@@ -113,7 +113,7 @@ class EvidenceItem(BaseModel):
 
 class ScenarioOutcome(BaseModel):
     name: str = Field(pattern="^(bear|base|bull)$")
-    probability: float = Field(ge=0, le=1)
+    probability: float | None = Field(default=None, ge=0, le=1)
     description: str
     price_range: PriceRange | None = None
     return_range: NumericRange | None = None
@@ -798,7 +798,11 @@ class HorizonDecision(BaseModel):
         names = {scenario.name for scenario in self.scenarios}
         if names != {"bear", "base", "bull"}:
             raise ValueError("scenarios must contain bear, base, and bull")
-        if not math.isclose(sum(s.probability for s in self.scenarios), 1.0, abs_tol=1e-6):
+        probabilities = [scenario.probability for scenario in self.scenarios]
+        if any(value is not None for value in probabilities) and (
+            any(value is None for value in probabilities)
+            or not math.isclose(sum(value or 0.0 for value in probabilities), 1.0, abs_tol=1e-6)
+        ):
             raise ValueError("scenario probabilities must total 100 percent")
         return self
 
@@ -872,6 +876,9 @@ class TickerDecision(BaseModel):
     market_state_publication_id: str | None = None
     market_state_snapshot: MarketStateSnapshot | None = None
     portfolio_impacts: dict[ExpressionKind, PortfolioImpact] = Field(default_factory=dict)
+    instrument_state_snapshot: dict[str, Any] | None = None
+    alpha_signals: list[dict[str, Any]] = Field(default_factory=list)
+    opportunity_rank: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1062,6 +1069,97 @@ class TickerDecision(BaseModel):
                 blockers.append(f"portfolio_impact_unavailable:{kind.value}")
             blockers.extend(impact.blockers)
         return tuple(dict.fromkeys(str(item) for item in blockers if str(item).strip()))
+
+
+def apply_opportunity_rank_safety(
+    decision: TickerDecision,
+    rank: Mapping[str, Any] | None,
+) -> TickerDecision:
+    """Make cash the only selected expression when book rank is not current."""
+
+    payload = dict(rank or {})
+    trade_rank = payload.get("trade_rank")
+    utility = payload.get("trade_utility")
+    if isinstance(utility, Mapping):
+        utility = utility.get("trade_utility")
+    reason = str(payload.get("trade_rank_unavailable_reason") or "").strip()
+    if trade_rank is not None and utility is not None and not reason:
+        return decision
+
+    expressions = dict(decision.expressions)
+    cash = expressions.get(ExpressionKind.CASH) or _cash_expression(
+        decision.ticker, decision.cutoff, decision.input_manifest.input_hash
+    )
+    cash = cash.model_copy(update={"selected": True})
+    expressions[ExpressionKind.CASH] = cash
+    expressions = {
+        kind: expression.model_copy(update={"selected": kind is ExpressionKind.CASH})
+        for kind, expression in expressions.items()
+    }
+    tactical = decision.tactical.model_copy(update={
+        "selected_instrument": ExpressionKind.CASH,
+        "alternate_expression": ExpressionKind.STOCK,
+    })
+    fundamental = decision.fundamental.model_copy(update={
+        "selected_instrument": ExpressionKind.CASH,
+        "alternate_expression": ExpressionKind.STOCK,
+    })
+    episode = build_opportunity_episode(
+        ticker=decision.ticker,
+        decision_revision=decision.decision_revision,
+        policy_version=decision.policy_version,
+        cutoff=decision.cutoff,
+        input_lineage=decision.input_lineage,
+        expressions=expressions,
+        selected_expression=ExpressionKind.CASH,
+        episode_id=decision.opportunity_episode_id,
+    )
+    impacts = {
+        kind: impact.model_copy(update={
+            "expression_identity": _expression_identity_for(
+                expression, kind, decision.ticker, decision.decision_revision
+            ),
+        })
+        for kind, expression in expressions.items()
+        for impact in [decision.portfolio_impacts.get(kind)]
+        if impact is not None
+    }
+    blocker = reason or "opportunity_rank_missing"
+    resolution = build_decision_resolution(
+        action="NO_TRADE",
+        decision_revision=decision.decision_revision,
+        policy_version=decision.policy_version,
+        provenance=decision.resolution.provenance if decision.resolution else {
+            "as_of": decision.as_of,
+            "input_hash": decision.input_manifest.input_hash,
+        },
+        ticker=decision.ticker,
+        blockers=[blocker],
+        ttl=decision.resolution.expires_at if decision.resolution else None,
+        portfolio_context={
+            "status": "cash_comparator",
+            "trade_rank": None,
+            "trade_utility": 0.0,
+            "blocker": blocker,
+        },
+        data_quality="INCOMPLETE",
+        authorization_mode="NONE",
+        rationale=f"Cash is selected because the current opportunity rank is unavailable: {blocker}.",
+        owned=decision.capital_action.owned,
+        catalyst=decision.capital_action.catalyst,
+        expires_at=decision.capital_action.expires_at,
+        blocked=True,
+    )
+    return decision.model_copy(update={
+        "tactical": tactical,
+        "fundamental": fundamental,
+        "expressions": expressions,
+        "selected_expression": cash,
+        "opportunity_episode": episode,
+        "portfolio_impacts": impacts,
+        "resolution": resolution,
+        "capital_action": capital_action_from_resolution(resolution),
+    })
 
 
 def _cash_expression(ticker: str, cutoff: datetime, thesis_revision: str) -> ExpressionDecision:
@@ -1302,6 +1400,9 @@ def build_ticker_decision(
                 "market_state_publication_id": persisted.get("market_state_publication_id") or None,
                 "market_state_snapshot": persisted.get("market_state_snapshot") or None,
                 "portfolio_impacts": persisted.get("portfolio_impacts") or {},
+                "instrument_state_snapshot": persisted.get("instrument_state_snapshot") or None,
+                "alpha_signals": persisted.get("alpha_signals") or [],
+                "opportunity_rank": persisted.get("opportunity_rank") or None,
             })
         except Exception:
             # A malformed persisted row is visible to source-health/learning
@@ -2472,26 +2573,26 @@ def _valuation_return(tables: Mapping[str, list[dict[str, Any]]]) -> NumericRang
 def _scenarios(row: Mapping[str, Any], stance: Stance, current_price: float | None, target: PriceRange | None) -> list[ScenarioOutcome]:
     raw = row.get("scenarios")
     values: dict[str, Any] = raw if isinstance(raw, Mapping) else {}
+    probabilities: dict[str, float | None] = {}
     result: list[ScenarioOutcome] = []
     for name in ("bear", "base", "bull"):
         item = values.get(name) if isinstance(values.get(name), Mapping) else {}
         probability = _number(_pick(item, "probability", "prob", "weight"))
-        if probability is None:
-            probability = 1 / 3
-        elif probability > 1:
+        if probability is not None and probability > 1:
             probability /= 100
+        probabilities[name] = probability if probability is not None and 0 <= probability <= 1 else None
         result.append(ScenarioOutcome(
             name=name,
-            probability=max(0, probability),
+            probability=probabilities[name],
             description=str(_pick(item, "description", "outcome") or f"{name.title()} case for a {stance.value.lower()} ticker view; scenario range not loaded."),
             price_range=_price_range(item, "price") if item else target if name == "base" and target else None,
             return_range=_numeric_range(item, "return"),
         ))
-    total = sum(item.probability for item in result)
-    if total <= 0:
-        total = 1
-    for item in result:
-        item.probability = item.probability / total
+    if any(value is None for value in probabilities.values()) or not math.isclose(
+        sum(value or 0.0 for value in probabilities.values()), 1.0, abs_tol=1e-6
+    ):
+        for item in result:
+            item.probability = None
     return result
 
 

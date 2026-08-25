@@ -81,7 +81,21 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     response = TestClient(app).get("/api/today")
 
     assert response.status_code == 200
-    assert response.json()["actions"] == [{**capital, "decision_revision": "ticker-decision.v1:test", "selected_expression": "STOCK"}]
+    assert response.json()["actions"] == [{
+        "ticker": "ACME",
+        "action": "AVOID",
+        "owned": False,
+        "rationale": "Cash is selected because the current opportunity rank is unavailable: opportunity_rank_missing.",
+        "decision_revision": "ticker-decision.v1:test",
+        "selected_expression": "CASH",
+        "price_condition": None,
+        "catalyst": None,
+        "expires_at": "2026-09-18",
+        "research_rank": None,
+        "trade_rank": None,
+        "trade_rank_unavailable_reason": "opportunity_rank_missing",
+        "trade_utility": None,
+    }]
 
 
 def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -447,8 +461,9 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
     assert selected_impact["opportunity_episode_id"] == decision["opportunity_episode"]["episode_id"]
     assert len(decision["opportunity_episode"]["input_lineage"]) == 5
     assert decision["market_state_snapshot"]["coverage_matrix"]["rows"][0]["current_status"] == "unavailable"
-    assert decision["resolution"]["eligibility"] == "PENDING"
-    assert decision["resolution"]["authorization_mode"] == "ADVISORY"
+    assert decision["resolution"]["eligibility"] == "BLOCKED"
+    assert decision["selected_expression"]["kind"] == "CASH"
+    assert decision["resolution"]["authorization_mode"] == "NONE"
     assert "PAPER_READY" not in repr(payload)
 
 

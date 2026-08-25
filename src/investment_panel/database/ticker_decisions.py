@@ -37,6 +37,12 @@ class TickerDecisionRepository:
         """Publish an immutable decision revision and its input manifest."""
 
         payload = decision.model_dump(mode="json")
+        payload["input_manifest"] = {
+            **dict(payload.get("input_manifest") or {}),
+            "instrument_state_snapshot": payload.get("instrument_state_snapshot"),
+            "alpha_signals": payload.get("alpha_signals") or [],
+            "opportunity_rank": payload.get("opportunity_rank"),
+        }
         with self.runtime.transaction(JOB_PROFILE) as connection:
             instrument = connection.execute(
                 "SELECT id FROM catalog.instrument WHERE symbol = %s LIMIT 1",
@@ -813,6 +819,7 @@ class TickerDecisionRepository:
 
 def _decision_from_row(row: Any) -> TickerDecision:
     resolution = resolution_from_legacy(dict(row))
+    manifest = dict(row["input_manifest"] or {})
     return TickerDecision.model_validate({
         "decision_contract_version": row["contract_version"],
         "ticker": row["ticker"],
@@ -829,7 +836,7 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "selected_expression": row["selected_expression"],
         "data_requests": row["data_requests"],
         "learning_history": row["learning_history"],
-        "input_manifest": row["input_manifest"],
+        "input_manifest": manifest,
         "market_state_publication_id": row.get("market_state_publication_id") if hasattr(row, "get") else None,
         "market_state_snapshot": row.get("market_state_snapshot") if hasattr(row, "get") else None,
         "portfolio_impacts": row.get("portfolio_impacts") if hasattr(row, "get") else {},
@@ -837,6 +844,9 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "opportunity_episode": (
             row.get("opportunity_episode") if hasattr(row, "get") else None
         ) or None,
+        "instrument_state_snapshot": manifest.get("instrument_state_snapshot"),
+        "alpha_signals": manifest.get("alpha_signals") or [],
+        "opportunity_rank": manifest.get("opportunity_rank"),
     })
 
 

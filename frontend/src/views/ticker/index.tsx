@@ -40,6 +40,9 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
           {ticker?.ticker_decision ? (
             <TickerDecisionPanel
               decision={ticker.ticker_decision}
+              instrumentStateSnapshot={ticker.instrument_state_snapshot}
+              alphaSignals={ticker.alpha_signals}
+              opportunityRank={ticker.opportunity_rank}
               dataRequests={ticker.data_requests ?? []}
               learning={ticker.learning}
               collecting={collecting}

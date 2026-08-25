@@ -1155,7 +1155,7 @@ export interface paths {
         };
         /**
          * Today
-         * @description Return exact ticker capital actions, ordered by action priority.
+         * @description Return exact ticker capital actions, ordered by backend opportunity rank.
          */
         get: operations["today_api_today_get"];
         put?: never;
@@ -1538,6 +1538,74 @@ export interface components {
              * @default 0
              */
             succeeded: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AlphaSignal
+         * @description A forecast with explicit target, horizon, calibration, and lineage.
+         */
+        AlphaSignal: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /** Calibration State */
+            calibration_state?: string | null;
+            /** Cohort Id */
+            cohort_id?: string | null;
+            /**
+             * Contract Version
+             * @default alpha-signal.v1
+             */
+            contract_version: string;
+            /** Decision Revision */
+            decision_revision: string;
+            /** Direction */
+            direction?: string | null;
+            /** Evaluation Stage */
+            evaluation_stage?: string | null;
+            /** Feature Version */
+            feature_version?: string | null;
+            /** Forecast Distribution */
+            forecast_distribution?: {
+                [key: string]: number;
+            } | null;
+            forecast_range?: components["schemas"]["NumericRange"] | null;
+            /** Forecast Value */
+            forecast_value?: number | null;
+            /** Horizon */
+            horizon?: string | null;
+            /**
+             * Input Cutoff
+             * Format: date-time
+             */
+            input_cutoff: string;
+            /**
+             * Input Lineage
+             * @default []
+             */
+            input_lineage: components["schemas"]["InputLineage"][];
+            /** Instrument State Snapshot Id */
+            instrument_state_snapshot_id: string;
+            /** Model Version */
+            model_version?: string | null;
+            /** Opportunity Episode Id */
+            opportunity_episode_id: string;
+            /** Probability Semantics */
+            probability_semantics?: string | null;
+            /** Signal Id */
+            signal_id: string;
+            /** Target */
+            target?: string | null;
+            /** Ticker */
+            ticker: string;
         } & {
             [key: string]: unknown;
         };
@@ -2187,6 +2255,75 @@ export interface components {
                 [key: string]: string;
             };
         };
+        /**
+         * InstrumentStateSnapshot
+         * @description One ticker's bounded point-in-time state, without neutral fallbacks.
+         */
+        InstrumentStateSnapshot: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /**
+             * Contract Version
+             * @default instrument-state-snapshot.v1
+             */
+            contract_version: string;
+            /** Coverage */
+            coverage?: {
+                [key: string]: unknown;
+            };
+            /** Event */
+            event?: {
+                [key: string]: unknown;
+            } | null;
+            /** Fundamental */
+            fundamental?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Input Cutoff
+             * Format: date-time
+             */
+            input_cutoff: string;
+            /**
+             * Input Lineage
+             * @default []
+             */
+            input_lineage: components["schemas"]["InputLineage"][];
+            /** Liquidity */
+            liquidity?: {
+                [key: string]: unknown;
+            } | null;
+            /** Market Snapshot Id */
+            market_snapshot_id?: string | null;
+            /** Market State Publication Id */
+            market_state_publication_id?: string | null;
+            /** Positioning */
+            positioning?: {
+                [key: string]: unknown;
+            } | null;
+            /** Snapshot Id */
+            snapshot_id: string;
+            /** Technical */
+            technical?: {
+                [key: string]: unknown;
+            } | null;
+            /** Ticker */
+            ticker: string;
+            /** Valuation */
+            valuation?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** Invalidation */
         Invalidation: {
             /** Kind */
@@ -2351,6 +2488,93 @@ export interface components {
             selected_expression?: components["schemas"]["ExpressionDecision"] | null;
             /** Ticker */
             ticker: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * OpportunityRank
+         * @description Book-level research and trade rank for one ticker opportunity.
+         */
+        OpportunityRank: {
+            /** Alpha Signal Id */
+            alpha_signal_id?: string | null;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /**
+             * Contract Version
+             * @default opportunity-rank.v1
+             */
+            contract_version: string;
+            /**
+             * Cutoff
+             * Format: date-time
+             */
+            cutoff: string;
+            /** Decision Revision */
+            decision_revision: string;
+            /**
+             * Evaluated Universe Complete
+             * @default false
+             */
+            evaluated_universe_complete: boolean;
+            /**
+             * Input Cutoff
+             * Format: date-time
+             */
+            input_cutoff: string;
+            /**
+             * Input Lineage
+             * @default []
+             */
+            input_lineage: components["schemas"]["InputLineage"][];
+            /** Instrument State Snapshot Id */
+            instrument_state_snapshot_id?: string | null;
+            /** Lower Confidence Expected Net Pnl */
+            lower_confidence_expected_net_pnl?: number | null;
+            /** Market Snapshot Id */
+            market_snapshot_id?: string | null;
+            /** Market State Publication Id */
+            market_state_publication_id?: string | null;
+            /** Opportunity Episode Id */
+            opportunity_episode_id: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Portfolio Impact Id */
+            portfolio_impact_id?: string | null;
+            /** Rank Id */
+            rank_id: string;
+            /**
+             * Ranking Universe Incomplete
+             * @default true
+             */
+            ranking_universe_incomplete: boolean;
+            /**
+             * Ranking Version
+             * @default ticker-opportunity-ranking.v1
+             */
+            ranking_version: string;
+            /** Research Priority Score */
+            research_priority_score?: number | null;
+            /** Research Rank */
+            research_rank?: number | null;
+            /** Risk Policy Version */
+            risk_policy_version?: string | null;
+            /** Selected Expression Identity */
+            selected_expression_identity?: string | null;
+            /** Selected Expression Kind */
+            selected_expression_kind?: string | null;
+            /** Ticker */
+            ticker: string;
+            /** Trade Rank */
+            trade_rank?: number | null;
+            /** Trade Rank Unavailable Reason */
+            trade_rank_unavailable_reason?: string | null;
+            /** Trade Utility */
+            trade_utility?: number | null;
+            utility?: components["schemas"]["TradeUtility"];
         } & {
             [key: string]: unknown;
         };
@@ -4193,7 +4417,7 @@ export interface components {
             name: string;
             price_range?: components["schemas"]["PriceRange"] | null;
             /** Probability */
-            probability: number;
+            probability?: number | null;
             return_range?: components["schemas"]["NumericRange"] | null;
         };
         /** SettingsResponse */
@@ -4807,6 +5031,10 @@ export interface components {
         };
         /** TickerDecision */
         TickerDecision: {
+            /** Alpha Signals */
+            alpha_signals?: {
+                [key: string]: unknown;
+            }[];
             /**
              * As Of
              * Format: date-time
@@ -4828,6 +5056,10 @@ export interface components {
             };
             fundamental: components["schemas"]["HorizonDecision"];
             input_manifest: components["schemas"]["InputManifest"];
+            /** Instrument State Snapshot */
+            instrument_state_snapshot?: {
+                [key: string]: unknown;
+            } | null;
             /** Learning History */
             learning_history?: {
                 [key: string]: unknown;
@@ -4836,6 +5068,10 @@ export interface components {
             market_state_publication_id?: string | null;
             market_state_snapshot?: components["schemas"]["MarketStateSnapshot"] | null;
             opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
+            /** Opportunity Rank */
+            opportunity_rank?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Policy Version
              * @default risk-policy.v2:legacy
@@ -4858,6 +5094,10 @@ export interface components {
          * @description The typed ticker decision; no flexible legacy snapshot fields remain.
          */
         TickerDecisionSnapshotResponse: {
+            /** Alpha Signals */
+            alpha_signals?: {
+                [key: string]: unknown;
+            }[];
             /**
              * As Of
              * Format: date-time
@@ -4879,6 +5119,10 @@ export interface components {
             };
             fundamental: components["schemas"]["HorizonDecision"];
             input_manifest: components["schemas"]["InputManifest"];
+            /** Instrument State Snapshot */
+            instrument_state_snapshot?: {
+                [key: string]: unknown;
+            } | null;
             /** Learning History */
             learning_history?: {
                 [key: string]: unknown;
@@ -4887,6 +5131,10 @@ export interface components {
             market_state_publication_id?: string | null;
             market_state_snapshot?: components["schemas"]["MarketStateSnapshot"] | null;
             opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
+            /** Opportunity Rank */
+            opportunity_rank?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Policy Version
              * @default risk-policy.v2:legacy
@@ -4906,6 +5154,8 @@ export interface components {
         };
         /** TickerDetailResponse */
         TickerDetailResponse: {
+            /** Alpha Signals */
+            alpha_signals?: components["schemas"]["AlphaSignal"][];
             /** As Of */
             as_of?: string | null;
             capital_action: components["schemas"]["CapitalAction"];
@@ -4926,6 +5176,7 @@ export interface components {
              * @default false
              */
             found: boolean;
+            instrument_state_snapshot?: components["schemas"]["InstrumentStateSnapshot"] | null;
             /** Learning */
             learning?: {
                 [key: string]: unknown;
@@ -4935,6 +5186,7 @@ export interface components {
                 [key: string]: unknown;
             }[];
             opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
+            opportunity_rank?: components["schemas"]["OpportunityRank"] | null;
             /**
              * Policy Version
              * @default risk-policy.v2:legacy
@@ -5023,11 +5275,19 @@ export interface components {
             price_condition?: string | null;
             /** Rationale */
             rationale: string;
+            /** Research Rank */
+            research_rank?: number | null;
             resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             /** Selected Expression */
             selected_expression?: string | null;
             /** Ticker */
             ticker: string;
+            /** Trade Rank */
+            trade_rank?: number | null;
+            /** Trade Rank Unavailable Reason */
+            trade_rank_unavailable_reason?: string | null;
+            /** Trade Utility */
+            trade_utility?: number | null;
         } & {
             [key: string]: unknown;
         };
@@ -5043,6 +5303,30 @@ export interface components {
              */
             count: number;
             status: components["schemas"]["ApiStatusResponse"];
+        };
+        /**
+         * TradeUtility
+         * @description Explicit utility inputs and the one calculated trade utility.
+         */
+        TradeUtility: {
+            /** Capital At Risk */
+            capital_at_risk?: number | null;
+            /** Diversification Benefit */
+            diversification_benefit?: number | null;
+            /** Expected Transaction Costs */
+            expected_transaction_costs?: number | null;
+            /** Lower Confidence Expected Gross Pnl */
+            lower_confidence_expected_gross_pnl?: number | null;
+            /** Lower Confidence Expected Net Pnl */
+            lower_confidence_expected_net_pnl?: number | null;
+            /** Portfolio Overlap Penalty */
+            portfolio_overlap_penalty?: number | null;
+            /** Tail Risk Penalty */
+            tail_risk_penalty?: number | null;
+            /** Trade Utility */
+            trade_utility?: number | null;
+        } & {
+            [key: string]: unknown;
         };
         /** ValidationError */
         ValidationError: {

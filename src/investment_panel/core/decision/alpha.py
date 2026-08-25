@@ -1,0 +1,626 @@
+"""Point-in-time ticker alpha and opportunity-rank contracts.
+
+The module is pure: callers provide bounded rows and explicit portfolio
+context. Missing evidence stays missing, so a research rank cannot become an
+order authority by accident.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+import hashlib
+import json
+from math import isfinite
+from typing import Any, Iterable, Mapping
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from investment_panel.core.decision.ticker import InputLineage, MarketStateSnapshot, NumericRange
+
+
+INSTRUMENT_STATE_SNAPSHOT_CONTRACT_VERSION = "instrument-state-snapshot.v1"
+ALPHA_SIGNAL_CONTRACT_VERSION = "alpha-signal.v1"
+OPPORTUNITY_RANK_CONTRACT_VERSION = "opportunity-rank.v1"
+TICKER_OPPORTUNITY_RANKING_VERSION = "ticker-opportunity-ranking.v1"
+
+
+class InstrumentStateSnapshot(BaseModel):
+    """One ticker's bounded point-in-time state, without neutral fallbacks."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    contract_version: str = INSTRUMENT_STATE_SNAPSHOT_CONTRACT_VERSION
+    snapshot_id: str = Field(min_length=1)
+    ticker: str = Field(min_length=1)
+    as_of: datetime
+    input_cutoff: datetime
+    market_snapshot_id: str | None = None
+    market_state_publication_id: str | None = None
+    fundamental: dict[str, Any] | None = None
+    technical: dict[str, Any] | None = None
+    event: dict[str, Any] | None = None
+    positioning: dict[str, Any] | None = None
+    liquidity: dict[str, Any] | None = None
+    valuation: dict[str, Any] | None = None
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    blockers: tuple[str, ...] = ()
+    input_lineage: tuple[InputLineage, ...] = ()
+
+    @model_validator(mode="after")
+    def enforce_cutoff(self) -> "InstrumentStateSnapshot":
+        if self.as_of.tzinfo is None or self.input_cutoff.tzinfo is None:
+            raise ValueError("instrument state snapshot timestamps must be timezone-aware")
+        if _utc(self.as_of) != _utc(self.input_cutoff):
+            raise ValueError("instrument state snapshot as_of and input_cutoff must match")
+        cutoff = _utc(self.input_cutoff)
+        if any(_utc(item.available_at) > cutoff for item in self.input_lineage):
+            raise ValueError("instrument state snapshot lineage cannot be newer than its cutoff")
+        return self
+
+
+class AlphaSignal(BaseModel):
+    """A forecast with explicit target, horizon, calibration, and lineage."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    contract_version: str = ALPHA_SIGNAL_CONTRACT_VERSION
+    signal_id: str = Field(min_length=1)
+    ticker: str = Field(min_length=1)
+    opportunity_episode_id: str = Field(min_length=1)
+    decision_revision: str = Field(min_length=1)
+    instrument_state_snapshot_id: str = Field(min_length=1)
+    target: str | None = None
+    horizon: str | None = None
+    direction: str | None = None
+    forecast_value: float | None = None
+    forecast_range: NumericRange | None = None
+    forecast_distribution: dict[str, float] | None = None
+    probability_semantics: str | None = None
+    cohort_id: str | None = None
+    calibration_state: str | None = None
+    model_version: str | None = None
+    feature_version: str | None = None
+    evaluation_stage: str | None = None
+    as_of: datetime
+    input_cutoff: datetime
+    input_lineage: tuple[InputLineage, ...] = ()
+    blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def enforce_forecast_metadata(self) -> "AlphaSignal":
+        if self.as_of.tzinfo is None or self.input_cutoff.tzinfo is None:
+            raise ValueError("alpha signal timestamps must be timezone-aware")
+        if _utc(self.as_of) != _utc(self.input_cutoff):
+            raise ValueError("alpha signal as_of and input_cutoff must match")
+        numerical = (
+            self.forecast_value is not None
+            or self.forecast_range is not None
+            or self.forecast_distribution is not None
+        )
+        if numerical:
+            missing = [
+                name for name, value in (
+                    ("target", self.target),
+                    ("horizon", self.horizon),
+                    ("cohort_id", self.cohort_id),
+                    ("calibration_state", self.calibration_state),
+                    ("model_version", self.model_version),
+                ) if not str(value or "").strip()
+            ]
+            if missing:
+                raise ValueError("numerical alpha forecasts require: " + ", ".join(missing))
+        if self.forecast_distribution is not None:
+            if not self.probability_semantics:
+                raise ValueError("alpha probability distributions require probability semantics")
+            values = tuple(float(value) for value in self.forecast_distribution.values())
+            if any(not isfinite(value) or value < 0 for value in values):
+                raise ValueError("alpha probability distribution must be finite and non-negative")
+            if not values or abs(sum(values) - 1.0) > 1e-6:
+                raise ValueError("alpha probability distribution must total one")
+        cutoff = _utc(self.input_cutoff)
+        if any(_utc(item.available_at) > cutoff for item in self.input_lineage):
+            raise ValueError("alpha signal lineage cannot be newer than its cutoff")
+        return self
+
+
+class TradeUtility(BaseModel):
+    """Explicit utility inputs and the one calculated trade utility."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    lower_confidence_expected_gross_pnl: float | None = None
+    expected_transaction_costs: float | None = None
+    lower_confidence_expected_net_pnl: float | None = None
+    tail_risk_penalty: float | None = None
+    portfolio_overlap_penalty: float | None = None
+    diversification_benefit: float | None = None
+    capital_at_risk: float | None = None
+    trade_utility: float | None = None
+
+
+class OpportunityRank(BaseModel):
+    """Book-level research and trade rank for one ticker opportunity."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    contract_version: str = OPPORTUNITY_RANK_CONTRACT_VERSION
+    rank_id: str = Field(min_length=1)
+    ranking_version: str = TICKER_OPPORTUNITY_RANKING_VERSION
+    ticker: str = Field(min_length=1)
+    opportunity_episode_id: str = Field(min_length=1)
+    decision_revision: str = Field(min_length=1)
+    policy_version: str = Field(min_length=1)
+    selected_expression_identity: str | None = None
+    selected_expression_kind: str | None = None
+    portfolio_impact_id: str | None = None
+    risk_policy_version: str | None = None
+    alpha_signal_id: str | None = None
+    instrument_state_snapshot_id: str | None = None
+    market_snapshot_id: str | None = None
+    market_state_publication_id: str | None = None
+    cutoff: datetime
+    input_cutoff: datetime
+    input_lineage: tuple[InputLineage, ...] = ()
+    research_priority_score: float | None = None
+    research_rank: int | None = None
+    trade_rank: int | None = None
+    trade_rank_unavailable_reason: str | None = None
+    utility: TradeUtility = Field(default_factory=TradeUtility)
+    lower_confidence_expected_net_pnl: float | None = None
+    trade_utility: float | None = None
+    evaluated_universe_complete: bool = False
+    ranking_universe_incomplete: bool = True
+    blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def enforce_cutoff(self) -> "OpportunityRank":
+        if self.cutoff.tzinfo is None or self.input_cutoff.tzinfo is None:
+            raise ValueError("opportunity rank timestamps must be timezone-aware")
+        if _utc(self.cutoff) != _utc(self.input_cutoff):
+            raise ValueError("opportunity rank cutoff and input_cutoff must match")
+        if self.trade_rank is not None and self.trade_rank < 1:
+            raise ValueError("trade rank must be positive")
+        return self
+
+
+def build_instrument_state_snapshot(
+    ticker: str,
+    tables: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
+    *,
+    as_of: datetime,
+    input_cutoff: datetime | None = None,
+    market_snapshot: MarketStateSnapshot | Mapping[str, Any] | None = None,
+    market_snapshot_id: str | None = None,
+    market_state_publication_id: str | None = None,
+    input_lineage: Iterable[InputLineage] = (),
+) -> InstrumentStateSnapshot:
+    """Build one snapshot from already bounded rows; missing dimensions stay null."""
+
+    reference = _utc(input_cutoff or as_of)
+    source_rows = tables or {}
+    dimensions = {
+        "fundamental": ("fundamentals",),
+        "technical": ("technicals",),
+        "event": ("earnings", "catalysts"),
+        "positioning": ("ownership_consensus", "short_interest"),
+        "liquidity": ("liquidity",),
+        "valuation": ("valuations",),
+    }
+    values: dict[str, dict[str, Any] | None] = {}
+    coverage: dict[str, Any] = {}
+    blockers: list[str] = []
+    symbol = ticker.strip().upper()
+    for dimension, names in dimensions.items():
+        row = _latest_row(source_rows, names, symbol, reference)
+        values[dimension] = _jsonable(row) if row is not None else None
+        coverage[dimension] = {
+            "status": "available" if row is not None else "unavailable",
+            "source_id": str((row or {}).get("source") or (row or {}).get("source_id") or "") or None,
+            "source_version": str((row or {}).get("source_version") or "") or None,
+            "available_at": _iso((row or {}).get("available_at")) if row is not None else None,
+        }
+        if row is None:
+            blockers.append(f"{dimension}_state_unavailable")
+    market = _model_dump(market_snapshot)
+    snapshot_id_value = market_snapshot_id or str(market.get("snapshot_id") or "") or None
+    publication_id = market_state_publication_id or str(market.get("publication_id") or "") or None
+    lineage = tuple(input_lineage)
+    identity_payload = {
+        "ticker": symbol,
+        "as_of": reference.isoformat(),
+        "market_snapshot_id": snapshot_id_value,
+        "market_state_publication_id": publication_id,
+        "dimensions": values,
+        "coverage": coverage,
+        "blockers": blockers,
+        "input_lineage": [_jsonable(item) for item in lineage],
+    }
+    return InstrumentStateSnapshot(
+        snapshot_id=_content_id("instrument-state", identity_payload),
+        ticker=symbol,
+        as_of=reference,
+        input_cutoff=reference,
+        market_snapshot_id=snapshot_id_value,
+        market_state_publication_id=publication_id,
+        **values,
+        coverage=coverage,
+        blockers=tuple(blockers),
+        input_lineage=lineage,
+    )
+
+
+def build_alpha_signal(
+    *,
+    ticker: str,
+    opportunity_episode_id: str,
+    decision_revision: str,
+    instrument_state_snapshot_id: str,
+    as_of: datetime,
+    input_lineage: Iterable[InputLineage] = (),
+    target: str | None = None,
+    horizon: str | None = None,
+    direction: str | None = None,
+    forecast_value: float | None = None,
+    forecast_range: NumericRange | Mapping[str, Any] | None = None,
+    forecast_distribution: Mapping[str, float] | None = None,
+    probability_semantics: str | None = None,
+    cohort_id: str | None = None,
+    calibration_state: str | None = None,
+    model_version: str | None = None,
+    feature_version: str | None = None,
+    evaluation_stage: str | None = None,
+    blockers: Iterable[str] = (),
+) -> AlphaSignal:
+    reference = _utc(as_of)
+    lineage = tuple(input_lineage)
+    range_value = forecast_range
+    if isinstance(range_value, Mapping):
+        range_value = NumericRange.model_validate(range_value)
+    values = {
+        "ticker": ticker.strip().upper(),
+        "opportunity_episode_id": opportunity_episode_id,
+        "decision_revision": decision_revision,
+        "instrument_state_snapshot_id": instrument_state_snapshot_id,
+        "target": target,
+        "horizon": horizon,
+        "direction": direction,
+        "forecast_value": forecast_value,
+        "forecast_range": _jsonable(range_value),
+        "forecast_distribution": dict(forecast_distribution or {}) or None,
+        "probability_semantics": probability_semantics,
+        "cohort_id": cohort_id,
+        "calibration_state": calibration_state,
+        "model_version": model_version,
+        "feature_version": feature_version,
+        "evaluation_stage": evaluation_stage,
+        "as_of": reference.isoformat(),
+        "input_cutoff": reference.isoformat(),
+        "input_lineage": [_jsonable(item) for item in lineage],
+        "blockers": list(blockers),
+    }
+    return AlphaSignal(
+        signal_id=_content_id("alpha-signal", values),
+        as_of=reference,
+        input_cutoff=reference,
+        input_lineage=lineage,
+        **{key: value for key, value in values.items() if key not in {"as_of", "input_cutoff", "input_lineage"}},
+    )
+
+
+def calculate_trade_utility(
+    *,
+    lower_confidence_expected_gross_pnl: float | None = None,
+    expected_transaction_costs: float | None = None,
+    lower_confidence_expected_net_pnl: float | None = None,
+    tail_risk_penalty: float | None = None,
+    portfolio_overlap_penalty: float | None = None,
+    diversification_benefit: float | None = None,
+    capital_at_risk: float | None = None,
+) -> TradeUtility:
+    """Calculate utility once; a supplied net value is never costed twice."""
+
+    gross = _finite(lower_confidence_expected_gross_pnl)
+    costs = _finite(expected_transaction_costs)
+    net = _finite(lower_confidence_expected_net_pnl)
+    if gross is not None and costs is not None:
+        calculated_net = gross - costs
+        if net is not None and abs(net - calculated_net) > 1e-8:
+            raise ValueError("lower-confidence net P&L does not match gross P&L less transaction costs")
+        net = calculated_net
+    tail = _finite(tail_risk_penalty)
+    overlap = _finite(portfolio_overlap_penalty)
+    diversification = _finite(diversification_benefit)
+    capital = _finite(capital_at_risk)
+    if any(value is not None and value < 0 for value in (costs, tail, overlap)):
+        raise ValueError("transaction costs and risk penalties cannot be negative")
+    utility = None
+    if all(value is not None for value in (net, tail, overlap, diversification)) and capital is not None and capital > 0:
+        utility = (net - tail - overlap + diversification) / capital
+    return TradeUtility(
+        lower_confidence_expected_gross_pnl=gross,
+        expected_transaction_costs=costs,
+        lower_confidence_expected_net_pnl=net,
+        tail_risk_penalty=tail,
+        portfolio_overlap_penalty=overlap,
+        diversification_benefit=diversification,
+        capital_at_risk=capital,
+        trade_utility=utility,
+    )
+
+
+def rank_opportunities(
+    candidates: Iterable[Mapping[str, Any]],
+    *,
+    evaluated_universe_complete: bool,
+    ranking_version: str = TICKER_OPPORTUNITY_RANKING_VERSION,
+) -> list[OpportunityRank]:
+    """Return dense research ranks and fail-closed book trade ranks."""
+
+    raw_rows = [dict(candidate) for candidate in candidates]
+    rows: list[dict[str, Any]] = []
+    for candidate in raw_rows:
+        utility_inputs = dict(candidate.get("utility") or {})
+        for name in (
+            "lower_confidence_expected_gross_pnl", "expected_transaction_costs",
+            "lower_confidence_expected_net_pnl", "tail_risk_penalty",
+            "portfolio_overlap_penalty", "diversification_benefit", "capital_at_risk",
+        ):
+            if name not in utility_inputs and name in candidate:
+                utility_inputs[name] = candidate[name]
+        utility = calculate_trade_utility(**utility_inputs)
+        reason = _unavailable_reason(candidate, utility, evaluated_universe_complete)
+        row = {
+            **candidate,
+            "utility": utility,
+            "trade_rank_unavailable_reason": reason,
+            "evaluated_universe_complete": evaluated_universe_complete,
+            "ranking_universe_incomplete": not evaluated_universe_complete,
+            "research_priority_score": _research_score(candidate),
+            "ranking_version": ranking_version,
+        }
+        rows.append(row)
+
+    ordered_research = sorted(rows, key=_research_key)
+    for rank, row in enumerate(ordered_research, start=1):
+        row["research_rank"] = rank
+    eligible = [row for row in rows if row["trade_rank_unavailable_reason"] is None]
+    eligible.sort(key=lambda row: (
+        -(row["utility"].trade_utility or 0.0),
+        int(row.get("research_rank") or 0),
+        str(row.get("ticker") or ""),
+        str(row.get("opportunity_episode_id") or ""),
+        str(row.get("selected_expression_identity") or ""),
+    ))
+    for rank, row in enumerate(eligible, start=1):
+        row["trade_rank"] = rank
+    output: list[OpportunityRank] = []
+    for row in rows:
+        utility: TradeUtility = row["utility"]
+        payload = {
+            "ranking_version": ranking_version,
+            "ticker": row.get("ticker"),
+            "opportunity_episode_id": row.get("opportunity_episode_id"),
+            "decision_revision": row.get("decision_revision"),
+            "policy_version": row.get("policy_version") or row.get("risk_policy_version"),
+            "selected_expression_identity": row.get("selected_expression_identity"),
+            "selected_expression_kind": row.get("selected_expression_kind"),
+            "portfolio_impact_id": row.get("portfolio_impact_id"),
+            "risk_policy_version": row.get("risk_policy_version") or row.get("policy_version"),
+            "alpha_signal_id": row.get("alpha_signal_id"),
+            "instrument_state_snapshot_id": row.get("instrument_state_snapshot_id"),
+            "market_snapshot_id": row.get("market_snapshot_id"),
+            "market_state_publication_id": row.get("market_state_publication_id"),
+            "cutoff": _jsonable(row.get("cutoff")),
+            "input_lineage": _jsonable(row.get("input_lineage") or ()),
+            "research_priority_score": row.get("research_priority_score"),
+            "research_rank": row.get("research_rank"),
+            "trade_rank": row.get("trade_rank"),
+            "trade_rank_unavailable_reason": row.get("trade_rank_unavailable_reason"),
+            "utility": utility.model_dump(mode="json"),
+            "evaluated_universe_complete": row["evaluated_universe_complete"],
+            "ranking_universe_incomplete": row["ranking_universe_incomplete"],
+            "blockers": list(row.get("blockers") or ()),
+        }
+        output.append(OpportunityRank(
+            rank_id=_content_id("opportunity-rank", payload),
+            input_cutoff=_timestamp(row["cutoff"]),
+            lower_confidence_expected_net_pnl=utility.lower_confidence_expected_net_pnl,
+            trade_utility=utility.trade_utility,
+            **payload,
+        ))
+    return sorted(output, key=lambda row: (row.research_rank or 0, row.ticker, row.opportunity_episode_id))
+
+
+def _unavailable_reason(candidate: Mapping[str, Any], utility: TradeUtility, universe_complete: bool) -> str | None:
+    if not universe_complete:
+        return "ranking_universe_incomplete"
+    kind = str(candidate.get("selected_expression_kind") or "").upper()
+    if kind == "CASH":
+        return "cash_comparator"
+    signal = _model_dump(candidate.get("alpha_signal"))
+    if not _signal_metadata_complete(signal):
+        return "alpha_signal_metadata_incomplete"
+    calibration = str(signal.get("calibration_state") or candidate.get("calibration_state") or "").lower()
+    stage = str(signal.get("evaluation_stage") or candidate.get("evaluation_stage") or "").lower()
+    exact = (
+        "exact" in calibration
+        and ("calibrat" in calibration or "out_of_sample" in calibration or "oos" in calibration)
+    )
+    if not exact:
+        return "calibration_not_exact_out_of_sample"
+    if utility.lower_confidence_expected_gross_pnl is None or utility.expected_transaction_costs is None:
+        return "transaction_cost_model_missing"
+    if candidate.get("requires_execution_grade_paper_evidence") and not candidate.get("walk_forward_paper_evidence"):
+        return "paper_evidence_missing"
+    if utility.lower_confidence_expected_net_pnl is None or utility.lower_confidence_expected_net_pnl <= 0:
+        return "lower_confidence_expected_net_pnl_not_positive"
+    if any(value is None for value in (
+        utility.tail_risk_penalty,
+        utility.portfolio_overlap_penalty,
+        utility.diversification_benefit,
+        utility.capital_at_risk,
+    )) or utility.capital_at_risk <= 0:
+        return "utility_input_missing"
+    impact = _model_dump(candidate.get("portfolio_impact"))
+    if not impact or impact.get("availability") != "available" or impact.get("blockers"):
+        return "portfolio_impact_missing_or_stale"
+    policy = _model_dump(candidate.get("risk_policy_snapshot"))
+    if not policy or policy.get("blockers"):
+        return "risk_policy_snapshot_missing_or_stale"
+    if candidate.get("execution_feasible") is not True:
+        return "execution_feasibility_incomplete"
+    if not str(candidate.get("selected_expression_identity") or "").strip():
+        return "selected_expression_identity_incomplete"
+    if not _lineage_matches(candidate, impact, policy, signal):
+        return "publication_lineage_mismatch"
+    del stage
+    return None
+
+
+def _signal_metadata_complete(signal: Mapping[str, Any]) -> bool:
+    if not signal:
+        return False
+    numerical = any(signal.get(key) is not None for key in ("forecast_value", "forecast_range", "forecast_distribution"))
+    if not numerical:
+        return False
+    return all(str(signal.get(key) or "").strip() for key in ("target", "horizon", "cohort_id", "calibration_state", "model_version"))
+
+
+def _lineage_matches(
+    candidate: Mapping[str, Any],
+    impact: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    signal: Mapping[str, Any],
+) -> bool:
+    pairs = (
+        ("ticker", signal.get("ticker")),
+        ("opportunity_episode_id", impact.get("opportunity_episode_id")),
+        ("decision_revision", impact.get("decision_revision")),
+        ("market_snapshot_id", impact.get("market_snapshot_id")),
+        ("market_state_publication_id", impact.get("market_state_publication_id")),
+        ("policy_version", policy.get("policy_version")),
+        ("instrument_state_snapshot_id", signal.get("instrument_state_snapshot_id")),
+        ("alpha_signal_id", signal.get("signal_id")),
+        ("portfolio_impact_id", impact.get("impact_id")),
+    )
+    if not all(not expected or str(candidate.get(name) or "") == str(expected) for name, expected in pairs):
+        return False
+    expression = _model_dump(candidate.get("expression"))
+    if candidate.get("selected_expression_kind") and expression:
+        if str(expression.get("kind") or "") != str(candidate["selected_expression_kind"]):
+            return False
+    if candidate.get("selected_expression_identity") and impact.get("expression_identity"):
+        if str(candidate["selected_expression_identity"]) != str(impact["expression_identity"]):
+            return False
+    return True
+
+
+def _research_score(candidate: Mapping[str, Any]) -> float | None:
+    for key in ("research_priority_score", "research_score", "discovery_score"):
+        value = _finite(candidate.get(key))
+        if value is not None:
+            return value
+    expression = _model_dump(candidate.get("expression"))
+    lower = _finite(expression.get("lower_confidence_expectancy"))
+    net = _finite(expression.get("net_expected_value_per_loss_dollar"))
+    liquidity = _finite(expression.get("liquidity_score"))
+    fill = _finite(expression.get("fill_probability"))
+    if all(value is None for value in (lower, net, liquidity, fill)):
+        return None
+    return sum(value or 0.0 for value in (lower, net, liquidity, fill))
+
+
+def _research_key(row: Mapping[str, Any]) -> tuple[int, float, str, str, str]:
+    score = _finite(row.get("research_priority_score"))
+    return (
+        0 if score is not None else 1,
+        -(score or 0.0),
+        str(row.get("ticker") or ""),
+        str(row.get("opportunity_episode_id") or ""),
+        str(row.get("selected_expression_identity") or ""),
+    )
+
+
+def _latest_row(
+    tables: Mapping[str, Iterable[Mapping[str, Any]]],
+    names: Iterable[str],
+    ticker: str,
+    cutoff: datetime,
+) -> dict[str, Any] | None:
+    rows: list[dict[str, Any]] = []
+    for name in names:
+        for raw in tables.get(name) or ():
+            row = dict(raw)
+            row_ticker = str(row.get("ticker") or row.get("symbol") or row.get("underlying") or "").strip().upper()
+            if row_ticker and row_ticker != ticker:
+                continue
+            available_at = row.get("available_at") or row.get("as_of")
+            if available_at is not None:
+                try:
+                    if _timestamp(available_at) > cutoff:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            rows.append(row)
+    return max(rows, key=lambda row: str(row.get("available_at") or row.get("as_of") or ""), default=None)
+
+
+def _model_dump(value: Any) -> dict[str, Any]:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _content_id(prefix: str, value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(_jsonable(value), sort_keys=True, separators=(",", ":"), default=str)
+    return f"{prefix}:{hashlib.sha256(encoded.encode()).hexdigest()[:32]}"
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (datetime,)):
+        return value.isoformat()
+    return value
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isfinite(parsed) else None
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else str(value) if value is not None else None
+
+
+def _timestamp(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return _utc(value)
+    return _utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+__all__ = [
+    "ALPHA_SIGNAL_CONTRACT_VERSION",
+    "INSTRUMENT_STATE_SNAPSHOT_CONTRACT_VERSION",
+    "OPPORTUNITY_RANK_CONTRACT_VERSION",
+    "TICKER_OPPORTUNITY_RANKING_VERSION",
+    "AlphaSignal",
+    "InstrumentStateSnapshot",
+    "OpportunityRank",
+    "TradeUtility",
+    "build_alpha_signal",
+    "build_instrument_state_snapshot",
+    "calculate_trade_utility",
+    "rank_opportunities",
+]

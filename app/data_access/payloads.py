@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Any
 from app.scheduler import scheduler_status
 from investment_panel.core.panel import (
@@ -15,6 +16,7 @@ from app.data_access.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.core.config import AppConfig, OptionAgentConfig
 from investment_panel.core.decision import (
+    apply_opportunity_rank_safety,
     build_ticker_decision,
     evaluate_ticker_policy,
     opportunity_episode_from_legacy,
@@ -169,7 +171,35 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         tables,
         as_of=_ticker_as_of(panel_data, tables),
     )
+    snapshot_row, signal_rows, rank_row = _current_alpha_rows(
+        tables, ticker_decision,
+    )
+    if not _rank_is_current_for_decision(rank_row, ticker_decision):
+        if rank_row is None:
+            reason = "opportunity_rank_missing"
+        else:
+            reason = str(rank_row.get("trade_rank_unavailable_reason") or "")
+            if not reason and not bool(rank_row.get("evaluated_universe_complete")):
+                reason = "ranking_universe_incomplete"
+            if not reason:
+                reason = "opportunity_rank_identity_mismatch"
+        ticker_decision = apply_opportunity_rank_safety(
+            ticker_decision,
+            {"trade_rank_unavailable_reason": reason},
+        )
+        if rank_row is not None:
+            rank_row = {
+                **rank_row,
+                "trade_rank": None,
+                "trade_utility": None,
+                "trade_rank_unavailable_reason": reason,
+            }
     ticker_decision_payload = ticker_decision.model_dump(mode="json")
+    ticker_decision_payload.update({
+        "instrument_state_snapshot": snapshot_row,
+        "alpha_signals": signal_rows,
+        "opportunity_rank": rank_row,
+    })
     learning = ticker_learning_payload(
         ticker_decision_payload,
         tables.get("ticker_outcomes") or [],
@@ -192,10 +222,75 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "expressions": ticker_decision_payload["expressions"],
         "data_requests": ticker_decision_payload["data_requests"],
         "learning_history": ticker_decision_payload["learning_history"],
+        "instrument_state_snapshot": snapshot_row,
+        "alpha_signals": signal_rows,
+        "opportunity_rank": rank_row,
         "learning": learning,
         "decision_revision": ticker_decision_payload["decision_revision"],
         "found": bool(dossier["coverage"].get("present") or dossier["coverage"]["live"]),
     }
+
+
+def _current_alpha_rows(
+    tables: dict[str, list[dict[str, Any]]],
+    decision: Any,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+    symbol = decision.ticker.strip().upper()
+    revision = decision.decision_revision
+    episode_id = decision.opportunity_episode_id
+
+    def matches(row: dict[str, Any], *, episode: bool = True) -> bool:
+        row_symbol = _payload_symbol(row)
+        if row_symbol and row_symbol != symbol:
+            return False
+        if row.get("decision_revision") and str(row["decision_revision"]) != revision:
+            return False
+        if episode and row.get("opportunity_episode_id") and str(row["opportunity_episode_id"]) != episode_id:
+            return False
+        return True
+
+    expected_snapshot_id = str(
+        (decision.instrument_state_snapshot or {}).get("snapshot_id") or ""
+    )
+    snapshots = [
+        row for row in tables.get("instrument_state_snapshot") or []
+        if matches(row, episode=False)
+        and (not expected_snapshot_id or str(row.get("snapshot_id") or "") == expected_snapshot_id)
+    ]
+    signals = [row for row in tables.get("alpha_signal") or [] if matches(row)]
+    ranks = [row for row in tables.get("opportunity_rank") or [] if matches(row)]
+    snapshot = max(snapshots, key=lambda row: str(row.get("as_of") or row.get("input_cutoff") or ""), default=None)
+    rank = max(ranks, key=lambda row: str(row.get("published_at") or row.get("publication_published_at") or ""), default=None)
+    return snapshot, signals, rank
+
+
+def _rank_is_current_for_decision(rank: dict[str, Any] | None, decision: Any) -> bool:
+    if rank is None:
+        return False
+    selected = decision.selected_expression
+    if selected is None:
+        return False
+    if str(rank.get("decision_revision") or "") != decision.decision_revision:
+        return False
+    if str(rank.get("opportunity_episode_id") or "") != decision.opportunity_episode_id:
+        return False
+    if str(rank.get("selected_expression_kind") or "") != selected.kind.value:
+        return False
+    try:
+        from investment_panel.core.decision import trade_expression_identity
+
+        if str(rank.get("selected_expression_identity") or "") != trade_expression_identity(selected):
+            return False
+        if not bool(rank.get("evaluated_universe_complete")):
+            return False
+        return (
+            int(rank.get("trade_rank")) > 0
+            and isfinite(float(rank.get("trade_utility")))
+            and float(rank.get("trade_utility")) > 0
+            and not rank.get("trade_rank_unavailable_reason")
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def ticker_decision_summary(ticker_decision: dict[str, Any]) -> dict[str, Any]:
@@ -291,6 +386,10 @@ def option_decision_adapter(
     episode_fields, episode_blocker = _canonical_opportunity_fields(ticker_decision)
     episode = episode_fields.get("opportunity_episode") or {}
     context_blockers = _portfolio_context_blockers(ticker_decision)
+    rank_blocker = _opportunity_rank_blocker(ticker_decision)
+    if rank_blocker:
+        context_blockers.append(rank_blocker)
+    context_blockers = list(dict.fromkeys(context_blockers))
     selected_from_episode = episode.get("selected_expression") or {}
     selected_kind = str(
         selected_from_episode.get("kind")
@@ -426,6 +525,30 @@ def _portfolio_context_blockers(ticker_decision: dict[str, Any]) -> list[str]:
     else:
         blockers.extend(str(item) for item in policy.get("blockers") or [])
     return list(dict.fromkeys(item for item in blockers if item))
+
+
+def _opportunity_rank_blocker(ticker_decision: dict[str, Any]) -> str | None:
+    rank = ticker_decision.get("opportunity_rank")
+    if not isinstance(rank, dict):
+        return "opportunity_rank_missing"
+    try:
+        selected = ticker_decision.get("selected_expression") or {}
+        if str(rank.get("selected_expression_kind") or "") != str(selected.get("kind") or ""):
+            return "opportunity_rank_identity_mismatch"
+        from investment_panel.core.decision import trade_expression_identity
+
+        if str(rank.get("selected_expression_identity") or "") != trade_expression_identity(selected):
+            return "opportunity_rank_identity_mismatch"
+        if not bool(rank.get("evaluated_universe_complete")):
+            return "ranking_universe_incomplete"
+        rank_utility = float(rank.get("trade_utility"))
+        if int(rank.get("trade_rank")) <= 0 or not isfinite(rank_utility) or rank_utility <= 0:
+            return str(rank.get("trade_rank_unavailable_reason") or "opportunity_rank_unavailable")
+        if rank.get("trade_rank_unavailable_reason"):
+            return str(rank["trade_rank_unavailable_reason"])
+    except (TypeError, ValueError, OverflowError):
+        return str(rank.get("trade_rank_unavailable_reason") or "opportunity_rank_unavailable")
+    return None
 
 
 def _compatibility_option_candidate(

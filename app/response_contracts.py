@@ -28,12 +28,15 @@ from app.options_history_contracts import (
     IVSurfaceGrid,
 )
 from investment_panel.core.decision import (
+    AlphaSignal,
     CapitalAction,
     DataRequest,
     DecisionResolutionV2,
     ExpressionDecision,
     ExpressionKind,
     OpportunityEpisode,
+    OpportunityRank,
+    InstrumentStateSnapshot,
     TickerDecision,
 )
 
@@ -97,6 +100,10 @@ class TodayCapitalAction(FlexibleResponse):
     price_condition: str | None = None
     catalyst: str | None = None
     expires_at: date | None = None
+    research_rank: int | None = None
+    trade_rank: int | None = None
+    trade_rank_unavailable_reason: str | None = None
+    trade_utility: float | None = None
 
 
 class TodayResponse(BaseModel):
@@ -539,6 +546,9 @@ class TickerDetailResponse(FlexibleResponse):
     resolution: DecisionResolutionV2 | None = None
     policy_version: str = "risk-policy.v2:legacy"
     opportunity_episode: OpportunityEpisode | None = None
+    instrument_state_snapshot: InstrumentStateSnapshot | None = None
+    alpha_signals: list[AlphaSignal] = Field(default_factory=list)
+    opportunity_rank: OpportunityRank | None = None
     expressions: dict[ExpressionKind, ExpressionDecision] = Field(default_factory=dict)
     data_requests: list[DataRequest] = Field(default_factory=list)
     learning: JsonObject = Field(default_factory=dict)

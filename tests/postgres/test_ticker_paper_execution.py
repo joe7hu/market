@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from investment_panel.core.decision import InputLineage, build_ticker_decision
+from investment_panel.core.decision import (
+    InputLineage,
+    build_ticker_decision,
+    rank_opportunities,
+    trade_expression_identity,
+)
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.portfolio_ledger import replay_portfolio_at
@@ -95,6 +100,67 @@ def _publish_context(
         portfolio_replay=replay,
     )
     TickerDecisionRepository(runtime).publish(decision)
+    selected = decision.selected_expression
+    impact = decision.portfolio_impacts[selected.kind]
+    signal = {
+        "signal_id": f"test-signal:{symbol}",
+        "ticker": symbol,
+        "opportunity_episode_id": decision.opportunity_episode_id,
+        "decision_revision": decision.decision_revision,
+        "instrument_state_snapshot_id": snapshot.snapshot_id,
+        "target": "expected_return",
+        "horizon": selected.horizon.value,
+        "direction": selected.stance.value,
+        "forecast_value": 0.1,
+        "cohort_id": "test-cohort",
+        "calibration_state": "calibrated_exact_cohort",
+        "model_version": "test-model",
+        "as_of": as_of,
+        "input_cutoff": as_of,
+        "input_lineage": decision.input_lineage,
+    }
+    rank = rank_opportunities([{
+        "ticker": symbol,
+        "opportunity_episode_id": decision.opportunity_episode_id,
+        "decision_revision": decision.decision_revision,
+        "policy_version": decision.policy_version,
+        "selected_expression_identity": trade_expression_identity(selected),
+        "selected_expression_kind": selected.kind.value,
+        "portfolio_impact_id": impact.impact_id,
+        "risk_policy_version": decision.policy_version,
+        "alpha_signal_id": signal["signal_id"],
+        "alpha_signal": signal,
+        "instrument_state_snapshot_id": snapshot.snapshot_id,
+        "market_snapshot_id": snapshot.snapshot_id,
+        "market_state_publication_id": str(publication_id),
+        "cutoff": as_of,
+        "input_lineage": decision.input_lineage,
+        "expression": selected.model_dump(mode="json"),
+        "portfolio_impact": impact.model_dump(mode="json"),
+        "risk_policy_snapshot": decision.risk_policy_snapshot.model_dump(mode="json"),
+        "execution_feasible": True,
+        "lower_confidence_expected_gross_pnl": 1000.0,
+        "expected_transaction_costs": 10.0,
+        "tail_risk_penalty": 0.0,
+        "portfolio_overlap_penalty": 0.0,
+        "diversification_benefit": 0.0,
+        "capital_at_risk": 1000.0,
+    }], evaluated_universe_complete=True)
+    rank_run = analysis.start_run(
+        "ticker-opportunity-ranking", input_cutoff=as_of, code_version=f"rank-test-{symbol}",
+        inputs={"ticker": symbol, "decision_revision": decision.decision_revision},
+        feature_versions={"ranking": "test"},
+    )
+    rank_publication = analysis.publish(
+        rank_run, "ticker-opportunity-ranking",
+        {"opportunity_rank": [rank[0].model_dump(mode="json")]},
+        complete_run_summary={"ticker": symbol},
+    )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE app.publication SET published_at = %s WHERE id = %s",
+            [as_of, rank_publication],
+        )
     return decision
 
 
@@ -508,9 +574,21 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         assert result["published_count"] == 1, result
         assert replay["published_count"] == 0
         assert replay["skipped_count"] == 1
+        with runtime.read() as connection:
+            rank_publication = connection.execute(
+                """
+                SELECT publication.published_at, run.input_cutoff
+                FROM app.publication publication
+                JOIN analysis.run run ON run.id = publication.analysis_run_id
+                WHERE publication.id = %s::uuid
+                """,
+                [result["ranking_publication_id"]],
+            ).fetchone()
         decision = TickerDecisionRepository(runtime).latest("PITX")
         assert decision is not None
         assert decision.as_of == observed
+        assert rank_publication["published_at"] <= observed
+        assert rank_publication["input_cutoff"] == observed
         assert len(decision.input_manifest.input_hash) == 64
         with runtime.read() as connection:
             manifest = connection.execute(

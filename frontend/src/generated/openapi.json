@@ -633,6 +633,213 @@
         "title": "AgentWorkflowResponse",
         "type": "object"
       },
+      "AlphaSignal": {
+        "additionalProperties": true,
+        "description": "A forecast with explicit target, horizon, calibration, and lineage.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "calibration_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calibration State"
+          },
+          "cohort_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cohort Id"
+          },
+          "contract_version": {
+            "default": "alpha-signal.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "decision_revision": {
+            "minLength": 1,
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "evaluation_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Stage"
+          },
+          "feature_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Version"
+          },
+          "forecast_distribution": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Distribution"
+          },
+          "forecast_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NumericRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "forecast_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Value"
+          },
+          "horizon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Horizon"
+          },
+          "input_cutoff": {
+            "format": "date-time",
+            "title": "Input Cutoff",
+            "type": "string"
+          },
+          "input_lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
+          },
+          "instrument_state_snapshot_id": {
+            "minLength": 1,
+            "title": "Instrument State Snapshot Id",
+            "type": "string"
+          },
+          "model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Version"
+          },
+          "opportunity_episode_id": {
+            "minLength": 1,
+            "title": "Opportunity Episode Id",
+            "type": "string"
+          },
+          "probability_semantics": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability Semantics"
+          },
+          "signal_id": {
+            "minLength": 1,
+            "title": "Signal Id",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          },
+          "ticker": {
+            "minLength": 1,
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal_id",
+          "ticker",
+          "opportunity_episode_id",
+          "decision_revision",
+          "instrument_state_snapshot_id",
+          "as_of",
+          "input_cutoff"
+        ],
+        "title": "AlphaSignal",
+        "type": "object"
+      },
       "ApiStatusResponse": {
         "properties": {
           "message": {
@@ -2461,6 +2668,160 @@
         "title": "InputManifest",
         "type": "object"
       },
+      "InstrumentStateSnapshot": {
+        "additionalProperties": true,
+        "description": "One ticker's bounded point-in-time state, without neutral fallbacks.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "contract_version": {
+            "default": "instrument-state-snapshot.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "title": "Coverage",
+            "type": "object"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event"
+          },
+          "fundamental": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fundamental"
+          },
+          "input_cutoff": {
+            "format": "date-time",
+            "title": "Input Cutoff",
+            "type": "string"
+          },
+          "input_lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
+          },
+          "liquidity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquidity"
+          },
+          "market_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Snapshot Id"
+          },
+          "market_state_publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market State Publication Id"
+          },
+          "positioning": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Positioning"
+          },
+          "snapshot_id": {
+            "minLength": 1,
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "technical": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technical"
+          },
+          "ticker": {
+            "minLength": 1,
+            "title": "Ticker",
+            "type": "string"
+          },
+          "valuation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuation"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "ticker",
+          "as_of",
+          "input_cutoff"
+        ],
+        "title": "InstrumentStateSnapshot",
+        "type": "object"
+      },
       "Invalidation": {
         "properties": {
           "kind": {
@@ -2872,6 +3233,251 @@
           "expressions"
         ],
         "title": "OpportunityEpisode",
+        "type": "object"
+      },
+      "OpportunityRank": {
+        "additionalProperties": true,
+        "description": "Book-level research and trade rank for one ticker opportunity.",
+        "properties": {
+          "alpha_signal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alpha Signal Id"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "contract_version": {
+            "default": "opportunity-rank.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "cutoff": {
+            "format": "date-time",
+            "title": "Cutoff",
+            "type": "string"
+          },
+          "decision_revision": {
+            "minLength": 1,
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "evaluated_universe_complete": {
+            "default": false,
+            "title": "Evaluated Universe Complete",
+            "type": "boolean"
+          },
+          "input_cutoff": {
+            "format": "date-time",
+            "title": "Input Cutoff",
+            "type": "string"
+          },
+          "input_lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
+          },
+          "instrument_state_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument State Snapshot Id"
+          },
+          "lower_confidence_expected_net_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower Confidence Expected Net Pnl"
+          },
+          "market_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Snapshot Id"
+          },
+          "market_state_publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market State Publication Id"
+          },
+          "opportunity_episode_id": {
+            "minLength": 1,
+            "title": "Opportunity Episode Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "minLength": 1,
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "portfolio_impact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Impact Id"
+          },
+          "rank_id": {
+            "minLength": 1,
+            "title": "Rank Id",
+            "type": "string"
+          },
+          "ranking_universe_incomplete": {
+            "default": true,
+            "title": "Ranking Universe Incomplete",
+            "type": "boolean"
+          },
+          "ranking_version": {
+            "default": "ticker-opportunity-ranking.v1",
+            "title": "Ranking Version",
+            "type": "string"
+          },
+          "research_priority_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Priority Score"
+          },
+          "research_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Rank"
+          },
+          "risk_policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Policy Version"
+          },
+          "selected_expression_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Expression Identity"
+          },
+          "selected_expression_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Expression Kind"
+          },
+          "ticker": {
+            "minLength": 1,
+            "title": "Ticker",
+            "type": "string"
+          },
+          "trade_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Rank"
+          },
+          "trade_rank_unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Rank Unavailable Reason"
+          },
+          "trade_utility": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Utility"
+          },
+          "utility": {
+            "$ref": "#/components/schemas/TradeUtility"
+          }
+        },
+        "required": [
+          "rank_id",
+          "ticker",
+          "opportunity_episode_id",
+          "decision_revision",
+          "policy_version",
+          "cutoff",
+          "input_cutoff"
+        ],
+        "title": "OpportunityRank",
         "type": "object"
       },
       "OpportunityScorecardResponse": {
@@ -8735,10 +9341,17 @@
             ]
           },
           "probability": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Probability",
-            "type": "number"
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
           },
           "return_range": {
             "anyOf": [
@@ -8753,7 +9366,6 @@
         },
         "required": [
           "name",
-          "probability",
           "description"
         ],
         "title": "ScenarioOutcome",
@@ -10301,6 +10913,14 @@
       },
       "TickerDecision": {
         "properties": {
+          "alpha_signals": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Alpha Signals",
+            "type": "array"
+          },
           "as_of": {
             "format": "date-time",
             "title": "As Of",
@@ -10341,6 +10961,18 @@
           "input_manifest": {
             "$ref": "#/components/schemas/InputManifest"
           },
+          "instrument_state_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument State Snapshot"
+          },
           "learning_history": {
             "items": {
               "additionalProperties": true,
@@ -10379,6 +11011,18 @@
                 "type": "null"
               }
             ]
+          },
+          "opportunity_rank": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opportunity Rank"
           },
           "policy_version": {
             "default": "risk-policy.v2:legacy",
@@ -10453,6 +11097,14 @@
       "TickerDecisionSnapshotResponse": {
         "description": "The typed ticker decision; no flexible legacy snapshot fields remain.",
         "properties": {
+          "alpha_signals": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Alpha Signals",
+            "type": "array"
+          },
           "as_of": {
             "format": "date-time",
             "title": "As Of",
@@ -10493,6 +11145,18 @@
           "input_manifest": {
             "$ref": "#/components/schemas/InputManifest"
           },
+          "instrument_state_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument State Snapshot"
+          },
           "learning_history": {
             "items": {
               "additionalProperties": true,
@@ -10531,6 +11195,18 @@
                 "type": "null"
               }
             ]
+          },
+          "opportunity_rank": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opportunity Rank"
           },
           "policy_version": {
             "default": "risk-policy.v2:legacy",
@@ -10605,6 +11281,13 @@
       "TickerDetailResponse": {
         "additionalProperties": true,
         "properties": {
+          "alpha_signals": {
+            "items": {
+              "$ref": "#/components/schemas/AlphaSignal"
+            },
+            "title": "Alpha Signals",
+            "type": "array"
+          },
           "as_of": {
             "anyOf": [
               {
@@ -10651,6 +11334,16 @@
             "title": "Found",
             "type": "boolean"
           },
+          "instrument_state_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstrumentStateSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "learning": {
             "additionalProperties": true,
             "title": "Learning",
@@ -10668,6 +11361,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/OpportunityEpisode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "opportunity_rank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityRank"
               },
               {
                 "type": "null"
@@ -10910,6 +11613,17 @@
             "title": "Rationale",
             "type": "string"
           },
+          "research_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Rank"
+          },
           "resolution": {
             "anyOf": [
               {
@@ -10934,6 +11648,39 @@
           "ticker": {
             "title": "Ticker",
             "type": "string"
+          },
+          "trade_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Rank"
+          },
+          "trade_rank_unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Rank Unavailable Reason"
+          },
+          "trade_utility": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Utility"
           }
         },
         "required": [
@@ -10980,6 +11727,102 @@
           "status"
         ],
         "title": "TodayResponse",
+        "type": "object"
+      },
+      "TradeUtility": {
+        "additionalProperties": true,
+        "description": "Explicit utility inputs and the one calculated trade utility.",
+        "properties": {
+          "capital_at_risk": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capital At Risk"
+          },
+          "diversification_benefit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diversification Benefit"
+          },
+          "expected_transaction_costs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Transaction Costs"
+          },
+          "lower_confidence_expected_gross_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower Confidence Expected Gross Pnl"
+          },
+          "lower_confidence_expected_net_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower Confidence Expected Net Pnl"
+          },
+          "portfolio_overlap_penalty": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Overlap Penalty"
+          },
+          "tail_risk_penalty": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tail Risk Penalty"
+          },
+          "trade_utility": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Utility"
+          }
+        },
+        "title": "TradeUtility",
         "type": "object"
       },
       "ValidationError": {
@@ -14462,7 +15305,7 @@
     },
     "/api/today": {
       "get": {
-        "description": "Return exact ticker capital actions, ordered by action priority.",
+        "description": "Return exact ticker capital actions, ordered by backend opportunity rank.",
         "operationId": "today_api_today_get",
         "responses": {
           "200": {

@@ -12,6 +12,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     # legacy option Radar and broad decision queue remain separate routes.
     "today": (
         "ticker_decisions",
+        "opportunity_rank",
         "portfolio",
         "preopen_daily_brief",
         "daily_brief",
@@ -296,6 +297,9 @@ TICKER_TABLES = (
     "event_decision_packets",
     "event_scout_events",
     "ticker_decisions",
+    "instrument_state_snapshot",
+    "alpha_signal",
+    "opportunity_rank",
     "ticker_outcomes",
     "ticker_benchmark_snapshot",
 )
@@ -327,6 +331,9 @@ TICKER_INITIAL_TABLES = (
     "technicals",
     "options_ticker_signals",
     "options_payoff_scenarios",
+    "instrument_state_snapshot",
+    "alpha_signal",
+    "opportunity_rank",
     "ticker_decisions",
     "ticker_outcomes",
     "ticker_benchmark_snapshot",

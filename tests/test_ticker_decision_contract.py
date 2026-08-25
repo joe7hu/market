@@ -42,7 +42,7 @@ def test_conflicting_horizons_choose_an_owned_hold_action_and_share_one_thesis()
     assert decision.tactical.invalidation == decision.fundamental.invalidation
     assert decision.tactical.horizon == "TACTICAL"
     assert decision.fundamental.horizon == "FUNDAMENTAL"
-    assert sum(scenario.probability for scenario in decision.tactical.scenarios) == pytest.approx(1.0)
+    assert all(scenario.probability is None for scenario in decision.tactical.scenarios)
     assert decision.selected_expression is not None
     declarations = {item.name: item for item in decision.input_manifest.signal_declarations}
     assert declarations["company_financials"].source.startswith("SEC")

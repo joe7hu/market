@@ -119,6 +119,7 @@ from investment_panel.core.decision.ticker import (
     OpportunityEpisode,
     TradeExpression,
     TickerDecision,
+    apply_opportunity_rank_safety,
     build_opportunity_episode,
     build_ticker_decision,
     expression_decision_from_trade_expression,
@@ -132,6 +133,20 @@ from investment_panel.core.decision.ticker import (
 from investment_panel.core.decision.ticker_learning import (
     TICKER_LEARNING_VERSION,
     evaluate_ticker_policy,
+)
+from investment_panel.core.decision.alpha import (
+    ALPHA_SIGNAL_CONTRACT_VERSION,
+    INSTRUMENT_STATE_SNAPSHOT_CONTRACT_VERSION,
+    OPPORTUNITY_RANK_CONTRACT_VERSION,
+    TICKER_OPPORTUNITY_RANKING_VERSION,
+    AlphaSignal,
+    InstrumentStateSnapshot,
+    OpportunityRank,
+    TradeUtility,
+    build_alpha_signal,
+    build_instrument_state_snapshot,
+    calculate_trade_utility,
+    rank_opportunities,
 )
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 
@@ -235,6 +250,7 @@ __all__ = [
     "OpportunityEpisode",
     "TradeExpression",
     "TickerDecision",
+    "apply_opportunity_rank_safety",
     "build_opportunity_episode",
     "build_ticker_decision",
     "expression_decision_from_trade_expression",
@@ -250,4 +266,16 @@ __all__ = [
     "resolution_from_legacy",
     "TICKER_LEARNING_VERSION",
     "evaluate_ticker_policy",
+    "ALPHA_SIGNAL_CONTRACT_VERSION",
+    "INSTRUMENT_STATE_SNAPSHOT_CONTRACT_VERSION",
+    "OPPORTUNITY_RANK_CONTRACT_VERSION",
+    "TICKER_OPPORTUNITY_RANKING_VERSION",
+    "AlphaSignal",
+    "InstrumentStateSnapshot",
+    "OpportunityRank",
+    "TradeUtility",
+    "build_alpha_signal",
+    "build_instrument_state_snapshot",
+    "calculate_trade_utility",
+    "rank_opportunities",
 ]

@@ -152,7 +152,7 @@ class TickerPaperExecutionRepository:
                 or str(persisted_resolution.get("policy_version") or "") != decision.policy_version
             ):
                 raise ValueError("ticker decision resolution is stale in PostgreSQL")
-            self._validate_persisted_context(connection, ticker_decision, decision, kind)
+            rank_evidence = self._validate_persisted_context(connection, ticker_decision, decision, kind)
             if decision.capital_action.action in EXIT_ACTIONS:
                 if not decision.capital_action.owned:
                     raise ValueError("TRIM and EXIT require an existing paper position")
@@ -236,9 +236,17 @@ class TickerPaperExecutionRepository:
                 "max_loss_per_unit": max_loss,
                 "planned_loss": planned_loss,
                 "nav": nav,
+                "ranking_publication_id": rank_evidence["publication_id"],
+                "opportunity_rank": rank_evidence["payload"],
+                "trade_rank": rank_evidence["payload"].get("trade_rank"),
+                "trade_utility": rank_evidence["payload"].get("trade_utility"),
                 "live_order_submission": False,
             }
             snapshot = decision.model_dump(mode="json")
+            snapshot.update({
+                "ranking_publication_id": rank_evidence["publication_id"],
+                "opportunity_rank": rank_evidence["payload"],
+            })
             row = connection.execute(
                 """
                 INSERT INTO app.paper_order (
@@ -322,7 +330,7 @@ class TickerPaperExecutionRepository:
         row: Any,
         decision: TickerDecision,
         kind: ExpressionKind,
-    ) -> None:
+    ) -> dict[str, Any]:
         if not row["opportunity_episode"] or str(row["opportunity_episode_id"] or "") != decision.opportunity_episode_id:
             raise ValueError("ticker opportunity episode context is missing in PostgreSQL")
         if row["opportunity_cutoff"] is None or _utc(row["opportunity_cutoff"]) != decision.cutoff:
@@ -372,6 +380,68 @@ class TickerPaperExecutionRepository:
             raise ValueError("ticker market publication is unavailable in PostgreSQL")
         if publication["input_cutoff"] is None or _utc(publication["input_cutoff"]) > decision.cutoff:
             raise ValueError("ticker market publication is newer than the decision cutoff")
+        rank = connection.execute(
+            """
+            SELECT item.publication_id::text AS publication_id,
+                   payload.payload, publication.published_at, run.input_cutoff
+            FROM app.current_publication_item item
+            JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+            JOIN app.publication publication ON publication.id = item.publication_id
+            JOIN analysis.run run ON run.id = publication.analysis_run_id
+            WHERE item.scope = 'ticker-opportunity-ranking'
+              AND item.model_name = 'opportunity_rank'
+              AND publication.status = 'published'
+              AND payload.payload->>'ticker' = %s
+              AND payload.payload->>'decision_revision' = %s
+              AND payload.payload->>'opportunity_episode_id' = %s
+            ORDER BY publication.published_at DESC, item.rank
+            LIMIT 1
+            """,
+            [decision.ticker, decision.decision_revision, decision.opportunity_episode_id],
+        ).fetchone()
+        if rank is None:
+            raise ValueError("ticker opportunity rank is missing in current PostgreSQL publication")
+        rank_payload = dict(rank["payload"] or {})
+        if rank["published_at"] is None or _utc(rank["published_at"]) > decision.cutoff:
+            raise ValueError("ticker opportunity rank is newer than the decision cutoff")
+        if rank["input_cutoff"] is None or _utc(rank["input_cutoff"]) > decision.cutoff:
+            raise ValueError("ticker opportunity rank input cutoff is stale in PostgreSQL")
+        selected = decision.selected_expression
+        selected_identity = trade_expression_identity(selected) if selected is not None else ""
+        rank_utility = rank_payload.get("trade_utility")
+        try:
+            rank_utility_value = float(rank_utility)
+            rank_value = int(rank_payload.get("trade_rank"))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("ticker opportunity rank is unavailable")
+        if (
+            rank_payload.get("trade_rank_unavailable_reason")
+            or rank_value <= 0
+            or not isfinite(rank_utility_value)
+            or rank_utility_value <= 0
+            or not bool(rank_payload.get("evaluated_universe_complete"))
+        ):
+            raise ValueError(
+                "ticker opportunity rank is unavailable: "
+                + str(rank_payload.get("trade_rank_unavailable_reason") or "positive_current_rank_required")
+            )
+        exact_pairs = {
+            "selected_expression_identity": selected_identity,
+            "selected_expression_kind": selected.kind.value if selected is not None else "",
+            "policy_version": decision.policy_version,
+            "market_snapshot_id": decision.market_state_snapshot.snapshot_id if decision.market_state_snapshot else "",
+            "market_state_publication_id": decision.market_state_publication_id,
+            "portfolio_impact_id": decision.portfolio_impacts[selected.kind].impact_id if selected is not None else "",
+        }
+        for field, expected in exact_pairs.items():
+            if str(rank_payload.get(field) or "") != str(expected or ""):
+                raise ValueError("ticker opportunity rank is stale in PostgreSQL")
+        if str(rank_payload.get("risk_policy_version") or "") != decision.policy_version:
+            raise ValueError("ticker opportunity rank policy is stale in PostgreSQL")
+        return {
+            "publication_id": str(rank["publication_id"]),
+            "payload": rank_payload,
+        }
 
     def process(
         self,

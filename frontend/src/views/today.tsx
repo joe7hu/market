@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import type { AppModel } from "@/model";
 import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
-import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
+import { booleanField, displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
 import { OptionTicketDetailSheet } from "./OptionTicketDetailSheet";
 import { EventScoutPanel } from "./EventScoutPanel";
 import { compareTodayOptionActions } from "./optionsRadar/helpers";
@@ -28,17 +28,6 @@ type TodayPageProps = {
 type JsonObject = { [key: string]: JsonValue };
 
 const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCategories.map((category) => [category.key, category]));
-const CAPITAL_ACTION_PRIORITY: Record<string, number> = {
-  EXIT: 0,
-  TRIM: 1,
-  HEDGE: 2,
-  BUY: 3,
-  ADD: 4,
-  WAIT_FOR_PRICE: 5,
-  HOLD: 6,
-  AVOID: 7,
-};
-
 export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
   const vm = useMemo(() => buildTodayViewModel(data, model), [data, model]);
   // This table is read directly from the current options-radar publication.
@@ -79,7 +68,7 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
         />
       </div>
 
-      <CapitalActions rows={data.tickerDecisions?.rows ?? []} onOpenTicker={onOpenTicker} />
+      <CapitalActions rows={data.tickerDecisions?.rows ?? []} ranks={data.opportunityRank?.rows ?? []} onOpenTicker={onOpenTicker} />
       <PreopenBrief row={vm.preopenBrief} />
       <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
       <OptionActions rows={optionActions} onOpenTicker={onOpenTicker} onOpenDecision={setSelectedDecisionId} />
@@ -107,25 +96,60 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
   );
 }
 
-function CapitalActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+export type CapitalActionView = {
+  ticker: string;
+  action: string;
+  owned: boolean;
+  rationale: string;
+  expression: string;
+  price: string;
+  expires: string;
+  researchRank: number | null;
+  tradeRank: number | null;
+  rankReason: string;
+};
+
+export function projectCapitalAction(row: RowRecord, ranks: RowRecord[]): CapitalActionView | null {
+  const capital = recordField(row, "capital_action");
+  const expression = recordField(row, "selected_expression");
+  const ticker = textField(row, ["ticker", "symbol"]);
+  if (!ticker) return null;
+  const rank = ranks.find((candidate) =>
+    textField(candidate, ["ticker", "symbol"]) === ticker
+    && textField(candidate, ["decision_revision"]) === textField(row, ["decision_revision"])
+    && textField(candidate, ["opportunity_episode_id"]) === textField(row, ["opportunity_episode_id"]),
+  );
+  const selectedKind = textField(expression, ["kind", "instrument"]);
+  const rankTrade = numberField(rank, ["trade_rank"]);
+  const rankUtility = numberField(rank, ["trade_utility"]);
+  let rankReason = "";
+  if (!rank) rankReason = "opportunity_rank_missing";
+  else if (!booleanField(rank, ["evaluated_universe_complete"])) rankReason = "ranking_universe_incomplete";
+  else if (!selectedKind || textField(rank, ["selected_expression_kind"]) !== selectedKind) rankReason = "opportunity_rank_identity_mismatch";
+  else if (textField(rank, ["trade_rank_unavailable_reason"])) rankReason = textField(rank, ["trade_rank_unavailable_reason"]);
+  else if (rankTrade <= 0 || rankUtility <= 0) rankReason = "opportunity_rank_unavailable";
+  const rankReady = !rankReason;
+  return {
+    ticker,
+    action: rankReady ? textField(capital, ["action"], textField(row, ["action"], "WAIT")).toUpperCase() : "AVOID",
+    owned: capital.owned === true,
+    rationale: rankReady ? textField(capital, ["rationale"]) : `Cash is selected because the current opportunity rank is unavailable: ${rankReason}.`,
+    expression: rankReady ? selectedKind : "CASH",
+    price: rankReady ? displayField(capital, ["price_condition"], "No price condition") : "No price condition",
+    expires: rankReady ? displayField(capital, ["expires_at"], "No expiry") : "No expiry",
+    researchRank: numberField(rank, ["research_rank"]) || null,
+    tradeRank: rankReady ? rankTrade || null : null,
+    rankReason,
+  };
+}
+
+function CapitalActions({ rows, ranks, onOpenTicker }: { rows: RowRecord[]; ranks: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
   const actions = rows
-    .map((row) => {
-      const capital = recordField(row, "capital_action");
-      const expression = recordField(row, "selected_expression");
-      const ticker = textField(row, ["ticker", "symbol"]);
-      return {
-        ticker,
-        action: textField(capital, ["action"], textField(row, ["action"], "WAIT")).toUpperCase(),
-        owned: capital.owned === true,
-        rationale: textField(capital, ["rationale"]),
-        expression: textField(expression, ["kind", "instrument"]),
-        price: displayField(capital, ["price_condition"], "No price condition"),
-        expires: displayField(capital, ["expires_at"], "No expiry"),
-      };
-    })
-    .filter((item) => item.ticker)
+    .map((row) => projectCapitalAction(row, ranks))
+    .filter((item): item is CapitalActionView => item !== null)
     .sort((left, right) => (
-      (CAPITAL_ACTION_PRIORITY[left.action] ?? 99) - (CAPITAL_ACTION_PRIORITY[right.action] ?? 99)
+      (left.tradeRank ?? Number.POSITIVE_INFINITY) - (right.tradeRank ?? Number.POSITIVE_INFINITY)
+      || (left.researchRank ?? Number.POSITIVE_INFINITY) - (right.researchRank ?? Number.POSITIVE_INFINITY)
       || left.ticker.localeCompare(right.ticker)
     ));
 
@@ -153,7 +177,10 @@ function CapitalActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicke
                 <OptionMetric label="Expression" value={item.expression || "Pending"} />
                 <OptionMetric label="Price" value={item.price} />
                 <OptionMetric label="Expiry" value={item.expires} />
+                <OptionMetric label="Trade rank" value={item.tradeRank == null ? "Cash" : `#${item.tradeRank}`} />
+                <OptionMetric label="Research rank" value={item.researchRank == null ? "—" : `#${item.researchRank}`} />
               </div>
+              {item.rankReason ? <p className="text-xs text-muted-foreground">Rank blocked: {item.rankReason}</p> : null}
               {item.rationale ? <p className="line-clamp-2 text-sm text-muted-foreground">{item.rationale}</p> : null}
               <Button type="button" variant="outline" size="sm" onClick={() => onOpenTicker(item.ticker)}>Open {item.ticker}</Button>
             </CardContent>

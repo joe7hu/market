@@ -31,15 +31,24 @@ import {
 type TickerDecisionContract = components["schemas"]["TickerDecision"];
 type HorizonDecisionContract = components["schemas"]["HorizonDecision"];
 type DataRequestContract = components["schemas"]["DataRequest"];
+type InstrumentStateSnapshotContract = components["schemas"]["InstrumentStateSnapshot"];
+type AlphaSignalContract = components["schemas"]["AlphaSignal"];
+type OpportunityRankContract = components["schemas"]["OpportunityRank"];
 
 export function TickerDecisionPanel({
   decision,
+  instrumentStateSnapshot,
+  alphaSignals,
+  opportunityRank,
   dataRequests,
   learning,
   collecting,
   onCollect,
 }: {
   decision: TickerDecisionContract;
+  instrumentStateSnapshot?: InstrumentStateSnapshotContract | null;
+  alphaSignals?: AlphaSignalContract[];
+  opportunityRank?: OpportunityRankContract | null;
   dataRequests: DataRequestContract[];
   learning?: TickerLearning;
   collecting: string | null;
@@ -99,6 +108,11 @@ export function TickerDecisionPanel({
           </div>
         </div>
       </DataTableFrame>
+      <OpportunityRankPanel
+        snapshot={instrumentStateSnapshot}
+        signals={alphaSignals ?? []}
+        rank={opportunityRank}
+      />
       {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
       <SelectedPortfolioImpact decision={decision} />
       {disagreement ? <DisagreementPanel learning={learning} /> : null}
@@ -147,22 +161,49 @@ function HorizonCard({ view, label }: { view: HorizonDecisionContract; label: st
 }
 
 function ScenarioRail({ scenarios }: { scenarios: TickerDecisionContract["tactical"]["scenarios"] }) {
+  const complete = scenarios.length === 3 && scenarios.every((scenario) => scenario.probability != null);
   return (
     <div className="mt-4">
-      <div className="flex h-2 overflow-hidden rounded-full bg-muted" aria-label="Scenario probabilities">
+      {complete ? <div className="flex h-2 overflow-hidden rounded-full bg-muted" aria-label="Scenario probabilities">
         {scenarios.map((scenario) => (
           <span
             key={scenario.name}
             className={scenario.name === "bull" ? "bg-[var(--success)]" : scenario.name === "bear" ? "bg-[var(--destructive)]" : "bg-[var(--warning)]"}
-            style={{ width: `${scenario.probability * 100}%` }}
+            style={{ width: `${(scenario.probability ?? 0) * 100}%` }}
             title={`${scenario.name} ${percent(scenario.probability)}`}
           />
         ))}
-      </div>
+      </div> : <p className="text-xs text-muted-foreground">Scenario probabilities unavailable.</p>}
       <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-muted-foreground">
         {scenarios.map((scenario) => <span key={scenario.name}><strong className="text-foreground">{scenario.name}</strong> {percent(scenario.probability)}</span>)}
       </div>
     </div>
+  );
+}
+
+function OpportunityRankPanel({
+  snapshot,
+  signals,
+  rank,
+}: {
+  snapshot?: InstrumentStateSnapshotContract | null;
+  signals: AlphaSignalContract[];
+  rank?: OpportunityRankContract | null;
+}) {
+  const signal = signals.find((item) => item.forecast_value != null || item.forecast_range != null);
+  return (
+    <DataTableFrame title="Book opportunity rank" action={<StatusBadge tone={rank?.trade_rank ? "good" : "warn"}>{rank?.trade_rank ? `Trade #${rank.trade_rank}` : "Cash"}</StatusBadge>}>
+      <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
+        <KeyValue label="Research rank" value={rank?.research_rank == null ? "Unavailable" : `#${rank.research_rank}`} />
+        <KeyValue label="Trade utility" value={rank?.trade_utility == null ? "Unavailable" : String(rank.trade_utility)} />
+        <KeyValue label="Rank reason" value={rank?.trade_rank_unavailable_reason ?? "Positive current rank"} />
+        <KeyValue label="Forecast target" value={signal?.target ?? "Unavailable"} />
+        <KeyValue label="Horizon" value={signal?.horizon ?? "Unavailable"} />
+        <KeyValue label="Cohort / calibration" value={signal ? `${signal.cohort_id ?? "-"} · ${signal.calibration_state ?? "-"}` : "Unavailable"} />
+        <KeyValue label="Model" value={signal?.model_version ?? "Unavailable"} />
+        <KeyValue label="Instrument snapshot" value={snapshot?.snapshot_id ?? "Unavailable"} />
+      </div>
+    </DataTableFrame>
   );
 }
 

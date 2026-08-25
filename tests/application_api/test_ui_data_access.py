@@ -261,6 +261,7 @@ def test_today_scope_contains_only_canonical_ticker_actions_and_ownership() -> N
 
     assert list(tables) == [
         "ticker_decisions",
+        "opportunity_rank",
         "portfolio",
         "preopen_daily_brief",
         "daily_brief",

@@ -177,6 +177,77 @@ def _start_run(repository: AnalysisRepository, suffix: str = "a"):
     )
 
 
+def test_ticker_opportunity_rank_publication_round_trips_all_three_models(analysis_context) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    cutoff = datetime(2026, 8, 25, 14, tzinfo=UTC)
+    run_id = repository.start_run(
+        "ticker-opportunity-ranking",
+        input_cutoff=cutoff,
+        code_version="ticker-opportunity-ranking.test",
+        inputs={
+            "universe": ["AAA", "BBB"],
+            "failures": [],
+            "ranking_version": "ticker-opportunity-ranking.v1",
+        },
+        feature_versions={"ranking": "ticker-opportunity-ranking.v1"},
+    )
+    publication_id = repository.publish(
+        run_id,
+        "ticker-opportunity-ranking",
+        {
+            "instrument_state_snapshot": [{
+                "stable_key": "AAA:instrument",
+                "snapshot_id": "snapshot:AAA",
+                "ticker": "AAA",
+                "as_of": cutoff,
+                "input_cutoff": cutoff,
+            }],
+            "alpha_signal": [{
+                "stable_key": "AAA:signal",
+                "signal_id": "signal:AAA",
+                "ticker": "AAA",
+                "opportunity_episode_id": "episode:AAA",
+                "decision_revision": "revision:AAA",
+                "instrument_state_snapshot_id": "snapshot:AAA",
+                "input_cutoff": cutoff,
+            }],
+            "opportunity_rank": [{
+                "stable_key": "AAA:rank",
+                "rank_id": "rank:AAA",
+                "ranking_version": "ticker-opportunity-ranking.v1",
+                "ticker": "AAA",
+                "opportunity_episode_id": "episode:AAA",
+                "decision_revision": "revision:AAA",
+                "policy_version": "risk-policy.test",
+                "cutoff": cutoff,
+                "input_cutoff": cutoff,
+                "research_rank": 1,
+                "trade_rank": None,
+                "trade_rank_unavailable_reason": "transaction_cost_model_missing",
+                "evaluated_universe_complete": True,
+                "ranking_universe_incomplete": False,
+            }],
+        },
+        validation={"paper_only": True, "live_order_submission": False},
+        complete_run_summary={"schema_head": "20260825_0055"},
+    )
+    with analysis_context["runtime"].transaction() as connection:
+        connection.execute(
+            "UPDATE app.publication SET published_at = %s WHERE id = %s",
+            [cutoff, publication_id],
+        )
+
+    publication = repository.publication_at_or_before(
+        "ticker-opportunity-ranking", cutoff=cutoff,
+    )
+    assert publication is not None
+    assert str(publication["publication_id"]) == str(publication_id)
+    assert set(publication["models"]) == {
+        "instrument_state_snapshot", "alpha_signal", "opportunity_rank",
+    }
+    assert repository.publication_rows("ticker-opportunity-ranking", "opportunity_rank")[0]["research_rank"] == 1
+
+
 def test_analysis_keeps_features_decisions_and_publication_separate(analysis_context, postgres_dsn: str) -> None:
     repository: AnalysisRepository = analysis_context["analysis"]
     run_id = _start_run(repository)
