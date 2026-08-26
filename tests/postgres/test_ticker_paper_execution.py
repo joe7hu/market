@@ -559,19 +559,52 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
     runtime.open()
     try:
         with runtime.transaction() as connection:
-            connection.execute(
-                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('PITX', 'Point In Time', 'equity')"
-            )
+            for symbol in ("PITX", "OTHER"):
+                connection.execute(
+                    "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity')",
+                    [symbol, symbol],
+                )
         config = typed_config(migrated_postgres_dsn)
         monkeypatch.setattr(ticker_decisions, "load_config", lambda _path: config)
-        outcome_scopes: list[tuple[list[str], datetime]] = []
+        historical = datetime(2026, 7, 1, 14, tzinfo=UTC)
+        for symbol in ("PITX", "OTHER"):
+            TickerDecisionRepository(runtime).publish(
+                build_ticker_decision(
+                    symbol,
+                    _actionable_tables(
+                        symbol,
+                        historical,
+                        legs=[{
+                            "contract_id": 1, "option_type": "call", "side": "long", "strike": 105,
+                            "bid": 2.0, "ask": 2.2, "bid_size": 10, "ask_size": 10,
+                            "quote_time": historical, "expiration": "2026-10-16",
+                        }],
+                    ),
+                    as_of=historical,
+                )
+            )
+        outcome_scopes: list[list[str]] = []
+        evaluated: list[tuple[str, datetime]] = []
         refresh_outcomes = TickerDecisionRepository.refresh_outcomes
 
         def scoped_refresh(repository, **kwargs):
-            outcome_scopes.append((list(kwargs["symbols"]), kwargs["since"]))
+            outcome_scopes.append(list(kwargs["symbols"]))
             return refresh_outcomes(repository, **kwargs)
 
         monkeypatch.setattr(TickerDecisionRepository, "refresh_outcomes", scoped_refresh)
+
+        def fake_evaluate(repository, decision, horizon, sessions, reference):
+            if sessions == 1:
+                evaluated.append((decision["ticker"], decision["as_of"]))
+            return {
+                "state": "resolved", "available_at": reference,
+                "selected_return": 0.1, "stock_return": 0.1,
+                "alternate_counterfactual_return": 0.0, "cash_return": 0.0,
+                "sector_return": 0.0, "market_return": 0.0,
+                "error_type": None, "mistake_card": {}, "learning_metadata": {},
+            }
+
+        monkeypatch.setattr(TickerDecisionRepository, "_evaluate", fake_evaluate)
         observed = datetime(2026, 8, 22, 14, tzinfo=UTC)
         result = ticker_decisions.publish(
             "config.yaml", symbols=["PITX"], as_of=observed,
@@ -583,7 +616,12 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         assert result["published_count"] == 1, result
         assert replay["published_count"] == 0
         assert replay["skipped_count"] == 1
-        assert outcome_scopes == [(["PITX"], observed), (["PITX"], observed)]
+        assert outcome_scopes == [["PITX"], ["PITX"]]
+        assert result["outcomes"]["evaluated"] == 2
+        assert replay["outcomes"]["evaluated"] == 2
+        assert evaluated.count(("PITX", historical)) == 2
+        assert evaluated.count(("PITX", observed)) == 2
+        assert ("OTHER", historical) not in evaluated
         with runtime.read() as connection:
             rank_publication = connection.execute(
                 """
@@ -609,6 +647,13 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
                 "SELECT count(*) FROM analysis.ticker_outcome outcome "
                 "JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id"
             ).fetchone()["count"]
+            mature_outcomes = connection.execute(
+                "SELECT count(*) FROM analysis.ticker_outcome outcome "
+                "JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id "
+                "JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id "
+                "WHERE instrument.symbol = 'PITX' AND decision.as_of = %s AND outcome.state = 'resolved'",
+                [historical],
+            ).fetchone()["count"]
             benchmark = connection.execute(
                 """
                 SELECT benchmark_key, member_count, membership_hash,
@@ -619,12 +664,36 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
                 [observed],
             ).fetchone()
         assert manifest >= 1
-        assert outcomes == 6
+        assert outcomes == 12
+        assert mature_outcomes == 6
         assert benchmark["benchmark_key"] == "market-equity-etf"
         assert benchmark["member_count"] == len(benchmark["exact_membership"])
         assert "PITX" in benchmark["exact_membership"]
         assert len(benchmark["membership_hash"]) == 64
         assert benchmark["coverage"]["options_availability_affects_breadth"] is False
+
+        future = observed + timedelta(days=1)
+        TickerDecisionRepository(runtime).publish(
+            build_ticker_decision(
+                "PITX",
+                _actionable_tables(
+                    "PITX",
+                    future,
+                    legs=[{
+                        "contract_id": 1, "option_type": "call", "side": "long", "strike": 105,
+                        "bid": 2.0, "ask": 2.2, "bid_size": 10, "ask_size": 10,
+                        "quote_time": future, "expiration": "2026-10-16",
+                    }],
+                ),
+                as_of=future,
+            )
+        )
+        before_future_refresh = len(evaluated)
+        future_refresh = refresh_outcomes(
+            TickerDecisionRepository(runtime), now=observed, symbols=["PITX"],
+        )
+        assert future_refresh["evaluated"] == 2
+        assert ("PITX", future) not in evaluated[before_future_refresh:]
     finally:
         runtime.close()
 

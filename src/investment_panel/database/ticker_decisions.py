@@ -152,7 +152,6 @@ class TickerDecisionRepository:
         now: datetime | None = None,
         limit: int = 2_000,
         symbols: Iterable[str] | None = None,
-        since: datetime | None = None,
     ) -> dict[str, int]:
         reference = _utc(now or datetime.now(UTC))
         selected = (
@@ -167,9 +166,8 @@ class TickerDecisionRepository:
         if selected is not None:
             filters.append("instrument.symbol = ANY(%s)")
             parameters.append(selected)
-        if since is not None:
-            filters.append("decision.as_of >= %s")
-            parameters.append(_utc(since))
+        filters.append("decision.as_of <= %s")
+        parameters.append(reference)
         parameters.append(max(1, min(int(limit), 10_000)))
         with self.runtime.read(JOB_PROFILE) as connection:
             decisions = connection.execute(

@@ -171,13 +171,9 @@ def publish(
             else:
                 published.append(repository.publish(decision))
             decisions_for_paper.append(decision)
-    # Keep publication bounded. The scheduled outcome-refresh job owns
-    # historical maturity; this run refreshes only its exact cutoff.
-    outcome_result = repository.refresh_outcomes(
-        now=reference,
-        symbols=selected,
-        since=reference,
-    )
+    # Keep publication bounded to selected history. The scheduled outcome-
+    # refresh job owns all-ticker historical maturity.
+    outcome_result = repository.refresh_outcomes(now=reference, symbols=selected)
     paper_staging = _stage_eligible(runtime, config, decisions_for_paper)
     paper_execution = TickerPaperExecutionRepository(runtime, config).process(now=reference)
     status = "ok" if not failures else "partial" if published or skipped else "failed"
