@@ -28,6 +28,38 @@ HORIZON_SESSIONS = {
 STOCK_COST_MODEL_VERSION = "stock-close-estimated-cost-v1"
 STOCK_COST_PER_SIDE_BPS = 10.0
 
+_PEER_RETURN_QUERY = """
+WITH peer_bars AS MATERIALIZED (
+    SELECT bar.instrument_id, bar.trading_date, bar.close, bar.available_at
+    FROM raw.confirmed_price_bar bar
+    WHERE bar.instrument_id = ANY(
+        ARRAY(
+            SELECT instrument.id
+            FROM catalog.instrument instrument
+            WHERE instrument.symbol = ANY(%s)
+        )
+    )
+      AND bar.interval = '1d'
+), entry_prices AS (
+    SELECT DISTINCT ON (bar.instrument_id)
+           bar.instrument_id, bar.close
+    FROM peer_bars bar
+    WHERE bar.trading_date <= %s
+      AND bar.available_at <= %s
+    ORDER BY bar.instrument_id, bar.trading_date DESC, bar.available_at DESC
+), mark_prices AS (
+    SELECT DISTINCT ON (bar.instrument_id)
+           bar.instrument_id, bar.close
+    FROM peer_bars bar
+    WHERE bar.trading_date = %s
+      AND bar.available_at <= %s
+    ORDER BY bar.instrument_id, bar.available_at DESC
+)
+SELECT avg(mark_prices.close / entry_prices.close - 1) AS return
+FROM entry_prices JOIN mark_prices USING (instrument_id)
+WHERE entry_prices.close > 0
+"""
+
 
 class TickerDecisionRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
@@ -751,33 +783,8 @@ class TickerDecisionRepository:
             return None
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute(
-                """
-                WITH entry_prices AS (
-                    SELECT DISTINCT ON (bar.instrument_id)
-                           bar.instrument_id, bar.close
-                    FROM raw.confirmed_price_bar bar
-                    JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
-                    WHERE instrument.symbol = ANY(%s)
-                      AND bar.interval = '1d'
-                      AND bar.trading_date <= %s
-                      AND bar.available_at <= %s
-                    ORDER BY bar.instrument_id, bar.trading_date DESC, bar.available_at DESC
-                ), mark_prices AS (
-                    SELECT DISTINCT ON (bar.instrument_id)
-                           bar.instrument_id, bar.close
-                    FROM raw.confirmed_price_bar bar
-                    JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
-                    WHERE instrument.symbol = ANY(%s)
-                      AND bar.interval = '1d'
-                      AND bar.trading_date = %s
-                      AND bar.available_at <= %s
-                    ORDER BY bar.instrument_id, bar.available_at DESC
-                )
-                SELECT avg(mark_prices.close / entry_prices.close - 1) AS return
-                FROM entry_prices JOIN mark_prices USING (instrument_id)
-                WHERE entry_prices.close > 0
-                """,
-                [symbols, entry_date, as_of, symbols, mark_date, reference],
+                _PEER_RETURN_QUERY,
+                [symbols, entry_date, as_of, mark_date, reference],
             ).fetchone()
         return _number(row["return"]) if row else None
 

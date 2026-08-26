@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from investment_panel.core.decision import (
@@ -11,11 +12,60 @@ from investment_panel.core.decision import (
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.portfolio_ledger import replay_portfolio_at
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.runtime import DatabaseRuntime, RuntimeProfile
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
 from investment_panel.jobs.ticker_decisions import portfolio_impacts
 from conftest import typed_config
+
+
+_LEGACY_PEER_RETURN_QUERY = """
+WITH entry_prices AS (
+    SELECT DISTINCT ON (bar.instrument_id)
+           bar.instrument_id, bar.close
+    FROM raw.confirmed_price_bar bar
+    JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
+    WHERE instrument.symbol = ANY(%s)
+      AND bar.interval = '1d'
+      AND bar.trading_date <= %s
+      AND bar.available_at <= %s
+    ORDER BY bar.instrument_id, bar.trading_date DESC, bar.available_at DESC
+), mark_prices AS (
+    SELECT DISTINCT ON (bar.instrument_id)
+           bar.instrument_id, bar.close
+    FROM raw.confirmed_price_bar bar
+    JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
+    WHERE instrument.symbol = ANY(%s)
+      AND bar.interval = '1d'
+      AND bar.trading_date = %s
+      AND bar.available_at <= %s
+    ORDER BY bar.instrument_id, bar.available_at DESC
+)
+SELECT avg(mark_prices.close / entry_prices.close - 1) AS return
+FROM entry_prices JOIN mark_prices USING (instrument_id)
+WHERE entry_prices.close > 0
+"""
+
+
+def _plan(query_result: object) -> dict[str, object]:
+    plan = query_result
+    if isinstance(plan, str):
+        plan = json.loads(plan)
+    assert isinstance(plan, list)
+    root = plan[0]
+    assert isinstance(root, dict)
+    result = root["Plan"]
+    assert isinstance(result, dict)
+    return result
+
+
+def _relation_count(plan: object, relation: str) -> int:
+    if isinstance(plan, list):
+        return sum(_relation_count(node, relation) for node in plan)
+    if not isinstance(plan, dict):
+        return 0
+    count = int(plan.get("Relation Name") == relation)
+    return count + sum(_relation_count(value, relation) for value in plan.values())
 
 
 def _actionable_tables(
@@ -694,6 +744,133 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         )
         assert future_refresh["evaluated"] == 2
         assert ("PITX", future) not in evaluated[before_future_refresh:]
+    finally:
+        runtime.close()
+
+
+def test_peer_return_materializes_large_confirmed_peer_set_once(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    import investment_panel.database.ticker_decisions as ticker_decision_module
+
+    monkeypatch.setattr(
+        ticker_decision_module,
+        "JOB_PROFILE",
+        RuntimeProfile(statement_timeout_ms=3_000),
+    )
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        source_id = "ticker-peer-performance"
+        peer_count = 640
+        entry_date = datetime(2026, 4, 1, tzinfo=UTC).date()
+        mark_date = datetime(2026, 4, 3, tzinfo=UTC).date()
+        as_of = datetime(2026, 4, 1, 22, tzinfo=UTC)
+        reference = datetime(2026, 4, 4, 22, tzinfo=UTC)
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source(source_id, name="Ticker peer performance", family="test", kind="daily_bars")
+        run_id = ingestion.start_run(source_id, "price_bars", started_at=as_of)
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO catalog.instrument (symbol, name, asset_class, sector)
+                SELECT 'PEER' || lpad(number::text, 4, '0'),
+                       'Peer ' || number::text, 'equity', 'performance-test'
+                FROM generate_series(1, %s) AS numbers(number)
+                """,
+                [peer_count],
+            )
+            connection.execute(
+                """
+                WITH trading_days AS (
+                    SELECT day::date AS trading_date
+                    FROM generate_series(%s::date - 180, %s::date + 180, interval '1 day') AS days(day)
+                    WHERE extract(isodow FROM day) < 6
+                )
+                INSERT INTO raw.price_bar (
+                    instrument_id, source_id, ingest_run_id, interval,
+                    trading_date, observed_at, close, available_at
+                )
+                SELECT instrument.id, %s, %s, '1d', trading_days.trading_date,
+                       ((trading_days.trading_date + time '20:00') AT TIME ZONE 'UTC'),
+                       CASE
+                           WHEN trading_days.trading_date = %s::date
+                               THEN 110.0 + right(instrument.symbol, 4)::integer
+                           ELSE 100.0 + right(instrument.symbol, 4)::integer
+                                + (trading_days.trading_date - %s::date) * 0.01
+                       END,
+                       CASE
+                           WHEN instrument.symbol = 'PEER0001'
+                            AND trading_days.trading_date = %s::date
+                               THEN %s::timestamptz + interval '1 hour'
+                           ELSE ((trading_days.trading_date + time '21:00') AT TIME ZONE 'UTC')
+                       END
+                FROM catalog.instrument instrument
+                CROSS JOIN trading_days
+                WHERE instrument.symbol LIKE 'PEER' || chr(37)
+                """,
+                [entry_date, entry_date, source_id, run_id, mark_date, entry_date, mark_date, reference],
+            )
+            connection.execute(
+                """
+                INSERT INTO raw.price_bar_fact_availability (fact_id, fact_available_at, ingest_run_id)
+                SELECT id, available_at, ingest_run_id
+                FROM raw.price_bar
+                WHERE ingest_run_id = %s
+                """,
+                [run_id],
+            )
+            connection.execute("ANALYZE raw.price_bar")
+            connection.execute("ANALYZE raw.price_bar_fact_availability")
+            symbols = [
+                str(row["symbol"])
+                for row in connection.execute(
+                    "SELECT symbol FROM catalog.instrument WHERE symbol LIKE 'PEER' || chr(37) ORDER BY symbol"
+                ).fetchall()
+            ]
+        ingestion.finish_run(run_id, "succeeded")
+
+        parameters = [symbols, entry_date, as_of, symbols, mark_date, reference]
+        with runtime.read() as connection:
+            legacy_plan = _plan(
+                connection.execute(
+                    "EXPLAIN (FORMAT JSON) " + _LEGACY_PEER_RETURN_QUERY,
+                    parameters,
+                ).fetchone()["QUERY PLAN"]
+            )
+            comparison_symbols = symbols[:8]
+            comparison_parameters = [
+                comparison_symbols, entry_date, as_of,
+                comparison_symbols, mark_date, reference,
+            ]
+            legacy_observed = connection.execute(
+                _LEGACY_PEER_RETURN_QUERY,
+                comparison_parameters,
+            ).fetchone()["return"]
+
+        repaired_observed = TickerDecisionRepository(runtime)._peer_return(
+            comparison_symbols, entry_date, mark_date, as_of, reference,
+        )
+        observed = TickerDecisionRepository(runtime)._peer_return(
+            symbols, entry_date, mark_date, as_of, reference,
+        )
+        expected = sum(
+            (110.0 + number) / (100.0 + number) - 1.0
+            for number in range(2, peer_count + 1)
+        ) / (peer_count - 1)
+        expected_comparison = sum(
+            (110.0 + number) / (100.0 + number) - 1.0
+            for number in range(2, 9)
+        ) / 7
+
+        assert _relation_count(legacy_plan, "price_bar_fact_availability") == 2
+        assert legacy_observed is not None
+        assert repaired_observed is not None
+        assert observed is not None
+        assert abs(legacy_observed - repaired_observed) < 1e-12
+        assert abs(repaired_observed - expected_comparison) < 1e-12
+        assert abs(observed - expected) < 1e-12
     finally:
         runtime.close()
 
