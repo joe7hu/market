@@ -68,7 +68,7 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
         />
       </div>
 
-      <CapitalActions rows={data.tickerDecisions?.rows ?? []} ranks={data.opportunityRank?.rows ?? []} onOpenTicker={onOpenTicker} />
+      <CapitalActions rows={data.tickerDecisions?.rows ?? []} plans={data.tradePlan?.rows ?? []} onOpenTicker={onOpenTicker} />
       <PreopenBrief row={vm.preopenBrief} />
       <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
       <OptionActions rows={optionActions} onOpenTicker={onOpenTicker} onOpenDecision={setSelectedDecisionId} />
@@ -103,53 +103,62 @@ export type CapitalActionView = {
   rationale: string;
   expression: string;
   price: string;
+  quantity: string;
+  loss: string;
   expires: string;
-  researchRank: number | null;
-  tradeRank: number | null;
+  planId: string;
   rankReason: string;
+  nextAction: string;
 };
 
-export function projectCapitalAction(row: RowRecord, ranks: RowRecord[]): CapitalActionView | null {
+export function projectCapitalAction(row: RowRecord, plans: RowRecord[]): CapitalActionView | null {
   const capital = recordField(row, "capital_action");
-  const expression = recordField(row, "selected_expression");
   const ticker = textField(row, ["ticker", "symbol"]);
   if (!ticker) return null;
-  const rank = ranks.find((candidate) =>
+  const plan = plans.find((candidate) =>
     textField(candidate, ["ticker", "symbol"]) === ticker
     && textField(candidate, ["decision_revision"]) === textField(row, ["decision_revision"])
     && textField(candidate, ["opportunity_episode_id"]) === textField(row, ["opportunity_episode_id"]),
   );
-  const selectedKind = textField(expression, ["kind", "instrument"]);
-  const rankTrade = numberField(rank, ["trade_rank"]);
-  const rankUtility = numberField(rank, ["trade_utility"]);
-  let rankReason = "";
-  if (!rank) rankReason = "opportunity_rank_missing";
-  else if (!booleanField(rank, ["evaluated_universe_complete"])) rankReason = "ranking_universe_incomplete";
-  else if (!selectedKind || textField(rank, ["selected_expression_kind"]) !== selectedKind) rankReason = "opportunity_rank_identity_mismatch";
-  else if (textField(rank, ["trade_rank_unavailable_reason"])) rankReason = textField(rank, ["trade_rank_unavailable_reason"]);
-  else if (rankTrade <= 0 || rankUtility <= 0) rankReason = "opportunity_rank_unavailable";
-  const rankReady = !rankReason;
+  if (!plan) {
+    return {
+      ticker,
+      action: "NO_TRADE",
+      owned: booleanField(capital, ["owned"]),
+      rationale: "Cash is selected because the current trade plan is unavailable.",
+      expression: "CASH",
+      price: "Unavailable",
+      quantity: "—",
+      loss: "—",
+      expires: "—",
+      planId: "",
+      rankReason: "trade_plan_missing",
+      nextAction: "Refresh the ticker decision and trade plan.",
+    };
+  }
+  const blocked = textField(plan, ["eligibility"]).toUpperCase() === "BLOCKED";
   return {
     ticker,
-    action: rankReady ? textField(capital, ["action"], textField(row, ["action"], "WAIT")).toUpperCase() : "AVOID",
+    action: blocked ? "NO_TRADE" : textField(plan, ["action"], "NO_TRADE").toUpperCase(),
     owned: capital.owned === true,
-    rationale: rankReady ? textField(capital, ["rationale"]) : `Cash is selected because the current opportunity rank is unavailable: ${rankReason}.`,
-    expression: rankReady ? selectedKind : "CASH",
-    price: rankReady ? displayField(capital, ["price_condition"], "No price condition") : "No price condition",
-    expires: rankReady ? displayField(capital, ["expires_at"], "No expiry") : "No expiry",
-    researchRank: numberField(rank, ["research_rank"]) || null,
-    tradeRank: rankReady ? rankTrade || null : null,
-    rankReason,
+    rationale: textField(plan, ["rationale"], textField(capital, ["rationale"])),
+    expression: blocked ? "CASH" : textField(plan, ["selected_expression_kind"], "CASH"),
+    price: blocked ? "No entry" : displayField(plan, ["entry_limit"], "Unavailable"),
+    quantity: blocked ? "—" : displayField(plan, ["quantity"], "Unavailable"),
+    loss: blocked ? "—" : displayField(plan, ["planned_loss"], "Unavailable"),
+    expires: displayField(plan, ["expiry"], "No expiry"),
+    planId: textField(plan, ["trade_plan_id"]),
+    rankReason: blocked ? textField(plan, ["primary_blocker"], "trade_plan_blocked") : "",
+    nextAction: textField(plan, ["next_action"]),
   };
 }
 
-function CapitalActions({ rows, ranks, onOpenTicker }: { rows: RowRecord[]; ranks: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+function CapitalActions({ rows, plans, onOpenTicker }: { rows: RowRecord[]; plans: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
   const actions = rows
-    .map((row) => projectCapitalAction(row, ranks))
+    .map((row) => projectCapitalAction(row, plans))
     .filter((item): item is CapitalActionView => item !== null)
     .sort((left, right) => (
-      (left.tradeRank ?? Number.POSITIVE_INFINITY) - (right.tradeRank ?? Number.POSITIVE_INFINITY)
-      || (left.researchRank ?? Number.POSITIVE_INFINITY) - (right.researchRank ?? Number.POSITIVE_INFINITY)
+      (left.action === "NO_TRADE" ? 1 : 0) - (right.action === "NO_TRADE" ? 1 : 0)
       || left.ticker.localeCompare(right.ticker)
     ));
 
@@ -176,11 +185,12 @@ function CapitalActions({ rows, ranks, onOpenTicker }: { rows: RowRecord[]; rank
                 <OptionMetric label="Ownership" value={item.owned ? "Owned" : "Unowned"} />
                 <OptionMetric label="Expression" value={item.expression || "Pending"} />
                 <OptionMetric label="Price" value={item.price} />
+                <OptionMetric label="Quantity" value={item.quantity} />
+                <OptionMetric label="Planned loss" value={item.loss} />
                 <OptionMetric label="Expiry" value={item.expires} />
-                <OptionMetric label="Trade rank" value={item.tradeRank == null ? "Cash" : `#${item.tradeRank}`} />
-                <OptionMetric label="Research rank" value={item.researchRank == null ? "—" : `#${item.researchRank}`} />
               </div>
-              {item.rankReason ? <p className="text-xs text-muted-foreground">Rank blocked: {item.rankReason}</p> : null}
+              {item.planId ? <p className="text-xs text-muted-foreground">Plan {item.planId.slice(-16)}</p> : null}
+              {item.rankReason ? <p className="text-xs text-muted-foreground">No trade: {item.rankReason}. {item.nextAction}</p> : null}
               {item.rationale ? <p className="line-clamp-2 text-sm text-muted-foreground">{item.rationale}</p> : null}
               <Button type="button" variant="outline" size="sm" onClick={() => onOpenTicker(item.ticker)}>Open {item.ticker}</Button>
             </CardContent>

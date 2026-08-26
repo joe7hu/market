@@ -19,6 +19,7 @@ from investment_panel.core.decision import (
     capital_action_from_resolution,
     resolution_from_legacy,
     trade_expression_identity,
+    TradePlan,
 )
 
 router = APIRouter()
@@ -37,16 +38,31 @@ def today(
     )
     actions: list[dict[str, Any]] = []
     rank_rows = panel_data.rows("opportunity_rank")
+    plan_rows = panel_data.rows("trade_plan")
     # The published ticker row already contains the deterministic capital
     # action. Do not reload a full dossier for every symbol: that makes this
     # summary route depend on deep evidence and option-surface queries.
     for row in panel_data.rows("ticker_decisions"):
         symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
         rank = _rank_for_row(row, rank_rows, symbol)
+        plan = _plan_for_row(row, plan_rows, rank, symbol)
         rank_ready, rank_reason = _rank_ready(row, rank)
-        if rank_ready:
-            resolution = resolution_from_legacy({**row, "ticker": symbol})
+        if plan is not None and (plan.eligibility == "BLOCKED" or rank_ready):
+            try:
+                resolution = resolution_from_legacy({**row, "ticker": symbol})
+                if resolution.trade_plan_id != plan.trade_plan_id:
+                    raise ValueError("trade plan resolution identity mismatch")
+            except (TypeError, ValueError, KeyError):
+                plan = None
+                rank_reason = "trade_plan_identity_mismatch"
+                resolution = None
         else:
+            rank_reason = "trade_plan_missing" if plan is None else rank_reason
+            plan = None
+            resolution = None
+        if plan is None:
+            if not rank_reason:
+                rank_reason = "trade_plan_missing"
             revision = str(row.get("decision_revision") or "legacy")
             policy_version = str(row.get("policy_version") or "risk-policy.v2:legacy")
             original_capital = row.get("capital_action") if isinstance(row.get("capital_action"), dict) else {}
@@ -59,26 +75,27 @@ def today(
                 blockers=[rank_reason],
                 data_quality="INCOMPLETE",
                 authorization_mode="NONE",
-                rationale=f"Cash is selected because the current opportunity rank is unavailable: {rank_reason}.",
+                rationale=f"Cash is selected because the current trade plan is unavailable: {rank_reason}.",
                 owned=bool(original_capital.get("owned")),
                 expires_at=original_capital.get("expires_at"),
                 blocked=True,
             )
+        else:
+            rank_reason = plan.primary_blocker or ""
         capital_value = capital_action_from_resolution(resolution).model_dump(mode="json")
         if not symbol or not isinstance(capital_value, dict) or not capital_value.get("action"):
             continue
         capital = dict(capital_value)
-        selected = row.get("selected_expression")
-        selected = selected if isinstance(selected, dict) else {}
         actions.append({
             **capital,
             "ticker": symbol,
             "decision_revision": row.get("decision_revision") or "",
-            "selected_expression": selected.get("kind") if rank_ready else "CASH",
+            "selected_expression": plan.selected_expression_kind.value if plan is not None else "CASH",
             "research_rank": rank.get("research_rank") if rank else None,
-            "trade_rank": rank.get("trade_rank") if rank_ready and rank else None,
-            "trade_rank_unavailable_reason": None if rank_ready else rank_reason,
-            "trade_utility": rank.get("trade_utility") if rank_ready and rank else None,
+            "trade_rank": rank.get("trade_rank") if plan is not None and rank_ready and rank else None,
+            "trade_rank_unavailable_reason": None if plan is not None and rank_ready else rank_reason,
+            "trade_utility": rank.get("trade_utility") if plan is not None and rank_ready and rank else None,
+            "trade_plan": plan.model_dump(mode="json") if plan is not None else None,
         })
     actions.sort(key=lambda row: (
         0 if row.get("trade_rank") is not None else 1,
@@ -112,6 +129,43 @@ def _rank_for_row(row: dict[str, Any], ranks: list[dict[str, Any]], symbol: str)
         and str(rank.get("opportunity_episode_id") or "") == episode_id
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def _plan_for_row(
+    row: dict[str, Any], plans: list[dict[str, Any]], rank: dict[str, Any] | None, symbol: str,
+) -> TradePlan | None:
+    revision = str(row.get("decision_revision") or "")
+    episode_id = str(row.get("opportunity_episode_id") or "")
+    matches = [
+        plan for plan in plans
+        if str(plan.get("ticker") or plan.get("symbol") or "").upper() == symbol
+        and str(plan.get("decision_revision") or "") == revision
+        and str(plan.get("opportunity_episode_id") or "") == episode_id
+        and rank is not None
+        and bool(rank.get("publication_id"))
+        and plan.get("publication_id") == rank.get("publication_id")
+    ]
+    if len(matches) != 1:
+        return None
+    try:
+        plan = TradePlan.model_validate(matches[0])
+        if plan.rank_id != str(rank.get("rank_id") or ""):
+            return None
+        if plan.selected_expression_identity != str(rank.get("selected_expression_identity") or ""):
+            return None
+        if plan.portfolio_impact_id != str(rank.get("portfolio_impact_id") or ""):
+            return None
+        if plan.market_state_publication_id != str(rank.get("market_state_publication_id") or ""):
+            return None
+        return plan
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _rank_reason(rank: dict[str, Any] | None) -> str:
+    if rank is None:
+        return "opportunity_rank_missing"
+    return str(rank.get("trade_rank_unavailable_reason") or "opportunity_rank_unavailable")
 
 
 def _rank_ready(row: dict[str, Any], rank: dict[str, Any] | None) -> tuple[bool, str]:

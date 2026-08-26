@@ -122,6 +122,7 @@ class TickerPaperEntryInput(BaseModel):
     """Unified stock/option paper-entry request for one ticker thesis."""
 
     idempotency_key: str = Field(min_length=1, max_length=160)
+    trade_plan_id: str = Field(min_length=1, max_length=160)
     decision_revision: str = Field(min_length=1, max_length=160)
     policy_version: str | None = Field(default=None, min_length=1, max_length=160)
     expression_kind: Literal[

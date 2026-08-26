@@ -16,6 +16,7 @@ from investment_panel.core.decision import (
     OpportunityEpisode,
     PortfolioImpact,
     RiskPolicySnapshot,
+    TradePlan,
     TickerDecision,
     trade_expression_identity,
 )
@@ -62,6 +63,7 @@ class TickerPaperExecutionRepository:
         quantity: int | None = None,
         limit_price: float | None = None,
         policy_version: str | None = None,
+        trade_plan_id: str | None = None,
     ) -> dict[str, Any]:
         symbol = ticker.strip().upper()
         if decision.ticker != symbol:
@@ -79,46 +81,63 @@ class TickerPaperExecutionRepository:
                 raise ValueError("ticker decision is not actionable")
         if not idempotency_key.strip():
             raise ValueError("idempotency key is required")
+        plan = decision.trade_plan
+        if plan is None or not trade_plan_id or trade_plan_id.strip() != plan.trade_plan_id:
+            raise ValueError("ticker trade plan is missing or stale")
+        if plan.eligibility != "ACTIONABLE" or plan.selected_expression_kind is ExpressionKind.CASH:
+            raise ValueError("ticker trade plan is blocked")
         try:
             kind = ExpressionKind(str(expression_kind).upper())
         except ValueError as exc:
             raise ValueError("unsupported ticker expression") from exc
         if kind is ExpressionKind.CASH:
             raise ValueError("cash is a competing expression, not a paper order")
+        if kind is not plan.selected_expression_kind:
+            raise ValueError("requested expression does not match the trade plan")
         self._validate_decision_context(decision, kind)
         self._check_switches(kind)
-        expression = decision.expressions.get(kind)
+        expression = plan.selected_expression
         if expression is None:
-            raise ValueError("requested expression is not in the current ticker decision")
+            raise ValueError("trade plan expression is missing")
         if decision.selected_expression is None or decision.selected_expression.kind is not kind:
             raise ValueError("requested expression is not the selected ticker expression")
+        if expression.model_dump(mode="json") != decision.selected_expression.model_dump(mode="json"):
+            raise ValueError("trade plan expression is stale")
         if expression.status != "eligible":
             raise ValueError("requested expression is not eligible in the current ticker decision")
         if kind in OPTION_EXPRESSIONS and not _complete_option_legs(expression.legs):
             raise ValueError("a complete executable option leg package is required before paper staging")
-        if decision.capital_action.action not in ENTRY_ACTIONS | EXIT_ACTIONS:
-            raise ValueError(f"capital action {decision.capital_action.action.value} does not stage an order")
+        try:
+            action = CapitalActionType(plan.action)
+        except ValueError as exc:
+            raise ValueError("trade plan action is not a supported paper action") from exc
+        if action not in ENTRY_ACTIONS | EXIT_ACTIONS:
+            raise ValueError(f"capital action {action.value} does not stage an order")
         requested_revision = decision.decision_revision
-        requested_quantity = quantity if quantity is not None else expression.quantity
+        if quantity is not None and quantity != plan.quantity:
+            raise ValueError("requested quantity does not match the trade plan")
+        requested_quantity = plan.quantity
         if requested_quantity is None:
-            raise ValueError("quantity is unavailable; collect the missing price, invalidation, and NAV inputs first")
+            raise ValueError("trade plan quantity is unavailable")
         if requested_quantity <= 0 or requested_quantity > int(expression.quantity or 0):
             raise ValueError("requested quantity exceeds the current ticker expression authorization")
-        if limit_price is None or not isfinite(float(limit_price)) or float(limit_price) <= 0:
-            raise ValueError("an executable paper limit price is required")
-        max_loss = expression.max_loss_per_unit
+        if limit_price is not None and (plan.entry_limit is None or float(limit_price) != float(plan.entry_limit)):
+            raise ValueError("requested limit price does not match the trade plan")
+        limit = plan.entry_limit
+        if limit is None or not isfinite(float(limit)) or float(limit) <= 0:
+            raise ValueError("trade plan entry limit is unavailable")
+        max_loss = plan.max_loss_per_unit
         if max_loss is None or max_loss <= 0:
-            raise ValueError("maximum expression loss is unavailable; quantity cannot be staged")
-        requested_loss = float(max_loss) * requested_quantity
-        planned_loss = requested_loss if decision.capital_action.action in ENTRY_ACTIONS else 0.0
+            raise ValueError("trade plan maximum loss is unavailable")
+        planned_loss = float(plan.planned_loss or 0.0) if action in ENTRY_ACTIONS else 0.0
         now = datetime.now(UTC)
-        expires_at = min(decision.tactical.expiry_date, decision.fundamental.expiry_date)
+        expires_at = plan.expiry
         nav = decision.risk_policy.loss_budget / decision.risk_policy.loss_budget_pct if decision.risk_policy.loss_budget is not None else None
         if nav is None or nav <= 0:
             raise ValueError("fresh broker NAV is required before paper staging")
         if planned_loss > nav * decision.risk_policy.max_ticker_loss_pct:
             raise ValueError("ticker paper order exceeds the combined ticker loss budget")
-        side = "sell" if kind is ExpressionKind.CASH_SECURED_PUT else "buy" if decision.capital_action.action in ENTRY_ACTIONS else "sell"
+        side = "sell" if kind is ExpressionKind.CASH_SECURED_PUT else "buy" if action in ENTRY_ACTIONS else "sell"
         structure = _option_structure(kind) if kind in OPTION_EXPRESSIONS else None
 
         with self.runtime.transaction() as connection:
@@ -152,8 +171,12 @@ class TickerPaperExecutionRepository:
                 or str(persisted_resolution.get("policy_version") or "") != decision.policy_version
             ):
                 raise ValueError("ticker decision resolution is stale in PostgreSQL")
-            rank_evidence = self._validate_persisted_context(connection, ticker_decision, decision, kind)
-            if decision.capital_action.action in EXIT_ACTIONS:
+            if str(persisted_resolution.get("trade_plan_id") or "") != plan.trade_plan_id:
+                raise ValueError("ticker decision trade plan is stale in PostgreSQL")
+            rank_evidence = self._validate_persisted_context(
+                connection, ticker_decision, decision, kind, plan.trade_plan_id,
+            )
+            if action in EXIT_ACTIONS:
                 if not decision.capital_action.owned:
                     raise ValueError("TRIM and EXIT require an existing paper position")
                 active = connection.execute(
@@ -179,18 +202,21 @@ class TickerPaperExecutionRepository:
             prior = connection.execute(
                 """
                 SELECT id, status, quantity, limit_price, ticker_decision_revision,
-                       expression_kind, planned_loss
+                       expression_kind, planned_loss, policy_result
                 FROM app.paper_order
-                WHERE idempotency_key = %s
+                WHERE lane = 'ticker'
+                  AND (idempotency_key = %s OR policy_result->>'trade_plan_id' = %s)
+                ORDER BY created_at, id
+                LIMIT 1
                 """,
-                [idempotency_key.strip()],
+                [plan.trade_plan_id, plan.trade_plan_id],
             ).fetchone()
             if prior:
                 same = (
                     str(prior["ticker_decision_revision"] or "") == requested_revision
                     and str(prior["expression_kind"] or "") == kind.value
                     and int(prior["quantity"] or 0) == requested_quantity
-                    and abs(float(prior["limit_price"] or 0) - float(limit_price)) <= 1e-6
+                    and abs(float(prior["limit_price"] or 0) - float(limit)) <= 1e-6
                 )
                 if not same:
                     raise ValueError("idempotency key was already used for a different ticker paper request")
@@ -203,6 +229,8 @@ class TickerPaperExecutionRepository:
                     "planned_loss": float(prior["planned_loss"] or planned_loss),
                     "decision_revision": requested_revision,
                     "policy_version": decision.policy_version,
+                    "trade_plan_id": plan.trade_plan_id,
+                    "trade_plan_publication_id": rank_evidence["plan_publication_id"],
                     "idempotent_replay": True,
                     "paper_only": True,
                 }
@@ -240,12 +268,18 @@ class TickerPaperExecutionRepository:
                 "opportunity_rank": rank_evidence["payload"],
                 "trade_rank": rank_evidence["payload"].get("trade_rank"),
                 "trade_utility": rank_evidence["payload"].get("trade_utility"),
+                "trade_plan_id": plan.trade_plan_id,
+                "trade_plan_publication_id": rank_evidence["plan_publication_id"],
+                "trade_plan": rank_evidence["plan_payload"],
+                "caller_idempotency_key": idempotency_key.strip(),
                 "live_order_submission": False,
             }
             snapshot = decision.model_dump(mode="json")
             snapshot.update({
                 "ranking_publication_id": rank_evidence["publication_id"],
                 "opportunity_rank": rank_evidence["payload"],
+                "trade_plan_publication_id": rank_evidence["plan_publication_id"],
+                "trade_plan": rank_evidence["plan_payload"],
             })
             row = connection.execute(
                 """
@@ -262,10 +296,10 @@ class TickerPaperExecutionRepository:
                 """,
                 [
                     ticker_decision["id"] if ticker_decision else None,
-                    instrument["id"], now, side, requested_quantity, float(limit_price),
-                    Jsonb(policy), Jsonb(policy), idempotency_key.strip(), requested_revision, kind.value,
+                    instrument["id"], now, side, requested_quantity, float(limit),
+                    Jsonb(policy), Jsonb(policy), plan.trade_plan_id, requested_revision, kind.value,
                     float(max_loss), planned_loss, expires_at, Jsonb(snapshot),
-                    structure, Jsonb(snapshot), float(limit_price),
+                    structure, Jsonb(snapshot), float(limit),
                 ],
             ).fetchone()
             if kind in OPTION_EXPRESSIONS:
@@ -291,10 +325,12 @@ class TickerPaperExecutionRepository:
             "ticker": symbol,
             "expression_kind": kind.value,
             "quantity": requested_quantity,
-            "limit_price": float(limit_price),
+            "limit_price": float(limit),
             "planned_loss": planned_loss,
             "decision_revision": requested_revision,
             "policy_version": decision.policy_version,
+            "trade_plan_id": plan.trade_plan_id,
+            "trade_plan_publication_id": rank_evidence["plan_publication_id"],
             "paper_only": True,
             "live_order_submission": False,
         }
@@ -330,6 +366,7 @@ class TickerPaperExecutionRepository:
         row: Any,
         decision: TickerDecision,
         kind: ExpressionKind,
+        trade_plan_id: str,
     ) -> dict[str, Any]:
         if not row["opportunity_episode"] or str(row["opportunity_episode_id"] or "") != decision.opportunity_episode_id:
             raise ValueError("ticker opportunity episode context is missing in PostgreSQL")
@@ -380,32 +417,86 @@ class TickerPaperExecutionRepository:
             raise ValueError("ticker market publication is unavailable in PostgreSQL")
         if publication["input_cutoff"] is None or _utc(publication["input_cutoff"]) > decision.cutoff:
             raise ValueError("ticker market publication is newer than the decision cutoff")
-        rank = connection.execute(
+        authority_rows = connection.execute(
             """
-            SELECT item.publication_id::text AS publication_id,
+            SELECT item.model_name, item.publication_id::text AS publication_id,
                    payload.payload, publication.published_at, run.input_cutoff
             FROM app.current_publication_item item
             JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
             JOIN app.publication publication ON publication.id = item.publication_id
             JOIN analysis.run run ON run.id = publication.analysis_run_id
             WHERE item.scope = 'ticker-opportunity-ranking'
-              AND item.model_name = 'opportunity_rank'
+              AND item.model_name = ANY(%s)
               AND publication.status = 'published'
               AND payload.payload->>'ticker' = %s
               AND payload.payload->>'decision_revision' = %s
               AND payload.payload->>'opportunity_episode_id' = %s
-            ORDER BY publication.published_at DESC, item.rank
-            LIMIT 1
+            ORDER BY item.model_name, publication.published_at DESC, item.rank
             """,
-            [decision.ticker, decision.decision_revision, decision.opportunity_episode_id],
-        ).fetchone()
-        if rank is None:
-            raise ValueError("ticker opportunity rank is missing in current PostgreSQL publication")
+            [["opportunity_rank", "trade_plan", "alpha_signal"], decision.ticker,
+             decision.decision_revision, decision.opportunity_episode_id],
+        ).fetchall()
+        grouped: dict[str, list[Any]] = {}
+        for item in authority_rows:
+            grouped.setdefault(str(item["model_name"]), []).append(item)
+        if len(grouped.get("opportunity_rank", [])) != 1:
+            raise ValueError("ticker opportunity rank is missing or duplicated in current PostgreSQL publication")
+        if len(grouped.get("trade_plan", [])) != 1:
+            raise ValueError("ticker trade plan is missing or duplicated in current PostgreSQL publication")
+        rank = grouped["opportunity_rank"][0]
+        plan_row = grouped["trade_plan"][0]
         rank_payload = dict(rank["payload"] or {})
+        plan_payload = dict(plan_row["payload"] or {})
         if rank["published_at"] is None or _utc(rank["published_at"]) > decision.cutoff:
             raise ValueError("ticker opportunity rank is newer than the decision cutoff")
         if rank["input_cutoff"] is None or _utc(rank["input_cutoff"]) > decision.cutoff:
             raise ValueError("ticker opportunity rank input cutoff is stale in PostgreSQL")
+        if plan_row["published_at"] is None or _utc(plan_row["published_at"]) > decision.cutoff:
+            raise ValueError("ticker trade plan is newer than the decision cutoff")
+        if plan_row["input_cutoff"] is None or _utc(plan_row["input_cutoff"]) > decision.cutoff:
+            raise ValueError("ticker trade plan input cutoff is stale in PostgreSQL")
+        if str(rank["publication_id"]) != str(plan_row["publication_id"]):
+            raise ValueError("ticker opportunity rank and trade plan publications differ")
+        plan_payload["publication_id"] = str(plan_row["publication_id"])
+        persisted_plan = TradePlan.model_validate(plan_payload)
+        if persisted_plan.trade_plan_id != trade_plan_id:
+            raise ValueError("ticker trade plan is stale in PostgreSQL")
+        if persisted_plan.publication_id != str(plan_row["publication_id"]):
+            raise ValueError("ticker trade plan publication identity is stale")
+        if persisted_plan.ticker != decision.ticker or persisted_plan.opportunity_episode_id != decision.opportunity_episode_id:
+            raise ValueError("ticker trade plan identity is stale in PostgreSQL")
+        if persisted_plan.decision_revision != decision.decision_revision or persisted_plan.policy_version != decision.policy_version:
+            raise ValueError("ticker trade plan revision or policy is stale in PostgreSQL")
+        if persisted_plan.cutoff != decision.cutoff:
+            raise ValueError("ticker trade plan cutoff is stale in PostgreSQL")
+        if persisted_plan.selected_expression_kind is not kind:
+            raise ValueError("ticker trade plan expression kind is stale in PostgreSQL")
+        if persisted_plan.selected_expression.model_dump(mode="json") != decision.selected_expression.model_dump(mode="json"):
+            raise ValueError("ticker trade plan expression is stale in PostgreSQL")
+        if persisted_plan.market_snapshot_id != decision.market_state_snapshot.snapshot_id:
+            raise ValueError("ticker trade plan market snapshot is stale in PostgreSQL")
+        if persisted_plan.market_state_publication_id != decision.market_state_publication_id:
+            raise ValueError("ticker trade plan market publication is stale in PostgreSQL")
+        if persisted_plan.portfolio_impact_id != decision.portfolio_impacts[kind].impact_id:
+            raise ValueError("ticker trade plan portfolio impact is stale in PostgreSQL")
+        if persisted_plan.input_lineage != tuple(decision.input_lineage):
+            raise ValueError("ticker trade plan lineage is stale in PostgreSQL")
+        if (
+            persisted_plan.rank_id != str(rank_payload.get("rank_id") or "")
+            or persisted_plan.selected_expression_kind.value != str(rank_payload.get("selected_expression_kind") or "")
+            or persisted_plan.selected_expression_identity != str(rank_payload.get("selected_expression_identity") or "")
+            or persisted_plan.alpha_signal_id != str(rank_payload.get("alpha_signal_id") or "")
+            or persisted_plan.portfolio_impact_id != str(rank_payload.get("portfolio_impact_id") or "")
+            or persisted_plan.market_snapshot_id != str(rank_payload.get("market_snapshot_id") or "")
+            or persisted_plan.market_state_publication_id != str(rank_payload.get("market_state_publication_id") or "")
+        ):
+            raise ValueError("ticker trade plan is not bound to the current opportunity rank")
+        signal_matches = [
+            item for item in grouped.get("alpha_signal", [])
+            if str((item["payload"] or {}).get("signal_id") or "") == str(persisted_plan.alpha_signal_id or "")
+        ]
+        if persisted_plan.alpha_signal_id is None or len(signal_matches) != 1:
+            raise ValueError("ticker trade plan alpha signal is missing or stale in PostgreSQL")
         selected = decision.selected_expression
         selected_identity = trade_expression_identity(selected) if selected is not None else ""
         rank_utility = rank_payload.get("trade_utility")
@@ -441,6 +532,8 @@ class TickerPaperExecutionRepository:
         return {
             "publication_id": str(rank["publication_id"]),
             "payload": rank_payload,
+            "plan_publication_id": str(plan_row["publication_id"]),
+            "plan_payload": plan_payload,
         }
 
     def process(

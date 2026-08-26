@@ -34,6 +34,7 @@ class TickerActions:
             quantity=payload.get("quantity"),
             limit_price=payload.get("limit_price"),
             policy_version=payload.get("policy_version"),
+            trade_plan_id=payload.get("trade_plan_id"),
         )
 
 

@@ -463,7 +463,8 @@ class AnalysisRepository:
         for row in rows:
             payload = dict(row["payload"] or {})
             if include_lineage:
-                payload.setdefault("publication_id", str(row["publication_id"]))
+                if model_name == "trade_plan" or "publication_id" not in payload:
+                    payload["publication_id"] = str(row["publication_id"])
                 if row["published_at"] is not None:
                     payload.setdefault("publication_published_at", row["published_at"].isoformat())
             output.append(payload)

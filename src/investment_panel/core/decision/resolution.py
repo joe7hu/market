@@ -79,6 +79,7 @@ class DecisionResolutionV2(BaseModel):
     authorization_mode: AuthorizationMode = AuthorizationMode.ADVISORY
     data_quality: DataQuality = DataQuality.UNKNOWN
     action: ResolutionAction
+    trade_plan_id: str | None = None
     primary_blocker: str | None = None
     blockers: list[str] = Field(default_factory=list)
     next_action: str = "Refresh and recalculate the decision."
@@ -119,6 +120,8 @@ class DecisionResolutionV2(BaseModel):
                 result[new] = result[old]
         nested = result.get("trade_plan")
         if isinstance(nested, Mapping):
+            if result.get("trade_plan_id") is None and nested.get("trade_plan_id") is not None:
+                result["trade_plan_id"] = nested["trade_plan_id"]
             for name in ("entry", "size", "invalidation", "exit", "ttl", "portfolio_context"):
                 if result.get(name) is None and name in nested:
                     result[name] = nested[name]
@@ -202,6 +205,7 @@ class DecisionResolutionV2(BaseModel):
     @property
     def trade_plan(self) -> dict[str, Any]:
         return {
+            "trade_plan_id": self.trade_plan_id,
             "entry": self.entry,
             "size": self.size,
             "invalidation": self.invalidation,
@@ -242,6 +246,7 @@ def build_decision_resolution(
     price_condition: str | None = None,
     catalyst: str | None = None,
     expires_at: date | datetime | None = None,
+    trade_plan_id: str | None = None,
     blocked: bool = False,
 ) -> DecisionResolutionV2:
     clean_blockers = [str(item) for item in blockers if str(item).strip()]
@@ -271,6 +276,7 @@ def build_decision_resolution(
         authorization_mode=authorization_mode,
         data_quality=data_quality,
         action=action,
+        trade_plan_id=trade_plan_id,
         primary_blocker=primary,
         blockers=clean_blockers,
         next_action=next_action_for(primary),

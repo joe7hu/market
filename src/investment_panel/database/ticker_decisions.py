@@ -74,6 +74,7 @@ class TickerDecisionRepository:
             "instrument_state_snapshot": payload.get("instrument_state_snapshot"),
             "alpha_signals": payload.get("alpha_signals") or [],
             "opportunity_rank": payload.get("opportunity_rank"),
+            "trade_plan": payload.get("trade_plan"),
         }
         with self.runtime.transaction(JOB_PROFILE) as connection:
             instrument = connection.execute(
@@ -875,6 +876,7 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "instrument_state_snapshot": manifest.get("instrument_state_snapshot"),
         "alpha_signals": manifest.get("alpha_signals") or [],
         "opportunity_rank": manifest.get("opportunity_rank"),
+        "trade_plan": manifest.get("trade_plan"),
     })
 
 

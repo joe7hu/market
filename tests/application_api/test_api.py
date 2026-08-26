@@ -85,7 +85,7 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
         "ticker": "ACME",
         "action": "AVOID",
         "owned": False,
-        "rationale": "Cash is selected because the current opportunity rank is unavailable: opportunity_rank_missing.",
+        "rationale": "Cash is selected because the current trade plan is unavailable: trade_plan_missing.",
         "decision_revision": "ticker-decision.v1:test",
         "selected_expression": "CASH",
         "price_condition": None,
@@ -93,8 +93,9 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
         "expires_at": "2026-09-18",
         "research_rank": None,
         "trade_rank": None,
-        "trade_rank_unavailable_reason": "opportunity_rank_missing",
+        "trade_rank_unavailable_reason": "trade_plan_missing",
         "trade_utility": None,
+        "trade_plan": None,
     }]
 
 

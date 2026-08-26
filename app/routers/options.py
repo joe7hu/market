@@ -505,8 +505,11 @@ def stage_option_radar_paper_entry(
     )
     decision_payload = payloads.ticker_payload(panel_data, ticker)["ticker_decision"]
     decision = TickerDecision.model_validate(decision_payload)
+    if decision.trade_plan is None:
+        raise HTTPException(status_code=409, detail="Current publication has no canonical trade plan")
     ticker_payload = TickerPaperEntryInput(
         idempotency_key=payload.idempotency_key,
+        trade_plan_id=decision.trade_plan.trade_plan_id,
         decision_revision=decision.decision_revision,
         policy_version=payload.policy_version or decision.policy_version,
         expression_kind=expression_kind.value,

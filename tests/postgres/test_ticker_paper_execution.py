@@ -5,6 +5,9 @@ from datetime import UTC, datetime, timedelta
 
 from investment_panel.core.decision import (
     InputLineage,
+    bind_trade_plan,
+    build_decision_resolution,
+    build_trade_plan,
     build_ticker_decision,
     rank_opportunities,
     trade_expression_identity,
@@ -149,7 +152,6 @@ def _publish_context(
         portfolio_impacts=impacts, risk_policy_snapshot=seed.risk_policy_snapshot,
         portfolio_replay=replay,
     )
-    TickerDecisionRepository(runtime).publish(decision)
     selected = decision.selected_expression
     impact = decision.portfolio_impacts[selected.kind]
     signal = {
@@ -169,6 +171,10 @@ def _publish_context(
         "as_of": as_of,
         "input_cutoff": as_of,
         "input_lineage": decision.input_lineage,
+    }
+    signal_payload = {
+        **signal,
+        "input_lineage": [item.model_dump(mode="json") for item in decision.input_lineage],
     }
     rank = rank_opportunities([{
         "ticker": symbol,
@@ -197,6 +203,29 @@ def _publish_context(
         "diversification_benefit": 0.0,
         "capital_at_risk": 1000.0,
     }], evaluated_universe_complete=True)
+    resolution = build_decision_resolution(
+        action=decision.capital_action.action.value,
+        decision_revision=decision.decision_revision,
+        policy_version=decision.policy_version,
+        provenance=decision.resolution.provenance if decision.resolution else {"as_of": as_of},
+        ticker=symbol,
+        entry=selected.entry_range.model_dump(mode="json"),
+        size=selected.quantity,
+        invalidation=selected.invalidation.model_dump(mode="json"),
+        exit=selected.target_range.model_dump(mode="json"),
+        ttl=decision.capital_action.expires_at or as_of.date(),
+        portfolio_context=impact.model_dump(mode="json"),
+        data_quality="FRESH",
+        authorization_mode="PAPER",
+        rationale=decision.capital_action.rationale,
+        owned=decision.capital_action.owned,
+    )
+    plan = build_trade_plan(
+        decision=decision,
+        rank=rank[0],
+        alpha_signal=signal,
+        resolution=resolution,
+    )
     rank_run = analysis.start_run(
         "ticker-opportunity-ranking", input_cutoff=as_of, code_version=f"rank-test-{symbol}",
         inputs={"ticker": symbol, "decision_revision": decision.decision_revision},
@@ -204,7 +233,11 @@ def _publish_context(
     )
     rank_publication = analysis.publish(
         rank_run, "ticker-opportunity-ranking",
-        {"opportunity_rank": [rank[0].model_dump(mode="json")]},
+        {
+            "opportunity_rank": [rank[0].model_dump(mode="json")],
+            "alpha_signal": [signal_payload],
+            "trade_plan": [plan.model_dump(mode="json")],
+        },
         complete_run_summary={"ticker": symbol},
     )
     with runtime.transaction() as connection:
@@ -212,6 +245,9 @@ def _publish_context(
             "UPDATE app.publication SET published_at = %s WHERE id = %s",
             [as_of, rank_publication],
         )
+    plan = plan.model_copy(update={"publication_id": str(rank_publication)})
+    decision = bind_trade_plan(decision, plan)
+    TickerDecisionRepository(runtime).publish(decision)
     return decision
 
 
@@ -293,21 +329,24 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migr
             observed,
         )
         repository = TickerPaperExecutionRepository(runtime, config)
+        assert decision.trade_plan is not None
         result = repository.stage(
             ticker="ACME",
             decision=decision,
-            expression_kind="STOCK",
+            expression_kind=decision.trade_plan.selected_expression_kind.value,
             idempotency_key="acme-entry-1",
-            quantity=50,
-            limit_price=100,
+            quantity=decision.trade_plan.quantity,
+            limit_price=decision.trade_plan.entry_limit,
+            trade_plan_id=decision.trade_plan.trade_plan_id,
         )
         replay = repository.stage(
             ticker="ACME",
             decision=decision,
-            expression_kind="STOCK",
+            expression_kind=decision.trade_plan.selected_expression_kind.value,
             idempotency_key="acme-entry-1",
-            quantity=50,
-            limit_price=100,
+            quantity=decision.trade_plan.quantity,
+            limit_price=decision.trade_plan.entry_limit,
+            trade_plan_id=decision.trade_plan.trade_plan_id,
         )
 
         assert result["status"] == "staged"
@@ -316,11 +355,14 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migr
         assert replay["idempotent_replay"] is True
         with runtime.read() as connection:
             row = connection.execute(
-                "SELECT lane, expression_kind, planned_loss, paper_only FROM app.paper_order WHERE idempotency_key = 'acme-entry-1'"
+                "SELECT lane, expression_kind, planned_loss, paper_only, idempotency_key, policy_result "
+                "FROM app.paper_order WHERE policy_result->>'caller_idempotency_key' = 'acme-entry-1'"
             ).fetchone()
         assert row["lane"] == "ticker"
         assert row["expression_kind"] == "STOCK"
-        assert float(row["planned_loss"]) == 500
+        assert float(row["planned_loss"]) == decision.trade_plan.planned_loss
+        assert row["idempotency_key"] == decision.trade_plan.trade_plan_id
+        assert row["policy_result"]["caller_idempotency_key"] == "acme-entry-1"
         assert row["paper_only"] is True
     finally:
         runtime.close()
@@ -386,9 +428,13 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
             observed,
         )
         repository = TickerPaperExecutionRepository(runtime, config)
+        assert decision.trade_plan is not None
         staged = repository.stage(
-            ticker="LIFE", decision=decision, expression_kind="STOCK",
-            idempotency_key="life-entry-1", quantity=4, limit_price=100,
+            ticker="LIFE", decision=decision,
+            expression_kind=decision.trade_plan.selected_expression_kind.value,
+            idempotency_key="life-entry-1", quantity=decision.trade_plan.quantity,
+            limit_price=decision.trade_plan.entry_limit,
+            trade_plan_id=decision.trade_plan.trade_plan_id,
         )
         with runtime.transaction() as connection:
             connection.execute(
@@ -400,10 +446,13 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
         with runtime.transaction() as connection:
             connection.execute(
                 "UPDATE app.paper_order SET policy_result = policy_result || %s::jsonb WHERE id = %s::uuid",
-                ['{"available_quantity": 10}', staged["paper_order_id"]],
+                    [
+                        json.dumps({"available_quantity": decision.trade_plan.quantity}),
+                        staged["paper_order_id"],
+                    ],
             )
         filled = repository.process(now=datetime(2026, 8, 22, 14, 6, tzinfo=UTC))
-        assert filled["managed"][0]["event_status"] == "entered"
+        assert filled["managed"][0]["event_status"] == "entered", filled
 
         with runtime.transaction() as connection:
             run_id = connection.execute(
@@ -436,8 +485,8 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                 [staged["paper_order_id"]],
             ).fetchone()
         assert status["status"] == "exited"
-        assert float(status["filled_quantity"]) == 4
-        assert float(status["exited_quantity"]) == 4
+        assert float(status["filled_quantity"]) == decision.trade_plan.quantity
+        assert float(status["exited_quantity"]) == decision.trade_plan.quantity
         assert float(status["fees"]) > 0
     finally:
         runtime.close()
@@ -509,8 +558,8 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
                     )
 
             add_option_snapshot(observed, ((3.0, 3.2), (1.0, 1.1)), (1, 1))
-            add_option_snapshot(later_quote, ((3.1, 3.3), (1.0, 1.1)), (2, 2))
-            add_option_snapshot(exit_quote, ((2.4, 2.6), (0.8, 1.0)), (2, 2))
+        add_option_snapshot(later_quote, ((3.0, 3.2), (1.0, 1.1)), (4, 4))
+        add_option_snapshot(exit_quote, ((2.4, 2.6), (0.8, 1.0)), (4, 4))
 
         legs = [
             {
@@ -541,9 +590,13 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
             observed,
         )
         repository = TickerPaperExecutionRepository(runtime, config)
+        assert decision.trade_plan is not None
         staged = repository.stage(
-            ticker="SPRD", decision=decision, expression_kind="DEBIT_SPREAD",
-            idempotency_key="sprd-spread-1", quantity=2, limit_price=2.3,
+            ticker="SPRD", decision=decision,
+            expression_kind=decision.trade_plan.selected_expression_kind.value,
+            idempotency_key="sprd-spread-1", quantity=decision.trade_plan.quantity,
+            limit_price=decision.trade_plan.entry_limit,
+            trade_plan_id=decision.trade_plan.trade_plan_id,
         )
         with runtime.read() as connection:
             assert connection.execute(
@@ -554,7 +607,7 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
         partial = repository.process(now=datetime(2026, 8, 22, 14, 5, tzinfo=UTC))
         assert partial["managed"][0]["status"] == "partial"
         filled = repository.process(now=datetime(2026, 8, 22, 14, 11, tzinfo=UTC))
-        assert filled["managed"][0]["event_status"] == "entered"
+        assert filled["managed"][0].get("event_status") == "entered", filled
 
         with runtime.transaction() as connection:
             run_id = connection.execute(
@@ -590,8 +643,8 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
                 [staged["paper_order_id"]],
             ).fetchone()
         assert row["status"] == "exited"
-        assert float(row["filled_quantity"]) == 2
-        assert float(row["exited_quantity"]) == 2
+        assert float(row["filled_quantity"]) == decision.trade_plan.quantity
+        assert float(row["exited_quantity"]) == decision.trade_plan.quantity
         assert float(row["fees"]) > 0
         assert float(row["exit_price"]) == 1.4
         assert row["paper_only"] is True

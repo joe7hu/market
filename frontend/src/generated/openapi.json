@@ -1391,6 +1391,17 @@
             ],
             "title": "Ticker"
           },
+          "trade_plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Plan Id"
+          },
           "ttl": {
             "title": "Ttl"
           }
@@ -11078,6 +11089,16 @@
           "ticker": {
             "title": "Ticker",
             "type": "string"
+          },
+          "trade_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradePlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -11262,6 +11283,16 @@
           "ticker": {
             "title": "Ticker",
             "type": "string"
+          },
+          "trade_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradePlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -11405,6 +11436,16 @@
           },
           "ticker_decision": {
             "$ref": "#/components/schemas/TickerDecision"
+          },
+          "trade_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradePlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -11480,10 +11521,17 @@
               }
             ],
             "title": "Quantity"
+          },
+          "trade_plan_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Trade Plan Id",
+            "type": "string"
           }
         },
         "required": [
           "idempotency_key",
+          "trade_plan_id",
           "decision_revision",
           "expression_kind"
         ],
@@ -11649,6 +11697,16 @@
             "title": "Ticker",
             "type": "string"
           },
+          "trade_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradePlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "trade_rank": {
             "anyOf": [
               {
@@ -11727,6 +11785,296 @@
           "status"
         ],
         "title": "TodayResponse",
+        "type": "object"
+      },
+      "TradePlan": {
+        "description": "The immutable, point-in-time paper terms for one ticker decision.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "alpha_signal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alpha Signal Id"
+          },
+          "authorization_mode": {
+            "title": "Authorization Mode",
+            "type": "string"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "contract_version": {
+            "default": "trade-plan.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "cutoff": {
+            "format": "date-time",
+            "title": "Cutoff",
+            "type": "string"
+          },
+          "data_quality": {
+            "default": "UNKNOWN",
+            "title": "Data Quality",
+            "type": "string"
+          },
+          "decision_revision": {
+            "minLength": 1,
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "eligibility": {
+            "title": "Eligibility",
+            "type": "string"
+          },
+          "entry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entry_limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Limit"
+          },
+          "expiry": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiry"
+          },
+          "input_lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
+          },
+          "invalidation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Invalidation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "market_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Snapshot Id"
+          },
+          "market_state_publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market State Publication Id"
+          },
+          "max_loss_per_unit": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Loss Per Unit"
+          },
+          "next_action": {
+            "default": "Refresh and recalculate the decision.",
+            "title": "Next Action",
+            "type": "string"
+          },
+          "opportunity_episode_id": {
+            "minLength": 1,
+            "title": "Opportunity Episode Id",
+            "type": "string"
+          },
+          "planned_loss": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Loss"
+          },
+          "policy_version": {
+            "minLength": 1,
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "portfolio_impact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PortfolioImpact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "portfolio_impact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Impact Id"
+          },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
+          },
+          "profit_exit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Id"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "rank_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Id"
+          },
+          "rationale": {
+            "default": "",
+            "title": "Rationale",
+            "type": "string"
+          },
+          "selected_expression": {
+            "$ref": "#/components/schemas/ExpressionDecision"
+          },
+          "selected_expression_identity": {
+            "minLength": 1,
+            "title": "Selected Expression Identity",
+            "type": "string"
+          },
+          "selected_expression_kind": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "ticker": {
+            "minLength": 1,
+            "title": "Ticker",
+            "type": "string"
+          },
+          "trade_plan_id": {
+            "minLength": 1,
+            "title": "Trade Plan Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trade_plan_id",
+          "ticker",
+          "opportunity_episode_id",
+          "decision_revision",
+          "policy_version",
+          "cutoff",
+          "selected_expression_kind",
+          "selected_expression_identity",
+          "selected_expression",
+          "action",
+          "eligibility",
+          "authorization_mode"
+        ],
+        "title": "TradePlan",
         "type": "object"
       },
       "TradeUtility": {

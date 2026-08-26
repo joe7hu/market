@@ -43,6 +43,7 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
               instrumentStateSnapshot={ticker.instrument_state_snapshot}
               alphaSignals={ticker.alpha_signals}
               opportunityRank={ticker.opportunity_rank}
+              tradePlan={ticker.trade_plan}
               dataRequests={ticker.data_requests ?? []}
               learning={ticker.learning}
               collecting={collecting}

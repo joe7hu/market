@@ -16,6 +16,7 @@ from app.data_access.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.core.config import AppConfig, OptionAgentConfig
 from investment_panel.core.decision import (
+    TradePlan,
     apply_opportunity_rank_safety,
     build_ticker_decision,
     evaluate_ticker_policy,
@@ -171,18 +172,16 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         tables,
         as_of=_ticker_as_of(panel_data, tables),
     )
-    snapshot_row, signal_rows, rank_row = _current_alpha_rows(
+    snapshot_row, signal_rows, rank_row, plan_row = _current_alpha_rows(
         tables, ticker_decision,
     )
-    if not _rank_is_current_for_decision(rank_row, ticker_decision):
-        if rank_row is None:
-            reason = "opportunity_rank_missing"
+    plan = _validated_trade_plan(plan_row, rank_row, ticker_decision, signal_rows)
+    rank_current = _rank_is_current_for_decision(rank_row, ticker_decision)
+    if plan is None or (plan.eligibility == "ACTIONABLE" and not rank_current):
+        if not rank_current:
+            reason = _rank_blocker(rank_row)
         else:
-            reason = str(rank_row.get("trade_rank_unavailable_reason") or "")
-            if not reason and not bool(rank_row.get("evaluated_universe_complete")):
-                reason = "ranking_universe_incomplete"
-            if not reason:
-                reason = "opportunity_rank_identity_mismatch"
+            reason = "trade_plan_missing"
         ticker_decision = apply_opportunity_rank_safety(
             ticker_decision,
             {"trade_rank_unavailable_reason": reason},
@@ -194,11 +193,13 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
                 "trade_utility": None,
                 "trade_rank_unavailable_reason": reason,
             }
+        plan = None
     ticker_decision_payload = ticker_decision.model_dump(mode="json")
     ticker_decision_payload.update({
         "instrument_state_snapshot": snapshot_row,
         "alpha_signals": signal_rows,
         "opportunity_rank": rank_row,
+        "trade_plan": plan.model_dump(mode="json") if plan is not None else None,
     })
     learning = ticker_learning_payload(
         ticker_decision_payload,
@@ -225,6 +226,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "instrument_state_snapshot": snapshot_row,
         "alpha_signals": signal_rows,
         "opportunity_rank": rank_row,
+        "trade_plan": plan.model_dump(mode="json") if plan is not None else None,
         "learning": learning,
         "decision_revision": ticker_decision_payload["decision_revision"],
         "found": bool(dossier["coverage"].get("present") or dossier["coverage"]["live"]),
@@ -234,7 +236,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
 def _current_alpha_rows(
     tables: dict[str, list[dict[str, Any]]],
     decision: Any,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
     symbol = decision.ticker.strip().upper()
     revision = decision.decision_revision
     episode_id = decision.opportunity_episode_id
@@ -259,9 +261,67 @@ def _current_alpha_rows(
     ]
     signals = [row for row in tables.get("alpha_signal") or [] if matches(row)]
     ranks = [row for row in tables.get("opportunity_rank") or [] if matches(row)]
+    plans = [row for row in tables.get("trade_plan") or [] if matches(row)]
     snapshot = max(snapshots, key=lambda row: str(row.get("as_of") or row.get("input_cutoff") or ""), default=None)
     rank = max(ranks, key=lambda row: str(row.get("published_at") or row.get("publication_published_at") or ""), default=None)
-    return snapshot, signals, rank
+    plan = plans[0] if len(plans) == 1 else None
+    return snapshot, signals, rank, plan
+
+
+def _rank_blocker(rank: dict[str, Any] | None) -> str:
+    if rank is None:
+        return "opportunity_rank_missing"
+    reason = str(rank.get("trade_rank_unavailable_reason") or "").strip()
+    if reason:
+        return reason
+    if not bool(rank.get("evaluated_universe_complete")):
+        return "ranking_universe_incomplete"
+    return "opportunity_rank_identity_mismatch"
+
+
+def _validated_trade_plan(
+    plan: dict[str, Any] | None,
+    rank: dict[str, Any] | None,
+    decision: Any,
+    signals: list[dict[str, Any]],
+) -> TradePlan | None:
+    if plan is None or rank is None:
+        return None
+    try:
+        value = TradePlan.model_validate(plan)
+        if value.eligibility == "ACTIONABLE" and not _rank_is_current_for_decision(rank, decision):
+            return None
+        if value.ticker != decision.ticker or value.opportunity_episode_id != decision.opportunity_episode_id:
+            return None
+        if value.decision_revision != decision.decision_revision or value.policy_version != decision.policy_version:
+            return None
+        if value.selected_expression_kind.value != str(rank.get("selected_expression_kind") or ""):
+            return None
+        if value.selected_expression_identity != str(rank.get("selected_expression_identity") or ""):
+            return None
+        if value.rank_id != str(rank.get("rank_id") or ""):
+            return None
+        if value.alpha_signal_id != str(rank.get("alpha_signal_id") or ""):
+            return None
+        if value.portfolio_impact_id != str(rank.get("portfolio_impact_id") or ""):
+            return None
+        if value.market_snapshot_id != str(rank.get("market_snapshot_id") or ""):
+            return None
+        if value.market_state_publication_id != str(rank.get("market_state_publication_id") or ""):
+            return None
+        if not value.publication_id or not rank.get("publication_id") or value.publication_id != rank.get("publication_id"):
+            return None
+        if value.alpha_signal_id not in {str(row.get("signal_id") or "") for row in signals}:
+            return None
+        if value.selected_expression.model_dump(mode="json") != (decision.selected_expression.model_dump(mode="json") if decision.selected_expression else None):
+            return None
+        if value.input_lineage != tuple(decision.input_lineage):
+            return None
+        if decision.resolution is None or decision.resolution.trade_plan_id != value.trade_plan_id:
+            return None
+        return value
+    except (TypeError, ValueError, KeyError):
+        return None
 
 
 def _rank_is_current_for_decision(rank: dict[str, Any] | None, decision: Any) -> bool:

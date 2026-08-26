@@ -20,8 +20,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from investment_panel.core.risk_policy import compile_risk_policy_snapshot
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 from investment_panel.core.decision.resolution import (
+    DataQuality,
     DecisionResolutionV2,
     build_decision_resolution,
+    next_action_for,
     resolution_from_legacy,
 )
 
@@ -30,6 +32,7 @@ CONTRACT_VERSION = "ticker-decision.v1"
 EXPERIMENT_ID = "ticker-first-v1"
 OPPORTUNITY_EPISODE_CONTRACT_VERSION = "opportunity-episode.v1"
 TRADE_EXPRESSION_CONTRACT_VERSION = "trade-expression.v1"
+TRADE_PLAN_CONTRACT_VERSION = "trade-plan.v1"
 _CONTEXT_UNSET = object()
 
 
@@ -619,6 +622,214 @@ class OpportunityEpisode(BaseModel):
         return self.selected_expression.kind if self.selected_expression else None
 
 
+class TradePlan(BaseModel):
+    """The immutable, point-in-time paper terms for one ticker decision."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True, use_enum_values=False)
+
+    contract_version: str = TRADE_PLAN_CONTRACT_VERSION
+    trade_plan_id: str = Field(min_length=1)
+    publication_id: str | None = None
+    ticker: str = Field(min_length=1)
+    opportunity_episode_id: str = Field(min_length=1)
+    decision_revision: str = Field(min_length=1)
+    policy_version: str = Field(min_length=1)
+    cutoff: datetime
+    input_lineage: tuple[InputLineage, ...] = ()
+    selected_expression_kind: ExpressionKind
+    selected_expression_identity: str = Field(min_length=1)
+    selected_expression: TradeExpression
+    rank_id: str | None = None
+    alpha_signal_id: str | None = None
+    portfolio_impact_id: str | None = None
+    market_snapshot_id: str | None = None
+    market_state_publication_id: str | None = None
+    action: str
+    eligibility: str
+    authorization_mode: str
+    data_quality: str = "UNKNOWN"
+    rationale: str = ""
+    primary_blocker: str | None = None
+    blockers: tuple[str, ...] = ()
+    next_action: str = "Refresh and recalculate the decision."
+    entry: PriceRange | None = None
+    entry_limit: float | None = None
+    quantity: int | None = Field(default=None, ge=0)
+    max_loss_per_unit: float | None = Field(default=None, ge=0)
+    planned_loss: float | None = Field(default=None, ge=0)
+    invalidation: Invalidation | None = None
+    profit_exit: PriceRange | None = None
+    expiry: date | datetime | None = None
+    portfolio_impact: PortfolioImpact | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_contract(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        result = dict(value)
+        aliases = {
+            "id": "trade_plan_id",
+            "episode_id": "opportunity_episode_id",
+            "expression_kind": "selected_expression_kind",
+            "expression_identity": "selected_expression_identity",
+            "impact_id": "portfolio_impact_id",
+            "snapshot_id": "market_snapshot_id",
+            "market_publication_id": "market_state_publication_id",
+            "exit": "profit_exit",
+            "time_exit": "expiry",
+            "size": "quantity",
+        }
+        for old, new in aliases.items():
+            if new not in result and old in result:
+                result[new] = result[old]
+        if isinstance(result.get("ticker"), str):
+            result["ticker"] = result["ticker"].strip().upper()
+        for key in ("action", "eligibility", "authorization_mode", "data_quality"):
+            if isinstance(result.get(key), str):
+                result[key] = result[key].upper().replace("-", "_")
+        return result
+
+    @model_validator(mode="after")
+    def enforce_invariants(self) -> "TradePlan":
+        if self.contract_version != TRADE_PLAN_CONTRACT_VERSION:
+            raise ValueError("unsupported trade plan contract version")
+        if not self.input_lineage:
+            raise ValueError("trade plan input lineage is required")
+        if self.eligibility not in {"ACTIONABLE", "BLOCKED"}:
+            raise ValueError("trade plan eligibility must be ACTIONABLE or BLOCKED")
+        if self.authorization_mode not in {"NONE", "ADVISORY", "PAPER"}:
+            raise ValueError("trade plan authorization mode is not paper-safe")
+        if self.data_quality not in {quality.value for quality in DataQuality}:
+            raise ValueError("trade plan data quality is invalid")
+        if self.cutoff.tzinfo is None:
+            raise ValueError("trade plan cutoff must be timezone-aware")
+        cutoff = _utc(self.cutoff)
+        if any(_utc(item.available_at) > cutoff for item in self.input_lineage):
+            raise ValueError("trade plan lineage cannot be newer than its cutoff")
+        expression = self.selected_expression
+        if expression.ticker.strip().upper() != self.ticker:
+            raise ValueError("trade plan expression ticker must match the plan")
+        if expression.kind is not self.selected_expression_kind:
+            raise ValueError("trade plan expression kind must match the plan")
+        valid_identities = {trade_expression_identity(expression)}
+        if expression.kind is ExpressionKind.CASH:
+            valid_identities.add(_expression_identity_for(
+                expression, expression.kind, self.ticker, self.decision_revision,
+            ))
+        if self.selected_expression_identity not in valid_identities:
+            raise ValueError("trade plan expression identity must match the expression")
+        if self.portfolio_impact is not None:
+            if self.portfolio_impact_id != self.portfolio_impact.impact_id:
+                raise ValueError("trade plan portfolio impact id must match the impact")
+            if self.portfolio_impact.opportunity_episode_id != self.opportunity_episode_id:
+                raise ValueError("trade plan portfolio impact episode must match the plan")
+            if self.portfolio_impact.decision_revision != self.decision_revision:
+                raise ValueError("trade plan portfolio impact revision must match the plan")
+            if self.portfolio_impact.risk_policy_version != self.policy_version:
+                raise ValueError("trade plan portfolio impact policy must match the plan")
+            if self.market_snapshot_id and self.portfolio_impact.market_snapshot_id != self.market_snapshot_id:
+                raise ValueError("trade plan portfolio impact snapshot must match the plan")
+            if self.market_state_publication_id and self.portfolio_impact.market_state_publication_id != self.market_state_publication_id:
+                raise ValueError("trade plan portfolio impact publication must match the plan")
+        if self.eligibility == "BLOCKED":
+            if self.selected_expression_kind is not ExpressionKind.CASH:
+                raise ValueError("blocked trade plan must select CASH")
+            if self.action != "NO_TRADE":
+                raise ValueError("blocked trade plan must be NO_TRADE")
+            if self.authorization_mode != "NONE":
+                raise ValueError("blocked trade plan cannot be paper authorized")
+            if not self.primary_blocker or self.blockers != (self.primary_blocker,):
+                raise ValueError("blocked trade plan must expose exactly one primary blocker")
+            if self.quantity is not None and self.quantity > 0:
+                raise ValueError("blocked trade plan cannot contain a positive quantity")
+        elif self.eligibility == "ACTIONABLE":
+            if self.selected_expression_kind is ExpressionKind.CASH:
+                raise ValueError("actionable trade plan cannot select CASH")
+            if self.action in {"NO_TRADE", "AVOID"}:
+                raise ValueError("actionable trade plan cannot be a no-trade action")
+            if self.authorization_mode not in {"ADVISORY", "PAPER"}:
+                raise ValueError("actionable trade plan requires a supported authorization mode")
+            required = {
+                "rank_id": self.rank_id,
+                "alpha_signal_id": self.alpha_signal_id,
+                "portfolio_impact_id": self.portfolio_impact_id,
+                "market_snapshot_id": self.market_snapshot_id,
+                "market_state_publication_id": self.market_state_publication_id,
+                "entry": self.entry,
+                "entry_limit": self.entry_limit,
+                "quantity": self.quantity,
+                "max_loss_per_unit": self.max_loss_per_unit,
+                "planned_loss": self.planned_loss,
+                "invalidation": self.invalidation,
+                "profit_exit": self.profit_exit,
+                "expiry": self.expiry,
+                "portfolio_impact": self.portfolio_impact,
+            }
+            missing = [name for name, item in required.items() if item is None]
+            if missing:
+                raise ValueError("actionable trade plan requires: " + ", ".join(missing))
+            if self.quantity <= 0:
+                raise ValueError("actionable trade plan requires a positive quantity")
+            if self.entry_limit <= 0 or not math.isfinite(self.entry_limit):
+                raise ValueError("actionable trade plan requires a finite positive entry limit")
+            if self.max_loss_per_unit <= 0 or not math.isfinite(self.max_loss_per_unit):
+                raise ValueError("actionable trade plan requires a finite positive maximum loss")
+            if self.planned_loss <= 0 or not math.isfinite(self.planned_loss):
+                raise ValueError("actionable trade plan requires a finite positive planned loss")
+            if self.primary_blocker or self.blockers:
+                raise ValueError("actionable trade plan cannot have blockers")
+        expected_id = _trade_plan_id(self.model_dump(mode="json", exclude={"trade_plan_id", "publication_id"}))
+        if self.trade_plan_id != expected_id:
+            raise ValueError("trade plan id does not match its immutable terms")
+        if self.eligibility == "BLOCKED" and any(
+            value is not None for value in (
+                self.entry, self.entry_limit, self.quantity, self.max_loss_per_unit,
+                self.planned_loss, self.invalidation, self.profit_exit,
+            )
+        ):
+            raise ValueError("blocked trade plan cannot contain executable terms")
+        if self.eligibility == "ACTIONABLE":
+            expression_terms = {
+                "entry": expression.entry_range,
+                "entry_limit": _midpoint(expression.entry_range),
+                "quantity": expression.quantity,
+                "max_loss_per_unit": expression.max_loss_per_unit,
+                "planned_loss": expression.planned_loss,
+                "invalidation": expression.invalidation,
+                "profit_exit": expression.target_range,
+            }
+            plan_terms = {
+                "entry": self.entry,
+                "entry_limit": self.entry_limit,
+                "quantity": self.quantity,
+                "max_loss_per_unit": self.max_loss_per_unit,
+                "planned_loss": self.planned_loss,
+                "invalidation": self.invalidation,
+                "profit_exit": self.profit_exit,
+            }
+            if _trade_plan_jsonable(plan_terms) != _trade_plan_jsonable(expression_terms):
+                raise ValueError("trade plan economic terms must match the selected expression")
+        object.__setattr__(self, "cutoff", cutoff)
+        return self
+
+    @property
+    def resolution_action(self) -> str:
+        return self.action
+
+    @property
+    def resolution_eligibility(self) -> str:
+        return self.eligibility
+
+    @property
+    def time_exit(self) -> date | datetime | None:
+        return self.expiry
+
+    @property
+    def selected_portfolio_impact(self) -> PortfolioImpact | None:
+        return self.portfolio_impact
+
+
 def opportunity_episode_id(ticker: str, decision_revision: str) -> str:
     encoded = json.dumps(
         {"ticker": ticker.strip().upper(), "decision_revision": decision_revision},
@@ -879,6 +1090,7 @@ class TickerDecision(BaseModel):
     instrument_state_snapshot: dict[str, Any] | None = None
     alpha_signals: list[dict[str, Any]] = Field(default_factory=list)
     opportunity_rank: dict[str, Any] | None = None
+    trade_plan: TradePlan | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1015,6 +1227,7 @@ class TickerDecision(BaseModel):
                 action="NO_TRADE",
                 decision_revision=self.decision_revision,
                 policy_version=self.policy_version,
+                trade_plan_id=self.resolution.trade_plan_id,
                 provenance=self.resolution.provenance,
                 ticker=self.ticker,
                 blockers=[context_blockers[0]],
@@ -1028,6 +1241,75 @@ class TickerDecision(BaseModel):
                 blocked=True,
             )
             self.capital_action = capital_action_from_resolution(self.resolution)
+        return self
+
+    @model_validator(mode="after")
+    def trade_plan_is_authority(self) -> "TickerDecision":
+        plan = self.trade_plan
+        if plan is None:
+            return self
+        if plan.ticker != self.ticker.strip().upper():
+            raise ValueError("trade plan ticker must match the ticker decision")
+        if plan.opportunity_episode_id != self.opportunity_episode_id:
+            raise ValueError("trade plan episode must match the ticker decision")
+        if plan.decision_revision != self.decision_revision:
+            raise ValueError("trade plan revision must match the ticker decision")
+        if plan.policy_version != self.policy_version:
+            raise ValueError("trade plan policy must match the ticker decision")
+        if _utc(plan.cutoff) != _utc(self.cutoff):
+            raise ValueError("trade plan cutoff must match the ticker decision")
+        if plan.input_lineage != tuple(self.input_lineage):
+            raise ValueError("trade plan lineage must match the ticker decision")
+        selected = self.selected_expression
+        if selected is None or plan.selected_expression.model_dump(mode="json") != selected.model_dump(mode="json"):
+            raise ValueError("trade plan expression must match the ticker decision")
+        resolution = self.resolution
+        if resolution is None or resolution.trade_plan_id != plan.trade_plan_id:
+            raise ValueError("ticker resolution must reference the trade plan")
+        resolution_terms = {
+            "action": getattr(resolution.action, "value", resolution.action),
+            "eligibility": getattr(resolution.eligibility, "value", resolution.eligibility),
+            "authorization_mode": getattr(resolution.authorization_mode, "value", resolution.authorization_mode),
+            "data_quality": getattr(resolution.data_quality, "value", resolution.data_quality),
+            "rationale": resolution.rationale,
+            "primary_blocker": resolution.primary_blocker,
+            "blockers": resolution.blockers,
+            "next_action": resolution.next_action,
+            "entry": resolution.entry,
+            "size": resolution.size,
+            "invalidation": resolution.invalidation,
+            "exit": resolution.exit,
+            "ttl": resolution.ttl,
+            "expires_at": resolution.expires_at,
+            "portfolio_context": resolution.portfolio_context,
+        }
+        plan_terms = {
+            "action": plan.action,
+            "eligibility": plan.eligibility,
+            "authorization_mode": plan.authorization_mode,
+            "data_quality": plan.data_quality,
+            "rationale": plan.rationale,
+            "primary_blocker": plan.primary_blocker,
+            "blockers": plan.blockers,
+            "next_action": plan.next_action,
+            "entry": plan.entry,
+            "size": plan.quantity,
+            "invalidation": plan.invalidation,
+            "exit": plan.profit_exit,
+            "ttl": plan.expiry,
+            "expires_at": plan.expiry,
+            "portfolio_context": plan.portfolio_impact.model_dump(mode="json") if plan.portfolio_impact else None,
+        }
+        if _trade_plan_jsonable(resolution_terms) != _trade_plan_jsonable(plan_terms):
+            raise ValueError("ticker resolution terms must match the trade plan")
+        impact = self.portfolio_impacts.get(plan.selected_expression_kind)
+        if impact is None or plan.portfolio_impact_id != impact.impact_id:
+            raise ValueError("trade plan impact must match the ticker decision")
+        if self.market_state_snapshot is not None:
+            if plan.market_snapshot_id and plan.market_snapshot_id != self.market_state_snapshot.snapshot_id:
+                raise ValueError("trade plan market snapshot must match the ticker decision")
+            if plan.market_state_publication_id and plan.market_state_publication_id != self.market_state_publication_id:
+                raise ValueError("trade plan market publication must match the ticker decision")
         return self
 
     @property
@@ -1170,6 +1452,260 @@ def apply_opportunity_rank_safety(
         "selected_expression": cash,
         "opportunity_episode": episode,
         "portfolio_impacts": impacts,
+        "resolution": resolution,
+        "capital_action": capital_action_from_resolution(resolution),
+    })
+
+
+def _trade_plan_id(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(_trade_plan_jsonable(payload), sort_keys=True, separators=(",", ":"))
+    return f"{TRADE_PLAN_CONTRACT_VERSION}:{hashlib.sha256(encoded.encode()).hexdigest()}"
+
+
+def _trade_plan_jsonable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {str(key): _trade_plan_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_trade_plan_jsonable(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        rendered = value.isoformat()
+        return rendered.replace("+00:00", "Z") if isinstance(value, datetime) else rendered
+    if isinstance(value, StrEnum):
+        return value.value
+    return value
+
+
+def _json_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def build_trade_plan(
+    *,
+    decision: TickerDecision,
+    rank: Mapping[str, Any] | BaseModel | None,
+    alpha_signal: Mapping[str, Any] | BaseModel | None = None,
+    portfolio_impact: PortfolioImpact | Mapping[str, Any] | None = None,
+    resolution: DecisionResolutionV2 | None = None,
+    publication_id: str | None = None,
+) -> TradePlan:
+    """Freeze one exact paper plan after rank and CASH safety are final."""
+
+    rank_payload = _json_mapping(rank)
+    signal_payload = _json_mapping(alpha_signal)
+    current_resolution = resolution or decision.resolution
+    selected = decision.selected_expression
+    reason = ""
+    if current_resolution is not None and current_resolution.is_blocked:
+        reason = current_resolution.primary_blocker or "decision_resolution_blocked"
+    if selected is None:
+        reason = reason or "selected_expression_missing"
+    if not rank_payload:
+        reason = reason or "opportunity_rank_missing"
+    if rank_payload:
+        if str(rank_payload.get("ticker") or rank_payload.get("symbol") or "").upper() not in {"", decision.ticker}:
+            reason = reason or "opportunity_rank_identity_mismatch"
+        if str(rank_payload.get("decision_revision") or "") != decision.decision_revision:
+            reason = reason or "opportunity_rank_identity_mismatch"
+        if str(rank_payload.get("opportunity_episode_id") or "") != decision.opportunity_episode_id:
+            reason = reason or "opportunity_rank_identity_mismatch"
+        rank_reason = str(rank_payload.get("trade_rank_unavailable_reason") or "").strip()
+        if rank_reason:
+            reason = reason or rank_reason
+        if not bool(rank_payload.get("evaluated_universe_complete")):
+            reason = reason or "ranking_universe_incomplete"
+        try:
+            if int(rank_payload.get("trade_rank")) <= 0 or not math.isfinite(float(rank_payload.get("trade_utility"))):
+                reason = reason or "opportunity_rank_unavailable"
+            elif float(rank_payload.get("trade_utility")) <= 0:
+                reason = reason or "opportunity_rank_unavailable"
+        except (TypeError, ValueError, OverflowError):
+            reason = reason or "opportunity_rank_unavailable"
+
+    impact = (
+        portfolio_impact
+        if isinstance(portfolio_impact, PortfolioImpact)
+        else PortfolioImpact.model_validate(portfolio_impact)
+        if portfolio_impact is not None
+        else decision.portfolio_impacts.get(selected.kind) if selected is not None else None
+    )
+    snapshot = decision.market_state_snapshot
+    if snapshot is None or not decision.market_state_publication_id:
+        reason = reason or "market_state_publication_missing"
+    if decision.risk_policy_snapshot is None or decision.risk_policy_snapshot.blockers:
+        reason = reason or "risk_policy_snapshot_missing"
+    if impact is None:
+        reason = reason or "portfolio_impact_missing"
+    elif impact.availability != "available" or impact.blockers:
+        reason = reason or str(impact.blockers[0] if impact.blockers else "portfolio_impact_unavailable")
+
+    if selected is not None and rank_payload:
+        if str(rank_payload.get("selected_expression_kind") or "") != selected.kind.value:
+            reason = reason or "opportunity_rank_identity_mismatch"
+        if str(rank_payload.get("selected_expression_identity") or "") != trade_expression_identity(selected):
+            reason = reason or "opportunity_rank_identity_mismatch"
+        if impact is not None and rank_payload.get("portfolio_impact_id") and str(rank_payload["portfolio_impact_id"]) != impact.impact_id:
+            reason = reason or "opportunity_rank_identity_mismatch"
+    if signal_payload and rank_payload.get("alpha_signal_id") and str(signal_payload.get("signal_id") or "") != str(rank_payload["alpha_signal_id"]):
+        reason = reason or "alpha_signal_identity_mismatch"
+    if rank_payload.get("alpha_signal_id") is None:
+        reason = reason or "alpha_signal_missing"
+    if not signal_payload and alpha_signal is not None:
+        reason = reason or "alpha_signal_missing"
+    if current_resolution is None or not current_resolution.is_actionable:
+        reason = reason or "decision_resolution_not_actionable"
+
+    actionable = not reason and selected is not None
+    if actionable:
+        expression = selected
+        kind = expression.kind
+        if kind is ExpressionKind.CASH:
+            reason = "cash_selected"
+        if expression.status != "eligible":
+            reason = "selected_expression_unavailable"
+        if expression.entry_range is None or _midpoint(expression.entry_range) is None or _midpoint(expression.entry_range) <= 0:
+            reason = reason or "entry_limit_missing"
+        if expression.quantity is None or expression.quantity <= 0:
+            reason = reason or "quantity_missing"
+        if expression.max_loss_per_unit is None or expression.max_loss_per_unit <= 0 or not math.isfinite(expression.max_loss_per_unit):
+            reason = reason or "max_loss_missing"
+        if expression.planned_loss is None or expression.planned_loss <= 0 or not math.isfinite(expression.planned_loss):
+            reason = reason or "planned_loss_missing"
+        if expression.invalidation is None:
+            reason = reason or "invalidation_missing"
+        if expression.target_range is None:
+            reason = reason or "profit_exit_missing"
+        if current_resolution is not None and current_resolution.primary_blocker:
+            reason = reason or current_resolution.primary_blocker
+    if reason:
+        cash = decision.expressions.get(ExpressionKind.CASH) or _cash_expression(
+            decision.ticker, decision.cutoff, decision.input_manifest.input_hash,
+        )
+        expression = cash.model_copy(update={"selected": True})
+        kind = ExpressionKind.CASH
+        selected_identity = (
+            str(rank_payload.get("selected_expression_identity") or "")
+            if str(rank_payload.get("selected_expression_kind") or "") == kind.value
+            else trade_expression_identity(expression)
+        )
+        if not selected_identity:
+            selected_identity = trade_expression_identity(expression)
+        action = "NO_TRADE"
+        eligibility = "BLOCKED"
+        authorization = "NONE"
+        data_quality = "INCOMPLETE"
+        blockers = (reason,)
+        entry = None
+        entry_limit = None
+        quantity = None
+        max_loss = None
+        planned_loss = None
+        invalidation = None
+        profit_exit = None
+        expiry = None
+        if current_resolution is not None:
+            expiry = current_resolution.expires_at
+        next_action = current_resolution.next_action if current_resolution is not None else next_action_for(reason)
+        if impact is None or impact.expression_kind is not ExpressionKind.CASH:
+            impact = decision.portfolio_impacts.get(ExpressionKind.CASH)
+    else:
+        expression = selected
+        kind = expression.kind
+        selected_identity = str(rank_payload.get("selected_expression_identity") or trade_expression_identity(expression))
+        action = getattr(current_resolution.action, "value", current_resolution.action)
+        eligibility = getattr(current_resolution.eligibility, "value", current_resolution.eligibility)
+        authorization = "PAPER"
+        data_quality = getattr(current_resolution.data_quality, "value", current_resolution.data_quality)
+        blockers = ()
+        entry = expression.entry_range
+        entry_limit = _midpoint(entry)
+        quantity = expression.quantity
+        max_loss = expression.max_loss_per_unit
+        planned_loss = expression.planned_loss
+        invalidation = expression.invalidation
+        profit_exit = expression.target_range
+        expiry = current_resolution.expires_at or min(decision.tactical.expiry_date, decision.fundamental.expiry_date)
+        next_action = current_resolution.next_action
+
+    values = {
+        "contract_version": TRADE_PLAN_CONTRACT_VERSION,
+        "publication_id": publication_id,
+        "ticker": decision.ticker,
+        "opportunity_episode_id": decision.opportunity_episode_id,
+        "decision_revision": decision.decision_revision,
+        "policy_version": decision.policy_version,
+        "cutoff": decision.cutoff,
+        "input_lineage": tuple(decision.input_lineage),
+        "selected_expression_kind": kind,
+        "selected_expression_identity": selected_identity,
+        "selected_expression": expression,
+        "rank_id": str(rank_payload.get("rank_id") or "") or None,
+        "alpha_signal_id": str(rank_payload.get("alpha_signal_id") or signal_payload.get("signal_id") or "") or None,
+        "portfolio_impact_id": impact.impact_id if impact is not None else None,
+        "market_snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
+        "market_state_publication_id": decision.market_state_publication_id or (snapshot.publication_id if snapshot else None),
+        "action": action,
+        "eligibility": eligibility,
+        "authorization_mode": authorization,
+        "data_quality": data_quality,
+        "rationale": current_resolution.rationale if current_resolution is not None else decision.capital_action.rationale,
+        "primary_blocker": blockers[0] if blockers else None,
+        "blockers": blockers,
+        "next_action": next_action or next_action_for(blockers[0] if blockers else None),
+        "entry": entry,
+        "entry_limit": entry_limit,
+        "quantity": quantity,
+        "max_loss_per_unit": max_loss,
+        "planned_loss": planned_loss,
+        "invalidation": invalidation,
+        "profit_exit": profit_exit,
+        "expiry": expiry,
+        "portfolio_impact": impact,
+    }
+    return TradePlan.model_validate({
+        **values,
+        "trade_plan_id": _trade_plan_id({
+            key: value for key, value in values.items()
+            if key not in {"trade_plan_id", "publication_id"}
+        }),
+    })
+
+
+def bind_trade_plan(decision: TickerDecision, plan: TradePlan) -> TickerDecision:
+    """Bind resolution compatibility fields to the frozen plan terms."""
+
+    base = decision.resolution.model_dump(mode="json") if decision.resolution is not None else {
+        "ticker": decision.ticker,
+        "decision_revision": decision.decision_revision,
+        "policy_version": decision.policy_version,
+        "provenance": {"as_of": decision.as_of, "input_hash": decision.input_manifest.input_hash},
+        "rationale": decision.capital_action.rationale,
+        "owned": decision.capital_action.owned,
+    }
+    base.update({
+        "trade_plan_id": plan.trade_plan_id,
+        "action": plan.action,
+        "eligibility": plan.eligibility,
+        "authorization_mode": plan.authorization_mode,
+        "data_quality": plan.data_quality,
+        "rationale": plan.rationale,
+        "primary_blocker": plan.primary_blocker,
+        "blockers": list(plan.blockers),
+        "next_action": plan.next_action,
+        "entry": plan.entry,
+        "size": plan.quantity,
+        "invalidation": plan.invalidation,
+        "exit": plan.profit_exit,
+        "ttl": plan.expiry,
+        "portfolio_context": plan.portfolio_impact.model_dump(mode="json") if plan.portfolio_impact else None,
+        "expires_at": plan.expiry,
+    })
+    resolution = DecisionResolutionV2.model_validate(base)
+    return decision.model_copy(update={
+        "trade_plan": plan,
         "resolution": resolution,
         "capital_action": capital_action_from_resolution(resolution),
     })
@@ -1416,6 +1952,7 @@ def build_ticker_decision(
                 "instrument_state_snapshot": persisted.get("instrument_state_snapshot") or None,
                 "alpha_signals": persisted.get("alpha_signals") or [],
                 "opportunity_rank": persisted.get("opportunity_rank") or None,
+                "trade_plan": persisted.get("trade_plan") or (persisted.get("input_manifest") or {}).get("trade_plan"),
             })
         except Exception:
             # A malformed persisted row is visible to source-health/learning

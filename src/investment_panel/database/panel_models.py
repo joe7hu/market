@@ -724,7 +724,7 @@ PUBLICATION_MODELS = {
     "opportunities_ranked", "candidates", "feed_signals",
     "market_environment_assets", "market_environment_model",
     "market_valuation_reference_charts", "market_state_snapshot", "coverage_matrix",
-    "instrument_state_snapshot", "alpha_signal", "opportunity_rank",
+    "instrument_state_snapshot", "alpha_signal", "opportunity_rank", "trade_plan",
 }
 
 SPECIAL_MODELS = {

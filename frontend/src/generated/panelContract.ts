@@ -107,6 +107,7 @@ export const PANEL_TABLE_KEYS = [
   "tickerOutcomes",
   "tickerSourceSignals",
   "tradeJournal",
+  "tradePlan",
   "universeScreen",
   "valuations",
   "volSurfaceFeatures",

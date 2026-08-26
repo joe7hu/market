@@ -1856,6 +1856,8 @@ export interface components {
             size?: unknown;
             /** Ticker */
             ticker?: string | null;
+            /** Trade Plan Id */
+            trade_plan_id?: string | null;
             /** Ttl */
             ttl?: unknown;
         } & {
@@ -5088,6 +5090,7 @@ export interface components {
             tactical: components["schemas"]["HorizonDecision"];
             /** Ticker */
             ticker: string;
+            trade_plan?: components["schemas"]["TradePlan"] | null;
         };
         /**
          * TickerDecisionSnapshotResponse
@@ -5151,6 +5154,7 @@ export interface components {
             tactical: components["schemas"]["HorizonDecision"];
             /** Ticker */
             ticker: string;
+            trade_plan?: components["schemas"]["TradePlan"] | null;
         };
         /** TickerDetailResponse */
         TickerDetailResponse: {
@@ -5199,6 +5203,7 @@ export interface components {
             /** Ticker */
             ticker: string;
             ticker_decision: components["schemas"]["TickerDecision"];
+            trade_plan?: components["schemas"]["TradePlan"] | null;
         } & {
             [key: string]: unknown;
         };
@@ -5222,6 +5227,8 @@ export interface components {
             policy_version?: string | null;
             /** Quantity */
             quantity?: number | null;
+            /** Trade Plan Id */
+            trade_plan_id: string;
         };
         /** TickerPaperEntryResponse */
         TickerPaperEntryResponse: {
@@ -5282,6 +5289,7 @@ export interface components {
             selected_expression?: string | null;
             /** Ticker */
             ticker: string;
+            trade_plan?: components["schemas"]["TradePlan"] | null;
             /** Trade Rank */
             trade_rank?: number | null;
             /** Trade Rank Unavailable Reason */
@@ -5303,6 +5311,95 @@ export interface components {
              */
             count: number;
             status: components["schemas"]["ApiStatusResponse"];
+        };
+        /**
+         * TradePlan
+         * @description The immutable, point-in-time paper terms for one ticker decision.
+         */
+        TradePlan: {
+            /** Action */
+            action: string;
+            /** Alpha Signal Id */
+            alpha_signal_id?: string | null;
+            /** Authorization Mode */
+            authorization_mode: string;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /**
+             * Contract Version
+             * @default trade-plan.v1
+             */
+            contract_version: string;
+            /**
+             * Cutoff
+             * Format: date-time
+             */
+            cutoff: string;
+            /**
+             * Data Quality
+             * @default UNKNOWN
+             */
+            data_quality: string;
+            /** Decision Revision */
+            decision_revision: string;
+            /** Eligibility */
+            eligibility: string;
+            entry?: components["schemas"]["PriceRange"] | null;
+            /** Entry Limit */
+            entry_limit?: number | null;
+            /** Expiry */
+            expiry?: string | null;
+            /**
+             * Input Lineage
+             * @default []
+             */
+            input_lineage: components["schemas"]["InputLineage"][];
+            invalidation?: components["schemas"]["Invalidation"] | null;
+            /** Market Snapshot Id */
+            market_snapshot_id?: string | null;
+            /** Market State Publication Id */
+            market_state_publication_id?: string | null;
+            /** Max Loss Per Unit */
+            max_loss_per_unit?: number | null;
+            /**
+             * Next Action
+             * @default Refresh and recalculate the decision.
+             */
+            next_action: string;
+            /** Opportunity Episode Id */
+            opportunity_episode_id: string;
+            /** Planned Loss */
+            planned_loss?: number | null;
+            /** Policy Version */
+            policy_version: string;
+            portfolio_impact?: components["schemas"]["PortfolioImpact"] | null;
+            /** Portfolio Impact Id */
+            portfolio_impact_id?: string | null;
+            /** Primary Blocker */
+            primary_blocker?: string | null;
+            profit_exit?: components["schemas"]["PriceRange"] | null;
+            /** Publication Id */
+            publication_id?: string | null;
+            /** Quantity */
+            quantity?: number | null;
+            /** Rank Id */
+            rank_id?: string | null;
+            /**
+             * Rationale
+             * @default
+             */
+            rationale: string;
+            selected_expression: components["schemas"]["ExpressionDecision"];
+            /** Selected Expression Identity */
+            selected_expression_identity: string;
+            selected_expression_kind: components["schemas"]["ExpressionKind"];
+            /** Ticker */
+            ticker: string;
+            /** Trade Plan Id */
+            trade_plan_id: string;
         };
         /**
          * TradeUtility

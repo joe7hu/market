@@ -13,6 +13,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "today": (
         "ticker_decisions",
         "opportunity_rank",
+        "trade_plan",
         "portfolio",
         "preopen_daily_brief",
         "daily_brief",
@@ -300,6 +301,7 @@ TICKER_TABLES = (
     "instrument_state_snapshot",
     "alpha_signal",
     "opportunity_rank",
+    "trade_plan",
     "ticker_outcomes",
     "ticker_benchmark_snapshot",
 )
@@ -334,6 +336,7 @@ TICKER_INITIAL_TABLES = (
     "instrument_state_snapshot",
     "alpha_signal",
     "opportunity_rank",
+    "trade_plan",
     "ticker_decisions",
     "ticker_outcomes",
     "ticker_benchmark_snapshot",

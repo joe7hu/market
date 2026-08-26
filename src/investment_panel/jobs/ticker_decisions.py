@@ -20,9 +20,12 @@ from investment_panel.core.decision import (
     PortfolioImpact,
     TradeUtility,
     TICKER_OPPORTUNITY_RANKING_VERSION,
+    TradePlan,
     apply_opportunity_rank_safety,
+    bind_trade_plan,
     build_alpha_signal,
     build_instrument_state_snapshot,
+    build_trade_plan,
     build_ticker_decision,
     rank_opportunities,
     trade_expression_identity,
@@ -41,7 +44,7 @@ PUBLISH_INPUT_TABLES = tuple(
     name for name in TICKER_INITIAL_TABLES
     if name not in {
         "ticker_decisions", "ticker_outcomes",
-        "instrument_state_snapshot", "alpha_signal", "opportunity_rank",
+        "instrument_state_snapshot", "alpha_signal", "opportunity_rank", "trade_plan",
     }
 )
 RANKING_SCOPE = "ticker-opportunity-ranking"
@@ -148,19 +151,12 @@ def publish(
             rank = rank_by_key[key]
             if rank.trade_rank is None or rank.trade_rank_unavailable_reason:
                 safe = apply_opportunity_rank_safety(original, rank.model_dump(mode="json"))
-                cash = safe.selected_expression
-                rank = rank.model_copy(update={
-                    "selected_expression_identity": trade_expression_identity(cash) if cash else None,
-                    "selected_expression_kind": ExpressionKind.CASH.value,
-                    "trade_rank": None,
-                    "trade_utility": None,
-                    "lower_confidence_expected_net_pnl": None,
-                    "utility": TradeUtility(),
-                })
+                rank = _rank_after_safety(rank, safe)
                 record["decision"] = safe
             rank_payload = rank.model_dump(mode="json")
             rank_payload["ranking_publication_id"] = str(ranking_publication_id)
-            decision = record["decision"].model_copy(update={
+            plan = record["plan"].model_copy(update={"publication_id": str(ranking_publication_id)})
+            decision = bind_trade_plan(record["decision"], plan).model_copy(update={
                 "instrument_state_snapshot": record["snapshot"].model_dump(mode="json"),
                 "alpha_signals": [signal.model_dump(mode="json") for signal in record["signals"]],
                 "opportunity_rank": rank_payload,
@@ -285,17 +281,38 @@ def _rank_records(
         rank = ranks_by_key[(record["decision"].ticker, record["decision"].decision_revision, record["decision"].opportunity_episode_id)]
         if rank.trade_rank is None or rank.trade_rank_unavailable_reason:
             safe = apply_opportunity_rank_safety(record["decision"], rank.model_dump(mode="json"))
-            cash = safe.selected_expression
-            rank = rank.model_copy(update={
-                "selected_expression_identity": trade_expression_identity(cash) if cash else None,
-                "selected_expression_kind": ExpressionKind.CASH.value,
-                "trade_rank": None,
-                "trade_utility": None,
-                "lower_confidence_expected_net_pnl": None,
-                "utility": TradeUtility(),
-            })
+            rank = _rank_after_safety(rank, safe)
             record["decision"] = safe
         record["rank"] = rank
+        plan = build_trade_plan(
+            decision=record["decision"],
+            rank=rank,
+            alpha_signal=next(
+                (signal for signal in record["signals"] if signal.signal_id == rank.alpha_signal_id),
+                None,
+            ),
+        )
+        if plan.eligibility != "ACTIONABLE" and (
+            record["decision"].selected_expression is not None
+            and record["decision"].selected_expression.kind is not ExpressionKind.CASH
+        ):
+            safe = apply_opportunity_rank_safety(
+                record["decision"],
+                {"trade_rank_unavailable_reason": plan.primary_blocker or "trade_plan_unavailable"},
+            )
+            record["decision"] = safe
+            rank = _rank_after_safety(rank, safe)
+            record["rank"] = rank
+            plan = build_trade_plan(
+                decision=safe,
+                rank=rank,
+                alpha_signal=next(
+                    (signal for signal in record["signals"] if signal.signal_id == rank.alpha_signal_id),
+                    None,
+                ),
+            )
+        record["decision"] = bind_trade_plan(record["decision"], plan)
+        record["plan"] = record["decision"].trade_plan
     models = {
         "instrument_state_snapshot": [
             {"stable_key": f"{record['decision'].ticker}:instrument:{record['snapshot'].snapshot_id}", **record["snapshot"].model_dump(mode="json")}
@@ -307,6 +324,10 @@ def _rank_records(
         ],
         "opportunity_rank": [
             {"stable_key": f"{record['decision'].ticker}:rank:{record['rank'].rank_id}", **record["rank"].model_dump(mode="json")}
+            for record in records
+        ],
+        "trade_plan": [
+            {"stable_key": f"{record['decision'].ticker}:plan:{record['plan'].trade_plan_id}", **record["plan"].model_dump(mode="json")}
             for record in records
         ],
     }
@@ -343,6 +364,26 @@ def _rank_records(
         "reference": reference,
     }
     return [record["rank"] for record in records], models, ranking_inputs
+
+
+def _rank_after_safety(rank: OpportunityRank, decision: Any) -> OpportunityRank:
+    cash = decision.selected_expression
+    impact = decision.portfolio_impacts.get(ExpressionKind.CASH)
+    reason = (
+        decision.resolution.primary_blocker
+        if decision.resolution is not None and decision.resolution.primary_blocker
+        else rank.trade_rank_unavailable_reason or "opportunity_rank_unavailable"
+    )
+    return rank.model_copy(update={
+        "selected_expression_identity": trade_expression_identity(cash) if cash else None,
+        "selected_expression_kind": ExpressionKind.CASH.value,
+        "portfolio_impact_id": impact.impact_id if impact is not None else None,
+        "trade_rank": None,
+        "trade_rank_unavailable_reason": reason,
+        "trade_utility": None,
+        "lower_confidence_expected_net_pnl": None,
+        "utility": TradeUtility(),
+    })
 
 
 def _publish_at_cutoff(runtime: Any, publication_id: Any, cutoff: datetime) -> None:
@@ -422,6 +463,8 @@ def _same_published_decision(left: Any, right: Any) -> bool:
         left.input_manifest.input_hash == right.input_manifest.input_hash
         and left.market_state_publication_id == right.market_state_publication_id
         and left.opportunity_rank == right.opportunity_rank
+        and (left.trade_plan.trade_plan_id if left.trade_plan else None)
+        == (right.trade_plan.trade_plan_id if right.trade_plan else None)
         and left.selected_expression.kind == right.selected_expression.kind
     )
 
@@ -601,41 +644,51 @@ def _stage_eligible(runtime: Any, config: AppConfig, decisions: Iterable[Any]) -
     rank_rows = AnalysisRepository(runtime).publication_rows(
         RANKING_SCOPE, "opportunity_rank", include_lineage=True,
     )
+    plan_rows = AnalysisRepository(runtime).publication_rows(
+        RANKING_SCOPE, "trade_plan", include_lineage=True,
+    )
     ranked: list[tuple[int, Any]] = []
     for decision in decisions:
         rank, rank_reason = _current_rank_for_decision(decision, rank_rows)
         if rank is None:
             skipped.append({"ticker": decision.ticker, "reason": rank_reason})
             continue
+        plan, plan_reason = _current_trade_plan_for_decision(decision, rank, plan_rows)
+        if plan is None:
+            skipped.append({"ticker": decision.ticker, "reason": plan_reason})
+            continue
+        if plan.eligibility != "ACTIONABLE":
+            skipped.append({"ticker": decision.ticker, "reason": plan.primary_blocker or "trade_plan_blocked"})
+            continue
         ranked.append((int(rank["trade_rank"]), decision))
     for _, decision in sorted(ranked, key=lambda item: (item[0], item[1].ticker)):
-        expression = decision.selected_expression
-        action = decision.capital_action.action.value
+        current_rank, _ = _current_rank_for_decision(decision, rank_rows)
+        plan, plan_reason = _current_trade_plan_for_decision(decision, current_rank, plan_rows)
+        if plan is None:
+            skipped.append({"ticker": decision.ticker, "reason": plan_reason})
+            continue
+        action = plan.action
         if action not in {
             "BUY", "ADD", "HEDGE", "WAIT_FOR_PRICE", "TRIM", "EXIT",
         }:
             skipped.append({"ticker": decision.ticker, "reason": "capital_action_not_orderable"})
             continue
-        if expression is None or expression.kind.value == "CASH" or expression.status != "eligible":
+        if plan.selected_expression_kind is ExpressionKind.CASH:
             skipped.append({"ticker": decision.ticker, "reason": "no_eligible_non_cash_expression"})
             continue
-        if expression.quantity is None or expression.quantity <= 0:
+        if plan.quantity is None or plan.quantity <= 0:
             skipped.append({"ticker": decision.ticker, "reason": "quantity_unavailable"})
             continue
-        entry = expression.entry_range
-        limit_price = ((entry.low + entry.high) / 2) if entry is not None else None
-        if limit_price is None or limit_price <= 0:
+        if plan.entry_limit is None or plan.entry_limit <= 0:
             skipped.append({"ticker": decision.ticker, "reason": "entry_limit_unavailable"})
             continue
-        key = f"ticker:{decision.ticker}:{decision.decision_revision}:{expression.kind.value}:{decision.capital_action.expires_at}"
         try:
             staged.append(repository.stage(
                 ticker=decision.ticker,
                 decision=decision,
-                expression_kind=expression.kind.value,
-                idempotency_key=key,
-                quantity=expression.quantity,
-                limit_price=limit_price,
+                expression_kind=plan.selected_expression_kind.value,
+                idempotency_key=f"ticker:{decision.ticker}:{plan.trade_plan_id}",
+                trade_plan_id=plan.trade_plan_id,
             ))
         except ValueError as exc:
             skipped.append({"ticker": decision.ticker, "reason": str(exc)})
@@ -671,6 +724,42 @@ def _current_rank_for_decision(
     except (TypeError, ValueError, OverflowError):
         return None, "opportunity_rank_unavailable"
     return rank, ""
+
+
+def _current_trade_plan_for_decision(
+    decision: Any,
+    rank: dict[str, Any] | None,
+    rows: list[dict[str, Any]],
+) -> tuple[TradePlan | None, str]:
+    if rank is None:
+        return None, "opportunity_rank_missing"
+    matches = [
+        row for row in rows
+        if str(row.get("ticker") or row.get("symbol") or "").upper() == decision.ticker
+        and str(row.get("decision_revision") or "") == decision.decision_revision
+        and str(row.get("opportunity_episode_id") or "") == decision.opportunity_episode_id
+        and str(row.get("publication_id") or "") == str(rank.get("publication_id") or "")
+    ]
+    if len(matches) != 1:
+        return None, "trade_plan_missing"
+    try:
+        plan = TradePlan.model_validate(matches[0])
+    except (TypeError, ValueError, KeyError):
+        return None, "trade_plan_invalid"
+    expected = decision.trade_plan
+    if (
+        expected is None
+        or plan.trade_plan_id != expected.trade_plan_id
+        or plan.publication_id != expected.publication_id
+    ):
+        return None, "trade_plan_identity_mismatch"
+    if plan.rank_id != str(rank.get("rank_id") or ""):
+        return None, "trade_plan_identity_mismatch"
+    if plan.selected_expression_identity != str(rank.get("selected_expression_identity") or ""):
+        return None, "trade_plan_identity_mismatch"
+    if plan.portfolio_impact_id != str(rank.get("portfolio_impact_id") or ""):
+        return None, "trade_plan_identity_mismatch"
+    return plan, ""
 
 
 def _utc(value: datetime) -> datetime:

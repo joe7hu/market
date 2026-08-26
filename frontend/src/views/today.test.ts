@@ -12,31 +12,35 @@ const decision: RowRecord = {
 };
 
 describe("Today capital projection", () => {
-  it("fails closed to cash when the current rank is missing", () => {
+  it("fails closed to no trade when the current plan is missing", () => {
     expect(projectCapitalAction(decision, [])).toMatchObject({
-      action: "AVOID",
+      action: "NO_TRADE",
       expression: "CASH",
-      rankReason: "opportunity_rank_missing",
+      rankReason: "trade_plan_missing",
     });
   });
 
-  it("uses the exact complete rank for the displayed action", () => {
-    const rank: RowRecord = {
+  it("uses the exact complete plan for the displayed action", () => {
+    const plan: RowRecord = {
       ticker: "AAA",
       decision_revision: "revision:AAA",
       opportunity_episode_id: "episode:AAA",
+      trade_plan_id: "trade-plan.v1:aaa",
+      eligibility: "ACTIONABLE",
+      action: "BUY",
       selected_expression_kind: "STOCK",
-      evaluated_universe_complete: true,
-      research_rank: 2,
-      trade_rank: 1,
-      trade_utility: 0.4,
+      entry_limit: 100,
+      quantity: 10,
+      planned_loss: 50,
     };
 
-    expect(projectCapitalAction(decision, [rank])).toMatchObject({
+    expect(projectCapitalAction(decision, [plan])).toMatchObject({
       action: "BUY",
       expression: "STOCK",
-      researchRank: 2,
-      tradeRank: 1,
+      price: "100",
+      quantity: "10",
+      loss: "50",
+      planId: "trade-plan.v1:aaa",
       rankReason: "",
     });
   });

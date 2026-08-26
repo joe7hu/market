@@ -37,6 +37,7 @@ from investment_panel.core.decision import (
     OpportunityEpisode,
     OpportunityRank,
     InstrumentStateSnapshot,
+    TradePlan,
     TickerDecision,
 )
 
@@ -104,6 +105,7 @@ class TodayCapitalAction(FlexibleResponse):
     trade_rank: int | None = None
     trade_rank_unavailable_reason: str | None = None
     trade_utility: float | None = None
+    trade_plan: TradePlan | None = None
 
 
 class TodayResponse(BaseModel):
@@ -549,6 +551,7 @@ class TickerDetailResponse(FlexibleResponse):
     instrument_state_snapshot: InstrumentStateSnapshot | None = None
     alpha_signals: list[AlphaSignal] = Field(default_factory=list)
     opportunity_rank: OpportunityRank | None = None
+    trade_plan: TradePlan | None = None
     expressions: dict[ExpressionKind, ExpressionDecision] = Field(default_factory=dict)
     data_requests: list[DataRequest] = Field(default_factory=list)
     learning: JsonObject = Field(default_factory=dict)
