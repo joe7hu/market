@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Iterable
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
@@ -146,11 +146,34 @@ class TickerDecisionRepository:
             # malformed row must not block a new canonical publication.
             return None
 
-    def refresh_outcomes(self, *, now: datetime | None = None, limit: int = 2_000) -> dict[str, int]:
+    def refresh_outcomes(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 2_000,
+        symbols: Iterable[str] | None = None,
+        since: datetime | None = None,
+    ) -> dict[str, int]:
         reference = _utc(now or datetime.now(UTC))
+        selected = (
+            None
+            if symbols is None
+            else sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+        )
+        if selected == []:
+            return {"evaluated": 0, "updated": 0, "resolved": 0}
+        filters = ["decision.status IN ('published', 'superseded')"]
+        parameters: list[Any] = []
+        if selected is not None:
+            filters.append("instrument.symbol = ANY(%s)")
+            parameters.append(selected)
+        if since is not None:
+            filters.append("decision.as_of >= %s")
+            parameters.append(_utc(since))
+        parameters.append(max(1, min(int(limit), 10_000)))
         with self.runtime.read(JOB_PROFILE) as connection:
             decisions = connection.execute(
-                """
+                f"""
                 SELECT decision.id::text AS decision_id, instrument.id AS instrument_id,
                        instrument.symbol AS ticker, decision.as_of,
                        decision.tactical, decision.fundamental,
@@ -158,11 +181,11 @@ class TickerDecisionRepository:
                        decision.selected_expression
                 FROM analysis.ticker_decision decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                WHERE decision.status IN ('published', 'superseded')
+                WHERE {" AND ".join(filters)}
                 ORDER BY decision.as_of, decision.id
                 LIMIT %s
                 """,
-                [max(1, min(int(limit), 10_000))],
+                parameters,
             ).fetchall()
         updated = 0
         resolved = 0

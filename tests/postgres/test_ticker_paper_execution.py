@@ -564,6 +564,14 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
             )
         config = typed_config(migrated_postgres_dsn)
         monkeypatch.setattr(ticker_decisions, "load_config", lambda _path: config)
+        outcome_scopes: list[tuple[list[str], datetime]] = []
+        refresh_outcomes = TickerDecisionRepository.refresh_outcomes
+
+        def scoped_refresh(repository, **kwargs):
+            outcome_scopes.append((list(kwargs["symbols"]), kwargs["since"]))
+            return refresh_outcomes(repository, **kwargs)
+
+        monkeypatch.setattr(TickerDecisionRepository, "refresh_outcomes", scoped_refresh)
         observed = datetime(2026, 8, 22, 14, tzinfo=UTC)
         result = ticker_decisions.publish(
             "config.yaml", symbols=["PITX"], as_of=observed,
@@ -575,6 +583,7 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         assert result["published_count"] == 1, result
         assert replay["published_count"] == 0
         assert replay["skipped_count"] == 1
+        assert outcome_scopes == [(["PITX"], observed), (["PITX"], observed)]
         with runtime.read() as connection:
             rank_publication = connection.execute(
                 """
@@ -680,7 +689,7 @@ def test_ticker_outcome_refresh_persists_costs_and_learning_metadata(
         )
         repository = TickerDecisionRepository(runtime)
         published = repository.publish(decision)
-        outcome_result = repository.refresh_outcomes(now=reference)
+        outcome_result = repository.refresh_outcomes(now=reference, symbols={ticker})
 
         assert outcome_result["resolved"] == 3
         with runtime.read() as connection:
