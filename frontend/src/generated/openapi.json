@@ -7612,6 +7612,482 @@
         "title": "OptionsWorkspaceResponse",
         "type": "object"
       },
+      "OutcomeAttribution": {
+        "description": "Frozen, content-addressed outcome authority for one plan and horizon.",
+        "properties": {
+          "all_expression_counterfactuals": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OutcomeEvidence"
+            },
+            "title": "All Expression Counterfactuals",
+            "type": "object"
+          },
+          "alpha_signal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alpha Signal Id"
+          },
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "contract_version": {
+            "default": "outcome-attribution.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "cost_model_version": {
+            "default": "mixed-expression-cost-model-v1",
+            "title": "Cost Model Version",
+            "type": "string"
+          },
+          "counterfactuals": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OutcomeEvidence"
+            },
+            "title": "Counterfactuals",
+            "type": "object"
+          },
+          "decision_cutoff": {
+            "format": "date-time",
+            "title": "Decision Cutoff",
+            "type": "string"
+          },
+          "decision_input_lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Decision Input Lineage",
+            "type": "array"
+          },
+          "decision_revision": {
+            "minLength": 1,
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "evaluation_cutoff": {
+            "format": "date-time",
+            "title": "Evaluation Cutoff",
+            "type": "string"
+          },
+          "evaluation_version": {
+            "default": "ticker-outcome-attribution-v1",
+            "title": "Evaluation Version",
+            "type": "string"
+          },
+          "evidence_state": {
+            "default": "MISSING",
+            "title": "Evidence State",
+            "type": "string"
+          },
+          "horizon": {
+            "$ref": "#/components/schemas/Horizon"
+          },
+          "horizon_sessions": {
+            "exclusiveMinimum": 0.0,
+            "title": "Horizon Sessions",
+            "type": "integer"
+          },
+          "learning_metadata": {
+            "additionalProperties": true,
+            "title": "Learning Metadata",
+            "type": "object"
+          },
+          "market_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Snapshot Id"
+          },
+          "market_state_publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market State Publication Id"
+          },
+          "mistake_card": {
+            "additionalProperties": true,
+            "title": "Mistake Card",
+            "type": "object"
+          },
+          "mistake_classification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mistake Classification"
+          },
+          "next_action": {
+            "default": "Collect exact post-decision evidence before using this outcome.",
+            "title": "Next Action",
+            "type": "string"
+          },
+          "observed_through": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Through"
+          },
+          "opportunity_episode_id": {
+            "minLength": 1,
+            "title": "Opportunity Episode Id",
+            "type": "string"
+          },
+          "outcome_attribution_id": {
+            "default": "",
+            "title": "Outcome Attribution Id",
+            "type": "string"
+          },
+          "outcome_evidence": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/OutcomeEvidence"
+            },
+            "title": "Outcome Evidence",
+            "type": "array"
+          },
+          "paper_execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PaperExecutionOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_version": {
+            "minLength": 1,
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "portfolio_impact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Impact Id"
+          },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
+          },
+          "promotion_eligible": {
+            "default": false,
+            "title": "Promotion Eligible",
+            "type": "boolean"
+          },
+          "publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Id"
+          },
+          "rank_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Id"
+          },
+          "realized_gross_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Gross Return"
+          },
+          "realized_net_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Net Return"
+          },
+          "sample_eligible": {
+            "default": false,
+            "title": "Sample Eligible",
+            "type": "boolean"
+          },
+          "selected_evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutcomeEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selected_expression_identity": {
+            "minLength": 1,
+            "title": "Selected Expression Identity",
+            "type": "string"
+          },
+          "selected_expression_kind": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "selected_gross_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Gross Return"
+          },
+          "selected_net_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Net Return"
+          },
+          "stable_unit_key": {
+            "minLength": 1,
+            "title": "Stable Unit Key",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/OutcomeAttributionState",
+            "default": "UNMEASURABLE"
+          },
+          "ticker": {
+            "minLength": 1,
+            "title": "Ticker",
+            "type": "string"
+          },
+          "trade_plan_id": {
+            "minLength": 1,
+            "title": "Trade Plan Id",
+            "type": "string"
+          },
+          "trade_plan_publication_id": {
+            "minLength": 1,
+            "title": "Trade Plan Publication Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stable_unit_key",
+          "ticker",
+          "trade_plan_id",
+          "trade_plan_publication_id",
+          "opportunity_episode_id",
+          "decision_revision",
+          "policy_version",
+          "selected_expression_kind",
+          "selected_expression_identity",
+          "decision_cutoff",
+          "evaluation_cutoff",
+          "horizon",
+          "horizon_sessions"
+        ],
+        "title": "OutcomeAttribution",
+        "type": "object"
+      },
+      "OutcomeAttributionState": {
+        "enum": [
+          "OBSERVING",
+          "RESOLVED",
+          "UNMEASURABLE",
+          "QUARANTINED"
+        ],
+        "title": "OutcomeAttributionState",
+        "type": "string"
+      },
+      "OutcomeEvidence": {
+        "description": "One immutable post-decision mark or counterfactual evidence item.",
+        "properties": {
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "cost_adjusted_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Adjusted Return"
+          },
+          "cost_model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Model Version"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "evidence_id": {
+            "default": "",
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "evidence_state": {
+            "default": "MISSING",
+            "title": "Evidence State",
+            "type": "string"
+          },
+          "gross_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gross Return"
+          },
+          "kind": {
+            "default": "outcome",
+            "title": "Kind",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "observed_through": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Through"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Version"
+          },
+          "status": {
+            "default": "unmeasurable",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "OutcomeEvidence",
+        "type": "object"
+      },
       "PanelContractResponse": {
         "properties": {
           "frontend_table_keys": {
@@ -7724,6 +8200,235 @@
           }
         },
         "title": "PaperEntryResponse",
+        "type": "object"
+      },
+      "PaperExecutionOutcome": {
+        "description": "Immutable snapshot of the exact paper-order evidence available at evaluation.",
+        "properties": {
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "contract_multiplier": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Multiplier"
+          },
+          "entry_fill_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Fill Count"
+          },
+          "entry_fill_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Fill Price"
+          },
+          "entry_filled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Filled At"
+          },
+          "entry_slippage": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Slippage"
+          },
+          "evidence_state": {
+            "default": "MISSING",
+            "title": "Evidence State",
+            "type": "string"
+          },
+          "exit_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit At"
+          },
+          "exit_fill_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Fill Count"
+          },
+          "exit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Price"
+          },
+          "exit_slippage": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Slippage"
+          },
+          "exited_quantity": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exited Quantity"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fees"
+          },
+          "filled_quantity": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filled Quantity"
+          },
+          "observed_through": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Through"
+          },
+          "paper_only": {
+            "default": true,
+            "title": "Paper Only",
+            "type": "boolean"
+          },
+          "paper_order_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paper Order Id"
+          },
+          "realized_gross_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Gross Return"
+          },
+          "realized_net_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Net Return"
+          },
+          "status": {
+            "default": "MISSING",
+            "title": "Status",
+            "type": "string"
+          },
+          "trade_plan_id": {
+            "minLength": 1,
+            "title": "Trade Plan Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trade_plan_id"
+        ],
+        "title": "PaperExecutionOutcome",
         "type": "object"
       },
       "PortfolioImpact": {
@@ -11407,6 +12112,13 @@
                 "type": "null"
               }
             ]
+          },
+          "outcome_attributions": {
+            "items": {
+              "$ref": "#/components/schemas/OutcomeAttribution"
+            },
+            "title": "Outcome Attributions",
+            "type": "array"
           },
           "policy_version": {
             "default": "risk-policy.v2:legacy",

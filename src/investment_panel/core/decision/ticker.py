@@ -33,6 +33,8 @@ EXPERIMENT_ID = "ticker-first-v1"
 OPPORTUNITY_EPISODE_CONTRACT_VERSION = "opportunity-episode.v1"
 TRADE_EXPRESSION_CONTRACT_VERSION = "trade-expression.v1"
 TRADE_PLAN_CONTRACT_VERSION = "trade-plan.v1"
+OUTCOME_ATTRIBUTION_CONTRACT_VERSION = "outcome-attribution.v1"
+OUTCOME_ATTRIBUTION_EVALUATION_VERSION = "ticker-outcome-attribution-v1"
 _CONTEXT_UNSET = object()
 
 
@@ -56,6 +58,21 @@ class CapitalActionType(StrEnum):
 class Horizon(StrEnum):
     TACTICAL = "TACTICAL"
     FUNDAMENTAL = "FUNDAMENTAL"
+
+
+class OutcomeAttributionState(StrEnum):
+    OBSERVING = "OBSERVING"
+    RESOLVED = "RESOLVED"
+    UNMEASURABLE = "UNMEASURABLE"
+    QUARANTINED = "QUARANTINED"
+
+
+class OutcomeEvidenceState(StrEnum):
+    OBSERVED = "OBSERVED"
+    DERIVED = "DERIVED"
+    ESTIMATED = "ESTIMATED"
+    UNMEASURABLE = "UNMEASURABLE"
+    MISSING = "MISSING"
 
 
 class ExpressionKind(StrEnum):
@@ -830,6 +847,378 @@ class TradePlan(BaseModel):
         return self.portfolio_impact
 
 
+class OutcomeEvidence(BaseModel):
+    """One immutable post-decision mark or counterfactual evidence item."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    evidence_id: str = ""
+    kind: str = "outcome"
+    source_id: str | None = None
+    source_version: str | None = None
+    observed_at: datetime | None = None
+    observed_through: datetime | None = None
+    available_at: datetime | None = None
+    gross_return: float | None = None
+    cost_adjusted_return: float | None = None
+    cost_model_version: str | None = None
+    evidence_state: str = OutcomeEvidenceState.MISSING.value
+    status: str = "unmeasurable"
+    details: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        result = dict(value)
+        for old, new in {
+            "id": "evidence_id",
+            "quote_time": "observed_at",
+            "mark_quote_time": "observed_at",
+            "net_return": "cost_adjusted_return",
+            "cost_adjusted_net_return": "cost_adjusted_return",
+        }.items():
+            if new not in result and old in result:
+                result[new] = result[old]
+        if isinstance(result.get("kind"), str):
+            result["kind"] = result["kind"].upper()
+        if isinstance(result.get("evidence_state"), str):
+            result["evidence_state"] = result["evidence_state"].upper()
+        return result
+
+    @model_validator(mode="after")
+    def timestamps_are_timezone_aware(self) -> "OutcomeEvidence":
+        for name in ("observed_at", "observed_through", "available_at"):
+            value = getattr(self, name)
+            if value is not None and value.tzinfo is None:
+                raise ValueError(f"outcome evidence {name} must be timezone-aware")
+        if self.observed_through is None and self.observed_at is not None:
+            object.__setattr__(self, "observed_through", self.observed_at)
+        return self
+
+    @property
+    def net_return(self) -> float | None:
+        return self.cost_adjusted_return
+
+    @property
+    def cost_adjusted_net_return(self) -> float | None:
+        return self.cost_adjusted_return
+
+    @property
+    def quote_time(self) -> datetime | None:
+        return self.observed_at
+
+
+class PaperExecutionOutcome(BaseModel):
+    """Immutable snapshot of the exact paper-order evidence available at evaluation."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    trade_plan_id: str = Field(min_length=1)
+    paper_order_id: str | None = None
+    status: str = "MISSING"
+    evidence_state: str = OutcomeEvidenceState.MISSING.value
+    paper_only: bool = True
+    entry_filled_at: datetime | None = None
+    exit_at: datetime | None = None
+    entry_fill_price: float | None = None
+    exit_price: float | None = None
+    filled_quantity: float | None = Field(default=None, ge=0)
+    exited_quantity: float | None = Field(default=None, ge=0)
+    fees: float | None = Field(default=None, ge=0)
+    entry_slippage: float | None = Field(default=None, ge=0)
+    exit_slippage: float | None = Field(default=None, ge=0)
+    contract_multiplier: float | None = Field(default=None, gt=0)
+    entry_fill_count: int | None = Field(default=None, ge=0)
+    exit_fill_count: int | None = Field(default=None, ge=0)
+    realized_gross_return: float | None = None
+    realized_net_return: float | None = None
+    observed_through: datetime | None = None
+    available_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        result = dict(value)
+        for old, new in {
+            "order_id": "paper_order_id",
+            "fill_at": "entry_filled_at",
+            "filled_at": "entry_filled_at",
+            "fill_price": "entry_fill_price",
+            "entry_price": "entry_fill_price",
+            "realized_return": "realized_net_return",
+            "quantity": "filled_quantity",
+            "slippage": "entry_slippage",
+            "multiplier": "contract_multiplier",
+            "entry_fills": "entry_fill_count",
+            "exit_fills": "exit_fill_count",
+        }.items():
+            if new not in result and old in result:
+                result[new] = result[old]
+        if isinstance(result.get("status"), str):
+            result["status"] = result["status"].upper()
+        if isinstance(result.get("evidence_state"), str):
+            result["evidence_state"] = result["evidence_state"].upper()
+        return result
+
+    @model_validator(mode="after")
+    def enforce_paper_evidence(self) -> "PaperExecutionOutcome":
+        if not self.paper_only:
+            raise ValueError("outcome execution evidence must be paper-only")
+        for name in ("entry_filled_at", "exit_at", "observed_through", "available_at"):
+            value = getattr(self, name)
+            if value is not None and value.tzinfo is None:
+                raise ValueError(f"paper execution {name} must be timezone-aware")
+        if self.entry_filled_at is None and self.exit_at is not None:
+            raise ValueError("paper execution exit requires an entry fill")
+        if (
+            self.entry_filled_at is not None and self.exit_at is not None
+            and self.exit_at < self.entry_filled_at
+        ):
+            raise ValueError("paper execution exit cannot precede the entry fill")
+        if self.observed_through is None:
+            object.__setattr__(self, "observed_through", self.exit_at or self.entry_filled_at)
+        return self
+
+    @property
+    def actual_fill_price(self) -> float | None:
+        return self.entry_fill_price
+
+    @property
+    def fill_price(self) -> float | None:
+        return self.entry_fill_price
+
+    @property
+    def quantity(self) -> float | None:
+        return self.filled_quantity
+
+    @property
+    def realized_return(self) -> float | None:
+        return self.realized_net_return if self.realized_net_return is not None else self.realized_gross_return
+
+
+class OutcomeAttribution(BaseModel):
+    """Frozen, content-addressed outcome authority for one plan and horizon."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True, use_enum_values=False)
+
+    contract_version: str = OUTCOME_ATTRIBUTION_CONTRACT_VERSION
+    outcome_attribution_id: str = ""
+    stable_unit_key: str = Field(min_length=1)
+    publication_id: str | None = None
+    evaluation_version: str = OUTCOME_ATTRIBUTION_EVALUATION_VERSION
+    ticker: str = Field(min_length=1)
+    trade_plan_id: str = Field(min_length=1)
+    trade_plan_publication_id: str = Field(min_length=1)
+    opportunity_episode_id: str = Field(min_length=1)
+    decision_revision: str = Field(min_length=1)
+    policy_version: str = Field(min_length=1)
+    selected_expression_kind: ExpressionKind
+    selected_expression_identity: str = Field(min_length=1)
+    rank_id: str | None = None
+    alpha_signal_id: str | None = None
+    portfolio_impact_id: str | None = None
+    market_snapshot_id: str | None = None
+    market_state_publication_id: str | None = None
+    decision_cutoff: datetime
+    evaluation_cutoff: datetime
+    decision_input_lineage: tuple[InputLineage, ...] = ()
+    horizon: Horizon
+    horizon_sessions: int = Field(gt=0)
+    state: OutcomeAttributionState = OutcomeAttributionState.UNMEASURABLE
+    observed_through: datetime | None = None
+    available_at: datetime | None = None
+    outcome_evidence: tuple[OutcomeEvidence, ...] = ()
+    selected_evidence: OutcomeEvidence | None = None
+    selected_gross_return: float | None = None
+    selected_net_return: float | None = None
+    realized_gross_return: float | None = None
+    realized_net_return: float | None = None
+    counterfactuals: dict[str, OutcomeEvidence] = Field(default_factory=dict)
+    all_expression_counterfactuals: dict[str, OutcomeEvidence] = Field(default_factory=dict)
+    cost_model_version: str = "mixed-expression-cost-model-v1"
+    evidence_state: str = OutcomeEvidenceState.MISSING.value
+    paper_execution: PaperExecutionOutcome | None = None
+    sample_eligible: bool = False
+    promotion_eligible: bool = False
+    primary_blocker: str | None = None
+    next_action: str = "Collect exact post-decision evidence before using this outcome."
+    mistake_classification: str | None = None
+    mistake_card: dict[str, Any] = Field(default_factory=dict)
+    learning_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        result = dict(value)
+        for old, new in {
+            "id": "outcome_attribution_id",
+            "stable_key": "stable_unit_key",
+            "trade_plan_cutoff": "decision_cutoff",
+            "cutoff": "decision_cutoff",
+            "input_lineage": "decision_input_lineage",
+            "evaluation_reference": "evaluation_cutoff",
+            "evaluation_as_of": "evaluation_cutoff",
+            "evidence": "outcome_evidence",
+            "paper_execution_outcome": "paper_execution",
+            "blocker": "primary_blocker",
+            "learning": "learning_metadata",
+            "selected_return": "selected_gross_return",
+            "selected_cost_adjusted_return": "selected_net_return",
+            "expression_outcomes": "all_expression_counterfactuals",
+            "all_expression_outcomes": "all_expression_counterfactuals",
+        }.items():
+            if new not in result and old in result:
+                result[new] = result[old]
+        if isinstance(result.get("ticker"), str):
+            result["ticker"] = result["ticker"].strip().upper()
+        for key in ("selected_expression_kind", "horizon", "state", "evidence_state"):
+            if isinstance(result.get(key), str):
+                result[key] = result[key].upper()
+        for key in ("counterfactuals", "all_expression_counterfactuals"):
+            raw = result.get(key)
+            if isinstance(raw, Mapping):
+                result[key] = {
+                    str(name).upper(): value if isinstance(value, (Mapping, BaseModel)) else {
+                        "kind": str(name).upper(), "gross_return": value,
+                        "evidence_state": OutcomeEvidenceState.DERIVED.value,
+                    }
+                    for name, value in raw.items()
+                }
+        return result
+
+    @model_validator(mode="after")
+    def enforce_invariants(self) -> "OutcomeAttribution":
+        if self.contract_version != OUTCOME_ATTRIBUTION_CONTRACT_VERSION:
+            raise ValueError("unsupported outcome attribution contract version")
+        if self.evaluation_version != OUTCOME_ATTRIBUTION_EVALUATION_VERSION:
+            raise ValueError("unsupported outcome attribution evaluation version")
+        if self.decision_cutoff.tzinfo is None or self.evaluation_cutoff.tzinfo is None:
+            raise ValueError("outcome attribution cutoffs must be timezone-aware")
+        decision_cutoff = _utc(self.decision_cutoff)
+        evaluation_cutoff = _utc(self.evaluation_cutoff)
+        if evaluation_cutoff < decision_cutoff:
+            raise ValueError("evaluation cutoff cannot precede the decision cutoff")
+        if self.stable_unit_key != outcome_attribution_stable_key(
+            self.trade_plan_id, self.horizon, self.horizon_sessions,
+        ):
+            raise ValueError("outcome attribution stable unit key is not plan-bound")
+        evidence = list(self.outcome_evidence)
+        if self.selected_evidence is not None and self.selected_evidence not in evidence:
+            evidence.append(self.selected_evidence)
+        evidence.extend(self.counterfactuals.values())
+        evidence.extend(self.all_expression_counterfactuals.values())
+        for item in evidence:
+            if item.gross_return is not None and item.kind != "CASH" and (
+                item.observed_at is None or item.available_at is None
+            ):
+                raise ValueError("return evidence requires observed and available-at timestamps")
+            for name in ("observed_at", "observed_through", "available_at"):
+                value = getattr(item, name)
+                if value is not None:
+                    normalized = _utc(value)
+                    if normalized > evaluation_cutoff:
+                        raise ValueError("outcome evidence is available after the evaluation cutoff")
+                    if name != "available_at" and normalized <= decision_cutoff:
+                        raise ValueError("outcome evidence must be observed after the decision cutoff")
+            if item.available_at is not None and _utc(item.available_at) > evaluation_cutoff:
+                raise ValueError("outcome evidence is available after the evaluation cutoff")
+        if self.available_at is not None:
+            if self.available_at.tzinfo is None:
+                raise ValueError("outcome attribution available_at must be timezone-aware")
+            if _utc(self.available_at) > evaluation_cutoff:
+                raise ValueError("outcome attribution is available after the evaluation cutoff")
+        if self.observed_through is not None:
+            if self.observed_through.tzinfo is None:
+                raise ValueError("outcome attribution observed_through must be timezone-aware")
+            if _utc(self.observed_through) > evaluation_cutoff:
+                raise ValueError("outcome attribution observed_through is after the evaluation cutoff")
+        if self.paper_execution is not None:
+            if self.paper_execution.trade_plan_id != self.trade_plan_id:
+                raise ValueError("paper execution must reference the exact trade plan")
+            if (
+                self.paper_execution.entry_filled_at is not None
+                and _utc(self.paper_execution.entry_filled_at) <= decision_cutoff
+            ):
+                raise ValueError("paper execution entry must be after the decision cutoff")
+            for value in (self.paper_execution.observed_through, self.paper_execution.available_at):
+                if value is not None and _utc(value) > evaluation_cutoff:
+                    raise ValueError("paper execution evidence is available after the evaluation cutoff")
+        if self.paper_execution is None and any(
+            value is not None for value in (self.realized_gross_return, self.realized_net_return)
+        ):
+            raise ValueError("realized outcome requires exact paper execution evidence")
+        if self.paper_execution is not None and self.paper_execution.status != "EXITED" and any(
+            value is not None for value in (self.realized_gross_return, self.realized_net_return)
+        ):
+            raise ValueError("unfinished paper execution cannot provide realized outcome")
+        if self.promotion_eligible and not self.sample_eligible:
+            raise ValueError("promotion eligibility requires sample eligibility")
+        if self.sample_eligible or self.promotion_eligible:
+            execution = self.paper_execution
+            if self.state is not OutcomeAttributionState.RESOLVED or execution is None:
+                raise ValueError("eligible attribution requires a resolved paper execution")
+            if (
+                execution.status != "EXITED"
+                or execution.entry_filled_at is None or execution.exit_at is None
+                or execution.entry_fill_price is None or execution.exit_price is None
+                or execution.entry_fill_count != 1 or execution.exit_fill_count != 1
+                or not execution.filled_quantity or not execution.exited_quantity
+                or execution.realized_gross_return is None or execution.realized_net_return is None
+            ):
+                raise ValueError("eligible attribution requires one provable paper fill and exit")
+        object.__setattr__(self, "decision_cutoff", decision_cutoff)
+        object.__setattr__(self, "evaluation_cutoff", evaluation_cutoff)
+        expected_id = _outcome_attribution_id(
+            self.model_dump(mode="python", exclude={"outcome_attribution_id", "publication_id"}),
+        )
+        if self.outcome_attribution_id and self.outcome_attribution_id != expected_id:
+            raise ValueError("outcome attribution id does not match its immutable content")
+        object.__setattr__(self, "outcome_attribution_id", expected_id)
+        return self
+
+    @property
+    def cutoff(self) -> datetime:
+        return self.decision_cutoff
+
+    @property
+    def trade_plan_cutoff(self) -> datetime:
+        return self.decision_cutoff
+
+    @property
+    def evaluation_reference(self) -> datetime:
+        return self.evaluation_cutoff
+
+    @property
+    def input_lineage(self) -> tuple[InputLineage, ...]:
+        return self.decision_input_lineage
+
+    @property
+    def evidence(self) -> tuple[OutcomeEvidence, ...]:
+        return self.outcome_evidence
+
+    @property
+    def selected_cost_adjusted_return(self) -> float | None:
+        return self.selected_net_return
+
+
+def outcome_attribution_stable_key(
+    trade_plan_id: str, horizon: Horizon | str, horizon_sessions: int,
+) -> str:
+    return f"{trade_plan_id}:{getattr(horizon, 'value', horizon)}:{int(horizon_sessions)}"
+
+
+def outcome_attribution_id(payload: Mapping[str, Any]) -> str:
+    """Return the content identity while excluding publication envelope metadata."""
+
+    return _outcome_attribution_id(payload)
+
+
 def opportunity_episode_id(ticker: str, decision_revision: str) -> str:
     encoded = json.dumps(
         {"ticker": ticker.strip().upper(), "decision_revision": decision_revision},
@@ -1460,6 +1849,44 @@ def apply_opportunity_rank_safety(
 def _trade_plan_id(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(_trade_plan_jsonable(payload), sort_keys=True, separators=(",", ":"))
     return f"{TRADE_PLAN_CONTRACT_VERSION}:{hashlib.sha256(encoded.encode()).hexdigest()}"
+
+
+def _outcome_attribution_id(payload: Mapping[str, Any]) -> str:
+    content = dict(payload)
+    content.pop("outcome_attribution_id", None)
+    content.pop("publication_id", None)
+    encoded = json.dumps(_outcome_attribution_jsonable(content), sort_keys=True, separators=(",", ":"))
+    return f"{OUTCOME_ATTRIBUTION_CONTRACT_VERSION}:{hashlib.sha256(encoded.encode()).hexdigest()}"
+
+
+def _outcome_attribution_jsonable(value: Any, *, key: str | None = None) -> Any:
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="python")
+    if isinstance(value, Mapping):
+        return {
+            str(name): _outcome_attribution_jsonable(item, key=str(name))
+            for name, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_outcome_attribution_jsonable(item, key=key) for item in value]
+    if isinstance(value, datetime):
+        normalized = _utc(value)
+        return normalized.isoformat().replace("+00:00", "Z")
+    if isinstance(value, str) and key is not None and (
+        key in {"as_of", "cutoff", "input_cutoff", "evaluation_reference", "trade_plan_cutoff"}
+        or key.endswith("_at") or key.endswith("_through") or key.endswith("_cutoff")
+    ):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+        normalized = _utc(parsed)
+        return normalized.isoformat().replace("+00:00", "Z")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, StrEnum):
+        return value.value
+    return value
 
 
 def _trade_plan_jsonable(value: Any) -> Any:
@@ -3387,7 +3814,9 @@ def _jsonable(value: Any) -> Any:
 
 __all__ = [
     "CONTRACT_VERSION", "EXPERIMENT_ID", "OPPORTUNITY_EPISODE_CONTRACT_VERSION",
-    "TRADE_EXPRESSION_CONTRACT_VERSION", "CapitalAction", "CapitalActionType",
+    "TRADE_EXPRESSION_CONTRACT_VERSION", "TRADE_PLAN_CONTRACT_VERSION",
+    "OUTCOME_ATTRIBUTION_CONTRACT_VERSION", "OUTCOME_ATTRIBUTION_EVALUATION_VERSION",
+    "CapitalAction", "CapitalActionType",
     "capital_action_from_resolution", "DataRequest", "EvidenceItem", "EvidencePolarity",
     "ExpressionDecision", "ExpressionKind", "TradeExpression", "trade_expression_from_legacy",
     "trade_expression_from_expression_decision", "expression_decision_from_trade_expression",
@@ -3395,5 +3824,8 @@ __all__ = [
     "InputLineage", "Invalidation", "NumericRange", "OpportunityEpisode",
     "opportunity_episode_id", "opportunity_episode_from_legacy", "build_opportunity_episode",
     "PriceRange", "RiskPolicy", "ScenarioOutcome", "Stance", "TickerDecision",
+    "OutcomeAttributionState", "OutcomeEvidenceState", "OutcomeEvidence",
+    "PaperExecutionOutcome", "OutcomeAttribution", "outcome_attribution_id",
+    "outcome_attribution_stable_key",
     "SignalDeclaration", "SignalEvidenceState", "build_ticker_decision",
 ]

@@ -303,6 +303,7 @@ TICKER_TABLES = (
     "opportunity_rank",
     "trade_plan",
     "ticker_outcomes",
+    "outcome_attribution",
     "ticker_benchmark_snapshot",
 )
 
@@ -339,6 +340,7 @@ TICKER_INITIAL_TABLES = (
     "trade_plan",
     "ticker_decisions",
     "ticker_outcomes",
+    "outcome_attribution",
     "ticker_benchmark_snapshot",
 )
 

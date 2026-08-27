@@ -37,6 +37,7 @@ from investment_panel.core.decision import (
     OpportunityEpisode,
     OpportunityRank,
     InstrumentStateSnapshot,
+    OutcomeAttribution,
     TradePlan,
     TickerDecision,
 )
@@ -552,6 +553,7 @@ class TickerDetailResponse(FlexibleResponse):
     alpha_signals: list[AlphaSignal] = Field(default_factory=list)
     opportunity_rank: OpportunityRank | None = None
     trade_plan: TradePlan | None = None
+    outcome_attributions: list[OutcomeAttribution] = Field(default_factory=list)
     expressions: dict[ExpressionKind, ExpressionDecision] = Field(default_factory=dict)
     data_requests: list[DataRequest] = Field(default_factory=list)
     learning: JsonObject = Field(default_factory=dict)

@@ -16,11 +16,20 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     config = load_config(config_path)
     runtime = runtime_for_config(config)
     symbol_outcomes = SymbolDecisionOutcomeRepository(runtime).refresh()
-    ticker_outcomes = TickerDecisionRepository(runtime).refresh_outcomes()
+    ticker_repository = TickerDecisionRepository(runtime)
+    ticker_outcomes = ticker_repository.refresh_outcomes()
+    publish_attributions = getattr(ticker_repository, "publish_outcome_attributions", None)
+    attribution_result = (
+        publish_attributions()
+        if callable(publish_attributions)
+        else {"status": "blocked", "blockers": ["canonical_attribution_publisher_missing"]}
+    )
     return {
         **symbol_outcomes,
         "symbol_outcomes": symbol_outcomes,
         "ticker_outcomes": ticker_outcomes,
+        "ticker_outcome_attribution": attribution_result,
+        "attribution_publication_id": attribution_result.get("attribution_publication_id"),
         "database": "postgresql",
         "paper_orders": 0,
     }

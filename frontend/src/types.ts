@@ -80,6 +80,9 @@ export type TickerDossier = {
 };
 
 export type TickerLearning = {
+  outcome_authority?: string;
+  outcome_authority_blocker?: string | null;
+  outcome_evidence_label?: string;
   independent_episode_count?: number;
   independent_horizon_episode_count?: number;
   effective_sample_count?: number;
@@ -99,6 +102,8 @@ export type TickerLearning = {
     metrics?: Record<string, JsonValue | undefined>;
   };
 };
+
+export type OutcomeAttributionContract = components["schemas"]["OutcomeAttribution"];
 
 export type TickerPayload = components["schemas"]["TickerDetailResponse"] & {
   dossier: TickerDossier;

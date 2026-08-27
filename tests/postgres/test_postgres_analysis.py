@@ -1195,7 +1195,7 @@ def test_options_radar_builds_same_snapshot_call_debit_spread(analysis_context) 
     assert all(leg["bid"] is not None and leg["ask"] is not None for leg in spread["ticket"]["legs"])
     mark_at = observed_at + timedelta(days=1)
     mark_run = ingestion.start_run("test-options", "option_quotes")
-    ingestion.store_option_snapshot(
+    mark_snapshot = ingestion.store_option_snapshot(
         mark_run, source_id="test-options", observed_at=mark_at, market_session="regular", universe="test",
         rows=[
                 {"symbol": "NVDA", "expiration": expiration, "strike": 175, "option_type": "call", "underlying_price": 182, "bid": 9.0, "ask": 9.2, "mid": 9.1, "volume": 200, "open_interest": 2000, "iv": .35, "delta": .58, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
@@ -1203,6 +1203,54 @@ def test_options_radar_builds_same_snapshot_call_debit_spread(analysis_context) 
         ],
     )
     ingestion.finish_run(mark_run, "succeeded")
+    with runtime.transaction() as connection:
+        quote_rows = connection.execute(
+            """
+            SELECT quote.id, contract.strike
+            FROM raw.option_quote quote
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            WHERE quote.snapshot_id = %s
+            """,
+            [mark_snapshot["snapshot_id"]],
+        ).fetchall()
+        quote_ids = {int(row["strike"]): row["id"] for row in quote_rows}
+        assert set(quote_ids) == {175, 190}
+        future_available_at = mark_at + timedelta(hours=2)
+        connection.execute(
+            "UPDATE raw.option_quote SET available_at = %s WHERE id = %s",
+            [future_available_at, quote_ids[175]],
+        )
+    OutcomeRepository(runtime).refresh(now=mark_at + timedelta(hours=1))
+    with runtime.read() as connection:
+        outcome = connection.execute(
+            "SELECT current_return FROM analysis.option_outcome WHERE decision_id = %s",
+            [spread["decision_id"]],
+        ).fetchone()
+    assert outcome["current_return"] is None
+
+    with runtime.transaction() as connection:
+        future_available_at = mark_at + timedelta(hours=2)
+        connection.execute(
+            "UPDATE raw.option_quote SET available_at = %s WHERE id = %s",
+            [mark_at, quote_ids[175]],
+        )
+        connection.execute(
+            "UPDATE raw.option_quote SET available_at = %s WHERE id = %s",
+            [future_available_at, quote_ids[190]],
+        )
+    OutcomeRepository(runtime).refresh(now=mark_at + timedelta(hours=1))
+    with runtime.read() as connection:
+        outcome = connection.execute(
+            "SELECT current_return FROM analysis.option_outcome WHERE decision_id = %s",
+            [spread["decision_id"]],
+        ).fetchone()
+    assert outcome["current_return"] is None
+
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE raw.option_quote SET available_at = %s WHERE id = ANY(%s)",
+            [mark_at, list(quote_ids.values())],
+        )
     OutcomeRepository(runtime).refresh(now=mark_at + timedelta(hours=1))
     with runtime.read() as connection:
         outcome = connection.execute(

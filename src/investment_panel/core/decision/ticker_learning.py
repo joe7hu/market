@@ -8,14 +8,16 @@ from statistics import mean, pstdev
 from typing import Any, Iterable, Mapping
 
 
-TICKER_LEARNING_VERSION = "ticker-learning-v1"
+TICKER_LEARNING_VERSION = "ticker-learning-v2"
 MIN_INDEPENDENT_EPISODES = 30
 MIN_TRADING_DAYS = 20
 MAX_TICKER_CONTRIBUTION = 0.20
 MAX_BRIER_SCORE = 0.25
 
 
-def evaluate_ticker_policy(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def evaluate_ticker_policy(
+    rows: Iterable[Mapping[str, Any]], *, canonical_only: bool = False,
+) -> dict[str, Any]:
     """Evaluate resolved ticker episodes without changing the active policy.
 
     Each input row must already represent one unique ticker-decision-horizon
@@ -24,7 +26,16 @@ def evaluate_ticker_policy(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     blocker while the current paper recommendation remains available.
     """
 
-    episodes = [dict(row) for row in rows]
+    source_rows = [
+        row.model_dump(mode="json") if hasattr(row, "model_dump") else dict(row)
+        for row in rows
+    ]
+    canonical_rows = [row for row in source_rows if _is_canonical_attribution(row)]
+    if canonical_only:
+        episodes = [_canonical_learning_row(row) for row in canonical_rows]
+        episodes = [row for row in episodes if row is not None]
+    else:
+        episodes = source_rows
     episodes = [row for row in episodes if str(row.get("state") or "") == "resolved"]
     episodes = _one_episode_per_horizon(episodes)
     episode_keys = {
@@ -101,6 +112,8 @@ def evaluate_ticker_policy(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         ),
         "multiple_trial_correction_rows": sum(1 for row in episodes if (row.get("metadata") or {}).get("multiple_trial_correction")),
         "point_in_time_defects": sum(1 for row in episodes if (row.get("metadata") or {}).get("point_in_time_defect")),
+        "canonical_attribution_rows": len(canonical_rows),
+        "canonical_sample_eligible_rows": len(episodes) if canonical_only else 0,
     }
     blockers: list[str] = []
     if metrics["independent_episode_count"] < MIN_INDEPENDENT_EPISODES:
@@ -163,6 +176,8 @@ def evaluate_ticker_policy(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         blockers.append("repeated_trial_correction_missing")
     if metrics["point_in_time_defects"]:
         blockers.append("point_in_time_defects_unresolved")
+    if canonical_only and source_rows and not episodes:
+        blockers.append("canonical_sample_evidence_missing")
     return {
         "status": "eligible" if not blockers else "collecting",
         "paper_only": True,
@@ -171,6 +186,68 @@ def evaluate_ticker_policy(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "blockers": blockers,
         "metrics": metrics,
     }
+
+
+def _is_canonical_attribution(row: Mapping[str, Any]) -> bool:
+    return (
+        str(row.get("contract_version") or "") == "outcome-attribution.v1"
+        and bool(row.get("outcome_attribution_id"))
+        and bool(row.get("trade_plan_id"))
+    )
+
+
+def _canonical_learning_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Project one eligible canonical attribution into the legacy metrics shape."""
+
+    if not _is_canonical_attribution(row) or not bool(row.get("sample_eligible")):
+        return None
+    execution = row.get("paper_execution")
+    if not isinstance(execution, Mapping):
+        return None
+    if (
+        str(execution.get("trade_plan_id") or "") != str(row.get("trade_plan_id") or "")
+        or str(execution.get("status") or "").upper() != "EXITED"
+        or execution.get("entry_fill_count") != 1
+        or execution.get("exit_fill_count") != 1
+        or execution.get("entry_filled_at") is None
+        or execution.get("exit_at") is None
+        or execution.get("entry_fill_price") is None
+        or execution.get("exit_price") is None
+        or not _number(execution.get("filled_quantity"))
+        or not _number(execution.get("exited_quantity"))
+        or _number(execution.get("realized_gross_return")) is None
+        or _number(execution.get("realized_net_return")) is None
+    ):
+        return None
+    counterfactuals = row.get("counterfactuals") or {}
+    stock = _mapping(counterfactuals.get("STOCK"))
+    cash = _mapping(counterfactuals.get("CASH"))
+    trend = _mapping(counterfactuals.get("TREND"))
+    metadata = dict(row.get("learning_metadata") or {})
+    metadata.update({
+        "outcome_attribution_id": row.get("outcome_attribution_id"),
+        "trade_plan_id": row.get("trade_plan_id"),
+        "cost_adjusted_selected_return": _number(execution.get("realized_net_return")),
+        "cost_adjusted_stock_counterfactual_return": _number(stock.get("cost_adjusted_return")),
+        "cost_adjusted_cash_return": _number(cash.get("cost_adjusted_return")),
+        "trend_counterfactual_return": _number(trend.get("cost_adjusted_return")),
+    })
+    return {
+        "ticker_decision_id": row.get("trade_plan_id"),
+        "ticker": row.get("ticker"),
+        "as_of": row.get("decision_cutoff"),
+        "horizon": str(row.get("horizon") or "").lower(),
+        "horizon_sessions": row.get("horizon_sessions"),
+        "state": "resolved",
+        "selected_return": _number(execution.get("realized_gross_return")),
+        "stock_counterfactual_return": _number(stock.get("gross_return")),
+        "metadata": metadata,
+        "scenarios": metadata.get("scenarios") or [],
+    }
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _brier(row: Mapping[str, Any]) -> float | None:

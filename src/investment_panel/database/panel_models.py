@@ -725,6 +725,7 @@ PUBLICATION_MODELS = {
     "market_environment_assets", "market_environment_model",
     "market_valuation_reference_charts", "market_state_snapshot", "coverage_matrix",
     "instrument_state_snapshot", "alpha_signal", "opportunity_rank", "trade_plan",
+    "outcome_attribution",
 }
 
 SPECIAL_MODELS = {
@@ -805,6 +806,15 @@ def load_postgres_tables(
     with runtime.read(runtime_profile) as connection:
         for name in requested:
             if name in tables:
+                continue
+            if name == "ticker_policy_learning":
+                canonical = AnalysisRepository(runtime).publication_rows(
+                    "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
+                )
+                tables[name] = [{
+                    "authority": "outcome-attribution.v1",
+                    "episodes": canonical,
+                }]
                 continue
             if name == "superinvestor_portfolios":
                 tables[name] = superinvestor_portfolios(connection)

@@ -56,7 +56,7 @@ def published_tables(runtime: Any, requested: tuple[str, ...]) -> dict[str, list
     output: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         payload = dict(row["payload"] or {})
-        if str(row["model_name"]) == "trade_plan" or "publication_id" not in payload:
+        if str(row["model_name"]) in {"trade_plan", "outcome_attribution"} or "publication_id" not in payload:
             payload["publication_id"] = str(row["publication_id"])
         published_at = row["published_at"]
         if published_at is not None:

@@ -65,6 +65,7 @@ export const PANEL_TABLE_KEYS = [
   "optionsPayoffScenarios",
   "optionsProviderCapabilities",
   "optionsTickerSignals",
+  "outcomeAttribution",
   "ownershipConsensus",
   "portfolio",
   "portfolioPerformance",

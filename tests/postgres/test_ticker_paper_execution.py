@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+from psycopg.types.json import Jsonb
+
 from investment_panel.core.decision import (
     InputLineage,
     bind_trade_plan,
@@ -16,7 +18,11 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.runtime import DatabaseRuntime, RuntimeProfile
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.database.ticker_decisions import (
+    HORIZON_SESSIONS,
+    TickerDecisionRepository,
+    paper_execution_for_plan,
+)
 from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
 from investment_panel.jobs.ticker_decisions import portfolio_impacts
 from conftest import typed_config
@@ -249,6 +255,158 @@ def _publish_context(
     decision = bind_trade_plan(decision, plan)
     TickerDecisionRepository(runtime).publish(decision)
     return decision
+
+
+def test_outcome_attribution_publication_is_full_and_replayable(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        symbol = "ATTR"
+        observed = datetime(2026, 8, 22, 14, tzinfo=UTC)
+        config = typed_config(migrated_postgres_dsn)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity')",
+                [symbol, symbol],
+            )
+        decision = _publish_context(
+            runtime,
+            config,
+            symbol,
+            _actionable_tables(
+                symbol,
+                observed,
+                legs=[{
+                    "contract_id": 1, "option_type": "call", "side": "long", "strike": 105,
+                    "bid": 2.0, "ask": 2.2, "bid_size": 10, "ask_size": 10,
+                    "quote_time": observed, "expiration": "2026-10-16",
+                }],
+            ),
+            observed,
+        )
+        assert decision.trade_plan is not None
+        plan = decision.trade_plan
+        assert plan.publication_id
+        rank = {
+            "ranking_publication_id": plan.publication_id,
+            "rank_id": plan.rank_id,
+            "alpha_signal_id": plan.alpha_signal_id,
+            "portfolio_impact_id": plan.portfolio_impact_id,
+            "market_snapshot_id": plan.market_snapshot_id,
+            "market_state_publication_id": plan.market_state_publication_id,
+            "selected_expression_kind": plan.selected_expression_kind.value,
+            "selected_expression_identity": plan.selected_expression_identity,
+            "opportunity_episode_id": plan.opportunity_episode_id,
+            "decision_revision": plan.decision_revision,
+            "policy_version": plan.policy_version,
+        }
+        with runtime.transaction() as connection:
+            row = connection.execute(
+                "SELECT id::text, input_manifest FROM analysis.ticker_decision WHERE decision_revision = %s",
+                [decision.decision_revision],
+            ).fetchone()
+            assert row is not None
+            manifest = dict(row["input_manifest"] or {})
+            manifest.update({"opportunity_rank": rank, "alpha_signals": [{"signal_id": plan.alpha_signal_id}]})
+            connection.execute(
+                "UPDATE analysis.ticker_decision SET input_manifest = %s::jsonb WHERE id = %s::uuid",
+                [json.dumps(manifest, default=str), row["id"]],
+            )
+            mark_at = observed + timedelta(days=1)
+            metadata = {
+                "selected_expression": plan.selected_expression_kind.value,
+                "selected_expression_identity": plan.selected_expression_identity,
+                "alternate_expression": "CASH",
+                "expression_returns": {"STOCK": 0.10, "CASH": 0.0},
+                "expression_marks": {
+                    "STOCK": {
+                        "status": "estimated", "gross_return": 0.10,
+                        "cost_adjusted_return": 0.09, "evidence_state": "ESTIMATED",
+                        "observed_at": mark_at.isoformat(), "available_at": mark_at.isoformat(),
+                    },
+                    "CASH": {
+                        "status": "measured", "gross_return": 0.0,
+                        "cost_adjusted_return": 0.0, "evidence_state": "DERIVED",
+                    },
+                },
+                "cost_adjusted_selected_return": 0.09,
+                "cost_adjusted_stock_counterfactual_return": 0.09,
+                "cost_adjusted_cash_return": 0.0,
+                "trend_counterfactual_return": 0.02,
+                "sample": "historical",
+                "sample_start": observed.date().isoformat(),
+                "sample_end": observed.date().isoformat(),
+                "purge_embargo_verified": True,
+                "delistings_handled": True,
+                "sector_slice": "technology",
+                "regime_slice": "risk_on",
+                "multiple_trial_correction": "single-policy",
+            }
+            for horizon, sessions in HORIZON_SESSIONS.items():
+                for horizon_sessions in sessions:
+                    connection.execute(
+                        """
+                        INSERT INTO analysis.ticker_outcome (
+                            ticker_decision_id, horizon, horizon_sessions, state,
+                            measured_through, selected_expression, selected_return,
+                            stock_counterfactual_return, alternate_counterfactual_return,
+                            cash_return, sector_return, market_return, available_at, metadata
+                        ) VALUES (%s::uuid, %s, %s, 'resolved', %s, %s, 0.10, 0.10, 0.0, 0.0, 0.02, 0.03, %s, %s)
+                        """,
+                        [
+                            row["id"], horizon.value, horizon_sessions, mark_at,
+                            plan.selected_expression_kind.value, mark_at, Jsonb(metadata),
+                        ],
+                    )
+
+        repository = TickerDecisionRepository(runtime)
+        first = repository.publish_outcome_attributions(now=observed + timedelta(days=2))
+        replay = repository.publish_outcome_attributions(now=observed + timedelta(days=2))
+        assert first["status"] == "ok", first
+        assert first["published_count"] == 6
+        assert first["paper_orders"] == 0
+        assert first["attribution_publication_id"] == replay["attribution_publication_id"]
+        rows = AnalysisRepository(runtime).publication_rows(
+            "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
+        )
+        assert len(rows) == 6
+        assert len({row["stable_unit_key"] for row in rows}) == 6
+        assert all(row["trade_plan_id"] == plan.trade_plan_id for row in rows)
+        assert all(row["publication_id"] == first["attribution_publication_id"] for row in rows)
+    finally:
+        runtime.close()
+
+
+def test_option_paper_attribution_uses_contract_cash_units_for_fees() -> None:
+    execution, blocker = paper_execution_for_plan(
+        [{
+            "trade_plan_id": "plan-option",
+            "paper_order_id": "order-option",
+            "status": "exited",
+            "paper_only": True,
+            "expression_kind": "CALL",
+            "structure": "long_call",
+            "filled_quantity": 1,
+            "exited_quantity": 1,
+            "actual_fill_price": 2.0,
+            "exit_price": 3.0,
+            "fees": 1.30,
+            "contract_multiplier": 100,
+            "entry_fill_count": 1,
+            "exit_fill_count": 1,
+            "filled_at": datetime(2026, 8, 23, 14, tzinfo=UTC),
+            "exit_at": datetime(2026, 8, 24, 14, tzinfo=UTC),
+            "updated_at": datetime(2026, 8, 24, 15, tzinfo=UTC),
+        }],
+        datetime(2026, 8, 24, 16, tzinfo=UTC),
+    )
+
+    assert blocker is None
+    assert execution is not None
+    assert execution.realized_gross_return == 0.5
+    assert execution.realized_net_return == (100.0 - 1.30) / 200.0
 
 
 def test_portfolio_replay_uses_execution_and_created_at_cutoffs(migrated_postgres_dsn: str) -> None:

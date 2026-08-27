@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Iterable
 from uuid import UUID
@@ -11,13 +11,24 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision import (
     Horizon,
+    OUTCOME_ATTRIBUTION_CONTRACT_VERSION,
+    OUTCOME_ATTRIBUTION_EVALUATION_VERSION,
+    OutcomeAttribution,
+    OutcomeAttributionState,
+    OutcomeEvidence,
+    OutcomeEvidenceState,
+    PaperExecutionOutcome,
     TickerDecision,
+    TradePlan,
     capital_action_from_resolution,
     evaluate_ticker_policy,
+    outcome_attribution_stable_key,
     resolution_from_legacy,
+    is_us_market_day,
 )
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.options_paper_quotes import is_credit_structure, package_price
+from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -207,9 +218,17 @@ class TickerDecisionRepository:
                 f"""
                 SELECT decision.id::text AS decision_id, instrument.id AS instrument_id,
                        instrument.symbol AS ticker, decision.as_of,
+                       decision.contract_version, decision.decision_revision,
                        decision.tactical, decision.fundamental,
-                       decision.capital_action, decision.expressions,
-                       decision.selected_expression
+                       decision.capital_action, decision.resolution,
+                       decision.policy_version, decision.opportunity_episode_id,
+                       decision.opportunity_cutoff, decision.opportunity_episode,
+                       decision.risk_policy, decision.expressions,
+                       decision.selected_expression, decision.data_requests,
+                       decision.learning_history, decision.input_manifest,
+                       decision.market_state_publication_id::text,
+                       decision.market_state_snapshot, decision.portfolio_impacts,
+                       decision.risk_policy_snapshot
                 FROM analysis.ticker_decision decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 WHERE {" AND ".join(filters)}
@@ -225,103 +244,244 @@ class TickerDecisionRepository:
             for horizon, sessions in HORIZON_SESSIONS.items():
                 for horizon_sessions in sessions:
                     outcome = self._evaluate(row, horizon, horizon_sessions, reference)
-                    selected = dict(row.get("selected_expression") or {})
+                    selected_expression = dict(row.get("selected_expression") or {})
+                    plan, plan_blocker = _plan_authority(row)
+                    outcome["trade_plan_id"] = plan.trade_plan_id if plan else None
+                    outcome["plan_authority"] = "canonical" if plan else "legacy_or_invalid"
+                    outcome["plan_blocker"] = plan_blocker
+                    outcome["selected_expression_identity"] = plan.selected_expression_identity if plan else None
+                    outcome["evaluation_cutoff"] = reference
                     self._store_outcome(
                         row["decision_id"], horizon, horizon_sessions, outcome,
-                        selected_expression=str(selected.get("kind") or "STOCK"),
+                        selected_expression=str(selected_expression.get("kind") or "STOCK"),
                     )
                     updated += 1
                     resolved += int(outcome["state"] == "resolved")
         return {"evaluated": len(decisions), "updated": updated, "resolved": resolved}
 
-    def learning_surface(self, ticker: str) -> dict[str, Any]:
-        with self.runtime.read() as connection:
-            decision = connection.execute(
+    def publish_outcome_attributions(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Publish the complete plan-bound outcome set for the canonical scope."""
+
+        reference = _utc(now or datetime.now(UTC))
+        with self.runtime.read(JOB_PROFILE) as connection:
+            rows = connection.execute(
                 """
-                SELECT decision.id::text AS ticker_decision_id, decision.decision_revision,
-                       decision.tactical, decision.fundamental, decision.capital_action,
-                       decision.expressions
-                FROM analysis.ticker_decision decision
-                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                WHERE instrument.symbol = %s AND decision.status = 'published'
-                ORDER BY decision.as_of DESC LIMIT 1
-                """,
-                [ticker.strip().upper()],
-            ).fetchone()
-            outcomes = connection.execute(
-                """
-                SELECT outcome.horizon, outcome.horizon_sessions, outcome.state,
+                SELECT decision.id::text AS decision_id, instrument.id AS instrument_id,
+                       instrument.symbol AS ticker, decision.as_of,
+                       decision.contract_version, decision.decision_revision,
+                       decision.tactical, decision.fundamental,
+                       decision.capital_action, decision.resolution,
+                       decision.policy_version, decision.opportunity_episode_id,
+                       decision.opportunity_cutoff, decision.opportunity_episode,
+                       decision.risk_policy, decision.expressions,
+                       decision.selected_expression, decision.data_requests,
+                       decision.learning_history, decision.input_manifest,
+                       decision.market_state_publication_id::text,
+                       decision.market_state_snapshot, decision.portfolio_impacts,
+                       decision.risk_policy_snapshot,
+                       outcome.id::text AS outcome_id, outcome.horizon,
+                       outcome.horizon_sessions, outcome.state,
+                       outcome.measured_through, outcome.selected_expression AS outcome_selected_expression,
                        outcome.selected_return, outcome.stock_counterfactual_return,
                        outcome.alternate_counterfactual_return, outcome.cash_return,
-                       outcome.error_type, outcome.mistake_card, outcome.metadata
-                FROM analysis.ticker_outcome outcome
-                JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
-                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                WHERE instrument.symbol = %s
-                ORDER BY outcome.horizon, outcome.horizon_sessions
-                """,
-                [ticker.strip().upper()],
-            ).fetchall()
-            episodes = connection.execute(
-                """
-                SELECT count(DISTINCT decision.id) AS episodes
+                       outcome.sector_return, outcome.market_return, outcome.error_type,
+                       outcome.mistake_card, outcome.available_at, outcome.metadata,
+                       outcome.updated_at
                 FROM analysis.ticker_decision decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                JOIN analysis.ticker_outcome outcome ON outcome.ticker_decision_id = decision.id
-                WHERE instrument.symbol = %s
+                LEFT JOIN analysis.ticker_outcome outcome
+                  ON outcome.ticker_decision_id = decision.id
+                WHERE decision.status IN ('published', 'superseded')
+                  AND decision.as_of <= %s
+                ORDER BY decision.as_of, decision.id, outcome.horizon, outcome.horizon_sessions
                 """,
-                [ticker.strip().upper()],
-            ).fetchone()["episodes"]
-            horizon_episodes = connection.execute(
+                [reference],
+            ).fetchall()
+            paper_rows = connection.execute(
                 """
-                SELECT count(DISTINCT (decision.id, outcome.horizon)) AS episodes
-                FROM analysis.ticker_decision decision
-                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                JOIN analysis.ticker_outcome outcome ON outcome.ticker_decision_id = decision.id
-                WHERE instrument.symbol = %s
-                """,
-                [ticker.strip().upper()],
-            ).fetchone()["episodes"]
-            policy_rows = connection.execute(
-                """
-                SELECT ticker_decision_id, ticker, as_of, horizon, state,
-                       selected_return, stock_counterfactual_return, metadata, scenarios
-                FROM (
-                    SELECT decision.id::text AS ticker_decision_id, instrument.symbol AS ticker,
-                           decision.as_of, outcome.horizon, outcome.horizon_sessions, outcome.state,
-                           outcome.selected_return, outcome.stock_counterfactual_return,
-                           outcome.metadata, decision.fundamental->'scenarios' AS scenarios,
-                           row_number() OVER (
-                               PARTITION BY decision.id, outcome.horizon
-                               ORDER BY outcome.horizon_sessions DESC, outcome.updated_at DESC, outcome.id DESC
-                           ) AS horizon_rank
-                    FROM analysis.ticker_outcome outcome
-                    JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
-                    JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                    WHERE outcome.state = 'resolved'
-                ) ranked
-                WHERE horizon_rank = 1
-                ORDER BY as_of, ticker_decision_id, horizon
-                LIMIT 10000
+                SELECT paper.id::text AS paper_order_id,
+                       paper.policy_result->>'trade_plan_id' AS trade_plan_id,
+                       paper.status, paper.paper_only, paper.quantity,
+                       paper.actual_fill_price, paper.filled_at, paper.filled_quantity,
+                       paper.exit_at, paper.exit_price, paper.exited_quantity,
+                       paper.fees, paper.entry_slippage, paper.exit_slippage,
+                       paper.expression_kind, paper.structure, paper.created_at,
+                       paper.updated_at,
+                       paper.reserved_collateral, paper.max_loss, paper.policy_result,
+                       paper.policy_result->>'entry_fill_count' AS entry_fill_count,
+                       paper.policy_result->>'exit_fill_count' AS exit_fill_count,
+                       (
+                         SELECT CASE
+                           WHEN count(*) = 0 THEN NULL
+                           WHEN min(contract.multiplier) = max(contract.multiplier)
+                             THEN min(contract.multiplier)
+                           ELSE 0
+                         END
+                         FROM app.paper_order_leg leg
+                         JOIN catalog.option_contract contract ON contract.id = leg.contract_id
+                         WHERE leg.paper_order_id = paper.id
+                       ) AS contract_multiplier
+                FROM app.paper_order paper
+                WHERE paper.lane = 'ticker'
+                  AND paper.paper_only = TRUE
+                  AND paper.policy_result->>'trade_plan_id' IS NOT NULL
+                ORDER BY paper.policy_result->>'trade_plan_id', paper.created_at, paper.id
                 """
             ).fetchall()
-        strategy_learning = evaluate_ticker_policy(policy_rows)
-        if not decision:
+
+        by_decision: dict[str, list[dict[str, Any]]] = {}
+        for raw in rows:
+            by_decision.setdefault(str(raw["decision_id"]), []).append(dict(raw))
+        paper_by_plan: dict[str, list[dict[str, Any]]] = {}
+        for raw in paper_rows:
+            paper_by_plan.setdefault(str(raw["trade_plan_id"]), []).append(dict(raw))
+
+        attributions: list[OutcomeAttribution] = []
+        blockers: list[str] = []
+        legacy_exclusion_reasons: list[str] = []
+        excluded_legacy = 0
+        evaluated = 0
+        seen_units: set[str] = set()
+        for decision_rows in by_decision.values():
+            evaluated += 1
+            decision_row = decision_rows[0]
+            plan, plan_blocker = _plan_authority(decision_row)
+            if plan is None:
+                excluded_legacy += 1
+                if plan_blocker:
+                    legacy_exclusion_reasons.append(plan_blocker)
+                continue
+            if plan_blocker:
+                blockers.append(plan_blocker)
+                continue
+            outcome_rows = [row for row in decision_rows if row["outcome_id"] is not None]
+            by_horizon: dict[tuple[str, int], list[dict[str, Any]]] = {}
+            for outcome in outcome_rows:
+                key = (str(outcome["horizon"]), int(outcome["horizon_sessions"]))
+                by_horizon.setdefault(key, []).append(outcome)
+            expected = {(horizon.value, sessions) for horizon in HORIZON_SESSIONS for sessions in HORIZON_SESSIONS[horizon]}
+            missing = expected - set(by_horizon)
+            if missing:
+                blockers.append(f"outcome_units_missing:{plan.trade_plan_id}")
+                continue
+            unexpected = set(by_horizon) - expected
+            if unexpected:
+                blockers.append(f"outcome_units_unexpected:{plan.trade_plan_id}")
+                continue
+            if any(len(items) != 1 for items in by_horizon.values()):
+                blockers.append(f"outcome_units_duplicated:{plan.trade_plan_id}")
+                continue
+            paper, paper_blocker = paper_execution_for_plan(
+                paper_by_plan.get(plan.trade_plan_id, []), reference,
+            )
+            if paper_blocker:
+                blockers.append(f"{paper_blocker}:{plan.trade_plan_id}")
+                continue
+            for key in sorted(expected):
+                outcome = by_horizon[key][0]
+                stable_key = outcome_attribution_stable_key(plan.trade_plan_id, key[0], key[1])
+                if stable_key in seen_units:
+                    blockers.append(f"stable_unit_duplicated:{stable_key}")
+                    continue
+                attribution = _build_outcome_attribution(
+                    plan, outcome, evaluation_cutoff=reference, paper_execution=paper,
+                )
+                if attribution is None:
+                    blockers.append(f"outcome_authority_invalid:{stable_key}")
+                    continue
+                seen_units.add(stable_key)
+                attributions.append(attribution)
+
+        unique_blockers = list(dict.fromkeys(blockers))
+        result: dict[str, Any] = {
+            "status": "blocked" if unique_blockers or not attributions else "ok",
+            "publication_status": "not_published" if unique_blockers or not attributions else "published",
+            "evaluated_count": evaluated,
+            "published_count": len(attributions) if not unique_blockers else 0,
+            "excluded_legacy_count": excluded_legacy,
+            "excluded_legacy_reasons": _blocker_counts(legacy_exclusion_reasons),
+            "blockers": unique_blockers or (["no_plan_bound_attributions"] if not attributions else []),
+            "blockers_by_reason": _blocker_counts(unique_blockers),
+            "paper_only": True,
+            "live_order_submission": False,
+            "paper_orders": 0,
+        }
+        if unique_blockers or not attributions:
+            return result
+
+        models = [item.model_dump(mode="json") for item in attributions]
+        analysis = AnalysisRepository(self.runtime)
+        run_id = analysis.start_run(
+            "ticker_outcome_attribution",
+            input_cutoff=reference,
+            code_version=attributions[0].evaluation_version,
+            inputs={"outcome_attributions": models},
+            feature_versions={"outcome_attribution": attributions[0].evaluation_version},
+        )
+        publication_id = analysis.publish(
+            run_id,
+            "ticker-outcome-attribution",
+            {"outcome_attribution": models},
+            validation={
+                "scope": "ticker-outcome-attribution",
+                "model": "outcome_attribution",
+                "complete": True,
+                "paper_only": True,
+                "live_order_submission": False,
+            },
+            complete_run_summary={
+                "evaluated_count": evaluated,
+                "published_count": len(attributions),
+                "excluded_legacy_count": excluded_legacy,
+                "excluded_legacy_reasons": _blocker_counts(legacy_exclusion_reasons),
+                "blockers": [],
+                "paper_orders": 0,
+            },
+        )
+        result.update({
+            "attribution_publication_id": str(publication_id),
+            "outcome_attribution_publication_id": str(publication_id),
+        })
+        return result
+
+    def learning_surface(self, ticker: str) -> dict[str, Any]:
+        decision = self.latest(ticker)
+        canonical = AnalysisRepository(self.runtime).publication_rows(
+            "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
+        )
+        plan_id = decision.trade_plan.trade_plan_id if decision and decision.trade_plan else None
+        outcomes = [
+            _attribution_surface_row(row) for row in canonical
+            if str(row.get("ticker") or "").upper() == ticker.strip().upper()
+            and str(row.get("trade_plan_id") or "") == str(plan_id or "")
+        ]
+        strategy_learning = evaluate_ticker_policy(canonical, canonical_only=True)
+        if not decision or not outcomes:
             return {
                 "independent_episode_count": 0,
                 "disagreement": {},
                 "expression_tournament": [],
                 "mistake_cards": [],
                 "strategy_learning": strategy_learning,
+                "outcome_attributions": outcomes,
+                "outcome_authority": "outcome-attribution.v1",
             }
-        tactical = dict(decision["tactical"] or {})
-        fundamental = dict(decision["fundamental"] or {})
-        expressions = dict(decision["expressions"] or {})
-        tournament_outcomes = [dict(row) for row in outcomes]
+        tactical = decision.tactical.model_dump(mode="json")
+        fundamental = decision.fundamental.model_dump(mode="json")
+        expressions = {
+            kind.value if hasattr(kind, "value") else str(kind): value.model_dump(mode="json")
+            for kind, value in decision.expressions.items()
+        }
         return {
-            "independent_episode_count": int(episodes or 0),
-            "independent_horizon_episode_count": int(horizon_episodes or 0),
-            "effective_sample_count": int(horizon_episodes or 0),
+            "independent_episode_count": len({str(row.get("ticker_decision_id")) for row in outcomes}),
+            "independent_horizon_episode_count": len({
+                (str(row.get("ticker_decision_id")), str(row.get("horizon"))) for row in outcomes
+            }),
+            "effective_sample_count": len(outcomes),
             "disagreement": {
                 "strongest_bull_case": _first_statement(fundamental.get("evidence_for")),
                 "strongest_bear_case": _first_statement(fundamental.get("evidence_against")),
@@ -341,7 +501,7 @@ class TickerDecisionRepository:
                                 dict(row.get("metadata") or {}).get("expression_returns") or {}
                             ).get(kind),
                         }
-                        for row in tournament_outcomes
+                        for row in outcomes
                     ],
                 }
                 for kind, value in expressions.items()
@@ -357,6 +517,8 @@ class TickerDecisionRepository:
                 for row in outcomes if row["error_type"] or row["mistake_card"]
             ],
             "strategy_learning": strategy_learning,
+            "outcome_attributions": outcomes,
+            "outcome_authority": "outcome-attribution.v1",
         }
 
     def _store_manifest(self, connection: Any, decision_id: str, decision: TickerDecision) -> None:
@@ -503,6 +665,7 @@ class TickerDecisionRepository:
         if entry is None or (not marks and terminal_mark is None):
             return {
                 "state": "unmeasurable", "available_at": None,
+                "observed_through": None,
                 "selected_return": None, "stock_return": None,
                 "alternate_counterfactual_return": None,
                 "sector_return": None, "market_return": None,
@@ -537,6 +700,10 @@ class TickerDecisionRepository:
             "evidence_state": "ESTIMATED",
             "entry_price": entry_price,
             "mark_price": float(mark["close"]),
+            "entry_observed_at": entry["observed_at"],
+            "entry_available_at": entry["available_at"],
+            "observed_at": mark["observed_at"],
+            "available_at": mark["available_at"],
         }
         trend_return = None
         if trend_reference is not None and float(trend_reference["close"] or 0) > 0:
@@ -595,6 +762,7 @@ class TickerDecisionRepository:
         return {
             "state": state,
             "available_at": mark["available_at"],
+            "observed_through": mark["observed_at"],
             "selected_return": selected_return,
             "stock_return": stock_return,
             "cash_return": 0.0,
@@ -667,12 +835,21 @@ class TickerDecisionRepository:
             try:
                 contract_ids.append(int(str(leg.get("contract_id") or "")))
             except (TypeError, ValueError):
-                return None, {"status": "unmeasurable", "reason": "contract_id_missing"}
+                return None, {
+                    "status": "unmeasurable", "evidence_state": OutcomeEvidenceState.UNMEASURABLE.value,
+                    "reason": "contract_id_missing",
+                }
         if not legs or len(contract_ids) != len(legs):
-            return None, {"status": "unmeasurable", "reason": "option_legs_missing"}
+            return None, {
+                "status": "unmeasurable", "evidence_state": OutcomeEvidenceState.UNMEASURABLE.value,
+                "reason": "option_legs_missing",
+            }
         entry_package = package_price(legs, phase="entry")
         if entry_package is None or entry_package <= 0:
-            return None, {"status": "unmeasurable", "reason": "entry_executable_quote_missing"}
+            return None, {
+                "status": "unmeasurable", "evidence_state": OutcomeEvidenceState.UNMEASURABLE.value,
+                "reason": "entry_executable_quote_missing",
+            }
         rows = connection.execute(
             """
             WITH valid_quotes AS (
@@ -718,6 +895,7 @@ class TickerDecisionRepository:
         if not complete:
             return None, {
                 "status": "unmeasurable",
+                "evidence_state": OutcomeEvidenceState.UNMEASURABLE.value,
                 "reason": "next_feasible_option_quote_missing",
                 "contracts_found": sorted({int(row["contract_id"]) for row in rows}),
             }
@@ -734,7 +912,10 @@ class TickerDecisionRepository:
         ]
         mark_package = package_price(mark_legs, phase="exit")
         if mark_package is None:
-            return None, {"status": "unmeasurable", "reason": "exit_executable_quote_missing"}
+            return None, {
+                "status": "unmeasurable", "evidence_state": OutcomeEvidenceState.UNMEASURABLE.value,
+                "reason": "exit_executable_quote_missing",
+            }
         max_loss = _number(expression.get("max_loss_per_unit"))
         multiplier = max(1, int(by_contract[next(iter(by_contract))]["multiplier"] or 100))
         denominator = max_loss if max_loss and max_loss > 0 else entry_package * multiplier
@@ -747,6 +928,7 @@ class TickerDecisionRepository:
         fees = FEE_PER_CONTRACT_LEG * len(legs) * 2
         return float(gross_pnl / denominator), {
             "status": "measured",
+            "evidence_state": OutcomeEvidenceState.OBSERVED.value,
             "entry_package": entry_package,
             "mark_package": mark_package,
             "multiplier": multiplier,
@@ -756,6 +938,10 @@ class TickerDecisionRepository:
             "cost_model_version": "option-executable-quotes-fees-v1",
             "mark_quote_time": max(row["observed_at"] for row in by_contract.values()),
             "mark_available_at": max(row["available_at"] for row in by_contract.values()),
+            "observed_through": max(row["observed_at"] for row in by_contract.values()),
+            "available_at": max(row["available_at"] for row in by_contract.values()),
+            "snapshot_id": str(next(iter(by_contract.values()))["snapshot_id"]),
+            "contract_ids": contract_ids,
         }
 
     def _peer_symbols(self, sector: Any) -> list[str]:
@@ -823,7 +1009,7 @@ class TickerDecisionRepository:
                 """,
                 [
                     decision_id, horizon.value, sessions, outcome["state"],
-                    outcome["available_at"], selected_expression,
+                    outcome.get("observed_through") or outcome.get("available_at"), selected_expression,
                     outcome["selected_return"], outcome["stock_return"],
                     outcome.get("alternate_counterfactual_return"),
                     outcome.get("cash_return", 0.0),
@@ -840,10 +1026,448 @@ class TickerDecisionRepository:
                         "cost_adjusted_stock_counterfactual_return": outcome.get("cost_adjusted_stock_counterfactual_return"),
                         "cost_adjusted_cash_return": outcome.get("cost_adjusted_cash_return", 0.0),
                         "cost_model_version": outcome.get("cost_model_version") or "mixed-expression-cost-model-v1",
+                        "observed_through": _jsonable(outcome.get("observed_through")),
+                        "available_at": _jsonable(outcome.get("available_at")),
+                        "evaluation_cutoff": _jsonable(outcome.get("evaluation_cutoff")),
+                        "trade_plan_id": outcome.get("trade_plan_id"),
+                        "selected_expression_identity": outcome.get("selected_expression_identity"),
+                        "plan_authority": outcome.get("plan_authority") or "legacy_or_invalid",
+                        "plan_blocker": outcome.get("plan_blocker"),
                         **dict(outcome.get("learning_metadata") or {}),
                     }),
                 ],
             )
+
+
+def _plan_authority(row: Any) -> tuple[TradePlan | None, str | None]:
+    """Resolve the persisted plan and its copied ranking authority exactly once."""
+
+    try:
+        decision = _decision_from_row(row)
+    except (TypeError, ValueError, KeyError):
+        return None, "ticker_decision_lineage_invalid"
+    plan = decision.trade_plan
+    if plan is None:
+        return None, "trade_plan_missing"
+    if not plan.publication_id:
+        return plan, "trade_plan_publication_missing"
+    manifest = dict(row.get("input_manifest") or {}) if hasattr(row, "get") else {}
+    rank = manifest.get("opportunity_rank")
+    if not isinstance(rank, dict):
+        return plan, "opportunity_rank_missing"
+    ranking_publication_id = str(
+        rank.get("ranking_publication_id") or rank.get("publication_id") or ""
+    )
+    if ranking_publication_id != plan.publication_id:
+        return plan, "ranking_publication_mismatch"
+    exact_rank_fields = {
+        "rank_id": plan.rank_id,
+        "alpha_signal_id": plan.alpha_signal_id,
+        "portfolio_impact_id": plan.portfolio_impact_id,
+        "market_snapshot_id": plan.market_snapshot_id,
+        "market_state_publication_id": plan.market_state_publication_id,
+        "selected_expression_kind": plan.selected_expression_kind.value,
+        "selected_expression_identity": plan.selected_expression_identity,
+        "opportunity_episode_id": plan.opportunity_episode_id,
+        "decision_revision": plan.decision_revision,
+        "policy_version": plan.policy_version,
+    }
+    for field, expected in exact_rank_fields.items():
+        if not expected or str(rank.get(field) or "") != str(expected):
+            return plan, f"trade_plan_{field}_mismatch"
+    signals = [
+        signal for signal in manifest.get("alpha_signals") or []
+        if isinstance(signal, dict) and str(signal.get("signal_id") or "") == str(plan.alpha_signal_id)
+    ]
+    if len(signals) != 1:
+        return plan, "alpha_signal_missing_or_duplicated"
+    return plan, None
+
+
+def paper_execution_for_plan(
+    rows: list[dict[str, Any]], reference: datetime,
+) -> tuple[PaperExecutionOutcome | None, str | None]:
+    if len(rows) > 1:
+        return None, "paper_execution_duplicated"
+    if not rows:
+        return None, None
+    row = rows[0]
+    available_at = _parse_datetime(row.get("updated_at") or row.get("created_at"))
+    if available_at is not None and available_at > reference:
+        return None, "paper_execution_future_available"
+    filled = _number(row.get("filled_quantity"))
+    exited = _number(row.get("exited_quantity"))
+    fill_price = _number(row.get("actual_fill_price"))
+    exit_price = _number(row.get("exit_price"))
+    fill_at = _parse_datetime(row.get("filled_at"))
+    exit_at = _parse_datetime(row.get("exit_at"))
+    realized_gross: float | None = None
+    realized_net: float | None = None
+    expression_kind = str(row.get("expression_kind") or "").upper()
+    structure = str(row.get("structure") or "").lower()
+    option_expression = expression_kind in {"CALL", "PUT", "DEBIT_SPREAD", "CASH_SECURED_PUT"} or structure in {
+        "long_call", "long_put", "debit_spread", "cash_secured_put",
+    }
+    multiplier = 1.0 if not option_expression else _number(row.get("contract_multiplier"))
+    if option_expression and (multiplier is None or multiplier <= 0):
+        return None, "paper_execution_multiplier_missing"
+    policy = row.get("policy_result") if isinstance(row.get("policy_result"), dict) else {}
+    entry_fill_count = _integer(
+        row.get("entry_fill_count") if row.get("entry_fill_count") not in (None, "")
+        else policy.get("entry_fill_count")
+    )
+    exit_fill_count = _integer(
+        row.get("exit_fill_count") if row.get("exit_fill_count") not in (None, "")
+        else policy.get("exit_fill_count")
+    )
+    if (entry_fill_count is not None and entry_fill_count > 1) or (
+        exit_fill_count is not None and exit_fill_count > 1
+    ):
+        return None, "paper_execution_multiple_fills"
+    if (
+        str(row.get("status") or "").lower() == "exited"
+        and filled and filled > 0 and exited and exited >= filled
+        and fill_price is not None and fill_price > 0 and exit_price is not None
+    ):
+        gross_pnl = (
+            (fill_price - exit_price) * multiplier * filled
+            if is_credit_structure(str(row.get("structure") or "").lower())
+            else (exit_price - fill_price) * multiplier * filled
+        )
+        if is_credit_structure(structure):
+            per_unit_collateral = _number(row.get("max_loss")) or _number(policy.get("max_loss_per_unit"))
+            collateral = _number(row.get("reserved_collateral")) or (
+                per_unit_collateral * filled if per_unit_collateral is not None else None
+            )
+            if collateral is None or collateral <= 0:
+                return None, "paper_execution_collateral_missing"
+            denominator = collateral
+        else:
+            denominator = fill_price * multiplier * filled
+        realized_gross = gross_pnl / denominator
+        realized_net = (gross_pnl - (_number(row.get("fees")) or 0.0)) / denominator
+    try:
+        execution = PaperExecutionOutcome.model_validate({
+            "trade_plan_id": str(row.get("trade_plan_id") or ""),
+            "paper_order_id": row.get("paper_order_id"),
+            "status": str(row.get("status") or "MISSING").upper(),
+            "evidence_state": OutcomeEvidenceState.OBSERVED.value,
+            "paper_only": bool(row.get("paper_only", True)),
+            "entry_filled_at": fill_at,
+            "exit_at": exit_at,
+            "entry_fill_price": fill_price,
+            "exit_price": exit_price,
+            "filled_quantity": filled,
+            "exited_quantity": exited,
+            "fees": _number(row.get("fees")),
+            "entry_slippage": _number(row.get("entry_slippage")),
+            "exit_slippage": _number(row.get("exit_slippage")),
+            "contract_multiplier": multiplier,
+            "entry_fill_count": entry_fill_count,
+            "exit_fill_count": exit_fill_count,
+            "realized_gross_return": realized_gross,
+            "realized_net_return": realized_net,
+            "observed_through": max(
+                (value for value in (fill_at, exit_at, available_at) if value is not None),
+                default=None,
+            ),
+            "available_at": available_at,
+        })
+    except (TypeError, ValueError):
+        return None, "paper_execution_invalid"
+    return execution, None
+
+
+def _paper_execution_matches_horizon(
+    plan: TradePlan, execution: PaperExecutionOutcome, horizon_sessions: int,
+) -> bool:
+    if execution.exit_at is None:
+        return False
+    first_day = _utc(plan.cutoff).date() + timedelta(days=1)
+    last_day = _utc(execution.exit_at).date()
+    elapsed = 0
+    current = first_day
+    while current <= last_day:
+        elapsed += int(is_us_market_day(current))
+        current += timedelta(days=1)
+    return elapsed == int(horizon_sessions)
+
+
+def _build_outcome_attribution(
+    plan: TradePlan,
+    outcome: dict[str, Any],
+    *,
+    evaluation_cutoff: datetime,
+    paper_execution: PaperExecutionOutcome | None,
+) -> OutcomeAttribution | None:
+    metadata = dict(outcome.get("metadata") or {})
+    marks = dict(metadata.get("expression_marks") or {})
+    returns = dict(metadata.get("expression_returns") or {})
+    selected_kind = str(
+        outcome.get("outcome_selected_expression")
+        or outcome.get("selected_expression")
+        or metadata.get("selected_expression")
+        or plan.selected_expression_kind.value
+    ).upper()
+    if selected_kind != plan.selected_expression_kind.value:
+        return None
+    selected_identity = metadata.get("selected_expression_identity")
+    if str(selected_identity or "") != plan.selected_expression_identity:
+        return None
+    observed_through = _parse_datetime(
+        outcome.get("measured_through") or metadata.get("observed_through")
+    )
+    available_at = _parse_datetime(outcome.get("available_at") or metadata.get("available_at"))
+    expression_kinds = sorted(set(returns) | set(marks) | {"STOCK", "CASH", selected_kind})
+    expression_values = {
+        str(kind).upper(): _number(
+            returns.get(kind) if kind in returns else returns.get(str(kind).upper())
+        )
+        for kind in expression_kinds
+    }
+    if expression_values.get(selected_kind) is None:
+        expression_values[selected_kind] = _number(outcome.get("selected_return"))
+    all_expressions = {
+        str(kind).upper(): _evidence_from_mark(
+            str(kind), marks.get(kind) or marks.get(str(kind).upper()),
+            gross_return=expression_values[str(kind).upper()],
+            default_observed=observed_through,
+            default_available=available_at,
+        )
+        for kind in expression_kinds
+    }
+    stock = all_expressions.get("STOCK") or _evidence_from_mark(
+        "STOCK", marks.get("STOCK"),
+        gross_return=_number(outcome.get("stock_counterfactual_return")),
+        default_observed=observed_through, default_available=available_at,
+    )
+    cash = all_expressions.get("CASH") or _evidence_from_mark(
+        "CASH", marks.get("CASH"), gross_return=_number(outcome.get("cash_return")) or 0.0,
+        default_observed=None, default_available=None,
+    )
+    special = {
+        "STOCK": stock,
+        "CASH": cash,
+        "TREND": _counterfactual_evidence("TREND", metadata.get("trend_counterfactual_return"), observed_through, available_at),
+        "SECTOR": _counterfactual_evidence("SECTOR", outcome.get("sector_return"), observed_through, available_at),
+        "MARKET": _counterfactual_evidence("MARKET", outcome.get("market_return"), observed_through, available_at),
+    }
+    alternate_kind = str(metadata.get("alternate_expression") or "CASH").upper()
+    special["ALTERNATE_EXPRESSION"] = all_expressions.get(alternate_kind) or _evidence_from_mark(
+        alternate_kind, marks.get(alternate_kind),
+        gross_return=_number(outcome.get("alternate_counterfactual_return")),
+        default_observed=observed_through, default_available=available_at,
+    )
+    for evidence in (*all_expressions.values(), *special.values()):
+        if evidence.gross_return is not None and evidence.kind != "CASH" and (
+            evidence.observed_at is None or evidence.available_at is None
+        ):
+            return None
+    selected_evidence = all_expressions.get(selected_kind) or _evidence_from_mark(
+        selected_kind, marks.get(selected_kind),
+        gross_return=_number(outcome.get("selected_return")),
+        default_observed=observed_through, default_available=available_at,
+    )
+    realized = bool(
+        paper_execution is not None
+        and paper_execution.status == "EXITED"
+        and paper_execution.entry_fill_count == 1
+        and paper_execution.exit_fill_count == 1
+        and paper_execution.entry_filled_at is not None
+        and paper_execution.exit_at is not None
+        and paper_execution.entry_fill_price is not None
+        and paper_execution.exit_price is not None
+        and paper_execution.filled_quantity
+        and paper_execution.exited_quantity
+        and paper_execution.realized_gross_return is not None
+        and paper_execution.realized_net_return is not None
+    )
+    state = str(outcome.get("state") or "unmeasurable").upper()
+    horizon_realized = bool(
+        realized and paper_execution is not None and _paper_execution_matches_horizon(
+            plan, paper_execution, int(outcome["horizon_sessions"]),
+        )
+    )
+    sample_eligible = state == OutcomeAttributionState.RESOLVED.value and horizon_realized and selected_kind != "CASH"
+    fill_history_proven = bool(
+        paper_execution is not None
+        and paper_execution.entry_fill_count == 1
+        and paper_execution.exit_fill_count == 1
+    )
+    primary_blocker = None if sample_eligible else (
+        "paper_execution_evidence_missing" if paper_execution is None
+        else "paper_execution_fill_history_unproven" if not fill_history_proven
+        else "paper_execution_not_exited" if not realized
+        else "paper_execution_horizon_mismatch" if not horizon_realized
+        else "outcome_not_resolved" if state != OutcomeAttributionState.RESOLVED.value
+        else "cash_is_not_executable"
+    )
+    base: dict[str, Any] = {
+        "contract_version": OUTCOME_ATTRIBUTION_CONTRACT_VERSION,
+        "stable_unit_key": outcome_attribution_stable_key(plan.trade_plan_id, outcome["horizon"], outcome["horizon_sessions"]),
+        "publication_id": None,
+        "evaluation_version": OUTCOME_ATTRIBUTION_EVALUATION_VERSION,
+        "ticker": plan.ticker,
+        "trade_plan_id": plan.trade_plan_id,
+        "trade_plan_publication_id": plan.publication_id,
+        "opportunity_episode_id": plan.opportunity_episode_id,
+        "decision_revision": plan.decision_revision,
+        "policy_version": plan.policy_version,
+        "selected_expression_kind": selected_kind,
+        "selected_expression_identity": plan.selected_expression_identity,
+        "rank_id": plan.rank_id,
+        "alpha_signal_id": plan.alpha_signal_id,
+        "portfolio_impact_id": plan.portfolio_impact_id,
+        "market_snapshot_id": plan.market_snapshot_id,
+        "market_state_publication_id": plan.market_state_publication_id,
+        "decision_cutoff": plan.cutoff,
+        "evaluation_cutoff": evaluation_cutoff,
+        "decision_input_lineage": plan.input_lineage,
+        "horizon": outcome["horizon"],
+        "horizon_sessions": outcome["horizon_sessions"],
+        "state": state,
+        "observed_through": observed_through,
+        "available_at": available_at,
+        "outcome_evidence": tuple(all_expressions[kind] for kind in sorted(all_expressions)),
+        "selected_evidence": selected_evidence,
+        "selected_gross_return": _number(outcome.get("selected_return")),
+        "selected_net_return": _number(metadata.get("cost_adjusted_selected_return")),
+        "realized_gross_return": paper_execution.realized_gross_return if horizon_realized else None,
+        "realized_net_return": paper_execution.realized_net_return if horizon_realized else None,
+        "counterfactuals": special,
+        "all_expression_counterfactuals": all_expressions,
+        "cost_model_version": str(metadata.get("cost_model_version") or "mixed-expression-cost-model-v1"),
+        "evidence_state": selected_evidence.evidence_state,
+        "paper_execution": paper_execution,
+        "sample_eligible": sample_eligible,
+        "promotion_eligible": sample_eligible,
+        "primary_blocker": primary_blocker,
+        "next_action": (
+            "Use this resolved paper execution for promotion evidence."
+            if sample_eligible
+            else "Complete an exact paper fill and exit for this TradePlan before using the outcome for promotion."
+        ),
+        "mistake_classification": outcome.get("error_type"),
+        "mistake_card": outcome.get("mistake_card") or {},
+        "learning_metadata": {
+            **metadata,
+            "canonical_authority": True,
+            "sample_eligible": sample_eligible,
+            "promotion_eligible": sample_eligible,
+        },
+    }
+    try:
+        return OutcomeAttribution.model_validate(base)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _evidence_from_mark(
+    kind: str,
+    mark: Any,
+    *,
+    gross_return: float | None,
+    default_observed: datetime | None,
+    default_available: datetime | None,
+) -> OutcomeEvidence:
+    details = dict(mark) if isinstance(mark, dict) else {}
+    status = str(details.get("status") or ("measured" if gross_return is not None else "unmeasurable"))
+    missing = gross_return is None and status.lower() in {"unmeasurable", "missing"}
+    observed = _parse_datetime(
+        details.get("observed_at") or details.get("observed_through") or details.get("mark_quote_time")
+    )
+    available = _parse_datetime(details.get("available_at") or details.get("mark_available_at"))
+    if observed is None and gross_return is not None and kind.upper() != "CASH":
+        observed = default_observed
+    if available is None and gross_return is not None and kind.upper() != "CASH":
+        available = default_available
+    return OutcomeEvidence.model_validate({
+        "evidence_id": str(details.get("evidence_id") or f"{kind.lower()}-outcome"),
+        "kind": kind.upper(),
+        "source_id": details.get("source_id") or (
+            "raw.option_quote" if kind.upper() not in {"STOCK", "CASH"} else "confirmed_price_bar"
+        ),
+        "source_version": details.get("source_version") or details.get("snapshot_id"),
+        "observed_at": observed,
+        "observed_through": observed,
+        "available_at": available,
+        "gross_return": None if missing else gross_return,
+        "cost_adjusted_return": _number(details.get("cost_adjusted_return")),
+        "cost_model_version": details.get("cost_model_version"),
+        "evidence_state": str(details.get("evidence_state") or (
+            OutcomeEvidenceState.UNMEASURABLE.value if missing else OutcomeEvidenceState.DERIVED.value
+        )).upper(),
+        "status": status,
+        "details": details,
+    })
+
+
+def _counterfactual_evidence(
+    kind: str,
+    value: Any,
+    observed_through: datetime | None,
+    available_at: datetime | None,
+) -> OutcomeEvidence:
+    number = _number(value)
+    return OutcomeEvidence.model_validate({
+        "evidence_id": f"{kind.lower()}-counterfactual",
+        "kind": kind,
+        "source_id": "derived-counterfactual",
+        "observed_at": observed_through if number is not None else None,
+        "observed_through": observed_through if number is not None else None,
+        "available_at": available_at if number is not None else None,
+        "gross_return": number,
+        "cost_adjusted_return": number,
+        "cost_model_version": "counterfactual-no-execution-cost-v1",
+        "evidence_state": OutcomeEvidenceState.DERIVED.value if number is not None else OutcomeEvidenceState.MISSING.value,
+        "status": "measured" if number is not None else "unmeasurable",
+        "details": {"counterfactual": True},
+    })
+
+
+def _blocker_counts(values: Iterable[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        reason = str(value).split(":", 1)[0]
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def _attribution_surface_row(row: dict[str, Any]) -> dict[str, Any]:
+    counterfactuals = dict(row.get("counterfactuals") or {})
+    expressions = dict(row.get("all_expression_counterfactuals") or {})
+    metadata = dict(row.get("learning_metadata") or {})
+    metadata["expression_returns"] = {
+        str(kind): _number((value or {}).get("gross_return"))
+        for kind, value in expressions.items() if isinstance(value, dict)
+    }
+    stock = dict(counterfactuals.get("STOCK") or {})
+    cash = dict(counterfactuals.get("CASH") or {})
+    trend = dict(counterfactuals.get("TREND") or {})
+    metadata.update({
+        "cost_adjusted_selected_return": _number(row.get("selected_net_return")),
+        "cost_adjusted_stock_counterfactual_return": _number(stock.get("cost_adjusted_return")),
+        "cost_adjusted_cash_return": _number(cash.get("cost_adjusted_return")),
+        "trend_counterfactual_return": _number(trend.get("cost_adjusted_return")),
+    })
+    return {
+        "outcome_attribution_id": row.get("outcome_attribution_id"),
+        "trade_plan_id": row.get("trade_plan_id"),
+        "ticker_decision_id": row.get("trade_plan_id"),
+        "ticker": row.get("ticker"),
+        "as_of": row.get("decision_cutoff"),
+        "horizon": str(row.get("horizon") or "").lower(),
+        "horizon_sessions": row.get("horizon_sessions"),
+        "state": str(row.get("state") or "").lower(),
+        "selected_return": row.get("selected_gross_return"),
+        "stock_counterfactual_return": stock.get("gross_return"),
+        "alternate_counterfactual_return": dict(counterfactuals.get("ALTERNATE_EXPRESSION") or {}).get("gross_return"),
+        "cash_return": cash.get("gross_return"),
+        "metadata": metadata,
+        "scenarios": metadata.get("scenarios") or [],
+        "error_type": row.get("mistake_classification"),
+        "mistake_card": row.get("mistake_card") or {},
+    }
 
 
 def _decision_from_row(row: Any) -> TickerDecision:
@@ -1045,6 +1669,7 @@ def _learning_metadata(
         "delisting_status": delisting_status,
         "sector_slice": sector_slice,
         "regime_slice": regime_slice,
+        "scenarios": fundamental.get("scenarios") or tactical.get("scenarios") or [],
         # Outcome refresh is an online, forward-only evaluator. No outcome is
         # used before its decision as_of, so the purge/embargo condition is
         # satisfied without claiming a backtest fit that did not occur.
@@ -1080,6 +1705,11 @@ def _number(value: Any) -> float | None:
         return None
 
 
+def _integer(value: Any) -> int | None:
+    number = _number(value)
+    return int(number) if number is not None and number.is_integer() else None
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -1094,4 +1724,4 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-__all__ = ["HORIZON_SESSIONS", "TickerDecisionRepository"]
+__all__ = ["HORIZON_SESSIONS", "TickerDecisionRepository", "paper_execution_for_plan"]

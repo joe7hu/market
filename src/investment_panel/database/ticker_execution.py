@@ -273,6 +273,8 @@ class TickerPaperExecutionRepository:
                 "trade_plan": rank_evidence["plan_payload"],
                 "caller_idempotency_key": idempotency_key.strip(),
                 "live_order_submission": False,
+                "entry_fill_count": 0,
+                "exit_fill_count": 0,
             }
             snapshot = decision.model_dump(mode="json")
             snapshot.update({
@@ -707,6 +709,7 @@ class TickerPaperExecutionRepository:
         fees = fill_quantity * max(0.0, _number(policy.get("fee_per_unit")) or 0.0)
         slippage = abs(market_price - (limit_price or market_price))
         new_status = "entered" if complete else "open"
+        policy["entry_fill_count"] = int(_number(policy.get("entry_fill_count")) or 0) + 1
         connection.execute(
             """
             UPDATE app.paper_order
@@ -714,12 +717,12 @@ class TickerPaperExecutionRepository:
                 filled_at = coalesce(filled_at, %s), submitted_at = coalesce(submitted_at, %s),
                 filled_quantity = %s, fees = coalesce(fees, 0) + %s,
                 entry_slippage = %s, unfilled_reason = CASE WHEN %s THEN NULL ELSE %s END,
-                updated_at = %s
+                policy_result = %s, updated_at = %s
             WHERE id = %s::uuid
             """,
             [
                 new_status, market_price, now, now, new_filled, fees, slippage,
-                complete, "partial_fill", now, order["id"],
+                complete, "partial_fill", Jsonb(policy), now, order["id"],
             ],
         )
         return {
@@ -766,6 +769,8 @@ class TickerPaperExecutionRepository:
         fees = FEE_PER_CONTRACT_LEG * len(quoted) * fill_quantity
         midpoint = _option_midpoint(quoted)
         slippage = abs(market_price - midpoint) if midpoint is not None else None
+        policy = dict(order.get("policy_result") or {})
+        policy["entry_fill_count"] = int(_number(policy.get("entry_fill_count")) or 0) + 1
         connection.execute(
             """
             UPDATE app.paper_order
@@ -773,11 +778,11 @@ class TickerPaperExecutionRepository:
                 filled_at = coalesce(filled_at, %s), submitted_at = coalesce(submitted_at, %s),
                 filled_quantity = %s, fees = coalesce(fees, 0) + %s,
                 entry_slippage = %s, unfilled_reason = CASE WHEN %s THEN NULL ELSE %s END,
-                updated_at = %s
+                policy_result = %s, updated_at = %s
             WHERE id = %s::uuid
             """,
             ["entered" if complete else "open", market_price, now, now, new_filled, fees, slippage,
-             complete, "partial_fill", now, order["id"]],
+             complete, "partial_fill", Jsonb(policy), now, order["id"]],
         )
         return {
             "paper_order_id": str(order["id"]),
@@ -882,6 +887,7 @@ class TickerPaperExecutionRepository:
                 if strike is not None and underlying_price <= strike:
                     policy = dict(order.get("policy_result") or {})
                     policy["assignment"] = {"status": "assigned", "strike": strike, "underlying_price": underlying_price}
+                    policy["exit_fill_count"] = int(_number(policy.get("exit_fill_count")) or 0) + 1
                     connection.execute(
                         """
                         UPDATE app.paper_order
@@ -915,15 +921,17 @@ class TickerPaperExecutionRepository:
         fees = FEE_PER_CONTRACT_LEG * len(quoted) * exit_quantity
         midpoint = _option_midpoint(quoted)
         slippage = abs(exit_price - midpoint) if midpoint is not None else None
+        policy = dict(order.get("policy_result") or {})
+        policy["exit_fill_count"] = int(_number(policy.get("exit_fill_count")) or 0) + 1
         connection.execute(
             """
             UPDATE app.paper_order
             SET status = %s, exited_quantity = %s, exit_price = %s, exit_at = %s,
                 fees = coalesce(fees, 0) + %s, exit_slippage = %s,
-                unfilled_reason = NULL, updated_at = %s
+                unfilled_reason = NULL, policy_result = %s, updated_at = %s
             WHERE id = %s::uuid
             """,
-            ["exited" if terminal else "partial_exited", new_exited, exit_price, now, fees, slippage, now, order["id"]],
+            ["exited" if terminal else "partial_exited", new_exited, exit_price, now, fees, slippage, Jsonb(policy), now, order["id"]],
         )
         return {
             "paper_order_id": str(order["id"]),
@@ -965,15 +973,16 @@ class TickerPaperExecutionRepository:
         fee_per_unit = max(0.0, _number(policy.get("fee_per_unit")) or 0.0)
         fees = quantity * fee_per_unit
         new_exited = _quantity(order.get("exited_quantity")) + quantity
+        policy["exit_fill_count"] = int(_number(policy.get("exit_fill_count")) or 0) + 1
         connection.execute(
             """
             UPDATE app.paper_order
             SET status = 'exited', exited_quantity = %s, exit_price = %s,
                 exit_at = %s, fees = coalesce(fees, 0) + %s,
-                updated_at = %s, unfilled_reason = NULL
+                updated_at = %s, unfilled_reason = NULL, policy_result = %s
             WHERE id = %s::uuid
             """,
-            [new_exited, price, now, fees, now, order["id"]],
+            [new_exited, price, now, fees, now, Jsonb(policy), order["id"]],
         )
         return {
             "paper_order_id": str(order["id"]),

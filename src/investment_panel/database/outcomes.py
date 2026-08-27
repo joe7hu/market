@@ -35,7 +35,8 @@ class OutcomeRepository:
                        option_decision.premium_mid, option_decision.entry_price,
                        option_decision.synthetic_legs,
                        option_decision.secured_cash, option_decision.effective_assignment_price,
-                       quote.observed_at, quote.mid, quote.bid, quote.ask, quote.underlying_price,
+                       quote.observed_at, quote.available_at, quote.mid, quote.bid, quote.ask, quote.underlying_price,
+                       short_quote.available_at AS short_available_at,
                        short_quote.mid AS short_mid, short_quote.ask AS short_ask,
                        outcome.maturity_state, outcome.return_1d, outcome.return_5d,
                        outcome.return_20d, outcome.return_60d, outcome.peak_return,
@@ -47,9 +48,10 @@ class OutcomeRepository:
                 JOIN raw.option_snapshot entry_snapshot ON entry_snapshot.id = option_decision.snapshot_id
                 LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
                 LEFT JOIN raw.option_quote quote
-                  ON quote.contract_id = option_decision.contract_id
+                 ON quote.contract_id = option_decision.contract_id
                  AND quote.observed_at > decision.as_of
                  AND quote.observed_at <= %s
+                 AND quote.available_at <= %s
                  AND EXISTS (
                      SELECT 1 FROM raw.option_snapshot mark_snapshot
                      WHERE mark_snapshot.id = quote.snapshot_id
@@ -61,6 +63,7 @@ class OutcomeRepository:
                  AND short_quote.contract_id = (option_decision.synthetic_legs->1->>'contract_id')::bigint
                  AND short_quote.observed_at = quote.observed_at
                  AND short_quote.snapshot_id = quote.snapshot_id
+                 AND short_quote.available_at <= %s
                 WHERE decision.kind = 'option' AND decision.state <> 'REJECTED'
                   AND decision.as_of >= %s - make_interval(days => %s)
                   AND NOT EXISTS (
@@ -73,7 +76,7 @@ class OutcomeRepository:
                        OR option_decision.structure IN ('call_debit_spread', 'put_debit_spread'))
                 ORDER BY decision.id, quote.observed_at
                 """,
-                [reference, reference, lookback_days],
+                [reference, reference, reference, reference, lookback_days],
             ).fetchall()
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:

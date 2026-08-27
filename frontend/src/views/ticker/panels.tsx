@@ -329,6 +329,11 @@ function LearningLoopPanel({ learning }: { learning: TickerLearning }) {
       title="Signal learning loop"
       action={<div className="flex flex-wrap items-center gap-2"><StatusBadge tone={toneFromText(status)}>{status}</StatusBadge><span className="text-xs text-muted-foreground">{promotionLabel} · paper only</span></div>}
     >
+      <p className="border-b border-border px-4 py-3 text-xs text-muted-foreground">
+        Authority: {textValue(learning.outcome_authority, "legacy compatibility")}
+        {learning.outcome_evidence_label ? ` · Evidence: ${learning.outcome_evidence_label}` : ""}
+        {learning.outcome_authority_blocker ? ` · ${learning.outcome_authority_blocker}` : ""}
+      </p>
       <div className="grid gap-0 border-b border-border sm:grid-cols-2 xl:grid-cols-5">
         <LearningMetric label="Effective episodes" value={String(learning.effective_sample_count ?? learning.independent_episode_count ?? 0)} detail="one decision-horizon unit" />
         <LearningMetric label="Trading days" value={numberText(metrics.trading_day_count)} detail="independent span" />

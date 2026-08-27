@@ -463,7 +463,7 @@ class AnalysisRepository:
         for row in rows:
             payload = dict(row["payload"] or {})
             if include_lineage:
-                if model_name == "trade_plan" or "publication_id" not in payload:
+                if model_name in {"trade_plan", "outcome_attribution"} or "publication_id" not in payload:
                     payload["publication_id"] = str(row["publication_id"])
                 if row["published_at"] is not None:
                     payload.setdefault("publication_published_at", row["published_at"].isoformat())
@@ -749,7 +749,7 @@ def _prepare_models(models: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[s
         for source in source_rows:
             payload = _jsonable(dict(source))
             stable_key = str(
-                payload.get("stable_key") or payload.get("decision_id") or payload.get("opportunity_id")
+                payload.get("stable_key") or payload.get("stable_unit_key") or payload.get("decision_id") or payload.get("opportunity_id")
                 or payload.get("event_id") or payload.get("contract_id") or payload.get("symbol") or _hash(payload)
             )
             if stable_key in keys:

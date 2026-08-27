@@ -3,7 +3,7 @@
 from __future__ import annotations
 from datetime import UTC, datetime
 from math import isfinite
-from typing import Any
+from typing import Any, Mapping
 from app.scheduler import scheduler_status
 from investment_panel.core.panel import (
     build_ticker_dossier,
@@ -16,6 +16,8 @@ from app.data_access.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.core.config import AppConfig, OptionAgentConfig
 from investment_panel.core.decision import (
+    InputLineage,
+    OutcomeAttribution,
     TradePlan,
     apply_opportunity_rank_safety,
     build_ticker_decision,
@@ -201,10 +203,15 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "opportunity_rank": rank_row,
         "trade_plan": plan.model_dump(mode="json") if plan is not None else None,
     })
+    outcome_attributions, attribution_blocker = select_current_outcome_attributions(
+        tables.get("outcome_attribution") or [], ticker_decision_payload,
+    )
     learning = ticker_learning_payload(
         ticker_decision_payload,
         tables.get("ticker_outcomes") or [],
         tables,
+        outcome_attributions=outcome_attributions,
+        attribution_blocker=attribution_blocker,
     )
     # Keep the established dossier sections readable by existing clients while
     # making the typed ticker decision the authoritative new surface.
@@ -227,6 +234,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "alpha_signals": signal_rows,
         "opportunity_rank": rank_row,
         "trade_plan": plan.model_dump(mode="json") if plan is not None else None,
+        "outcome_attributions": outcome_attributions,
         "learning": learning,
         "decision_revision": ticker_decision_payload["decision_revision"],
         "found": bool(dossier["coverage"].get("present") or dossier["coverage"]["live"]),
@@ -765,39 +773,64 @@ def ticker_learning_payload(
     ticker_decision: dict[str, Any],
     outcomes: list[dict[str, Any]],
     tables: dict[str, list[dict[str, Any]]] | None = None,
+    *,
+    outcome_attributions: list[dict[str, Any]] | None = None,
+    attribution_blocker: str | None = None,
 ) -> dict[str, Any]:
     """Compose disagreement, expression tournament, mistakes, and policy gates."""
 
     tables = tables or {}
     fundamental = dict(ticker_decision.get("fundamental") or {})
     expressions = dict(ticker_decision.get("expressions") or {})
+    canonical_mode = outcome_attributions is not None or "outcome_attribution" in tables
+    source_attributions = (
+        list(outcome_attributions)
+        if outcome_attributions is not None
+        else list(tables.get("outcome_attribution") or [])
+    )
+    display_outcomes = (
+        [_attribution_learning_row(row) for row in source_attributions]
+        if canonical_mode
+        else list(outcomes)
+    )
+    display_outcomes = [row for row in display_outcomes if row]
     episode_ids = {
         str(row.get("ticker_decision_id") or row.get("decision_id") or "")
-        for row in outcomes
+        for row in display_outcomes
         if row.get("ticker_decision_id") or row.get("decision_id")
     }
     horizon_episode_ids = {
         (str(row.get("ticker_decision_id") or row.get("decision_id") or ""), str(row.get("horizon") or ""))
-        for row in outcomes
+        for row in display_outcomes
         if (row.get("ticker_decision_id") or row.get("decision_id")) and row.get("horizon")
     }
     scenarios = fundamental.get("scenarios") or []
-    global_policy_row = next(iter(tables.get("ticker_policy_learning") or []), {})
-    global_policy_rows = global_policy_row.get("episodes")
-    policy_rows = (
-        list(global_policy_rows)
-        if isinstance(global_policy_rows, list)
-        else [{**row, "scenarios": row.get("scenarios") or scenarios} for row in outcomes]
-    )
-    strategy_learning = evaluate_ticker_policy(policy_rows)
-    return {
-        "independent_episode_count": len(episode_ids) or (1 if outcomes else 0),
+    if canonical_mode:
+        strategy_learning = evaluate_ticker_policy(source_attributions, canonical_only=True)
+        if not source_attributions:
+            strategy_learning["blockers"] = list(dict.fromkeys([
+                *strategy_learning.get("blockers", []),
+                attribution_blocker or "canonical_outcome_attribution_missing",
+            ]))
+            strategy_learning["automatic_promotion"] = False
+            strategy_learning["status"] = "collecting"
+    else:
+        global_policy_row = next(iter(tables.get("ticker_policy_learning") or []), {})
+        global_policy_rows = global_policy_row.get("episodes")
+        policy_rows = (
+            list(global_policy_rows)
+            if isinstance(global_policy_rows, list)
+            else [{**row, "scenarios": row.get("scenarios") or scenarios} for row in display_outcomes]
+        )
+        strategy_learning = evaluate_ticker_policy(policy_rows)
+    payload = {
+        "independent_episode_count": len(episode_ids) or (1 if display_outcomes else 0),
         "independent_horizon_episode_count": len({
             (str(row.get("ticker_decision_id") or row.get("decision_id") or ""), str(row.get("horizon") or ""))
-            for row in outcomes
+            for row in display_outcomes
             if row.get("ticker_decision_id") or row.get("decision_id")
         }),
-        "effective_sample_count": len(horizon_episode_ids) or (1 if outcomes else 0),
+        "effective_sample_count": len(horizon_episode_ids) or (1 if display_outcomes else 0),
         "disagreement": {
             "strongest_bull_case": _first_statement(fundamental.get("evidence_for")),
             "strongest_bear_case": _first_statement(fundamental.get("evidence_against")),
@@ -817,7 +850,7 @@ def ticker_learning_payload(
                             dict(row.get("metadata") or {}).get("expression_returns") or {}
                         ).get(kind),
                     }
-                    for row in outcomes
+                    for row in display_outcomes
                 ],
             }
             for kind, value in expressions.items()
@@ -830,10 +863,137 @@ def ticker_learning_payload(
                 "error_type": row.get("error_type"),
                 "card": row.get("mistake_card") or {},
             }
-            for row in outcomes if row.get("error_type") or row.get("mistake_card")
+            for row in display_outcomes if row.get("error_type") or row.get("mistake_card")
         ],
         "strategy_learning": strategy_learning,
     }
+    if canonical_mode:
+        payload["outcome_authority"] = "outcome-attribution.v1"
+        payload["outcome_authority_blocker"] = attribution_blocker
+        payload["outcome_evidence_label"] = (
+            "REALIZED_PAPER"
+            if any(
+                str((_mapping_value(row.get("paper_execution"))).get("status") or "").upper() == "EXITED"
+                for row in source_attributions
+            )
+            else "COUNTERFACTUAL_MARKS_ONLY" if source_attributions else "UNAVAILABLE"
+        )
+    return payload
+
+
+def select_current_outcome_attributions(
+    rows: list[dict[str, Any]], ticker_decision: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Select only the current plan's exact canonical attribution units."""
+
+    plan = ticker_decision.get("trade_plan")
+    if not isinstance(plan, Mapping) or not plan.get("trade_plan_id"):
+        return [], "trade_plan_missing"
+    symbol = str(ticker_decision.get("ticker") or ticker_decision.get("symbol") or "").upper()
+    plan_id = str(plan["trade_plan_id"])
+    matches = [
+        dict(row) for row in rows
+        if str(row.get("trade_plan_id") or "") == plan_id
+        and str(row.get("ticker") or row.get("symbol") or "").upper() == symbol
+    ]
+    if not matches:
+        return [], "outcome_attribution_missing"
+    expected = {
+        "trade_plan_publication_id": plan.get("publication_id"),
+        "opportunity_episode_id": plan.get("opportunity_episode_id"),
+        "decision_revision": plan.get("decision_revision"),
+        "policy_version": plan.get("policy_version"),
+        "selected_expression_kind": plan.get("selected_expression_kind"),
+        "selected_expression_identity": plan.get("selected_expression_identity"),
+        "rank_id": plan.get("rank_id"),
+        "alpha_signal_id": plan.get("alpha_signal_id"),
+        "portfolio_impact_id": plan.get("portfolio_impact_id"),
+        "market_snapshot_id": plan.get("market_snapshot_id"),
+        "market_state_publication_id": plan.get("market_state_publication_id"),
+    }
+    for row in matches:
+        if str(row.get("contract_version") or "") != "outcome-attribution.v1":
+            return [], "outcome_attribution_contract_invalid"
+        if any(str(row.get(key) or "") != str(value or "") for key, value in expected.items()):
+            return [], "outcome_attribution_lineage_mismatch"
+        if not row.get("outcome_attribution_id"):
+            return [], "outcome_attribution_id_missing"
+        try:
+            attribution = OutcomeAttribution.model_validate(row)
+            expected_lineage = tuple(
+                InputLineage.model_validate(item) for item in (plan.get("input_lineage") or [])
+            )
+            if attribution.decision_input_lineage != expected_lineage:
+                return [], "outcome_attribution_lineage_mismatch"
+        except (TypeError, ValueError, KeyError):
+            return [], "outcome_attribution_invalid"
+    stable_keys = [str(row.get("stable_unit_key") or "") for row in matches]
+    if not all(stable_keys) or len(set(stable_keys)) != len(stable_keys):
+        return [], "outcome_attribution_unit_duplicated"
+    units = {
+        (str(row.get("horizon") or "").upper(), int(row.get("horizon_sessions") or 0))
+        for row in matches
+    }
+    expected_units = {
+        ("TACTICAL", 1), ("TACTICAL", 5), ("TACTICAL", 20),
+        ("FUNDAMENTAL", 63), ("FUNDAMENTAL", 126), ("FUNDAMENTAL", 252),
+    }
+    if units != expected_units:
+        return [], "outcome_attribution_units_incomplete"
+    return sorted(matches, key=lambda row: (str(row.get("horizon") or ""), int(row.get("horizon_sessions") or 0))), None
+
+
+def _attribution_learning_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    value = dict(row)
+    counterfactuals = value.get("counterfactuals") or {}
+    expressions = value.get("all_expression_counterfactuals") or value.get("expression_outcomes") or {}
+    stock = _mapping_value(counterfactuals.get("STOCK"))
+    cash = _mapping_value(counterfactuals.get("CASH"))
+    trend = _mapping_value(counterfactuals.get("TREND"))
+    metadata = dict(value.get("learning_metadata") or {})
+    metadata.update({
+        "expression_returns": {
+            str(kind): _number_value(_mapping_value(item).get("gross_return"))
+            for kind, item in expressions.items()
+        },
+        "cost_adjusted_selected_return": _number_value(value.get("selected_net_return")),
+        "cost_adjusted_stock_counterfactual_return": _number_value(stock.get("cost_adjusted_return")),
+        "cost_adjusted_cash_return": _number_value(cash.get("cost_adjusted_return")),
+        "trend_counterfactual_return": _number_value(trend.get("cost_adjusted_return")),
+    })
+    return {
+        "outcome_attribution_id": value.get("outcome_attribution_id"),
+        "trade_plan_id": value.get("trade_plan_id"),
+        "ticker_decision_id": value.get("trade_plan_id"),
+        "ticker": value.get("ticker"),
+        "as_of": value.get("decision_cutoff"),
+        "horizon": str(value.get("horizon") or "").lower(),
+        "horizon_sessions": value.get("horizon_sessions"),
+        "state": str(value.get("state") or "").lower(),
+        "selected_return": value.get("selected_gross_return"),
+        "stock_counterfactual_return": stock.get("gross_return"),
+        "alternate_counterfactual_return": _mapping_value(counterfactuals.get("ALTERNATE_EXPRESSION")).get("gross_return"),
+        "cash_return": cash.get("gross_return"),
+        "metadata": metadata,
+        "scenarios": metadata.get("scenarios") or [],
+        "error_type": value.get("mistake_classification"),
+        "mistake_card": value.get("mistake_card") or {},
+        "evidence_state": value.get("evidence_state"),
+        "sample_eligible": bool(value.get("sample_eligible")),
+        "promotion_eligible": bool(value.get("promotion_eligible")),
+        "paper_execution": value.get("paper_execution"),
+    }
+
+
+def _mapping_value(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _number_value(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _first_statement(values: Any) -> str | None:

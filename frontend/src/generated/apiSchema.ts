@@ -3838,6 +3838,191 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * OutcomeAttribution
+         * @description Frozen, content-addressed outcome authority for one plan and horizon.
+         */
+        OutcomeAttribution: {
+            /** All Expression Counterfactuals */
+            all_expression_counterfactuals?: {
+                [key: string]: components["schemas"]["OutcomeEvidence"];
+            };
+            /** Alpha Signal Id */
+            alpha_signal_id?: string | null;
+            /** Available At */
+            available_at?: string | null;
+            /**
+             * Contract Version
+             * @default outcome-attribution.v1
+             */
+            contract_version: string;
+            /**
+             * Cost Model Version
+             * @default mixed-expression-cost-model-v1
+             */
+            cost_model_version: string;
+            /** Counterfactuals */
+            counterfactuals?: {
+                [key: string]: components["schemas"]["OutcomeEvidence"];
+            };
+            /**
+             * Decision Cutoff
+             * Format: date-time
+             */
+            decision_cutoff: string;
+            /**
+             * Decision Input Lineage
+             * @default []
+             */
+            decision_input_lineage: components["schemas"]["InputLineage"][];
+            /** Decision Revision */
+            decision_revision: string;
+            /**
+             * Evaluation Cutoff
+             * Format: date-time
+             */
+            evaluation_cutoff: string;
+            /**
+             * Evaluation Version
+             * @default ticker-outcome-attribution-v1
+             */
+            evaluation_version: string;
+            /**
+             * Evidence State
+             * @default MISSING
+             */
+            evidence_state: string;
+            horizon: components["schemas"]["Horizon"];
+            /** Horizon Sessions */
+            horizon_sessions: number;
+            /** Learning Metadata */
+            learning_metadata?: {
+                [key: string]: unknown;
+            };
+            /** Market Snapshot Id */
+            market_snapshot_id?: string | null;
+            /** Market State Publication Id */
+            market_state_publication_id?: string | null;
+            /** Mistake Card */
+            mistake_card?: {
+                [key: string]: unknown;
+            };
+            /** Mistake Classification */
+            mistake_classification?: string | null;
+            /**
+             * Next Action
+             * @default Collect exact post-decision evidence before using this outcome.
+             */
+            next_action: string;
+            /** Observed Through */
+            observed_through?: string | null;
+            /** Opportunity Episode Id */
+            opportunity_episode_id: string;
+            /**
+             * Outcome Attribution Id
+             * @default
+             */
+            outcome_attribution_id: string;
+            /**
+             * Outcome Evidence
+             * @default []
+             */
+            outcome_evidence: components["schemas"]["OutcomeEvidence"][];
+            paper_execution?: components["schemas"]["PaperExecutionOutcome"] | null;
+            /** Policy Version */
+            policy_version: string;
+            /** Portfolio Impact Id */
+            portfolio_impact_id?: string | null;
+            /** Primary Blocker */
+            primary_blocker?: string | null;
+            /**
+             * Promotion Eligible
+             * @default false
+             */
+            promotion_eligible: boolean;
+            /** Publication Id */
+            publication_id?: string | null;
+            /** Rank Id */
+            rank_id?: string | null;
+            /** Realized Gross Return */
+            realized_gross_return?: number | null;
+            /** Realized Net Return */
+            realized_net_return?: number | null;
+            /**
+             * Sample Eligible
+             * @default false
+             */
+            sample_eligible: boolean;
+            selected_evidence?: components["schemas"]["OutcomeEvidence"] | null;
+            /** Selected Expression Identity */
+            selected_expression_identity: string;
+            selected_expression_kind: components["schemas"]["ExpressionKind"];
+            /** Selected Gross Return */
+            selected_gross_return?: number | null;
+            /** Selected Net Return */
+            selected_net_return?: number | null;
+            /** Stable Unit Key */
+            stable_unit_key: string;
+            /** @default UNMEASURABLE */
+            state: components["schemas"]["OutcomeAttributionState"];
+            /** Ticker */
+            ticker: string;
+            /** Trade Plan Id */
+            trade_plan_id: string;
+            /** Trade Plan Publication Id */
+            trade_plan_publication_id: string;
+        };
+        /**
+         * OutcomeAttributionState
+         * @enum {string}
+         */
+        OutcomeAttributionState: "OBSERVING" | "RESOLVED" | "UNMEASURABLE" | "QUARANTINED";
+        /**
+         * OutcomeEvidence
+         * @description One immutable post-decision mark or counterfactual evidence item.
+         */
+        OutcomeEvidence: {
+            /** Available At */
+            available_at?: string | null;
+            /** Cost Adjusted Return */
+            cost_adjusted_return?: number | null;
+            /** Cost Model Version */
+            cost_model_version?: string | null;
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Evidence Id
+             * @default
+             */
+            evidence_id: string;
+            /**
+             * Evidence State
+             * @default MISSING
+             */
+            evidence_state: string;
+            /** Gross Return */
+            gross_return?: number | null;
+            /**
+             * Kind
+             * @default outcome
+             */
+            kind: string;
+            /** Observed At */
+            observed_at?: string | null;
+            /** Observed Through */
+            observed_through?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Version */
+            source_version?: string | null;
+            /**
+             * Status
+             * @default unmeasurable
+             */
+            status: string;
+        };
         /** PanelContractResponse */
         PanelContractResponse: {
             /** Frontend Table Keys */
@@ -3874,6 +4059,63 @@ export interface components {
             status?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * PaperExecutionOutcome
+         * @description Immutable snapshot of the exact paper-order evidence available at evaluation.
+         */
+        PaperExecutionOutcome: {
+            /** Available At */
+            available_at?: string | null;
+            /** Contract Multiplier */
+            contract_multiplier?: number | null;
+            /** Entry Fill Count */
+            entry_fill_count?: number | null;
+            /** Entry Fill Price */
+            entry_fill_price?: number | null;
+            /** Entry Filled At */
+            entry_filled_at?: string | null;
+            /** Entry Slippage */
+            entry_slippage?: number | null;
+            /**
+             * Evidence State
+             * @default MISSING
+             */
+            evidence_state: string;
+            /** Exit At */
+            exit_at?: string | null;
+            /** Exit Fill Count */
+            exit_fill_count?: number | null;
+            /** Exit Price */
+            exit_price?: number | null;
+            /** Exit Slippage */
+            exit_slippage?: number | null;
+            /** Exited Quantity */
+            exited_quantity?: number | null;
+            /** Fees */
+            fees?: number | null;
+            /** Filled Quantity */
+            filled_quantity?: number | null;
+            /** Observed Through */
+            observed_through?: string | null;
+            /**
+             * Paper Only
+             * @default true
+             */
+            paper_only: boolean;
+            /** Paper Order Id */
+            paper_order_id?: string | null;
+            /** Realized Gross Return */
+            realized_gross_return?: number | null;
+            /** Realized Net Return */
+            realized_net_return?: number | null;
+            /**
+             * Status
+             * @default MISSING
+             */
+            status: string;
+            /** Trade Plan Id */
+            trade_plan_id: string;
         };
         /**
          * PortfolioImpact
@@ -5191,6 +5433,8 @@ export interface components {
             }[];
             opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
             opportunity_rank?: components["schemas"]["OpportunityRank"] | null;
+            /** Outcome Attributions */
+            outcome_attributions?: components["schemas"]["OutcomeAttribution"][];
             /**
              * Policy Version
              * @default risk-policy.v2:legacy
