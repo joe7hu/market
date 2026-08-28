@@ -86,6 +86,129 @@ def test_market_publication_builds_visible_models_from_normalized_quotes(migrate
         runtime.close()
 
 
+def test_market_crypto_volume_uses_fixed_utc_windows_and_lineage(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        source_id = "daily-market-prices"
+        ingestion.register_source(source_id, name="Daily market prices", family="market_data", kind="daily_bars")
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = market_analysis._completed_crypto_dates(cutoff, count=252)
+        run_id = ingestion.start_run(source_id, "price_bars")
+        rows = [
+            {
+                "symbol": symbol,
+                "date": trading_date,
+                "open": 1,
+                "high": 1,
+                "low": 1,
+                "close": 1,
+                "volume": base + index,
+                "currency": "USD",
+            }
+            for symbol, base in (("BTC-USD", 100), ("ETH-USD", 200), ("SOL-USD", 300))
+            for index, trading_date in enumerate(dates)
+        ]
+        assert ingestion.store_price_bars(
+            run_id, source_id, rows,
+            asset_classes={symbol: "crypto" for symbol in ("BTC-USD", "ETH-USD", "SOL-USD")},
+        ) == len(rows)
+        ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=3)
+
+        result = refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        states = {
+            horizon: next(item for item in dimensions if item.dimension == "crypto liquidity")
+            for horizon, dimensions in snapshot.horizons.items()
+        }
+        assert [states[horizon].evidence_status for horizon in MARKET_HORIZONS] == [
+            "unavailable", "available", "available", "available"
+        ]
+        assert states["intraday"].blockers == ("crypto_liquidity_daily_volume_unsupported_for_intraday",)
+        assert states["intraday"].data_requests == ["intraday_crypto_spread_depth_execution_data"]
+        assert [states[horizon].expected_calendar_days for horizon in MARKET_HORIZONS] == [0, 5, 40, 252]
+        assert [len(states[horizon].lineage) for horizon in MARKET_HORIZONS] == [0, 15, 120, 756]
+        state = states["1-5 trading days"]
+        assert state.state == "reported daily USD crypto trading volume"
+        assert state.benchmark_key == "market-crypto-majors"
+        assert tuple(state.eligible_members) == ("BTC-USD", "ETH-USD", "SOL-USD")
+        assert state.latest_aggregate_volume_usd == pytest.approx(600)
+        assert state.median_aggregate_daily_volume_usd == pytest.approx(606)
+        assert state.latest_to_horizon_median_ratio == pytest.approx(600 / 606)
+        assert state.window_start == dates[4].isoformat()
+        assert state.window_end == dates[0].isoformat()
+        assert all(item.field == "crypto_daily_trading_volume_usd" for item in state.lineage)
+        assert all(item.available_at <= cutoff and item.currency == "USD" for item in state.lineage)
+        assert all("three-of-three denominator" in driver for driver in state.change_drivers[:1])
+        assert result["coverage_rows"] == 48
+        crypto_coverage = [
+            row for row in snapshot.coverage_matrix.rows if row.dimension == "crypto liquidity"
+        ]
+        assert [row.current_status for row in crypto_coverage] == ["unavailable", "available", "available", "available"]
+        assert [len(row.input_lineage) for row in crypto_coverage] == [0, 15, 120, 756]
+        assert all(row.decision_impact == "context" for row in crypto_coverage)
+
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE raw.price_bar SET volume = volume + 1 WHERE source_id = %s AND trading_date = %s",
+                [source_id, dates[0]],
+            )
+        changed = refresh_market_publication(runtime, now=cutoff)
+        assert changed["snapshot_id"] != result["snapshot_id"]
+    finally:
+        runtime.close()
+
+
+def test_market_crypto_volume_fails_closed_for_wrong_currency(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        source_id = "daily-market-prices"
+        ingestion.register_source(source_id, name="Daily market prices", family="market_data", kind="daily_bars")
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = market_analysis._completed_crypto_dates(cutoff, count=5)
+        run_id = ingestion.start_run(source_id, "price_bars")
+        rows = [
+            {
+                "symbol": symbol, "date": trading_date, "open": 1, "high": 1, "low": 1,
+                "close": 1, "volume": 10, "currency": "EUR",
+            }
+            for symbol in ("BTC-USD", "ETH-USD", "SOL-USD")
+            for trading_date in dates
+        ]
+        ingestion.store_price_bars(
+            run_id, source_id, rows,
+            asset_classes={symbol: "crypto" for symbol in ("BTC-USD", "ETH-USD", "SOL-USD")},
+        )
+        ingestion.finish_run(run_id, "succeeded")
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        state = next(item for item in snapshot.horizons["1-5 trading days"] if item.dimension == "crypto liquidity")
+        coverage = next(
+            row for row in snapshot.coverage_matrix.rows
+            if row.dimension == "crypto liquidity" and row.horizon == "1-5 trading days"
+        )
+        assert state.evidence_status == "unavailable"
+        assert state.blockers == ("crypto_daily_trading_volume_wrong_currency",)
+        assert state.wrong_currency_member_count == 3
+        assert state.latest_aggregate_volume_usd is None
+        assert state.median_aggregate_daily_volume_usd is None
+        assert not state.lineage
+        assert coverage.current_status == "unavailable"
+        assert coverage.wrong_currency_member_count == 3
+        assert not coverage.input_lineage
+    finally:
+        runtime.close()
+
+
 def test_market_publication_uses_prior_year_close_for_ytd(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

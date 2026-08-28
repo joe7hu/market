@@ -99,8 +99,9 @@ def confirmed_daily_bars(
             WHERE %s::integer IS NULL OR recency_rank <= %s
         )
         SELECT id AS fact_id, fact_table, ingest_run_id,
-               instrument_id, trading_date, open, high, low, close, volume,
-               source_id, observed_at, available_at, confirmed_at, fact_rank
+               instrument_id, trading_date, open, high, low, close, volume, currency,
+               source_id, observed_at, available_at, confirmed_at,
+               confirmed_at AS run_finished_at, fact_rank
         FROM bounded
         WHERE %s::integer IS NULL OR fact_rank <= %s::integer + 1
         ORDER BY instrument_id, trading_date, available_at, confirmed_at, source_id

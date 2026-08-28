@@ -36,6 +36,9 @@ _HORIZON_LOOKBACK = {
 }
 _MARKET_STALE_AFTER = timedelta(days=7)
 _BENCHMARK_KEY = "market-equity-etf"
+_CRYPTO_BENCHMARK_KEY = "market-crypto-majors"
+_CRYPTO_SOURCE_ID = "daily-market-prices"
+_CRYPTO_SYMBOLS = ("BTC-USD", "ETH-USD", "SOL-USD")
 _CORPORATE_BENCHMARK_KEY = "market-corporate-equity"
 _CORPORATE_SOURCE_ID = "sec_companyfacts"
 _CORPORATE_METRIC_SET = "sec_companyfacts"
@@ -131,6 +134,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
         ]
         event_risk_evidence = _event_risk_evidence(connection, as_of)
         corporate_cycle_evidence = _corporate_cycle_evidence(connection, instrument_rows, as_of)
+        crypto_volume_evidence = _crypto_volume_evidence(connection, instrument_rows, as_of)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in price_rows:
         grouped[str(row["symbol"])].append(row)
@@ -143,7 +147,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
     input_lineage = _market_lineage(price_rows, valuation_rows, as_of)
     snapshot = _market_snapshot(
         as_of, assets, drivers, input_lineage, horizon_evidence, event_risk_evidence,
-        volatility_evidence, corporate_cycle_evidence,
+        volatility_evidence, corporate_cycle_evidence, crypto_volume_evidence,
     )
     coverage_rows = _coverage_rows(snapshot.coverage_matrix)
     analysis = AnalysisRepository(runtime)
@@ -177,6 +181,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             "source_lineage": [item.model_dump(mode="json") for item in input_lineage],
             "volatility_evidence": volatility_inputs,
             "corporate_cycle_evidence": _corporate_cycle_inputs(corporate_cycle_evidence),
+            "crypto_volume_evidence": _crypto_volume_inputs(crypto_volume_evidence),
         },
         feature_versions={"market_environment": "v2"},
     )
@@ -566,6 +571,385 @@ def _volatility_evidence(
             "benchmark_key": _BENCHMARK_KEY,
         }
     return result
+
+
+def _crypto_volume_evidence(
+    connection: Any,
+    instrument_rows: list[dict[str, Any]],
+    cutoff: datetime,
+) -> dict[str, dict[str, Any]]:
+    instruments = {str(row.get("symbol")): row for row in instrument_rows}
+    expected_instruments = {
+        symbol: instruments.get(symbol) for symbol in _CRYPTO_SYMBOLS
+    }
+    missing_instruments = sum(row is None for row in expected_instruments.values())
+    wrong_asset_class = sum(
+        row is not None and str(row.get("asset_class") or "").lower() != "crypto"
+        for row in expected_instruments.values()
+    )
+    crypto_instrument_ids = [
+        int(row["id"])
+        for row in expected_instruments.values()
+        if row is not None and str(row.get("asset_class") or "").lower() == "crypto"
+    ]
+    crypto_bars = (
+        confirmed_daily_bars(
+            connection, crypto_instrument_ids, as_of=cutoff, max_bars=400, include_versions=True,
+        )
+        if crypto_instrument_ids else {}
+    )
+    source = connection.execute(
+        """
+        SELECT enabled, operational_state, health_owner, freshness_seconds
+        FROM ingest.source
+        WHERE id = %s
+        """,
+        [_CRYPTO_SOURCE_ID],
+    ).fetchone()
+    source_blocker: str | None = None
+    source_count_key = "invalid_member_count"
+    freshness_seconds = 0
+    latest_finished_at: datetime | None = None
+    member_finished_at: dict[int, datetime] = {}
+    if source is None:
+        source_blocker = "crypto_daily_trading_volume_source_unavailable"
+    else:
+        source = dict(source)
+        freshness_seconds = int(source.get("freshness_seconds") or 0)
+        if (
+            not source.get("enabled")
+            or source.get("operational_state") != "active"
+            or source.get("health_owner") != "update_market_data"
+            or freshness_seconds <= 0
+        ):
+            source_blocker = "crypto_daily_trading_volume_source_lifecycle_mismatch"
+        else:
+            run = connection.execute(
+                """
+                SELECT max(finished_at) AS finished_at
+                FROM ingest.run
+                WHERE source_id = %s
+                  AND capability = 'price_bars'
+                  AND status IN ('succeeded', 'partial')
+                  AND finished_at IS NOT NULL
+                  AND finished_at <= %s
+                """,
+                [_CRYPTO_SOURCE_ID, cutoff],
+            ).fetchone()
+            latest_finished_at = _as_utc(run["finished_at"]) if run and run["finished_at"] else None
+            if latest_finished_at is None:
+                source_blocker = "crypto_daily_trading_volume_source_run_unavailable"
+            elif cutoff - latest_finished_at > timedelta(seconds=freshness_seconds):
+                source_blocker = "crypto_daily_trading_volume_source_run_stale"
+                source_count_key = "stale_member_count"
+            else:
+                member_runs = connection.execute(
+                    """
+                    WITH facts AS (
+                        SELECT id, instrument_id, source_id, available_at
+                        FROM raw.price_bar
+                        UNION ALL
+                        SELECT id, instrument_id, source_id, available_at
+                        FROM raw.price_bar_history
+                    )
+                    SELECT fact.instrument_id, max(run.finished_at) AS finished_at
+                    FROM facts fact
+                    JOIN raw.price_bar_fact_availability availability
+                      ON availability.fact_id = fact.id
+                     AND availability.fact_available_at = fact.available_at
+                    JOIN ingest.run run ON run.id = availability.ingest_run_id
+                    WHERE fact.source_id = %s
+                      AND fact.instrument_id = ANY(%s)
+                      AND run.status IN ('succeeded', 'partial')
+                      AND run.finished_at IS NOT NULL
+                      AND run.finished_at <= %s
+                    GROUP BY fact.instrument_id
+                    """,
+                    [_CRYPTO_SOURCE_ID, crypto_instrument_ids, cutoff],
+                ).fetchall()
+                member_finished_at = {
+                    int(row["instrument_id"]): _as_utc(row["finished_at"])
+                    for row in member_runs
+                    if _as_utc(row["finished_at"]) is not None
+                }
+
+    result: dict[str, dict[str, Any]] = {}
+    for horizon, lookback in _HORIZON_LOOKBACK.items():
+        if lookback is None:
+            result[horizon] = {
+                "available": False,
+                "status": "unavailable",
+                "benchmark_key": _CRYPTO_BENCHMARK_KEY,
+                "eligible_members": _CRYPTO_SYMBOLS,
+                "eligible_member_count": len(_CRYPTO_SYMBOLS),
+                "available_member_count": 0,
+                "missing_member_count": 0,
+                "stale_member_count": 0,
+                "truncated_member_count": 0,
+                "duplicate_member_count": 0,
+                "invalid_member_count": 0,
+                "wrong_currency_member_count": 0,
+                "wrong_asset_class_member_count": 0,
+                "wrong_source_member_count": 0,
+                "expected_calendar_days": 0,
+                "window_start": None,
+                "window_end": None,
+                "latest_aggregate_volume_usd": None,
+                "median_aggregate_daily_volume_usd": None,
+                "latest_to_horizon_median_ratio": None,
+                "freshness_max_age_seconds": freshness_seconds or None,
+                "freshness_latest_available_at": latest_finished_at,
+                "lineage": (),
+                "valid_rows": (),
+                "blockers": ["crypto_liquidity_daily_volume_unsupported_for_intraday"],
+                "data_requests": ["intraday_crypto_spread_depth_execution_data"],
+            }
+            continue
+
+        expected = _completed_crypto_dates(cutoff, count=lookback)
+        evidence: dict[str, Any] = {
+            "available": False,
+            "status": "unavailable",
+            "benchmark_key": _CRYPTO_BENCHMARK_KEY,
+            "eligible_members": _CRYPTO_SYMBOLS,
+            "eligible_member_count": len(_CRYPTO_SYMBOLS),
+            "available_member_count": 0,
+            "missing_member_count": missing_instruments,
+            "stale_member_count": 0,
+            "truncated_member_count": 0,
+            "duplicate_member_count": 0,
+            "invalid_member_count": 0,
+            "wrong_currency_member_count": 0,
+            "wrong_asset_class_member_count": wrong_asset_class,
+            "wrong_source_member_count": 0,
+            "expected_calendar_days": lookback,
+            "window_start": expected[-1],
+            "window_end": expected[0],
+            "latest_aggregate_volume_usd": None,
+            "median_aggregate_daily_volume_usd": None,
+            "latest_to_horizon_median_ratio": None,
+            "freshness_max_age_seconds": freshness_seconds or None,
+            "freshness_latest_available_at": latest_finished_at,
+            "lineage": (),
+            "valid_rows": (),
+            "blockers": [],
+            "data_requests": ["update_market_data"],
+        }
+        if source_blocker:
+            evidence["blockers"] = [source_blocker]
+            evidence[source_count_key] = len(_CRYPTO_SYMBOLS)
+            result[horizon] = evidence
+            continue
+
+        valid_rows: list[dict[str, Any]] = []
+        missing = stale = truncated = duplicate = invalid = wrong_currency = wrong_source = 0
+        expected_set = set(expected)
+        for symbol in _CRYPTO_SYMBOLS:
+            member = expected_instruments[symbol]
+            if member is None:
+                continue
+            if str(member.get("asset_class") or "").lower() != "crypto":
+                continue
+            member_run_finished_at = member_finished_at.get(int(member["id"]))
+            if member_run_finished_at is None:
+                missing += 1
+                continue
+            if cutoff - member_run_finished_at > timedelta(seconds=freshness_seconds):
+                stale += 1
+                continue
+            all_rows = [dict(row) for row in crypto_bars.get(int(member["id"]), ())]
+            if not all_rows:
+                missing += 1
+                continue
+            source_rows = [row for row in all_rows if str(row.get("source_id")) == _CRYPTO_SOURCE_ID]
+            if not source_rows:
+                wrong_source += 1
+                continue
+            source_rows_by_date: dict[date, list[dict[str, Any]]] = defaultdict(list)
+            for row in source_rows:
+                if row.get("trading_date") in expected_set:
+                    source_rows_by_date[row["trading_date"]].append(row)
+            relevant = []
+            duplicate_version = False
+            for trading_date in expected:
+                candidates = source_rows_by_date.get(trading_date, [])
+                if not candidates:
+                    continue
+                candidates.sort(
+                    key=lambda row: (
+                        _as_utc(row.get("available_at")) or datetime.min.replace(tzinfo=UTC),
+                        _as_utc(row.get("confirmed_at")) or datetime.min.replace(tzinfo=UTC),
+                        int(row.get("fact_id") or 0),
+                    )
+                )
+                newest = candidates[-1]
+                newest_key = (
+                    _as_utc(newest.get("available_at")),
+                    _as_utc(newest.get("confirmed_at")),
+                )
+                if sum(
+                    (
+                        _as_utc(row.get("available_at")),
+                        _as_utc(row.get("confirmed_at")),
+                    ) == newest_key
+                    for row in candidates
+                ) > 1:
+                    duplicate_version = True
+                relevant.append(newest)
+            if not relevant:
+                truncated += 1
+                continue
+            dates = [row.get("trading_date") for row in relevant]
+            if duplicate_version or len(dates) != len(set(dates)):
+                duplicate += 1
+                continue
+            if len(relevant) != len(expected) or set(dates) != expected_set:
+                truncated += 1
+                continue
+            selected_by_date = {row["trading_date"]: row for row in relevant}
+            selected = []
+            for trading_date in expected:
+                row = dict(selected_by_date[trading_date])
+                row["symbol"] = symbol
+                selected.append(row)
+            observed = [_as_utc(row.get("observed_at")) for row in selected]
+            available = [_as_utc(row.get("available_at")) for row in selected]
+            confirmed = [_as_utc(row.get("confirmed_at")) for row in selected]
+            if any(
+                value is None or value > cutoff
+                for values in (observed, available, confirmed)
+                for value in values
+            ):
+                invalid += 1
+                continue
+            latest_available = max(value for value in available if value is not None)
+            if cutoff - latest_available > _MARKET_STALE_AFTER:
+                stale += 1
+                continue
+            if any(str(row.get("currency") or "").upper() != "USD" for row in selected):
+                wrong_currency += 1
+                continue
+            volumes = [_finite_number(row.get("volume")) for row in selected]
+            if any(value is None or value <= 0 for value in volumes):
+                invalid += 1
+                continue
+            valid_rows.extend(selected)
+
+        evidence.update({
+            "available_member_count": len(valid_rows) // lookback,
+            "missing_member_count": missing_instruments + missing,
+            "stale_member_count": stale,
+            "truncated_member_count": truncated,
+            "duplicate_member_count": duplicate,
+            "invalid_member_count": invalid,
+            "wrong_currency_member_count": wrong_currency,
+            "wrong_asset_class_member_count": wrong_asset_class,
+            "wrong_source_member_count": wrong_source,
+        })
+        quality_counts = (
+            missing_instruments + missing,
+            wrong_asset_class,
+            stale,
+            truncated,
+            duplicate,
+            invalid,
+            wrong_currency,
+            wrong_source,
+        )
+        if not any(quality_counts) and evidence["available_member_count"] == len(_CRYPTO_SYMBOLS):
+            aggregates = {
+                trading_date: sum(
+                    _finite_number(row["volume"]) or 0
+                    for row in valid_rows
+                    if row["trading_date"] == trading_date
+                )
+                for trading_date in expected
+            }
+            if all(math.isfinite(value) and value > 0 for value in aggregates.values()):
+                latest_volume = aggregates[expected[0]]
+                median_volume = median(aggregates.values())
+                ratio = latest_volume / median_volume if median_volume > 0 else None
+                if ratio is not None and not math.isfinite(ratio):
+                    ratio = None
+                evidence.update({
+                    "available": True,
+                    "status": "available",
+                    "latest_aggregate_volume_usd": latest_volume,
+                    "median_aggregate_daily_volume_usd": median_volume,
+                    "latest_to_horizon_median_ratio": ratio,
+                    "lineage": _crypto_volume_lineage(valid_rows, cutoff),
+                    "valid_rows": tuple(valid_rows),
+                    "blockers": [],
+                    "data_requests": [],
+                })
+        if not evidence["available"]:
+            blockers = []
+            for count, blocker in (
+                (evidence["missing_member_count"], "crypto_daily_trading_volume_missing"),
+                (evidence["wrong_asset_class_member_count"], "crypto_daily_trading_volume_wrong_asset_class"),
+                (evidence["stale_member_count"], "crypto_daily_trading_volume_stale"),
+                (evidence["truncated_member_count"], "crypto_daily_trading_volume_truncated"),
+                (evidence["duplicate_member_count"], "crypto_daily_trading_volume_duplicate"),
+                (evidence["invalid_member_count"], "crypto_daily_trading_volume_invalid"),
+                (evidence["wrong_currency_member_count"], "crypto_daily_trading_volume_wrong_currency"),
+                (evidence["wrong_source_member_count"], "crypto_daily_trading_volume_wrong_source"),
+            ):
+                if count:
+                    blockers.append(blocker)
+            evidence["blockers"] = blockers or ["crypto_daily_trading_volume_unavailable"]
+        result[horizon] = evidence
+    return result
+
+
+def _crypto_volume_lineage(rows: list[dict[str, Any]], cutoff: datetime) -> tuple[InputLineage, ...]:
+    lineage: list[InputLineage] = []
+    for row in rows:
+        available_at = _as_utc(row.get("available_at"))
+        observed_at = _as_utc(row.get("observed_at"))
+        confirmed_at = _as_utc(row.get("confirmed_at"))
+        if available_at is None or observed_at is None or confirmed_at is None:
+            continue
+        fact_table = str(row.get("fact_table") or "raw.price_bar")
+        fact_id = int(row["fact_id"]) if row.get("fact_id") is not None else None
+        revision = f"{fact_table}:{fact_id}:{available_at.isoformat()}"
+        lineage.append(InputLineage(
+            field="crypto_daily_trading_volume_usd",
+            source_id=_CRYPTO_SOURCE_ID,
+            source_version=str(row.get("ingest_run_id") or revision),
+            event_at=observed_at,
+            available_at=available_at,
+            received_at=confirmed_at,
+            revision=revision,
+            cutoff=cutoff,
+            fact_id=fact_id,
+            fact_table=fact_table,
+            symbol=str(row.get("symbol")),
+            trading_date=row.get("trading_date"),
+            currency="USD",
+            observed_at=observed_at,
+            confirmed_at=confirmed_at,
+        run_finished_at=_as_utc(row.get("run_finished_at")) or confirmed_at,
+            ingest_run_id=str(row.get("ingest_run_id")) if row.get("ingest_run_id") is not None else None,
+        ))
+    return tuple(sorted(lineage, key=lambda item: (item.trading_date, item.symbol, item.fact_id or 0)))
+
+
+def _completed_crypto_dates(as_of: datetime, *, count: int) -> tuple[date, ...]:
+    reference = _as_utc(as_of)
+    if reference is None or count <= 0:
+        return ()
+    return tuple(reference.date() - timedelta(days=offset) for offset in range(1, count + 1))
+
+
+def _crypto_volume_inputs(evidence: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return {
+        horizon: {
+            key: value
+            for key, value in row.items()
+            if key not in {"lineage", "valid_rows"}
+        } | {"lineage": [item.model_dump(mode="json") for item in row.get("lineage") or ()]}
+        for horizon, row in evidence.items()
+    }
 
 
 def _corporate_cycle_evidence(
@@ -1039,6 +1423,7 @@ def _market_snapshot(
     event_risk_evidence: dict[str, dict[str, Any]] | None = None,
     volatility_evidence: dict[str, dict[str, Any]] | None = None,
     corporate_cycle_evidence: dict[str, Any] | None = None,
+    crypto_volume_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> MarketStateSnapshot:
     reference = cutoff.astimezone(UTC)
     del assets, drivers
@@ -1046,6 +1431,7 @@ def _market_snapshot(
     event_risk_evidence = event_risk_evidence or {}
     volatility_evidence = volatility_evidence or {}
     corporate_cycle_evidence = corporate_cycle_evidence or {}
+    crypto_volume_evidence = crypto_volume_evidence or {}
     dimensions: dict[str, tuple[MarketDimensionState, ...]] = {}
     for horizon in MARKET_HORIZONS:
         evidence = horizon_evidence.get(horizon, {})
@@ -1189,6 +1575,50 @@ def _market_snapshot(
                         duplicate_member_count=corporate_cycle_evidence.get("duplicate_member_count"),
                         invalid_member_count=corporate_cycle_evidence.get("invalid_member_count"),
                     ))
+            elif dimension == "crypto liquidity":
+                crypto = crypto_volume_evidence.get(horizon, {})
+                crypto_fields = {
+                    key: crypto.get(key)
+                    for key in (
+                        "benchmark_key", "eligible_members", "eligible_member_count", "available_member_count",
+                        "missing_member_count", "stale_member_count", "truncated_member_count",
+                        "duplicate_member_count", "invalid_member_count", "wrong_currency_member_count",
+                        "wrong_asset_class_member_count", "wrong_source_member_count", "expected_calendar_days",
+                        "window_start", "window_end", "latest_aggregate_volume_usd",
+                        "median_aggregate_daily_volume_usd", "latest_to_horizon_median_ratio",
+                        "freshness_max_age_seconds", "freshness_latest_available_at",
+                    )
+                }
+                if crypto.get("available"):
+                    horizon_rows.append(MarketDimensionState(
+                        dimension=dimension,
+                        horizon=horizon,
+                        state="reported daily USD crypto trading volume",
+                        change_drivers=(
+                            "Reported daily USD crypto trading volume; three-of-three denominator: BTC-USD, ETH-USD, SOL-USD.",
+                            f"Latest completed UTC aggregate: {crypto['latest_aggregate_volume_usd']:.2f} USD; "
+                            f"horizon median: {crypto['median_aggregate_daily_volume_usd']:.2f} USD; "
+                            f"latest/median ratio: {crypto['latest_to_horizon_median_ratio']:.6f}.",
+                            f"Exact completed UTC window {crypto['window_start']} through {crypto['window_end']} "
+                            f"({crypto['expected_calendar_days']} dates).",
+                        ),
+                        evidence_status="available",
+                        uncertainty="descriptive reported daily trading volume only; not full liquidity, execution capacity, or trading authority",
+                        quality="coingecko_reported_daily_trading_volume",
+                        lineage=tuple(crypto.get("lineage") or ()),
+                        data_requests=(),
+                        **crypto_fields,
+                    ))
+                else:
+                    horizon_rows.append(MarketDimensionState(
+                        dimension=dimension,
+                        horizon=horizon,
+                        evidence_status="unavailable",
+                        uncertainty="exact point-in-time daily USD crypto trading-volume evidence is incomplete, stale, or invalid",
+                        blockers=tuple(crypto.get("blockers") or ("crypto_daily_trading_volume_unavailable",)),
+                        data_requests=tuple(crypto.get("data_requests") or ("update_market_data",)),
+                        **crypto_fields,
+                    ))
             elif dimension == "event risk" and event_evidence.get("available"):
                 scheduled_events = tuple(event_evidence.get("scheduled_events") or ())
                 horizon_rows.append(MarketDimensionState(
@@ -1237,7 +1667,8 @@ def _market_snapshot(
     measured_lineage = _lineage_union(
         tuple(evidence.get("lineage") or ())
         for evidence in (
-            *horizon_evidence.values(), *volatility_evidence.values(), *event_risk_evidence.values(), corporate_cycle_evidence
+            *horizon_evidence.values(), *volatility_evidence.values(), *event_risk_evidence.values(),
+            corporate_cycle_evidence, *crypto_volume_evidence.values()
         )
         if evidence.get("available")
     )
@@ -1254,7 +1685,7 @@ def _market_snapshot(
     rows = tuple(
         _coverage_row(
             horizon, dimension, reference, horizon_evidence, event_risk_evidence, volatility_evidence,
-            corporate_cycle_evidence,
+            corporate_cycle_evidence, crypto_volume_evidence,
         )
         for horizon in MARKET_HORIZONS
         for dimension in MARKET_DIMENSIONS
@@ -1290,15 +1721,18 @@ def _coverage_row(
     event_risk_evidence: dict[str, dict[str, Any]] | None = None,
     volatility_evidence: dict[str, dict[str, Any]] | None = None,
     corporate_cycle_evidence: dict[str, Any] | None = None,
+    crypto_volume_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> CoverageMatrixRow:
     evidence = horizon_evidence.get(horizon, {})
     event_evidence = (event_risk_evidence or {}).get(horizon, {})
     volatility = (volatility_evidence or {}).get(horizon, {})
     corporate = corporate_cycle_evidence or {}
+    crypto = (crypto_volume_evidence or {}).get(horizon, {})
     selected_evidence = (
         event_evidence if dimension == "event risk"
         else volatility if dimension == "volatility"
         else corporate if dimension == "corporate cycle"
+        else crypto if dimension == "crypto liquidity"
         else evidence
     )
     available = (
@@ -1309,6 +1743,8 @@ def _coverage_row(
         dimension == "event risk" and bool(event_evidence.get("available"))
     ) or (
         dimension == "corporate cycle" and horizon == _CORPORATE_HORIZON and bool(corporate.get("available"))
+    ) or (
+        dimension == "crypto liquidity" and bool(crypto.get("available"))
     )
     lineage = tuple(selected_evidence.get("lineage") or ()) if available else ()
     provider = ",".join(sorted({item.source_id for item in lineage})) or None
@@ -1325,6 +1761,8 @@ def _coverage_row(
             if horizon != _CORPORATE_HORIZON
             else tuple(corporate.get("blockers") or ("corporate_cycle_inputs_unavailable",))
         )
+    elif dimension == "crypto liquidity":
+        blockers = tuple(crypto.get("blockers") or ("crypto_daily_trading_volume_unavailable",))
     elif dimension != "equity internals":
         blockers = (_UNSUPPORTED_DIMENSIONS[dimension][0],)
     if dimension in {"equity internals", "volatility"}:
@@ -1340,6 +1778,10 @@ def _coverage_row(
         data_requests = () if available else (
             _CORPORATE_HORIZON_BLOCKERS[horizon][1]
             if horizon != _CORPORATE_HORIZON else "update_company_financials",
+        )
+    elif dimension == "crypto liquidity":
+        data_requests = () if available else tuple(
+            crypto.get("data_requests") or ("update_market_data",)
         )
     else:
         data_requests = (_UNSUPPORTED_DIMENSIONS[dimension][1],)
@@ -1359,7 +1801,9 @@ def _coverage_row(
             f"official-event-calendar; available_at <= input_cutoff; max_age={event_evidence.get('freshness_max_age_seconds')}s"
             if dimension == "event risk" and available else
             f"sec_companyfacts; run_finished_at <= input_cutoff; max_age={corporate.get('freshness_max_age_days')}d"
-            if dimension == "corporate cycle" and available else None
+            if dimension == "corporate cycle" and available else
+            f"daily-market-prices; update_market_data; run_finished_at <= input_cutoff; max_age={crypto.get('freshness_max_age_seconds')}s"
+            if dimension == "crypto liquidity" and available else None
         ),
         current_status="available" if available else "unavailable",
         decision_impact="market_context" if dimension == "equity internals" and available else "context",
@@ -1368,23 +1812,23 @@ def _coverage_row(
         input_lineage=lineage,
         blockers=blockers if not available else (),
         benchmark_key=selected_evidence.get("benchmark_key")
-        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle", "crypto liquidity"} else None,
         eligible_members=tuple(selected_evidence.get("eligible_members") or ())
-        if dimension == "corporate cycle" else (),
+        if dimension in {"corporate cycle", "crypto liquidity"} else (),
         eligible_member_count=selected_evidence.get("eligible_member_count")
-        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle", "crypto liquidity"} else None,
         available_member_count=selected_evidence.get("available_member_count")
-        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle", "crypto liquidity"} else None,
         missing_member_count=selected_evidence.get("missing_member_count")
-        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle", "crypto liquidity"} else None,
         stale_member_count=selected_evidence.get("stale_member_count")
-        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle", "crypto liquidity"} else None,
         truncated_member_count=selected_evidence.get("truncated_member_count")
-        if dimension in {"equity internals", "volatility"} else None,
+        if dimension in {"equity internals", "volatility", "crypto liquidity"} else None,
         duplicate_member_count=selected_evidence.get("duplicate_member_count")
-        if dimension in {"volatility", "corporate cycle"} else None,
+        if dimension in {"volatility", "corporate cycle", "crypto liquidity"} else None,
         invalid_member_count=selected_evidence.get("invalid_member_count")
-        if dimension in {"volatility", "corporate cycle"} else None,
+        if dimension in {"volatility", "corporate cycle", "crypto liquidity"} else None,
         required_history_trading_days=selected_evidence.get("minimum_history_trading_days")
         if dimension in {"equity internals", "volatility"} else None,
         data_requests=data_requests,
@@ -1409,6 +1853,15 @@ def _coverage_row(
         if dimension == "corporate cycle" and available else None,
         selected_periods=corporate.get("selected_periods")
         if dimension == "corporate cycle" and available else (),
+        **({
+            key: crypto.get(key)
+            for key in (
+                "wrong_currency_member_count", "wrong_asset_class_member_count", "wrong_source_member_count",
+                "expected_calendar_days", "window_start", "window_end", "latest_aggregate_volume_usd",
+                "median_aggregate_daily_volume_usd", "latest_to_horizon_median_ratio",
+                "freshness_max_age_seconds", "freshness_latest_available_at",
+            )
+        } if dimension == "crypto liquidity" else {}),
     )
 
 
