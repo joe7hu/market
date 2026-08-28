@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
@@ -20,6 +20,7 @@ from investment_panel.core.decision import (
     PaperExecutionOutcome,
     TickerDecision,
     TradePlan,
+    InputLineage,
     capital_action_from_resolution,
     evaluate_ticker_policy,
     outcome_attribution_stable_key,
@@ -38,6 +39,76 @@ HORIZON_SESSIONS = {
 }
 STOCK_COST_MODEL_VERSION = "stock-close-estimated-cost-v1"
 STOCK_COST_PER_SIDE_BPS = 10.0
+
+
+def select_current_outcome_attributions(
+    rows: list[dict[str, Any]], ticker_decision: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Select only the current plan's exact canonical attribution units."""
+
+    plan = ticker_decision.get("trade_plan")
+    if not isinstance(plan, Mapping) or not plan.get("trade_plan_id"):
+        return [], "trade_plan_missing"
+    symbol = str(ticker_decision.get("ticker") or ticker_decision.get("symbol") or "").upper()
+    plan_id = str(plan["trade_plan_id"])
+    matches = [
+        dict(row) for row in rows
+        if str(row.get("trade_plan_id") or "") == plan_id
+        and str(row.get("ticker") or row.get("symbol") or "").upper() == symbol
+    ]
+    if not matches:
+        return [], "outcome_attribution_missing"
+    expected = {
+        "trade_plan_publication_id": plan.get("publication_id"),
+        "opportunity_episode_id": plan.get("opportunity_episode_id"),
+        "decision_revision": plan.get("decision_revision"),
+        "policy_version": plan.get("policy_version"),
+        "selected_expression_kind": plan.get("selected_expression_kind"),
+        "selected_expression_identity": plan.get("selected_expression_identity"),
+        "rank_id": plan.get("rank_id"),
+        "alpha_signal_id": plan.get("alpha_signal_id"),
+        "portfolio_impact_id": plan.get("portfolio_impact_id"),
+        "market_snapshot_id": plan.get("market_snapshot_id"),
+        "market_state_publication_id": plan.get("market_state_publication_id"),
+    }
+    for row in matches:
+        if str(row.get("contract_version") or "") != OUTCOME_ATTRIBUTION_CONTRACT_VERSION:
+            return [], "outcome_attribution_contract_invalid"
+        if any(str(row.get(key) or "") != str(value or "") for key, value in expected.items()):
+            return [], "outcome_attribution_lineage_mismatch"
+        if not row.get("outcome_attribution_id"):
+            return [], "outcome_attribution_id_missing"
+        try:
+            attribution = OutcomeAttribution.model_validate(row)
+            expected_lineage = tuple(
+                InputLineage.model_validate(item) for item in (plan.get("input_lineage") or [])
+            )
+            if attribution.decision_input_lineage != expected_lineage:
+                return [], "outcome_attribution_lineage_mismatch"
+        except (TypeError, ValueError, KeyError):
+            return [], "outcome_attribution_invalid"
+    stable_keys = [str(row.get("stable_unit_key") or "") for row in matches]
+    if not all(stable_keys) or len(set(stable_keys)) != len(stable_keys):
+        return [], "outcome_attribution_unit_duplicated"
+    try:
+        units = {
+            (str(row.get("horizon") or "").upper(), int(row.get("horizon_sessions") or 0))
+            for row in matches
+        }
+    except (TypeError, ValueError):
+        return [], "outcome_attribution_units_incomplete"
+    expected_units = {
+        (horizon.value, sessions)
+        for horizon, sessions_list in HORIZON_SESSIONS.items()
+        for sessions in sessions_list
+    }
+    if units != expected_units:
+        return [], "outcome_attribution_units_incomplete"
+    return sorted(
+        matches,
+        key=lambda row: (str(row.get("horizon") or ""), int(row.get("horizon_sessions") or 0)),
+    ), None
+
 
 _PEER_RETURN_QUERY = """
 WITH peer_bars AS MATERIALIZED (
@@ -453,13 +524,11 @@ class TickerDecisionRepository:
         canonical = AnalysisRepository(self.runtime).publication_rows(
             "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
         )
-        plan_id = decision.trade_plan.trade_plan_id if decision and decision.trade_plan else None
-        outcomes = [
-            _attribution_surface_row(row) for row in canonical
-            if str(row.get("ticker") or "").upper() == ticker.strip().upper()
-            and str(row.get("trade_plan_id") or "") == str(plan_id or "")
-        ]
-        strategy_learning = evaluate_ticker_policy(canonical, canonical_only=True)
+        current, _ = select_current_outcome_attributions(
+            canonical, decision.model_dump(mode="json") if decision else {},
+        )
+        outcomes = [_attribution_surface_row(row) for row in current]
+        strategy_learning = evaluate_ticker_policy(current, canonical_only=True)
         if not decision or not outcomes:
             return {
                 "independent_episode_count": 0,
@@ -1724,4 +1793,7 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-__all__ = ["HORIZON_SESSIONS", "TickerDecisionRepository", "paper_execution_for_plan"]
+__all__ = [
+    "HORIZON_SESSIONS", "TickerDecisionRepository", "paper_execution_for_plan",
+    "select_current_outcome_attributions",
+]

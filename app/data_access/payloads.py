@@ -16,8 +16,6 @@ from app.data_access.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.core.config import AppConfig, OptionAgentConfig
 from investment_panel.core.decision import (
-    InputLineage,
-    OutcomeAttribution,
     TradePlan,
     apply_opportunity_rank_safety,
     build_ticker_decision,
@@ -25,6 +23,7 @@ from investment_panel.core.decision import (
     opportunity_episode_from_legacy,
     ticker_decision_brief,
 )
+from investment_panel.database.ticker_decisions import select_current_outcome_attributions
 
 DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
 
@@ -879,68 +878,6 @@ def ticker_learning_payload(
             else "COUNTERFACTUAL_MARKS_ONLY" if source_attributions else "UNAVAILABLE"
         )
     return payload
-
-
-def select_current_outcome_attributions(
-    rows: list[dict[str, Any]], ticker_decision: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Select only the current plan's exact canonical attribution units."""
-
-    plan = ticker_decision.get("trade_plan")
-    if not isinstance(plan, Mapping) or not plan.get("trade_plan_id"):
-        return [], "trade_plan_missing"
-    symbol = str(ticker_decision.get("ticker") or ticker_decision.get("symbol") or "").upper()
-    plan_id = str(plan["trade_plan_id"])
-    matches = [
-        dict(row) for row in rows
-        if str(row.get("trade_plan_id") or "") == plan_id
-        and str(row.get("ticker") or row.get("symbol") or "").upper() == symbol
-    ]
-    if not matches:
-        return [], "outcome_attribution_missing"
-    expected = {
-        "trade_plan_publication_id": plan.get("publication_id"),
-        "opportunity_episode_id": plan.get("opportunity_episode_id"),
-        "decision_revision": plan.get("decision_revision"),
-        "policy_version": plan.get("policy_version"),
-        "selected_expression_kind": plan.get("selected_expression_kind"),
-        "selected_expression_identity": plan.get("selected_expression_identity"),
-        "rank_id": plan.get("rank_id"),
-        "alpha_signal_id": plan.get("alpha_signal_id"),
-        "portfolio_impact_id": plan.get("portfolio_impact_id"),
-        "market_snapshot_id": plan.get("market_snapshot_id"),
-        "market_state_publication_id": plan.get("market_state_publication_id"),
-    }
-    for row in matches:
-        if str(row.get("contract_version") or "") != "outcome-attribution.v1":
-            return [], "outcome_attribution_contract_invalid"
-        if any(str(row.get(key) or "") != str(value or "") for key, value in expected.items()):
-            return [], "outcome_attribution_lineage_mismatch"
-        if not row.get("outcome_attribution_id"):
-            return [], "outcome_attribution_id_missing"
-        try:
-            attribution = OutcomeAttribution.model_validate(row)
-            expected_lineage = tuple(
-                InputLineage.model_validate(item) for item in (plan.get("input_lineage") or [])
-            )
-            if attribution.decision_input_lineage != expected_lineage:
-                return [], "outcome_attribution_lineage_mismatch"
-        except (TypeError, ValueError, KeyError):
-            return [], "outcome_attribution_invalid"
-    stable_keys = [str(row.get("stable_unit_key") or "") for row in matches]
-    if not all(stable_keys) or len(set(stable_keys)) != len(stable_keys):
-        return [], "outcome_attribution_unit_duplicated"
-    units = {
-        (str(row.get("horizon") or "").upper(), int(row.get("horizon_sessions") or 0))
-        for row in matches
-    }
-    expected_units = {
-        ("TACTICAL", 1), ("TACTICAL", 5), ("TACTICAL", 20),
-        ("FUNDAMENTAL", 63), ("FUNDAMENTAL", 126), ("FUNDAMENTAL", 252),
-    }
-    if units != expected_units:
-        return [], "outcome_attribution_units_incomplete"
-    return sorted(matches, key=lambda row: (str(row.get("horizon") or ""), int(row.get("horizon_sessions") or 0))), None
 
 
 def _attribution_learning_row(row: Mapping[str, Any]) -> dict[str, Any]:

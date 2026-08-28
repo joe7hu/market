@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
 from investment_panel.core.decision.ticker_learning import evaluate_ticker_policy
+from investment_panel.core.decision import ExpressionKind, InputLineage, OutcomeAttribution
 from app.data_access.payloads import ticker_learning_payload
 
 
@@ -182,3 +186,103 @@ def test_ticker_learning_payload_exposes_expression_result_and_policy_gate() -> 
 
     assert payload["strategy_learning"]["status"] == "collecting"
     assert payload["expression_tournament"][0]["outcomes"][0]["expression_return"] == 0.04
+
+
+def test_repository_learning_surface_rejects_mismatched_current_attributions(monkeypatch) -> None:
+    from investment_panel.database import ticker_decisions as owner
+
+    cutoff = datetime(2026, 8, 22, 14, tzinfo=UTC)
+    old_lineage = InputLineage(
+        field="old-source", source_id="old", source_version="1",
+        event_at=cutoff - timedelta(minutes=5),
+        available_at=cutoff - timedelta(minutes=5), cutoff=cutoff,
+    )
+    new_lineage = InputLineage(
+        field="new-source", source_id="new", source_version="1",
+        event_at=cutoff - timedelta(minutes=5),
+        available_at=cutoff - timedelta(minutes=5), cutoff=cutoff,
+    )
+    plan = SimpleNamespace(
+        trade_plan_id="trade-plan.v1:new",
+        publication_id="ranking:new",
+        opportunity_episode_id="episode:new",
+        decision_revision="decision:new",
+        policy_version="policy:v1",
+        selected_expression_kind=ExpressionKind.CALL,
+        selected_expression_identity="expression:new",
+        rank_id="rank:new",
+        alpha_signal_id="signal:new",
+        portfolio_impact_id="impact:new",
+        market_snapshot_id="snapshot:new",
+        market_state_publication_id="market:new",
+        input_lineage=(new_lineage,),
+    )
+    old = OutcomeAttribution.model_validate({
+        "stable_unit_key": "trade-plan.v1:old:TACTICAL:1",
+        "ticker": "QQQ",
+        "trade_plan_id": "trade-plan.v1:old",
+        "trade_plan_publication_id": "ranking:old",
+        "opportunity_episode_id": "episode:old",
+        "decision_revision": "decision:old",
+        "policy_version": "policy:v1",
+        "selected_expression_kind": "CALL",
+        "selected_expression_identity": "expression:old",
+        "decision_cutoff": cutoff,
+        "evaluation_cutoff": cutoff + timedelta(days=1),
+        "decision_input_lineage": (old_lineage,),
+        "horizon": "TACTICAL",
+        "horizon_sessions": 1,
+    }).model_dump(mode="json")
+    forged = OutcomeAttribution.model_validate({
+        "stable_unit_key": "trade-plan.v1:new:TACTICAL:1",
+        "ticker": "QQQ",
+        "trade_plan_id": plan.trade_plan_id,
+        "trade_plan_publication_id": "ranking:old",
+        "opportunity_episode_id": "episode:old",
+        "decision_revision": "decision:old",
+        "policy_version": "policy:v1",
+        "selected_expression_kind": "CALL",
+        "selected_expression_identity": "expression:old",
+        "decision_cutoff": cutoff,
+        "evaluation_cutoff": cutoff + timedelta(days=1),
+        "decision_input_lineage": (old_lineage,),
+        "horizon": "TACTICAL",
+        "horizon_sessions": 1,
+    }).model_dump(mode="json")
+    plan_payload = {
+        "trade_plan_id": plan.trade_plan_id,
+        "publication_id": plan.publication_id,
+        "opportunity_episode_id": plan.opportunity_episode_id,
+        "decision_revision": plan.decision_revision,
+        "policy_version": plan.policy_version,
+        "selected_expression_kind": plan.selected_expression_kind.value,
+        "selected_expression_identity": plan.selected_expression_identity,
+        "rank_id": plan.rank_id,
+        "alpha_signal_id": plan.alpha_signal_id,
+        "portfolio_impact_id": plan.portfolio_impact_id,
+        "market_snapshot_id": plan.market_snapshot_id,
+        "market_state_publication_id": plan.market_state_publication_id,
+        "input_lineage": [new_lineage.model_dump(mode="json")],
+    }
+    repository = object.__new__(owner.TickerDecisionRepository)
+    repository.runtime = None
+    repository.latest = lambda _ticker: SimpleNamespace(
+        model_dump=lambda mode: {"ticker": "QQQ", "trade_plan": plan_payload},
+        trade_plan=plan,
+        tactical=SimpleNamespace(model_dump=lambda mode: {}),
+        fundamental=SimpleNamespace(model_dump=lambda mode: {}),
+        expressions={},
+    )
+    monkeypatch.setattr(
+        owner.AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [old, forged],
+    )
+    evaluated: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        owner, "evaluate_ticker_policy",
+        lambda rows, canonical_only=False: evaluated.extend(rows) or {"rows": list(rows)},
+    )
+
+    result = repository.learning_surface("QQQ")
+
+    assert result["outcome_attributions"] == []
+    assert evaluated == []

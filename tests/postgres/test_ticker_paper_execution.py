@@ -259,7 +259,10 @@ def _publish_context(
 
 def test_outcome_attribution_publication_is_full_and_replayable(
     migrated_postgres_dsn: str,
+    monkeypatch,
 ) -> None:
+    from investment_panel.jobs import ticker_decisions
+
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
@@ -375,6 +378,49 @@ def test_outcome_attribution_publication_is_full_and_replayable(
         assert len({row["stable_unit_key"] for row in rows}) == 6
         assert all(row["trade_plan_id"] == plan.trade_plan_id for row in rows)
         assert all(row["publication_id"] == first["attribution_publication_id"] for row in rows)
+
+        monkeypatch.setattr(ticker_decisions, "load_config", lambda _path: config)
+
+        def fake_evaluate(repository, decision, horizon, sessions, reference):
+            return {
+                "state": "resolved", "available_at": reference,
+                "selected_return": 0.1, "stock_return": 0.1,
+                "alternate_counterfactual_return": 0.0, "cash_return": 0.0,
+                "sector_return": 0.0, "market_return": 0.0,
+                "error_type": None, "mistake_card": {}, "learning_metadata": {},
+            }
+
+        monkeypatch.setattr(TickerDecisionRepository, "_evaluate", fake_evaluate)
+        revised_result = ticker_decisions.publish(
+            "config.yaml", symbols=[symbol], as_of=observed + timedelta(days=1),
+        )
+        assert revised_result["published_count"] == 1, revised_result
+        revised = repository.latest(symbol)
+        assert revised is not None and revised.trade_plan is not None
+        assert revised.trade_plan.trade_plan_id != plan.trade_plan_id
+        latest = repository.latest(symbol)
+        assert latest is not None and latest.trade_plan is not None
+        assert latest.trade_plan.trade_plan_id == revised.trade_plan.trade_plan_id
+        selected_refresh = repository.refresh_outcomes(
+            now=observed + timedelta(days=3), symbols={symbol},
+        )
+        assert selected_refresh["evaluated"] == 2
+        preserved = AnalysisRepository(runtime).publication_rows(
+            "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
+        )
+        assert len(preserved) == 6
+        assert len({row["stable_unit_key"] for row in preserved}) == 6
+        assert all(row["publication_id"] == first["attribution_publication_id"] for row in preserved)
+        for field in (
+            "trade_plan_id", "opportunity_episode_id", "decision_revision",
+            "selected_expression_identity",
+        ):
+            assert all(row[field] == getattr(plan, field) for row in preserved)
+            assert getattr(revised.trade_plan, field) != getattr(plan, field)
+        assert all(row["trade_plan_publication_id"] == plan.publication_id for row in preserved)
+        learning = repository.learning_surface(symbol)
+        assert learning["outcome_attributions"] == []
+        assert learning["strategy_learning"]["metrics"]["canonical_attribution_rows"] == 0
     finally:
         runtime.close()
 
