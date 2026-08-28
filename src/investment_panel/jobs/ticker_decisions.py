@@ -766,15 +766,15 @@ def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     import argparse
     import json
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--ticker", action="append", dest="tickers")
+    parser.add_argument("--ticker", "--tickers", action="append", dest="tickers")
     parser.add_argument("--limit", type=int, default=2_000)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     print(json.dumps(publish(args.config, symbols=args.tickers, limit=args.limit), indent=2, default=str))
 
 

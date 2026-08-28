@@ -266,3 +266,23 @@ def test_options_compatibility_adapter_uses_the_selected_expression() -> None:
     assert result["state"] == "WATCH"
     assert "opportunity_lineage_invalid" in result["decision_truth"]["blockers"]
     assert result["summary"]["ticker_selected_expression"] == "PUT"
+
+
+def test_ticker_cli_aliases_share_the_symbols_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    from investment_panel.jobs import ticker_decisions
+
+    calls: list[tuple[str | None, list[str] | None, int]] = []
+
+    def fake_publish(config_path: str | None, *, symbols: list[str] | None, limit: int) -> dict[str, str]:
+        calls.append((config_path, symbols, limit))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(ticker_decisions, "publish", fake_publish)
+
+    for option in ("--ticker", "--tickers"):
+        ticker_decisions.main([option, "QQQ"])
+
+    assert calls == [
+        ("config.yaml", ["QQQ"], 2_000),
+        ("config.yaml", ["QQQ"], 2_000),
+    ]
