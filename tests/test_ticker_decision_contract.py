@@ -13,7 +13,7 @@ from investment_panel.core.decision.ticker import (
     build_ticker_decision,
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST
-from investment_panel.core.risk_policy import compile_risk_policy_snapshot
+from investment_panel.core.risk_policy import RiskPolicySnapshot, compile_risk_policy_snapshot
 
 
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
@@ -76,7 +76,9 @@ def test_account_timestamps_are_preserved_as_distinct_fields() -> None:
     )
 
     assert snapshot.account_observed_at == AS_OF
-    assert snapshot.available_at == AS_OF.replace(minute=1)
+    assert "available_at" not in RiskPolicySnapshot.model_fields
+    assert snapshot.model_extra["available_at"] == AS_OF.replace(minute=1)
+    assert snapshot.model_dump(mode="json")["available_at"] == "2026-08-22T14:01:00Z"
 
 
 def test_risk_policy_version_is_stable_for_normalized_replay_inputs() -> None:

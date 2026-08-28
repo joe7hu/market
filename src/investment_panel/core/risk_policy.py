@@ -42,7 +42,6 @@ class RiskPolicySnapshot(BaseModel):
     cash_balance: float | None = None
     buying_power: float | None = None
     account_observed_at: datetime | None = None
-    available_at: datetime | None = None
     blockers: tuple[str, ...] = ()
 
     @property
