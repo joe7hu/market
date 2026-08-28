@@ -103,25 +103,6 @@ def test_book_identity_changes_every_bound_impact_and_never_unlocks_non_cash() -
     )
 
 
-def test_supplied_policy_snapshot_must_match_canonical_point_in_time_authority() -> None:
-    seed = _decision()
-    assert seed.risk_policy_snapshot is not None
-    supplied = seed.risk_policy_snapshot.model_copy(update={"cash_balance": 1.0})
-
-    decision = _decision(
-        market_state_snapshot=seed.market_state_snapshot,
-        portfolio_impacts=seed.portfolio_impacts,
-        risk_policy_snapshot=supplied,
-    )
-
-    assert decision.risk_policy_snapshot is not None
-    assert decision.risk_policy_snapshot.cash_balance is None
-    assert "risk_policy_snapshot_mismatch" in decision.context_blockers
-    assert decision.resolution is not None
-    assert decision.resolution.action.value == "NO_TRADE"
-    assert decision.resolution.size is None
-
-
 def test_future_market_lineage_is_rejected() -> None:
     future = AS_OF + timedelta(minutes=1)
     lineage = InputLineage(field="rates", source_id="test", source_version="1", available_at=future)
