@@ -832,10 +832,12 @@ def _corporate_fact(row: dict[str, Any], period_end: date | None) -> dict[str, A
     revenue = _finite_number(metrics.get("revenue"))
     operating_income = _finite_number(metrics.get("operating_income"))
     period_start = _as_date(row.get("period_start"))
-    units = tuple(
-        str(((tags.get(metric) or {}).get("unit") or "")).strip()
-        for metric in ("revenue", "operating_income")
-    )
+    units = []
+    for metric in ("revenue", "operating_income"):
+        tag = tags.get(metric)
+        unit = tag.get("unit") if isinstance(tag, dict) else None
+        units.append(unit.strip() if isinstance(unit, str) else "")
+    units = tuple(units)
     accession_number = str(values.get("accession_number") or "").strip()
     accepted_at = _as_utc(row.get("filed_at"))
     observed_at = _as_utc(row.get("observed_at"))
@@ -1147,6 +1149,7 @@ def _market_snapshot(
                         quality="sec_companyfacts_annual_filed_actuals",
                         lineage=tuple(corporate_cycle_evidence.get("lineage") or ()),
                         benchmark_key=corporate_cycle_evidence.get("benchmark_key"),
+                        eligible_members=tuple(corporate_cycle_evidence.get("eligible_members") or ()),
                         eligible_member_count=corporate_cycle_evidence.get("eligible_member_count"),
                         available_member_count=corporate_cycle_evidence.get("available_member_count"),
                         missing_member_count=corporate_cycle_evidence.get("missing_member_count"),
@@ -1178,6 +1181,7 @@ def _market_snapshot(
                         blockers=(blockers,) if isinstance(blockers, str) else tuple(blockers),
                         data_requests=(request,),
                         benchmark_key=corporate_cycle_evidence.get("benchmark_key"),
+                        eligible_members=tuple(corporate_cycle_evidence.get("eligible_members") or ()),
                         eligible_member_count=corporate_cycle_evidence.get("eligible_member_count"),
                         available_member_count=corporate_cycle_evidence.get("available_member_count"),
                         missing_member_count=corporate_cycle_evidence.get("missing_member_count"),
@@ -1239,6 +1243,10 @@ def _market_snapshot(
     )
     encoded = json_dumps({
         "cutoff": reference.isoformat(),
+        "corporate_cycle_benchmark": {
+            "benchmark_key": corporate_cycle_evidence.get("benchmark_key"),
+            "eligible_members": tuple(corporate_cycle_evidence.get("eligible_members") or ()),
+        },
         "lineage": [item.model_dump(mode="json") for item in measured_lineage],
         "dimensions": dimensions,
     })
@@ -1361,6 +1369,8 @@ def _coverage_row(
         blockers=blockers if not available else (),
         benchmark_key=selected_evidence.get("benchmark_key")
         if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
+        eligible_members=tuple(selected_evidence.get("eligible_members") or ())
+        if dimension == "corporate cycle" else (),
         eligible_member_count=selected_evidence.get("eligible_member_count")
         if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
         available_member_count=selected_evidence.get("available_member_count")

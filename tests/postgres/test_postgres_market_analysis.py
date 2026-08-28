@@ -1320,3 +1320,83 @@ def test_market_corporate_cycle_snapshot_id_tracks_selected_metric_values(
         assert acme["latest"]["operating_income"] == pytest.approx(19.5)
     finally:
         runtime.close()
+
+
+def test_market_corporate_cycle_rejects_malformed_metric_tag_metadata(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source(
+            "sec_companyfacts", name="SEC company facts", family="fundamentals", kind="sec_companyfacts"
+        )
+        cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+        rows = [row for row in _complete_corporate_rows() if row["symbol"] != "SPY"]
+        rows[0]["values"]["tags"]["revenue"] = "malformed"
+        run_id = ingestion.start_run("sec_companyfacts", "company_financials")
+        assert ingestion.store_fundamental_observations(
+            run_id, "sec_companyfacts", "sec_companyfacts", rows
+        ) == len(rows)
+        ingestion.finish_run(run_id, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), run_id],
+            )
+
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        state = next(item for item in snapshot.horizons["3-12 months"] if item.dimension == "corporate cycle")
+        coverage = next(row for row in snapshot.coverage_matrix.rows if row.dimension == "corporate cycle" and row.horizon == "3-12 months")
+        assert state.evidence_status == "unavailable"
+        assert state.available_member_count == 3
+        assert state.invalid_member_count == 1
+        assert "corporate_cycle_annual_fact_invalid" in state.blockers
+        assert coverage.invalid_member_count == 1
+        assert not state.lineage
+        assert not coverage.input_lineage
+    finally:
+        runtime.close()
+
+
+def test_market_corporate_cycle_unavailable_identity_tracks_benchmark_membership(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO catalog.instrument (symbol, name, asset_class)
+                VALUES ('ACME', 'ACME', 'equity'), ('BETA', 'BETA', 'equity'),
+                       ('NVDA', 'NVIDIA', 'equity'), ('QQQ', 'QQQ', 'equity')
+                ON CONFLICT (symbol) DO UPDATE SET asset_class = 'equity', delisted_at = NULL
+                """
+            )
+        first = refresh_market_publication(runtime, now=datetime(2026, 8, 28, 15, tzinfo=UTC))
+        repository = AnalysisRepository(runtime)
+        first_snapshot = MarketStateSnapshot.model_validate(
+            repository.publication_rows("market", "market_state_snapshot")[0]
+        )
+        first_state = next(item for item in first_snapshot.horizons["3-12 months"] if item.dimension == "corporate cycle")
+        assert first_state.evidence_status == "unavailable"
+        first_members = tuple(first_state.eligible_members)
+
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE catalog.instrument SET symbol = 'ALFA' WHERE symbol = 'ACME'")
+        second = refresh_market_publication(runtime, now=datetime(2026, 8, 28, 15, tzinfo=UTC))
+        second_snapshot = MarketStateSnapshot.model_validate(
+            repository.publication_rows("market", "market_state_snapshot")[0]
+        )
+        second_state = next(item for item in second_snapshot.horizons["3-12 months"] if item.dimension == "corporate cycle")
+        assert second_state.evidence_status == "unavailable"
+        assert len(first_members) == len(second_state.eligible_members)
+        assert tuple(second_state.eligible_members) != first_members
+        assert second["snapshot_id"] != first["snapshot_id"]
+    finally:
+        runtime.close()
