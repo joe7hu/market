@@ -1,47 +1,35 @@
 import { describe, expect, it } from "vitest";
 
-import type { RowRecord } from "@/types";
-import { projectCapitalAction } from "./today";
+import type { TodayResponse } from "@/api/panel";
 
-const decision: RowRecord = {
-  ticker: "AAA",
-  decision_revision: "revision:AAA",
-  opportunity_episode_id: "episode:AAA",
-  capital_action: { action: "BUY", owned: false, rationale: "Buy the stock." },
-  selected_expression: { kind: "STOCK" },
+const response: TodayResponse = {
+  status: { ready: true, message: "test", source: "test" },
+  count: 1,
+  actions: [{
+    projection_identity: "capital:ticker-decision:decision:AAA",
+    source_authority: "ticker-decision:decision:AAA",
+    source: "capital_action",
+    title: "AAA capital action",
+    lifecycle_state: "blocked",
+    primary_blocker: "trade_plan_missing",
+    next_action: "Refresh the ticker decision and trade plan.",
+    ticker: "AAA",
+    action: "NO_TRADE",
+    owned: false,
+    rationale: "Cash is selected.",
+    policy_version: "risk-policy.v2:legacy",
+    selected_expression: "CASH",
+  }],
 };
 
-describe("Today capital projection", () => {
-  it("fails closed to no trade when the current plan is missing", () => {
-    expect(projectCapitalAction(decision, [])).toMatchObject({
+describe("Today Action Queue", () => {
+  it("uses the generated backend item and its stable identity", () => {
+    expect(response.actions?.[0]).toMatchObject({
+      projection_identity: "capital:ticker-decision:decision:AAA",
+      source_authority: "ticker-decision:decision:AAA",
       action: "NO_TRADE",
-      expression: "CASH",
-      rankReason: "trade_plan_missing",
-    });
-  });
-
-  it("uses the exact complete plan for the displayed action", () => {
-    const plan: RowRecord = {
-      ticker: "AAA",
-      decision_revision: "revision:AAA",
-      opportunity_episode_id: "episode:AAA",
-      trade_plan_id: "trade-plan.v1:aaa",
-      eligibility: "ACTIONABLE",
-      action: "BUY",
-      selected_expression_kind: "STOCK",
-      entry_limit: 100,
-      quantity: 10,
-      planned_loss: 50,
-    };
-
-    expect(projectCapitalAction(decision, [plan])).toMatchObject({
-      action: "BUY",
-      expression: "STOCK",
-      price: "100",
-      quantity: "10",
-      loss: "50",
-      planId: "trade-plan.v1:aaa",
-      rankReason: "",
+      selected_expression: "CASH",
+      primary_blocker: "trade_plan_missing",
     });
   });
 });

@@ -33,6 +33,7 @@ export type RefreshJobsPayload = {
   latest_status: RefreshLatestStatus | null;
 };
 export type SourceCatalogPayload = ApiSchema["SourceCatalogResponse"];
+export type TodayResponse = ApiSchema["TodayResponse"];
 export type SourceCatalogRow = {
   source_id: string;
   source_name: string;
@@ -79,6 +80,10 @@ export { emptyPanelData } from "../apiPanelData";
 
 export async function loadPanelData(): Promise<PanelData> {
   return loadPanelScope("feed");
+}
+
+export async function loadToday(): Promise<TodayResponse> {
+  return getJson<TodayResponse>("/api/today");
 }
 
 export async function loadPanelScope(

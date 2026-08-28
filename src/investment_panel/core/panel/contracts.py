@@ -7,9 +7,8 @@ from typing import Any
 
 PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "feed": ("feed_signals",),
-    # Today is the capital-action surface. Keep canonical ticker decisions
-    # first and allow only bounded context for the existing page shell. The
-    # legacy option Radar and broad decision queue remain separate routes.
+    # Today is the bounded action queue. Keep canonical ticker decisions first
+    # and include only existing source-backed context used by its cards.
     "today": (
         "ticker_decisions",
         "opportunity_rank",
@@ -18,6 +17,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "preopen_daily_brief",
         "daily_brief",
         "portfolio_risk_cards",
+        "feed_signals",
     ),
     "watchlist": (
         "universe_screen",

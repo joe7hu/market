@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-import threading
 from types import SimpleNamespace
+import threading
 from typing import Any
 
 import pytest
@@ -49,6 +49,11 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _use_temp_api_db(monkeypatch, tmp_path / "status.json")
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_options_actions,
+        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
     capital = {
         "ticker": "ACME",
         "action": "BUY",
@@ -81,22 +86,14 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     response = TestClient(app).get("/api/today")
 
     assert response.status_code == 200
-    assert response.json()["actions"] == [{
-        "ticker": "ACME",
-        "action": "AVOID",
-        "owned": False,
-        "rationale": "Cash is selected because the current trade plan is unavailable: trade_plan_missing.",
-        "decision_revision": "ticker-decision.v1:test",
-        "selected_expression": "CASH",
-        "price_condition": None,
-        "catalyst": None,
-        "expires_at": "2026-09-18",
-        "research_rank": None,
-        "trade_rank": None,
-        "trade_rank_unavailable_reason": "trade_plan_missing",
-        "trade_utility": None,
-        "trade_plan": None,
-    }]
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["actions"][0]["ticker"] == "ACME"
+    assert payload["actions"][0]["action"] == "NO_TRADE"
+    assert payload["actions"][0]["selected_expression"] == "CASH"
+    assert payload["actions"][0]["primary_blocker"] == "trade_plan_missing"
+    assert payload["actions"][0]["projection_identity"].startswith("capital:ticker-decision:")
+    assert payload["actions"][0]["resolution"]["action"] == "NO_TRADE"
 
 
 def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

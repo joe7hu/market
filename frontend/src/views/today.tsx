@@ -1,24 +1,25 @@
 import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { Button } from "@/components/ui/button";
-import { adaptOptionDecision } from "@/adapters/optionsDecision";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { cn } from "@/lib/utils";
+import type { TodayResponse } from "@/api/panel";
 import type { AppModel } from "@/model";
 import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
-import { booleanField, displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
-import { OptionTicketDetailSheet } from "./OptionTicketDetailSheet";
+import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
-import { compareTodayOptionActions } from "./optionsRadar/helpers";
 
 type TodayPageProps = {
   data: PanelData;
   model: AppModel;
   lastRefresh: Date | null;
+  actionQueue: TodayResponse | null;
+  actionQueueLoading: boolean;
+  actionQueueError: string | null;
   loading: boolean;
   scopeStatus?: ScopeSnapshotStatus;
   onRefresh: () => void;
@@ -26,15 +27,12 @@ type TodayPageProps = {
 };
 
 type JsonObject = { [key: string]: JsonValue };
+type TodayAction = NonNullable<TodayResponse["actions"]>[number];
 
 const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCategories.map((category) => [category.key, category]));
-export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
+export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLoading, actionQueueError, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
   const vm = useMemo(() => buildTodayViewModel(data, model), [data, model]);
-  // This table is read directly from the current options-radar publication.
-  // Do not use the retired, copied option_action_queue from a today refresh.
-  const optionActions = data.optionRadarOpportunity?.rows ?? [];
   const riskExceptions = (data.portfolioRiskCards?.rows ?? vm.portfolioPulse).slice(0, 3);
-  const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null);
   const hasBrief = vm.briefCount > 0;
 
   return (
@@ -68,10 +66,9 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
         />
       </div>
 
-      <CapitalActions rows={data.tickerDecisions?.rows ?? []} plans={data.tradePlan?.rows ?? []} onOpenTicker={onOpenTicker} />
+      <ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} />
       <PreopenBrief row={vm.preopenBrief} />
       <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
-      <OptionActions rows={optionActions} onOpenTicker={onOpenTicker} onOpenDecision={setSelectedDecisionId} />
 
       {hasBrief ? (
         <>
@@ -91,167 +88,57 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
       ) : (
         <EmptyState title="No daily brief loaded" detail="Refresh /today to load decisions, source changes, catalysts, and portfolio moves." />
       )}
-      <OptionTicketDetailSheet decisionId={selectedDecisionId} onClose={() => setSelectedDecisionId(null)} onOpenTicker={onOpenTicker} />
     </section>
   );
 }
 
-export type CapitalActionView = {
-  ticker: string;
-  action: string;
-  owned: boolean;
-  rationale: string;
-  expression: string;
-  price: string;
-  quantity: string;
-  loss: string;
-  expires: string;
-  planId: string;
-  rankReason: string;
-  nextAction: string;
-};
-
-export function projectCapitalAction(row: RowRecord, plans: RowRecord[]): CapitalActionView | null {
-  const capital = recordField(row, "capital_action");
-  const ticker = textField(row, ["ticker", "symbol"]);
-  if (!ticker) return null;
-  const plan = plans.find((candidate) =>
-    textField(candidate, ["ticker", "symbol"]) === ticker
-    && textField(candidate, ["decision_revision"]) === textField(row, ["decision_revision"])
-    && textField(candidate, ["opportunity_episode_id"]) === textField(row, ["opportunity_episode_id"]),
-  );
-  if (!plan) {
-    return {
-      ticker,
-      action: "NO_TRADE",
-      owned: booleanField(capital, ["owned"]),
-      rationale: "Cash is selected because the current trade plan is unavailable.",
-      expression: "CASH",
-      price: "Unavailable",
-      quantity: "—",
-      loss: "—",
-      expires: "—",
-      planId: "",
-      rankReason: "trade_plan_missing",
-      nextAction: "Refresh the ticker decision and trade plan.",
-    };
-  }
-  const blocked = textField(plan, ["eligibility"]).toUpperCase() === "BLOCKED";
-  return {
-    ticker,
-    action: blocked ? "NO_TRADE" : textField(plan, ["action"], "NO_TRADE").toUpperCase(),
-    owned: capital.owned === true,
-    rationale: textField(plan, ["rationale"], textField(capital, ["rationale"])),
-    expression: blocked ? "CASH" : textField(plan, ["selected_expression_kind"], "CASH"),
-    price: blocked ? "No entry" : displayField(plan, ["entry_limit"], "Unavailable"),
-    quantity: blocked ? "—" : displayField(plan, ["quantity"], "Unavailable"),
-    loss: blocked ? "—" : displayField(plan, ["planned_loss"], "Unavailable"),
-    expires: displayField(plan, ["expiry"], "No expiry"),
-    planId: textField(plan, ["trade_plan_id"]),
-    rankReason: blocked ? textField(plan, ["primary_blocker"], "trade_plan_blocked") : "",
-    nextAction: textField(plan, ["next_action"]),
-  };
-}
-
-function CapitalActions({ rows, plans, onOpenTicker }: { rows: RowRecord[]; plans: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
-  const actions = rows
-    .map((row) => projectCapitalAction(row, plans))
-    .filter((item): item is CapitalActionView => item !== null)
-    .sort((left, right) => (
-      (left.action === "NO_TRADE" ? 1 : 0) - (right.action === "NO_TRADE" ? 1 : 0)
-      || left.ticker.localeCompare(right.ticker)
-    ));
-
-  if (!actions.length) return null;
-
+function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { response: TodayResponse | null; loading: boolean; error: string | null; onRefresh: () => void; onOpenTicker: (symbol: string) => void }) {
+  const items = response?.actions ?? [];
+  const unavailable = Boolean(response && !response.status.ready);
+  const queueError = error ?? (unavailable ? response?.status.message ?? "Action Queue unavailable." : null);
   return (
-    <section className="mb-6">
+    <section className="mb-6" aria-labelledby="action-queue-title">
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Capital actions</h2>
-          <p className="text-xs text-muted-foreground">One deterministic action per published ticker thesis. Open a ticker for sizing and expression details.</p>
+          <h2 id="action-queue-title" className="text-lg font-semibold">Action Queue</h2>
+          <p className="text-xs text-muted-foreground">Current capital actions, Inbox transitions, portfolio risks, and decision-blocking research.</p>
         </div>
-        <StatusBadge tone="info">{actions.length} current</StatusBadge>
+        {response && !unavailable ? <StatusBadge tone="info">{response.count} current</StatusBadge> : null}
       </div>
-      <div className="grid gap-3 lg:grid-cols-3">
-        {actions.slice(0, 12).map((item) => (
-          <Card key={item.ticker} className={cn("min-w-0", toneBorder(toneFromText(item.action)))}>
-            <CardContent className="space-y-3 p-4">
-              <div className="flex items-start justify-between gap-2">
-                <button type="button" className="font-semibold hover:underline" onClick={() => onOpenTicker(item.ticker)}>{item.ticker}</button>
-                <StatusBadge tone={toneFromText(item.action)}>{item.action}</StatusBadge>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <OptionMetric label="Ownership" value={item.owned ? "Owned" : "Unowned"} />
-                <OptionMetric label="Expression" value={item.expression || "Pending"} />
-                <OptionMetric label="Price" value={item.price} />
-                <OptionMetric label="Quantity" value={item.quantity} />
-                <OptionMetric label="Planned loss" value={item.loss} />
-                <OptionMetric label="Expiry" value={item.expires} />
-              </div>
-              {item.planId ? <p className="text-xs text-muted-foreground">Plan {item.planId.slice(-16)}</p> : null}
-              {item.rankReason ? <p className="text-xs text-muted-foreground">No trade: {item.rankReason}. {item.nextAction}</p> : null}
-              {item.rationale ? <p className="line-clamp-2 text-sm text-muted-foreground">{item.rationale}</p> : null}
-              <Button type="button" variant="outline" size="sm" onClick={() => onOpenTicker(item.ticker)}>Open {item.ticker}</Button>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      {queueError ? <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900"><span>{error && response ? `Showing the last Action Queue. ${error}` : `Action Queue unavailable: ${queueError}`}</span><Button type="button" size="sm" variant="outline" onClick={onRefresh}>Retry</Button></div> : null}
+      {loading && !response ? <p role="status" className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">Loading Action Queue…</p> : null}
+      {!loading && !queueError && !items.length ? <EmptyState title="Action Queue is clear" detail="No current actionable or transition items are available." /> : null}
+      {!unavailable && items.length ? (
+        <div className="grid gap-3 lg:grid-cols-3" role="list">
+          {items.map((item) => <ActionQueueCard key={item.projection_identity} item={item} onOpenTicker={onOpenTicker} />)}
+        </div>
+      ) : null}
     </section>
   );
 }
 
-function OptionActions({ rows, onOpenTicker, onOpenDecision }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void; onOpenDecision: (decisionId: string) => void }) {
-  const gatedRows = rows.filter((row) => {
-    const truth = row.decision_truth;
-    return truth && typeof truth === "object" && !Array.isArray(truth)
-      && truth.route_verdict === "PAPER_ONLY"
-      && truth.readiness_state === "ready"
-      && truth.execution_state === "PAPER_ONLY_READY";
-  }).sort(compareTodayOptionActions);
-  if (!gatedRows.length) return null;
-  const decisions = gatedRows.map(adaptOptionDecision);
+function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onOpenTicker: (symbol: string) => void }) {
+  const tone = toneFromText(item.lifecycle_state === "actionable" ? item.action : item.lifecycle_state);
+  const statusLabel = item.transition ?? item.action ?? item.lifecycle_state;
+  const expiry = item.expires_at ? new Date(item.expires_at).toLocaleDateString() : null;
+  const ticker = item.ticker;
   return (
-    <section className="mb-6">
-      <div className="mb-3 flex items-end justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold">Options decisions</h2>
-          <p className="text-xs text-muted-foreground">Top current actions from the same immutable Options Radar publication.</p>
+    <Card role="listitem" className={cn("min-w-0", toneBorder(tone))}>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex items-start justify-between gap-2">
+          {ticker ? <button type="button" className="font-semibold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onOpenTicker(ticker)}>{ticker}</button> : <h3 className="font-semibold">{item.title}</h3>}
+          <StatusBadge tone={tone}>{statusLabel}</StatusBadge>
         </div>
-        <StatusBadge tone="info">{decisions.length} current</StatusBadge>
-      </div>
-      <div className="grid gap-3 lg:grid-cols-3">
-        {decisions.slice(0, 3).map((decision, index) => {
-          const source = gatedRows[index];
-          const decisionId = textField(source, ["decision_id", "opportunity_id"]);
-          const state = textField(source, ["state"], decision.action).toUpperCase();
-          return (
-            <Card key={decision.key}>
-              <CardContent className="space-y-3 p-4">
-                <div className="flex items-start justify-between gap-2">
-                  <button type="button" className="font-semibold hover:underline" onClick={() => decisionId ? onOpenDecision(decisionId) : onOpenTicker(decision.symbol)}>{decision.symbol}</button>
-                  <StatusBadge tone="good">PAPER ONLY</StatusBadge>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <OptionMetric label={decision.cashSecured ? "Credit" : "Entry"} value={formatMoney(decision.entryPrice)} />
-                  <OptionMetric label={decision.cashSecured ? "Assignment basis" : "Max loss"} value={formatMoney(decision.cashSecured ? decision.effectiveAssignmentPrice : decision.maxLoss)} />
-                  <OptionMetric label={decision.cashSecured ? "Secured cash" : "Expected value"} value={formatMoney(decision.cashSecured ? decision.securedCash : decision.expectedValue)} />
-                  <OptionMetric label={decision.cashSecured ? "Assignment" : "State"} value={decision.cashSecured ? `${(decision.probabilityAssignment * 100).toFixed(1)}%` : decision.action} />
-                </div>
-                <p className="line-clamp-2 text-sm text-muted-foreground">{decision.summary}</p>
-                <p className="text-xs font-medium text-muted-foreground">Paper entry is eligible only while this ticket remains current; this is not a live-trade instruction.</p>
-                {decisionId ? <Button type="button" variant="outline" size="sm" onClick={() => onOpenDecision(decisionId)}>View immutable ticket</Button> : null}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
-    </section>
+        {ticker ? <p className="text-sm font-medium">{item.title}</p> : null}
+        {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{item.rationale}</p> : null}
+        {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {item.primary_blocker}</p> : null}
+        <p className="text-sm"><span className="font-semibold">Next:</span> {item.next_action}</p>
+        {expiry ? <p className="text-xs text-muted-foreground">Expires {expiry}</p> : null}
+        {item.trade_plan ? <p className="text-xs text-muted-foreground">TradePlan {item.trade_plan.trade_plan_id}</p> : null}
+        {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Open drill-down</a> : null}
+      </CardContent>
+    </Card>
   );
-}
-
-function OptionMetric({ label, value }: { label: string; value: string }) {
-  return <div><div className="text-muted-foreground">{label}</div><div className="mt-0.5 font-medium tabular-nums text-foreground">{value}</div></div>;
 }
 
 function PreopenBrief({ row }: { row: RowRecord | null }) {

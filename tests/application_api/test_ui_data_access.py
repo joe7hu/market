@@ -267,6 +267,7 @@ def test_today_scope_contains_only_canonical_ticker_actions_and_ownership() -> N
         "preopen_daily_brief",
         "daily_brief",
         "portfolio_risk_cards",
+        "feed_signals",
     ]
     assert tables["ticker_decisions"]["count"] == 1
     assert tables["portfolio"]["count"] == 1

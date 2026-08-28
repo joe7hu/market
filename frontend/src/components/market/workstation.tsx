@@ -1,23 +1,13 @@
 import {
-  Activity,
-  AlertTriangle,
-  BarChart3,
-  BrainCircuit,
-  CalendarDays,
   Database,
   Eye,
-  FileSearch,
   HeartPulse,
   Home,
-  Inbox,
   Landmark,
   Menu,
   Mic,
   RefreshCw,
   Search,
-  Settings,
-  Target,
-  UsersRound,
 } from "lucide-react";
 import { useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -41,22 +31,12 @@ type NavItem = {
   aliases?: string[];
 };
 
-const navItems: NavItem[] = [
-  { to: "/today", label: "Today", icon: Home, aliases: ["/", "/dashboard"] },
-  { to: "/feed", label: "Feed", icon: Activity },
-  { to: "/watchlist", label: "Watchlist", icon: Eye },
+export const navItems: NavItem[] = [
+  { to: "/today", label: "Command Center", icon: Home, aliases: ["/", "/dashboard"] },
+  { to: "/watchlist", label: "Opportunities", icon: Eye, aliases: ["/opportunities"] },
   { to: "/portfolio", label: "Portfolio", icon: Landmark },
-  { to: "/options-radar", label: "Options Radar", icon: Target },
-  { to: "/options-chain", label: "Options Chain", icon: Target },
-  { to: "/inbox", label: "Decision Inbox", icon: Inbox },
-  { to: "/thesis-monitor", label: "Theses", icon: AlertTriangle },
-  { to: "/superinvestors", label: "Superinvestors", icon: UsersRound, aliases: ["/filings"] },
-  { to: "/calendar", label: "Calendar", icon: CalendarDays },
-  { to: "/sources", label: "Sources", icon: Mic },
-  { to: "/market", label: "Market", icon: BarChart3 },
-  { to: "/agent", label: "Agent", icon: BrainCircuit },
-  { to: "/health", label: "Health", icon: HeartPulse },
-  { to: "/settings", label: "Settings", icon: Settings },
+  { to: "/sources", label: "Research", icon: Mic, aliases: ["/research", "/research-queue"] },
+  { to: "/health", label: "System", icon: HeartPulse, aliases: ["/system"] },
 ];
 
 export function AppShell() {

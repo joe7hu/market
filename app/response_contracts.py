@@ -91,22 +91,35 @@ class PanelSnapshotResponse(BaseModel):
 
 
 class TodayCapitalAction(FlexibleResponse):
-    ticker: str
-    action: str
-    owned: bool
-    rationale: str
-    decision_revision: str
+    projection_identity: str
+    source_authority: str
+    source: str
+    title: str
+    lifecycle_state: str
+    transition: str | None = None
+    current_at: datetime | None = None
+    primary_blocker: str | None = None
+    next_action: str
+    drill_down: str | None = None
+    ticker: str | None = None
+    action: str = "NO_TRADE"
+    owned: bool = False
+    rationale: str = ""
+    decision_revision: str | None = None
     policy_version: str = "risk-policy.v2:legacy"
     resolution: DecisionResolutionV2 | None = None
     selected_expression: str | None = None
     price_condition: str | None = None
     catalyst: str | None = None
-    expires_at: date | None = None
+    expires_at: date | datetime | None = None
     research_rank: int | None = None
     trade_rank: int | None = None
     trade_rank_unavailable_reason: str | None = None
     trade_utility: float | None = None
     trade_plan: TradePlan | None = None
+
+
+ActionQueueItem = TodayCapitalAction
 
 
 class TodayResponse(BaseModel):
@@ -612,6 +625,7 @@ __all__ = [
     "AgentOverviewResponse",
     "AgentResearchPromptResponse",
     "AgentSubmissionResponse",
+    "ActionQueueItem",
     "ApiStatusResponse",
     "DashboardResponse",
     "DecisionInboxResponse",

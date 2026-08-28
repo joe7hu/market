@@ -1155,7 +1155,7 @@ export interface paths {
         };
         /**
          * Today
-         * @description Return exact ticker capital actions, ordered by backend opportunity rank.
+         * @description Return one bounded, source-ordered action queue.
          */
         get: operations["today_api_today_get"];
         put?: never;
@@ -5507,15 +5507,29 @@ export interface components {
         };
         /** TodayCapitalAction */
         TodayCapitalAction: {
-            /** Action */
+            /**
+             * Action
+             * @default NO_TRADE
+             */
             action: string;
             /** Catalyst */
             catalyst?: string | null;
+            /** Current At */
+            current_at?: string | null;
             /** Decision Revision */
-            decision_revision: string;
+            decision_revision?: string | null;
+            /** Drill Down */
+            drill_down?: string | null;
             /** Expires At */
             expires_at?: string | null;
-            /** Owned */
+            /** Lifecycle State */
+            lifecycle_state: string;
+            /** Next Action */
+            next_action: string;
+            /**
+             * Owned
+             * @default false
+             */
             owned: boolean;
             /**
              * Policy Version
@@ -5524,15 +5538,28 @@ export interface components {
             policy_version: string;
             /** Price Condition */
             price_condition?: string | null;
-            /** Rationale */
+            /** Primary Blocker */
+            primary_blocker?: string | null;
+            /** Projection Identity */
+            projection_identity: string;
+            /**
+             * Rationale
+             * @default
+             */
             rationale: string;
             /** Research Rank */
             research_rank?: number | null;
             resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             /** Selected Expression */
             selected_expression?: string | null;
+            /** Source */
+            source: string;
+            /** Source Authority */
+            source_authority: string;
             /** Ticker */
-            ticker: string;
+            ticker?: string | null;
+            /** Title */
+            title: string;
             trade_plan?: components["schemas"]["TradePlan"] | null;
             /** Trade Rank */
             trade_rank?: number | null;
@@ -5540,6 +5567,8 @@ export interface components {
             trade_rank_unavailable_reason?: string | null;
             /** Trade Utility */
             trade_utility?: number | null;
+            /** Transition */
+            transition?: string | null;
         } & {
             [key: string]: unknown;
         };

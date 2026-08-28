@@ -238,26 +238,64 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY decision.as_of DESC, decision.rank
     """,
     "ticker_decisions": """
-        SELECT decision.id::text AS ticker_decision_id,
-               instrument.symbol AS ticker, instrument.symbol,
-               decision.decision_revision, decision.contract_version,
-               decision.as_of, decision.published_at, decision.published_at AS available_at,
-               decision.input_hash,
-               decision.code_version, decision.experiment_id,
-               decision.tactical, decision.fundamental, decision.capital_action,
-               decision.resolution, decision.policy_version,
-               decision.opportunity_episode_id, decision.opportunity_cutoff,
-               decision.opportunity_episode, decision.risk_policy, decision.expressions,
-               decision.selected_expression, decision.data_requests,
-               decision.learning_history, decision.input_manifest,
-               decision.market_state_publication_id::text,
-               decision.market_state_snapshot, decision.portfolio_impacts,
-               decision.risk_policy_snapshot,
-               decision.status
-        FROM analysis.ticker_decision decision
-        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-        WHERE decision.status = 'published'
-        ORDER BY decision.as_of DESC, decision.created_at DESC
+        WITH current_candidates AS (
+            SELECT decision.id::text AS ticker_decision_id,
+                   instrument.symbol AS ticker, instrument.symbol,
+                   decision.decision_revision, decision.contract_version,
+                   decision.as_of, decision.published_at, decision.published_at AS available_at,
+                   decision.input_hash,
+                   decision.code_version, decision.experiment_id,
+                   decision.tactical, decision.fundamental, decision.capital_action,
+                   decision.resolution, decision.policy_version,
+                   decision.opportunity_episode_id, decision.opportunity_cutoff,
+                   decision.opportunity_episode, decision.risk_policy, decision.expressions,
+                   decision.selected_expression, decision.data_requests,
+                   decision.learning_history, decision.input_manifest,
+                   decision.market_state_publication_id::text,
+                   decision.market_state_snapshot, decision.portfolio_impacts,
+                   decision.risk_policy_snapshot,
+                   decision.status, decision.created_at,
+                   count(*) OVER (
+                       PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
+                   ) AS authority_count,
+                   row_number() OVER (
+                       PARTITION BY decision.instrument_id
+                       ORDER BY decision.as_of DESC, decision.published_at DESC,
+                                decision.created_at DESC, decision.id DESC
+                   ) AS current_row
+            FROM analysis.ticker_decision decision
+            JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+            WHERE decision.status = 'published'
+              AND decision.contract_version = 'ticker-decision.v1'
+              AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+              AND decision.as_of <= now()
+              AND decision.published_at IS NOT NULL
+              AND decision.published_at <= now()
+              AND jsonb_typeof(decision.tactical) = 'object'
+              AND jsonb_typeof(decision.fundamental) = 'object'
+              AND jsonb_typeof(decision.capital_action) = 'object'
+              AND jsonb_typeof(decision.risk_policy) = 'object'
+              AND jsonb_typeof(decision.expressions) = 'object'
+              AND jsonb_typeof(decision.input_manifest) = 'object'
+        )
+        SELECT ticker_decision_id, ticker, symbol,
+               decision_revision, contract_version,
+               as_of, published_at, available_at,
+               input_hash, code_version, experiment_id,
+               tactical, fundamental, capital_action,
+               resolution, policy_version,
+               opportunity_episode_id, opportunity_cutoff,
+               opportunity_episode, risk_policy, expressions,
+               selected_expression, data_requests,
+               learning_history, input_manifest,
+               market_state_publication_id,
+               market_state_snapshot, portfolio_impacts,
+               risk_policy_snapshot, status
+        FROM current_candidates
+        WHERE current_row = 1 AND authority_count = 1
+        ORDER BY as_of DESC, published_at DESC, created_at DESC, ticker_decision_id DESC
     """,
     "ticker_outcomes": """
         SELECT outcome.ticker_decision_id::text, instrument.symbol AS ticker,

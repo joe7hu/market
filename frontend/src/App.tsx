@@ -5,8 +5,6 @@ import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { MarketDataProvider } from "./marketData";
 import { AgentRoute } from "./pages/AgentRoute";
 import { CalendarRoute } from "./pages/CalendarRoute";
-import { DecisionInboxRoute } from "./pages/DecisionInboxRoute";
-import { FeedRoute } from "./pages/FeedRoute";
 import { HealthRoute } from "./pages/HealthRoute";
 import { MarketRoute } from "./pages/MarketRoute";
 import { NotFoundRoute } from "./pages/NotFoundRoute";
@@ -28,7 +26,7 @@ export function App() {
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<Navigate to="/today" replace />} />
-          <Route path="feed" element={<FeedRoute />} />
+          <Route path="feed" element={<Navigate to="/today" replace />} />
           <Route path="today" element={<TodayRoute />} />
           <Route path="dashboard" element={<Navigate to="/today" replace />} />
           <Route path="watchlist" element={<WatchlistRoute />} />
@@ -37,11 +35,11 @@ export function App() {
           <Route path="market" element={<MarketRoute />} />
           <Route path="opportunities" element={<Navigate to="/watchlist" replace />} />
           <Route path="portfolio" element={<PortfolioRoute />} />
-          <Route path="research" element={<Navigate to="/watchlist" replace />} />
-          <Route path="research-queue" element={<Navigate to="/watchlist" replace />} />
+          <Route path="research" element={<Navigate to="/sources" replace />} />
+          <Route path="research-queue" element={<Navigate to="/sources" replace />} />
           <Route path="options-radar" element={<OptionsRadarRoute />} />
           <Route path="options-chain" element={<Suspense fallback={<p className="text-sm text-muted-foreground">Loading option-chain workstation…</p>}><OptionsChainRoute /></Suspense>} />
-          <Route path="inbox" element={<RouteErrorBoundary route="/inbox" failedApis={["/api/decision-inbox"]}><DecisionInboxRoute /></RouteErrorBoundary>} />
+          <Route path="inbox" element={<Navigate to="/today" replace />} />
           <Route path="thesis-monitor" element={<ThesisMonitorRoute />} />
           <Route path="theses" element={<ThesisMonitorRoute />} />
           <Route path="filings" element={<Navigate to="/superinvestors" replace />} />

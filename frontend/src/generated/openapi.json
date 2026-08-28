@@ -12319,6 +12319,7 @@
         "additionalProperties": true,
         "properties": {
           "action": {
+            "default": "NO_TRADE",
             "title": "Action",
             "type": "string"
           },
@@ -12333,9 +12334,39 @@
             ],
             "title": "Catalyst"
           },
+          "current_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current At"
+          },
           "decision_revision": {
-            "title": "Decision Revision",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Revision"
+          },
+          "drill_down": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drill Down"
           },
           "expires_at": {
             "anyOf": [
@@ -12344,12 +12375,25 @@
                 "type": "string"
               },
               {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
                 "type": "null"
               }
             ],
             "title": "Expires At"
           },
+          "lifecycle_state": {
+            "title": "Lifecycle State",
+            "type": "string"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
           "owned": {
+            "default": false,
             "title": "Owned",
             "type": "boolean"
           },
@@ -12369,7 +12413,23 @@
             ],
             "title": "Price Condition"
           },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
+          },
+          "projection_identity": {
+            "title": "Projection Identity",
+            "type": "string"
+          },
           "rationale": {
+            "default": "",
             "title": "Rationale",
             "type": "string"
           },
@@ -12405,8 +12465,27 @@
             ],
             "title": "Selected Expression"
           },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "source_authority": {
+            "title": "Source Authority",
+            "type": "string"
+          },
           "ticker": {
-            "title": "Ticker",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker"
+          },
+          "title": {
+            "title": "Title",
             "type": "string"
           },
           "trade_plan": {
@@ -12451,14 +12530,26 @@
               }
             ],
             "title": "Trade Utility"
+          },
+          "transition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition"
           }
         },
         "required": [
-          "ticker",
-          "action",
-          "owned",
-          "rationale",
-          "decision_revision"
+          "projection_identity",
+          "source_authority",
+          "source",
+          "title",
+          "lifecycle_state",
+          "next_action"
         ],
         "title": "TodayCapitalAction",
         "type": "object"
@@ -16365,7 +16456,7 @@
     },
     "/api/today": {
       "get": {
-        "description": "Return exact ticker capital actions, ordered by backend opportunity rank.",
+        "description": "Return one bounded, source-ordered action queue.",
         "operationId": "today_api_today_get",
         "responses": {
           "200": {
