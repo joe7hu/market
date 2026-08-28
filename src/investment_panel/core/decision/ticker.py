@@ -2508,46 +2508,6 @@ def build_ticker_decision(
         for name, rows in tables.items()
     }
     persisted = _latest(usable, "ticker_decisions")
-    if persisted:
-        try:
-            # Published revisions are immutable decision truth. The composed
-            # fallback below is only for symbols that have not yet been
-            # materialized by the ticker decision job.
-            persisted_resolution = resolution_from_legacy({
-                **persisted,
-                "ticker": symbol,
-                "resolution": persisted.get("resolution"),
-            })
-            return TickerDecision.model_validate({
-                "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
-                "ticker": symbol,
-                "as_of": persisted.get("as_of") or reference,
-                "decision_revision": persisted.get("decision_revision"),
-                "tactical": persisted.get("tactical"),
-                "fundamental": persisted.get("fundamental"),
-                "capital_action": capital_action_from_resolution(persisted_resolution),
-                "resolution": persisted_resolution,
-                "policy_version": persisted.get("policy_version") or (persisted.get("risk_policy") or {}).get("policy_version") or "risk-policy.v2:legacy",
-                "risk_policy": persisted.get("risk_policy"),
-                "expressions": persisted.get("expressions") or {},
-                "selected_expression": persisted.get("selected_expression"),
-                "opportunity_episode": persisted.get("opportunity_episode") or None,
-                "data_requests": persisted.get("data_requests") or [],
-                "learning_history": persisted.get("learning_history") or [],
-                "input_manifest": persisted.get("input_manifest") or {},
-                "risk_policy_snapshot": persisted.get("risk_policy_snapshot") or None,
-                "market_state_publication_id": persisted.get("market_state_publication_id") or None,
-                "market_state_snapshot": persisted.get("market_state_snapshot") or None,
-                "portfolio_impacts": persisted.get("portfolio_impacts") or {},
-                "instrument_state_snapshot": persisted.get("instrument_state_snapshot") or None,
-                "alpha_signals": persisted.get("alpha_signals") or [],
-                "opportunity_rank": persisted.get("opportunity_rank") or None,
-                "trade_plan": persisted.get("trade_plan") or (persisted.get("input_manifest") or {}).get("trade_plan"),
-            })
-        except Exception:
-            # A malformed persisted row is visible to source-health/learning
-            # diagnostics, but it must not make the ticker route disappear.
-            pass
     manifest = _build_manifest(usable, reference, code_version, experiment_id)
     decision_row = _latest(usable, "symbol_decision_snapshot", "symbol_decision_snapshots", "decision_queue", "opportunities_ranked", "candidates")
     quote = _latest(usable, "quotes")
@@ -2579,28 +2539,144 @@ def build_ticker_decision(
         "broker_available_capital": _pick(portfolio, "broker_available_capital"),
         "cash_balance": _pick(portfolio, "cash_balance"),
         "buying_power": _pick(portfolio, "buying_power"),
-        "available_at": _pick(portfolio, "available_at", "account_observed_at", "observed_at", "updated_at"),
         "account_source": _pick(portfolio, "account_source", "account_facts_source", "provider", "source_id"),
     }
-    canonical_policy_snapshot = compile_risk_policy_snapshot(
-        account_facts=account_facts,
-        sleeve_capital=nav,
-        conviction_tier=conviction_tier,
-        policy_kind="ticker",
-    )
-    policy_blockers = list(canonical_policy_snapshot.blockers)
-    account_observed_at = canonical_policy_snapshot.account_observed_at
+    account_observed_at = _pick(portfolio, "account_observed_at")
+    available_at = _pick(portfolio, "available_at")
+    if account_observed_at is None and available_at is None:
+        available_at = _pick(portfolio, "observed_at", "updated_at")
+    if account_observed_at is not None:
+        account_facts["account_observed_at"] = account_observed_at
+    if available_at is not None:
+        account_facts["available_at"] = available_at
+    account_observed_at = _parse_datetime(_pick(account_facts, "account_observed_at", "available_at"))
+    policy_blockers: list[str] = []
     if account_observed_at is None or nav is None:
         policy_blockers.append("fresh_postgres_account_facts_required")
     elif account_observed_at > reference:
         policy_blockers.append("future_account_revision_not_allowed")
     elif (reference - account_observed_at).total_seconds() > 1800:
         policy_blockers.append("fresh_postgres_account_facts_required")
-    if tuple(policy_blockers) != canonical_policy_snapshot.blockers:
-        canonical_policy_snapshot = canonical_policy_snapshot.model_copy(update={
-            "blockers": tuple(dict.fromkeys(policy_blockers)),
-        })
+    canonical_policy_snapshot = compile_risk_policy_snapshot(
+        account_facts=account_facts,
+        sleeve_capital=nav,
+        conviction_tier=conviction_tier,
+        policy_kind="ticker",
+        additional_blockers=policy_blockers,
+    )
     risk_policy = _risk_policy(canonical_policy_snapshot)
+
+    if persisted:
+        try:
+            # Published revisions remain immutable, but current account
+            # authority must still gate their use.
+            persisted_resolution = resolution_from_legacy({
+                **persisted,
+                "ticker": symbol,
+                "resolution": persisted.get("resolution"),
+            })
+            persisted_policy_snapshot = None
+            if persisted.get("risk_policy_snapshot") is not None:
+                try:
+                    persisted_policy_snapshot = (
+                        persisted["risk_policy_snapshot"]
+                        if isinstance(persisted["risk_policy_snapshot"], RiskPolicySnapshot)
+                        else RiskPolicySnapshot.model_validate(persisted["risk_policy_snapshot"])
+                    )
+                except Exception:
+                    pass
+            authority_blockers = list(canonical_policy_snapshot.blockers)
+            if (
+                persisted_policy_snapshot is None
+                or persisted_policy_snapshot.model_dump(mode="json")
+                != canonical_policy_snapshot.model_dump(mode="json")
+            ):
+                authority_blockers.append("risk_policy_snapshot_mismatch")
+            if risk_policy_snapshot is not _CONTEXT_UNSET:
+                if risk_policy_snapshot is None:
+                    authority_blockers.append("risk_policy_snapshot_missing")
+                else:
+                    try:
+                        supplied_policy_snapshot = (
+                            risk_policy_snapshot
+                            if isinstance(risk_policy_snapshot, RiskPolicySnapshot)
+                            else RiskPolicySnapshot.model_validate(risk_policy_snapshot)
+                        )
+                    except Exception:
+                        supplied_policy_snapshot = None
+                    if (
+                        supplied_policy_snapshot is None
+                        or supplied_policy_snapshot.model_dump(mode="json")
+                        != canonical_policy_snapshot.model_dump(mode="json")
+                    ):
+                        authority_blockers.append("risk_policy_snapshot_mismatch")
+            authority_blockers = list(dict.fromkeys(authority_blockers))
+            stored_policy_version = (
+                persisted.get("policy_version")
+                or (persisted.get("risk_policy") or {}).get("policy_version")
+                or "risk-policy.v2:legacy"
+            )
+            if persisted_policy_snapshot is None:
+                persisted_policy_snapshot = RiskPolicySnapshot(
+                    policy_version=stored_policy_version,
+                    blockers=tuple(authority_blockers + ["risk_policy_snapshot_missing"]),
+                )
+            elif authority_blockers:
+                persisted_policy_snapshot = persisted_policy_snapshot.model_copy(update={
+                    "blockers": tuple(dict.fromkeys((*persisted_policy_snapshot.blockers, *authority_blockers))),
+                })
+            if authority_blockers:
+                persisted_resolution = build_decision_resolution(
+                    action="NO_TRADE",
+                    decision_revision=persisted_resolution.decision_revision,
+                    policy_version=stored_policy_version,
+                    trade_plan_id=persisted_resolution.trade_plan_id,
+                    provenance=persisted_resolution.provenance,
+                    ticker=symbol,
+                    blockers=[authority_blockers[0]],
+                    data_quality="INCOMPLETE",
+                    authorization_mode="NONE",
+                    rationale=persisted_resolution.rationale,
+                    owned=persisted_resolution.owned,
+                    price_condition=persisted_resolution.price_condition,
+                    catalyst=persisted_resolution.catalyst,
+                    expires_at=persisted_resolution.expires_at,
+                    blocked=True,
+                )
+            return TickerDecision.model_validate({
+                "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
+                "ticker": symbol,
+                "as_of": persisted.get("as_of") or reference,
+                "decision_revision": persisted.get("decision_revision"),
+                "tactical": persisted.get("tactical"),
+                "fundamental": persisted.get("fundamental"),
+                "capital_action": capital_action_from_resolution(persisted_resolution),
+                "resolution": persisted_resolution,
+                "policy_version": stored_policy_version,
+                "risk_policy": persisted.get("risk_policy"),
+                "expressions": persisted.get("expressions") or {},
+                "selected_expression": persisted.get("selected_expression"),
+                "opportunity_episode": persisted.get("opportunity_episode") or None,
+                "data_requests": persisted.get("data_requests") or [],
+                "learning_history": persisted.get("learning_history") or [],
+                "input_manifest": persisted.get("input_manifest") or {},
+                "risk_policy_snapshot": persisted_policy_snapshot,
+                "market_state_publication_id": persisted.get("market_state_publication_id") or None,
+                "market_state_snapshot": persisted.get("market_state_snapshot") or None,
+                "portfolio_impacts": persisted.get("portfolio_impacts") or {},
+                "instrument_state_snapshot": persisted.get("instrument_state_snapshot") or None,
+                "alpha_signals": persisted.get("alpha_signals") or [],
+                "opportunity_rank": persisted.get("opportunity_rank") or None,
+                "trade_plan": (
+                    None
+                    if authority_blockers
+                    else persisted.get("trade_plan") or (persisted.get("input_manifest") or {}).get("trade_plan")
+                ),
+            })
+        except Exception:
+            # A malformed persisted row is visible to source-health/learning
+            # diagnostics, but it must not make the ticker route disappear.
+            pass
 
     requests: list[DataRequest] = []
     if current_price is None:

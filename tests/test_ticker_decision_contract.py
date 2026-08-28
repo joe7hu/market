@@ -83,14 +83,36 @@ def test_risk_policy_version_is_stable_for_normalized_replay_inputs() -> None:
         conviction_tier="STANDARD",
         policy_kind="ticker",
     )
+    replay_facts = {**facts, "account_observed_at": AS_OF}
+    replay_facts.pop("available_at")
     replay = compile_risk_policy_snapshot(
-        account_facts=_account_facts(account_observed_at=AS_OF),
+        account_facts=replay_facts,
         sleeve_capital=100_000,
         conviction_tier="STANDARD",
         policy_kind="ticker",
     )
 
     assert first.policy_version == replay.policy_version
+
+
+def test_account_observation_and_availability_both_contribute_to_policy_identity() -> None:
+    baseline = compile_risk_policy_snapshot(
+        account_facts=_account_facts(account_observed_at=AS_OF),
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+    revised = compile_risk_policy_snapshot(
+        account_facts=_account_facts(
+            account_observed_at=AS_OF,
+            available_at=AS_OF.replace(minute=1),
+        ),
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+
+    assert baseline.policy_version != revised.policy_version
 
 
 def test_ticker_compiles_one_policy_snapshot_before_sizing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -307,6 +329,73 @@ def test_persisted_ticker_decision_is_not_dropped_by_point_in_time_filtering() -
     replay = build_ticker_decision("ACME", {"ticker_decisions": [persisted]}, as_of=AS_OF)
 
     assert replay.decision_revision == source.decision_revision
+
+
+def test_persisted_ticker_decision_rechecks_current_account_authority() -> None:
+    source = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{
+                "symbol": "ACME",
+                "net_liquidation": 100_000,
+                "available_at": AS_OF,
+                "account_source": "postgresql",
+            }],
+            "decision_queue": [{
+                "symbol": "ACME",
+                "stance": "BULLISH",
+                "entry_low": 99,
+                "entry_high": 101,
+                "invalidation_price": 90,
+                "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+    )
+    persisted = source.model_dump(mode="json")
+    persisted.update({"ticker_decision_id": "persisted-id", "available_at": AS_OF.isoformat()})
+
+    replay = build_ticker_decision(
+        "ACME",
+        {
+            "ticker_decisions": [persisted],
+            "portfolio_summary": [{
+                "symbol": "ACME",
+                "net_liquidation": 100_000,
+                "available_at": "2026-08-22T12:00:00Z",
+                "account_source": "postgresql",
+            }],
+        },
+        as_of=AS_OF,
+    )
+
+    assert replay.capital_action.action is CapitalActionType.AVOID
+    assert replay.resolution is not None
+    assert replay.resolution.action.value == "NO_TRADE"
+    assert replay.resolution.is_blocked is True
+    assert "fresh_postgres_account_facts_required" in replay.context_blockers
+
+    supplied = source.risk_policy_snapshot.model_copy(update={"cash_balance": 1.0})
+    supplied_replay = build_ticker_decision(
+        "ACME",
+        {
+            "ticker_decisions": [persisted],
+            "portfolio_summary": [{
+                "symbol": "ACME",
+                "net_liquidation": 100_000,
+                "available_at": AS_OF,
+                "account_source": "postgresql",
+            }],
+        },
+        as_of=AS_OF,
+        risk_policy_snapshot=supplied,
+    )
+
+    assert supplied_replay.resolution is not None
+    assert supplied_replay.resolution.action.value == "NO_TRADE"
+    assert supplied_replay.resolution.is_blocked is True
+    assert "risk_policy_snapshot_mismatch" in supplied_replay.context_blockers
 
 
 def test_stale_account_authority_blocks_resolution() -> None:

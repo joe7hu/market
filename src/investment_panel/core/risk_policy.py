@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 import json
 from math import isfinite
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -299,6 +299,7 @@ def compile_risk_policy_snapshot(
     sleeve_capital: float | None = None,
     conviction_tier: str | None = None,
     policy_kind: str = "standard",
+    additional_blockers: Iterable[str] = (),
 ) -> RiskPolicySnapshot:
     """Compile existing settings and account facts into one immutable document."""
 
@@ -317,7 +318,7 @@ def compile_risk_policy_snapshot(
     tier = str(conviction_tier or "").upper()
     ticker_pct = {"EXPLORATORY": 0.005, "STANDARD": 0.01, "HIGH": 0.02}.get(tier)
     account = dict(account_facts or {})
-    blockers: list[str] = []
+    blockers: list[str] = [str(item) for item in additional_blockers if str(item).strip()]
     if policy_kind == "recovery":
         if sleeve is None or sleeve <= 0:
             blockers.append("positive_recovery_sleeve_capital_required")
@@ -354,8 +355,10 @@ def compile_risk_policy_snapshot(
         "buying_power": _number(account.get("buying_power")),
         "account_observed_at": _timestamp(
             account.get("account_observed_at")
-            or account.get("available_at")
-            or account.get("observed_at")
+            if account.get("account_observed_at") is not None
+            else account.get("available_at")
+            if account.get("available_at") is not None
+            else account.get("observed_at")
         ),
         "blockers": tuple(dict.fromkeys(blockers)),
     }
@@ -367,6 +370,9 @@ def compile_risk_policy_snapshot(
     snapshot = RiskPolicySnapshot(policy_version="pending", **values)
     canonical = snapshot.model_dump(mode="json")
     canonical.pop("policy_version", None)
+    if account.get("account_observed_at") is not None and account.get("available_at") is not None:
+        available_at = _timestamp(account.get("available_at"))
+        canonical["available_at"] = available_at.isoformat() if available_at is not None else None
     digest = sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     return snapshot.model_copy(update={"policy_version": f"{RISK_POLICY_VERSION}:{digest}"})
 
