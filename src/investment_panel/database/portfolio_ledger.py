@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_EVEN
+import hashlib
+import json
 from math import isfinite
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -262,6 +264,22 @@ def replay_portfolio_at(
             [reference, reference, reference, reference],
         ).fetchall()
     ]
+    lineage_rows = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT transaction.id, transaction.instrument_id, transaction.transaction_type,
+                   transaction.quantity, transaction.price, transaction.amount, transaction.fees,
+                   transaction.currency, transaction.executed_at, transaction.created_at,
+                   transaction.reverses_transaction_id
+            FROM app.portfolio_transaction transaction
+            WHERE transaction.executed_at <= %s
+              AND transaction.created_at <= %s
+            ORDER BY transaction.id
+            """,
+            [reference, reference],
+        ).fetchall()
+    ]
     positions: dict[int, dict[str, Any]] = {}
     realized_pnl = 0.0
     income = 0.0
@@ -305,60 +323,121 @@ def replay_portfolio_at(
                 positions.pop(instrument_id, None)
 
     instrument_ids = sorted(positions)
-    prices = {
-        int(row["instrument_id"]): dict(row)
-        for row in (
-            connection.execute(
-                "SELECT * FROM raw.current_price_at(%s, %s)",
-                [reference, instrument_ids],
-            ).fetchall()
-            if instrument_ids
-            else []
-        )
+    price_rows = (
+        [dict(row) for row in connection.execute(
+            "SELECT * FROM raw.current_price_at(%s, %s)", [reference, instrument_ids],
+        ).fetchall()]
+        if instrument_ids else []
+    )
+    prices = {int(row["instrument_id"]): row for row in price_rows}
+    duplicate_price_ids = {
+        int(row["instrument_id"])
+        for row in price_rows
+        if sum(int(other["instrument_id"]) == int(row["instrument_id"]) for other in price_rows) > 1
     }
     position_rows: list[dict[str, Any]] = []
+    valued_position_count = 0
+    missing_valuation_count = 0
     portfolio_value = 0.0
     for instrument_id in instrument_ids:
         position = dict(positions[instrument_id])
         price = prices.get(instrument_id)
         quantity = float(position["quantity"])
         cost_basis = quantity * float(position["avg_cost"] or 0)
-        market_value = quantity * float(price["price"]) if price and price.get("price") is not None else None
-        if market_value is not None:
+        selected_price = float(price["price"]) if price and price.get("price") is not None else None
+        observed_at = price.get("observed_at") if price else None
+        available_at = price.get("available_at") if price else None
+        valid_price = (
+            selected_price is not None
+            and isfinite(selected_price)
+            and selected_price > 0
+            and isinstance(observed_at, datetime)
+            and isinstance(available_at, datetime)
+            and observed_at <= reference
+            and available_at <= reference
+            and instrument_id not in duplicate_price_ids
+        )
+        market_value = quantity * selected_price if valid_price else None
+        if market_value is not None and isfinite(market_value):
             portfolio_value += market_value
+            valued_position_count += 1
+        else:
+            missing_valuation_count += 1
         position.update({
             "quantity": quantity,
             "avg_cost": float(position["avg_cost"] or 0),
             "cost_basis": cost_basis,
-            "price": float(price["price"]) if price and price.get("price") is not None else None,
+            "price": selected_price,
             "market_value": market_value,
-            "quote_observed_at": price.get("observed_at") if price else None,
-            "available_at": price.get("available_at") if price else None,
+            "source_id": price.get("source_id") if price else None,
+            "currency": price.get("currency") if price else None,
+            "source_kind": price.get("source_kind") if price else None,
+            "trading_date": price.get("trading_date") if price else None,
+            "observed_at": observed_at,
+            "quote_observed_at": observed_at,
+            "available_at": available_at,
             "valuation_status": price.get("valuation_status") if price else "unavailable",
+            "valuation_complete": valid_price,
         })
         position_rows.append(position)
+    valuation_complete = missing_valuation_count == 0
+    complete_portfolio_value = round(portfolio_value, 6) if valuation_complete else None
     for position in position_rows:
         position["portfolio_weight"] = (
-            float(position["market_value"]) / portfolio_value if portfolio_value and position["market_value"] is not None else None
+            float(position["market_value"]) / portfolio_value
+            if valuation_complete and portfolio_value and position["market_value"] is not None else None
         )
+    lineage = [
+        {
+            "transaction_id": str(row["id"]),
+            "reverses_transaction_id": str(row["reverses_transaction_id"]) if row.get("reverses_transaction_id") else None,
+            "instrument_id": int(row["instrument_id"]) if row.get("instrument_id") is not None else None,
+            "transaction_type": row["transaction_type"],
+            "quantity": float(row["quantity"]) if row.get("quantity") is not None else None,
+            "price": float(row["price"]) if row.get("price") is not None else None,
+            "amount": float(row["amount"]) if row.get("amount") is not None else None,
+            "fees": float(row["fees"]) if row.get("fees") is not None else None,
+            "currency": row.get("currency"),
+            "executed_at": row["executed_at"],
+            "created_at": row["created_at"],
+        }
+        for row in lineage_rows
+    ]
+    book = {
+        "cutoff": reference,
+        "lineage": sorted(lineage, key=lambda row: row["transaction_id"]),
+        "positions": sorted(position_rows, key=lambda row: row["instrument_id"]),
+        "totals": {
+            "portfolio_value": complete_portfolio_value,
+            "realized_pnl": round(realized_pnl, 6),
+            "income": round(income, 6),
+            "fees": round(fees, 6),
+            "net_contributions": round(net_contributions, 6),
+            "transaction_count": len(rows),
+            "eligible_position_count": len(position_rows),
+            "valued_position_count": valued_position_count,
+            "missing_valuation_count": missing_valuation_count,
+            "valuation_complete": valuation_complete,
+        },
+    }
     return {
         "cutoff": reference.isoformat(),
         "available_at": reference.isoformat(),
         "positions": position_rows,
-        "portfolio_value": round(portfolio_value, 6),
+        "portfolio_value": complete_portfolio_value,
         "realized_pnl": round(realized_pnl, 6),
         "income": round(income, 6),
         "fees": round(fees, 6),
         "net_contributions": round(net_contributions, 6),
         "transaction_count": len(rows),
-        "lineage": [
-            {
-                "transaction_id": str(row["id"]),
-                "executed_at": row["executed_at"].isoformat(),
-                "created_at": row["created_at"].isoformat(),
-            }
-            for row in rows
-        ],
+        "eligible_position_count": len(position_rows),
+        "valued_position_count": valued_position_count,
+        "missing_valuation_count": missing_valuation_count,
+        "valuation_complete": valuation_complete,
+        "lineage": lineage,
+        "book_identity": "portfolio-book:" + hashlib.sha256(
+            json.dumps(_portfolio_jsonable(book), sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
     }
 
 
@@ -380,6 +459,18 @@ def portfolio_rows_at(
     connection: Any | None = None,
 ) -> list[dict[str, Any]]:
     return replay_portfolio_at(config, cutoff, connection=connection)["positions"]
+
+
+def _portfolio_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _portfolio_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_portfolio_jsonable(item) for item in value]
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
 
 
 def _normalize_transaction(fields: dict[str, Any]) -> dict[str, Any]:

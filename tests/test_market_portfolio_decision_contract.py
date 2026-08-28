@@ -18,7 +18,23 @@ from investment_panel.core.decision import (
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
 
 
+def _complete_replay(*, book_identity: str = "portfolio-book:test") -> dict[str, object]:
+    return {
+        "cutoff": AS_OF,
+        "positions": [],
+        "portfolio_value": 0.0,
+        "transaction_count": 0,
+        "eligible_position_count": 0,
+        "valued_position_count": 0,
+        "missing_valuation_count": 0,
+        "valuation_complete": True,
+        "lineage": [],
+        "book_identity": book_identity,
+    }
+
+
 def _decision(**context):
+    context.setdefault("portfolio_replay", _complete_replay())
     return build_ticker_decision(
         "ACME",
         {
@@ -64,8 +80,27 @@ def test_every_expression_has_one_portfolio_impact_including_cash() -> None:
         assert impact.cutoff == decision.cutoff
 
     cash = decision.portfolio_impacts[ExpressionKind.CASH]
+    assert cash.availability == "available"
+    assert cash.portfolio_before == cash.portfolio_after
     assert cash.marginal_risk == 0
     assert cash.risk_budget_consumed == 0
+    non_cash = next(impact for kind, impact in decision.portfolio_impacts.items() if kind is not ExpressionKind.CASH)
+    assert non_cash.availability == "unavailable"
+    assert "portfolio_marginal_risk_unsupported" in non_cash.blockers
+
+
+def test_book_identity_changes_every_bound_impact_and_never_unlocks_non_cash() -> None:
+    first = _decision(portfolio_replay=_complete_replay(book_identity="portfolio-book:first"))
+    second = _decision(portfolio_replay=_complete_replay(book_identity="portfolio-book:second"))
+
+    for kind in first.portfolio_impacts:
+        assert first.portfolio_impacts[kind].impact_id != second.portfolio_impacts[kind].impact_id
+    assert second.portfolio_impacts[ExpressionKind.CASH].availability == "available"
+    assert all(
+        impact.availability == "unavailable"
+        for kind, impact in second.portfolio_impacts.items()
+        if kind is not ExpressionKind.CASH
+    )
 
 
 def test_future_market_lineage_is_rejected() -> None:

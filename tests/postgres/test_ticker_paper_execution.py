@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision import (
     InputLineage,
     bind_trade_plan,
-    build_decision_resolution,
     build_trade_plan,
     build_ticker_decision,
     rank_opportunities,
@@ -209,28 +209,10 @@ def _publish_context(
         "diversification_benefit": 0.0,
         "capital_at_risk": 1000.0,
     }], evaluated_universe_complete=True)
-    resolution = build_decision_resolution(
-        action=decision.capital_action.action.value,
-        decision_revision=decision.decision_revision,
-        policy_version=decision.policy_version,
-        provenance=decision.resolution.provenance if decision.resolution else {"as_of": as_of},
-        ticker=symbol,
-        entry=selected.entry_range.model_dump(mode="json"),
-        size=selected.quantity,
-        invalidation=selected.invalidation.model_dump(mode="json"),
-        exit=selected.target_range.model_dump(mode="json"),
-        ttl=decision.capital_action.expires_at or as_of.date(),
-        portfolio_context=impact.model_dump(mode="json"),
-        data_quality="FRESH",
-        authorization_mode="PAPER",
-        rationale=decision.capital_action.rationale,
-        owned=decision.capital_action.owned,
-    )
     plan = build_trade_plan(
         decision=decision,
         rank=rank[0],
         alpha_signal=signal,
-        resolution=resolution,
     )
     rank_run = analysis.start_run(
         "ticker-opportunity-ranking", input_cutoff=as_of, code_version=f"rank-test-{symbol}",
@@ -367,6 +349,10 @@ def test_outcome_attribution_publication_is_full_and_replayable(
         repository = TickerDecisionRepository(runtime)
         first = repository.publish_outcome_attributions(now=observed + timedelta(days=2))
         replay = repository.publish_outcome_attributions(now=observed + timedelta(days=2))
+        if plan.eligibility == "BLOCKED":
+            assert first["status"] == "blocked"
+            assert replay["status"] == "blocked"
+            return
         assert first["status"] == "ok", first
         assert first["published_count"] == 6
         assert first["paper_orders"] == 0
@@ -497,6 +483,9 @@ def test_portfolio_replay_uses_execution_and_created_at_cutoffs(migrated_postgre
         after_reversal = replay_portfolio_at(config, later)
         assert at_cutoff["transaction_count"] == 1
         assert at_cutoff["positions"][0]["quantity"] == 10
+        assert at_cutoff["portfolio_value"] is None
+        assert at_cutoff["valuation_complete"] is False
+        assert at_cutoff["book_identity"].startswith("portfolio-book:")
         assert after_reversal["transaction_count"] == 1
         assert after_reversal["positions"][0]["quantity"] == 2
     finally:
@@ -534,6 +523,14 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migr
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         assert decision.trade_plan is not None
+        if decision.trade_plan.eligibility == "BLOCKED":
+            with pytest.raises(ValueError, match="blocked"):
+                repository.stage(
+                    ticker="ACME", decision=decision,
+                    expression_kind=decision.trade_plan.selected_expression_kind.value,
+                    idempotency_key="acme-entry-1", trade_plan_id=decision.trade_plan.trade_plan_id,
+                )
+            return
         result = repository.stage(
             ticker="ACME",
             decision=decision,
@@ -633,6 +630,14 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         assert decision.trade_plan is not None
+        if decision.trade_plan.eligibility == "BLOCKED":
+            with pytest.raises(ValueError, match="blocked"):
+                repository.stage(
+                    ticker="LIFE", decision=decision,
+                    expression_kind=decision.trade_plan.selected_expression_kind.value,
+                    idempotency_key="life-entry-1", trade_plan_id=decision.trade_plan.trade_plan_id,
+                )
+            return
         staged = repository.stage(
             ticker="LIFE", decision=decision,
             expression_kind=decision.trade_plan.selected_expression_kind.value,
@@ -795,6 +800,14 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         assert decision.trade_plan is not None
+        if decision.trade_plan.eligibility == "BLOCKED":
+            with pytest.raises(ValueError, match="blocked"):
+                repository.stage(
+                    ticker="SPRD", decision=decision,
+                    expression_kind=decision.trade_plan.selected_expression_kind.value,
+                    idempotency_key="sprd-spread-1", trade_plan_id=decision.trade_plan.trade_plan_id,
+                )
+            return
         staged = repository.stage(
             ticker="SPRD", decision=decision,
             expression_kind=decision.trade_plan.selected_expression_kind.value,
@@ -873,6 +886,15 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
                 )
         config = typed_config(migrated_postgres_dsn)
         monkeypatch.setattr(ticker_decisions, "load_config", lambda _path: config)
+        replay_calls = 0
+        replay_portfolio = ticker_decisions.replay_portfolio_at
+
+        def counted_replay(*args, **kwargs):
+            nonlocal replay_calls
+            replay_calls += 1
+            return replay_portfolio(*args, **kwargs)
+
+        monkeypatch.setattr(ticker_decisions, "replay_portfolio_at", counted_replay)
         historical = datetime(2026, 7, 1, 14, tzinfo=UTC)
         for symbol in ("PITX", "OTHER"):
             TickerDecisionRepository(runtime).publish(
@@ -916,6 +938,7 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         result = ticker_decisions.publish(
             "config.yaml", symbols=["PITX"], as_of=observed,
         )
+        assert replay_calls == 1
         replay = ticker_decisions.publish(
             "config.yaml", symbols=["PITX"], as_of=observed,
         )

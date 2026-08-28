@@ -77,6 +77,7 @@ def publish(
     records: list[dict[str, Any]] = []
     skipped = 0
     failures: list[dict[str, str]] = []
+    replay = replay_portfolio_at(config, reference)
     for symbol in selected:
         try:
             tables, metadata = load_postgres_tables(
@@ -90,7 +91,6 @@ def publish(
                 raise RuntimeError("ticker input read models are unavailable")
             # The benchmark is written before the read so its membership is
             # part of the same point-in-time input manifest as the decision.
-            replay = replay_portfolio_at(config, reference)
             seed = build_ticker_decision(symbol, tables, as_of=reference, portfolio_replay=replay)
             market_publication = analysis_repository.publication_at_or_before(
                 "market", cutoff=reference
@@ -490,44 +490,17 @@ def portfolio_impacts(
     publication_id: str,
     replay: dict[str, Any],
 ) -> dict[ExpressionKind, PortfolioImpact]:
-    before = {
-        "cutoff": replay["cutoff"],
-        "positions": replay["positions"],
-        "portfolio_value": replay["portfolio_value"],
-        "transaction_count": replay["transaction_count"],
-    }
-    impacts: dict[ExpressionKind, PortfolioImpact] = {}
-    for kind, expression in decision.expressions.items():
-        planned_loss = float(expression.planned_loss or 0)
-        impacts[kind] = PortfolioImpact(
-            impact_id=f"portfolio-impact:{decision.opportunity_episode_id}:{kind.value}",
-            opportunity_episode_id=decision.opportunity_episode_id,
-            expression_kind=kind,
-            expression_identity=trade_expression_identity(expression),
-            decision_revision=decision.decision_revision,
-            risk_policy_version=decision.policy_version,
-            market_snapshot_id=snapshot.snapshot_id,
-            market_state_publication_id=publication_id,
-            cutoff=decision.cutoff,
-            input_lineage=tuple(decision.input_lineage),
-            portfolio_before=before,
-            portfolio_after={**before, "expression_kind": kind.value},
-            marginal_risk=0.0 if kind is ExpressionKind.CASH else planned_loss,
-            diversification_benefit=None,
-            expected_transaction_costs=None,
-            tail_risk_penalty=None,
-            portfolio_overlap_penalty=None,
-            capital_at_risk=planned_loss,
-            risk_budget_consumed=0.0 if kind is ExpressionKind.CASH else planned_loss,
-            positions_most_correlated=(),
-            position_to_trim_or_replace=None,
-            scenario_pnl={"status": "zero_impact", "pnl": 0.0} if kind is ExpressionKind.CASH else None,
-            factor_exposure=None,
-            greeks=None,
-            liquidity={"status": "unavailable"},
-            availability="available",
+    canonical_snapshot = snapshot.model_copy(update={"publication_id": publication_id})
+    return {
+        kind: PortfolioImpact.compose(
+            episode=decision.opportunity_episode,
+            expression=expression,
+            snapshot=canonical_snapshot,
+            policy_version=decision.policy_version,
+            portfolio_replay=replay,
         )
-    return impacts
+        for kind, expression in decision.expressions.items()
+    }
 
 
 def publish_benchmark(

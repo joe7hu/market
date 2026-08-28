@@ -430,6 +430,10 @@ class PortfolioImpact(BaseModel):
     availability: str = "unavailable"
     blockers: tuple[str, ...] = ()
 
+    @classmethod
+    def compose(cls, **kwargs: Any) -> "PortfolioImpact":
+        return compose_portfolio_impact(**kwargs)
+
     @model_validator(mode="before")
     @classmethod
     def normalize_aliases(cls, value: Any) -> Any:
@@ -454,6 +458,36 @@ class PortfolioImpact(BaseModel):
         for lineage in self.input_lineage:
             if _utc(lineage.available_at) > cutoff:
                 raise ValueError("portfolio impact lineage cannot be newer than its cutoff")
+        if self.availability not in {"available", "unavailable"}:
+            raise ValueError("portfolio impact availability must be available or unavailable")
+        if self.availability == "unavailable":
+            if not self.blockers:
+                raise ValueError("unavailable portfolio impacts require blockers")
+            return self
+        if self.blockers:
+            raise ValueError("available portfolio impacts cannot have blockers")
+        before = self.portfolio_before
+        after = self.portfolio_after
+        book_identity = str(before.get("book_identity") or "")
+        if (
+            not book_identity
+            or after.get("book_identity") != book_identity
+            or before.get("valuation_complete") is not True
+            or before.get("missing_valuation_count") != 0
+            or before.get("valued_position_count") != before.get("eligible_position_count")
+        ):
+            raise ValueError("available portfolio impacts require a complete cutoff book")
+        if self.expression_kind is ExpressionKind.CASH:
+            if (
+                before != after
+                or self.marginal_risk != 0
+                or self.risk_budget_consumed != 0
+                or self.scenario_pnl != {"status": "zero_impact", "pnl": 0.0}
+                or self.liquidity != {"status": "not_applicable"}
+            ):
+                raise ValueError("CASH portfolio impact must be exact zero change")
+        else:
+            raise ValueError("non-CASH portfolio impacts require unsupported institutional evidence")
         return self
 
 
@@ -2249,6 +2283,154 @@ def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) ->
     )
 
 
+def _portfolio_book_blockers(replay: Mapping[str, Any], cutoff: datetime) -> list[str]:
+    blockers: list[str] = []
+    if not str(replay.get("book_identity") or "").strip():
+        blockers.append("portfolio_book_identity_missing")
+    try:
+        replay_cutoff = replay.get("cutoff")
+        if not isinstance(replay_cutoff, datetime):
+            replay_cutoff = datetime.fromisoformat(str(replay_cutoff).replace("Z", "+00:00"))
+        if _utc(replay_cutoff) != _utc(cutoff):
+            blockers.append("portfolio_book_cutoff_mismatch")
+    except (TypeError, ValueError):
+        blockers.append("portfolio_book_cutoff_invalid")
+    positions = replay.get("positions")
+    if not isinstance(positions, list):
+        blockers.append("portfolio_positions_missing")
+        positions = []
+    lineage = replay.get("lineage")
+    if not isinstance(lineage, list) or (replay.get("transaction_count") and not lineage):
+        blockers.append("portfolio_transaction_lineage_missing")
+        lineage = []
+    transaction_ids = [str(item.get("transaction_id") or "") for item in lineage if isinstance(item, Mapping)]
+    if len(transaction_ids) != len(lineage) or not all(transaction_ids) or len(set(transaction_ids)) != len(transaction_ids):
+        blockers.append("portfolio_transaction_lineage_invalid")
+    instrument_ids: set[str] = set()
+    for position in positions:
+        if not isinstance(position, Mapping):
+            blockers.append("portfolio_position_invalid")
+            continue
+        instrument_id = str(position.get("instrument_id") or "")
+        if not instrument_id or instrument_id in instrument_ids:
+            blockers.append("portfolio_position_duplicate")
+        instrument_ids.add(instrument_id)
+        for name in ("quantity", "avg_cost", "price", "market_value"):
+            value = _number(position.get(name))
+            if value is None or not math.isfinite(value) or (name in {"quantity", "price"} and value <= 0):
+                blockers.append(f"portfolio_{name}_invalid")
+        for name in ("source_id", "currency", "source_kind", "trading_date", "observed_at", "available_at", "valuation_status"):
+            if not position.get(name):
+                blockers.append(f"portfolio_{name}_missing")
+        for name in ("observed_at", "available_at"):
+            try:
+                value = position.get(name)
+                if not isinstance(value, datetime):
+                    value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if _utc(value) > _utc(cutoff):
+                    blockers.append(f"portfolio_{name}_future")
+            except (TypeError, ValueError):
+                blockers.append(f"portfolio_{name}_invalid")
+        if str(position.get("valuation_status") or "").lower() == "unavailable":
+            blockers.append("portfolio_valuation_unavailable")
+    expected_count = len(positions)
+    if (
+        replay.get("valuation_complete") is not True
+        or replay.get("eligible_position_count") != expected_count
+        or replay.get("valued_position_count") != expected_count
+        or replay.get("missing_valuation_count") != 0
+    ):
+        blockers.append("portfolio_book_incomplete")
+    value = _number(replay.get("portfolio_value"))
+    if value is None or not math.isfinite(value) or value < 0:
+        blockers.append("portfolio_value_incomplete")
+    return list(dict.fromkeys(blockers))
+
+
+def compose_portfolio_impact(
+    *,
+    episode: OpportunityEpisode,
+    expression: ExpressionDecision,
+    snapshot: MarketStateSnapshot,
+    policy_version: str,
+    portfolio_replay: Mapping[str, Any] | None,
+) -> PortfolioImpact:
+    """Build the one fail-closed impact shape shared by local and published paths."""
+
+    before = dict(portfolio_replay or {})
+    kind = expression.kind
+    expression_identity = _expression_identity_for(expression, kind, episode.ticker, episode.decision_revision)
+    blockers = _portfolio_book_blockers(before, episode.cutoff)
+    if kind is ExpressionKind.CASH and not blockers:
+        after = dict(before)
+        availability = "available"
+        values = {
+            "marginal_risk": 0.0,
+            "risk_budget_consumed": 0.0,
+            "scenario_pnl": {"status": "zero_impact", "pnl": 0.0},
+            "factor_exposure": None,
+            "greeks": None,
+            "liquidity": {"status": "not_applicable"},
+        }
+    else:
+        after = {}
+        availability = "unavailable"
+        if kind is not ExpressionKind.CASH:
+            blockers.extend((
+                "portfolio_marginal_risk_unsupported",
+                "portfolio_risk_budget_unsupported",
+                "portfolio_scenario_pnl_unsupported",
+                "portfolio_factor_exposure_unsupported",
+                "portfolio_greeks_unsupported",
+                "portfolio_liquidity_unsupported",
+                "portfolio_opportunity_cost_unsupported",
+                "portfolio_overlap_unsupported",
+                "portfolio_diversification_unsupported",
+                "portfolio_capital_at_risk_unsupported",
+                "portfolio_stress_evidence_unsupported",
+            ))
+        values = {
+            "marginal_risk": None,
+            "risk_budget_consumed": None,
+            "scenario_pnl": None,
+            "factor_exposure": None,
+            "greeks": None,
+            "liquidity": None,
+        }
+    payload = {
+        "book_identity": before.get("book_identity"),
+        "opportunity_episode_id": episode.episode_id,
+        "expression_kind": kind.value,
+        "expression_identity": expression_identity,
+        "decision_revision": episode.decision_revision,
+        "risk_policy_version": policy_version,
+        "market_snapshot_id": snapshot.snapshot_id,
+        "market_state_publication_id": snapshot.publication_id,
+        "cutoff": episode.cutoff,
+        "portfolio_before": before,
+        "portfolio_after": after,
+        "values": values,
+    }
+    impact_id = f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+    return PortfolioImpact(
+        impact_id=impact_id,
+        opportunity_episode_id=episode.episode_id,
+        expression_kind=kind,
+        expression_identity=expression_identity,
+        decision_revision=episode.decision_revision,
+        risk_policy_version=policy_version,
+        market_snapshot_id=snapshot.snapshot_id,
+        market_state_publication_id=snapshot.publication_id,
+        cutoff=episode.cutoff,
+        input_lineage=tuple(episode.input_lineage),
+        portfolio_before=before,
+        portfolio_after=after,
+        availability=availability,
+        blockers=tuple(dict.fromkeys(blockers)),
+        **values,
+    )
+
+
 def _local_portfolio_impacts(
     *,
     episode: OpportunityEpisode,
@@ -2259,35 +2441,16 @@ def _local_portfolio_impacts(
     owned: bool,
     portfolio_replay: Mapping[str, Any] | None,
 ) -> dict[ExpressionKind, PortfolioImpact]:
-    before = dict(portfolio_replay or {"nav": nav, "owned": owned})
-    result: dict[ExpressionKind, PortfolioImpact] = {}
-    for kind, expression in expressions.items():
-        planned_loss = _number(expression.planned_loss)
-        identity = _expression_identity_for(expression, kind, episode.ticker, episode.decision_revision)
-        impact = PortfolioImpact(
-            impact_id=f"local-impact:{episode.episode_id}:{kind.value}",
-            opportunity_episode_id=episode.episode_id,
-            expression_kind=kind,
-            expression_identity=identity,
-            decision_revision=episode.decision_revision,
-            risk_policy_version=policy.policy_version,
-            market_snapshot_id=snapshot.snapshot_id,
-            market_state_publication_id=snapshot.publication_id,
-            cutoff=episode.cutoff,
-            input_lineage=tuple(episode.input_lineage),
-            portfolio_before=before,
-            portfolio_after={**before, "expression_kind": kind.value},
-            marginal_risk=planned_loss,
-            risk_budget_consumed=planned_loss,
-            scenario_pnl=None,
-            factor_exposure=None,
-            greeks=None,
-            liquidity={"status": "unavailable"},
-            availability="available" if kind is ExpressionKind.CASH or nav is not None else "unavailable",
-            blockers=() if kind is ExpressionKind.CASH or nav is not None else ("portfolio_replay_required",),
+    return {
+        kind: compose_portfolio_impact(
+            episode=episode,
+            expression=expression,
+            snapshot=snapshot,
+            policy_version=policy.policy_version,
+            portfolio_replay=portfolio_replay,
         )
-        result[kind] = impact
-    return result
+        for kind, expression in expressions.items()
+    }
 
 
 def _context_blockers_for(

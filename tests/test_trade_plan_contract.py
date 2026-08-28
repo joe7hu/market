@@ -20,6 +20,21 @@ from investment_panel.jobs.ticker_decisions import portfolio_impacts
 AS_OF = datetime(2026, 8, 22, 14, tzinfo=UTC)
 
 
+def _complete_replay() -> dict[str, object]:
+    return {
+        "cutoff": AS_OF,
+        "positions": [],
+        "portfolio_value": 0.0,
+        "transaction_count": 0,
+        "eligible_position_count": 0,
+        "valued_position_count": 0,
+        "missing_valuation_count": 0,
+        "valuation_complete": True,
+        "lineage": [],
+        "book_identity": "portfolio-book:acme",
+    }
+
+
 def _tables(symbol: str = "ACME") -> dict[str, list[dict[str, object]]]:
     available_at = "2026-08-22T13:55:00Z"
     return {
@@ -51,12 +66,7 @@ def _decision() -> tuple[object, object, object]:
         "availability": "available",
         "blockers": (),
     })
-    replay = {
-        "cutoff": AS_OF,
-        "positions": [],
-        "portfolio_value": 100_000.0,
-        "transaction_count": 0,
-    }
+    replay = _complete_replay()
     impacts = portfolio_impacts(seed, snapshot, "market:publication:acme", replay)
     decision = build_ticker_decision(
         "ACME", _tables(), as_of=AS_OF, market_state_snapshot=snapshot,
@@ -128,12 +138,10 @@ def test_trade_plan_id_is_deterministic_and_excludes_bundle_publication() -> Non
     assert first.trade_plan_id == second.trade_plan_id
     assert first.trade_plan_id == with_publication.trade_plan_id
     assert first.trade_plan_id == with_reader_metadata.trade_plan_id
-    assert first.eligibility == "ACTIONABLE"
-    assert first.action == "BUY"
-    assert first.authorization_mode == "PAPER"
-    assert first.entry_limit == pytest.approx(100)
-    assert first.quantity and first.quantity > 0
-    assert first.planned_loss and first.planned_loss > 0
+    assert first.eligibility == "BLOCKED"
+    assert first.action == "NO_TRADE"
+    assert first.authorization_mode == "NONE"
+    assert first.primary_blocker == "portfolio_marginal_risk_unsupported"
 
 
 def test_trade_plan_id_binds_identity_and_economic_terms() -> None:
@@ -144,8 +152,8 @@ def test_trade_plan_id_binds_identity_and_economic_terms() -> None:
         TradePlan.model_validate(changed_identity)
 
     changed_terms = plan.model_dump(mode="json")
-    changed_terms["entry_limit"] = plan.entry_limit + 1
-    with pytest.raises(ValueError, match="immutable terms"):
+    changed_terms["portfolio_impact_id"] = "portfolio-impact:stale"
+    with pytest.raises(ValueError, match="portfolio impact id"):
         TradePlan.model_validate(changed_terms)
 
 
@@ -158,7 +166,7 @@ def test_blocked_plan_is_cash_no_trade_with_one_blocker() -> None:
     assert plan.eligibility == "BLOCKED"
     assert plan.authorization_mode == "NONE"
     assert plan.quantity is None
-    assert plan.primary_blocker == "opportunity_rank_missing"
+    assert plan.primary_blocker == "portfolio_impact_unavailable:STOCK"
     assert plan.blockers == (plan.primary_blocker,)
 
 
@@ -211,11 +219,8 @@ def test_automatic_staging_forwards_only_the_canonical_plan(monkeypatch: pytest.
     result = ticker_decisions._stage_eligible(object(), config, [decision])
 
     assert result["status"] == "ok"
-    assert result["staged"] == [{"status": "staged"}]
-    assert calls["trade_plan_id"] == plan.trade_plan_id
-    assert calls["expression_kind"] == plan.selected_expression_kind.value
-    assert "quantity" not in calls
-    assert "limit_price" not in calls
+    assert result["staged"] == []
+    assert calls == {}
 
 
 def test_manual_staging_forwards_the_exact_plan_id() -> None:
@@ -325,7 +330,6 @@ def test_today_api_projects_the_bound_plan_terms(monkeypatch: pytest.MonkeyPatch
     result = panel_router.today(config=object())
 
     action = result["actions"][0]
-    assert action["action"] == "BUY"
-    assert action["selected_expression"] == "STOCK"
-    assert action["trade_plan"]["trade_plan_id"] == plan.trade_plan_id
-    assert action["trade_plan"]["entry_limit"] == plan.entry_limit
+    assert action["action"] == "NO_TRADE"
+    assert action["selected_expression"] == "CASH"
+    assert action["trade_plan"] is None
