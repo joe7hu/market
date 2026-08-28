@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, time, timedelta
+from math import log, sqrt
+from statistics import mean, pstdev
 
 import pytest
 
@@ -10,6 +12,7 @@ from investment_panel.core.decision import MARKET_DIMENSIONS, MARKET_HORIZONS, M
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import completed_trading_dates
 from investment_panel.database.ingestion import IngestionRepository
+import investment_panel.database.market_analysis as market_analysis
 from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.source_facts import SourceFactRepository
@@ -154,7 +157,7 @@ def test_market_coverage_uses_exact_history_per_horizon(migrated_postgres_dsn: s
         ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=3)
 
         result = refresh_market_publication(runtime, now=cutoff)
-        assert result["available_coverage_rows"] == 3
+        assert result["available_coverage_rows"] == 5
         repository = AnalysisRepository(runtime)
         consumed = repository.publication_at_or_before("market", cutoff=cutoff)
         assert consumed is not None
@@ -185,6 +188,21 @@ def test_market_coverage_uses_exact_history_per_horizon(migrated_postgres_dsn: s
         assert all(item.field == "market_daily_price" for item in snapshot.input_lineage)
         assert all(item.revision and item.fact_id for item in snapshot.input_lineage)
 
+        volatility_states = {
+            horizon: next(
+                dimension for dimension in dimensions if dimension.dimension == "volatility"
+            )
+            for horizon, dimensions in snapshot.horizons.items()
+        }
+        assert volatility_states["1-5 trading days"].evidence_status == "available"
+        assert volatility_states["2-8 weeks"].evidence_status == "available"
+        assert volatility_states["3-12 months"].evidence_status == "unavailable"
+        assert volatility_states["3-12 months"].blockers == ("market_daily_history_truncated",)
+        assert volatility_states["1-5 trading days"].model_dump(mode="json")["return_window_trading_days"] == 5
+        assert volatility_states["2-8 weeks"].model_dump(mode="json")["return_window_trading_days"] == 40
+        assert len(volatility_states["1-5 trading days"].lineage) == 18
+        assert len(volatility_states["2-8 weeks"].lineage) == 123
+
         microstructure = [
             next(dimension for dimension in dimensions if dimension.dimension == "microstructure")
             for dimensions in snapshot.horizons.values()
@@ -197,6 +215,379 @@ def test_market_coverage_uses_exact_history_per_horizon(migrated_postgres_dsn: s
         )
         valuation = repository.publication_rows("market", "market_environment_model")
         assert next(row for row in valuation if row["category"] == "Valuation")["score"] is None
+    finally:
+        runtime.close()
+
+
+def test_market_realized_volatility_uses_exact_extra_close_lineage_and_identity(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        source_id = "market-volatility-test"
+        ingestion.register_source(source_id, name="Market volatility test", family="test", kind="quote")
+        run_id = ingestion.start_run(source_id, "quotes")
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = completed_trading_dates(cutoff, count=253)
+        rows = [
+            {
+                "symbol": symbol,
+                "date": trading_date,
+                "open": base + index,
+                "high": base + index,
+                "low": base + index,
+                "close": base + index,
+                "volume": 1,
+            }
+            for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
+            for index, trading_date in enumerate(reversed(dates))
+        ]
+        ingestion.store_price_bars(
+            run_id, source_id, rows,
+            asset_classes={"SPY": "etf", "QQQ": "etf", "NVDA": "equity"},
+        )
+        ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=3)
+
+        result = refresh_market_publication(runtime, now=cutoff)
+        repository = AnalysisRepository(runtime)
+        snapshot = MarketStateSnapshot.model_validate(
+            repository.publication_rows("market", "market_state_snapshot")[0]
+        )
+        volatility_states = {
+            horizon: next(
+                dimension for dimension in dimensions if dimension.dimension == "volatility"
+            )
+            for horizon, dimensions in snapshot.horizons.items()
+        }
+        assert result["available_coverage_rows"] == 6, [
+            state.model_dump(mode="json") for state in volatility_states.values()
+        ]
+        assert volatility_states["intraday"].evidence_status == "unavailable"
+        daily_volatility_states = [
+            volatility_states[horizon]
+            for horizon in ("1-5 trading days", "2-8 weeks", "3-12 months")
+        ]
+        assert all(state.evidence_status == "available" for state in daily_volatility_states)
+        assert all(state.state == "realized historical volatility" for state in daily_volatility_states)
+        assert all(state.probability is None for state in daily_volatility_states)
+        assert all("not implied volatility" in state.change_drivers[1] for state in daily_volatility_states)
+        assert [len(volatility_states[horizon].lineage) for horizon in (
+            "1-5 trading days", "2-8 weeks", "3-12 months"
+        )] == [18, 123, 759]
+        assert len(snapshot.input_lineage) == 759
+        assert all(item.available_at <= cutoff for item in snapshot.input_lineage)
+
+        expected = {}
+        for base, horizon, period in (
+            (500, "1-5 trading days", 5),
+            (450, "1-5 trading days", 5),
+            (400, "1-5 trading days", 5),
+        ):
+            closes = [base + 252 - index for index in range(6)]
+            expected.setdefault(horizon, []).append(pstdev(
+                [log(current / previous) for previous, current in zip(closes, closes[1:], strict=False)]
+            ) * sqrt(252))
+        state = volatility_states["1-5 trading days"].model_dump(mode="json")
+        assert state["realized_volatility"] == pytest.approx(mean(expected["1-5 trading days"]))
+        assert state["eligible_member_count"] == state["available_member_count"] == 3
+        assert state["missing_member_count"] == state["stale_member_count"] == 0
+        assert state["truncated_member_count"] == 0
+        assert state["required_history_trading_days"] == 6
+
+        coverage = [
+            row for row in snapshot.coverage_matrix.rows if row.dimension == "volatility"
+        ]
+        assert len(coverage) == 4
+        assert coverage[0].current_status == "unavailable"
+        assert all(row.current_status == "available" for row in coverage[1:])
+        assert all(row.decision_impact == "context" and row.point_in_time_safe for row in coverage[1:])
+        assert [row.required_history_trading_days for row in coverage] == [0, 6, 41, 253]
+        assert sorted({json.dumps(item.model_dump(mode="json"), sort_keys=True) for item in snapshot.input_lineage}) == sorted(
+            {json.dumps(item.model_dump(mode="json"), sort_keys=True)
+             for row in coverage
+             for item in row.input_lineage}
+        )
+
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE raw.price_bar SET close = close + 1 WHERE trading_date = %s",
+                [dates[-1]],
+            )
+        changed_result = refresh_market_publication(runtime, now=cutoff)
+        assert changed_result["snapshot_id"] != result["snapshot_id"]
+        changed_snapshot = AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        assert changed_snapshot["snapshot_id"] == changed_result["snapshot_id"]
+    finally:
+        runtime.close()
+
+
+def test_market_realized_volatility_stays_unavailable_for_incomplete_member(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        source_id = "market-volatility-quality-test"
+        ingestion.register_source(source_id, name="Market volatility quality test", family="test", kind="quote")
+        run_id = ingestion.start_run(source_id, "quotes")
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = completed_trading_dates(cutoff, count=253)
+        rows = [
+            {
+                "symbol": symbol,
+                "date": trading_date,
+                "open": base + index,
+                "high": base + index,
+                "low": base + index,
+                "close": base + index,
+                "volume": 1,
+            }
+            for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
+            for index, trading_date in enumerate(reversed(dates))
+        ]
+        ingestion.store_price_bars(
+            run_id, source_id, rows,
+            asset_classes={"SPY": "etf", "QQQ": "etf", "NVDA": "equity"},
+        )
+        ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=3)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE raw.price_bar SET close = 0 WHERE trading_date = %s AND source_id = %s",
+                [dates[0], source_id],
+            )
+
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        states = [
+            dimension
+            for dimensions in snapshot.horizons.values()
+            for dimension in dimensions
+            if dimension.dimension == "volatility"
+        ]
+        assert all(state.evidence_status == "unavailable" for state in states)
+        assert states[0].blockers == ("intraday_evidence_unavailable_from_daily_bars",)
+        assert all(state.blockers == ("market_daily_history_truncated",) for state in states[1:]), [
+            state.model_dump(mode="json") for state in states
+        ]
+        assert all(not state.lineage for state in states)
+        coverage = [row for row in snapshot.coverage_matrix.rows if row.dimension == "volatility"]
+        assert all(row.current_status == "unavailable" for row in coverage)
+        assert tuple(coverage[0].blockers) == ("intraday_evidence_unavailable_from_daily_bars",)
+        assert all(tuple(row.blockers) == ("market_daily_history_truncated",) for row in coverage[1:])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("quality", "expected_blocker", "count_key"),
+    [
+        ("missing", "market_daily_history_missing", "missing_member_count"),
+        ("stale", "market_daily_history_stale", "stale_member_count"),
+        ("duplicate", "market_daily_history_duplicate", "duplicate_member_count"),
+        ("future", "market_daily_history_truncated", "truncated_member_count"),
+    ],
+)
+def test_market_realized_volatility_fails_closed_per_member_quality(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+    quality: str,
+    expected_blocker: str,
+    count_key: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = completed_trading_dates(cutoff, count=253)
+        good_source = f"market-quality-good-{quality}"
+        bad_source = f"market-quality-bad-{quality}"
+        for source_id in (good_source, bad_source):
+            ingestion.register_source(
+                source_id, name="Market quality test", family="test", kind="quote", origin="test"
+            )
+        for source_id, symbols in ((good_source, ("SPY", "QQQ")), (bad_source, ("NVDA",))):
+            run_id = ingestion.start_run(source_id, "quotes")
+            rows = [
+                {
+                    "symbol": symbol,
+                    "date": trading_date,
+                    "open": base + index,
+                    "high": base + index,
+                    "low": base + index,
+                    "close": base + index,
+                    "volume": 1,
+                }
+                for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
+                if symbol in symbols
+                for index, trading_date in enumerate(reversed(dates))
+            ]
+            ingestion.store_price_bars(
+                run_id, source_id, rows,
+                asset_classes={symbol: "etf" for symbol in symbols},
+            )
+            ingestion.finish_run(run_id, "succeeded")
+
+        with runtime.read() as connection:
+            bad_instrument_id = connection.execute(
+                "SELECT id FROM catalog.instrument WHERE symbol = 'NVDA'"
+            ).fetchone()["id"]
+        if quality == "missing":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE raw.price_bar SET close = 0 WHERE instrument_id = %s",
+                    [bad_instrument_id],
+                )
+        elif quality == "stale":
+            stale_at = cutoff - timedelta(days=8)
+            with runtime.transaction() as connection:
+                connection.execute(
+                    """
+                    UPDATE raw.price_bar bar
+                    SET available_at = %s
+                    WHERE bar.instrument_id = %s AND bar.source_id = %s
+                      AND bar.trading_date = %s
+                    """, [stale_at, bad_instrument_id, bad_source, dates[0]]
+                )
+                connection.execute(
+                    """
+                    UPDATE raw.price_bar_fact_availability availability
+                    SET fact_available_at = %s
+                    FROM raw.price_bar bar
+                    WHERE availability.fact_id = bar.id
+                      AND bar.instrument_id = %s AND bar.source_id = %s
+                      AND bar.trading_date = %s
+                    """, [stale_at, bad_instrument_id, bad_source, dates[0]]
+                )
+        elif quality == "future":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    """
+                    UPDATE raw.price_bar
+                    SET observed_at = %s
+                    WHERE instrument_id = %s AND source_id = %s
+                      AND trading_date = %s
+                    """, [cutoff + timedelta(minutes=1), bad_instrument_id, bad_source, dates[0]]
+                )
+        elif quality == "disabled":
+            ingestion.set_source_enabled(bad_source, False)
+        elif quality == "duplicate":
+            original_confirmed_daily_bars = market_analysis.confirmed_daily_bars
+
+            def confirmed_daily_bars_with_duplicate(*args, **kwargs):
+                selected = original_confirmed_daily_bars(*args, **kwargs)
+                duplicated = {instrument_id: list(rows) for instrument_id, rows in selected.items()}
+                duplicated[bad_instrument_id].append(dict(duplicated[bad_instrument_id][-1]))
+                return duplicated
+
+            monkeypatch.setattr(market_analysis, "confirmed_daily_bars", confirmed_daily_bars_with_duplicate)
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+    finally:
+        runtime.close()
+
+    other_count_keys = {
+        "missing_member_count", "stale_member_count", "truncated_member_count",
+        "duplicate_member_count", "invalid_member_count",
+    } - {count_key}
+    states = {
+        horizon: next(dimension for dimension in dimensions if dimension.dimension == "volatility")
+        for horizon, dimensions in snapshot.horizons.items()
+    }
+    coverage = {
+        row.horizon: row for row in snapshot.coverage_matrix.rows if row.dimension == "volatility"
+    }
+    assert states["intraday"].evidence_status == "unavailable"
+    for horizon in ("1-5 trading days", "2-8 weeks", "3-12 months"):
+        state = states[horizon]
+        assert state.evidence_status == "unavailable"
+        assert state.blockers == (expected_blocker,)
+        assert not state.lineage
+        assert state.model_dump(mode="json")[count_key] == 1
+        assert all(state.model_dump(mode="json")[key] == 0 for key in other_count_keys)
+        row = coverage[horizon]
+        assert row.current_status == "unavailable"
+        assert tuple(row.blockers) == (expected_blocker,)
+        assert not row.input_lineage
+        assert row.model_dump(mode="json")[count_key] == 1
+
+
+@pytest.mark.parametrize("source_state", ["disabled", "unconfirmed", "unfinished"])
+def test_market_realized_volatility_fails_closed_for_unusable_postgres_source(
+    migrated_postgres_dsn: str,
+    source_state: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = completed_trading_dates(cutoff, count=253)
+        good_source = f"market-quality-good-{source_state}"
+        bad_source = f"market-quality-bad-{source_state}"
+        ingestion.register_source(
+            good_source, name="Good quality test", family="test", kind="quote", origin="test"
+        )
+        ingestion.register_source(
+            bad_source, name="Bad quality test", family="test", kind="quote", origin="test"
+        )
+        for source_id, symbols in ((good_source, ("SPY", "QQQ")), (bad_source, ("NVDA",))):
+            run_id = ingestion.start_run(source_id, "quotes")
+            rows = [
+                {
+                    "symbol": symbol,
+                    "date": trading_date,
+                    "open": base + index,
+                    "high": base + index,
+                    "low": base + index,
+                    "close": base + index,
+                    "volume": 1,
+                }
+                for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
+                if symbol in symbols
+                for index, trading_date in enumerate(reversed(dates))
+            ]
+            ingestion.store_price_bars(
+                run_id, source_id, rows,
+                asset_classes={symbol: "etf" for symbol in symbols},
+            )
+            if source_id == bad_source:
+                if source_state == "unfinished":
+                    continue
+                ingestion.finish_run(run_id, "failed" if source_state == "unconfirmed" else "succeeded")
+            else:
+                ingestion.finish_run(run_id, "succeeded")
+        if source_state == "disabled":
+            ingestion.set_source_enabled(bad_source, False)
+
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        states = [
+            dimension
+            for dimensions in snapshot.horizons.values()
+            for dimension in dimensions
+            if dimension.dimension == "volatility"
+        ]
+        assert all(state.evidence_status == "unavailable" for state in states)
+        assert states[0].blockers == ("intraday_evidence_unavailable_from_daily_bars",)
+        assert all(state.blockers == ("market_daily_history_missing",) for state in states[1:])
+        assert all(not state.lineage for state in states)
+        assert all(state.model_dump(mode="json")["missing_member_count"] == 1 for state in states[1:])
+        coverage = [row for row in snapshot.coverage_matrix.rows if row.dimension == "volatility"]
+        assert all(row.current_status == "unavailable" for row in coverage)
+        assert tuple(coverage[0].blockers) == ("intraday_evidence_unavailable_from_daily_bars",)
+        assert all(tuple(row.blockers) == ("market_daily_history_missing",) for row in coverage[1:])
+        assert all(not row.input_lineage for row in coverage)
+        assert all(row.model_dump(mode="json")["missing_member_count"] == 1 for row in coverage[1:])
     finally:
         runtime.close()
 

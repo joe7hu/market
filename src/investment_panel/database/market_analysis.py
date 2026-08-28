@@ -6,9 +6,11 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import math
 from statistics import mean
 from typing import Any
 
+from investment_panel.analysis.trend_features import realized_volatility
 from investment_panel.core.decision import (
     CoverageMatrix,
     CoverageMatrixRow,
@@ -125,14 +127,35 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
     assets = [_asset_row(rows) for rows in grouped.values()]
     assets.sort(key=lambda row: (str(row["group_name"]), str(row["symbol"])))
     horizon_evidence = _horizon_evidence(instrument_rows, bars_by_id, as_of)
+    volatility_evidence = _volatility_evidence(instrument_rows, bars_by_id, as_of)
     drivers = _driver_rows(assets, valuation_rows, horizon_evidence)
     references = [_valuation_reference(row) for row in valuation_rows]
     input_lineage = _market_lineage(price_rows, valuation_rows, as_of)
     snapshot = _market_snapshot(
-        as_of, assets, drivers, input_lineage, horizon_evidence, event_risk_evidence
+        as_of, assets, drivers, input_lineage, horizon_evidence, event_risk_evidence,
+        volatility_evidence,
     )
     coverage_rows = _coverage_rows(snapshot.coverage_matrix)
     analysis = AnalysisRepository(runtime)
+    volatility_inputs = {
+        horizon: {
+            "available": evidence.get("available"),
+            "blockers": evidence.get("blockers"),
+            "counts": {
+                key: evidence.get(key)
+                for key in (
+                    "eligible_member_count", "available_member_count", "missing_member_count",
+                    "stale_member_count", "truncated_member_count", "duplicate_member_count",
+                    "invalid_member_count",
+                )
+            },
+            "return_window_trading_days": evidence.get("return_window_trading_days"),
+            "minimum_history_trading_days": evidence.get("minimum_history_trading_days"),
+            "realized_volatility": evidence.get("realized_volatility"),
+            "lineage": [item.model_dump(mode="json") for item in evidence.get("lineage") or ()],
+        }
+        for horizon, evidence in volatility_evidence.items()
+    }
     run_id = analysis.start_run(
         "market-environment",
         input_cutoff=as_of,
@@ -142,6 +165,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             "symbols": sorted(grouped),
             "valuation_rows": len(valuation_rows),
             "source_lineage": [item.model_dump(mode="json") for item in input_lineage],
+            "volatility_evidence": volatility_inputs,
         },
         feature_versions={"market_environment": "v2"},
     )
@@ -411,6 +435,128 @@ def _horizon_evidence(
     return result
 
 
+def _volatility_evidence(
+    instrument_rows: list[dict[str, Any]],
+    bars_by_id: dict[int, list[dict[str, Any]]],
+    cutoff: datetime,
+) -> dict[str, dict[str, Any]]:
+    benchmark = sorted(
+        (row for row in instrument_rows if str(row.get("asset_class") or "").lower() in {"equity", "etf"}),
+        key=lambda row: str(row.get("symbol") or ""),
+    )
+    result: dict[str, dict[str, Any]] = {}
+    for horizon, return_window in _HORIZON_LOOKBACK.items():
+        if return_window is None:
+            result[horizon] = {
+                "available": False,
+                "status": "unavailable",
+                "blockers": ["intraday_evidence_unavailable_from_daily_bars"],
+                "data_requests": ["intraday_spread_depth_execution_data"],
+                "eligible_member_count": len(benchmark),
+                "available_member_count": 0,
+                "missing_member_count": 0,
+                "stale_member_count": 0,
+                "truncated_member_count": 0,
+                "duplicate_member_count": 0,
+                "invalid_member_count": 0,
+                "expected_trading_days": 0,
+                "return_window_trading_days": 0,
+                "minimum_history_trading_days": 0,
+                "annualization_factor": 252,
+                "lineage": (),
+                "valid_rows": (),
+                "benchmark_key": _BENCHMARK_KEY,
+            }
+            continue
+        expected = completed_trading_dates(cutoff, count=return_window + 1)
+        valid_rows: list[dict[str, Any]] = []
+        member_volatilities: list[float] = []
+        missing = stale = truncated = duplicate = invalid = 0
+        for member in benchmark:
+            rows = [
+                row for row in bars_by_id.get(int(member["id"]), ())
+                if row.get("trading_date") in expected
+            ]
+            dates = [row.get("trading_date") for row in rows]
+            if not rows:
+                missing += 1
+                continue
+            if len(dates) != len(set(dates)):
+                duplicate += 1
+                continue
+            by_date = {row["trading_date"]: row for row in rows}
+            if len(by_date) != len(expected) or set(by_date) != set(expected):
+                truncated += 1
+                continue
+            selected = [by_date[trading_date] for trading_date in expected]
+            available_at = [_as_utc(row.get("available_at")) for row in selected]
+            observed_at = [_as_utc(row.get("observed_at")) for row in selected]
+            if any(value is None or value > cutoff for value in observed_at):
+                invalid += 1
+                continue
+            if any(value is None or value > cutoff for value in available_at):
+                invalid += 1
+                continue
+            if cutoff - available_at[0] > _MARKET_STALE_AFTER:
+                stale += 1
+                continue
+            closes = [_number(row.get("close")) for row in selected]
+            if any(value is None or value <= 0 or not math.isfinite(value) for value in closes):
+                invalid += 1
+                continue
+            volatility = realized_volatility(closes, return_window)
+            if volatility is None or not math.isfinite(volatility):
+                invalid += 1
+                continue
+            valid_rows.extend(selected)
+            member_volatilities.append(volatility)
+        available = bool(benchmark) and not (missing or stale or truncated or duplicate or invalid)
+        if len(member_volatilities) != len(benchmark):
+            available = False
+        blockers: list[str] = []
+        if missing:
+            blockers.append("market_daily_history_missing")
+        if stale:
+            blockers.append("market_daily_history_stale")
+        if truncated:
+            blockers.append("market_daily_history_truncated")
+        if duplicate:
+            blockers.append("market_daily_history_duplicate")
+        if invalid:
+            blockers.append("market_daily_history_invalid")
+        if not benchmark:
+            blockers.append("market_equity_etf_benchmark_unavailable")
+        lineages = _market_lineage(valid_rows, None, cutoff)
+        result[horizon] = {
+            "available": available,
+            "status": "available" if available else "unavailable",
+            "blockers": blockers,
+            "data_requests": ["confirmed_daily_price_history"],
+            "eligible_member_count": len(benchmark),
+            "eligible_members": [str(row["symbol"]) for row in benchmark],
+            "available_member_count": len(member_volatilities),
+            "missing_member_count": missing,
+            "stale_member_count": stale,
+            "truncated_member_count": truncated,
+            "duplicate_member_count": duplicate,
+            "invalid_member_count": invalid,
+            "expected_trading_days": return_window,
+            "return_window_trading_days": return_window,
+            "minimum_history_trading_days": return_window + 1,
+            "history_start": expected[-1] if expected else None,
+            "freshness_max_age_days": _MARKET_STALE_AFTER.days,
+            "freshness_latest_available_at": max(
+                (_as_utc(row.get("available_at")) for row in valid_rows), default=None
+            ),
+            "realized_volatility": mean(member_volatilities) if available else None,
+            "annualization_factor": 252,
+            "lineage": lineages if available else (),
+            "valid_rows": tuple(valid_rows) if available else (),
+            "benchmark_key": _BENCHMARK_KEY,
+        }
+    return result
+
+
 def _event_risk_evidence(connection: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
     rows = [
         dict(row)
@@ -542,11 +688,13 @@ def _market_snapshot(
     lineage: tuple[InputLineage, ...],
     horizon_evidence: dict[str, dict[str, Any]] | None = None,
     event_risk_evidence: dict[str, dict[str, Any]] | None = None,
+    volatility_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> MarketStateSnapshot:
     reference = cutoff.astimezone(UTC)
     del assets, drivers
     horizon_evidence = horizon_evidence or {}
     event_risk_evidence = event_risk_evidence or {}
+    volatility_evidence = volatility_evidence or {}
     dimensions: dict[str, tuple[MarketDimensionState, ...]] = {}
     for horizon in MARKET_HORIZONS:
         evidence = horizon_evidence.get(horizon, {})
@@ -587,6 +735,52 @@ def _market_snapshot(
                     blockers=tuple(evidence.get("blockers") or ("market_horizon_history_unavailable",)),
                     data_requests=tuple(evidence.get("data_requests") or ("confirmed_daily_price_history",)),
                 ))
+            elif dimension == "volatility":
+                volatility = volatility_evidence.get(horizon, {})
+                volatility_fields = {
+                    "benchmark_key": volatility.get("benchmark_key"),
+                    "eligible_member_count": volatility.get("eligible_member_count"),
+                    "available_member_count": volatility.get("available_member_count"),
+                    "missing_member_count": volatility.get("missing_member_count"),
+                    "stale_member_count": volatility.get("stale_member_count"),
+                    "truncated_member_count": volatility.get("truncated_member_count"),
+                    "duplicate_member_count": volatility.get("duplicate_member_count"),
+                    "invalid_member_count": volatility.get("invalid_member_count"),
+                    "return_window_trading_days": volatility.get("return_window_trading_days"),
+                    "required_history_trading_days": volatility.get("minimum_history_trading_days"),
+                    "annualization_factor": volatility.get("annualization_factor"),
+                    "realized_volatility": volatility.get("realized_volatility"),
+                    "history_start": volatility.get("history_start"),
+                    "freshness_max_age_days": volatility.get("freshness_max_age_days"),
+                }
+                if volatility.get("available"):
+                    value = float(volatility["realized_volatility"])
+                    horizon_rows.append(MarketDimensionState(
+                        dimension=dimension,
+                        horizon=horizon,
+                        state="realized historical volatility",
+                        change_drivers=(
+                            f"{value:.6f} annualized over {volatility['return_window_trading_days']} trading-day close-to-close log returns.",
+                            "Population standard deviation annualized by sqrt(252); historical only, not implied volatility, a tail model, or a forward forecast.",
+                            f"{volatility['available_member_count']} of {volatility['eligible_member_count']} eligible benchmark members.",
+                        ),
+                        evidence_status="available",
+                        uncertainty="historical realized volatility does not measure implied volatility, tail or jump risk, or forward volatility",
+                        quality="measured",
+                        lineage=tuple(volatility.get("lineage") or ()),
+                        data_requests=(),
+                        **volatility_fields,
+                    ))
+                else:
+                    horizon_rows.append(MarketDimensionState(
+                        dimension=dimension,
+                        horizon=horizon,
+                        evidence_status="unavailable",
+                        uncertainty="exact point-in-time daily-bar evidence for realized volatility is incomplete, stale, or invalid",
+                        blockers=tuple(volatility.get("blockers") or ("volatility_inputs_unavailable",)),
+                        data_requests=tuple(volatility.get("data_requests") or ("confirmed_daily_price_history",)),
+                        **volatility_fields,
+                    ))
             elif dimension == "event risk" and event_evidence.get("available"):
                 scheduled_events = tuple(event_evidence.get("scheduled_events") or ())
                 horizon_rows.append(MarketDimensionState(
@@ -634,7 +828,7 @@ def _market_snapshot(
         dimensions[horizon] = tuple(horizon_rows)
     measured_lineage = _lineage_union(
         tuple(evidence.get("lineage") or ())
-        for evidence in (*horizon_evidence.values(), *event_risk_evidence.values())
+        for evidence in (*horizon_evidence.values(), *volatility_evidence.values(), *event_risk_evidence.values())
         if evidence.get("available")
     )
     encoded = json_dumps({
@@ -644,7 +838,9 @@ def _market_snapshot(
     })
     snapshot_id = f"market-state:{hashlib.sha256(encoded.encode()).hexdigest()[:24]}"
     rows = tuple(
-        _coverage_row(horizon, dimension, reference, horizon_evidence, event_risk_evidence)
+        _coverage_row(
+            horizon, dimension, reference, horizon_evidence, event_risk_evidence, volatility_evidence
+        )
         for horizon in MARKET_HORIZONS
         for dimension in MARKET_DIMENSIONS
     )
@@ -677,12 +873,20 @@ def _coverage_row(
     cutoff: datetime,
     horizon_evidence: dict[str, dict[str, Any]],
     event_risk_evidence: dict[str, dict[str, Any]] | None = None,
+    volatility_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> CoverageMatrixRow:
     evidence = horizon_evidence.get(horizon, {})
     event_evidence = (event_risk_evidence or {}).get(horizon, {})
-    selected_evidence = event_evidence if dimension == "event risk" else evidence
+    volatility = (volatility_evidence or {}).get(horizon, {})
+    selected_evidence = (
+        event_evidence if dimension == "event risk"
+        else volatility if dimension == "volatility"
+        else evidence
+    )
     available = (
         dimension == "equity internals" and bool(evidence.get("available"))
+    ) or (
+        dimension == "volatility" and bool(volatility.get("available"))
     ) or (
         dimension == "event risk" and bool(event_evidence.get("available"))
     )
@@ -691,20 +895,36 @@ def _coverage_row(
     blockers = tuple(evidence.get("blockers") or ("market_horizon_history_unavailable",))
     if dimension == "event risk":
         blockers = tuple(event_evidence.get("blockers") or ("event_risk_inputs_unavailable",))
+    elif dimension == "volatility":
+        blockers = tuple(volatility.get("blockers") or ("volatility_inputs_unavailable",))
     elif dimension == "microstructure":
         blockers = ("microstructure_execution_evidence_unavailable",)
     elif dimension != "equity internals":
         blockers = (_UNSUPPORTED_DIMENSIONS[dimension][0],)
+    if dimension in {"equity internals", "volatility"}:
+        data_requests = (
+            tuple(selected_evidence.get("data_requests") or ("confirmed_daily_price_history",))
+            if not available else ()
+        )
+    elif dimension == "microstructure":
+        data_requests = ("spread_depth_market_impact_expected_execution_cost",)
+    elif dimension == "event risk":
+        data_requests = tuple(event_evidence.get("data_requests") or ("update_market_events",)) if not available else ()
+    else:
+        data_requests = (_UNSUPPORTED_DIMENSIONS[dimension][1],)
     return CoverageMatrixRow(
         dimension=dimension,
         asset_class="cross-asset",
         horizon=horizon,
         provider=provider if available else None,
-        history_start=evidence.get("history_start") if dimension == "equity internals" and available else None,
+        history_start=selected_evidence.get("history_start")
+        if dimension in {"equity internals", "volatility"} and available else None,
         point_in_time_safe=available,
         freshness_slo=(
             f"confirmed daily bars; available_at <= input_cutoff; max_age={evidence.get('freshness_max_age_days')}d"
             if dimension == "equity internals" and available else
+            f"confirmed daily bars; available_at <= input_cutoff; max_age={volatility.get('freshness_max_age_days')}d"
+            if dimension == "volatility" and available else
             f"official-event-calendar; available_at <= input_cutoff; max_age={event_evidence.get('freshness_max_age_seconds')}s"
             if dimension == "event risk" and available else None
         ),
@@ -714,24 +934,30 @@ def _coverage_row(
         input_cutoff=cutoff,
         input_lineage=lineage,
         blockers=blockers if not available else (),
-        benchmark_key=evidence.get("benchmark_key") if dimension == "equity internals" else None,
-        eligible_member_count=evidence.get("eligible_member_count") if dimension == "equity internals" else None,
-        available_member_count=evidence.get("available_member_count") if dimension == "equity internals" else None,
-        missing_member_count=evidence.get("missing_member_count") if dimension == "equity internals" else None,
-        stale_member_count=evidence.get("stale_member_count") if dimension == "equity internals" else None,
-        truncated_member_count=evidence.get("truncated_member_count") if dimension == "equity internals" else None,
-        required_history_trading_days=evidence.get("minimum_history_trading_days") if dimension == "equity internals" else None,
-        data_requests=(
-            ("confirmed_daily_price_history",) if dimension == "equity internals" and not available
-            else ("spread_depth_market_impact_expected_execution_cost",) if dimension == "microstructure"
-            else ("update_market_events",) if dimension == "event risk" and not available
-            else (_UNSUPPORTED_DIMENSIONS[dimension][1],)
-            if dimension not in {"equity internals", "event risk"} else ()
-        ),
+        benchmark_key=selected_evidence.get("benchmark_key")
+        if dimension in {"equity internals", "volatility"} else None,
+        eligible_member_count=selected_evidence.get("eligible_member_count")
+        if dimension in {"equity internals", "volatility"} else None,
+        available_member_count=selected_evidence.get("available_member_count")
+        if dimension in {"equity internals", "volatility"} else None,
+        missing_member_count=selected_evidence.get("missing_member_count")
+        if dimension in {"equity internals", "volatility"} else None,
+        stale_member_count=selected_evidence.get("stale_member_count")
+        if dimension in {"equity internals", "volatility"} else None,
+        truncated_member_count=selected_evidence.get("truncated_member_count")
+        if dimension in {"equity internals", "volatility"} else None,
+        required_history_trading_days=selected_evidence.get("minimum_history_trading_days")
+        if dimension in {"equity internals", "volatility"} else None,
+        data_requests=data_requests,
         scheduled_events=(
             tuple(event_evidence.get("scheduled_events") or ())
             if dimension == "event risk" and available else ()
         ),
+        realized_volatility=volatility.get("realized_volatility") if dimension == "volatility" else None,
+        return_window_trading_days=volatility.get("return_window_trading_days") if dimension == "volatility" else None,
+        annualization_factor=volatility.get("annualization_factor") if dimension == "volatility" else None,
+        duplicate_member_count=volatility.get("duplicate_member_count") if dimension == "volatility" else None,
+        invalid_member_count=volatility.get("invalid_member_count") if dimension == "volatility" else None,
     )
 
 

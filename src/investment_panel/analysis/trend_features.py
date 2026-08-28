@@ -167,8 +167,8 @@ def compute_trend_feature(
         kama_fast_slope=latest_metrics["kama_fast_slope"],
         kama_slow_slope=latest_metrics["kama_slow_slope"],
         atr_pct=latest_metrics["atr_pct"],
-        realized_vol_20d=_realized_vol(closes, 20),
-        realized_vol_60d=_realized_vol(closes, 60),
+        realized_vol_20d=realized_volatility(closes, 20),
+        realized_vol_60d=realized_volatility(closes, 60),
         realized_vol_percentile=_realized_vol_percentile(closes),
         trend_state=trend_state,
         trend_confidence=trend_confidence,
@@ -290,8 +290,8 @@ def _trend_confidence(
 
 
 def _volatility_state(closes: Sequence[float]) -> VolatilityState:
-    current = _realized_vol(closes, 20)
-    slower = _realized_vol(closes, 60)
+    current = realized_volatility(closes, 20)
+    slower = realized_volatility(closes, 60)
     percentile = _realized_vol_percentile(closes)
     if current is None or slower is None or percentile is None:
         return "unstable"
@@ -310,14 +310,16 @@ def _realized_vol_percentile(closes: Sequence[float]) -> float | None:
     series = [
         value
         for end in range(max(21, len(closes) - 251), len(closes) + 1)
-        if (value := _realized_vol(closes[:end], 20)) is not None
+        if (value := realized_volatility(closes[:end], 20)) is not None
     ]
     if not series:
         return None
     return sum(value <= series[-1] for value in series) / len(series)
 
 
-def _realized_vol(closes: Sequence[float], period: int) -> float | None:
+def realized_volatility(closes: Sequence[float], period: int) -> float | None:
+    """Return annualized close-to-close realized volatility from log returns."""
+
     if len(closes) <= period:
         return None
     window = closes[-(period + 1) :]
