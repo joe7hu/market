@@ -1026,3 +1026,131 @@ def test_market_event_risk_stays_unavailable_for_stale_disabled_or_empty_sources
         assert_unavailable()
     finally:
         runtime.close()
+
+
+def _corporate_fact(
+    symbol: str,
+    period_start: str,
+    period_end: str,
+    accepted_at: datetime,
+    accession: str,
+    revenue: float,
+    operating_income: float,
+    *,
+    asset_class: str = "equity",
+) -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "asset_class": asset_class,
+        "period_start": period_start,
+        "period_end": period_end,
+        "filed_at": accepted_at,
+        "observed_at": accepted_at,
+        "values": {
+            "accession_number": accession,
+            "accepted_at": accepted_at.isoformat(),
+            "form": "10-K",
+            "fiscal_period": "FY",
+            "metrics": {"revenue": revenue, "operating_income": operating_income},
+            "tags": {
+                "revenue": {"unit": "USD"},
+                "operating_income": {"unit": "USD"},
+            },
+        },
+    }
+
+
+def test_market_corporate_cycle_uses_cutoff_visible_annual_sec_facts(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source(
+            "sec_companyfacts", name="SEC company facts", family="fundamentals", kind="sec_companyfacts"
+        )
+        run_id = ingestion.start_run("sec_companyfacts", "company_financials")
+        cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+        rows = [
+            _corporate_fact("ACME", "2025-01-01", "2025-12-31", datetime(2026, 2, 1, tzinfo=UTC), "ACME-2025", 120, 18),
+            _corporate_fact("ACME", "2024-01-01", "2024-12-31", datetime(2025, 2, 1, tzinfo=UTC), "ACME-2024", 100, 10),
+            _corporate_fact("BETA", "2025-01-01", "2025-12-31", datetime(2026, 2, 2, tzinfo=UTC), "BETA-2025", 210, 21),
+            _corporate_fact("BETA", "2024-01-01", "2024-12-31", datetime(2025, 2, 2, tzinfo=UTC), "BETA-2024", 200, 18),
+            _corporate_fact("QQQ", "2025-01-01", "2025-12-31", datetime(2026, 2, 3, tzinfo=UTC), "QQQ-2025", 230, 34.5),
+            _corporate_fact("QQQ", "2024-01-01", "2024-12-31", datetime(2025, 2, 3, tzinfo=UTC), "QQQ-2024", 200, 28),
+            _corporate_fact("NVDA", "2025-01-01", "2025-12-31", datetime(2026, 2, 4, tzinfo=UTC), "NVDA-2025", 230, 34.5),
+            _corporate_fact("NVDA", "2024-01-01", "2024-12-31", datetime(2025, 2, 4, tzinfo=UTC), "NVDA-2024", 200, 28),
+            _corporate_fact("SPY", "2025-01-01", "2025-12-31", datetime(2026, 2, 3, tzinfo=UTC), "SPY-2025", 1000, 100, asset_class="etf"),
+        ]
+        assert ingestion.store_fundamental_observations(
+            run_id, "sec_companyfacts", "sec_companyfacts", rows
+        ) == len(rows)
+        ingestion.finish_run(run_id, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), run_id],
+            )
+        first = refresh_market_publication(runtime, now=cutoff)
+        repository = AnalysisRepository(runtime)
+        snapshot = MarketStateSnapshot.model_validate(
+            repository.publication_rows("market", "market_state_snapshot")[0]
+        )
+        states = {
+            horizon: next(item for item in dimensions if item.dimension == "corporate cycle")
+            for horizon, dimensions in snapshot.horizons.items()
+        }
+        corporate = states["3-12 months"]
+        assert corporate.evidence_status == "available"
+        assert corporate.state == "reported annual issuer actuals"
+        assert corporate.model_dump(mode="json")["median_revenue_growth"] == pytest.approx(0.15)
+        assert corporate.model_dump(mode="json")["median_operating_margin_change_bps"] == pytest.approx(100)
+        assert corporate.model_dump(mode="json")["eligible_member_count"] == 4
+        assert corporate.model_dump(mode="json")["available_member_count"] == 4
+        assert corporate.model_dump(mode="json")["selected_periods"]
+        assert len(corporate.lineage) == 8
+        assert all(item.source_id == "sec_companyfacts" for item in corporate.lineage)
+        assert all(item.fact_table == "raw.fundamental_observation" for item in corporate.lineage)
+        assert all(item.cutoff == cutoff for item in corporate.lineage)
+        assert all(item.available_at <= cutoff for item in corporate.lineage)
+        for horizon in ("intraday", "1-5 trading days", "2-8 weeks"):
+            assert states[horizon].evidence_status == "unavailable"
+            assert not states[horizon].lineage
+            assert states[horizon].blockers == market_analysis._CORPORATE_HORIZON_BLOCKERS[horizon][:1]
+        coverage = [row for row in snapshot.coverage_matrix.rows if row.dimension == "corporate cycle"]
+        assert len(coverage) == 4
+        assert sum(row.current_status == "available" for row in coverage) == 1
+        assert len(snapshot.input_lineage) == 8
+        assert first["snapshot_id"] == snapshot.snapshot_id
+
+        amendment_run = ingestion.start_run("sec_companyfacts", "company_financials")
+        assert ingestion.store_fundamental_observations(
+            amendment_run,
+            "sec_companyfacts",
+            "sec_companyfacts",
+            [_corporate_fact("ACME", "2025-01-01", "2025-12-31", datetime(2026, 8, 28, 16, tzinfo=UTC), "ACME-2025-A", 150, 30)],
+        ) == 1
+        ingestion.finish_run(amendment_run, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [cutoff - timedelta(minutes=20), cutoff - timedelta(minutes=20), amendment_run],
+            )
+        before_amendment = refresh_market_publication(runtime, now=cutoff)
+        assert before_amendment["snapshot_id"] == first["snapshot_id"]
+
+        after_amendment = refresh_market_publication(
+            runtime, now=datetime(2026, 8, 28, 17, tzinfo=UTC)
+        )
+        changed = MarketStateSnapshot.model_validate(
+            repository.publication_rows("market", "market_state_snapshot")[0]
+        )
+        changed_corporate = next(
+            item for item in changed.horizons["3-12 months"] if item.dimension == "corporate cycle"
+        )
+        assert after_amendment["snapshot_id"] != first["snapshot_id"]
+        assert changed_corporate.model_dump(mode="json")["median_revenue_growth"] == pytest.approx(0.15)
+        assert any("ACME-2025-A" == item.accession_number for item in changed_corporate.lineage)
+    finally:
+        runtime.close()

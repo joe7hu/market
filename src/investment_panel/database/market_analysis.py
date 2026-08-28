@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import hashlib
 import json
 import math
-from statistics import mean
+from statistics import mean, median
 from typing import Any
 
 from investment_panel.analysis.trend_features import realized_volatility
@@ -36,6 +36,15 @@ _HORIZON_LOOKBACK = {
 }
 _MARKET_STALE_AFTER = timedelta(days=7)
 _BENCHMARK_KEY = "market-equity-etf"
+_CORPORATE_BENCHMARK_KEY = "market-corporate-equity"
+_CORPORATE_SOURCE_ID = "sec_companyfacts"
+_CORPORATE_METRIC_SET = "sec_companyfacts"
+_CORPORATE_HORIZON = "3-12 months"
+_CORPORATE_HORIZON_BLOCKERS = {
+    "intraday": ("corporate_cycle_annual_facts_unsupported_for_intraday", "intraday_corporate_cycle_evidence"),
+    "1-5 trading days": ("corporate_cycle_annual_facts_unsupported_for_1_5_trading_days", "1_5_day_corporate_cycle_evidence"),
+    "2-8 weeks": ("corporate_cycle_annual_facts_unsupported_for_2_8_weeks", "2_8_week_corporate_cycle_evidence"),
+}
 _MAX_EVENT_RISK_SCHEDULE = 8
 _UNSUPPORTED_DIMENSIONS = {
     "growth/inflation": ("growth_inflation_inputs_unavailable", "update_macro_series"),
@@ -121,6 +130,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             ).fetchall()
         ]
         event_risk_evidence = _event_risk_evidence(connection, as_of)
+        corporate_cycle_evidence = _corporate_cycle_evidence(connection, instrument_rows, as_of)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in price_rows:
         grouped[str(row["symbol"])].append(row)
@@ -133,7 +143,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
     input_lineage = _market_lineage(price_rows, valuation_rows, as_of)
     snapshot = _market_snapshot(
         as_of, assets, drivers, input_lineage, horizon_evidence, event_risk_evidence,
-        volatility_evidence,
+        volatility_evidence, corporate_cycle_evidence,
     )
     coverage_rows = _coverage_rows(snapshot.coverage_matrix)
     analysis = AnalysisRepository(runtime)
@@ -166,6 +176,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             "valuation_rows": len(valuation_rows),
             "source_lineage": [item.model_dump(mode="json") for item in input_lineage],
             "volatility_evidence": volatility_inputs,
+            "corporate_cycle_evidence": _corporate_cycle_inputs(corporate_cycle_evidence),
         },
         feature_versions={"market_environment": "v2"},
     )
@@ -557,6 +568,330 @@ def _volatility_evidence(
     return result
 
 
+def _corporate_cycle_evidence(
+    connection: Any,
+    instrument_rows: list[dict[str, Any]],
+    cutoff: datetime,
+) -> dict[str, Any]:
+    benchmark = sorted(
+        (row for row in instrument_rows if str(row.get("asset_class") or "").lower() == "equity"),
+        key=lambda row: str(row.get("symbol") or ""),
+    )
+    base = {
+        "available": False,
+        "status": "unavailable",
+        "benchmark_key": _CORPORATE_BENCHMARK_KEY,
+        "eligible_members": [str(row["symbol"]) for row in benchmark],
+        "eligible_member_count": len(benchmark),
+        "available_member_count": 0,
+        "missing_member_count": 0,
+        "stale_member_count": 0,
+        "duplicate_member_count": 0,
+        "invalid_member_count": 0,
+        "median_revenue_growth": None,
+        "median_operating_margin_change_bps": None,
+        "selected_periods": (),
+        "lineage": (),
+        "blockers": [],
+        "data_requests": ["update_company_financials"],
+    }
+    if not benchmark:
+        base["blockers"] = ["market_corporate_equity_benchmark_unavailable"]
+        base["missing_member_count"] = 0
+        return base
+
+    source = connection.execute(
+        """
+        SELECT enabled, operational_state, freshness_seconds
+        FROM ingest.source
+        WHERE id = %s
+        """,
+        [_CORPORATE_SOURCE_ID],
+    ).fetchone()
+    if source is None:
+        base["blockers"] = ["corporate_cycle_source_missing"]
+        base["missing_member_count"] = len(benchmark)
+        return base
+    source = dict(source)
+    if not source["enabled"] or source["operational_state"] != "active":
+        base["blockers"] = ["corporate_cycle_source_unavailable"]
+        base["invalid_member_count"] = len(benchmark)
+        return base
+    freshness_seconds = int(source.get("freshness_seconds") or 0)
+    if freshness_seconds != 86400:
+        base["blockers"] = ["corporate_cycle_source_lifecycle_mismatch"]
+        base["invalid_member_count"] = len(benchmark)
+        return base
+
+    latest_run = connection.execute(
+        """
+        SELECT max(run.finished_at) AS finished_at
+        FROM ingest.run run
+        WHERE run.source_id = %s
+          AND run.capability = 'company_financials'
+          AND run.status IN ('succeeded', 'partial')
+          AND run.finished_at IS NOT NULL
+          AND run.finished_at <= %s
+        """,
+        [_CORPORATE_SOURCE_ID, cutoff],
+    ).fetchone()
+    latest_finished_at = _as_utc(latest_run["finished_at"]) if latest_run and latest_run["finished_at"] else None
+    if latest_finished_at is None:
+        base["blockers"] = ["corporate_cycle_source_run_unavailable"]
+        base["invalid_member_count"] = len(benchmark)
+        return base
+    if cutoff - latest_finished_at > timedelta(seconds=freshness_seconds):
+        base["blockers"] = ["corporate_cycle_source_run_stale"]
+        base["stale_member_count"] = len(benchmark)
+        return base
+
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT observation.id, observation.instrument_id, instrument.symbol,
+                   observation.metric_set, observation.period_start, observation.period_end,
+                   observation.filed_at, observation.observed_at, observation.values,
+                   run.id::text AS ingest_run_id, run.finished_at AS available_at
+            FROM raw.fundamental_observation observation
+            JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+            JOIN ingest.source source ON source.id = observation.source_id
+            JOIN ingest.run run ON run.id = observation.ingest_run_id
+            WHERE observation.instrument_id = ANY(%s)
+              AND observation.source_id = %s
+              AND observation.metric_set = %s
+              AND observation.filed_at IS NOT NULL
+              AND observation.filed_at <= %s
+              AND observation.observed_at <= %s
+              AND run.capability = 'company_financials'
+              AND run.status IN ('succeeded', 'partial')
+              AND run.finished_at IS NOT NULL
+              AND run.finished_at <= %s
+            ORDER BY observation.instrument_id, observation.period_end DESC,
+                     observation.filed_at DESC, observation.observed_at DESC, observation.id DESC
+            """,
+            [[int(row["id"]) for row in benchmark], _CORPORATE_SOURCE_ID, _CORPORATE_METRIC_SET,
+             cutoff, cutoff, cutoff],
+        ).fetchall()
+    ]
+    by_member: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_member[int(row["instrument_id"])].append(row)
+
+    valid_members: list[dict[str, Any]] = []
+    counts = {key: 0 for key in ("missing", "stale", "duplicate", "invalid")}
+    blockers: set[str] = set()
+    for member in benchmark:
+        annual_by_end: dict[date, list[dict[str, Any]]] = defaultdict(list)
+        invalid_rows = 0
+        for row in by_member.get(int(member["id"]), ()):
+            values = row.get("values")
+            if not isinstance(values, dict):
+                invalid_rows += 1
+                continue
+            form = str(values.get("form") or "").strip()
+            fiscal_period = str(values.get("fiscal_period") or "").strip().upper()
+            if form not in {"10-K", "10-K/A"} or fiscal_period != "FY":
+                continue
+            period_end = _as_date(row.get("period_end"))
+            fact = _corporate_fact(row, period_end)
+            if period_end is None:
+                invalid_rows += 1
+                continue
+            annual_by_end[period_end].append(fact)
+
+        selected: list[dict[str, Any]] = []
+        duplicate = False
+        for period_end in sorted(annual_by_end, reverse=True):
+            candidates = annual_by_end[period_end]
+            candidates.sort(key=lambda item: (item["accepted_at"], item["observed_at"], int(item["id"])))
+            newest = candidates[-1]
+            newest_time = (newest["accepted_at"], newest["observed_at"])
+            if sum((item["accepted_at"], item["observed_at"]) == newest_time for item in candidates) > 1:
+                duplicate = True
+            if len({item["accession_number"] for item in candidates}) < len(candidates):
+                duplicate = True
+            selected.append(newest)
+
+        if not selected:
+            bucket = "invalid" if invalid_rows else "missing"
+            counts[bucket] += 1
+            blockers.add(
+                "corporate_cycle_annual_fact_invalid"
+                if invalid_rows else "corporate_cycle_annual_pair_missing"
+            )
+            continue
+        latest = selected[0]
+        if latest["period_end"] > cutoff.date() or cutoff.date() - latest["period_end"] > timedelta(days=550):
+            counts["stale"] += 1
+            blockers.add("corporate_cycle_annual_pair_stale")
+            continue
+        if len(selected) < 2:
+            counts["missing"] += 1
+            blockers.add("corporate_cycle_annual_pair_missing")
+            continue
+        prior = selected[1]
+        if duplicate:
+            counts["duplicate"] += 1
+            blockers.add("corporate_cycle_annual_pair_duplicate")
+            continue
+        if not latest["valid"] or not prior["valid"]:
+            counts["invalid"] += 1
+            blockers.add("corporate_cycle_annual_fact_invalid")
+            continue
+        if not 300 <= (latest["period_end"] - prior["period_end"]).days <= 430:
+            counts["invalid"] += 1
+            blockers.add("corporate_cycle_annual_periods_not_comparable")
+            continue
+        if latest["units"] != prior["units"]:
+            counts["invalid"] += 1
+            blockers.add("corporate_cycle_annual_units_incompatible")
+            continue
+        valid_members.append({"member": member, "latest": latest, "prior": prior})
+
+    available = len(valid_members) == len(benchmark)
+    if not available:
+        base.update({
+            "available_member_count": len(valid_members),
+            "missing_member_count": counts["missing"],
+            "stale_member_count": counts["stale"],
+            "duplicate_member_count": counts["duplicate"],
+            "invalid_member_count": counts["invalid"],
+            "blockers": sorted(blockers),
+        })
+        return base
+
+    selected_periods = tuple(
+        {
+            "symbol": str(item["member"]["symbol"]),
+            "latest": {
+                "start": item["latest"]["period_start"],
+                "end": item["latest"]["period_end"],
+                "accession_number": item["latest"]["accession_number"],
+            },
+            "prior": {
+                "start": item["prior"]["period_start"],
+                "end": item["prior"]["period_end"],
+                "accession_number": item["prior"]["accession_number"],
+            },
+        }
+        for item in valid_members
+    )
+    lineages = tuple(
+        lineage
+        for item in valid_members
+        for lineage in (
+            _corporate_lineage(item["latest"], cutoff),
+            _corporate_lineage(item["prior"], cutoff),
+        )
+    )
+    return {
+        **base,
+        "available": True,
+        "status": "available",
+        "available_member_count": len(valid_members),
+        "missing_member_count": 0,
+        "stale_member_count": 0,
+        "duplicate_member_count": 0,
+        "invalid_member_count": 0,
+        "median_revenue_growth": median(item["latest"]["revenue"] / item["prior"]["revenue"] - 1 for item in valid_members),
+        "median_operating_margin_change_bps": median(
+            ((item["latest"]["operating_income"] / item["latest"]["revenue"])
+             - (item["prior"]["operating_income"] / item["prior"]["revenue"])) * 10000
+            for item in valid_members
+        ),
+        "latest_period_start": min(item["latest"]["period_start"] for item in valid_members),
+        "latest_period_end": max(item["latest"]["period_end"] for item in valid_members),
+        "prior_period_start": min(item["prior"]["period_start"] for item in valid_members),
+        "prior_period_end": max(item["prior"]["period_end"] for item in valid_members),
+        "selected_periods": selected_periods,
+        "lineage": lineages,
+        "blockers": [],
+        "data_requests": [],
+        "freshness_latest_available_at": latest_finished_at,
+        "freshness_max_age_days": 1,
+    }
+
+
+def _corporate_fact(row: dict[str, Any], period_end: date | None) -> dict[str, Any]:
+    values = row.get("values") if isinstance(row.get("values"), dict) else {}
+    metrics = values.get("metrics") if isinstance(values.get("metrics"), dict) else {}
+    tags = values.get("tags") if isinstance(values.get("tags"), dict) else {}
+    revenue = _finite_number(metrics.get("revenue"))
+    operating_income = _finite_number(metrics.get("operating_income"))
+    period_start = _as_date(row.get("period_start"))
+    units = tuple(
+        str(((tags.get(metric) or {}).get("unit") or "")).strip()
+        for metric in ("revenue", "operating_income")
+    )
+    accession_number = str(values.get("accession_number") or "").strip()
+    accepted_at = _as_utc(row.get("filed_at"))
+    observed_at = _as_utc(row.get("observed_at"))
+    valid = (
+        period_start is not None
+        and period_end is not None
+        and 300 <= (period_end - period_start).days <= 400
+        and bool(accession_number)
+        and accepted_at is not None
+        and observed_at is not None
+        and revenue is not None
+        and revenue > 0
+        and operating_income is not None
+        and all(units)
+    )
+    return {
+        **row,
+        "period_start": period_start,
+        "period_end": period_end,
+        "accession_number": accession_number,
+        "accepted_at": accepted_at,
+        "observed_at": observed_at,
+        "revenue": revenue,
+        "operating_income": operating_income,
+        "units": units,
+        "valid": valid,
+    }
+
+
+def _corporate_lineage(fact: dict[str, Any], cutoff: datetime) -> InputLineage:
+    fact_identity = (
+        f"raw.fundamental_observation:{int(fact['id'])}:"
+        f"{fact['accession_number']}:{fact['period_end']}:{fact['observed_at'].isoformat()}"
+    )
+    return InputLineage(
+        field="sec_annual_revenue_operating_income",
+        source_id=_CORPORATE_SOURCE_ID,
+        source_version=str(fact["ingest_run_id"]),
+        published_at=fact["accepted_at"],
+        available_at=_as_utc(fact["available_at"]),
+        received_at=fact["accepted_at"],
+        revision=fact_identity,
+        cutoff=cutoff,
+        fact_id=int(fact["id"]),
+        fact_table="raw.fundamental_observation",
+        metric_set=_CORPORATE_METRIC_SET,
+        accession_number=fact["accession_number"],
+        form=str((fact.get("values") or {}).get("form") or ""),
+        fiscal_period=str((fact.get("values") or {}).get("fiscal_period") or ""),
+        period_start=fact["period_start"],
+        period_end=fact["period_end"],
+        accepted_at=fact["accepted_at"],
+        filed_at=fact.get("filed_at"),
+        run_finished_at=_as_utc(fact["available_at"]),
+        revision_identity=fact_identity,
+        units=fact["units"],
+    )
+
+
+def _corporate_cycle_inputs(evidence: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        key: value for key, value in evidence.items()
+        if key not in {"lineage", "valid_rows"}
+    }
+    result["lineage"] = [item.model_dump(mode="json") for item in evidence.get("lineage") or ()]
+    return json.loads(json_dumps(result))
+
+
 def _event_risk_evidence(connection: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
     rows = [
         dict(row)
@@ -689,12 +1024,14 @@ def _market_snapshot(
     horizon_evidence: dict[str, dict[str, Any]] | None = None,
     event_risk_evidence: dict[str, dict[str, Any]] | None = None,
     volatility_evidence: dict[str, dict[str, Any]] | None = None,
+    corporate_cycle_evidence: dict[str, Any] | None = None,
 ) -> MarketStateSnapshot:
     reference = cutoff.astimezone(UTC)
     del assets, drivers
     horizon_evidence = horizon_evidence or {}
     event_risk_evidence = event_risk_evidence or {}
     volatility_evidence = volatility_evidence or {}
+    corporate_cycle_evidence = corporate_cycle_evidence or {}
     dimensions: dict[str, tuple[MarketDimensionState, ...]] = {}
     for horizon in MARKET_HORIZONS:
         evidence = horizon_evidence.get(horizon, {})
@@ -781,6 +1118,54 @@ def _market_snapshot(
                         data_requests=tuple(volatility.get("data_requests") or ("confirmed_daily_price_history",)),
                         **volatility_fields,
                     ))
+            elif dimension == "corporate cycle":
+                if horizon == _CORPORATE_HORIZON and corporate_cycle_evidence.get("available"):
+                    revenue_growth = float(corporate_cycle_evidence["median_revenue_growth"])
+                    margin_change = float(corporate_cycle_evidence["median_operating_margin_change_bps"])
+                    horizon_rows.append(MarketDimensionState(
+                        dimension=dimension,
+                        horizon=horizon,
+                        state="reported annual issuer actuals",
+                        change_drivers=(
+                            f"Median revenue growth {revenue_growth:.2%}; median operating-margin change {margin_change:.1f} basis points.",
+                            f"Complete fixed benchmark denominator: {corporate_cycle_evidence['available_member_count']} of {corporate_cycle_evidence['eligible_member_count']} eligible issuers.",
+                        ),
+                        evidence_status="available",
+                        uncertainty="descriptive filed actuals only; no estimates, guidance, probabilities, or trading authority",
+                        quality="sec_companyfacts_annual_filed_actuals",
+                        lineage=tuple(corporate_cycle_evidence.get("lineage") or ()),
+                        benchmark_key=corporate_cycle_evidence.get("benchmark_key"),
+                        eligible_member_count=corporate_cycle_evidence.get("eligible_member_count"),
+                        available_member_count=corporate_cycle_evidence.get("available_member_count"),
+                        missing_member_count=corporate_cycle_evidence.get("missing_member_count"),
+                        stale_member_count=corporate_cycle_evidence.get("stale_member_count"),
+                        duplicate_member_count=corporate_cycle_evidence.get("duplicate_member_count"),
+                        invalid_member_count=corporate_cycle_evidence.get("invalid_member_count"),
+                        median_revenue_growth=revenue_growth,
+                        median_operating_margin_change_bps=margin_change,
+                        latest_period_start=corporate_cycle_evidence.get("latest_period_start"),
+                        latest_period_end=corporate_cycle_evidence.get("latest_period_end"),
+                        prior_period_start=corporate_cycle_evidence.get("prior_period_start"),
+                        prior_period_end=corporate_cycle_evidence.get("prior_period_end"),
+                        selected_periods=corporate_cycle_evidence.get("selected_periods"),
+                    ))
+                else:
+                    blockers, request = (
+                        _CORPORATE_HORIZON_BLOCKERS[horizon]
+                        if horizon != _CORPORATE_HORIZON
+                        else (
+                            tuple(corporate_cycle_evidence.get("blockers") or ("corporate_cycle_inputs_unavailable",)),
+                            "update_company_financials",
+                        )
+                    )
+                    horizon_rows.append(MarketDimensionState(
+                        dimension=dimension,
+                        horizon=horizon,
+                        evidence_status="unavailable",
+                        uncertainty="point-in-time annual issuer facts do not support this horizon",
+                        blockers=(blockers,) if isinstance(blockers, str) else tuple(blockers),
+                        data_requests=(request,),
+                    ))
             elif dimension == "event risk" and event_evidence.get("available"):
                 scheduled_events = tuple(event_evidence.get("scheduled_events") or ())
                 horizon_rows.append(MarketDimensionState(
@@ -828,7 +1213,9 @@ def _market_snapshot(
         dimensions[horizon] = tuple(horizon_rows)
     measured_lineage = _lineage_union(
         tuple(evidence.get("lineage") or ())
-        for evidence in (*horizon_evidence.values(), *volatility_evidence.values(), *event_risk_evidence.values())
+        for evidence in (
+            *horizon_evidence.values(), *volatility_evidence.values(), *event_risk_evidence.values(), corporate_cycle_evidence
+        )
         if evidence.get("available")
     )
     encoded = json_dumps({
@@ -839,7 +1226,8 @@ def _market_snapshot(
     snapshot_id = f"market-state:{hashlib.sha256(encoded.encode()).hexdigest()[:24]}"
     rows = tuple(
         _coverage_row(
-            horizon, dimension, reference, horizon_evidence, event_risk_evidence, volatility_evidence
+            horizon, dimension, reference, horizon_evidence, event_risk_evidence, volatility_evidence,
+            corporate_cycle_evidence,
         )
         for horizon in MARKET_HORIZONS
         for dimension in MARKET_DIMENSIONS
@@ -874,13 +1262,16 @@ def _coverage_row(
     horizon_evidence: dict[str, dict[str, Any]],
     event_risk_evidence: dict[str, dict[str, Any]] | None = None,
     volatility_evidence: dict[str, dict[str, Any]] | None = None,
+    corporate_cycle_evidence: dict[str, Any] | None = None,
 ) -> CoverageMatrixRow:
     evidence = horizon_evidence.get(horizon, {})
     event_evidence = (event_risk_evidence or {}).get(horizon, {})
     volatility = (volatility_evidence or {}).get(horizon, {})
+    corporate = corporate_cycle_evidence or {}
     selected_evidence = (
         event_evidence if dimension == "event risk"
         else volatility if dimension == "volatility"
+        else corporate if dimension == "corporate cycle" and horizon == _CORPORATE_HORIZON
         else evidence
     )
     available = (
@@ -889,6 +1280,8 @@ def _coverage_row(
         dimension == "volatility" and bool(volatility.get("available"))
     ) or (
         dimension == "event risk" and bool(event_evidence.get("available"))
+    ) or (
+        dimension == "corporate cycle" and horizon == _CORPORATE_HORIZON and bool(corporate.get("available"))
     )
     lineage = tuple(selected_evidence.get("lineage") or ()) if available else ()
     provider = ",".join(sorted({item.source_id for item in lineage})) or None
@@ -899,6 +1292,12 @@ def _coverage_row(
         blockers = tuple(volatility.get("blockers") or ("volatility_inputs_unavailable",))
     elif dimension == "microstructure":
         blockers = ("microstructure_execution_evidence_unavailable",)
+    elif dimension == "corporate cycle":
+        blockers = (
+            (_CORPORATE_HORIZON_BLOCKERS[horizon][0],)
+            if horizon != _CORPORATE_HORIZON
+            else tuple(corporate.get("blockers") or ("corporate_cycle_inputs_unavailable",))
+        )
     elif dimension != "equity internals":
         blockers = (_UNSUPPORTED_DIMENSIONS[dimension][0],)
     if dimension in {"equity internals", "volatility"}:
@@ -910,6 +1309,11 @@ def _coverage_row(
         data_requests = ("spread_depth_market_impact_expected_execution_cost",)
     elif dimension == "event risk":
         data_requests = tuple(event_evidence.get("data_requests") or ("update_market_events",)) if not available else ()
+    elif dimension == "corporate cycle":
+        data_requests = () if available else (
+            _CORPORATE_HORIZON_BLOCKERS[horizon][1]
+            if horizon != _CORPORATE_HORIZON else "update_company_financials",
+        )
     else:
         data_requests = (_UNSUPPORTED_DIMENSIONS[dimension][1],)
     return CoverageMatrixRow(
@@ -946,6 +1350,10 @@ def _coverage_row(
         if dimension in {"equity internals", "volatility"} else None,
         truncated_member_count=selected_evidence.get("truncated_member_count")
         if dimension in {"equity internals", "volatility"} else None,
+        duplicate_member_count=selected_evidence.get("duplicate_member_count")
+        if dimension in {"volatility", "corporate cycle"} else None,
+        invalid_member_count=selected_evidence.get("invalid_member_count")
+        if dimension in {"volatility", "corporate cycle"} else None,
         required_history_trading_days=selected_evidence.get("minimum_history_trading_days")
         if dimension in {"equity internals", "volatility"} else None,
         data_requests=data_requests,
@@ -956,8 +1364,20 @@ def _coverage_row(
         realized_volatility=volatility.get("realized_volatility") if dimension == "volatility" else None,
         return_window_trading_days=volatility.get("return_window_trading_days") if dimension == "volatility" else None,
         annualization_factor=volatility.get("annualization_factor") if dimension == "volatility" else None,
-        duplicate_member_count=volatility.get("duplicate_member_count") if dimension == "volatility" else None,
-        invalid_member_count=volatility.get("invalid_member_count") if dimension == "volatility" else None,
+        median_revenue_growth=corporate.get("median_revenue_growth")
+        if dimension == "corporate cycle" and available else None,
+        median_operating_margin_change_bps=corporate.get("median_operating_margin_change_bps")
+        if dimension == "corporate cycle" and available else None,
+        latest_period_start=corporate.get("latest_period_start")
+        if dimension == "corporate cycle" and available else None,
+        latest_period_end=corporate.get("latest_period_end")
+        if dimension == "corporate cycle" and available else None,
+        prior_period_start=corporate.get("prior_period_start")
+        if dimension == "corporate cycle" and available else None,
+        prior_period_end=corporate.get("prior_period_end")
+        if dimension == "corporate cycle" and available else None,
+        selected_periods=corporate.get("selected_periods")
+        if dimension == "corporate cycle" and available else (),
     )
 
 
@@ -1010,6 +1430,17 @@ def _as_utc(value: Any) -> datetime | None:
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
 def _coverage_rows(matrix: CoverageMatrix | None) -> list[dict[str, Any]]:
     if matrix is None:
         return []
@@ -1028,6 +1459,11 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return result if result == result else None
+
+
+def _finite_number(value: Any) -> float | None:
+    result = _number(value)
+    return result if result is not None and math.isfinite(result) else None
 
 
 def json_dumps(value: Any) -> str:
