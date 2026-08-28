@@ -38,6 +38,7 @@ _MARKET_STALE_AFTER = timedelta(days=7)
 _BENCHMARK_KEY = "market-equity-etf"
 _CRYPTO_BENCHMARK_KEY = "market-crypto-majors"
 _CRYPTO_SOURCE_ID = "daily-market-prices"
+_CRYPTO_SOURCE_FRESHNESS_SECONDS = 3600
 _CRYPTO_SYMBOLS = ("BTC-USD", "ETH-USD", "SOL-USD")
 _CORPORATE_BENCHMARK_KEY = "market-corporate-equity"
 _CORPORATE_SOURCE_ID = "sec_companyfacts"
@@ -594,7 +595,7 @@ def _crypto_volume_evidence(
     ]
     crypto_bars = (
         confirmed_daily_bars(
-            connection, crypto_instrument_ids, as_of=cutoff, max_bars=400, include_versions=True,
+            connection, crypto_instrument_ids, as_of=cutoff, max_bars=400,
         )
         if crypto_instrument_ids else {}
     )
@@ -610,7 +611,6 @@ def _crypto_volume_evidence(
     source_count_key = "invalid_member_count"
     freshness_seconds = 0
     latest_finished_at: datetime | None = None
-    member_finished_at: dict[int, datetime] = {}
     if source is None:
         source_blocker = "crypto_daily_trading_volume_source_unavailable"
     else:
@@ -620,7 +620,7 @@ def _crypto_volume_evidence(
             not source.get("enabled")
             or source.get("operational_state") != "active"
             or source.get("health_owner") != "update_market_data"
-            or freshness_seconds <= 0
+            or freshness_seconds != _CRYPTO_SOURCE_FRESHNESS_SECONDS
         ):
             source_blocker = "crypto_daily_trading_volume_source_lifecycle_mismatch"
         else:
@@ -642,37 +642,6 @@ def _crypto_volume_evidence(
             elif cutoff - latest_finished_at > timedelta(seconds=freshness_seconds):
                 source_blocker = "crypto_daily_trading_volume_source_run_stale"
                 source_count_key = "stale_member_count"
-            else:
-                member_runs = connection.execute(
-                    """
-                    WITH facts AS (
-                        SELECT id, instrument_id, source_id, available_at
-                        FROM raw.price_bar
-                        UNION ALL
-                        SELECT id, instrument_id, source_id, available_at
-                        FROM raw.price_bar_history
-                    )
-                    SELECT fact.instrument_id, max(run.finished_at) AS finished_at
-                    FROM facts fact
-                    JOIN raw.price_bar_fact_availability availability
-                      ON availability.fact_id = fact.id
-                     AND availability.fact_available_at = fact.available_at
-                    JOIN ingest.run run ON run.id = availability.ingest_run_id
-                    WHERE fact.source_id = %s
-                      AND fact.instrument_id = ANY(%s)
-                      AND run.status IN ('succeeded', 'partial')
-                      AND run.finished_at IS NOT NULL
-                      AND run.finished_at <= %s
-                    GROUP BY fact.instrument_id
-                    """,
-                    [_CRYPTO_SOURCE_ID, crypto_instrument_ids, cutoff],
-                ).fetchall()
-                member_finished_at = {
-                    int(row["instrument_id"]): _as_utc(row["finished_at"])
-                    for row in member_runs
-                    if _as_utc(row["finished_at"]) is not None
-                }
-
     result: dict[str, dict[str, Any]] = {}
     for horizon, lookback in _HORIZON_LOOKBACK.items():
         if lookback is None:
@@ -750,13 +719,6 @@ def _crypto_volume_evidence(
                 continue
             if str(member.get("asset_class") or "").lower() != "crypto":
                 continue
-            member_run_finished_at = member_finished_at.get(int(member["id"]))
-            if member_run_finished_at is None:
-                missing += 1
-                continue
-            if cutoff - member_run_finished_at > timedelta(seconds=freshness_seconds):
-                stale += 1
-                continue
             all_rows = [dict(row) for row in crypto_bars.get(int(member["id"]), ())]
             if not all_rows:
                 missing += 1
@@ -821,6 +783,12 @@ def _crypto_volume_evidence(
                 for value in values
             ):
                 invalid += 1
+                continue
+            if any(
+                value is None or cutoff - value > timedelta(seconds=freshness_seconds)
+                for value in confirmed
+            ):
+                stale += 1
                 continue
             latest_available = max(value for value in available if value is not None)
             if cutoff - latest_available > _MARKET_STALE_AFTER:

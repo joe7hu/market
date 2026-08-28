@@ -19,6 +19,84 @@ from investment_panel.database.source_facts import SourceFactRepository
 from conftest import typed_config
 
 
+def _seed_crypto_bars(
+    runtime: DatabaseRuntime,
+    *,
+    dates: tuple,
+    source_id: str = "daily-market-prices",
+    symbols: tuple[str, ...] = ("BTC-USD", "ETH-USD", "SOL-USD"),
+    currency: str = "USD",
+    volume: float = 10,
+    finish_status: str | None = "succeeded",
+) -> None:
+    ingestion = IngestionRepository(runtime)
+    ingestion.register_source(
+        source_id,
+        name=source_id,
+        family="market_data",
+        kind="daily_bars",
+        origin="test" if source_id != "daily-market-prices" else None,
+    )
+    run_id = ingestion.start_run(source_id, "price_bars")
+    rows = [
+        {
+            "symbol": symbol,
+            "date": trading_date,
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": volume + index,
+            "currency": currency,
+        }
+        for symbol in symbols
+        for index, trading_date in enumerate(dates)
+    ]
+    ingestion.store_price_bars(
+        run_id,
+        source_id,
+        rows,
+        asset_classes={symbol: "crypto" for symbol in symbols},
+    )
+    if finish_status is not None:
+        ingestion.finish_run(run_id, finish_status)
+
+
+def _crypto_states(snapshot: MarketStateSnapshot) -> dict[str, object]:
+    return {
+        horizon: next(item for item in dimensions if item.dimension == "crypto liquidity")
+        for horizon, dimensions in snapshot.horizons.items()
+    }
+
+
+def _assert_crypto_unavailable(
+    snapshot: MarketStateSnapshot,
+    blocker: str,
+    *,
+    count_key: str | None = None,
+    count: int = 0,
+) -> None:
+    states = _crypto_states(snapshot)
+    for horizon in MARKET_HORIZONS[1:]:
+        state = states[horizon]
+        assert state.evidence_status == "unavailable"
+        assert state.blockers == (blocker,)
+        assert state.latest_aggregate_volume_usd is None
+        assert state.median_aggregate_daily_volume_usd is None
+        assert state.latest_to_horizon_median_ratio is None
+        assert not state.lineage
+        if count_key is not None:
+            assert state.model_dump(mode="json")[count_key] == count
+        coverage = next(
+            row for row in snapshot.coverage_matrix.rows
+            if row.dimension == "crypto liquidity" and row.horizon == horizon
+        )
+        assert coverage.current_status == "unavailable"
+        assert not coverage.input_lineage
+        if count_key is not None:
+            assert coverage.model_dump(mode="json")[count_key] == count
+
+
 def test_market_publication_builds_visible_models_from_normalized_quotes(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -207,6 +285,259 @@ def test_market_crypto_volume_fails_closed_for_wrong_currency(migrated_postgres_
         assert not coverage.input_lineage
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("quality", "expected_blocker", "count_key"),
+    [
+        ("missing", "crypto_daily_trading_volume_missing", "missing_member_count"),
+        ("truncated", "crypto_daily_trading_volume_truncated", "truncated_member_count"),
+        ("duplicate", "crypto_daily_trading_volume_duplicate", "duplicate_member_count"),
+        ("invalid", "crypto_daily_trading_volume_invalid", "invalid_member_count"),
+        ("future", "crypto_daily_trading_volume_truncated", "truncated_member_count"),
+        ("late_available", "crypto_daily_trading_volume_truncated", "truncated_member_count"),
+    ],
+)
+def test_market_crypto_volume_fails_closed_for_postgres_quality(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+    quality: str,
+    expected_blocker: str,
+    count_key: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = market_analysis._completed_crypto_dates(cutoff, count=252)
+        symbols = ("BTC-USD", "ETH-USD") if quality == "missing" else ("BTC-USD", "ETH-USD", "SOL-USD")
+        _seed_crypto_bars(runtime, dates=dates, symbols=symbols)
+        with runtime.read() as connection:
+            instrument_id = connection.execute(
+                "SELECT id FROM catalog.instrument WHERE symbol = 'SOL-USD'"
+            ).fetchone()
+            instrument_id = instrument_id["id"] if instrument_id else None
+        if quality != "missing":
+            assert instrument_id is not None
+        if quality == "truncated":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE raw.price_bar SET trading_date = %s "
+                    "WHERE instrument_id = %s AND trading_date = %s",
+                    [dates[0] - timedelta(days=1), instrument_id, dates[0]],
+                )
+        elif quality == "invalid":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE raw.price_bar SET volume = 0 "
+                    "WHERE instrument_id = %s AND trading_date = %s",
+                    [instrument_id, dates[0]],
+                )
+        elif quality == "future":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE raw.price_bar SET observed_at = %s "
+                    "WHERE instrument_id = %s AND trading_date = %s",
+                    [cutoff + timedelta(minutes=1), instrument_id, dates[0]],
+                )
+        elif quality == "late_available":
+            with runtime.transaction() as connection:
+                fact = connection.execute(
+                    "UPDATE raw.price_bar SET available_at = %s "
+                    "WHERE instrument_id = %s AND trading_date = %s "
+                    "RETURNING id",
+                    [cutoff + timedelta(minutes=1), instrument_id, dates[0]],
+                ).fetchone()
+                connection.execute(
+                    "UPDATE raw.price_bar_fact_availability SET fact_available_at = %s "
+                    "WHERE fact_id = %s",
+                    [cutoff + timedelta(minutes=1), fact["id"]],
+                )
+        else:
+            original_confirmed_daily_bars = market_analysis.confirmed_daily_bars
+
+            def confirmed_daily_bars_with_duplicate(*args, **kwargs):
+                selected = original_confirmed_daily_bars(*args, **kwargs)
+                duplicated = {instrument: list(rows) for instrument, rows in selected.items()}
+                duplicated[instrument_id].append(dict(duplicated[instrument_id][-1]))
+                return duplicated
+
+            if quality == "duplicate":
+                monkeypatch.setattr(market_analysis, "confirmed_daily_bars", confirmed_daily_bars_with_duplicate)
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+    finally:
+        runtime.close()
+    _assert_crypto_unavailable(snapshot, expected_blocker, count_key=count_key, count=1)
+
+
+@pytest.mark.parametrize(
+    ("source_case", "expected_blocker", "count_key"),
+    [
+        ("disabled", "crypto_daily_trading_volume_source_lifecycle_mismatch", "invalid_member_count"),
+        ("inactive", "crypto_daily_trading_volume_source_lifecycle_mismatch", "invalid_member_count"),
+        ("cadence", "crypto_daily_trading_volume_source_lifecycle_mismatch", "invalid_member_count"),
+        ("wrong_owner", "crypto_daily_trading_volume_source_lifecycle_mismatch", "invalid_member_count"),
+        ("failed", "crypto_daily_trading_volume_source_run_unavailable", "invalid_member_count"),
+        ("unfinished", "crypto_daily_trading_volume_source_run_unavailable", "invalid_member_count"),
+        ("future_finished", "crypto_daily_trading_volume_source_run_unavailable", "invalid_member_count"),
+        ("stale", "crypto_daily_trading_volume_source_run_stale", "stale_member_count"),
+    ],
+)
+def test_market_crypto_volume_fails_closed_for_source_lifecycle_and_run(
+    migrated_postgres_dsn: str,
+    source_case: str,
+    expected_blocker: str,
+    count_key: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = market_analysis._completed_crypto_dates(cutoff, count=252)
+        status = "failed" if source_case == "failed" else None if source_case == "unfinished" else "succeeded"
+        _seed_crypto_bars(runtime, dates=dates, finish_status=status)
+        ingestion = IngestionRepository(runtime)
+        if source_case == "disabled":
+            ingestion.set_source_enabled("daily-market-prices", False)
+        elif source_case == "inactive":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE ingest.source SET operational_state = 'standby' WHERE id = %s",
+                    ["daily-market-prices"],
+                )
+        elif source_case == "cadence":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE ingest.source SET freshness_seconds = 86400 WHERE id = %s",
+                    ["daily-market-prices"],
+                )
+        elif source_case == "wrong_owner":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE ingest.source SET health_owner = 'wrong-owner' WHERE id = %s",
+                    ["daily-market-prices"],
+                )
+        elif source_case == "future_finished":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE ingest.run SET finished_at = %s "
+                    "WHERE source_id = %s AND capability = 'price_bars'",
+                    [cutoff + timedelta(minutes=1), "daily-market-prices"],
+                )
+        elif source_case == "stale":
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE ingest.run SET finished_at = %s "
+                    "WHERE source_id = %s AND capability = 'price_bars'",
+                    [cutoff - timedelta(hours=2), "daily-market-prices"],
+                )
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+    finally:
+        runtime.close()
+    _assert_crypto_unavailable(snapshot, expected_blocker, count_key=count_key, count=3)
+
+
+def test_market_crypto_volume_fails_closed_for_missing_daily_market_prices_source(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = market_analysis._completed_crypto_dates(cutoff, count=252)
+        _seed_crypto_bars(runtime, dates=dates, source_id="polygon")
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+    finally:
+        runtime.close()
+    _assert_crypto_unavailable(
+        snapshot,
+        "crypto_daily_trading_volume_source_unavailable",
+        count_key="invalid_member_count",
+        count=3,
+    )
+
+
+def test_market_crypto_volume_binds_freshness_to_selected_daily_facts(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = market_analysis._completed_crypto_dates(cutoff, count=252)
+        _seed_crypto_bars(runtime, dates=dates)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET finished_at = %s "
+                "WHERE source_id = %s AND capability = 'price_bars'",
+                [cutoff - timedelta(hours=2), "daily-market-prices"],
+            )
+        _seed_crypto_bars(runtime, dates=(cutoff.date(),))
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+    finally:
+        runtime.close()
+    _assert_crypto_unavailable(
+        snapshot,
+        "crypto_daily_trading_volume_stale",
+        count_key="stale_member_count",
+        count=3,
+    )
+
+
+def test_market_crypto_volume_excludes_current_day_partial(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = market_analysis._completed_crypto_dates(cutoff, count=5)
+        _seed_crypto_bars(runtime, dates=(*dates, cutoff.date()))
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+    finally:
+        runtime.close()
+    state = _crypto_states(snapshot)["1-5 trading days"]
+    assert state.evidence_status == "available"
+    assert state.window_end == dates[0].isoformat()
+    assert all(item.trading_date != cutoff.date() for item in state.lineage)
+    assert len(state.lineage) == 15
+
+
+def test_market_crypto_volume_rejects_noncanonical_source_collision(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        dates = market_analysis._completed_crypto_dates(cutoff, count=252)
+        _seed_crypto_bars(runtime, dates=dates)
+        _seed_crypto_bars(runtime, dates=dates, source_id="polygon", volume=1_000_000)
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+    finally:
+        runtime.close()
+    _assert_crypto_unavailable(
+        snapshot,
+        "crypto_daily_trading_volume_wrong_source",
+        count_key="wrong_source_member_count",
+        count=3,
+    )
 
 
 def test_market_publication_uses_prior_year_close_for_ytd(migrated_postgres_dsn: str) -> None:
