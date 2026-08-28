@@ -25,7 +25,7 @@ def _account_facts(**updates: object) -> dict[str, object]:
         "broker_available_capital": 80_000,
         "cash_balance": 70_000,
         "buying_power": 75_000,
-        "account_observed_at": AS_OF,
+        "available_at": AS_OF,
         "account_source": "postgresql",
     }
     facts.update(updates)
@@ -39,7 +39,7 @@ def _account_facts(**updates: object) -> dict[str, object]:
         "broker_available_capital",
         "cash_balance",
         "buying_power",
-        "account_observed_at",
+        "available_at",
         "account_source",
     ),
 )
@@ -51,7 +51,7 @@ def test_risk_policy_version_changes_for_each_material_account_fact(field: str) 
         policy_kind="ticker",
     )
     changed = {
-        "account_observed_at": AS_OF.replace(minute=1),
+        "available_at": AS_OF.replace(minute=1),
         "account_source": "other-source",
     }.get(field, 100_001)
     revised = compile_risk_policy_snapshot(
@@ -64,8 +64,19 @@ def test_risk_policy_version_changes_for_each_material_account_fact(field: str) 
     assert baseline.policy_version != revised.policy_version
 
 
+def test_available_at_is_preserved_as_account_observation_time() -> None:
+    snapshot = compile_risk_policy_snapshot(
+        account_facts={"available_at": AS_OF},
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+
+    assert snapshot.account_observed_at == AS_OF
+
+
 def test_risk_policy_version_is_stable_for_normalized_replay_inputs() -> None:
-    facts = _account_facts(account_observed_at="2026-08-22T14:00:00Z")
+    facts = _account_facts(available_at="2026-08-22T14:00:00Z")
     first = compile_risk_policy_snapshot(
         account_facts=facts,
         sleeve_capital=100_000,
@@ -115,7 +126,47 @@ def test_ticker_compiles_one_policy_snapshot_before_sizing(monkeypatch: pytest.M
     )
 
 
-def test_conflicting_horizons_choose_an_owned_hold_action_and_share_one_thesis() -> None:
+@pytest.mark.parametrize(
+    ("account_rows", "expected_blocker"),
+    (
+        ([], "fresh_postgres_account_facts_required"),
+        ([{"net_liquidation": 100_000, "available_at": "2026-08-22T12:00:00Z"}], "fresh_postgres_account_facts_required"),
+        ([{"net_liquidation": 100_000, "available_at": "2026-08-22T15:00:00Z"}], "fresh_postgres_account_facts_required"),
+    ),
+    ids=("missing", "stale", "future"),
+)
+def test_ticker_fail_closes_account_authority_without_external_context(
+    account_rows: list[dict[str, object]],
+    expected_blocker: str,
+) -> None:
+    decision = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": account_rows,
+            "decision_queue": [{
+                "symbol": "ACME",
+                "tactical_stance": "BEARISH",
+                "fundamental_stance": "BULLISH",
+                "entry_low": 95,
+                "entry_high": 98,
+                "invalidation_price": 90,
+                "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+    )
+
+    assert decision.capital_action.action is CapitalActionType.AVOID
+    assert decision.resolution is not None
+    assert decision.resolution.action.value == "NO_TRADE"
+    assert decision.resolution.is_blocked is True
+    assert decision.resolution.size is None
+    assert decision.resolution.blockers == [expected_blocker]
+    assert expected_blocker in decision.context_blockers
+
+
+def test_conflicting_horizons_preserve_views_but_block_missing_account_authority() -> None:
     decision = build_ticker_decision(
         "ACME",
         {
@@ -135,7 +186,11 @@ def test_conflicting_horizons_choose_an_owned_hold_action_and_share_one_thesis()
         as_of=AS_OF,
     )
 
-    assert decision.capital_action.action is CapitalActionType.HOLD
+    assert decision.capital_action.action is CapitalActionType.AVOID
+    assert decision.resolution is not None
+    assert decision.resolution.action.value == "NO_TRADE"
+    assert decision.resolution.is_blocked is True
+    assert "fresh_postgres_account_facts_required" in decision.resolution.blockers
     assert decision.capital_action.owned is True
     assert decision.tactical.invalidation == decision.fundamental.invalidation
     assert decision.tactical.horizon == "TACTICAL"
@@ -155,7 +210,11 @@ def test_missing_inputs_keep_directional_views_but_do_not_invent_quantity() -> N
     )
 
     assert decision.tactical.stance == "BULLISH"
-    assert decision.capital_action.action is CapitalActionType.BUY
+    assert decision.capital_action.action is CapitalActionType.AVOID
+    assert decision.resolution is not None
+    assert decision.resolution.action.value == "NO_TRADE"
+    assert decision.resolution.is_blocked is True
+    assert "fresh_postgres_account_facts_required" in decision.resolution.blockers
     assert decision.selected_expression is not None
     assert decision.selected_expression.quantity is None
     assert {request.field for request in decision.data_requests} >= {"current_price", "invalidation", "portfolio_nav"}
@@ -250,7 +309,7 @@ def test_persisted_ticker_decision_is_not_dropped_by_point_in_time_filtering() -
     assert replay.decision_revision == source.decision_revision
 
 
-def test_wait_for_price_keeps_the_directional_expression_and_stale_nav_is_actionable() -> None:
+def test_stale_account_authority_blocks_resolution() -> None:
     decision = build_ticker_decision(
         "ACME",
         {
@@ -265,7 +324,11 @@ def test_wait_for_price_keeps_the_directional_expression_and_stale_nav_is_action
         as_of=AS_OF,
     )
 
-    assert decision.capital_action.action is CapitalActionType.WAIT_FOR_PRICE
+    assert decision.capital_action.action is CapitalActionType.AVOID
+    assert decision.resolution is not None
+    assert decision.resolution.action.value == "NO_TRADE"
+    assert decision.resolution.is_blocked is True
+    assert "fresh_postgres_account_facts_required" in decision.resolution.blockers
     assert decision.selected_expression is not None
     assert decision.selected_expression.kind is ExpressionKind.STOCK
     assert "portfolio_nav" in {request.field for request in decision.data_requests}

@@ -352,7 +352,11 @@ def compile_risk_policy_snapshot(
         "broker_available_capital": _number(account.get("broker_available_capital")),
         "cash_balance": _number(account.get("cash_balance")),
         "buying_power": _number(account.get("buying_power")),
-        "account_observed_at": _timestamp(account.get("account_observed_at", account.get("observed_at"))),
+        "account_observed_at": _timestamp(
+            account.get("account_observed_at")
+            or account.get("available_at")
+            or account.get("observed_at")
+        ),
         "blockers": tuple(dict.fromkeys(blockers)),
     }
     account_source = account.get("account_source") or account.get("account_facts_source")

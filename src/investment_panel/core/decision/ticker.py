@@ -2579,7 +2579,7 @@ def build_ticker_decision(
         "broker_available_capital": _pick(portfolio, "broker_available_capital"),
         "cash_balance": _pick(portfolio, "cash_balance"),
         "buying_power": _pick(portfolio, "buying_power"),
-        "account_observed_at": _pick(portfolio, "account_observed_at", "observed_at", "updated_at"),
+        "available_at": _pick(portfolio, "available_at", "account_observed_at", "observed_at", "updated_at"),
         "account_source": _pick(portfolio, "account_source", "account_facts_source", "provider", "source_id"),
     }
     canonical_policy_snapshot = compile_risk_policy_snapshot(
@@ -2588,6 +2588,18 @@ def build_ticker_decision(
         conviction_tier=conviction_tier,
         policy_kind="ticker",
     )
+    policy_blockers = list(canonical_policy_snapshot.blockers)
+    account_observed_at = canonical_policy_snapshot.account_observed_at
+    if account_observed_at is None or nav is None:
+        policy_blockers.append("fresh_postgres_account_facts_required")
+    elif account_observed_at > reference:
+        policy_blockers.append("future_account_revision_not_allowed")
+    elif (reference - account_observed_at).total_seconds() > 1800:
+        policy_blockers.append("fresh_postgres_account_facts_required")
+    if tuple(policy_blockers) != canonical_policy_snapshot.blockers:
+        canonical_policy_snapshot = canonical_policy_snapshot.model_copy(update={
+            "blockers": tuple(dict.fromkeys(policy_blockers)),
+        })
     risk_policy = _risk_policy(canonical_policy_snapshot)
 
     requests: list[DataRequest] = []
@@ -2738,7 +2750,7 @@ def build_ticker_decision(
             expressions=expressions,
         )
         if context_supplied
-        else []
+        else list(canonical_policy_snapshot.blockers)
     )
     selected_entry = selected.entry_range if selected is not None else None
     selected_invalidation = selected.invalidation if selected is not None else None
