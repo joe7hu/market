@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -171,21 +172,27 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
 def test_options_candidate_fill_basis_is_string_for_both_api_routes(
     fill_assumption: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from investment_panel.database.options_decision_system import _candidate_payload
+    from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
 
-    candidate = _candidate_payload(
-        {
-            "decision_id": "decision-1",
-            "relative_value_id": 1,
-            "paper_state": "WATCH",
-            "discovery_lane": "thesis",
-            "structure": "long_call",
-            "expiration": "2026-09-18",
-            "strike": 500,
-            "option_type": "call",
-            "fill_assumption": fill_assumption,
-        }
-    )
+    candidate_row = {
+        "decision_id": "decision-1",
+        "relative_value_id": 1,
+        "paper_state": "WATCH",
+        "discovery_lane": "thesis",
+        "structure": "long_call",
+        "expiration": "2026-09-18",
+        "strike": 500,
+        "option_type": "call",
+        "fill_assumption": fill_assumption,
+    }
+    responses = iter([
+        SimpleNamespace(fetchone=lambda: {"id": "run-1", "summary": {}, "finished_at": None}),
+        SimpleNamespace(fetchone=lambda: {"count": 1}),
+        SimpleNamespace(fetchall=lambda: [candidate_row]),
+    ])
+    connection = SimpleNamespace(execute=lambda *_args: next(responses))
+    runtime = SimpleNamespace(read=lambda: nullcontext(connection))
+    candidate = OptionsDecisionSystemRepository(runtime).candidates()["items"][0]
     readiness = {
         "capture": {"capture_state": None, "completeness": None, "capture_generation_id": None, "complete_captures": 0},
         "underlying": {"group_count": 0, "groups_with_missing_underlying": 0, "groups_with_inconsistent_underlying": 0},
