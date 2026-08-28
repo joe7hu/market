@@ -731,6 +731,14 @@ def _corporate_cycle_evidence(
             blockers.add("corporate_cycle_annual_pair_missing")
             continue
         prior = selected[1]
+        if any(
+            fact["available_at"] is None
+            or cutoff - _as_utc(fact["available_at"]) > timedelta(seconds=freshness_seconds)
+            for fact in (latest, prior)
+        ):
+            counts["stale"] += 1
+            blockers.add("corporate_cycle_annual_pair_stale")
+            continue
         if duplicate:
             counts["duplicate"] += 1
             blockers.add("corporate_cycle_annual_pair_duplicate")
@@ -768,11 +776,15 @@ def _corporate_cycle_evidence(
                 "start": item["latest"]["period_start"],
                 "end": item["latest"]["period_end"],
                 "accession_number": item["latest"]["accession_number"],
+                "revenue": item["latest"]["revenue"],
+                "operating_income": item["latest"]["operating_income"],
             },
             "prior": {
                 "start": item["prior"]["period_start"],
                 "end": item["prior"]["period_end"],
                 "accession_number": item["prior"]["accession_number"],
+                "revenue": item["prior"]["revenue"],
+                "operating_income": item["prior"]["operating_income"],
             },
         }
         for item in valid_members
@@ -1165,6 +1177,13 @@ def _market_snapshot(
                         uncertainty="point-in-time annual issuer facts do not support this horizon",
                         blockers=(blockers,) if isinstance(blockers, str) else tuple(blockers),
                         data_requests=(request,),
+                        benchmark_key=corporate_cycle_evidence.get("benchmark_key"),
+                        eligible_member_count=corporate_cycle_evidence.get("eligible_member_count"),
+                        available_member_count=corporate_cycle_evidence.get("available_member_count"),
+                        missing_member_count=corporate_cycle_evidence.get("missing_member_count"),
+                        stale_member_count=corporate_cycle_evidence.get("stale_member_count"),
+                        duplicate_member_count=corporate_cycle_evidence.get("duplicate_member_count"),
+                        invalid_member_count=corporate_cycle_evidence.get("invalid_member_count"),
                     ))
             elif dimension == "event risk" and event_evidence.get("available"):
                 scheduled_events = tuple(event_evidence.get("scheduled_events") or ())
@@ -1271,7 +1290,7 @@ def _coverage_row(
     selected_evidence = (
         event_evidence if dimension == "event risk"
         else volatility if dimension == "volatility"
-        else corporate if dimension == "corporate cycle" and horizon == _CORPORATE_HORIZON
+        else corporate if dimension == "corporate cycle"
         else evidence
     )
     available = (
@@ -1330,7 +1349,9 @@ def _coverage_row(
             f"confirmed daily bars; available_at <= input_cutoff; max_age={volatility.get('freshness_max_age_days')}d"
             if dimension == "volatility" and available else
             f"official-event-calendar; available_at <= input_cutoff; max_age={event_evidence.get('freshness_max_age_seconds')}s"
-            if dimension == "event risk" and available else None
+            if dimension == "event risk" and available else
+            f"sec_companyfacts; run_finished_at <= input_cutoff; max_age={corporate.get('freshness_max_age_days')}d"
+            if dimension == "corporate cycle" and available else None
         ),
         current_status="available" if available else "unavailable",
         decision_impact="market_context" if dimension == "equity internals" and available else "context",
@@ -1339,15 +1360,15 @@ def _coverage_row(
         input_lineage=lineage,
         blockers=blockers if not available else (),
         benchmark_key=selected_evidence.get("benchmark_key")
-        if dimension in {"equity internals", "volatility"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
         eligible_member_count=selected_evidence.get("eligible_member_count")
-        if dimension in {"equity internals", "volatility"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
         available_member_count=selected_evidence.get("available_member_count")
-        if dimension in {"equity internals", "volatility"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
         missing_member_count=selected_evidence.get("missing_member_count")
-        if dimension in {"equity internals", "volatility"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
         stale_member_count=selected_evidence.get("stale_member_count")
-        if dimension in {"equity internals", "volatility"} else None,
+        if dimension in {"equity internals", "volatility", "corporate cycle"} else None,
         truncated_member_count=selected_evidence.get("truncated_member_count")
         if dimension in {"equity internals", "volatility"} else None,
         duplicate_member_count=selected_evidence.get("duplicate_member_count")

@@ -1060,6 +1060,20 @@ def _corporate_fact(
     }
 
 
+def _complete_corporate_rows() -> list[dict[str, object]]:
+    return [
+        _corporate_fact("ACME", "2025-01-01", "2025-12-31", datetime(2026, 2, 1, tzinfo=UTC), "ACME-2025", 120, 18),
+        _corporate_fact("ACME", "2024-01-01", "2024-12-31", datetime(2025, 2, 1, tzinfo=UTC), "ACME-2024", 100, 10),
+        _corporate_fact("BETA", "2025-01-01", "2025-12-31", datetime(2026, 2, 2, tzinfo=UTC), "BETA-2025", 210, 21),
+        _corporate_fact("BETA", "2024-01-01", "2024-12-31", datetime(2025, 2, 2, tzinfo=UTC), "BETA-2024", 200, 18),
+        _corporate_fact("QQQ", "2025-01-01", "2025-12-31", datetime(2026, 2, 3, tzinfo=UTC), "QQQ-2025", 230, 34.5),
+        _corporate_fact("QQQ", "2024-01-01", "2024-12-31", datetime(2025, 2, 3, tzinfo=UTC), "QQQ-2024", 200, 28),
+        _corporate_fact("NVDA", "2025-01-01", "2025-12-31", datetime(2026, 2, 4, tzinfo=UTC), "NVDA-2025", 230, 34.5),
+        _corporate_fact("NVDA", "2024-01-01", "2024-12-31", datetime(2025, 2, 4, tzinfo=UTC), "NVDA-2024", 200, 28),
+        _corporate_fact("SPY", "2025-01-01", "2025-12-31", datetime(2026, 2, 3, tzinfo=UTC), "SPY-2025", 1000, 100, asset_class="etf"),
+    ]
+
+
 def test_market_corporate_cycle_uses_cutoff_visible_annual_sec_facts(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -1072,17 +1086,7 @@ def test_market_corporate_cycle_uses_cutoff_visible_annual_sec_facts(
         )
         run_id = ingestion.start_run("sec_companyfacts", "company_financials")
         cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
-        rows = [
-            _corporate_fact("ACME", "2025-01-01", "2025-12-31", datetime(2026, 2, 1, tzinfo=UTC), "ACME-2025", 120, 18),
-            _corporate_fact("ACME", "2024-01-01", "2024-12-31", datetime(2025, 2, 1, tzinfo=UTC), "ACME-2024", 100, 10),
-            _corporate_fact("BETA", "2025-01-01", "2025-12-31", datetime(2026, 2, 2, tzinfo=UTC), "BETA-2025", 210, 21),
-            _corporate_fact("BETA", "2024-01-01", "2024-12-31", datetime(2025, 2, 2, tzinfo=UTC), "BETA-2024", 200, 18),
-            _corporate_fact("QQQ", "2025-01-01", "2025-12-31", datetime(2026, 2, 3, tzinfo=UTC), "QQQ-2025", 230, 34.5),
-            _corporate_fact("QQQ", "2024-01-01", "2024-12-31", datetime(2025, 2, 3, tzinfo=UTC), "QQQ-2024", 200, 28),
-            _corporate_fact("NVDA", "2025-01-01", "2025-12-31", datetime(2026, 2, 4, tzinfo=UTC), "NVDA-2025", 230, 34.5),
-            _corporate_fact("NVDA", "2024-01-01", "2024-12-31", datetime(2025, 2, 4, tzinfo=UTC), "NVDA-2024", 200, 28),
-            _corporate_fact("SPY", "2025-01-01", "2025-12-31", datetime(2026, 2, 3, tzinfo=UTC), "SPY-2025", 1000, 100, asset_class="etf"),
-        ]
+        rows = _complete_corporate_rows()
         assert ingestion.store_fundamental_observations(
             run_id, "sec_companyfacts", "sec_companyfacts", rows
         ) == len(rows)
@@ -1152,5 +1156,167 @@ def test_market_corporate_cycle_uses_cutoff_visible_annual_sec_facts(
         assert after_amendment["snapshot_id"] != first["snapshot_id"]
         assert changed_corporate.model_dump(mode="json")["median_revenue_growth"] == pytest.approx(0.15)
         assert any("ACME-2025-A" == item.accession_number for item in changed_corporate.lineage)
+    finally:
+        runtime.close()
+
+
+def test_market_corporate_cycle_rejects_stale_facts_after_fresh_incomplete_run(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source(
+            "sec_companyfacts", name="SEC company facts", family="fundamentals", kind="sec_companyfacts"
+        )
+        cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+        old_run = ingestion.start_run("sec_companyfacts", "company_financials")
+        old_rows = [row for row in _complete_corporate_rows() if row["symbol"] != "SPY"]
+        for row in old_rows:
+            if row["symbol"] == "NVDA":
+                row["values"]["form"] = "10-Q"
+        assert ingestion.store_fundamental_observations(
+            old_run, "sec_companyfacts", "sec_companyfacts", old_rows
+        ) == len(old_rows)
+        ingestion.finish_run(old_run, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [cutoff - timedelta(days=2), cutoff - timedelta(days=2), old_run],
+            )
+        fresh_incomplete_run = ingestion.start_run("sec_companyfacts", "company_financials")
+        ingestion.finish_run(fresh_incomplete_run, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), fresh_incomplete_run],
+            )
+
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        state = next(item for item in snapshot.horizons["3-12 months"] if item.dimension == "corporate cycle")
+        coverage = next(row for row in snapshot.coverage_matrix.rows if row.dimension == "corporate cycle" and row.horizon == "3-12 months")
+        for item in (state, coverage):
+            assert item.benchmark_key == "market-corporate-equity"
+            assert item.eligible_member_count == 4
+            assert item.available_member_count == 0
+            assert item.missing_member_count == 1
+            assert item.stale_member_count == 3
+            assert item.duplicate_member_count == 0
+            assert item.invalid_member_count == 0
+        assert state.evidence_status == "unavailable"
+        assert not state.lineage
+        assert coverage.current_status == "unavailable"
+        assert not coverage.input_lineage
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("failure", ("duplicate", "unit", "period"))
+def test_market_corporate_cycle_rejects_invalid_annual_evidence(
+    migrated_postgres_dsn: str,
+    failure: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source(
+            "sec_companyfacts", name="SEC company facts", family="fundamentals", kind="sec_companyfacts"
+        )
+        cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+        rows = [row for row in _complete_corporate_rows() if row["symbol"] != "SPY"]
+        if failure == "duplicate":
+            rows.append(_corporate_fact("ACME", "2025-01-01", "2025-12-31", datetime(2026, 2, 5, tzinfo=UTC), "ACME-2025", 120, 18))
+        elif failure == "unit":
+            rows[0]["values"]["tags"]["revenue"]["unit"] = "EUR"
+        else:
+            rows[1]["period_start"] = "2023-01-01"
+            rows[1]["period_end"] = "2023-12-31"
+        run_id = ingestion.start_run("sec_companyfacts", "company_financials")
+        assert ingestion.store_fundamental_observations(
+            run_id, "sec_companyfacts", "sec_companyfacts", rows
+        ) == len(rows)
+        ingestion.finish_run(run_id, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), run_id],
+            )
+
+        refresh_market_publication(runtime, now=cutoff)
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        state = next(item for item in snapshot.horizons["3-12 months"] if item.dimension == "corporate cycle")
+        coverage = next(row for row in snapshot.coverage_matrix.rows if row.dimension == "corporate cycle" and row.horizon == "3-12 months")
+        assert state.evidence_status == "unavailable"
+        assert state.eligible_member_count == 4
+        assert state.available_member_count == 3
+        assert state.missing_member_count == 0
+        assert state.stale_member_count == 0
+        assert state.duplicate_member_count == (1 if failure == "duplicate" else 0)
+        assert state.invalid_member_count == (1 if failure != "duplicate" else 0)
+        assert coverage.benchmark_key == "market-corporate-equity"
+        assert coverage.eligible_member_count == 4
+        assert coverage.available_member_count == 3
+        assert coverage.duplicate_member_count == (1 if failure == "duplicate" else 0)
+        assert coverage.invalid_member_count == (1 if failure != "duplicate" else 0)
+        assert not state.lineage
+        assert not coverage.input_lineage
+    finally:
+        runtime.close()
+
+
+def test_market_corporate_cycle_snapshot_id_tracks_selected_metric_values(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source(
+            "sec_companyfacts", name="SEC company facts", family="fundamentals", kind="sec_companyfacts"
+        )
+        cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+        run_id = ingestion.start_run("sec_companyfacts", "company_financials")
+        rows = [row for row in _complete_corporate_rows() if row["symbol"] != "SPY"]
+        assert ingestion.store_fundamental_observations(
+            run_id, "sec_companyfacts", "sec_companyfacts", rows
+        ) == len(rows)
+        ingestion.finish_run(run_id, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), run_id],
+            )
+        repository = AnalysisRepository(runtime)
+        first = refresh_market_publication(runtime, now=cutoff)
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE raw.fundamental_observation
+                SET values = jsonb_set(jsonb_set(values, '{metrics,revenue}', '130'::jsonb),
+                                       '{metrics,operating_income}', '19.5'::jsonb)
+                WHERE instrument_id = (SELECT id FROM catalog.instrument WHERE symbol = 'ACME')
+                  AND source_id = 'sec_companyfacts'
+                  AND metric_set = 'sec_companyfacts'
+                  AND period_end = DATE '2025-12-31'
+                """
+            )
+        second = refresh_market_publication(runtime, now=cutoff)
+        changed = MarketStateSnapshot.model_validate(
+            repository.publication_rows("market", "market_state_snapshot")[0]
+        )
+        state = next(item for item in changed.horizons["3-12 months"] if item.dimension == "corporate cycle")
+        assert second["snapshot_id"] != first["snapshot_id"]
+        assert state.median_revenue_growth == pytest.approx(0.15)
+        assert state.median_operating_margin_change_bps == pytest.approx(100)
+        acme = next(item for item in state.selected_periods if item["symbol"] == "ACME")
+        assert acme["latest"]["revenue"] == pytest.approx(130)
+        assert acme["latest"]["operating_income"] == pytest.approx(19.5)
     finally:
         runtime.close()
