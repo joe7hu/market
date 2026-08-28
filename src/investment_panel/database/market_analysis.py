@@ -15,8 +15,10 @@ from investment_panel.core.decision import (
     InputLineage,
     MARKET_DIMENSIONS,
     MARKET_HORIZONS,
+    MARKET_TZ,
     MarketDimensionState,
     MarketStateSnapshot,
+    is_us_market_day,
 )
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars, completed_trading_dates
@@ -32,6 +34,7 @@ _HORIZON_LOOKBACK = {
 }
 _MARKET_STALE_AFTER = timedelta(days=7)
 _BENCHMARK_KEY = "market-equity-etf"
+_MAX_EVENT_RISK_SCHEDULE = 8
 _UNSUPPORTED_DIMENSIONS = {
     "growth/inflation": ("growth_inflation_inputs_unavailable", "update_macro_series"),
     "monetary liquidity": ("monetary_liquidity_inputs_unavailable", "update_macro_series"),
@@ -115,6 +118,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
                 [as_of, as_of, as_of],
             ).fetchall()
         ]
+        event_risk_evidence = _event_risk_evidence(connection, as_of)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in price_rows:
         grouped[str(row["symbol"])].append(row)
@@ -124,7 +128,9 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
     drivers = _driver_rows(assets, valuation_rows, horizon_evidence)
     references = [_valuation_reference(row) for row in valuation_rows]
     input_lineage = _market_lineage(price_rows, valuation_rows, as_of)
-    snapshot = _market_snapshot(as_of, assets, drivers, input_lineage, horizon_evidence)
+    snapshot = _market_snapshot(
+        as_of, assets, drivers, input_lineage, horizon_evidence, event_risk_evidence
+    )
     coverage_rows = _coverage_rows(snapshot.coverage_matrix)
     analysis = AnalysisRepository(runtime)
     run_id = analysis.start_run(
@@ -405,19 +411,146 @@ def _horizon_evidence(
     return result
 
 
+def _event_risk_evidence(connection: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            """
+            WITH visible AS (
+                SELECT DISTINCT ON (version.market_event_id)
+                       version.id AS market_event_version_id,
+                       version.market_event_id,
+                       version.source_id,
+                       version.ingest_run_id,
+                       version.event_scope,
+                       version.event_kind,
+                       version.title,
+                       version.starts_at,
+                       version.available_at,
+                       version.verification_status,
+                       ingestion.finished_at AS ingest_finished_at,
+                       source.enabled,
+                       source.operational_state,
+                       source.freshness_seconds
+                FROM raw.market_event_version version
+                JOIN ingest.run ingestion ON ingestion.id = version.ingest_run_id
+                JOIN ingest.source source ON source.id = version.source_id
+                WHERE version.source_id = 'official-event-calendar'
+                  AND version.available_at <= %s
+                  AND ingestion.status IN ('succeeded', 'partial')
+                  AND ingestion.finished_at IS NOT NULL
+                  AND ingestion.finished_at <= %s
+                ORDER BY version.market_event_id, version.available_at DESC, version.id DESC
+            )
+            SELECT *
+            FROM visible
+            WHERE enabled
+              AND operational_state = 'active'
+              AND event_scope = 'macro'
+              AND starts_at > %s
+              AND btrim(title) <> ''
+              AND btrim(event_kind) <> ''
+              AND lower(btrim(coalesce(verification_status, ''))) IN ('confirmed', 'verified', 'scheduled')
+              AND freshness_seconds > 0
+              AND ingest_finished_at >= %s - make_interval(secs => freshness_seconds)
+            ORDER BY starts_at, event_kind, title, market_event_id, market_event_version_id
+            """,
+            [cutoff, cutoff, cutoff, cutoff],
+        ).fetchall()
+    ]
+    result = {
+        horizon: {
+            "available": False,
+            "status": "unavailable",
+            "blockers": ["event_risk_inputs_unavailable"],
+            "data_requests": ["update_market_events"],
+            "eligible_event_count": 0,
+            "scheduled_events": (),
+            "lineage": (),
+        }
+        for horizon in MARKET_HORIZONS
+    }
+    for row in rows:
+        horizon = _event_risk_horizon(row["starts_at"], cutoff)
+        if horizon is None:
+            continue
+        evidence = result[horizon]
+        evidence["eligible_event_count"] += 1
+        if len(evidence["scheduled_events"]) >= _MAX_EVENT_RISK_SCHEDULE:
+            continue
+        starts_at = _as_utc(row["starts_at"])
+        available_at = _as_utc(row["available_at"])
+        finished_at = _as_utc(row["ingest_finished_at"])
+        if starts_at is None or available_at is None or finished_at is None:
+            continue
+        fact_identity = f"raw.market_event_version:{int(row['market_event_version_id'])}:{available_at.isoformat()}"
+        lineage = InputLineage(
+            field="market_event_schedule",
+            source_id=str(row["source_id"]),
+            source_version=str(row["ingest_run_id"]),
+            event_at=starts_at,
+            available_at=available_at,
+            received_at=finished_at,
+            revision=fact_identity,
+            cutoff=cutoff,
+            fact_id=int(row["market_event_version_id"]),
+            fact_table="raw.market_event_version",
+            market_event_id=int(row["market_event_id"]),
+            ingest_run_id=str(row["ingest_run_id"]),
+        )
+        evidence["scheduled_events"] = (*evidence["scheduled_events"], {
+            "title": str(row["title"]).strip(),
+            "kind": str(row["event_kind"]).strip().lower(),
+            "starts_at": starts_at.isoformat(),
+        })
+        evidence["lineage"] = (*evidence["lineage"], lineage)
+        evidence["available"] = True
+        evidence["status"] = "available"
+        evidence["blockers"] = []
+        evidence["data_requests"] = []
+        evidence["freshness_max_age_seconds"] = int(row["freshness_seconds"])
+    return result
+
+
+def _event_risk_horizon(starts_at: datetime, cutoff: datetime) -> str | None:
+    event_local = _as_utc(starts_at).astimezone(MARKET_TZ)
+    cutoff_local = _as_utc(cutoff).astimezone(MARKET_TZ)
+    if event_local.date() == cutoff_local.date() and is_us_market_day(event_local.date()):
+        return "intraday"
+    target_date = event_local.date()
+    while not is_us_market_day(target_date):
+        target_date += timedelta(days=1)
+    cursor = cutoff_local.date() + timedelta(days=1)
+    trading_days = 0
+    while cursor <= target_date:
+        if is_us_market_day(cursor):
+            trading_days += 1
+        cursor += timedelta(days=1)
+    if trading_days <= 5:
+        return "1-5 trading days"
+    if trading_days <= 40:
+        return "2-8 weeks"
+    if trading_days > _HORIZON_LOOKBACK["3-12 months"]:
+        return None
+    return "3-12 months"
+
+
 def _market_snapshot(
     cutoff: datetime,
     assets: list[dict[str, Any]],
     drivers: list[dict[str, Any]],
     lineage: tuple[InputLineage, ...],
     horizon_evidence: dict[str, dict[str, Any]] | None = None,
+    event_risk_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> MarketStateSnapshot:
     reference = cutoff.astimezone(UTC)
     del assets, drivers
     horizon_evidence = horizon_evidence or {}
+    event_risk_evidence = event_risk_evidence or {}
     dimensions: dict[str, tuple[MarketDimensionState, ...]] = {}
     for horizon in MARKET_HORIZONS:
         evidence = horizon_evidence.get(horizon, {})
+        event_evidence = event_risk_evidence.get(horizon, {})
         horizon_rows: list[MarketDimensionState] = []
         for dimension in MARKET_DIMENSIONS:
             if dimension == "equity internals" and evidence.get("available"):
@@ -454,6 +587,31 @@ def _market_snapshot(
                     blockers=tuple(evidence.get("blockers") or ("market_horizon_history_unavailable",)),
                     data_requests=tuple(evidence.get("data_requests") or ("confirmed_daily_price_history",)),
                 ))
+            elif dimension == "event risk" and event_evidence.get("available"):
+                scheduled_events = tuple(event_evidence.get("scheduled_events") or ())
+                horizon_rows.append(MarketDimensionState(
+                    dimension=dimension,
+                    horizon=horizon,
+                    state="scheduled",
+                    change_drivers=(
+                        "Official macro event schedule only; no surprise, direction, magnitude, or probability.",
+                        _event_schedule_text(scheduled_events),
+                    ),
+                    evidence_status="available",
+                    uncertainty="schedule-only evidence does not measure event outcomes or market impact",
+                    quality="official_schedule",
+                    lineage=tuple(event_evidence.get("lineage") or ()),
+                    scheduled_events=scheduled_events,
+                ))
+            elif dimension == "event risk":
+                horizon_rows.append(MarketDimensionState(
+                    dimension=dimension,
+                    horizon=horizon,
+                    evidence_status="unavailable",
+                    uncertainty="cutoff-visible official future event schedule is unavailable",
+                    blockers=tuple(event_evidence.get("blockers") or ("event_risk_inputs_unavailable",)),
+                    data_requests=tuple(event_evidence.get("data_requests") or ("update_market_events",)),
+                ))
             elif dimension == "microstructure":
                 horizon_rows.append(MarketDimensionState(
                     dimension=dimension,
@@ -476,7 +634,7 @@ def _market_snapshot(
         dimensions[horizon] = tuple(horizon_rows)
     measured_lineage = _lineage_union(
         tuple(evidence.get("lineage") or ())
-        for evidence in horizon_evidence.values()
+        for evidence in (*horizon_evidence.values(), *event_risk_evidence.values())
         if evidence.get("available")
     )
     encoded = json_dumps({
@@ -486,7 +644,7 @@ def _market_snapshot(
     })
     snapshot_id = f"market-state:{hashlib.sha256(encoded.encode()).hexdigest()[:24]}"
     rows = tuple(
-        _coverage_row(horizon, dimension, reference, horizon_evidence)
+        _coverage_row(horizon, dimension, reference, horizon_evidence, event_risk_evidence)
         for horizon in MARKET_HORIZONS
         for dimension in MARKET_DIMENSIONS
     )
@@ -518,13 +676,22 @@ def _coverage_row(
     dimension: str,
     cutoff: datetime,
     horizon_evidence: dict[str, dict[str, Any]],
+    event_risk_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> CoverageMatrixRow:
     evidence = horizon_evidence.get(horizon, {})
-    available = dimension == "equity internals" and bool(evidence.get("available"))
-    lineage = tuple(evidence.get("lineage") or ()) if available else ()
+    event_evidence = (event_risk_evidence or {}).get(horizon, {})
+    selected_evidence = event_evidence if dimension == "event risk" else evidence
+    available = (
+        dimension == "equity internals" and bool(evidence.get("available"))
+    ) or (
+        dimension == "event risk" and bool(event_evidence.get("available"))
+    )
+    lineage = tuple(selected_evidence.get("lineage") or ()) if available else ()
     provider = ",".join(sorted({item.source_id for item in lineage})) or None
     blockers = tuple(evidence.get("blockers") or ("market_horizon_history_unavailable",))
-    if dimension == "microstructure":
+    if dimension == "event risk":
+        blockers = tuple(event_evidence.get("blockers") or ("event_risk_inputs_unavailable",))
+    elif dimension == "microstructure":
         blockers = ("microstructure_execution_evidence_unavailable",)
     elif dimension != "equity internals":
         blockers = (_UNSUPPORTED_DIMENSIONS[dimension][0],)
@@ -533,18 +700,20 @@ def _coverage_row(
         asset_class="cross-asset",
         horizon=horizon,
         provider=provider if available else None,
-        history_start=evidence.get("history_start") if available else None,
+        history_start=evidence.get("history_start") if dimension == "equity internals" and available else None,
         point_in_time_safe=available,
         freshness_slo=(
             f"confirmed daily bars; available_at <= input_cutoff; max_age={evidence.get('freshness_max_age_days')}d"
-            if available else None
+            if dimension == "equity internals" and available else
+            f"official-event-calendar; available_at <= input_cutoff; max_age={event_evidence.get('freshness_max_age_seconds')}s"
+            if dimension == "event risk" and available else None
         ),
         current_status="available" if available else "unavailable",
-        decision_impact="market_context" if available else "context",
+        decision_impact="market_context" if dimension == "equity internals" and available else "context",
         fallback_policy="unavailable",
         input_cutoff=cutoff,
         input_lineage=lineage,
-        blockers=blockers,
+        blockers=blockers if not available else (),
         benchmark_key=evidence.get("benchmark_key") if dimension == "equity internals" else None,
         eligible_member_count=evidence.get("eligible_member_count") if dimension == "equity internals" else None,
         available_member_count=evidence.get("available_member_count") if dimension == "equity internals" else None,
@@ -555,8 +724,20 @@ def _coverage_row(
         data_requests=(
             ("confirmed_daily_price_history",) if dimension == "equity internals" and not available
             else ("spread_depth_market_impact_expected_execution_cost",) if dimension == "microstructure"
-            else (_UNSUPPORTED_DIMENSIONS[dimension][1],) if dimension != "equity internals" else ()
+            else ("update_market_events",) if dimension == "event risk" and not available
+            else (_UNSUPPORTED_DIMENSIONS[dimension][1],)
+            if dimension not in {"equity internals", "event risk"} else ()
         ),
+        scheduled_events=(
+            tuple(event_evidence.get("scheduled_events") or ())
+            if dimension == "event risk" and available else ()
+        ),
+    )
+
+
+def _event_schedule_text(events: tuple[dict[str, Any], ...]) -> str:
+    return "Nearest scheduled events: " + "; ".join(
+        f"{event['title']} ({event['kind']}) at {event['starts_at']}" for event in events
     )
 
 
