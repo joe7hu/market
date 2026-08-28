@@ -495,7 +495,7 @@ def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
         "legs": legs,
         "conservative_entry": {
             "price": _number(value.get("entry_price")),
-            "fill_basis": value.get("fill_assumption") or "worst_side_quote",
+            "fill_basis": str(value.get("fill_assumption") or "worst_side_quote"),
         },
         "one_unit_max_loss": _number(value.get("max_loss")),
         "fair_value_interval": {"low": fair_low, "high": fair_high},

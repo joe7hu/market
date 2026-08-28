@@ -167,6 +167,90 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
         close_cached_runtimes()
 
 
+@pytest.mark.parametrize("fill_assumption", [7.1, 5.01])
+def test_options_candidate_fill_basis_is_string_for_both_api_routes(
+    fill_assumption: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from investment_panel.database.options_decision_system import _candidate_payload
+
+    candidate = _candidate_payload(
+        {
+            "decision_id": "decision-1",
+            "relative_value_id": 1,
+            "paper_state": "WATCH",
+            "discovery_lane": "thesis",
+            "structure": "long_call",
+            "expiration": "2026-09-18",
+            "strike": 500,
+            "option_type": "call",
+            "fill_assumption": fill_assumption,
+        }
+    )
+    readiness = {
+        "capture": {"capture_state": None, "completeness": None, "capture_generation_id": None, "complete_captures": 0},
+        "underlying": {"group_count": 0, "groups_with_missing_underlying": 0, "groups_with_inconsistent_underlying": 0},
+        "analysis": {"eligible_groups": 0, "fit_attempts": 0, "succeeded_groups": 0, "solver_failures": 0},
+        "thesis": {"eligible": False, "present": False, "revision": None, "invalidation": None, "blocker": None, "direction": None},
+        "calibration": [],
+        "canary": {
+            "observed_regular_session_dates": 0,
+            "qualified_regular_sessions": 0,
+            "required_regular_sessions": 5,
+            "canary_revision": "test",
+            "canary_started_at": None,
+            "disqualification_reasons": [],
+        },
+        "top_blockers": [],
+        "next_required_action": "research_only",
+    }
+    brief = {
+        "symbol": "QQQ",
+        "lane": "thesis",
+        "mode": "shadow",
+        "analysis_run_id": None,
+        "as_of": None,
+        "state": "WATCH",
+        "summary": {},
+        "readiness": readiness,
+        "strongest_candidate": candidate,
+        "paper_only": True,
+        "decision_truth": None,
+    }
+    page = {
+        "items": [candidate],
+        "total": 1,
+        "next_cursor": None,
+        "as_of": None,
+        "capture_generation_id": None,
+        "model_revision": "test",
+        "scope": "current",
+        "analysis_run_id": None,
+        "rows": [candidate],
+        "count": 1,
+        "offset": 0,
+        "limit": 100,
+    }
+    actions = SimpleNamespace(
+        candidates=lambda **_kwargs: page,
+        workspace=lambda **_kwargs: {"symbol": "QQQ", "decision_brief": brief},
+    )
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_options_actions, lambda: actions)
+
+    try:
+        client = TestClient(app)
+        candidates = client.get("/api/options/candidates")
+        workspace = client.get("/api/options/workspace")
+    finally:
+        app.dependency_overrides.pop(dependencies.get_options_actions, None)
+
+    expected = str(fill_assumption)
+    assert candidate["conservative_entry"]["fill_basis"] == expected
+    assert candidates.status_code == 200
+    assert candidates.json()["items"][0]["conservative_entry"]["fill_basis"] == expected
+    assert workspace.status_code == 200
+    assert workspace.json()["decision_brief"]["strongest_candidate"]["conservative_entry"]["fill_basis"] == expected
+
+
 def test_removed_compatibility_routes_return_404() -> None:
     client = TestClient(app)
     removed = [
