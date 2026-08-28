@@ -42,6 +42,7 @@ class RiskPolicySnapshot(BaseModel):
     cash_balance: float | None = None
     buying_power: float | None = None
     account_observed_at: datetime | None = None
+    available_at: datetime | None = None
     blockers: tuple[str, ...] = ()
 
     @property
@@ -340,6 +341,14 @@ def compile_risk_policy_snapshot(
             blockers.append("open_position_limit_cannot_cover_aggregate_open_risk")
         if max_positions <= 0:
             blockers.append("positive_recovery_open_position_limit_required")
+    observed_at = account.get("account_observed_at")
+    if observed_at is None:
+        observed_at = account.get("observed_at")
+    if observed_at is None:
+        observed_at = account.get("available_at")
+    available_at = account.get("available_at")
+    if available_at is None:
+        available_at = observed_at
     values: dict[str, Any] = {
         "policy_kind": policy_kind,
         "sleeve_capital": sleeve,
@@ -353,13 +362,8 @@ def compile_risk_policy_snapshot(
         "broker_available_capital": _number(account.get("broker_available_capital")),
         "cash_balance": _number(account.get("cash_balance")),
         "buying_power": _number(account.get("buying_power")),
-        "account_observed_at": _timestamp(
-            account.get("account_observed_at")
-            if account.get("account_observed_at") is not None
-            else account.get("available_at")
-            if account.get("available_at") is not None
-            else account.get("observed_at")
-        ),
+        "account_observed_at": _timestamp(observed_at),
+        "available_at": _timestamp(available_at),
         "blockers": tuple(dict.fromkeys(blockers)),
     }
     account_source = account.get("account_source") or account.get("account_facts_source")
@@ -370,9 +374,6 @@ def compile_risk_policy_snapshot(
     snapshot = RiskPolicySnapshot(policy_version="pending", **values)
     canonical = snapshot.model_dump(mode="json")
     canonical.pop("policy_version", None)
-    if account.get("account_observed_at") is not None and account.get("available_at") is not None:
-        available_at = _timestamp(account.get("available_at"))
-        canonical["available_at"] = available_at.isoformat() if available_at is not None else None
     digest = sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     return snapshot.model_copy(update={"policy_version": f"{RISK_POLICY_VERSION}:{digest}"})
 

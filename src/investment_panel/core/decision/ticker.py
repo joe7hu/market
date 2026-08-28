@@ -1639,13 +1639,102 @@ class TickerDecision(BaseModel):
                 raise ValueError("portfolio impact expression identity must match the expression")
             normalized[kind] = impact
         self.portfolio_impacts = normalized
+        if policy.blockers:
+            cash = _cash_expression(self.ticker, self.cutoff, self.input_manifest.input_hash).model_copy(
+                update={"selected": True}
+            )
+            safe_expressions = {
+                kind: (
+                    cash
+                    if kind is ExpressionKind.CASH
+                    else expression.model_copy(update={
+                        "entry_range": None,
+                        "target_range": None,
+                        "invalidation": None,
+                        "quantity": None,
+                        "loss_budget": None,
+                        "max_loss_per_unit": None,
+                        "planned_loss": None,
+                        "legs": [],
+                        "selected": False,
+                        "status": "blocked",
+                    })
+                )
+                for kind, expression in expected.items()
+            }
+            self.expressions = safe_expressions
+            self.selected_expression = cash
+            self.opportunity_episode = build_opportunity_episode(
+                ticker=self.ticker,
+                decision_revision=self.decision_revision,
+                policy_version=self.policy_version,
+                cutoff=self.cutoff,
+                input_lineage=self.input_lineage,
+                expressions=safe_expressions,
+                selected_expression=ExpressionKind.CASH,
+                episode_id=self.opportunity_episode_id,
+            )
+            normalized = {
+                kind: impact.model_copy(update={
+                    "expression_identity": _expression_identity_for(
+                        expression, kind, self.ticker, self.decision_revision
+                    ),
+                })
+                for kind, impact in normalized.items()
+                for expression in [safe_expressions[kind]]
+            }
+            self.portfolio_impacts = normalized
+            expected = dict(safe_expressions)
         context_blockers = _context_blockers_for(
             snapshot=snapshot,
             policy=policy,
             impacts=normalized,
             expressions=expected,
         )
-        if self.resolution is not None and self.resolution.is_actionable and context_blockers:
+        if policy.blockers:
+            existing = self.resolution
+            safe_trade_plan = self.trade_plan
+            if safe_trade_plan is not None and (
+                safe_trade_plan.action != "NO_TRADE"
+                or safe_trade_plan.eligibility != "BLOCKED"
+                or safe_trade_plan.selected_expression_kind is not ExpressionKind.CASH
+                or any(
+                    value is not None
+                    for value in (
+                        safe_trade_plan.entry,
+                        safe_trade_plan.entry_limit,
+                        safe_trade_plan.quantity,
+                        safe_trade_plan.max_loss_per_unit,
+                        safe_trade_plan.planned_loss,
+                        safe_trade_plan.invalidation,
+                        safe_trade_plan.profit_exit,
+                    )
+                )
+            ):
+                safe_trade_plan = None
+            if existing is not None:
+                blocker = existing.primary_blocker or context_blockers[0]
+                self.resolution = build_decision_resolution(
+                    action="NO_TRADE",
+                    decision_revision=self.decision_revision,
+                    policy_version=self.policy_version,
+                    trade_plan_id=safe_trade_plan.trade_plan_id if safe_trade_plan else None,
+                    provenance=existing.provenance,
+                    ticker=self.ticker,
+                    blockers=[blocker],
+                    ttl=existing.ttl,
+                    portfolio_context=normalized[ExpressionKind.CASH].model_dump(mode="json"),
+                    data_quality="INCOMPLETE",
+                    authorization_mode="NONE",
+                    rationale=existing.rationale,
+                    owned=existing.owned,
+                    catalyst=existing.catalyst,
+                    expires_at=existing.expires_at,
+                    blocked=True,
+                )
+                self.capital_action = capital_action_from_resolution(self.resolution)
+            self.trade_plan = safe_trade_plan
+        elif self.resolution is not None and self.resolution.is_actionable and context_blockers:
             self.resolution = build_decision_resolution(
                 action="NO_TRADE",
                 decision_revision=self.decision_revision,

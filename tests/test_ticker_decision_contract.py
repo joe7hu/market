@@ -64,15 +64,19 @@ def test_risk_policy_version_changes_for_each_material_account_fact(field: str) 
     assert baseline.policy_version != revised.policy_version
 
 
-def test_available_at_is_preserved_as_account_observation_time() -> None:
+def test_account_timestamps_are_preserved_as_distinct_fields() -> None:
     snapshot = compile_risk_policy_snapshot(
-        account_facts={"available_at": AS_OF},
+        account_facts={
+            "account_observed_at": AS_OF,
+            "available_at": AS_OF.replace(minute=1),
+        },
         sleeve_capital=100_000,
         conviction_tier="STANDARD",
         policy_kind="ticker",
     )
 
     assert snapshot.account_observed_at == AS_OF
+    assert snapshot.available_at == AS_OF.replace(minute=1)
 
 
 def test_risk_policy_version_is_stable_for_normalized_replay_inputs() -> None:
@@ -375,6 +379,16 @@ def test_persisted_ticker_decision_rechecks_current_account_authority() -> None:
     assert replay.resolution.action.value == "NO_TRADE"
     assert replay.resolution.is_blocked is True
     assert "fresh_postgres_account_facts_required" in replay.context_blockers
+    assert replay.selected_expression is not None
+    assert replay.selected_expression.kind is ExpressionKind.CASH
+    persisted_stock = replay.expressions[ExpressionKind.STOCK]
+    assert persisted_stock.quantity is None
+    assert persisted_stock.entry_range is None
+    assert persisted_stock.target_range is None
+    assert persisted_stock.invalidation is None
+    assert replay.resolution.entry is None
+    assert replay.resolution.invalidation is None
+    assert replay.resolution.exit is None
 
     supplied = source.risk_policy_snapshot.model_copy(update={"cash_balance": 1.0})
     supplied_replay = build_ticker_decision(
@@ -419,9 +433,46 @@ def test_stale_account_authority_blocks_resolution() -> None:
     assert decision.resolution.is_blocked is True
     assert "fresh_postgres_account_facts_required" in decision.resolution.blockers
     assert decision.selected_expression is not None
-    assert decision.selected_expression.kind is ExpressionKind.STOCK
+    assert decision.selected_expression.kind is ExpressionKind.CASH
     assert "portfolio_nav" in {request.field for request in decision.data_requests}
     assert any("update_broker_account" in request.why_it_matters for request in decision.data_requests)
+
+
+def test_account_policy_blocker_suppresses_positive_expression_terms() -> None:
+    decision = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{
+                "symbol": "ACME",
+                "net_liquidation": 100_000,
+                "available_at": "2026-08-22T13:55:00Z",
+                "account_observed_at": "2026-08-22T15:00:00Z",
+                "account_source": "postgresql",
+            }],
+            "decision_queue": [{
+                "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+                "entry_low": 99, "entry_high": 101, "target_low": 110, "target_high": 120,
+                "invalidation_price": 90, "conviction_tier": "STANDARD", "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+    )
+
+    stock = decision.expressions[ExpressionKind.STOCK]
+    assert decision.selected_expression is not None
+    assert decision.selected_expression.kind is ExpressionKind.CASH
+    assert stock.quantity is None
+    assert stock.entry_range is None
+    assert stock.target_range is None
+    assert stock.invalidation is None
+    assert stock.planned_loss is None
+    assert decision.resolution is not None
+    assert decision.resolution.action.value == "NO_TRADE"
+    assert decision.resolution.size is None
+    assert decision.resolution.entry is None
+    assert decision.resolution.invalidation is None
+    assert decision.resolution.exit is None
 
 
 def test_typed_decision_contract_rejects_soft_final_actions_and_blocker_text() -> None:
