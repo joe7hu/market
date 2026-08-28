@@ -10,7 +10,11 @@ from investment_panel.core.option_trade_ticket import (
     sizing_policy,
 )
 from investment_panel.core.decision import is_market_open
-from investment_panel.core.risk_policy import PortfolioAssignmentPolicy, RiskPolicySnapshot
+from investment_panel.core.risk_policy import (
+    PortfolioAssignmentPolicy,
+    RiskPolicySnapshot,
+    compile_risk_policy_snapshot,
+)
 from investment_panel.database.actions import ordered_ticket_snapshot
 from investment_panel.database.options_history_v3_candidates import (
     history_truth_blockers,
@@ -471,6 +475,60 @@ def test_cash_secured_put_ticket_blocks_risk_policy_version_mismatch() -> None:
             "lower_95_expected_value": 100,
         },
     )
+    assert ticket["state"] == "RESEARCH"
+    assert "risk_policy_version_mismatch" in ticket["blockers"]
+    assert ticket["resolution"]["action"] == "NO_TRADE"
+
+
+def test_option_ticket_rejects_snapshot_with_stale_account_identity() -> None:
+    baseline = compile_risk_policy_snapshot(
+        account_facts={
+            "broker_net_liquidation": 100_000,
+            "broker_available_capital": 90_000,
+            "cash_balance": 80_000,
+            "buying_power": 85_000,
+            "account_observed_at": NOW,
+            "account_source": "postgresql",
+        },
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+    stale = compile_risk_policy_snapshot(
+        account_facts={
+            "broker_net_liquidation": 100_001,
+            "broker_available_capital": 90_000,
+            "cash_balance": 80_000,
+            "buying_power": 85_000,
+            "account_observed_at": NOW,
+            "account_source": "postgresql",
+        },
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+    ticket = build_option_trade_ticket(
+        decision_id="stale-risk-policy",
+        symbol="NVDA",
+        structure="long_call",
+        expiration=date(2026, 8, 21),
+        legs=[_leg()],
+        entry_price=2.0,
+        one_unit_max_loss=100,
+        state="READY",
+        evaluated_at=NOW,
+        market_session="regular",
+        sleeve_capital=100_000,
+        broker_available_capital=90_000,
+        risk_policy_snapshot=stale,
+        policy_version=baseline.policy_version,
+        thesis={"direction": "long", "invalidation": "Exit below 145."},
+        forecast={
+            "probability_semantics": "calibrated_exact_cohort",
+            "lower_95_expected_value": 100,
+        },
+    )
+
     assert ticket["state"] == "RESEARCH"
     assert "risk_policy_version_mismatch" in ticket["blockers"]
     assert ticket["resolution"]["action"] == "NO_TRADE"

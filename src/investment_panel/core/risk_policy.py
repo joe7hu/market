@@ -317,25 +317,6 @@ def compile_risk_policy_snapshot(
     tier = str(conviction_tier or "").upper()
     ticker_pct = {"EXPLORATORY": 0.005, "STANDARD": 0.01, "HIGH": 0.02}.get(tier)
     account = dict(account_facts or {})
-    canonical = {
-        "policy_kind": policy_kind,
-        "sleeve_capital": sleeve,
-        "max_risk_per_trade_pct": trade_pct,
-        "max_open_risk_pct": open_pct,
-        "max_symbol_risk_pct": symbol_pct,
-        "daily_loss_halt_pct": halt_pct,
-        "max_open_positions": max_positions,
-        "defined_trade_fraction": 0.0025,
-        "defined_symbol_fraction": 0.005,
-        "defined_total_fraction": 0.01,
-        "csp_symbol_fraction": 0.05,
-        "csp_total_fraction": 0.15,
-        "ticker_loss_budget_pct": ticker_pct,
-        "ticker_max_loss_pct": 0.04,
-        "ticker_total_open_loss_pct": 0.10,
-        "ticker_position_limit_pct": 0.10,
-    }
-    digest = sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
     blockers: list[str] = []
     if policy_kind == "recovery":
         if sleeve is None or sleeve <= 0:
@@ -358,23 +339,32 @@ def compile_risk_policy_snapshot(
             blockers.append("open_position_limit_cannot_cover_aggregate_open_risk")
         if max_positions <= 0:
             blockers.append("positive_recovery_open_position_limit_required")
-    return RiskPolicySnapshot(
-        policy_version=f"{RISK_POLICY_VERSION}:{digest}",
-        policy_kind=policy_kind,
-        sleeve_capital=sleeve,
-        max_risk_per_trade_pct=trade_pct,
-        max_open_risk_pct=open_pct,
-        max_symbol_risk_pct=symbol_pct,
-        daily_loss_halt_pct=halt_pct,
-        max_open_positions=max_positions,
-        ticker_loss_budget_pct=ticker_pct,
-        broker_net_liquidation=_number(account.get("broker_net_liquidation", account.get("net_liquidation"))),
-        broker_available_capital=_number(account.get("broker_available_capital")),
-        cash_balance=_number(account.get("cash_balance")),
-        buying_power=_number(account.get("buying_power")),
-        account_observed_at=_timestamp(account.get("account_observed_at", account.get("observed_at"))),
-        blockers=tuple(dict.fromkeys(blockers)),
-    )
+    values: dict[str, Any] = {
+        "policy_kind": policy_kind,
+        "sleeve_capital": sleeve,
+        "max_risk_per_trade_pct": trade_pct,
+        "max_open_risk_pct": open_pct,
+        "max_symbol_risk_pct": symbol_pct,
+        "daily_loss_halt_pct": halt_pct,
+        "max_open_positions": max_positions,
+        "ticker_loss_budget_pct": ticker_pct,
+        "broker_net_liquidation": _number(account.get("broker_net_liquidation", account.get("net_liquidation"))),
+        "broker_available_capital": _number(account.get("broker_available_capital")),
+        "cash_balance": _number(account.get("cash_balance")),
+        "buying_power": _number(account.get("buying_power")),
+        "account_observed_at": _timestamp(account.get("account_observed_at", account.get("observed_at"))),
+        "blockers": tuple(dict.fromkeys(blockers)),
+    }
+    account_source = account.get("account_source") or account.get("account_facts_source")
+    if account_source is not None:
+        values["account_source"] = str(account_source)
+    # Hash the normalized model so every carried material fact, including
+    # broker observations and allowed source identity, participates once.
+    snapshot = RiskPolicySnapshot(policy_version="pending", **values)
+    canonical = snapshot.model_dump(mode="json")
+    canonical.pop("policy_version", None)
+    digest = sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+    return snapshot.model_copy(update={"policy_version": f"{RISK_POLICY_VERSION}:{digest}"})
 
 
 def coerce_portfolio_assignment_policy(value: Any = None, **defaults: Any) -> PortfolioAssignmentPolicy:

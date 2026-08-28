@@ -2570,7 +2570,25 @@ def build_ticker_decision(
     nav, nav_age = _portfolio_nav(portfolio, reference)
     tactical_stance = _stance(decision_row, Horizon.TACTICAL, usable)
     fundamental_stance = _stance(decision_row, Horizon.FUNDAMENTAL, usable)
-    risk_policy = _risk_policy(decision_row, usable, nav)
+    confidence = _number(_pick(decision_row, "confidence", "confidence_score"))
+    if confidence is not None and confidence > 1:
+        confidence /= 100
+    conviction_tier = _conviction(decision_row, confidence, "EXPLORATORY")
+    account_facts = {
+        "broker_net_liquidation": _pick(portfolio, "broker_net_liquidation", "net_liquidation"),
+        "broker_available_capital": _pick(portfolio, "broker_available_capital"),
+        "cash_balance": _pick(portfolio, "cash_balance"),
+        "buying_power": _pick(portfolio, "buying_power"),
+        "account_observed_at": _pick(portfolio, "account_observed_at", "observed_at", "updated_at"),
+        "account_source": _pick(portfolio, "account_source", "account_facts_source", "provider", "source_id"),
+    }
+    canonical_policy_snapshot = compile_risk_policy_snapshot(
+        account_facts=account_facts,
+        sleeve_capital=nav,
+        conviction_tier=conviction_tier,
+        policy_kind="ticker",
+    )
+    risk_policy = _risk_policy(canonical_policy_snapshot)
 
     requests: list[DataRequest] = []
     if current_price is None:
@@ -2668,20 +2686,30 @@ def build_ticker_decision(
             if isinstance(market_state_snapshot, MarketStateSnapshot)
             else MarketStateSnapshot.model_validate(market_state_snapshot)
         )
+    policy_snapshot_mismatch = False
     if risk_policy_snapshot is _CONTEXT_UNSET:
-        policy_snapshot = compile_risk_policy_snapshot(
-            sleeve_capital=nav,
-            conviction_tier=risk_policy.conviction_tier,
-            policy_kind="ticker",
-        )
+        policy_snapshot = canonical_policy_snapshot
     elif risk_policy_snapshot is None:
         policy_snapshot = None
     else:
-        policy_snapshot = (
-            risk_policy_snapshot
-            if isinstance(risk_policy_snapshot, RiskPolicySnapshot)
-            else RiskPolicySnapshot.model_validate(risk_policy_snapshot)
+        try:
+            supplied_policy_snapshot = (
+                risk_policy_snapshot
+                if isinstance(risk_policy_snapshot, RiskPolicySnapshot)
+                else RiskPolicySnapshot.model_validate(risk_policy_snapshot)
+            )
+        except Exception:
+            supplied_policy_snapshot = None
+        policy_snapshot_mismatch = (
+            supplied_policy_snapshot is None
+            or supplied_policy_snapshot.model_dump(mode="json")
+            != canonical_policy_snapshot.model_dump(mode="json")
         )
+        policy_snapshot = canonical_policy_snapshot
+        if policy_snapshot_mismatch:
+            policy_snapshot = policy_snapshot.model_copy(update={
+                "blockers": tuple(dict.fromkeys((*policy_snapshot.blockers, "risk_policy_snapshot_mismatch"))),
+            })
     if portfolio_impacts is _CONTEXT_UNSET:
         impacts = _local_portfolio_impacts(
             episode=episode,
@@ -3827,21 +3855,17 @@ def _add_business_days(start: date, count: int) -> date:
     return current
 
 
-def _risk_policy(row: Mapping[str, Any], tables: Mapping[str, list[dict[str, Any]]], nav: float | None) -> RiskPolicy:
-    confidence = _number(_pick(row, "confidence", "confidence_score"))
-    if confidence is not None and confidence > 1:
-        confidence /= 100
-    tier = _conviction(row, confidence, "EXPLORATORY")
-    pct = {"EXPLORATORY": 0.005, "STANDARD": 0.01, "HIGH": 0.02}[tier]
-    snapshot = compile_risk_policy_snapshot(
-        sleeve_capital=nav,
-        conviction_tier=tier,
-        policy_kind="ticker",
-    )
+def _risk_policy(snapshot: RiskPolicySnapshot) -> RiskPolicy:
+    pct = snapshot.ticker_loss_budget_pct
+    conviction_tier = {
+        0.005: "EXPLORATORY",
+        0.01: "STANDARD",
+        0.02: "HIGH",
+    }.get(pct, "EXPLORATORY")
     return RiskPolicy(
-        conviction_tier=tier,
+        conviction_tier=conviction_tier,
         loss_budget_pct=pct,
-        loss_budget=nav * pct if nav is not None else None,
+        loss_budget=snapshot.sleeve_capital * pct if snapshot.sleeve_capital is not None and pct is not None else None,
         max_ticker_loss_pct=snapshot.ticker_max_loss_pct,
         max_total_open_planned_loss_pct=snapshot.ticker_total_open_loss_pct,
         position_limit_pct=snapshot.ticker_position_limit_pct,

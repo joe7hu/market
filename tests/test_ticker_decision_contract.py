@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import investment_panel.core.decision.ticker as ticker_module
 from app.data_access.payloads import option_decision_adapter
 from investment_panel.core.decision.ticker import (
     CapitalActionType,
@@ -12,9 +13,106 @@ from investment_panel.core.decision.ticker import (
     build_ticker_decision,
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST
+from investment_panel.core.risk_policy import compile_risk_policy_snapshot
 
 
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
+
+
+def _account_facts(**updates: object) -> dict[str, object]:
+    facts: dict[str, object] = {
+        "broker_net_liquidation": 100_000,
+        "broker_available_capital": 80_000,
+        "cash_balance": 70_000,
+        "buying_power": 75_000,
+        "account_observed_at": AS_OF,
+        "account_source": "postgresql",
+    }
+    facts.update(updates)
+    return facts
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "broker_net_liquidation",
+        "broker_available_capital",
+        "cash_balance",
+        "buying_power",
+        "account_observed_at",
+        "account_source",
+    ),
+)
+def test_risk_policy_version_changes_for_each_material_account_fact(field: str) -> None:
+    baseline = compile_risk_policy_snapshot(
+        account_facts=_account_facts(),
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+    changed = {
+        "account_observed_at": AS_OF.replace(minute=1),
+        "account_source": "other-source",
+    }.get(field, 100_001)
+    revised = compile_risk_policy_snapshot(
+        account_facts=_account_facts(**{field: changed}),
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+
+    assert baseline.policy_version != revised.policy_version
+
+
+def test_risk_policy_version_is_stable_for_normalized_replay_inputs() -> None:
+    facts = _account_facts(account_observed_at="2026-08-22T14:00:00Z")
+    first = compile_risk_policy_snapshot(
+        account_facts=facts,
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+    replay = compile_risk_policy_snapshot(
+        account_facts=_account_facts(account_observed_at=AS_OF),
+        sleeve_capital=100_000,
+        conviction_tier="STANDARD",
+        policy_kind="ticker",
+    )
+
+    assert first.policy_version == replay.policy_version
+
+
+def test_ticker_compiles_one_policy_snapshot_before_sizing(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = ticker_module.compile_risk_policy_snapshot
+    calls = 0
+
+    def counted(*args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ticker_module, "compile_risk_policy_snapshot", counted)
+    decision = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"symbol": "ACME", "net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "decision_queue": [{
+                "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+                "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+                "conviction_tier": "STANDARD", "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+    )
+
+    assert calls == 1
+    assert decision.risk_policy_snapshot is not None
+    assert decision.risk_policy.policy_version == decision.risk_policy_snapshot.policy_version
+    assert decision.risk_policy.loss_budget == pytest.approx(
+        decision.risk_policy_snapshot.sleeve_capital
+        * decision.risk_policy_snapshot.ticker_loss_budget_pct
+    )
 
 
 def test_conflicting_horizons_choose_an_owned_hold_action_and_share_one_thesis() -> None:
