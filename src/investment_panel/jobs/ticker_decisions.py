@@ -194,21 +194,28 @@ def publish(
 def _market_snapshot_for_decision(publication: dict[str, Any] | None, cutoff: datetime) -> Any:
     if publication is None:
         return None
+    reference = _utc(cutoff)
+    publication_cutoff = _timestamp(publication.get("input_cutoff"))
+    publication_published_at = _timestamp(publication.get("published_at"))
+    if publication_cutoff != reference or publication_published_at is None or publication_published_at > reference:
+        return None
     rows = publication.get("models", {}).get("market_state_snapshot") or []
     if not rows:
         return None
-    snapshot = MarketStateSnapshot.model_validate(rows[0])
+    try:
+        snapshot = MarketStateSnapshot.model_validate(rows[0])
+    except (TypeError, ValueError):
+        return None
+    if _utc(snapshot.input_cutoff) != reference or _utc(snapshot.as_of) != reference:
+        return None
     matrix = snapshot.coverage_matrix
     if matrix is not None:
-        matrix = matrix.model_copy(update={
-            "as_of": cutoff,
-            "input_cutoff": cutoff,
-            "rows": tuple(row.model_copy(update={"input_cutoff": cutoff}) for row in matrix.rows),
-        })
+        if _utc(matrix.as_of) != reference or _utc(matrix.input_cutoff) != reference:
+            return None
+        if any(row.input_cutoff is not None and _utc(row.input_cutoff) != reference for row in matrix.rows):
+            return None
     return snapshot.model_copy(update={
         "publication_id": publication["publication_id"],
-        "as_of": cutoff,
-        "input_cutoff": cutoff,
         "coverage_matrix": matrix,
     })
 
@@ -279,7 +286,7 @@ def _rank_records(
     }
     for record in records:
         rank = ranks_by_key[(record["decision"].ticker, record["decision"].decision_revision, record["decision"].opportunity_episode_id)]
-        if rank.trade_rank is None or rank.trade_rank_unavailable_reason:
+        if rank.trade_rank is None or rank.trade_rank_unavailable_reason or record["decision"].context_blockers:
             safe = apply_opportunity_rank_safety(record["decision"], rank.model_dump(mode="json"))
             rank = _rank_after_safety(rank, safe)
             record["decision"] = safe
@@ -764,6 +771,17 @@ def _current_trade_plan_for_decision(
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _utc(value)
+    if isinstance(value, str) and value:
+        try:
+            return _utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -22,6 +22,9 @@ class ConfirmedDailyPrice:
     source_id: str
     observed_at: datetime
     available_at: datetime
+    fact_id: int | None = None
+    fact_table: str = "raw.price_bar"
+    ingest_run_id: str | None = None
 
 
 def confirmed_daily_bars(
@@ -42,9 +45,11 @@ def confirmed_daily_bars(
     rows = connection.execute(
         """
         WITH facts AS (
-            SELECT * FROM raw.price_bar
+            SELECT fact.*, 'raw.price_bar'::text AS fact_table
+            FROM raw.price_bar fact
             UNION ALL
-            SELECT * FROM raw.price_bar_history
+            SELECT fact.*, 'raw.price_bar_history'::text AS fact_table
+            FROM raw.price_bar_history fact
         ), confirmed AS (
             SELECT fact.*, confirmation_run.finished_at AS confirmed_at
             FROM facts fact
@@ -93,7 +98,8 @@ def confirmed_daily_bars(
             FROM ranked
             WHERE %s::integer IS NULL OR recency_rank <= %s
         )
-        SELECT instrument_id, trading_date, open, high, low, close, volume,
+        SELECT id AS fact_id, fact_table, ingest_run_id,
+               instrument_id, trading_date, open, high, low, close, volume,
                source_id, observed_at, available_at, confirmed_at, fact_rank
         FROM bounded
         WHERE %s::integer IS NULL OR fact_rank <= %s::integer + 1
@@ -153,6 +159,9 @@ def latest_completed_references(
         selected.append(ConfirmedDailyPrice(
             instrument_id=int(row["instrument_id"]), trading_date=trading_date, close=close,
             source_id=str(row["source_id"]), observed_at=_utc(observed_at), available_at=_utc(available_at),
+            fact_id=int(row["fact_id"]) if row.get("fact_id") is not None else None,
+            fact_table=str(row.get("fact_table") or "raw.price_bar"),
+            ingest_run_id=str(row["ingest_run_id"]) if row.get("ingest_run_id") is not None else None,
         ))
     return tuple(selected)
 

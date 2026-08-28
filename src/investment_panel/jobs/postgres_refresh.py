@@ -19,11 +19,12 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
 
     config = load_config(config_path)
     runtime = runtime_for_config(config)
+    cutoff = datetime.now(UTC)
     options = refresh_options_radar.run_deterministic_only(config_path)
-    tickers = ticker_decisions.publish(config_path)
+    market = refresh_market_publication(runtime, now=cutoff)
+    tickers = ticker_decisions.publish(config_path, as_of=cutoff)
     outcomes = _refresh_option_outcomes(runtime, config)
-    today = refresh_today_publication(runtime)
-    market = refresh_market_publication(runtime)
+    today = refresh_today_publication(runtime, now=cutoff)
     status = "ok" if all(
         str(row.get("status")) == "ok"
         for row in (tickers, today, market)
@@ -95,14 +96,15 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     agents = run_option_agents.run(config_path)
     thesis_monitor = run_thesis_monitor.run(config_path, trigger="preopen")
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
-    tickers = ticker_decisions.publish(config_path)
+    cutoff = reference.astimezone(UTC)
+    market = refresh_market_publication(runtime, now=cutoff)
+    tickers = ticker_decisions.publish(config_path, as_of=cutoff)
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(
-        runtime, use_agent_narrative=True,
+        runtime, now=cutoff, use_agent_narrative=True,
         agent_model=config.agents.thesis_monitor.model,
         reasoning_effort=config.agents.thesis_monitor.reasoning_effort,
     )
-    market = refresh_market_publication(runtime)
     option_ready = any(str(result.get("status") or "").lower() == "ok" for result in (before_agents, after_agents))
     thesis_status = str(thesis_monitor.get("status") or "failed").lower()
     publication_ready = all(str(result.get("status") or "").lower() == "ok" for result in (tickers, today, market))
@@ -152,6 +154,14 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
     )
 
     config = load_config(config_path)
+    publication_cutoff: datetime | None = None
+
+    def bounded_cutoff() -> datetime:
+        nonlocal publication_cutoff
+        if publication_cutoff is None:
+            publication_cutoff = datetime.now(UTC)
+        return publication_cutoff
+
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
         ("arco_sources", False, lambda: update_arco_sources.run(config_path)),
         ("market_data", False, lambda: update_market_data.run(config_path, publish=False)),
@@ -162,7 +172,12 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("ibkr_options", False, lambda: update_ibkr_options.run(config_path)),
         ("broker_sources", False, lambda: update_broker_sources.run(config_path)),
         ("options_radar", True, lambda: refresh_options_radar.run(config_path)),
-        ("ticker_decisions", True, lambda: ticker_decisions.publish(config_path)),
+        ("market_publication", True, lambda: refresh_market_publication(
+            runtime_for_config(config), now=bounded_cutoff()
+        )),
+        ("ticker_decisions", True, lambda: ticker_decisions.publish(
+            config_path, as_of=bounded_cutoff()
+        )),
         (
             "option_outcomes",
             False,
@@ -170,8 +185,9 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ),
         ("option_agents", True, lambda: run_option_agents.run(config_path)),
         ("thesis_monitor", False, lambda: run_thesis_monitor.run(config_path, trigger="preopen")),
-        ("today_publication", True, lambda: refresh_today_publication(runtime_for_config(config))),
-        ("market_publication", True, lambda: refresh_market_publication(runtime_for_config(config))),
+        ("today_publication", True, lambda: refresh_today_publication(
+            runtime_for_config(config), now=bounded_cutoff()
+        )),
         ("retention", True, lambda: RetentionRepository(runtime_for_config(config)).prune()),
         ("database_snapshot", False, lambda: snapshot_database.run(config_path)),
     ]
