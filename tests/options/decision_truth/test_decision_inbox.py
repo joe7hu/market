@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -216,6 +219,92 @@ def test_decision_inbox_action_change_resolves_prior_actionable_item(
         assert [(row["transition"], row["status"]) for row in statuses] == [
             ("newly_actionable", "resolved"), ("action_changed", "active"),
         ]
+    finally:
+        runtime.close()
+
+
+def test_decision_inbox_overlapping_action_changes_keep_replacement_active(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        inbox.sync_current_decisions([], now=reference)
+        actionable = _row(reference + timedelta(minutes=1), plan=_plan("BUY"))
+        replacement = _row(
+            reference + timedelta(minutes=2),
+            revision="revision-2", plan=_plan("HOLD"),
+        )
+        inbox.sync_current_decisions([actionable], now=reference + timedelta(minutes=3))
+        replacement_key = decision_inbox_module._canonical_dedupe_key(
+            "episode-1", "revision-2", "action_changed", "risk-policy.v2:test",
+        )
+        barrier = Barrier(2)
+        original_emit = DecisionInboxRepository._emit_in_transaction
+
+        def synchronized_emit(
+            repository: DecisionInboxRepository,
+            connection: Any,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            if kwargs.get("dedupe_key") == replacement_key:
+                barrier.wait(timeout=5)
+            return original_emit(repository, connection, **kwargs)
+
+        monkeypatch.setattr(DecisionInboxRepository, "_emit_in_transaction", synchronized_emit)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    DecisionInboxRepository(runtime).sync_current_decisions,
+                    [replacement], now=reference + timedelta(minutes=3),
+                )
+                for _ in range(2)
+            ]
+            results = [future.result(timeout=10) for future in futures]
+        assert sum(result["action_changed"] for result in results) == 1
+        items = inbox.rows()["items"]
+        by_transition = {item["payload"]["state_transition"]: item for item in items}
+        assert by_transition["newly_actionable"]["status"] == "resolved"
+        assert by_transition["action_changed"]["status"] == "active"
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM app.notification_outbox").fetchone()["count"] == 2
+    finally:
+        runtime.close()
+
+
+def test_decision_inbox_emit_failure_preserves_prior_actionable_item(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        inbox.sync_current_decisions([], now=reference)
+        actionable = _row(reference + timedelta(minutes=1), plan=_plan("BUY"))
+        replacement = _row(
+            reference + timedelta(minutes=2),
+            revision="revision-2", plan=_plan("HOLD"),
+        )
+        inbox.sync_current_decisions([actionable], now=reference + timedelta(minutes=3))
+
+        def fail_emit(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("replacement emit failed")
+
+        monkeypatch.setattr(inbox, "_emit_in_transaction", fail_emit)
+        with pytest.raises(RuntimeError, match="replacement emit failed"):
+            inbox.sync_current_decisions([replacement], now=reference + timedelta(minutes=3))
+        item = inbox.rows()["items"][0]
+        assert item["payload"]["state_transition"] == "newly_actionable"
+        assert item["status"] == "active"
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM app.notification_outbox").fetchone()["count"] == 1
     finally:
         runtime.close()
 

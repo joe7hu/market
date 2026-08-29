@@ -48,6 +48,36 @@ class DecisionInboxRepository:
         enqueue_telegram: bool = True,
         dedupe_key: str | None = None,
     ) -> dict[str, Any]:
+        if event_type.strip().lower() not in INBOX_EVENT_TYPES:
+            raise ValueError("unsupported decision Inbox event type")
+        with self.runtime.transaction() as connection:
+            return self._emit_in_transaction(
+                connection,
+                event_type=event_type,
+                payload=payload,
+                opportunity_id=opportunity_id,
+                ticket_version=ticket_version,
+                paper_order_id=paper_order_id,
+                lane=lane,
+                severity=severity,
+                enqueue_telegram=enqueue_telegram,
+                dedupe_key=dedupe_key,
+            )
+
+    def _emit_in_transaction(
+        self,
+        connection: Any,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+        opportunity_id: str | None = None,
+        ticket_version: int | None = None,
+        paper_order_id: str | None = None,
+        lane: str | None = None,
+        severity: str = "info",
+        enqueue_telegram: bool = True,
+        dedupe_key: str | None = None,
+    ) -> dict[str, Any]:
         normalized_type = event_type.strip().lower()
         if normalized_type not in INBOX_EVENT_TYPES:
             raise ValueError("unsupported decision Inbox event type")
@@ -62,39 +92,38 @@ class DecisionInboxRepository:
             ticket_version=ticket_version,
             paper_order_id=paper_order_id,
         )
-        with self.runtime.transaction() as connection:
-            row = connection.execute(
-                """
-                INSERT INTO app.decision_inbox_item
-                    (dedupe_key, event_type, opportunity_id, ticket_version,
-                     paper_order_id, lane, severity, payload)
-                VALUES (%s, %s, %s::uuid, %s, %s::uuid, %s, %s, %s)
-                ON CONFLICT (dedupe_key) DO NOTHING
-                RETURNING id, created_at
-                """,
-                [
-                    key, normalized_type, opportunity_id, ticket_version,
-                    paper_order_id, normalized_lane, severity, Jsonb(_safe_payload(payload)),
-                ],
+        row = connection.execute(
+            """
+            INSERT INTO app.decision_inbox_item
+                (dedupe_key, event_type, opportunity_id, ticket_version,
+                 paper_order_id, lane, severity, payload)
+            VALUES (%s, %s, %s::uuid, %s, %s::uuid, %s, %s, %s)
+            ON CONFLICT (dedupe_key) DO NOTHING
+            RETURNING id, created_at
+            """,
+            [
+                key, normalized_type, opportunity_id, ticket_version,
+                paper_order_id, normalized_lane, severity, Jsonb(_safe_payload(payload)),
+            ],
+        ).fetchone()
+        if row is None:
+            existing = connection.execute(
+                "SELECT id, created_at FROM app.decision_inbox_item WHERE dedupe_key = %s",
+                [key],
             ).fetchone()
-            if row is None:
-                existing = connection.execute(
-                    "SELECT id, created_at FROM app.decision_inbox_item WHERE dedupe_key = %s",
-                    [key],
-                ).fetchone()
-                assert existing is not None
-                return {"id": str(existing["id"]), "dedupe_key": key, "created": False, "created_at": existing["created_at"].isoformat()}
-            inbox_id = str(row["id"])
-            if enqueue_telegram and normalized_type in TELEGRAM_EVENT_TYPES:
-                connection.execute(
-                    """
-                    INSERT INTO app.notification_outbox
-                        (dedupe_key, inbox_item_id, event_type, payload)
-                    VALUES (%s, %s::uuid, %s, %s)
-                    ON CONFLICT (dedupe_key) DO NOTHING
-                    """,
-                    [key, inbox_id, normalized_type, Jsonb(_safe_payload(payload))],
-                )
+            assert existing is not None
+            return {"id": str(existing["id"]), "dedupe_key": key, "created": False, "created_at": existing["created_at"].isoformat()}
+        inbox_id = str(row["id"])
+        if enqueue_telegram and normalized_type in TELEGRAM_EVENT_TYPES:
+            connection.execute(
+                """
+                INSERT INTO app.notification_outbox
+                    (dedupe_key, inbox_item_id, event_type, payload)
+                VALUES (%s, %s::uuid, %s, %s)
+                ON CONFLICT (dedupe_key) DO NOTHING
+                """,
+                [key, inbox_id, normalized_type, Jsonb(_safe_payload(payload))],
+            )
         return {"id": inbox_id, "dedupe_key": key, "created": True, "created_at": row["created_at"].isoformat()}
 
     def rows(self, *, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
@@ -180,8 +209,6 @@ class DecisionInboxRepository:
                 next_action = "Refresh and republish the canonical TradePlan authority."
                 if exact_authority and plan is not None:
                     next_action = plan.next_action
-            if transition != "newly_actionable":
-                self._resolve_canonical_actionable_item(episode_id)
             payload = _canonical_event_payload(
                 row,
                 plan if exact_authority else None,
@@ -190,12 +217,18 @@ class DecisionInboxRepository:
                 blocker=blocker,
                 next_action=next_action,
             )
-            event = self.emit(
-                event_type="ready" if transition in ACTIONABLE_TRANSITIONS else "revoked",
-                payload=payload,
-                severity="info" if transition in ACTIONABLE_TRANSITIONS else "warning",
-                dedupe_key=_canonical_dedupe_key(episode_id, revision, transition, policy_version),
-            )
+            dedupe_key = _canonical_dedupe_key(episode_id, revision, transition, policy_version)
+            with self.runtime.transaction() as connection:
+                event = self._emit_in_transaction(
+                    connection,
+                    event_type="ready" if transition in ACTIONABLE_TRANSITIONS else "revoked",
+                    payload=payload,
+                    severity="info" if transition in ACTIONABLE_TRANSITIONS else "warning",
+                    dedupe_key=dedupe_key,
+                )
+                self._resolve_canonical_actionable_item(
+                    connection, episode_id, exclude_dedupe_key=dedupe_key,
+                )
             created[transition] += int(event["created"])
         return created
 
@@ -247,18 +280,20 @@ class DecisionInboxRepository:
                 }
         return None
 
-    def _resolve_canonical_actionable_item(self, episode_id: str) -> None:
-        with self.runtime.transaction() as connection:
-            connection.execute(
-                """
-                UPDATE app.decision_inbox_item
-                SET status = 'resolved', resolved_at = now()
-                WHERE status = 'active' AND event_type = 'ready'
-                  AND payload->>'opportunity_episode_id' = %s
-                  AND payload->>'state_transition' IN ('newly_actionable', 'action_changed')
-                """,
-                [episode_id],
-            )
+    def _resolve_canonical_actionable_item(
+        self, connection: Any, episode_id: str, *, exclude_dedupe_key: str,
+    ) -> None:
+        connection.execute(
+            """
+            UPDATE app.decision_inbox_item
+            SET status = 'resolved', resolved_at = now()
+            WHERE status = 'active' AND event_type = 'ready'
+              AND payload->>'opportunity_episode_id' = %s
+              AND payload->>'state_transition' IN ('newly_actionable', 'action_changed')
+              AND dedupe_key <> %s
+            """,
+            [episode_id, exclude_dedupe_key],
+        )
 
     def _resolve_ready_item(self, decision_id: str, ticket_version: int) -> None:
         with self.runtime.transaction() as connection:
