@@ -110,6 +110,7 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
         "positions": [{
             "instrument_id": 1,
             "symbol": "ACME",
+            "sector": "Technology",
             "quantity": 10.0,
             "avg_cost": 90.0,
             "price": 100.0,
@@ -124,6 +125,12 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
         }],
         "eligible_position_count": 1,
         "valued_position_count": 1,
+        "stock_evidence": {
+            "sector": "Technology",
+            "beta": 1.1,
+            "avg_dollar_volume": 1_000_000.0,
+            "correlation_cluster_delta": 0.01,
+        },
     })
     decision = _decision(portfolio_replay=replay)
     impact = decision.portfolio_impacts[ExpressionKind.STOCK]
@@ -132,8 +139,11 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
     assert impact.position_weight_after is not None
     assert impact.position_weight_after > impact.position_weight_before
     assert impact.gross_exposure_after > impact.gross_exposure_before
-    assert "stock_beta_evidence_missing" in impact.blockers
-    assert impact.availability == "unavailable"
+    assert impact.sector_concentration_delta == pytest.approx(impact.symbol_concentration_delta)
+    assert impact.beta_delta == pytest.approx(1.1 * impact.symbol_concentration_delta)
+    assert impact.adv_participation == pytest.approx(impact.symbol_concentration_delta * 100_000 / 1_000_000)
+    assert impact.days_to_exit == pytest.approx(0.01)
+    assert impact.availability == "available"
 
 
 def test_supplied_policy_snapshot_must_match_canonical_point_in_time_authority() -> None:

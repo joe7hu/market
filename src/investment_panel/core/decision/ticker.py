@@ -549,6 +549,22 @@ class PortfolioImpact(BaseModel):
                 or self.liquidity != {"status": "not_applicable"}
             ):
                 raise ValueError("CASH portfolio impact must be exact zero change")
+        elif self.expression_kind is ExpressionKind.STOCK:
+            required = (
+                self.position_weight_before,
+                self.position_weight_after,
+                self.gross_exposure_before,
+                self.gross_exposure_after,
+                self.net_exposure_before,
+                self.net_exposure_after,
+                self.planned_loss,
+                self.adv_participation,
+                self.days_to_exit,
+                self.beta_delta,
+                self.correlation_cluster_delta,
+            )
+            if any(value is None for value in required):
+                raise ValueError("available stock portfolio impacts require complete evidence")
         else:
             raise ValueError("non-CASH portfolio impacts require unsupported institutional evidence")
         return self
@@ -2608,6 +2624,8 @@ def _stock_impact_values(
     planned_loss = expression.planned_loss
     if planned_loss is None and expression.max_loss_per_unit is not None and quantity:
         planned_loss = expression.max_loss_per_unit * quantity
+    evidence = replay.get("stock_evidence")
+    evidence = evidence if isinstance(evidence, Mapping) else {}
     before = {
         "position_weight": owned / nav if nav else None,
         "gross_exposure": before_gross,
@@ -2621,7 +2639,7 @@ def _stock_impact_values(
         "symbol_concentration": after_weight,
         "funding_source_or_position_to_trim": "cash comparator",
     }
-    sector = next(
+    sector = str(evidence.get("sector") or "").strip() or next(
         (str(item.get("sector") or "").strip() for item in positions
          if str(item.get("symbol") or "").upper() == expression.ticker.upper()),
         "",
@@ -2637,8 +2655,18 @@ def _stock_impact_values(
         before["sector_concentration"] = before_sector
     else:
         blockers.append("stock_sector_evidence_missing")
-    blockers.append("stock_beta_evidence_missing")
-    blockers.extend(("stock_adv_evidence_missing", "stock_correlation_evidence_missing"))
+    beta = _number(evidence.get("beta"))
+    beta_delta = beta * (added_value / nav) if beta is not None and nav else None
+    if beta_delta is None:
+        blockers.append("stock_beta_evidence_missing")
+    adv = _number(evidence.get("avg_dollar_volume"))
+    adv_participation = added_value / adv if adv and adv > 0 else None
+    days_to_exit = (owned / (adv * 0.1)) if adv and adv > 0 else None
+    if adv_participation is None:
+        blockers.append("stock_adv_evidence_missing")
+    correlation_delta = _number(evidence.get("correlation_cluster_delta"))
+    if correlation_delta is None:
+        blockers.append("stock_correlation_evidence_missing")
     values = {
         "position_weight_before": before["position_weight"],
         "position_weight_after": after["position_weight"],
@@ -2648,11 +2676,11 @@ def _stock_impact_values(
         "net_exposure_after": after["net_exposure"],
         "symbol_concentration_delta": (after_weight - before["position_weight"]) if after_weight is not None else None,
         "sector_concentration_delta": sector_delta,
-        "beta_delta": None,
-        "correlation_cluster_delta": None,
+        "beta_delta": beta_delta,
+        "correlation_cluster_delta": correlation_delta,
         "planned_loss": planned_loss,
-        "adv_participation": None,
-        "days_to_exit": None,
+        "adv_participation": adv_participation,
+        "days_to_exit": days_to_exit,
         "cash_comparator": {"status": "available", "planned_loss": 0.0},
         "top_alternative": "CASH",
         "funding_source_or_position_to_trim": "cash comparator",
