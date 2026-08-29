@@ -1610,6 +1610,30 @@ class TickerDecision(BaseModel):
         unexpected = set(normalized) - set(expected)
         if unexpected:
             raise ValueError("ticker decision contains an impact for an unknown expression")
+        safe_expressions: dict[ExpressionKind, ExpressionDecision] | None = None
+        if policy.blockers:
+            cash = _cash_expression(self.ticker, self.cutoff, self.input_manifest.input_hash).model_copy(
+                update={"selected": True}
+            )
+            safe_expressions = {
+                kind: (
+                    cash
+                    if kind is ExpressionKind.CASH
+                    else expression.model_copy(update={
+                        "entry_range": None,
+                        "target_range": None,
+                        "invalidation": None,
+                        "quantity": None,
+                        "loss_budget": None,
+                        "max_loss_per_unit": None,
+                        "planned_loss": None,
+                        "legs": [],
+                        "selected": False,
+                        "status": "blocked",
+                    })
+                )
+                for kind, expression in expected.items()
+            }
         for kind, expression in expected.items():
             impact = normalized.get(kind)
             if impact is None:
@@ -1635,33 +1659,19 @@ class TickerDecision(BaseModel):
                 raise ValueError("portfolio impact cutoff must match the ticker decision")
             if tuple(impact.input_lineage) != tuple(self.input_lineage):
                 raise ValueError("portfolio impact lineage must match the ticker decision")
-            if impact.expression_identity != _expression_identity_for(expression, kind, self.ticker, self.decision_revision):
-                raise ValueError("portfolio impact expression identity must match the expression")
+            expected_identity = _expression_identity_for(expression, kind, self.ticker, self.decision_revision)
+            if impact.expression_identity != expected_identity:
+                safe_expression = safe_expressions.get(kind) if safe_expressions is not None else None
+                if (
+                    safe_expression is None
+                    or impact.expression_identity
+                    != _expression_identity_for(safe_expression, kind, self.ticker, self.decision_revision)
+                ):
+                    raise ValueError("portfolio impact expression identity must match the expression")
             normalized[kind] = impact
         self.portfolio_impacts = normalized
         if policy.blockers:
-            cash = _cash_expression(self.ticker, self.cutoff, self.input_manifest.input_hash).model_copy(
-                update={"selected": True}
-            )
-            safe_expressions = {
-                kind: (
-                    cash
-                    if kind is ExpressionKind.CASH
-                    else expression.model_copy(update={
-                        "entry_range": None,
-                        "target_range": None,
-                        "invalidation": None,
-                        "quantity": None,
-                        "loss_budget": None,
-                        "max_loss_per_unit": None,
-                        "planned_loss": None,
-                        "legs": [],
-                        "selected": False,
-                        "status": "blocked",
-                    })
-                )
-                for kind, expression in expected.items()
-            }
+            assert safe_expressions is not None
             self.expressions = safe_expressions
             self.selected_expression = cash
             self.opportunity_episode = build_opportunity_episode(

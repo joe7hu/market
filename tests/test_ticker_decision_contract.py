@@ -14,6 +14,7 @@ from investment_panel.core.decision.ticker import (
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST
 from investment_panel.core.risk_policy import RiskPolicySnapshot, compile_risk_policy_snapshot
+from investment_panel.jobs.ticker_decisions import portfolio_impacts
 
 
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
@@ -573,6 +574,50 @@ def test_policy_blocker_rehashes_sanitized_portfolio_impacts() -> None:
         assert impact.impact_id == ticker_module._portfolio_impact_id(impact)
         if kind is not ExpressionKind.CASH:
             assert impact.impact_id != source.portfolio_impacts[kind].impact_id
+
+
+def test_policy_blocked_seed_impacts_survive_publication_bound_rebuild() -> None:
+    tables = {
+        "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+        "portfolio_summary": [{
+            "net_liquidation": 100_000,
+            "available_at": "2026-08-22T13:55:00Z",
+            "account_observed_at": "2026-08-22T12:00:00Z",
+        }],
+        "decision_queue": [{
+            "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+            "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+            "conviction_tier": "STANDARD", "available_at": "2026-08-22T13:55:00Z",
+        }],
+    }
+    replay: dict[str, object] = {}
+    seed = build_ticker_decision("ACME", tables, as_of=AS_OF, portfolio_replay=replay)
+    assert seed.risk_policy_snapshot is not None
+    assert "fresh_postgres_account_facts_required" in seed.risk_policy_snapshot.blockers
+    assert seed.market_state_snapshot is not None
+
+    snapshot = seed.market_state_snapshot.model_copy(update={
+        "snapshot_id": "market-state:publication-bound",
+        "publication_id": "market-publication:publication-bound",
+    })
+    impacts = portfolio_impacts(seed, snapshot, snapshot.publication_id, replay)
+    decision = build_ticker_decision(
+        "ACME",
+        tables,
+        as_of=AS_OF,
+        market_state_snapshot=snapshot,
+        portfolio_impacts=impacts,
+        risk_policy_snapshot=seed.risk_policy_snapshot,
+        portfolio_replay=replay,
+    )
+
+    assert decision.market_state_publication_id == snapshot.publication_id
+    assert decision.selected_expression is not None
+    assert decision.selected_expression.kind is ExpressionKind.CASH
+    for kind, impact in decision.portfolio_impacts.items():
+        assert impact.expression_identity == ticker_module._expression_identity_for(
+            decision.expressions[kind], kind, decision.ticker, decision.decision_revision
+        )
 
 
 def test_policy_blocker_without_resolution_forces_blocked_no_trade() -> None:
