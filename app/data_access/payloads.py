@@ -822,6 +822,12 @@ def ticker_learning_payload(
             else [{**row, "scenarios": row.get("scenarios") or scenarios} for row in display_outcomes]
         )
         strategy_learning = evaluate_ticker_policy(policy_rows)
+        strategy_learning["blockers"] = list(dict.fromkeys([
+            *strategy_learning.get("blockers", []),
+            "canonical_outcome_attribution_missing",
+        ]))
+        strategy_learning["automatic_promotion"] = False
+        strategy_learning["status"] = "collecting"
     payload = {
         "independent_episode_count": len(episode_ids) or (1 if display_outcomes else 0),
         "independent_horizon_episode_count": len({

@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from math import sqrt
+from math import isfinite, sqrt
 from statistics import mean, pstdev
 from typing import Any, Iterable, Mapping
+
+from investment_panel.core.decision.ticker import (
+    OUTCOME_ATTRIBUTION_CONTRACT_VERSION,
+    OutcomeAttribution,
+)
 
 
 TICKER_LEARNING_VERSION = "ticker-learning-v2"
@@ -13,6 +18,10 @@ MIN_INDEPENDENT_EPISODES = 30
 MIN_TRADING_DAYS = 20
 MAX_TICKER_CONTRIBUTION = 0.20
 MAX_BRIER_SCORE = 0.25
+_CANONICAL_UNITS = frozenset({
+    ("TACTICAL", 1), ("TACTICAL", 5), ("TACTICAL", 20),
+    ("FUNDAMENTAL", 63), ("FUNDAMENTAL", 126), ("FUNDAMENTAL", 252),
+})
 
 
 def evaluate_ticker_policy(
@@ -30,14 +39,37 @@ def evaluate_ticker_policy(
         row.model_dump(mode="json") if hasattr(row, "model_dump") else dict(row)
         for row in rows
     ]
-    canonical_rows = [row for row in source_rows if _is_canonical_attribution(row)]
+    canonical_blockers: list[str] = []
+    canonical_rows: list[dict[str, Any]] = []
     if canonical_only:
-        episodes = [_canonical_learning_row(row) for row in canonical_rows]
+        for row in source_rows:
+            attribution, blocker = _validate_canonical_attribution(row)
+            if attribution is not None:
+                canonical_rows.append(attribution)
+            elif blocker:
+                canonical_blockers.append(blocker)
+    else:
+        canonical_rows = [row for row in source_rows if _is_canonical_attribution(row)]
+    if canonical_only:
+        units = [
+            (str(row.get("horizon") or "").upper(), _sessions(row))
+            for row in canonical_rows
+        ]
+        if len(units) != len(set(units)):
+            canonical_blockers.append("outcome_attribution_unit_duplicated")
+        if set(units) != _CANONICAL_UNITS:
+            canonical_blockers.append("outcome_attribution_units_incomplete")
+        episodes = (
+            [_canonical_learning_row(row) for row in canonical_rows]
+            if not canonical_blockers
+            else []
+        )
         episodes = [row for row in episodes if row is not None]
     else:
         episodes = source_rows
     episodes = [row for row in episodes if str(row.get("state") or "") == "resolved"]
-    episodes = _one_episode_per_horizon(episodes)
+    if not canonical_only:
+        episodes = _one_episode_per_horizon(episodes)
     episode_keys = {
         (str(row.get("ticker_decision_id") or ""), str(row.get("horizon") or ""))
         for row in episodes
@@ -115,7 +147,7 @@ def evaluate_ticker_policy(
         "canonical_attribution_rows": len(canonical_rows),
         "canonical_sample_eligible_rows": len(episodes) if canonical_only else 0,
     }
-    blockers: list[str] = []
+    blockers: list[str] = list(canonical_blockers)
     if metrics["independent_episode_count"] < MIN_INDEPENDENT_EPISODES:
         blockers.append("independent_episode_sample_below_30")
     if metrics["trading_day_count"] < MIN_TRADING_DAYS:
@@ -176,8 +208,21 @@ def evaluate_ticker_policy(
         blockers.append("repeated_trial_correction_missing")
     if metrics["point_in_time_defects"]:
         blockers.append("point_in_time_defects_unresolved")
-    if canonical_only and source_rows and not episodes:
+    if canonical_only and source_rows and not canonical_rows:
         blockers.append("canonical_sample_evidence_missing")
+    if canonical_only and canonical_rows:
+        if any(row.get("state") == "QUARANTINED" for row in canonical_rows):
+            blockers.append("outcome_attribution_quarantined")
+        if any(
+            row.get("evidence_state") in {"MISSING", "UNMEASURABLE"}
+            or row.get("available_at") is None
+            for row in canonical_rows
+        ):
+            blockers.append("outcome_attribution_unavailable")
+        if any(row.get("sample_eligible") is not True for row in canonical_rows):
+            blockers.append("canonical_sample_evidence_missing")
+        if any(row.get("promotion_eligible") is not True for row in canonical_rows):
+            blockers.append("canonical_promotion_evidence_missing")
     return {
         "status": "eligible" if not blockers else "collecting",
         "paper_only": True,
@@ -196,10 +241,36 @@ def _is_canonical_attribution(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _validate_canonical_attribution(
+    row: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not _all_finite(row):
+        return None, "outcome_attribution_non_finite"
+    if any(
+        field in row and not isinstance(row[field], bool)
+        for field in ("sample_eligible", "promotion_eligible")
+    ):
+        return None, "outcome_attribution_invalid"
+    if not _is_canonical_attribution(row):
+        if str(row.get("contract_version") or "") != OUTCOME_ATTRIBUTION_CONTRACT_VERSION:
+            return None, "outcome_attribution_legacy"
+        if not row.get("outcome_attribution_id"):
+            return None, "outcome_attribution_id_missing"
+        return None, "outcome_attribution_invalid"
+    try:
+        attribution = OutcomeAttribution.model_validate(row)
+        normalized = attribution.model_dump(mode="json")
+    except (TypeError, ValueError, KeyError):
+        return None, "outcome_attribution_invalid"
+    if not _all_finite(normalized):
+        return None, "outcome_attribution_non_finite"
+    return normalized, None
+
+
 def _canonical_learning_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
     """Project one eligible canonical attribution into the legacy metrics shape."""
 
-    if not _is_canonical_attribution(row) or not bool(row.get("sample_eligible")):
+    if not _is_canonical_attribution(row) or row.get("sample_eligible") is not True:
         return None
     execution = row.get("paper_execution")
     if not isinstance(execution, Mapping):
@@ -354,9 +425,20 @@ def _sessions(row: Mapping[str, Any]) -> int:
 
 def _number(value: Any) -> float | None:
     try:
-        return float(value) if value not in (None, "") else None
+        number = float(value) if value not in (None, "") else None
+        return number if number is not None and isfinite(number) else None
     except (TypeError, ValueError):
         return None
+
+
+def _all_finite(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return all(_all_finite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return all(_all_finite(item) for item in value)
+    if isinstance(value, float):
+        return isfinite(value)
+    return True
 
 
 def _valid_slice(value: Any) -> bool:

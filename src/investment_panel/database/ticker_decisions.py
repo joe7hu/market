@@ -557,11 +557,17 @@ class TickerDecisionRepository:
         canonical = AnalysisRepository(self.runtime).publication_rows(
             "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
         )
-        current, _ = select_current_outcome_attributions(
+        current, attribution_blocker = select_current_outcome_attributions(
             canonical, decision.model_dump(mode="json") if decision else {},
         )
         outcomes = [_attribution_surface_row(row) for row in current]
         strategy_learning = evaluate_ticker_policy(current, canonical_only=True)
+        if attribution_blocker:
+            strategy_learning["blockers"] = list(dict.fromkeys([
+                *strategy_learning.get("blockers", []), attribution_blocker,
+            ]))
+            strategy_learning["automatic_promotion"] = False
+            strategy_learning["status"] = "collecting"
         if not decision or not outcomes:
             return {
                 "independent_episode_count": 0,

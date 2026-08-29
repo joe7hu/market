@@ -8,6 +8,52 @@ from investment_panel.core.decision import ExpressionKind, InputLineage, Outcome
 from app.data_access.payloads import ticker_learning_payload
 
 
+def _canonical_rows(*, sample_eligible: bool = True, promotion_eligible: bool = True) -> list[dict[str, object]]:
+    cutoff = datetime(2026, 8, 22, 14, tzinfo=UTC)
+    observed = cutoff + timedelta(days=1)
+    rows = []
+    for horizon, sessions in (
+        ("TACTICAL", 1), ("TACTICAL", 5), ("TACTICAL", 20),
+        ("FUNDAMENTAL", 63), ("FUNDAMENTAL", 126), ("FUNDAMENTAL", 252),
+    ):
+        plan_id = "trade-plan.v1:learning"
+        stock = {
+            "kind": "STOCK", "source_id": "confirmed_price_bar",
+            "observed_at": observed, "available_at": observed,
+            "gross_return": 0.01, "cost_adjusted_return": 0.005,
+            "evidence_state": "OBSERVED",
+        }
+        value = {
+            "stable_unit_key": f"{plan_id}:{horizon}:{sessions}",
+            "ticker": "ACME", "trade_plan_id": plan_id,
+            "trade_plan_publication_id": "publication:learning",
+            "opportunity_episode_id": "episode:learning",
+            "decision_revision": "revision:learning", "policy_version": "policy:v1",
+            "selected_expression_kind": "STOCK",
+            "selected_expression_identity": "expression:learning",
+            "decision_cutoff": cutoff, "evaluation_cutoff": observed,
+            "horizon": horizon, "horizon_sessions": sessions,
+            "state": "RESOLVED", "observed_through": observed, "available_at": observed,
+            "outcome_evidence": [stock], "selected_evidence": stock,
+            "selected_gross_return": 0.03, "selected_net_return": 0.02,
+            "counterfactuals": {"STOCK": stock, "CASH": {"kind": "CASH", "gross_return": 0.0}},
+            "all_expression_counterfactuals": {"STOCK": stock, "CASH": {"kind": "CASH", "gross_return": 0.0}},
+            "evidence_state": "OBSERVED", "sample_eligible": sample_eligible,
+            "promotion_eligible": promotion_eligible,
+            "paper_execution": {
+                "trade_plan_id": plan_id, "status": "EXITED", "paper_only": True,
+                "entry_filled_at": observed, "exit_at": observed,
+                "entry_fill_price": 100, "exit_price": 103,
+                "filled_quantity": 1, "exited_quantity": 1,
+                "entry_fill_count": 1, "exit_fill_count": 1,
+                "realized_gross_return": 0.03, "realized_net_return": 0.02,
+                "available_at": observed,
+            },
+        }
+        rows.append(OutcomeAttribution.model_validate(value).model_dump(mode="json"))
+    return rows
+
+
 def test_ticker_policy_learning_fails_closed_without_cost_and_baseline_evidence() -> None:
     result = evaluate_ticker_policy([{
         "ticker_decision_id": "one",
@@ -160,6 +206,50 @@ def test_ticker_policy_learning_does_not_count_placeholder_slices() -> None:
     assert "regime_slice_evidence_missing" in result["blockers"]
 
 
+def test_canonical_learning_rejects_forged_and_non_finite_attributions() -> None:
+    rows = _canonical_rows()
+    forged = {**rows[0], "selected_net_return": 0.01}
+    non_finite = {**rows[1], "selected_net_return": float("nan")}
+
+    result = evaluate_ticker_policy([forged, non_finite, *rows[2:]], canonical_only=True)
+
+    assert result["automatic_promotion"] is False
+    assert "outcome_attribution_invalid" in result["blockers"]
+    assert "outcome_attribution_non_finite" in result["blockers"]
+
+
+def test_canonical_learning_rejects_duplicate_and_incomplete_units() -> None:
+    rows = _canonical_rows()
+
+    duplicate = evaluate_ticker_policy([*rows, rows[0]], canonical_only=True)
+    incomplete = evaluate_ticker_policy(rows[:-1], canonical_only=True)
+
+    assert "outcome_attribution_unit_duplicated" in duplicate["blockers"]
+    assert duplicate["automatic_promotion"] is False
+    assert "outcome_attribution_units_incomplete" in incomplete["blockers"]
+    assert incomplete["automatic_promotion"] is False
+
+
+def test_canonical_learning_keeps_sample_evidence_separate_from_promotion() -> None:
+    result = evaluate_ticker_policy(
+        _canonical_rows(promotion_eligible=False), canonical_only=True,
+    )
+
+    assert result["metrics"]["canonical_sample_eligible_rows"] == 6
+    assert "canonical_promotion_evidence_missing" in result["blockers"]
+    assert result["automatic_promotion"] is False
+
+
+def test_legacy_learning_payload_cannot_promote_without_canonical_evidence() -> None:
+    payload = ticker_learning_payload(
+        {"fundamental": {}, "expressions": {}},
+        [{"ticker_decision_id": "legacy", "state": "resolved", "horizon": "TACTICAL"}],
+    )
+
+    assert payload["strategy_learning"]["automatic_promotion"] is False
+    assert "canonical_outcome_attribution_missing" in payload["strategy_learning"]["blockers"]
+
+
 def test_ticker_learning_payload_exposes_expression_result_and_policy_gate() -> None:
     payload = ticker_learning_payload(
         {
@@ -286,3 +376,6 @@ def test_repository_learning_surface_rejects_mismatched_current_attributions(mon
 
     assert result["outcome_attributions"] == []
     assert evaluated == []
+    assert result["strategy_learning"]["blockers"] == [
+        "outcome_attribution_lineage_mismatch",
+    ]
