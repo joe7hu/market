@@ -5,7 +5,6 @@ type TradePlan = components["schemas"]["TradePlan"];
 type PriceRange = components["schemas"]["PriceRange"];
 type Invalidation = components["schemas"]["Invalidation"];
 type TradePlanLeg = NonNullable<TradePlan["selected_expression"]["legs"]>[number];
-type PortfolioImpact = NonNullable<TradePlan["portfolio_impact"]>;
 
 export function TradePlanCard({ plan }: { plan?: TradePlan | null }) {
   const actionable = isRenderableActionable(plan);
@@ -20,7 +19,7 @@ export function TradePlanCard({ plan }: { plan?: TradePlan | null }) {
 }
 
 function ActionablePlan({ plan }: { plan: TradePlan }) {
-  const impact = plan.portfolio_impact as PortfolioImpact;
+  const impact = plan.portfolio_impact;
   const legs = plan.selected_expression?.legs ?? [];
   return (
     <div className="min-w-0 space-y-5 p-4 text-sm">
@@ -53,12 +52,12 @@ function ActionablePlan({ plan }: { plan: TradePlan }) {
       <section>
         <h3 className="text-sm font-semibold">Selected portfolio impact</h3>
         <dl className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          <Field label="Availability" value={displayText(impact.availability)} />
-          <Field label="Marginal risk" value={numberValue(impact.marginal_risk)} />
-          <Field label="Risk budget consumed" value={numberValue(impact.risk_budget_consumed)} />
-          <Field label="Diversification benefit" value={numberValue(impact.diversification_benefit)} />
-          <Field label="Position to trim or replace" value={displayText(impact.position_to_trim_or_replace)} />
-          <Field label="Positions most correlated" value={impact.positions_most_correlated?.length ? impact.positions_most_correlated.join(", ") : "Unavailable"} />
+          <Field label="Availability" value={displayText(impact?.availability)} />
+          <Field label="Marginal risk" value={numberValue(impact?.marginal_risk)} />
+          <Field label="Risk budget consumed" value={numberValue(impact?.risk_budget_consumed)} />
+          <Field label="Diversification benefit" value={numberValue(impact?.diversification_benefit)} />
+          <Field label="Position to trim or replace" value={displayText(impact?.position_to_trim_or_replace)} />
+          <Field label="Positions most correlated" value={impact?.positions_most_correlated?.length ? impact.positions_most_correlated.join(", ") : "Unavailable"} />
         </dl>
       </section>
 
@@ -105,13 +104,12 @@ function OptionLegs({ legs }: { legs: TradePlanLeg[] }) {
 }
 
 function BlockedPlan({ plan }: { plan?: TradePlan | null }) {
-  const blocker = plan?.primary_blocker || plan?.blockers?.[0] || "Unavailable";
   return (
     <div className="min-w-0 p-4 text-sm">
       <dl className="grid min-w-0 gap-3 sm:grid-cols-2">
         <Field label="State" value="NO TRADE" />
         <Field label="Expression" value="CASH" />
-        <Field label="Primary blocker" value={displayText(blocker)} />
+        <Field label="Primary blocker" value={displayText(plan?.primary_blocker)} />
         <Field label="Next action" value={displayText(plan?.next_action)} />
         {plan?.trade_plan_id ? <Field label="Plan" value={plan.trade_plan_id} /> : null}
       </dl>
@@ -129,54 +127,11 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function isRenderableActionable(plan: TradePlan | null | undefined): plan is TradePlan {
-  const expression = plan?.selected_expression;
-  const impact = plan?.portfolio_impact;
-  return Boolean(
-    plan &&
-      plan.contract_version === "trade-plan.v1" &&
-      plan.eligibility === "ACTIONABLE" &&
-      (plan.authorization_mode === "PAPER" || plan.authorization_mode === "ADVISORY") &&
-      plan.action &&
-      plan.action !== "NO_TRADE" &&
-      plan.action !== "AVOID" &&
-      plan.ticker &&
-      plan.selected_expression_kind !== "CASH" &&
-      expression &&
-      expression.kind === plan.selected_expression_kind &&
-      expression.ticker === plan.ticker &&
-      impact &&
-      impact.availability === "available" &&
-      !impact.blockers?.length &&
-      !plan.primary_blocker &&
-      !plan.blockers?.length &&
-      plan.rank_id &&
-      plan.alpha_signal_id &&
-      plan.portfolio_impact_id &&
-      plan.market_snapshot_id &&
-      plan.market_state_publication_id &&
-      plan.input_lineage?.length > 0 &&
-      validRange(plan.entry) &&
-      positive(plan.entry_limit) &&
-      positive(plan.quantity) &&
-      positive(plan.max_loss_per_unit) &&
-      positive(plan.planned_loss) &&
-      plan.invalidation &&
-      validRange(plan.profit_exit) &&
-      typeof plan.expiry === "string" &&
-      plan.expiry.trim(),
-  );
+  return Boolean(plan && plan.eligibility === "ACTIONABLE" && (plan.authorization_mode === "PAPER" || plan.authorization_mode === "ADVISORY"));
 }
 
 function authorizationLabel(mode: string): "PAPER ONLY" | "ADVISORY" {
   return mode === "PAPER" ? "PAPER ONLY" : "ADVISORY";
-}
-
-function validRange(value: PriceRange | null | undefined): value is PriceRange {
-  return Boolean(value && Number.isFinite(value.low) && Number.isFinite(value.high) && value.low <= value.high);
-}
-
-function positive(value: number | null | undefined): boolean {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function displayText(value: unknown): string {
@@ -186,17 +141,17 @@ function displayText(value: unknown): string {
 }
 
 function numberValue(value: number | null | undefined): string {
-  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 3 }) : "Unavailable";
+  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 20 }) : "Unavailable";
 }
 
 function money(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value)
-    ? value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: Math.abs(value) > 1000 ? 0 : 2 })
+    ? value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 20 })
     : "Unavailable";
 }
 
 function priceRange(value: PriceRange | null | undefined): string {
-  if (!validRange(value)) return "Unavailable";
+  if (!value) return "Unavailable";
   return value.low === value.high ? money(value.low) : `${money(value.low)}–${money(value.high)}`;
 }
 

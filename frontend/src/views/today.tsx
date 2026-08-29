@@ -122,25 +122,28 @@ function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { re
   );
 }
 
-function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onOpenTicker: (symbol: string) => void }) {
-  const tone = toneFromText(item.lifecycle_state === "actionable" ? item.action : item.lifecycle_state);
+export function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onOpenTicker: (symbol: string) => void }) {
+  const plan = tradePlanForAction(item);
+  const tone = plan !== undefined ? "info" : toneFromText(item.lifecycle_state === "actionable" ? item.action : item.lifecycle_state);
   const statusLabel = item.transition ?? item.action ?? item.lifecycle_state;
   const expiry = item.expires_at ? new Date(item.expires_at).toLocaleDateString() : null;
   const ticker = item.ticker;
-  const plan = tradePlanForAction(item);
   return (
     <Card role="listitem" className={cn("min-w-0", toneBorder(tone))}>
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start justify-between gap-2">
           {ticker ? <button type="button" className="font-semibold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onOpenTicker(ticker)}>{ticker}</button> : <h3 className="font-semibold">{item.title}</h3>}
-          <StatusBadge tone={tone}>{statusLabel}</StatusBadge>
+          {plan === undefined ? <StatusBadge tone={tone}>{statusLabel}</StatusBadge> : null}
         </div>
         {ticker ? <p className="text-sm font-medium">{item.title}</p> : null}
-        {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{item.rationale}</p> : null}
-        {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {item.primary_blocker}</p> : null}
-        <p className="text-sm"><span className="font-semibold">Next:</span> {item.next_action}</p>
-        {expiry ? <p className="text-xs text-muted-foreground">Expires {expiry}</p> : null}
-        {plan !== undefined ? <TradePlanCard plan={plan} /> : null}
+        {plan !== undefined ? <TradePlanCard plan={plan} /> : (
+          <>
+            {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{item.rationale}</p> : null}
+            {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {item.primary_blocker}</p> : null}
+            <p className="text-sm"><span className="font-semibold">Next:</span> {item.next_action}</p>
+            {expiry ? <p className="text-xs text-muted-foreground">Expires {expiry}</p> : null}
+          </>
+        )}
         {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Open drill-down</a> : null}
       </CardContent>
     </Card>

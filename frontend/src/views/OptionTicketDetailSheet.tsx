@@ -94,12 +94,12 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
                   ["Maximum risk", formatMoney(numberField(risk, ["one_unit_max_loss", "one_unit_collateral"], Number.NaN))],
                   ["Quote expires", textField(ticket, ["expires_at"], textField(entry, ["valid_until"], "—"))],
                   ["Lower-confidence EV / risk", decimal(numberField(ticket, ["lower_confidence_expectancy_per_max_risk"], Number.NaN))],
-                  ["Next action", textField(ticket, ["required_next_action"], "Resolve blockers")],
+                  ["Next action", textField(ticket, ["required_next_action"], "Unavailable")],
                   ["Resolution", `${textField(resolution, ["eligibility"], "UNKNOWN")} · ${textField(resolution, ["lifecycle"], "—")}`],
                   ["Authorization", textField(resolution, ["authorization_mode"], "—")],
                   ["Policy", textField(ticket, ["policy_version", "risk_policy_version"], "—")],
                   ["Decision revision", textField(ticket, ["decision_revision"], textField(resolution, ["decision_revision"], "—"))],
-                  ["Primary blocker", textField(resolution, ["primary_blocker"], blockers[0] || "None")],
+                  ["Primary blocker", textField(resolution, ["primary_blocker"], "Unavailable")],
                 ]} />
               </DetailSection>
 

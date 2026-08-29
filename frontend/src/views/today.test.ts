@@ -5,7 +5,7 @@ import { createElement } from "react";
 import type { TodayResponse } from "@/api/panel";
 import type { components } from "@/generated/apiSchema";
 import { TradePlanCard } from "./TradePlanCard";
-import { tradePlanForAction } from "./today";
+import { ActionQueueCard, tradePlanForAction } from "./today";
 
 type TradePlan = components["schemas"]["TradePlan"];
 
@@ -90,6 +90,62 @@ describe("Today Action Queue", () => {
     expect(missing).toContain("CASH");
     expect(missing).toContain("Unavailable");
     expect(missing).not.toContain("BUY");
+  });
+
+  it("does not leak queue terms when a capital plan is missing", () => {
+    const markup = renderToStaticMarkup(createElement(ActionQueueCard, {
+      item: {
+        ...response.actions![0],
+        action: "BUY",
+        lifecycle_state: "actionable",
+        rationale: "queue rationale leak",
+        primary_blocker: "queue blocker leak",
+        next_action: "queue next action leak",
+        expires_at: "2026-09-19T13:30:00Z",
+        trade_plan: null,
+      },
+      onOpenTicker: () => undefined,
+    }));
+
+    expect(markup).toContain("NO TRADE");
+    expect(markup).toContain("CASH");
+    expect(markup).toContain("Unavailable");
+    expect(markup).not.toContain("BUY");
+    expect(markup).not.toContain("queue rationale leak");
+    expect(markup).not.toContain("queue blocker leak");
+    expect(markup).not.toContain("queue next action leak");
+    expect(markup).not.toContain("2026-09-19");
+  });
+
+  it("keeps numeric terms at stored precision", () => {
+    const base = plan();
+    const markup = renderToStaticMarkup(createElement(TradePlanCard, {
+      plan: {
+        ...base,
+        entry_limit: 1234.56,
+        max_loss_per_unit: 1234.56,
+        planned_loss: 1234.56,
+        portfolio_impact: { ...base.portfolio_impact!, risk_budget_consumed: 1234.56789 },
+      },
+    }));
+
+    expect(markup).toContain("1,234.56");
+    expect(markup).toContain("1,234.56789");
+    expect(markup).not.toContain("1,235");
+  });
+
+  it("does not infer a missing primary blocker from the blocker list", () => {
+    const markup = renderToStaticMarkup(createElement(TradePlanCard, { plan: plan({
+      action: "NO_TRADE",
+      authorization_mode: "NONE",
+      blockers: ["list_only_blocker"],
+      eligibility: "BLOCKED",
+      primary_blocker: null,
+      selected_expression_kind: "CASH",
+    }) }));
+
+    expect(markup).toContain("Unavailable");
+    expect(markup).not.toContain("list_only_blocker");
   });
 
   it("gives only capital actions a trade-plan presentation", () => {
