@@ -534,6 +534,64 @@ def test_option_ticket_rejects_snapshot_with_stale_account_identity() -> None:
     assert ticket["resolution"]["action"] == "NO_TRADE"
 
 
+@pytest.mark.parametrize(
+    ("blocker", "account_observed_at"),
+    [
+        ("fresh_postgres_account_facts_required", NOW - timedelta(hours=1)),
+        ("future_account_revision_not_allowed", NOW + timedelta(minutes=1)),
+    ],
+)
+def test_option_ticket_enforces_supplied_account_authority_blockers(
+    blocker: str, account_observed_at: datetime
+) -> None:
+    snapshot = RiskPolicySnapshot(
+        policy_version="risk-policy.v2:account-authority",
+        sleeve_capital=100_000,
+        broker_available_capital=100_000,
+        broker_net_liquidation=100_000,
+        account_observed_at=account_observed_at,
+        account_source="postgresql",
+        blockers=(blocker,),
+    )
+
+    sized = sizing_policy(
+        structure="long_call",
+        sleeve_capital=100_000,
+        broker_available_capital=100_000,
+        one_unit_max_loss=100,
+        secured_cash=None,
+        risk_policy_snapshot=snapshot,
+    )
+    ticket = build_option_trade_ticket(
+        decision_id=f"{blocker}-ticket",
+        symbol="QQQ",
+        structure="long_call",
+        expiration=date(2026, 8, 21),
+        legs=[_leg()],
+        entry_price=2.0,
+        one_unit_max_loss=100,
+        state="PAPER_READY",
+        evaluated_at=NOW,
+        market_session="regular",
+        sleeve_capital=100_000,
+        broker_available_capital=100_000,
+        risk_policy_snapshot=snapshot,
+        policy_version=snapshot.policy_version,
+        thesis={"direction": "long", "invalidation": "Exit below 145."},
+        forecast={
+            "probability_semantics": "calibrated_exact_cohort",
+            "lower_95_expected_value": 100,
+        },
+    )
+
+    assert sized["recommended_quantity"] == 0
+    assert sized["blockers"] == [blocker]
+    assert ticket["state"] == "RESEARCH"
+    assert ticket["risk"]["recommended_quantity"] == 0
+    assert blocker in ticket["blockers"]
+    assert ticket["resolution"]["action"] == "NO_TRADE"
+
+
 def _rank_row(
     *,
     ticker: str = "NVDA",

@@ -440,7 +440,7 @@ def sizing_policy(
         if broker_net_liquidation is not None
         else policy_snapshot.broker_net_liquidation or broker_available_capital
     )
-    blockers: list[str] = []
+    blockers: list[str] = list(policy_snapshot.blockers)
     if sleeve is None:
         blockers.append("options_risk_sleeve_required")
     if unit is None:
