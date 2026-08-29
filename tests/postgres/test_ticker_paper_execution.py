@@ -492,6 +492,53 @@ def test_portfolio_replay_uses_execution_and_created_at_cutoffs(migrated_postgre
         runtime.close()
 
 
+def test_portfolio_replay_freezes_sector_when_current_metadata_changes(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        config = typed_config(migrated_postgres_dsn)
+        cutoff = datetime(2026, 8, 22, 14, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            instrument = connection.execute(
+                """
+                INSERT INTO catalog.instrument (symbol, name, asset_class, sector)
+                VALUES ('REPLAYSECTOR', 'Replay Sector', 'equity', 'old-sector')
+                RETURNING id
+                """
+            ).fetchone()["id"]
+            transaction = connection.execute(
+                """
+                INSERT INTO app.portfolio_transaction
+                    (instrument_id, transaction_type, quantity, price, amount,
+                     executed_at, created_at, idempotency_key)
+                VALUES (%s, 'opening_balance', 10, 100, 1000, %s, %s, 'replay-sector-initial')
+                RETURNING id
+                """
+                , [instrument, cutoff - timedelta(hours=1), cutoff - timedelta(hours=1)]
+            ).fetchone()["id"]
+            stored = connection.execute(
+                "SELECT instrument_sector FROM app.portfolio_transaction WHERE id = %s",
+                [transaction],
+            ).fetchone()
+            assert stored["instrument_sector"] == "old-sector"
+
+        before_metadata_change = replay_portfolio_at(config, cutoff)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE catalog.instrument SET sector = 'new-sector' WHERE id = %s",
+                [instrument],
+            )
+        after_metadata_change = replay_portfolio_at(config, cutoff)
+
+        assert before_metadata_change["positions"][0]["sector"] == "old-sector"
+        assert after_metadata_change["positions"][0]["sector"] == "old-sector"
+        assert after_metadata_change["book_identity"] == before_metadata_change["book_identity"]
+    finally:
+        runtime.close()
+
+
 def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

@@ -14,6 +14,7 @@ from investment_panel.core.decision.ticker import (
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST
 from investment_panel.core.risk_policy import RiskPolicySnapshot, compile_risk_policy_snapshot
+import investment_panel.jobs.ticker_decisions as ticker_decision_job
 from investment_panel.jobs.ticker_decisions import portfolio_impacts
 
 
@@ -618,6 +619,58 @@ def test_policy_blocked_seed_impacts_survive_publication_bound_rebuild() -> None
         assert impact.expression_identity == ticker_module._expression_identity_for(
             decision.expressions[kind], kind, decision.ticker, decision.decision_revision
         )
+
+
+def test_publisher_reuses_seed_cutoff_stock_evidence_on_bound_rebuild() -> None:
+    replay = {
+        "cutoff": AS_OF,
+        "positions": [],
+        "portfolio_value": 0.0,
+        "transaction_count": 0,
+        "eligible_position_count": 0,
+        "valued_position_count": 0,
+        "missing_valuation_count": 0,
+        "valuation_complete": True,
+        "lineage": [],
+        "book_identity": "portfolio-book:publisher-evidence",
+    }
+    tables = {
+        "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+        "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+        "decision_queue": [{
+            "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+            "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+            "conviction_tier": "STANDARD", "available_at": "2026-08-22T13:55:00Z",
+        }],
+        "fundamentals": [{
+            "symbol": "ACME", "sector": "Technology", "beta": 1.1,
+            "avg_dollar_volume": 1_000_000.0, "correlation_cluster_delta": 0.01,
+            "available_at": "2026-08-22T13:55:00Z",
+        }],
+    }
+    seed = build_ticker_decision("ACME", tables, as_of=AS_OF, portfolio_replay=replay)
+    seed_evidence = seed.portfolio_impacts[ExpressionKind.STOCK].portfolio_before["stock_evidence"]
+    assert seed_evidence["sector"] == "Technology"
+
+    replay_for_publication = ticker_decision_job._replay_with_seed_stock_evidence(seed, replay)
+    assert "stock_impact" not in replay_for_publication
+    impacts = portfolio_impacts(
+        seed,
+        seed.market_state_snapshot,
+        str(seed.market_state_snapshot.publication_id),
+        replay_for_publication,
+    )
+    rebuilt = build_ticker_decision(
+        "ACME",
+        tables,
+        as_of=AS_OF,
+        market_state_snapshot=seed.market_state_snapshot,
+        portfolio_impacts=impacts,
+        risk_policy_snapshot=seed.risk_policy_snapshot,
+        portfolio_replay=replay_for_publication,
+    )
+
+    assert rebuilt.portfolio_impacts[ExpressionKind.STOCK].portfolio_before["stock_evidence"] == seed_evidence
 
 
 def test_policy_blocker_without_resolution_forces_blocked_no_trade() -> None:

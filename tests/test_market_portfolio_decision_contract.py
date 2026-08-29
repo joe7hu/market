@@ -51,6 +51,33 @@ def _decision(**context):
     )
 
 
+def _valued_replay(*, stock_evidence: dict[str, object]) -> dict[str, object]:
+    replay = _complete_replay(book_identity="portfolio-book:valued")
+    replay.update({
+        "portfolio_value": 100_000.0,
+        "positions": [{
+            "instrument_id": 1,
+            "symbol": "ACME",
+            "sector": "Technology",
+            "quantity": 10.0,
+            "avg_cost": 90.0,
+            "price": 100.0,
+            "market_value": 1_000.0,
+            "source_id": "test",
+            "currency": "USD",
+            "source_kind": "daily_bars",
+            "trading_date": "2026-08-22",
+            "observed_at": AS_OF,
+            "available_at": AS_OF,
+            "valuation_status": "market_quotes",
+        }],
+        "eligible_position_count": 1,
+        "valued_position_count": 1,
+        "stock_evidence": stock_evidence,
+    })
+    return replay
+
+
 def test_market_snapshot_has_four_horizons_and_unavailable_dimensions() -> None:
     snapshot = _decision().market_state_snapshot
 
@@ -104,34 +131,21 @@ def test_book_identity_changes_every_bound_impact_and_never_unlocks_non_cash() -
 
 
 def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
-    replay = _complete_replay(book_identity="portfolio-book:valued")
-    replay.update({
-        "portfolio_value": 100_000.0,
-        "positions": [{
-            "instrument_id": 1,
-            "symbol": "ACME",
-            "sector": "Technology",
-            "quantity": 10.0,
-            "avg_cost": 90.0,
-            "price": 100.0,
-            "market_value": 1_000.0,
-            "source_id": "test",
-            "currency": "USD",
-            "source_kind": "daily_bars",
-            "trading_date": "2026-08-22",
-            "observed_at": AS_OF,
-            "available_at": AS_OF,
-            "valuation_status": "market_quotes",
-        }],
-        "eligible_position_count": 1,
-        "valued_position_count": 1,
-        "stock_evidence": {
+    replay = _valued_replay(stock_evidence={
             "sector": "Technology",
             "beta": 1.1,
             "avg_dollar_volume": 1_000_000.0,
             "correlation_cluster_delta": 0.01,
-        },
-    })
+            "adv_participation_limit": 0.10,
+            "stress_scenarios": {
+                "bear": {"pnl": -1_000.0},
+                "base": {"pnl": 100.0},
+                "bull": {"pnl": 1_500.0},
+            },
+            "risk_budget": {"available": 2_000.0, "consumed": 1_000.0},
+            "cash_comparator": {"status": "available", "expected_return": 0.0},
+            "funding_source_or_position_to_trim": "cash",
+        })
     decision = _decision(portfolio_replay=replay)
     impact = decision.portfolio_impacts[ExpressionKind.STOCK]
 
@@ -143,7 +157,36 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
     assert impact.beta_delta == pytest.approx(1.1 * impact.symbol_concentration_delta)
     assert impact.adv_participation == pytest.approx(impact.symbol_concentration_delta * 100_000 / 1_000_000)
     assert impact.days_to_exit == pytest.approx(0.11)
+    assert impact.scenario_pnl == replay["stock_evidence"]["stress_scenarios"]
+    assert impact.risk_budget_consumed == pytest.approx(1_000.0)
+    assert impact.liquidity["adv_participation_limit"] == pytest.approx(0.10)
+    assert impact.cash_comparator == {"status": "available", "expected_return": 0.0}
+    assert impact.funding_source_or_position_to_trim == "cash"
     assert impact.availability == "available"
+
+
+def test_stock_impact_missing_institutional_evidence_stays_unavailable() -> None:
+    replay = _valued_replay(stock_evidence={
+        "sector": "Technology",
+        "beta": 1.1,
+        "avg_dollar_volume": 1_000_000.0,
+        "correlation_cluster_delta": 0.01,
+    })
+    impact = _decision(portfolio_replay=replay).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert {
+        "stock_stress_scenarios_missing",
+        "stock_risk_budget_evidence_missing",
+        "stock_adv_participation_limit_missing",
+        "stock_cash_comparator_missing",
+        "stock_funding_evidence_missing",
+    } <= set(impact.blockers)
+    assert impact.scenario_pnl is None
+    assert impact.risk_budget_consumed is None
+    assert impact.liquidity is None
+    assert impact.cash_comparator is None
+    assert impact.funding_source_or_position_to_trim is None
 
 
 def test_supplied_policy_snapshot_must_match_canonical_point_in_time_authority() -> None:

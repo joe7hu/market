@@ -523,6 +523,8 @@ class PortfolioImpact(BaseModel):
                 raise ValueError("portfolio impact lineage cannot be newer than its cutoff")
         if self.availability not in {"available", "unavailable"}:
             raise ValueError("portfolio impact availability must be available or unavailable")
+        if self.availability == "available" and self.availability_status is not AvailabilityStatus.AVAILABLE:
+            raise ValueError("available portfolio impacts require available evidence status")
         if self.availability == "unavailable":
             if not self.blockers:
                 raise ValueError("unavailable portfolio impacts require blockers")
@@ -560,11 +562,57 @@ class PortfolioImpact(BaseModel):
                 self.planned_loss,
                 self.adv_participation,
                 self.days_to_exit,
+                self.sector_concentration_delta,
                 self.beta_delta,
                 self.correlation_cluster_delta,
             )
             if any(value is None for value in required):
                 raise ValueError("available stock portfolio impacts require complete evidence")
+            evidence = before.get("stock_evidence")
+            if not isinstance(evidence, Mapping):
+                raise ValueError("available stock portfolio impacts require stock evidence")
+            scenario_pnl = _stock_scenario_pnl(evidence)
+            if scenario_pnl is None or self.scenario_pnl != scenario_pnl:
+                raise ValueError("available stock portfolio impacts require complete stress scenarios")
+            budget_available, budget_consumed = _stock_risk_budget(evidence)
+            if (
+                budget_available is None
+                or budget_consumed is None
+                or self.risk_budget_consumed is None
+                or self.marginal_risk is None
+                or not math.isclose(self.risk_budget_consumed, budget_consumed, rel_tol=1e-9, abs_tol=1e-6)
+                or not math.isclose(self.marginal_risk, budget_consumed, rel_tol=1e-9, abs_tol=1e-6)
+                or not math.isclose(self.planned_loss, budget_consumed, rel_tol=1e-9, abs_tol=1e-6)
+                or budget_available < budget_consumed
+            ):
+                raise ValueError("available stock portfolio impacts require used risk-budget evidence")
+            liquidity = self.liquidity
+            liquidity_status = str(_pick(liquidity or {}, "status", "availability") or "").lower()
+            adv = _number(_pick(liquidity or {}, "avg_dollar_volume", "average_dollar_volume", "adv"))
+            participation_limit = _number(
+                _pick(liquidity or {}, "adv_participation_limit", "max_adv_participation")
+            )
+            if (
+                not isinstance(liquidity, Mapping)
+                or liquidity_status != "available"
+                or adv is None
+                or adv <= 0
+                or participation_limit is None
+                or participation_limit <= 0
+                or participation_limit > 1
+                or self.adv_participation > participation_limit
+            ):
+                raise ValueError("available stock portfolio impacts require usable liquidity evidence")
+            cash = self.cash_comparator
+            cash_status = str(_pick(cash or {}, "status", "availability") or "").lower()
+            if (
+                not isinstance(cash, Mapping)
+                or cash_status != "available"
+                or not any(_number(cash.get(key)) is not None for key in _STOCK_CASH_COMPARISON_KEYS)
+            ):
+                raise ValueError("available stock portfolio impacts require a cash comparison")
+            if _stock_evidence_label(self.funding_source_or_position_to_trim) is None:
+                raise ValueError("available stock portfolio impacts require funding or trim evidence")
         else:
             raise ValueError("non-CASH portfolio impacts require unsupported institutional evidence")
         return self
@@ -2470,6 +2518,7 @@ def _portfolio_impact_id(impact: PortfolioImpact) -> str:
             "liquidity": impact.liquidity,
             "cash_comparator": impact.cash_comparator,
             "top_alternative": impact.top_alternative,
+            "position_to_trim_or_replace": impact.position_to_trim_or_replace,
             "funding_source_or_position_to_trim": impact.funding_source_or_position_to_trim,
         },
     }
@@ -2592,6 +2641,72 @@ def _portfolio_book_blockers(replay: Mapping[str, Any], cutoff: datetime) -> lis
     return list(dict.fromkeys(blockers))
 
 
+_STOCK_SCENARIO_NAMES = ("bear", "base", "bull")
+_STOCK_CASH_COMPARISON_KEYS = (
+    "expected_return", "expected_pnl", "cash_return", "cash_yield", "return",
+    "pnl", "opportunity_cost", "expected_value",
+)
+_STOCK_PLACEHOLDER_LABELS = {"", "cash comparator", "cash_comparator", "none", "unknown", "tbd"}
+
+
+def _stock_scenario_pnl(evidence: Mapping[str, Any]) -> dict[str, Any] | None:
+    raw = evidence.get("stress_scenarios")
+    if raw is None:
+        raw = evidence.get("scenario_pnl")
+    if not isinstance(raw, Mapping):
+        return None
+    result: dict[str, Any] = {}
+    for name in _STOCK_SCENARIO_NAMES:
+        key = next((candidate for candidate in raw if str(candidate).lower() == name), None)
+        if key is None:
+            return None
+        value = raw[key]
+        pnl = _pick(value, "pnl", "pnl_usd", "value") if isinstance(value, Mapping) else value
+        if _number(pnl) is None:
+            return None
+        result[name] = value
+    return result
+
+
+def _stock_risk_budget(evidence: Mapping[str, Any]) -> tuple[float | None, float | None]:
+    raw = evidence.get("risk_budget")
+    budget = raw if isinstance(raw, Mapping) else {}
+    available = _number(_pick(budget, "available", "limit", "budget"))
+    consumed = _number(_pick(budget, "consumed", "used", "risk_budget_consumed"))
+    if available is None:
+        available = _number(_pick(evidence, "risk_budget_available", "risk_budget_limit"))
+    if consumed is None:
+        consumed = _number(_pick(evidence, "risk_budget_consumed", "risk_budget_used"))
+    return available, consumed
+
+
+def _stock_evidence_label(value: Any) -> str | None:
+    label = str(value or "").strip()
+    return None if label.lower() in _STOCK_PLACEHOLDER_LABELS else label
+
+
+def _stock_funding_evidence(evidence: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    raw = evidence.get("funding_source_or_position_to_trim")
+    trim = _stock_evidence_label(evidence.get("position_to_trim_or_replace"))
+    if isinstance(raw, Mapping):
+        source = _pick(raw, "source", "funding_source", "position_to_trim", "position_to_trim_or_replace", "id")
+        if trim is None:
+            trim = _stock_evidence_label(_pick(raw, "position_to_trim", "position_to_trim_or_replace"))
+    else:
+        source = raw
+    if source is None:
+        raw = evidence.get("funding")
+        if isinstance(raw, Mapping):
+            source = _pick(raw, "source", "funding_source", "position_to_trim", "position_to_trim_or_replace", "id")
+            if trim is None:
+                trim = _stock_evidence_label(_pick(raw, "position_to_trim", "position_to_trim_or_replace"))
+        else:
+            source = raw
+    if source is None:
+        source = _pick(evidence, "funding_source", "position_to_trim_or_replace")
+    return _stock_evidence_label(source), trim
+
+
 def _stock_impact_values(
     expression: ExpressionDecision,
     replay: Mapping[str, Any],
@@ -2637,7 +2752,6 @@ def _stock_impact_values(
         "gross_exposure": after_gross,
         "net_exposure": after_net,
         "symbol_concentration": after_weight,
-        "funding_source_or_position_to_trim": "cash comparator",
     }
     sector = str(evidence.get("sector") or "").strip() or next(
         (str(item.get("sector") or "").strip() for item in positions
@@ -2659,14 +2773,90 @@ def _stock_impact_values(
     beta_delta = beta * (added_value / nav) if beta is not None and nav else None
     if beta_delta is None:
         blockers.append("stock_beta_evidence_missing")
-    adv = _number(evidence.get("avg_dollar_volume"))
+    stress_scenarios = _stock_scenario_pnl(evidence)
+    if stress_scenarios is None:
+        blockers.append("stock_stress_scenarios_missing")
+    budget_available, budget_consumed = _stock_risk_budget(evidence)
+    if (
+        budget_available is None
+        or budget_consumed is None
+        or budget_available < 0
+        or budget_consumed < 0
+    ):
+        blockers.append("stock_risk_budget_evidence_missing")
+    elif planned_loss is None or not math.isclose(budget_consumed, planned_loss, rel_tol=1e-9, abs_tol=1e-6):
+        blockers.append("stock_risk_budget_use_mismatch")
+    elif budget_available < budget_consumed:
+        blockers.append("stock_risk_budget_exceeded")
+    liquidity_evidence = evidence.get("liquidity")
+    liquidity_evidence = liquidity_evidence if isinstance(liquidity_evidence, Mapping) else {}
+    liquidity_status = str(_pick(liquidity_evidence, "status", "availability") or "").lower()
+    if liquidity_status and liquidity_status != "available":
+        blockers.append("stock_liquidity_unavailable")
+    adv = _number(_pick(liquidity_evidence, "avg_dollar_volume", "average_dollar_volume", "adv"))
+    if adv is None:
+        adv = _number(_pick(evidence, "avg_dollar_volume", "average_dollar_volume", "adv"))
     adv_participation = added_value / adv if adv and adv > 0 else None
-    days_to_exit = ((owned + added_value) / (adv * 0.1)) if adv and adv > 0 else None
     if adv_participation is None:
         blockers.append("stock_adv_evidence_missing")
+    participation_limit = _number(
+        _pick(liquidity_evidence, "adv_participation_limit", "max_adv_participation")
+    )
+    if participation_limit is None:
+        participation_limit = _number(
+            _pick(evidence, "adv_participation_limit", "max_adv_participation")
+        )
+    if participation_limit is None or participation_limit <= 0 or participation_limit > 1:
+        blockers.append("stock_adv_participation_limit_missing")
+    if adv_participation is not None and participation_limit is not None and adv_participation > participation_limit:
+        blockers.append("stock_adv_participation_exceeds_limit")
+    liquidity = None
+    days_to_exit = None
+    if (
+        adv is not None
+        and adv > 0
+        and participation_limit is not None
+        and 0 < participation_limit <= 1
+        and adv_participation is not None
+        and adv_participation <= participation_limit
+        and liquidity_status in {"", "available"}
+    ):
+        liquidity = {
+            **dict(liquidity_evidence),
+            "status": "available",
+            "avg_dollar_volume": adv,
+            "adv_participation_limit": participation_limit,
+            "adv_participation": adv_participation,
+        }
+        days_to_exit = (owned + added_value) / (adv * participation_limit)
+    if not liquidity_evidence and not any(
+        evidence.get(key) is not None
+        for key in ("avg_dollar_volume", "average_dollar_volume", "adv", "adv_participation_limit", "max_adv_participation")
+    ):
+        blockers.append("stock_liquidity_evidence_missing")
     correlation_delta = _number(evidence.get("correlation_cluster_delta"))
     if correlation_delta is None:
         blockers.append("stock_correlation_evidence_missing")
+    cash_comparator = evidence.get("cash_comparator")
+    cash_comparator = dict(cash_comparator) if isinstance(cash_comparator, Mapping) else None
+    cash_status = str(_pick(cash_comparator or {}, "status", "availability") or "").lower()
+    if (
+        cash_comparator is None
+        or cash_status != "available"
+        or not any(_number(cash_comparator.get(key)) is not None for key in _STOCK_CASH_COMPARISON_KEYS)
+    ):
+        blockers.append("stock_cash_comparator_missing")
+        cash_comparator = None
+    funding, trim = _stock_funding_evidence(evidence)
+    if funding is None:
+        blockers.append("stock_funding_evidence_missing")
+    top_alternative = _stock_evidence_label(evidence.get("top_alternative"))
+    if top_alternative is None and cash_comparator is not None:
+        top_alternative = _stock_evidence_label(_pick(cash_comparator, "top_alternative", "alternative"))
+    if funding is not None:
+        after["funding_source_or_position_to_trim"] = funding
+    if trim is not None:
+        after["position_to_trim_or_replace"] = trim
     values = {
         "position_weight_before": before["position_weight"],
         "position_weight_after": after["position_weight"],
@@ -2681,9 +2871,14 @@ def _stock_impact_values(
         "planned_loss": planned_loss,
         "adv_participation": adv_participation,
         "days_to_exit": days_to_exit,
-        "cash_comparator": {"status": "available", "planned_loss": 0.0},
-        "top_alternative": "CASH",
-        "funding_source_or_position_to_trim": "cash comparator",
+        "marginal_risk": budget_consumed,
+        "risk_budget_consumed": budget_consumed,
+        "scenario_pnl": stress_scenarios,
+        "liquidity": liquidity,
+        "cash_comparator": cash_comparator,
+        "top_alternative": top_alternative,
+        "position_to_trim_or_replace": trim,
+        "funding_source_or_position_to_trim": funding,
         "impact_method": "stock_portfolio_impact.v1:first_order",
     }
     return before, after, values, list(dict.fromkeys(blockers))
@@ -2723,12 +2918,12 @@ def compose_portfolio_impact(
         availability = "unavailable" if blockers else "available"
         values = {
             **{
-                "marginal_risk": expression.planned_loss,
-                "risk_budget_consumed": stock_values["planned_loss"],
-                "scenario_pnl": {"status": "first_order_stock", "pnl": 0.0},
+                "marginal_risk": None,
+                "risk_budget_consumed": None,
+                "scenario_pnl": None,
                 "factor_exposure": None,
                 "greeks": None,
-                "liquidity": {"status": "unavailable"},
+                "liquidity": None,
             },
             **stock_values,
         }

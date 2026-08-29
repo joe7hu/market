@@ -246,7 +246,8 @@ def replay_portfolio_at(
         dict(row)
         for row in connection.execute(
             """
-            SELECT transaction.*, instrument.symbol, instrument.asset_class, instrument.sector
+            SELECT transaction.*, instrument.symbol, instrument.asset_class,
+                   transaction.instrument_sector AS sector
             FROM app.portfolio_transaction transaction
             LEFT JOIN catalog.instrument instrument ON instrument.id = transaction.instrument_id
             WHERE transaction.executed_at <= %s
