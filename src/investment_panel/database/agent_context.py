@@ -23,6 +23,7 @@ def ticker_context(
     *,
     context_sources: dict[str, bool] | None = None,
     cutoff: Any | None = None,
+    decision_id: Any | None = None,
 ) -> dict[str, Any]:
     enabled = context_sources or {}
 
@@ -83,13 +84,17 @@ def ticker_context(
         WHERE publication.scope = 'options-radar' AND publication.status = 'published'
           AND item.model_name = 'option_radar_opportunity'
           AND coalesce(item.payload->>'ticker', item.payload->>'symbol') = %s
+          AND (
+              (item.payload->>'decision_id' = CAST(%s AS text))
+              OR (item.payload->>'decision_id' IS NULL AND item.payload->>'opportunity_id' = CAST(%s AS text))
+          )
           AND CAST(%s AS timestamptz) IS NOT NULL AND publication.published_at <= %s
           AND publication_run.status IN ('succeeded', 'partial')
           AND publication_run.finished_at IS NOT NULL AND publication_run.finished_at <= %s
         ORDER BY publication.published_at DESC NULLS LAST, publication.id DESC, item.rank, item.stable_key
         LIMIT 1
         """,
-        [symbol, cutoff, cutoff, cutoff],
+        [symbol, decision_id, decision_id, cutoff, cutoff, cutoff],
     ).fetchone()
     published = connection.execute(
         """

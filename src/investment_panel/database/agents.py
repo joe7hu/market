@@ -79,7 +79,11 @@ class AgentRepository:
             decision_context = decision_identity if include_decision else {}
             cutoff = decision_identity.get("as_of")
             resolved_context = ticker_context(
-                connection, symbol, context_sources=context_sources, cutoff=cutoff,
+                connection,
+                symbol,
+                context_sources=context_sources,
+                cutoff=cutoff,
+                decision_id=decision_identity.get("id"),
             )
             request = {
                 "ticker": symbol,
@@ -214,13 +218,13 @@ class AgentRepository:
         ).fetchone()
         if task is None or str(task["task_kind"]) != task_kind:
             raise ValueError(f"agent request not found: {request_id}")
+        _validate_result(
+            task_kind, payload, request=_task_request(task), task_id=str(task["id"]),
+        )
         if str(task["status"]) == "completed":
             if task["result"] == _jsonable(payload):
                 return str(task["id"])
             raise ValueError(f"conflicting replay for completed agent request: {request_id}")
-        _validate_result(
-            task_kind, payload, request=_task_request(task), task_id=str(task["id"]),
-        )
         row = accept_agent_task_result(connection, task_id=request_id, task_kind=task_kind, result=payload)
         if row is None:
             raise ValueError(f"agent request not found: {request_id}")

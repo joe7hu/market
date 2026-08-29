@@ -291,14 +291,15 @@ def test_agent_queue_candidate_context_cannot_bypass_future_publication(
                 """,
                 [cutoff, "a" * 64, cutoff - timedelta(hours=2), cutoff - timedelta(hours=1)],
             ).fetchone()["id"]
-            connection.execute(
+            decision_id = connection.execute(
                 """
                 INSERT INTO analysis.decision
                     (run_id, decision_key, kind, instrument_id, as_of, state, score, input_hash)
                 VALUES (%s, 'queue-cutoff-decision', 'option', %s, %s, 'WATCH', 0.5, %s)
+                RETURNING id
                 """,
                 [decision_run, instrument_id, cutoff, "b" * 64],
-            )
+            ).fetchone()["id"]
             future_run = connection.execute(
                 """
                 INSERT INTO analysis.run
@@ -322,7 +323,11 @@ def test_agent_queue_candidate_context_cannot_bypass_future_publication(
                     (publication_id, model_name, stable_key, rank, instrument_id, payload)
                 VALUES (%s, 'option_radar_opportunity', 'qfut-future', 1, %s, %s)
                 """,
-                [publication, instrument_id, Jsonb({"ticker": "QFUT", "entry_price": 123.0})],
+                [
+                    publication,
+                    instrument_id,
+                    Jsonb({"ticker": "QFUT", "decision_id": str(decision_id), "entry_price": 123.0}),
+                ],
             )
         queued = AgentRepository(runtime).queue_thesis(
             "QFUT", trigger="future-publication-candidate", context={"ticker": "QFUT", "entry_price": 99.0},
@@ -367,6 +372,84 @@ def test_agent_queue_tied_decisions_use_latest_identity(postgres_dsn: str) -> No
                 for index, character in enumerate(("a", "b"))
             ]
         queued = AgentRepository(runtime).queue_thesis("TIED", trigger="tied-decision")
+        with runtime.read() as connection:
+            stored = connection.execute(
+                "SELECT decision_id FROM analysis.agent_task WHERE id = %s", [queued["request_id"]]
+            ).fetchone()
+        assert stored["decision_id"] == decision_ids[1]
+    finally:
+        runtime.close()
+
+
+def test_agent_queue_option_context_binds_selected_decision_identity(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+    try:
+        with runtime.transaction() as connection:
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, asset_class) VALUES ('QDEC', 'equity') RETURNING id"
+            ).fetchone()["id"]
+            run_id = connection.execute(
+                """
+                INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+                VALUES ('queue-decision-context-test', %s, 'test', %s, %s, %s, 'succeeded')
+                RETURNING id
+                """,
+                [cutoff, "a" * 64, cutoff - timedelta(hours=3), cutoff - timedelta(hours=1)],
+            ).fetchone()["id"]
+            decision_ids = [
+                connection.execute(
+                    """
+                    INSERT INTO analysis.decision
+                        (run_id, decision_key, kind, instrument_id, as_of, state, score, input_hash)
+                    VALUES (%s, %s, 'option', %s, %s, 'WATCH', 0.5, %s)
+                    RETURNING id
+                    """,
+                    [
+                        run_id,
+                        f"qdec-{index}",
+                        instrument_id,
+                        cutoff - timedelta(hours=2) if index == 0 else cutoff,
+                        character * 64,
+                    ],
+                ).fetchone()["id"]
+                for index, character in enumerate(("b", "c"))
+            ]
+            publication = connection.execute(
+                """
+                INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+                VALUES ('options-radar', %s, 'published', %s)
+                RETURNING id
+                """,
+                [run_id, cutoff - timedelta(minutes=5)],
+            ).fetchone()["id"]
+            for rank, (decision_id, entry_price) in enumerate(
+                ((decision_ids[0], 111.0), (decision_ids[1], 222.0)), start=1
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO app.publication_item
+                        (publication_id, model_name, stable_key, rank, instrument_id, payload)
+                    VALUES (%s, 'option_radar_opportunity', %s, %s, %s, %s)
+                    """,
+                    [
+                        publication,
+                        f"qdec-{entry_price}",
+                        rank,
+                        instrument_id,
+                        Jsonb({
+                            "ticker": "QDEC",
+                            "decision_id": str(decision_id),
+                            "entry_price": entry_price,
+                        }),
+                    ],
+                )
+
+        queued = AgentRepository(runtime).queue_thesis("QDEC", trigger="decision-context")
+        assert queued["context"]["option_opportunity"]["entry_price"] == 222.0
         with runtime.read() as connection:
             stored = connection.execute(
                 "SELECT decision_id FROM analysis.agent_task WHERE id = %s", [queued["request_id"]]
@@ -529,6 +612,9 @@ def test_completed_agent_submission_rejects_conflicting_replay(postgres_dsn: str
         first["evidence_refs"] = [{"type": "agent_request", "id": queued["request_id"]}]
         assert repository.submit("option_thesis", first) == queued["request_id"]
         assert repository.submit("option_thesis", first) == queued["request_id"]
+        boolean_replay = {**first, "confidence": True}
+        with pytest.raises(ValueError):
+            repository.submit("option_thesis", boolean_replay)
         conflicting = {**first, "core_thesis": "conflicting replay"}
         with pytest.raises(ValueError, match="conflicting replay"):
             repository.submit("option_thesis", conflicting)
