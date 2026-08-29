@@ -2592,8 +2592,6 @@ def _stock_impact_values(
     planned_loss = expression.planned_loss
     if planned_loss is None and expression.max_loss_per_unit is not None and quantity:
         planned_loss = expression.max_loss_per_unit * quantity
-    blockers.extend(("stock_sector_evidence_missing", "stock_beta_evidence_missing"))
-    blockers.extend(("stock_adv_evidence_missing", "stock_correlation_evidence_missing"))
     before = {
         "position_weight": owned / nav if nav else None,
         "gross_exposure": before_gross,
@@ -2607,6 +2605,24 @@ def _stock_impact_values(
         "symbol_concentration": after_weight,
         "funding_source_or_position_to_trim": "cash comparator",
     }
+    sector = next(
+        (str(item.get("sector") or "").strip() for item in positions
+         if str(item.get("symbol") or "").upper() == expression.ticker.upper()),
+        "",
+    )
+    sector_delta = None
+    if sector and all(str(item.get("sector") or "").strip() for item in positions):
+        before_sector = sum(
+            float(item.get("market_value") or 0) for item in positions
+            if str(item.get("sector") or "").strip() == sector
+        ) / nav if nav else 0.0
+        sector_delta = added_value / nav if nav else None
+        after["sector_concentration"] = before_sector + (sector_delta or 0.0)
+        before["sector_concentration"] = before_sector
+    else:
+        blockers.append("stock_sector_evidence_missing")
+    blockers.append("stock_beta_evidence_missing")
+    blockers.extend(("stock_adv_evidence_missing", "stock_correlation_evidence_missing"))
     values = {
         "position_weight_before": before["position_weight"],
         "position_weight_after": after["position_weight"],
@@ -2615,7 +2631,7 @@ def _stock_impact_values(
         "net_exposure_before": before["net_exposure"],
         "net_exposure_after": after["net_exposure"],
         "symbol_concentration_delta": (after_weight - before["position_weight"]) if after_weight is not None else None,
-        "sector_concentration_delta": None,
+        "sector_concentration_delta": sector_delta,
         "beta_delta": None,
         "correlation_cluster_delta": None,
         "planned_loss": planned_loss,
