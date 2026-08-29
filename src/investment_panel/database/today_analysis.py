@@ -8,7 +8,7 @@ from typing import Any
 
 from investment_panel.core.event_truth import build_options_decision_truth
 from investment_panel.core.decision import MARKET_TZ
-from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.analysis import AnalysisRepository, current_option_publication_rows
 from investment_panel.database.agent_telemetry import AgentTelemetryRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.preopen_context import compact_preopen_context
@@ -95,22 +95,20 @@ def refresh_today_publication(
                 "publication_id": str(row["publication_id"]),
                 "publication_published_at": row["published_at"].isoformat() if row["published_at"] else None,
             }
-            for row in connection.execute(
-                """
-                WITH latest AS (
-                    SELECT id, published_at FROM app.publication
-                    WHERE scope = 'options-radar' AND status = 'published'
-                    ORDER BY published_at DESC NULLS LAST, created_at DESC LIMIT 1
-                )
-                SELECT item.payload, latest.id::text AS publication_id, latest.published_at
-                FROM app.publication_content_item item
-                JOIN latest ON latest.id = item.publication_id
-                WHERE item.model_name = 'option_radar_opportunity'
-                ORDER BY NULLIF(item.payload->>'trade_rank', '')::integer NULLS LAST,
-                         item.rank LIMIT 10
-                """
-            ).fetchall()
+            for row in current_option_publication_rows(
+                connection,
+                scope="options-radar",
+                model_name="option_radar_opportunity",
+                cutoff=as_of,
+            )
         ]
+        option_rows.sort(
+            key=lambda row: (
+                _number(row.get("trade_rank")) is None,
+                _number(row.get("trade_rank")) or 0,
+            )
+        )
+        option_rows = option_rows[:10]
         qqq_instrument = connection.execute(
             "SELECT id FROM catalog.instrument WHERE symbol = 'QQQ'"
         ).fetchone()

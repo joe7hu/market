@@ -250,15 +250,18 @@ class TickerDecisionRepository:
                            decision.published_at, decision.created_at, decision.id,
                            count(*) OVER (
                                PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
-                           ) AS authority_count
+                           ) AS authority_count,
+                           count(*) OVER (
+                               PARTITION BY decision.opportunity_episode_id
+                           ) AS opportunity_authority_count
                     FROM analysis.ticker_decision decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                    WHERE instrument.symbol = %s
-                      AND decision.status = 'published'
+                    WHERE decision.status = 'published'
                       AND decision.contract_version = 'ticker-decision.v1'
                       AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
                       AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
                       AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+                      AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
                       AND decision.as_of <= now()
                       AND decision.published_at IS NOT NULL
                       AND decision.published_at <= now()
@@ -281,7 +284,9 @@ class TickerDecisionRepository:
                        market_state_snapshot, portfolio_impacts,
                        risk_policy_snapshot
                 FROM current_candidates
-                WHERE authority_count = 1
+                WHERE ticker = %s
+                  AND authority_count = 1
+                  AND opportunity_authority_count = 1
                 ORDER BY as_of DESC, published_at DESC, created_at DESC, id DESC
                 LIMIT 1
                 """,

@@ -338,6 +338,68 @@ def test_analysis_keeps_features_decisions_and_publication_separate(analysis_con
     assert truth[5].startswith("option-scorecard-truth-v1:")
 
 
+def test_current_option_publication_rejects_duplicate_authoritative_episode(
+    analysis_context,
+) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    run_id = _start_run(repository, "duplicate-episode")
+    decision_ids = [
+        repository.store_option_decision(
+            run_id,
+            decision_key=f"duplicate-episode-{suffix}",
+            instrument_id=analysis_context["instrument_id"],
+            contract_id=analysis_context["contract_id"],
+            snapshot_id=analysis_context["snapshot_id"],
+            quote_observed_at=analysis_context["observed_at"],
+            state="SETUP",
+            score=80,
+            rank=rank,
+            inputs={"rank": rank},
+            details={"quality_status": "complete", "structure": "long_call"},
+        )
+        for rank, suffix in enumerate(("one", "two"), start=1)
+    ]
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(
+        run_id,
+        "options-radar",
+        {
+            "option_radar_opportunity": [
+                {"decision_id": str(decision_id), "symbol": "NVDA"}
+                for decision_id in decision_ids
+            ]
+        },
+    )
+
+    assert repository.publication_rows("options-radar", "option_radar_opportunity") == []
+
+
+def test_current_option_publication_rejects_conflicting_payload_identity(analysis_context) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    run_id = _start_run(repository, "conflicting-option-identity")
+    decision_id = repository.store_option_decision(
+        run_id,
+        decision_key="conflicting-option-identity",
+        instrument_id=analysis_context["instrument_id"],
+        contract_id=analysis_context["contract_id"],
+        snapshot_id=analysis_context["snapshot_id"],
+        quote_observed_at=analysis_context["observed_at"],
+        state="SETUP",
+        score=80,
+        rank=1,
+        inputs={"rank": 1},
+        details={"quality_status": "complete", "structure": "long_call"},
+    )
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(
+        run_id,
+        "options-radar",
+        {"option_radar_opportunity": [{"decision_id": str(decision_id), "symbol": "MSFT"}]},
+    )
+
+    assert repository.publication_rows("options-radar", "option_radar_opportunity") == []
+
+
 def test_opportunity_episode_persists_ticker_and_option_expressions(analysis_context) -> None:
     runtime: DatabaseRuntime = analysis_context["runtime"]
     with runtime.transaction() as connection:

@@ -167,6 +167,7 @@ def _revalidated_row(
         market_session="regular" if is_market_open(now) else "closed",
         sleeve_capital=sleeve_capital,
         **risk_context,
+        episode_key=str(prior.get("episode_key") or row.get("episode_key") or "").strip() or None,
         thesis=dict(prior.get("thesis") or {}),
         forecast=forecast,
         provenance={

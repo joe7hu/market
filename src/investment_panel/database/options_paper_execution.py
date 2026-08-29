@@ -17,6 +17,7 @@ from investment_panel.core.decision import is_market_open
 from investment_panel.core.option_trade_ticket import execution_policy
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.actions import ActionRepository
+from investment_panel.database.analysis import current_option_publication_answers
 from investment_panel.database.decision_inbox import DecisionInboxRepository
 from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
 from investment_panel.database.options_paper_ledger import acquire_shared_sleeve_lock
@@ -98,24 +99,15 @@ class OptionsPaperExecutionRepository:
         enabled = set(enabled_lanes)
         radar_gate = self._radar_gate(now) if "radar" in enabled else None
         with self.runtime.read(JOB_PROFILE) as connection:
-            rows = connection.execute(
-                """
-                SELECT publication.id::text AS publication_id, publication.scope,
-                       publication.published_at, item.payload
-                FROM app.publication publication
-                JOIN app.publication_content_item item ON item.publication_id = publication.id
-                WHERE publication.status = 'published'
-                  AND publication.published_at <= %s
-                  AND (
-                    (publication.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
-                    OR
-                    (publication.scope = 'options-decision-system' AND item.model_name = 'options_decision_candidate')
-                  )
-                ORDER BY publication.published_at DESC NULLS LAST, item.rank
-                LIMIT %s
-                """,
-                [now, max(1, min(int(limit), 100))],
-            ).fetchall()
+            rows = current_option_publication_answers(connection, cutoff=now)
+            rows.sort(
+                key=lambda row: (
+                    row["published_at"] or datetime.min.replace(tzinfo=UTC),
+                    -int(row.get("rank") or 0),
+                ),
+                reverse=True,
+            )
+            rows = rows[:max(1, min(int(limit), 100))]
         result: list[dict[str, Any]] = []
         for source in rows:
             payload = dict(source["payload"] or {})
@@ -437,21 +429,18 @@ class OptionsPaperExecutionRepository:
         if not decision_id or version is None:
             return None, "paper_order_ticket_identity_missing"
         scope = "options-decision-system" if lane == "qqq" else "options-radar"
-        model = "options_decision_candidate" if lane == "qqq" else "option_radar_opportunity"
-        row = connection.execute(
-            """
-            SELECT publication.id::text AS publication_id, item.payload
-            FROM app.publication publication
-            JOIN app.publication_content_item item ON item.publication_id = publication.id
-            WHERE publication.scope = %s AND publication.status = 'published'
-              AND publication.published_at <= %s
-              AND item.model_name = %s AND item.payload->>'decision_id' = %s
-            LIMIT 1
-            """,
-            [scope, as_of, model, decision_id],
-        ).fetchone()
-        if row is None:
+        matches = [
+            row for row in current_option_publication_answers(connection, cutoff=as_of)
+            if row["scope"] == scope
+            if str(
+                (row["payload"] or {}).get("decision_id")
+                or (row["payload"] or {}).get("opportunity_id")
+                or ""
+            ) == decision_id
+        ]
+        if len(matches) != 1:
             return None, "ticket_no_longer_in_current_publication"
+        row = matches[0]
         current = dict(row["payload"] or {})
         current_ticket = dict(current.get("ticket") or {})
         if _integer(current_ticket.get("ticket_version")) != version:

@@ -18,6 +18,7 @@ def latest_run(runtime: DatabaseRuntime, *, symbol: str) -> dict[str, Any] | Non
             JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
             WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
               AND run.summary->>'model_revision' = %s AND snapshot.history_symbol = %s
+              AND run.finished_at IS NOT NULL AND run.finished_at <= now()
             ORDER BY snapshot.slot_at DESC NULLS LAST, generation.id DESC,
                      run.finished_at DESC NULLS LAST LIMIT 1
             """,
@@ -48,6 +49,7 @@ def workspace_payload(
                 JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
                 WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
                   AND run.summary->>'model_revision' = %s AND snapshot.history_symbol = %s
+                  AND run.finished_at IS NOT NULL AND run.finished_at <= now()
                 ORDER BY snapshot.slot_at DESC NULLS LAST, generation.id DESC, run.finished_at DESC NULLS LAST LIMIT 1
             )
             SELECT

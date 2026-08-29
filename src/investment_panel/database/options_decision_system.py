@@ -19,6 +19,55 @@ from investment_panel.database.options_decision_workspace import latest_run, wor
 __all__ = ["OptionsDecisionSystemRepository"]
 
 
+_CURRENT_EPISODE_AUTHORITY_FILTER = """
+NULLIF(BTRIM(decision.episode_key), '') IS NOT NULL
+AND NOT EXISTS (
+    SELECT 1
+    FROM analysis.decision duplicate
+    JOIN analysis.option_decision duplicate_option ON duplicate_option.decision_id = duplicate.id
+    WHERE duplicate.run_id = decision.run_id
+      AND duplicate.kind = 'option'
+      AND duplicate.id <> decision.id
+      AND duplicate.episode_key = decision.episode_key
+      AND (
+          CASE duplicate_option.paper_state
+              WHEN 'PAPER_READY' THEN 1
+              WHEN 'WATCH' THEN 2
+              WHEN 'COLLECTING' THEN 3
+              ELSE 4
+          END < CASE option_decision.paper_state
+              WHEN 'PAPER_READY' THEN 1
+              WHEN 'WATCH' THEN 2
+              WHEN 'COLLECTING' THEN 3
+              ELSE 4
+          END
+          OR (
+              CASE duplicate_option.paper_state
+                  WHEN 'PAPER_READY' THEN 1
+                  WHEN 'WATCH' THEN 2
+                  WHEN 'COLLECTING' THEN 3
+                  ELSE 4
+              END = CASE option_decision.paper_state
+                  WHEN 'PAPER_READY' THEN 1
+                  WHEN 'WATCH' THEN 2
+                  WHEN 'COLLECTING' THEN 3
+                  ELSE 4
+              END
+              AND (
+                  (duplicate_option.modeled_net_edge IS NOT NULL
+                   AND option_decision.modeled_net_edge IS NULL)
+                  OR duplicate_option.modeled_net_edge > option_decision.modeled_net_edge
+                  OR (
+                      duplicate_option.modeled_net_edge = option_decision.modeled_net_edge
+                      OR (duplicate_option.modeled_net_edge IS NULL AND option_decision.modeled_net_edge IS NULL)
+                  ) AND duplicate.id < decision.id
+              )
+          )
+      )
+)
+"""
+
+
 def _next_required_action(
     analysis: dict[str, int],
     thesis: dict[str, Any],
@@ -83,6 +132,7 @@ class OptionsDecisionSystemRepository:
                 WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
                   AND run.summary->>'model_revision' = %s
                   AND snapshot.history_symbol = %s
+                  AND run.finished_at IS NOT NULL AND run.finished_at <= now()
                 -- Replay completion order is not market chronology.  The
                 -- decision brief must continue to select the newest captured
                 -- QQQ cohort after an append-only historical rematerialization.
@@ -94,7 +144,7 @@ class OptionsDecisionSystemRepository:
             if latest is None:
                 return _empty_brief(symbol, lane, "No post-fix v3 capture is available yet.", mode=self.mode)
             candidate = connection.execute(
-                """
+                f"""
                 SELECT decision.id::text AS decision_id, decision.reasons, decision.blockers,
                        option_decision.paper_state, option_decision.discovery_lane, option_decision.structure,
                        option_decision.entry_price, option_decision.fill_assumption,
@@ -107,6 +157,7 @@ class OptionsDecisionSystemRepository:
                        value.fair_low, value.fair_high, value.modeled_net_edge, value.confidence,
                        value.evidence, contract.expiration, contract.strike, contract.option_type,
                        option_decision.snapshot_id, value.capture_generation_id,
+                       decision.episode_key,
                        thesis.thesis AS thesis_payload, thesis.updated_at AS thesis_updated_at
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
@@ -114,6 +165,7 @@ class OptionsDecisionSystemRepository:
                 JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
                 LEFT JOIN app.thesis thesis ON thesis.id = option_decision.thesis_id
                 WHERE decision.run_id = %s AND option_decision.discovery_lane = %s
+                  AND {_CURRENT_EPISODE_AUTHORITY_FILTER}
                 ORDER BY CASE option_decision.paper_state
                     WHEN 'PAPER_READY' THEN 1 WHEN 'WATCH' THEN 2 WHEN 'COLLECTING' THEN 3 ELSE 4 END,
                     option_decision.modeled_net_edge DESC NULLS LAST, decision.id
@@ -190,6 +242,8 @@ class OptionsDecisionSystemRepository:
         if expiration:
             filters.append("contract.expiration = %s")
             values.append(expiration)
+        if scope != "history":
+            filters.append(_CURRENT_EPISODE_AUTHORITY_FILTER)
         where = " AND ".join(filters)
         with self.runtime.read() as connection:
             count = connection.execute(
@@ -214,6 +268,7 @@ class OptionsDecisionSystemRepository:
                        option_decision.market_regime_detail, option_decision.event_state,
                        value.id AS relative_value_id, value.classification, value.confidence, value.evidence,
                        contract.expiration, contract.strike, contract.option_type,
+                       decision.episode_key,
                        thesis.thesis AS thesis_payload, thesis.updated_at AS thesis_updated_at
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
@@ -489,6 +544,7 @@ def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
         }
     return {
         "decision_id": str(value["decision_id"]), "relative_value_id": value["relative_value_id"],
+        "episode_key": value.get("episode_key"),
         "paper_state": value["paper_state"], "discovery_lane": value["discovery_lane"],
         "structure": value["structure"], "expiration": value["expiration"],
         "strike": float(value["strike"]), "option_type": value["option_type"],

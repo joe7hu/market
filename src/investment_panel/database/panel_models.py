@@ -258,6 +258,9 @@ DIRECT_QUERIES: dict[str, str] = {
                    count(*) OVER (
                        PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
                    ) AS authority_count,
+                   count(*) OVER (
+                       PARTITION BY decision.opportunity_episode_id
+                   ) AS opportunity_authority_count,
                    row_number() OVER (
                        PARTITION BY decision.instrument_id
                        ORDER BY decision.as_of DESC, decision.published_at DESC,
@@ -270,6 +273,7 @@ DIRECT_QUERIES: dict[str, str] = {
               AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
               AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
               AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
               AND decision.as_of <= now()
               AND decision.published_at IS NOT NULL
               AND decision.published_at <= now()
@@ -294,7 +298,9 @@ DIRECT_QUERIES: dict[str, str] = {
                market_state_snapshot, portfolio_impacts,
                risk_policy_snapshot, status
         FROM current_candidates
-        WHERE current_row = 1 AND authority_count = 1
+        WHERE current_row = 1
+          AND authority_count = 1
+          AND opportunity_authority_count = 1
         ORDER BY as_of DESC, published_at DESC, created_at DESC, ticker_decision_id DESC
     """,
     "ticker_outcomes": """

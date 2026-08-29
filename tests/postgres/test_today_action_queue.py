@@ -51,6 +51,34 @@ def _duplicate_revision(runtime: DatabaseRuntime, revision: str) -> None:
         )
 
 
+def _duplicate_episode_with_new_timestamp(runtime: DatabaseRuntime, revision: str) -> None:
+    with runtime.transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO analysis.ticker_decision (
+                instrument_id, decision_revision, contract_version, as_of,
+                published_at, input_hash, code_version, experiment_id,
+                tactical, fundamental, capital_action, resolution, policy_version,
+                opportunity_episode_id, opportunity_cutoff, opportunity_episode,
+                risk_policy, expressions, selected_expression, data_requests,
+                learning_history, input_manifest, market_state_publication_id,
+                market_state_snapshot, portfolio_impacts, risk_policy_snapshot, status
+            )
+            SELECT instrument_id, decision_revision || ':episode-duplicate', contract_version,
+                   as_of + interval '1 minute', published_at + interval '1 minute',
+                   input_hash, code_version, experiment_id,
+                   tactical, fundamental, capital_action, resolution, policy_version,
+                   opportunity_episode_id, opportunity_cutoff, opportunity_episode,
+                   risk_policy, expressions, selected_expression, data_requests,
+                   learning_history, input_manifest, market_state_publication_id,
+                   market_state_snapshot, portfolio_impacts, risk_policy_snapshot, status
+            FROM analysis.ticker_decision
+            WHERE decision_revision = %s
+            """,
+            [revision],
+        )
+
+
 def test_current_ticker_selector_is_pit_valid_and_fails_closed_for_bad_authority(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -89,5 +117,30 @@ def test_current_ticker_selector_is_pit_valid_and_fails_closed_for_bad_authority
         assert repository.latest("W1P6FUTURE") is None
         assert repository.latest("W1P6DUP") is None
         assert repository.latest("W1P6BAD") is None
+    finally:
+        runtime.close()
+
+
+def test_current_ticker_selector_rejects_duplicate_episode_across_timestamps(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    reference = datetime.now(UTC) - timedelta(hours=1)
+    _insert_instruments(runtime, ["W1P6EPISODE"])
+    repository = TickerDecisionRepository(runtime)
+    try:
+        decision = _decision("W1P6EPISODE", reference)
+        repository.publish(decision)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE analysis.ticker_decision SET published_at = now() - interval '2 minutes' WHERE decision_revision = %s",
+                [decision.decision_revision],
+            )
+        _duplicate_episode_with_new_timestamp(runtime, decision.decision_revision)
+
+        assert repository.latest("W1P6EPISODE") is None
+        rows = load_postgres_tables(typed_config(migrated_postgres_dsn), ("ticker_decisions",))[0]["ticker_decisions"]
+        assert rows == []
     finally:
         runtime.close()

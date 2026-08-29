@@ -9,6 +9,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.database.analysis import current_option_publication_answers
 from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_parameters import (
@@ -214,6 +215,20 @@ class ActionRepository:
             ).fetchone()
             if signal is None:
                 raise ValueError("options-radar signal not found")
+            current_rows = [
+                row for row in current_option_publication_answers(connection, cutoff=now)
+                if str((row["payload"] or {}).get("decision_id") or (row["payload"] or {}).get("opportunity_id") or "")
+                == str(decision_id)
+            ]
+            if len(current_rows) != 1:
+                raise ValueError("option opportunity has no unique current publication authority")
+            current_row = current_rows[0]
+            signal = dict(signal)
+            signal["publication_id"] = current_row["publication_id"]
+            signal["publication_scope"] = current_row["scope"]
+            signal["publication_published_at"] = current_row["published_at"]
+            signal["publication_payload"] = current_row["payload"]
+            signal["currently_published"] = True
             if signal["paper_state"] is not None and str(signal["paper_state"]) != "PAPER_READY":
                 raise ValueError("decision is not PAPER_READY")
             if not signal["currently_published"]:

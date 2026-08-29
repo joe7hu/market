@@ -609,6 +609,33 @@ def test_decision_inbox_rejects_invalid_current_rows_and_duplicate_authority(
         runtime.close()
 
 
+def test_decision_inbox_hides_duplicate_active_episode_answers(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    try:
+        for revision, dedupe_key in (("revision-1", "duplicate-inbox-1"), ("revision-2", "duplicate-inbox-2")):
+            inbox.emit(
+                event_type="ready",
+                lane="ticker",
+                enqueue_telegram=False,
+                dedupe_key=dedupe_key,
+                payload={
+                    "ticker": "DUPINBOX",
+                    "symbol": "DUPINBOX",
+                    "opportunity_episode_id": "episode:duplicate-inbox",
+                    "decision_revision": revision,
+                    "state_transition": "newly_actionable",
+                },
+            )
+
+        assert inbox.rows()["items"] == []
+    finally:
+        runtime.close()
+
+
 def test_ticker_paper_lifecycle_postgres_activation_filtering_and_dedupe(
     migrated_postgres_dsn: str,
 ) -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from investment_panel.database.analysis import current_option_publication_rows
+
 
 def published_tables(runtime: Any, requested: tuple[str, ...]) -> dict[str, list[dict[str, Any]]]:
     """Read the current item for each requested model with its publication lineage."""
@@ -53,6 +55,15 @@ def published_tables(runtime: Any, requested: tuple[str, ...]) -> dict[str, list
             """,
             [list(requested), list(requested)],
         ).fetchall()
+        option_rows = (
+            current_option_publication_rows(
+                connection,
+                scope="options-radar",
+                model_name="option_radar_opportunity",
+            )
+            if "option_radar_opportunity" in requested
+            else None
+        )
     output: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         payload = dict(row["payload"] or {})
@@ -62,4 +73,13 @@ def published_tables(runtime: Any, requested: tuple[str, ...]) -> dict[str, list
         if published_at is not None:
             payload.setdefault("publication_published_at", published_at.isoformat())
         output.setdefault(str(row["model_name"]), []).append(payload)
+    if option_rows is not None:
+        output["option_radar_opportunity"] = []
+        for row in option_rows:
+            payload = dict(row["payload"] or {})
+            if "publication_id" not in payload:
+                payload["publication_id"] = str(row["publication_id"])
+            if row["published_at"] is not None:
+                payload.setdefault("publication_published_at", row["published_at"].isoformat())
+            output["option_radar_opportunity"].append(payload)
     return output

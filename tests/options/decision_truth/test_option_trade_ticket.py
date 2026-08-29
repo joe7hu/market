@@ -308,6 +308,23 @@ def test_shortlist_falls_back_to_candidate_quality_when_expectancy_is_missing() 
     assert shortlist(rows)[0]["decision_id"] == "high"
 
 
+def test_shortlist_keeps_one_answer_for_one_authoritative_episode() -> None:
+    rows = [
+        {
+            "ticker": "NVDA", "structure": "long_call", "episode_key": "radar:episode-1",
+            "decision_id": "contract-a", "score": 80,
+        },
+        {
+            "ticker": "NVDA", "structure": "long_call", "episode_key": "radar:episode-1",
+            "decision_id": "contract-b", "score": 90,
+        },
+    ]
+
+    current = shortlist(rows)
+
+    assert [row["decision_id"] for row in current] == ["contract-b"]
+
+
 def test_zero_broker_capacity_is_preserved_as_a_hard_limit() -> None:
     available = broker_available(
         {

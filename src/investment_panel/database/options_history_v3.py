@@ -621,7 +621,8 @@ class OptionHistoryV3Materializer:
         with self.runtime.read(JOB_PROFILE) as connection:
             rows = connection.execute(
                 """
-                SELECT decision.id::text AS decision_id, decision.instrument_id, decision.as_of,
+                SELECT decision.id::text AS decision_id, decision.instrument_id, decision.episode_key,
+                       decision.as_of,
                        decision.state, decision.reasons, decision.blockers,
                        option_decision.paper_state, option_decision.discovery_lane, option_decision.structure,
                        option_decision.entry_price, option_decision.max_loss, option_decision.expected_value,

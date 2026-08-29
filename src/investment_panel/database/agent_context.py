@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from investment_panel.database.analysis import current_option_publication_rows
 from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.thesis_evidence import thesis_source_evidence
 
@@ -85,27 +86,21 @@ def ticker_context(
         """,
         [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, symbol],
     ).fetchone()
-    option = connection.execute(
-        """
-        SELECT item.payload
-        FROM app.publication publication
-        JOIN app.publication_content_item item ON item.publication_id = publication.id
-        JOIN analysis.run publication_run ON publication_run.id = publication.analysis_run_id
-        WHERE publication.scope = 'options-radar' AND publication.status = 'published'
-          AND item.model_name = 'option_radar_opportunity'
-          AND coalesce(item.payload->>'ticker', item.payload->>'symbol') = %s
-          AND (
-              (item.payload->>'decision_id' = CAST(%s AS text))
-              OR (item.payload->>'decision_id' IS NULL AND item.payload->>'opportunity_id' = CAST(%s AS text))
-          )
-          AND CAST(%s AS timestamptz) IS NOT NULL AND publication.published_at <= %s
-          AND publication_run.status IN ('succeeded', 'partial')
-          AND publication_run.finished_at IS NOT NULL AND publication_run.finished_at <= %s
-        ORDER BY publication.published_at DESC NULLS LAST, publication.id DESC, item.rank, item.stable_key
-        LIMIT 1
-        """,
-        [symbol, decision_id, decision_id, cutoff, cutoff, cutoff],
-    ).fetchone()
+    option = None
+    if decision_id is not None:
+        option_matches = []
+        for current in current_option_publication_rows(
+            connection,
+            scope="options-radar",
+            model_name="option_radar_opportunity",
+            cutoff=cutoff,
+        ):
+            payload = dict(current["payload"] or {})
+            payload_symbol = str(payload.get("ticker") or payload.get("symbol") or "").upper()
+            payload_decision_id = str(payload.get("decision_id") or payload.get("opportunity_id") or "")
+            if payload_symbol == str(symbol).upper() and payload_decision_id == str(decision_id):
+                option_matches.append(current)
+        option = option_matches[0] if option_matches else None
     published = connection.execute(
         """
         SELECT DISTINCT ON (item.model_name) item.model_name, item.payload
@@ -194,7 +189,7 @@ def ticker_context(
 
 def option_opportunity_context(payload: dict[str, Any]) -> dict[str, Any]:
     keys = {
-        "ticker", "symbol", "decision_id", "state", "recommendation_state",
+        "ticker", "symbol", "decision_id", "episode_key", "state", "recommendation_state",
         "ranking_version", "research_rank", "trade_rank",
         "trade_rank_unavailable_reason", "execution_quality_score",
         "structure", "expiration", "strike", "option_type", "underlying_price",
