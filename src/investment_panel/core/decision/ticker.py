@@ -2664,7 +2664,7 @@ def compose_portfolio_impact(
         values = {
             **{
                 "marginal_risk": expression.planned_loss,
-                "risk_budget_consumed": expression.planned_loss,
+                "risk_budget_consumed": stock_values["planned_loss"],
                 "scenario_pnl": {"status": "first_order_stock", "pnl": 0.0},
                 "factor_exposure": None,
                 "greeks": None,

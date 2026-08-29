@@ -103,6 +103,39 @@ def test_book_identity_changes_every_bound_impact_and_never_unlocks_non_cash() -
     )
 
 
+def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
+    replay = _complete_replay(book_identity="portfolio-book:valued")
+    replay.update({
+        "portfolio_value": 100_000.0,
+        "positions": [{
+            "instrument_id": 1,
+            "symbol": "ACME",
+            "quantity": 10.0,
+            "avg_cost": 90.0,
+            "price": 100.0,
+            "market_value": 1_000.0,
+            "source_id": "test",
+            "currency": "USD",
+            "source_kind": "daily_bars",
+            "trading_date": "2026-08-22",
+            "observed_at": AS_OF,
+            "available_at": AS_OF,
+            "valuation_status": "market_quotes",
+        }],
+        "eligible_position_count": 1,
+        "valued_position_count": 1,
+    })
+    decision = _decision(portfolio_replay=replay)
+    impact = decision.portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.impact_method == "stock_portfolio_impact.v1:first_order"
+    assert impact.position_weight_after is not None
+    assert impact.position_weight_after > impact.position_weight_before
+    assert impact.gross_exposure_after > impact.gross_exposure_before
+    assert "stock_beta_evidence_missing" in impact.blockers
+    assert impact.availability == "unavailable"
+
+
 def test_supplied_policy_snapshot_must_match_canonical_point_in_time_authority() -> None:
     seed = _decision()
     assert seed.risk_policy_snapshot is not None
