@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import UTC, datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -106,7 +107,7 @@ def validate_result(
             except (TypeError, ValueError):
                 value = 0.0
             targets[key] = value
-            if value <= 0:
+            if not math.isfinite(value) or value <= 0:
                 missing.append(key)
         if not (
             targets["bull_target_price"] > targets["base_target_price"] > targets["bear_target_price"]
@@ -134,7 +135,7 @@ def validate_result(
             confidence = float(payload.get("confidence"))
         except (TypeError, ValueError):
             confidence = -1.0
-        if confidence < 0 or confidence > 1:
+        if not math.isfinite(confidence) or confidence < 0 or confidence > 1:
             missing.append("confidence")
         try:
             datetime.fromisoformat(required["bull_target_date"])
@@ -148,7 +149,11 @@ def validate_result(
                 values = [float(probabilities[key]) for key in ("base", "bull", "bear")]
             except (KeyError, TypeError, ValueError):
                 values = []
-            if len(values) != 3 or any(value < 0 or value > 1 for value in values) or abs(sum(values) - 1.0) > 0.02:
+            if (
+                len(values) != 3
+                or any(not math.isfinite(value) or value < 0 or value > 1 for value in values)
+                or abs(sum(values) - 1.0) > 0.02
+            ):
                 missing.append("scenario_probabilities")
         if missing:
             raise ValueError(f"agent thesis missing or invalid required fields: {', '.join(sorted(set(missing)))}")

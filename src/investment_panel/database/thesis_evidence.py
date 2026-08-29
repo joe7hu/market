@@ -41,6 +41,7 @@ def thesis_source_evidence(
                    ) AS source_rank
             FROM raw.content_item_instrument link
             JOIN raw.content_item item ON item.id = link.content_item_id
+            JOIN ingest.run ingest_run ON ingest_run.id = item.ingest_run_id
             JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
             JOIN ingest.source source ON source.id = item.source_id
             LEFT JOIN LATERAL (
@@ -54,6 +55,9 @@ def thesis_source_evidence(
             WHERE regexp_replace(upper(instrument.symbol), '[.]+$', '') = ANY(%s)
               AND source.enabled
               AND source.operational_state = 'active'
+              AND ingest_run.status IN ('succeeded', 'partial')
+              AND ingest_run.finished_at IS NOT NULL
+              AND ingest_run.finished_at <= %s
               AND item.observed_at <= %s
               AND COALESCE(item.published_at, item.observed_at) <= %s
         ), balanced AS (
@@ -65,7 +69,7 @@ def thesis_source_evidence(
                title, summary, sentiment, observed_at, reference
         FROM balanced WHERE symbol_rank <= %s ORDER BY symbol, observed_at DESC
         """,
-        [cutoff, cutoff, symbols, cutoff, cutoff, max(1, int(max_per_symbol))],
+        [cutoff, cutoff, symbols, cutoff, cutoff, cutoff, max(1, int(max_per_symbol))],
     ).fetchall()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for raw_row in rows:

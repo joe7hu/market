@@ -474,7 +474,7 @@ class AgentRepository:
                 result = json.loads(process.stdout)
                 _validate_result(
                     str(task["task_kind"]), result,
-                    request=dict(task["request"] or {}), task_id=str(task["id"]),
+                    request=_task_request(task), task_id=str(task["id"]),
                 )
                 with self.runtime.transaction() as connection:
                     accept_agent_task_result(
@@ -520,7 +520,7 @@ class AgentRepository:
                 if not isinstance(result, dict):
                     raise ValueError("agent result must be an object")
                 _validate_result(
-                    kind, result, request=dict(task["request"] or {}), task_id=str(task["id"]),
+                    kind, result, request=_task_request(task), task_id=str(task["id"]),
                 )
                 with self.runtime.transaction() as connection:
                     accept_agent_task_result(
@@ -756,6 +756,7 @@ def _task_envelope(task: Any, stored: dict[str, Any]) -> dict[str, Any]:
         return {**envelope, "request": str(task["id"])}
     return {
         "request": str(task["id"]),
+        "request_id": str(task["id"]),
         "task": str(task["task_kind"]),
         "role": "expression-specialist" if str(task["task_kind"]) == "option_thesis" else "postmortem",
         "objective": "falsifiable_option_thesis" if str(task["task_kind"]) == "option_thesis" else "proposal_only",
@@ -767,11 +768,18 @@ def _task_envelope(task: Any, stored: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _task_input_payload(task: Any) -> dict[str, Any]:
+def _task_request(task: Any) -> dict[str, Any]:
     stored = dict(task["request"] or {})
+    if isinstance(stored.get("request_envelope"), dict):
+        return stored
+    return {**stored, "request_envelope": _task_envelope(task, stored)}
+
+
+def _task_input_payload(task: Any) -> dict[str, Any]:
+    stored = _task_request(task)
     return {
         **stored,
-        "request": _task_envelope(task, stored),
+        "request": stored["request_envelope"],
         "prompt": str(stored.get("custom_prompt") or ""),
         "context": stored.get("context") or stored.get("decision") or {},
         "guardrails": {"authority": stored.get("authority") or "advisory_only"},

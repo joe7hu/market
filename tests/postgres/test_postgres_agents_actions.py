@@ -14,12 +14,13 @@ import pytest
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.agents import AgentRepository, command_args
-from investment_panel.database.agent_process import market_day_start_utc
+from investment_panel.database.agent_process import market_day_start_utc, validate_result
 from investment_panel.database.agent_context import option_opportunity_context
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
+from investment_panel.database.thesis_evidence import thesis_source_evidence
 from investment_panel.jobs.option_agent_workflow import compact_agent_batch
 
 
@@ -322,6 +323,68 @@ def test_agent_repository_requeues_tasks_from_expired_worker_lease(postgres_dsn:
         runtime.close()
 
 
+def test_legacy_recovered_task_uses_dispatch_fallback_envelope(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    repository = AgentRepository(runtime)
+    try:
+        with runtime.transaction() as connection:
+            task = connection.execute(
+                """
+                INSERT INTO analysis.agent_task (task_kind, status, request, updated_at)
+                VALUES ('option_thesis', 'running', %s, %s) RETURNING id
+                """,
+                [
+                    Jsonb({"ticker": "NVDA", "trigger": "legacy-recovery", "authority": "hypothesis_only"}),
+                    datetime.now(UTC) - timedelta(minutes=30),
+                ],
+            ).fetchone()
+        task_id = str(task["id"])
+        assert repository.recover_stale_tasks(stale_after=timedelta(minutes=10)) == 1
+
+        def fake_run(*_args, input, **_kwargs):
+            request = json.loads(input)
+            envelope = request["request"]
+            result = _option_thesis_result(envelope["ticker"], request_id=envelope["request_id"])
+            result["evidence_refs"] = [{"type": "agent_request", "id": envelope["request_id"]}]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(result), stderr="")
+
+        monkeypatch.setattr("investment_panel.database.agents.subprocess.run", fake_run)
+        outcome = repository.run_queued(
+            "legacy-agent", limit=1, trigger="legacy-recovery", task_kinds=("option_thesis",),
+        )
+        assert outcome["completed"] == 1
+        with runtime.read() as connection:
+            recovered = connection.execute(
+                "SELECT status, result FROM analysis.agent_task WHERE id = %s", [task_id]
+            ).fetchone()
+        assert recovered["status"] == "completed"
+        assert recovered["result"]["request_id"] == task_id
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("confidence", float("nan")),
+        ("confidence", float("inf")),
+        ("bull_target_price", float("nan")),
+        ("bull_target_price", float("inf")),
+        ("scenario_probabilities", {"base": float("nan"), "bull": 0.25, "bear": 0.20}),
+        ("scenario_probabilities", {"base": float("inf"), "bull": 0.25, "bear": 0.20}),
+    ],
+)
+def test_option_agent_rejects_non_finite_numeric_fields(field: str, value: object) -> None:
+    result = _option_thesis_result("NVDA")
+    result[field] = value
+    with pytest.raises(ValueError):
+        validate_result("option_thesis", result)
+
+
 def test_agent_repository_claims_sequential_tasks_only_when_execution_starts(
     postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -544,6 +607,54 @@ def test_option_agent_rejects_unknown_reference_before_materialization(postgres_
             ).fetchone()
         assert task["status"] == "queued"
         assert task["result"] is None
+    finally:
+        runtime.close()
+
+
+def test_agent_context_excludes_source_from_future_ingest_run(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+    source_id = f"agent-cutoff-{uuid4().hex}"
+    try:
+        with runtime.transaction() as connection:
+            instrument = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('PITX', 'PITX', 'equity') "
+                "RETURNING id"
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO ingest.source
+                    (id, name, family, kind, operational_state, health_owner, freshness_seconds)
+                VALUES (%s, 'PITX test source', 'news', 'news', 'active', 'test', 3600)
+                """,
+                [source_id],
+            )
+            ingest_run = connection.execute(
+                """
+                INSERT INTO ingest.run (source_id, capability, started_at, finished_at, status)
+                VALUES (%s, 'news', %s, %s, 'succeeded') RETURNING id
+                """,
+                [source_id, cutoff - timedelta(hours=2), cutoff + timedelta(minutes=1)],
+            ).fetchone()
+            item = connection.execute(
+                """
+                INSERT INTO raw.content_item
+                    (source_id, ingest_run_id, source_key, kind, title, published_at, observed_at)
+                VALUES (%s, %s, 'pitx-before-cutoff', 'article', 'PITX before cutoff', %s, %s)
+                RETURNING id
+                """,
+                [source_id, ingest_run["id"], cutoff - timedelta(hours=3), cutoff - timedelta(hours=3)],
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO raw.content_item_instrument (content_item_id, instrument_id) VALUES (%s, %s)",
+                [item["id"], instrument["id"]],
+            )
+
+        with runtime.read() as connection:
+            evidence = thesis_source_evidence(connection, ["PITX"], cutoff=cutoff)
+        assert evidence.get("PITX", []) == []
     finally:
         runtime.close()
 
