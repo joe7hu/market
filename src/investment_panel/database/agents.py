@@ -10,7 +10,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.database.agent_context import option_opportunity_context, ticker_context
+from investment_panel.database.agent_context import ticker_context
 from investment_panel.database.agent_candidate_queue import current_candidate_payloads
 from investment_panel.database.agent_process import (
     agent_env,
@@ -81,8 +81,6 @@ class AgentRepository:
             resolved_context = ticker_context(
                 connection, symbol, context_sources=context_sources, cutoff=cutoff,
             )
-            if context:
-                resolved_context["option_opportunity"] = option_opportunity_context(context)
             request = {
                 "ticker": symbol,
                 "trigger": trigger,

@@ -250,6 +250,89 @@ def test_agent_queue_uses_the_exact_published_decision(postgres_dsn: str) -> Non
         runtime.close()
 
 
+def test_agent_queue_candidate_context_cannot_restore_missing_cutoff(
+    postgres_dsn: str,
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, asset_class) VALUES ('QMIS', 'equity')"
+            )
+        queued = AgentRepository(runtime).queue_thesis(
+            "QMIS", trigger="missing-cutoff-candidate", context={"ticker": "QMIS", "entry_price": 99.0},
+        )
+        assert queued["context"]["context_status"]["cutoff_available"] is False
+        assert queued["context"]["option_opportunity"] == {}
+    finally:
+        runtime.close()
+
+
+def test_agent_queue_candidate_context_cannot_bypass_future_publication(
+    postgres_dsn: str,
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+    try:
+        with runtime.transaction() as connection:
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, asset_class) VALUES ('QFUT', 'equity') RETURNING id"
+            ).fetchone()["id"]
+            decision_run = connection.execute(
+                """
+                INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+                VALUES ('queue-cutoff-test', %s, 'test', %s, %s, %s, 'succeeded')
+                RETURNING id
+                """,
+                [cutoff, "a" * 64, cutoff - timedelta(hours=2), cutoff - timedelta(hours=1)],
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO analysis.decision
+                    (run_id, decision_key, kind, instrument_id, as_of, state, score, input_hash)
+                VALUES (%s, 'queue-cutoff-decision', 'option', %s, %s, 'WATCH', 0.5, %s)
+                """,
+                [decision_run, instrument_id, cutoff, "b" * 64],
+            )
+            future_run = connection.execute(
+                """
+                INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+                VALUES ('queue-future-publication-test', %s, 'test', %s, %s, %s, 'succeeded')
+                RETURNING id
+                """,
+                [cutoff + timedelta(hours=1), "c" * 64, cutoff, cutoff + timedelta(hours=1)],
+            ).fetchone()["id"]
+            publication = connection.execute(
+                """
+                INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+                VALUES ('options-radar', %s, 'published', %s)
+                RETURNING id
+                """,
+                [future_run, cutoff + timedelta(hours=1)],
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO app.publication_item
+                    (publication_id, model_name, stable_key, rank, instrument_id, payload)
+                VALUES (%s, 'option_radar_opportunity', 'qfut-future', 1, %s, %s)
+                """,
+                [publication, instrument_id, Jsonb({"ticker": "QFUT", "entry_price": 123.0})],
+            )
+        queued = AgentRepository(runtime).queue_thesis(
+            "QFUT", trigger="future-publication-candidate", context={"ticker": "QFUT", "entry_price": 99.0},
+        )
+        assert queued["context"]["context_status"]["cutoff_available"] is True
+        assert queued["context"]["option_opportunity"] == {}
+    finally:
+        runtime.close()
+
+
 def test_agent_queue_tied_decisions_use_latest_identity(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
