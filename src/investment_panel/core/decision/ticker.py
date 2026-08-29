@@ -2661,7 +2661,7 @@ def _stock_impact_values(
         blockers.append("stock_beta_evidence_missing")
     adv = _number(evidence.get("avg_dollar_volume"))
     adv_participation = added_value / adv if adv and adv > 0 else None
-    days_to_exit = (owned / (adv * 0.1)) if adv and adv > 0 else None
+    days_to_exit = ((owned + added_value) / (adv * 0.1)) if adv and adv > 0 else None
     if adv_participation is None:
         blockers.append("stock_adv_evidence_missing")
     correlation_delta = _number(evidence.get("correlation_cluster_delta"))

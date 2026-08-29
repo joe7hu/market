@@ -142,7 +142,7 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
     assert impact.sector_concentration_delta == pytest.approx(impact.symbol_concentration_delta)
     assert impact.beta_delta == pytest.approx(1.1 * impact.symbol_concentration_delta)
     assert impact.adv_participation == pytest.approx(impact.symbol_concentration_delta * 100_000 / 1_000_000)
-    assert impact.days_to_exit == pytest.approx(0.01)
+    assert impact.days_to_exit == pytest.approx(0.11)
     assert impact.availability == "available"
 
 
