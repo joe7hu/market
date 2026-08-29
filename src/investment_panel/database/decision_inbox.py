@@ -1121,13 +1121,13 @@ def _validated_portfolio_risk_cards(
         normalized_id = card_id.strip()
         normalized_type = risk_type.strip().lower()
         normalized_severity = severity.strip().lower()
-        correlation_parts = normalized_id.split(":")
+        correlation_parts = card_id.split(":")
         canonical_identity = (
             (normalized_id == "largest-position" and normalized_type == "concentration")
             or (
                 len(correlation_parts) == 3
                 and correlation_parts[0] == "correlation"
-                and all(part.strip() for part in correlation_parts[1:])
+                and all(part and not any(character.isspace() for character in part) for part in correlation_parts[1:])
                 and normalized_type == "correlation"
             )
             or (normalized_id == "portfolio-drawdown" and normalized_type == "drawdown")
@@ -1162,6 +1162,10 @@ def _validated_portfolio_risk_cards(
             if not isinstance(symbol, str) or not symbol.strip():
                 return None
             normalized_symbols.add(symbol.strip().upper())
+        if normalized_type == "correlation":
+            correlation_symbols = set(correlation_parts[1:])
+            if len(correlation_symbols) != 2 or correlation_symbols != normalized_symbols:
+                return None
 
         card_times: dict[str, datetime] = {}
         for name in ("as_of", "available_at", "updated_at", "created_at"):

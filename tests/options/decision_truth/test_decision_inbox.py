@@ -1013,8 +1013,10 @@ def test_current_portfolio_risk_requires_critical_canonical_cards_and_resolves_a
         cards = [
             _risk_card(),
             _risk_card("portfolio-drawdown"),
-            _risk_card("correlation:TSLA:QQQ"),
         ]
+        correlation_card = _risk_card("correlation:TSLA:QQQ")
+        correlation_card["symbols"] = ["TSLA", "QQQ"]
+        cards.append(correlation_card)
         assert inbox.sync_current_portfolio_risk(cards, summary, now=reference) == {"breached": 3, "resolved": 0}
         assert inbox.sync_current_portfolio_risk(cards[:2], summary, now=reference) == {"breached": 0, "resolved": 1}
         assert inbox.sync_current_portfolio_risk([], summary, now=reference) == {"breached": 0, "resolved": 2}
@@ -1056,6 +1058,11 @@ def test_current_portfolio_risk_rejects_ambiguous_input_and_rolls_back(
         future_summary["available_at"] = reference + timedelta(minutes=1)
         unknown = _risk_card("provider-failure")
         malformed_correlation = _risk_card("correlation:TSLA")
+        repeated_correlation = _risk_card("correlation:TSLA:TSLA")
+        whitespace_correlation = _risk_card("correlation:TSLA: QQQ")
+        whitespace_correlation["symbols"] = ["TSLA", "QQQ"]
+        mismatched_correlation = _risk_card("correlation:TSLA:QQQ")
+        mismatched_correlation["symbols"] = ["TSLA", "SPY"]
         mismatched = _risk_card()
         mismatched["risk_type"] = "drawdown"
         naive_summary = _risk_summary(reference)
@@ -1070,7 +1077,8 @@ def test_current_portfolio_risk_rejects_ambiguous_input_and_rolls_back(
         for invalid_cards, invalid_summary in (
             ([malformed], summary), (duplicate, summary), (nonfinite, summary), ([future], summary),
             ([card], future_summary), ([unknown], summary), ([malformed_correlation], summary),
-            ([mismatched], summary),
+            ([repeated_correlation], summary), ([whitespace_correlation], summary),
+            ([mismatched_correlation], summary), ([mismatched], summary),
             ([card], naive_summary), ([card], reversed_summary), ([naive_card], summary),
             ([reversed_card], summary),
         ):
