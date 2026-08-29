@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
+from investment_panel.database import decision_inbox as decision_inbox_module
 from investment_panel.database.decision_inbox import DecisionInboxRepository, telegram_message
-from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -81,153 +82,255 @@ def test_decision_inbox_rejects_operational_noise() -> None:
         repository.emit(event_type="provider_failure", payload={})
 
 
-def test_decision_inbox_does_not_read_a_future_publication(
+def _plan(
+    action: str = "BUY", *, eligibility: str = "ACTIONABLE", blocker: str | None = None,
+) -> SimpleNamespace:
+    actionable = eligibility == "ACTIONABLE"
+    return SimpleNamespace(
+        action=action,
+        eligibility=eligibility,
+        authorization_mode="PAPER" if actionable else "NONE",
+        data_quality="FRESH" if actionable else "INCOMPLETE",
+        trade_plan_id=f"trade-plan:{action.lower()}",
+        selected_expression_kind=SimpleNamespace(value="STOCK"),
+        selected_expression_identity=f"STOCK:{action}",
+        expiry=datetime(2026, 8, 20, tzinfo=UTC).date() if actionable else None,
+        rationale=f"{action} rationale",
+        primary_blocker=blocker,
+        next_action="Refresh the decision authority.",
+    )
+
+
+def _row(
+    published_at: datetime,
+    *,
+    ticker: str = "TSLA",
+    episode_id: str = "episode-1",
+    revision: str = "revision-1",
+    policy_version: str = "risk-policy.v2:test",
+    plan: SimpleNamespace | None = None,
+    plan_blocker: str | None = None,
+    lifecycle: str = "ACTIVE",
+    as_of: datetime | None = None,
+) -> dict[str, object]:
+    return {
+        "ticker": ticker,
+        "symbol": ticker,
+        "status": "published",
+        "contract_version": "ticker-decision.v1",
+        "as_of": as_of or published_at - timedelta(minutes=1),
+        "published_at": published_at,
+        "decision_revision": revision,
+        "policy_version": policy_version,
+        "opportunity_episode_id": episode_id,
+        "resolution": {"lifecycle": lifecycle},
+        "input_manifest": {},
+        "_plan": plan or _plan(),
+        "_plan_blocker": plan_blocker,
+    }
+
+
+def _stub_plan_authority(row: dict[str, object]) -> tuple[object | None, str | None]:
+    return row.get("_plan"), row.get("_plan_blocker")  # type: ignore[return-value]
+
+
+def _zero_transitions() -> dict[str, int]:
+    return {
+        "newly_actionable": 0,
+        "action_changed": 0,
+        "thesis_invalidated": 0,
+        "decision_authority_degraded": 0,
+    }
+
+
+def test_decision_inbox_canonical_activation_does_not_replay_existing_decisions(
     migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
-    analysis = AnalysisRepository(runtime)
     inbox = DecisionInboxRepository(runtime)
-    decision_id = str(uuid4())
     reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
     try:
-        run_id = analysis.start_run(
-            "inbox-pit-test", input_cutoff=reference, code_version="test",
-            inputs={"reference": reference.isoformat()},
-        )
-        analysis.finish_run(run_id, "succeeded")
-        publication_id = analysis.publish(
-            run_id,
-            "options-radar",
-            {
-                "option_radar_opportunity": [{
-                    "decision_id": decision_id,
-                    "symbol": "TSLA",
-                    "ticket": {
-                        "decision_id": decision_id,
-                        "ticket_version": 4,
-                        "lane": "radar",
-                        "state": "READY",
-                        "blockers": [],
-                        "expires_at": (reference + timedelta(hours=1)).isoformat(),
-                    },
-                }],
-            },
-        )
-        with runtime.transaction() as connection:
-            connection.execute(
-                "UPDATE app.publication SET published_at = %s WHERE id = %s::uuid",
-                [reference + timedelta(minutes=1), publication_id],
-            )
-
-        before = inbox.sync_current_tickets(now=reference)
-        after = inbox.sync_current_tickets(now=reference + timedelta(minutes=2))
-
-        assert before["ready"] == 0
-        assert after["ready"] == 1
+        old = _row(reference - timedelta(minutes=1), plan=_plan())
+        assert inbox.sync_current_decisions([old], now=reference) == _zero_transitions()
+        assert inbox.sync_current_decisions([old], now=reference + timedelta(minutes=2)) == _zero_transitions()
+        current = _row(reference + timedelta(minutes=1), plan=_plan())
+        result = inbox.sync_current_decisions([current], now=reference + timedelta(minutes=2))
+        assert result["newly_actionable"] == 1
     finally:
         runtime.close()
 
 
-def test_decision_inbox_persists_high_priority_research_without_notification(
+def test_decision_inbox_canonical_actionable_transition_emits_one_dry_run_outbox(
     migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
-    analysis = AnalysisRepository(runtime)
     inbox = DecisionInboxRepository(runtime)
-    decision_id = str(uuid4())
     reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
     try:
-        # Arm the lifecycle watermark before the new publication arrives.
-        assert inbox.sync_current_tickets(now=reference)["high_priority_research"] == 0
-        run_id = analysis.start_run(
-            "inbox-research-test", input_cutoff=reference, code_version="test",
-            inputs={"reference": reference.isoformat()},
-        )
-        analysis.finish_run(run_id, "succeeded")
-        publication_id = analysis.publish(
-            run_id,
-            "options-radar",
-            {
-                "option_radar_opportunity": [{
-                    "decision_id": decision_id,
-                    "symbol": "NBIS",
-                    "state": "SETUP",
-                    "tier": "Research",
-                    "ticket": {
-                        "decision_id": decision_id,
-                        "ticket_version": 8,
-                        "lane": "radar",
-                        "state": "RESEARCH",
-                        "blockers": ["calibrated_probability_required"],
-                        "expires_at": (reference + timedelta(minutes=2)).isoformat(),
-                    },
-                }],
-            },
-        )
-        with runtime.transaction() as connection:
-            connection.execute(
-                "UPDATE app.publication SET published_at = %s WHERE id = %s::uuid",
-                [reference + timedelta(minutes=1), publication_id],
-            )
-
-        created = inbox.sync_current_tickets(now=reference + timedelta(minutes=2))
-        page = inbox.rows()
+        assert inbox.sync_current_decisions([], now=reference) == _zero_transitions()
+        row = _row(reference + timedelta(minutes=1), plan=_plan())
+        assert inbox.sync_current_decisions([row], now=reference + timedelta(minutes=2))["newly_actionable"] == 1
+        assert inbox.sync_current_decisions([row], now=reference + timedelta(minutes=3)) == _zero_transitions()
+        item = inbox.rows()["items"][0]
+        assert item["event_type"] == "ready"
+        assert item["payload"]["state_transition"] == "newly_actionable"
+        assert item["payload"]["trade_plan_id"] == "trade-plan:buy"
+        assert item["payload"]["authorization_mode"] == "PAPER"
+        assert "entry" not in item["payload"]
         with runtime.read() as connection:
-            outbox_count = connection.execute("SELECT count(*) AS count FROM app.notification_outbox").fetchone()["count"]
-
-        assert created["high_priority_research"] == 1
-        assert created["ready"] == 0
-        assert page["items"][0]["event_type"] == "high_priority_research"
-        assert page["items"][0]["payload"]["state"] == "HIGH_PRIORITY_RESEARCH"
-        assert outbox_count == 0
+            assert connection.execute("SELECT count(*) AS count FROM app.notification_outbox").fetchone()["count"] == 1
+        assert inbox.deliver_outbox(sender=None, dry_run=True) == {"sent": 0, "failed": 0, "dry_run": 1}
     finally:
         runtime.close()
 
 
-def test_decision_inbox_arms_without_replaying_existing_ticket(
+def test_decision_inbox_action_change_resolves_prior_actionable_item(
     migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
-    analysis = AnalysisRepository(runtime)
     inbox = DecisionInboxRepository(runtime)
-    decision_id = str(uuid4())
     reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
     try:
-        run_id = analysis.start_run(
-            "inbox-bootstrap-test", input_cutoff=reference, code_version="test",
-            inputs={"reference": reference.isoformat()},
+        inbox.sync_current_decisions([], now=reference)
+        first = _row(reference + timedelta(minutes=1), plan=_plan("BUY"))
+        second = _row(
+            reference + timedelta(minutes=2),
+            revision="revision-2", plan=_plan("HOLD"),
         )
-        analysis.finish_run(run_id, "succeeded")
-        publication_id = analysis.publish(
-            run_id,
-            "options-radar",
-            {
-                "option_radar_opportunity": [{
-                    "decision_id": decision_id,
-                    "symbol": "TSLA",
-                    "ticket": {
-                        "decision_id": decision_id,
-                        "ticket_version": 4,
-                        "lane": "radar",
-                        "state": "READY",
-                        "blockers": [],
-                        "expires_at": (reference + timedelta(hours=1)).isoformat(),
-                    },
-                }],
-            },
+        inbox.sync_current_decisions([first], now=reference + timedelta(minutes=3))
+        result = inbox.sync_current_decisions([second], now=reference + timedelta(minutes=3))
+        assert result["action_changed"] == 1
+        with runtime.read() as connection:
+            statuses = connection.execute(
+                "SELECT payload->>'state_transition' AS transition, status FROM app.decision_inbox_item ORDER BY created_at"
+            ).fetchall()
+        assert [(row["transition"], row["status"]) for row in statuses] == [
+            ("newly_actionable", "resolved"), ("action_changed", "active"),
+        ]
+    finally:
+        runtime.close()
+
+
+def test_decision_inbox_invalidated_transition_is_no_trade_and_resolves_prior(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        inbox.sync_current_decisions([], now=reference)
+        actionable = _row(reference + timedelta(minutes=1), plan=_plan("BUY"))
+        invalidated = _row(
+            reference + timedelta(minutes=2), revision="revision-2", lifecycle="INVALIDATED",
+            plan=_plan("NO_TRADE", eligibility="BLOCKED", blocker="thesis_invalidated"),
         )
-        with runtime.transaction() as connection:
-            connection.execute(
-                "UPDATE app.publication SET published_at = %s WHERE id = %s::uuid",
-                [reference - timedelta(minutes=1), publication_id],
-            )
+        inbox.sync_current_decisions([actionable], now=reference + timedelta(minutes=3))
+        result = inbox.sync_current_decisions([invalidated], now=reference + timedelta(minutes=3))
+        assert result["thesis_invalidated"] == 1
+        item = inbox.rows()["items"][0]
+        assert item["event_type"] == "revoked"
+        assert item["payload"]["action"] == "NO_TRADE"
+        assert item["payload"]["state"] == "NO_TRADE"
+        assert item["payload"]["lifecycle"] == "INVALIDATED"
+        assert "selected_expression_kind" not in item["payload"]
+        assert [row["status"] for row in inbox.rows()["items"]] == ["active", "resolved"]
+    finally:
+        runtime.close()
 
-        result = inbox.sync_current_tickets(now=reference)
 
-        assert result == {"ready": 0, "revoked": 0, "expired": 0, "high_priority_research": 0}
+def test_decision_inbox_lost_plan_authority_degrades_fail_closed(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        inbox.sync_current_decisions([], now=reference)
+        actionable = _row(reference + timedelta(minutes=1), plan=_plan("BUY"))
+        degraded = _row(
+            reference + timedelta(minutes=2), revision="revision-2", plan=_plan("BUY"),
+            plan_blocker="ranking_publication_mismatch",
+        )
+        inbox.sync_current_decisions([actionable], now=reference + timedelta(minutes=3))
+        result = inbox.sync_current_decisions([degraded], now=reference + timedelta(minutes=3))
+        assert result["decision_authority_degraded"] == 1
+        assert inbox.sync_current_decisions([degraded], now=reference + timedelta(minutes=4)) == _zero_transitions()
+        item = inbox.rows()["items"][0]
+        payload = item["payload"]
+        assert item["event_type"] == "revoked"
+        assert payload["action"] == "NO_TRADE"
+        assert payload["authorization_mode"] == "NONE"
+        assert payload["primary_blocker"] == "ranking_publication_mismatch"
+        assert payload["blockers"] == ["ranking_publication_mismatch"]
+        assert payload["next_action"]
+        assert "trade_plan_id" not in payload
+        assert "selected_expression_kind" not in payload
+        assert "entry" not in payload
+        assert [row["status"] for row in inbox.rows()["items"]] == ["active", "resolved"]
+    finally:
+        runtime.close()
+
+
+def test_decision_inbox_blocked_episode_without_prior_actionability_is_silent(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        inbox.sync_current_decisions([], now=reference)
+        blocked = _row(
+            reference + timedelta(minutes=1),
+            plan=_plan("NO_TRADE", eligibility="BLOCKED", blocker="current_price"),
+        )
+        assert inbox.sync_current_decisions([blocked], now=reference + timedelta(minutes=2)) == _zero_transitions()
+        assert inbox.rows()["items"] == []
+    finally:
+        runtime.close()
+
+
+def test_decision_inbox_rejects_invalid_current_rows_and_duplicate_authority(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(decision_inbox_module, "plan_authority", _stub_plan_authority)
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        inbox.sync_current_decisions([], now=reference)
+        published = reference + timedelta(minutes=1)
+        invalid = [
+            _row(published, ticker="MISSING_EPISODE", episode_id=""),
+            _row(published, ticker="MISSING_REVISION", revision=""),
+            _row(published, ticker="MISSING_POLICY", policy_version=""),
+            _row(published + timedelta(minutes=5), ticker="FUTURE", as_of=published + timedelta(minutes=5)),
+            _row(published, ticker="MALFORMED", plan=_plan()),
+        ]
+        invalid[-1]["resolution"] = "not-an-object"
+        duplicate = _row(published, ticker="DUPLICATE", episode_id="episode-a", plan=_plan())
+        duplicate_other = _row(published, ticker="DUPLICATE", episode_id="episode-b", plan=_plan())
+        result = inbox.sync_current_decisions([*invalid, duplicate, duplicate_other], now=reference + timedelta(minutes=2))
+        assert result == _zero_transitions()
         assert inbox.rows()["items"] == []
     finally:
         runtime.close()

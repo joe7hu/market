@@ -349,7 +349,7 @@ class TickerDecisionRepository:
                 for horizon_sessions in sessions:
                     outcome = self._evaluate(row, horizon, horizon_sessions, reference)
                     selected_expression = dict(row.get("selected_expression") or {})
-                    plan, plan_blocker = _plan_authority(row)
+                    plan, plan_blocker = plan_authority(row)
                     outcome["trade_plan_id"] = plan.trade_plan_id if plan else None
                     outcome["plan_authority"] = "canonical" if plan else "legacy_or_invalid"
                     outcome["plan_blocker"] = plan_blocker
@@ -453,7 +453,7 @@ class TickerDecisionRepository:
         for decision_rows in by_decision.values():
             evaluated += 1
             decision_row = decision_rows[0]
-            plan, plan_blocker = _plan_authority(decision_row)
+            plan, plan_blocker = plan_authority(decision_row)
             if plan is None:
                 excluded_legacy += 1
                 if plan_blocker:
@@ -1147,7 +1147,7 @@ class TickerDecisionRepository:
             )
 
 
-def _plan_authority(row: Any) -> tuple[TradePlan | None, str | None]:
+def plan_authority(row: Any) -> tuple[TradePlan | None, str | None]:
     """Resolve the persisted plan and its copied ranking authority exactly once."""
 
     try:
@@ -1833,6 +1833,6 @@ def _jsonable(value: Any) -> Any:
 
 
 __all__ = [
-    "HORIZON_SESSIONS", "TickerDecisionRepository", "paper_execution_for_plan",
+    "HORIZON_SESSIONS", "TickerDecisionRepository", "paper_execution_for_plan", "plan_authority",
     "select_current_outcome_attributions",
 ]

@@ -14,6 +14,8 @@ from urllib.request import Request, urlopen
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.decision_inbox import DecisionInboxRepository
+from investment_panel.database.panel_models import load_postgres_tables
+from investment_panel.database.runtime import JOB_PROFILE
 
 
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
@@ -21,8 +23,9 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     settings = config.analysis.options_decision_system
     if not settings.decision_inbox_enabled:
         return {"status": "skipped", "reason": "decision_inbox_enabled_false"}
+    tables, _ = load_postgres_tables(config, ("ticker_decisions",), runtime_profile=JOB_PROFILE)
     repository = DecisionInboxRepository(runtime_for_config(config))
-    synced = repository.sync_current_tickets()
+    synced = repository.sync_current_decisions(tables["ticker_decisions"])
     if not settings.telegram_notifications_enabled:
         return {"status": "ok", "synced": synced, "delivery": {"skipped": 1, "reason": "telegram_notifications_enabled_false"}}
     dry_run = bool(settings.telegram_notifications_dry_run)

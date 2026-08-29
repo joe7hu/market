@@ -14,6 +14,7 @@ from typing import Any, Callable
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.ticker_decisions import plan_authority
 
 
 INBOX_EVENT_TYPES = frozenset({
@@ -23,6 +24,11 @@ INBOX_EVENT_TYPES = frozenset({
 # Research delivery is durable in the Inbox but can never become a paper-order
 # or Telegram path.  READY is the only option ticket state that may notify.
 TELEGRAM_EVENT_TYPES = INBOX_EVENT_TYPES - {"high_priority_research"}
+CANONICAL_TRANSITIONS = frozenset({
+    "newly_actionable", "action_changed", "thesis_invalidated", "decision_authority_degraded",
+})
+ACTIONABLE_TRANSITIONS = frozenset({"newly_actionable", "action_changed"})
+CANONICAL_STATE_KEY = "canonical_decision_transition"
 
 
 class DecisionInboxRepository:
@@ -40,6 +46,7 @@ class DecisionInboxRepository:
         lane: str | None = None,
         severity: str = "info",
         enqueue_telegram: bool = True,
+        dedupe_key: str | None = None,
     ) -> dict[str, Any]:
         normalized_type = event_type.strip().lower()
         if normalized_type not in INBOX_EVENT_TYPES:
@@ -49,7 +56,7 @@ class DecisionInboxRepository:
             raise ValueError("unsupported paper lane")
         if severity not in {"info", "warning", "critical"}:
             raise ValueError("unsupported decision Inbox severity")
-        key = _dedupe_key(
+        key = dedupe_key or _dedupe_key(
             event_type=normalized_type,
             opportunity_id=opportunity_id,
             ticket_version=ticket_version,
@@ -126,185 +133,132 @@ class DecisionInboxRepository:
         next_cursor = _encode_cursor(page[-1]) if len(values) > bounded_limit and page else None
         return {"items": page, "count": len(page), "next_cursor": next_cursor}
 
-    def sync_current_tickets(self, *, now: datetime | None = None) -> dict[str, int]:
-        """Create lifecycle events after the Inbox has observed its first state.
-
-        The first scheduler pass is an activation marker, not a replay of every
-        old ticket in a retained publication.  That prevents a new Inbox from
-        treating historical SETUPs and already-expired tickets as fresh alerts.
-        """
+    def sync_current_decisions(
+        self, rows: list[dict[str, Any]], *, now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Record post-activation transitions from the canonical ticker model."""
 
         reference = _utc(now)
-        activation_at, is_bootstrap = self._ticket_sync_activation(reference)
-        created = {"ready": 0, "revoked": 0, "expired": 0, "high_priority_research": 0}
+        activation_at, is_bootstrap = self._decision_sync_activation(reference)
+        created = {transition: 0 for transition in CANONICAL_TRANSITIONS}
         if is_bootstrap:
             return created
-        with self.runtime.read() as connection:
-            rows = connection.execute(
-                """
-                SELECT item.payload
-                FROM app.publication publication
-                JOIN app.publication_content_item item ON item.publication_id = publication.id
-                WHERE publication.status = 'published'
-                  AND publication.published_at <= %s
-                  AND publication.published_at >= %s
-                  AND (
-                    (publication.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
-                    OR
-                    (publication.scope = 'options-decision-system' AND item.model_name = 'options_decision_candidate')
-                  )
-                """,
-                [reference, activation_at],
-            ).fetchall()
-            recovery_rows = connection.execute(
-                """
-                SELECT signal.ticket, signal.decision_id::text, signal.status,
-                       signal.available_at, instrument.symbol, signal.strategy_key
-                FROM analysis.option_event_signal signal
-                JOIN analysis.option_event event ON event.id = signal.event_id
-                JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
-                WHERE event.status = 'active'
-                  AND signal.status IN ('shadow', 'ticketed', 'entered', 'partial_exited')
-                  AND signal.ticket->>'state' = 'READY'
-                  AND signal.available_at <= %s
-                  AND signal.available_at >= %s
-                ORDER BY signal.available_at DESC, signal.id DESC
-                LIMIT 100
-                """,
-                [reference, activation_at],
-            ).fetchall()
-        current: dict[tuple[str, int], dict[str, Any]] = {}
-        for row in rows:
-            payload = dict(row["payload"] or {})
-            ticket = dict(payload.get("ticket") or {})
-            decision_id = str(ticket.get("decision_id") or payload.get("decision_id") or "")
-            version = _int(ticket.get("ticket_version"))
-            if not decision_id or version is None:
+        for row in _current_rows_after_activation(rows, activation_at, reference):
+            episode_id = str(row["opportunity_episode_id"])
+            revision = str(row["decision_revision"])
+            policy_version = str(row["policy_version"])
+            try:
+                plan, plan_blocker = plan_authority(row)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                plan, plan_blocker = None, "ticker_decision_lineage_invalid"
+            exact_authority = plan is not None and plan_blocker is None
+            raw_resolution = row.get("resolution")
+            if not isinstance(raw_resolution, dict):
                 continue
-            expires_at = _parse_time(ticket.get("expires_at") or (ticket.get("entry") or {}).get("valid_until"))
-            ready = str(ticket.get("state") or "").upper() == "READY" and not list(ticket.get("blockers") or [])
-            if ready and expires_at is not None and expires_at <= reference:
-                expired_ticket = {**ticket, "state": "EXPIRED"}
-                current[(decision_id, version)] = {"payload": payload, "ticket": expired_ticket, "ready": False}
-                event = self.emit(
-                    event_type="expired", payload=_ticket_event_payload(payload, expired_ticket),
-                    opportunity_id=decision_id, ticket_version=version,
-                    lane=str(ticket.get("lane") or "radar"), severity="warning",
-                )
-                created["expired"] += int(event["created"])
-                if event["created"]:
-                    self._resolve_ready_item(decision_id, version)
-            elif ready:
-                current[(decision_id, version)] = {"payload": payload, "ticket": ticket, "ready": True}
-                event = self.emit(
-                    event_type="ready", payload=_ticket_event_payload(payload, ticket),
-                    opportunity_id=decision_id, ticket_version=version,
-                    lane=str(ticket.get("lane") or "radar"), severity="info",
-                )
-                created["ready"] += int(event["created"])
-            else:
-                current[(decision_id, version)] = {"payload": payload, "ticket": ticket, "ready": False}
-                if _is_high_priority_research(payload, ticket):
-                    research_ticket = {**ticket, "state": "HIGH_PRIORITY_RESEARCH"}
-                    event = self.emit(
-                        event_type="high_priority_research",
-                        payload={
-                            **_ticket_event_payload(payload, research_ticket),
-                            "reason": "Timely research setup; execution remains blocked until deterministic gates clear.",
-                        },
-                        opportunity_id=decision_id,
-                        ticket_version=version,
-                        lane=str(ticket.get("lane") or "radar"),
-                        severity="info",
-                        enqueue_telegram=False,
-                    )
-                    created["high_priority_research"] += int(event["created"])
-        for row in recovery_rows:
-            ticket = dict(row["ticket"] or {})
-            decision_id = str(ticket.get("decision_id") or row["decision_id"] or "")
-            version = _int(ticket.get("ticket_version"))
-            if not decision_id or version is None:
+            resolution = dict(raw_resolution)
+            lifecycle = str(resolution.get("lifecycle") or "").upper()
+            prior = self._latest_canonical_state(episode_id, activation_at)
+            transition: str | None = None
+            if exact_authority and lifecycle == "INVALIDATED":
+                transition = "thesis_invalidated" if prior and prior["actionable"] else None
+            elif exact_authority and plan.eligibility == "ACTIONABLE":
+                if not prior or not prior["actionable"]:
+                    transition = "newly_actionable"
+                elif str(prior.get("action") or "") != plan.action:
+                    transition = "action_changed"
+            elif prior and prior["actionable"]:
+                transition = "decision_authority_degraded"
+            if transition is None:
                 continue
-            recovery_ticket = {**ticket, "lane": "recovery"}
-            ready = not list(recovery_ticket.get("blockers") or [])
-            expires_at = _parse_time(
-                recovery_ticket.get("expires_at")
-                or (recovery_ticket.get("entry") or {}).get("valid_until")
+            blocker = None
+            next_action = None
+            if transition == "decision_authority_degraded":
+                blocker = (
+                    plan.primary_blocker if exact_authority and plan is not None
+                    else plan_blocker
+                ) or "trade_plan_authority_invalid"
+                next_action = "Refresh and republish the canonical TradePlan authority."
+                if exact_authority and plan is not None:
+                    next_action = plan.next_action
+            if transition != "newly_actionable":
+                self._resolve_canonical_actionable_item(episode_id)
+            payload = _canonical_event_payload(
+                row,
+                plan if exact_authority else None,
+                transition=transition,
+                published_at=_parse_time(row["published_at"]),
+                blocker=blocker,
+                next_action=next_action,
             )
-            payload = {
-                "decision_id": decision_id,
-                "ticker": str(row["symbol"]),
-                "structure": recovery_ticket.get("structure"),
-                "top_reasons": [str(row["strategy_key"])],
-                "ticket": recovery_ticket,
-            }
-            if ready and expires_at is not None and expires_at <= reference:
-                expired_ticket = {**recovery_ticket, "state": "EXPIRED"}
-                current[(decision_id, version)] = {"payload": payload, "ticket": expired_ticket, "ready": False}
-                event = self.emit(
-                    event_type="expired", payload=_ticket_event_payload(payload, expired_ticket),
-                    opportunity_id=decision_id, ticket_version=version,
-                    lane="recovery", severity="warning",
-                )
-                created["expired"] += int(event["created"])
-                if event["created"]:
-                    self._resolve_ready_item(decision_id, version)
-            elif ready:
-                current[(decision_id, version)] = {"payload": payload, "ticket": recovery_ticket, "ready": True}
-                event = self.emit(
-                    event_type="ready", payload=_ticket_event_payload(payload, recovery_ticket),
-                    opportunity_id=decision_id, ticket_version=version,
-                    lane="recovery", severity="info",
-                )
-                created["ready"] += int(event["created"])
-            else:
-                current[(decision_id, version)] = {"payload": payload, "ticket": recovery_ticket, "ready": False}
-        with self.runtime.read() as connection:
-            active_ready = connection.execute(
-                """
-                SELECT opportunity_id::text, ticket_version, payload
-                FROM app.decision_inbox_item
-                WHERE event_type = 'ready' AND status = 'active'
-                  AND opportunity_id IS NOT NULL AND ticket_version IS NOT NULL
-                """
-            ).fetchall()
-        for prior in active_ready:
-            key = (str(prior["opportunity_id"]), int(prior["ticket_version"]))
-            current_ticket = current.get(key)
-            if current_ticket and bool(current_ticket.get("ready")):
-                continue
-            prior_payload = dict(prior["payload"] or {})
             event = self.emit(
-                event_type="revoked",
-                payload={**prior_payload, "state": "REVOKED", "reason": "ticket_not_current_or_not_ready"},
-                opportunity_id=key[0], ticket_version=key[1],
-                lane=str(prior_payload.get("lane") or "radar"), severity="warning",
+                event_type="ready" if transition in ACTIONABLE_TRANSITIONS else "revoked",
+                payload=payload,
+                severity="info" if transition in ACTIONABLE_TRANSITIONS else "warning",
+                dedupe_key=_canonical_dedupe_key(episode_id, revision, transition, policy_version),
             )
-            created["revoked"] += int(event["created"])
-            if event["created"]:
-                self._resolve_ready_item(key[0], key[1])
+            created[transition] += int(event["created"])
         return created
 
-    def _ticket_sync_activation(self, reference: datetime) -> tuple[datetime, bool]:
-        """Return the durable lifecycle watermark and whether it was just armed."""
+    def _decision_sync_activation(self, reference: datetime) -> tuple[datetime, bool]:
+        """Return the durable canonical decision watermark and bootstrap state."""
 
         with self.runtime.transaction() as connection:
             inserted = connection.execute(
                 """
                 INSERT INTO app.decision_inbox_sync_state (state_key, activated_at)
-                VALUES ('ticket_lifecycle', %s)
+                VALUES (%s, %s)
                 ON CONFLICT (state_key) DO NOTHING
                 RETURNING activated_at
                 """,
-                [reference],
+                [CANONICAL_STATE_KEY, reference],
             ).fetchone()
             if inserted is not None:
                 return inserted["activated_at"], True
             existing = connection.execute(
-                "SELECT activated_at FROM app.decision_inbox_sync_state WHERE state_key = 'ticket_lifecycle'"
+                "SELECT activated_at FROM app.decision_inbox_sync_state WHERE state_key = %s",
+                [CANONICAL_STATE_KEY],
             ).fetchone()
             assert existing is not None
             return existing["activated_at"], False
+
+    def _latest_canonical_state(self, episode_id: str, activation_at: datetime) -> dict[str, Any] | None:
+        with self.runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload
+                FROM app.decision_inbox_item
+                WHERE payload->>'opportunity_episode_id' = %s
+                  AND payload->>'state_transition' IN (
+                      'newly_actionable', 'action_changed',
+                      'thesis_invalidated', 'decision_authority_degraded'
+                  )
+                  AND created_at >= %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 20
+                """,
+                [episode_id, activation_at],
+            ).fetchall()
+        for row in rows:
+            payload = dict(row["payload"] or {})
+            if payload.get("state_transition") in CANONICAL_TRANSITIONS:
+                return {
+                    "actionable": str(payload.get("state") or "").upper() == "ACTIONABLE",
+                    "action": payload.get("action"),
+                }
+        return None
+
+    def _resolve_canonical_actionable_item(self, episode_id: str) -> None:
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE app.decision_inbox_item
+                SET status = 'resolved', resolved_at = now()
+                WHERE status = 'active' AND event_type = 'ready'
+                  AND payload->>'opportunity_episode_id' = %s
+                  AND payload->>'state_transition' IN ('newly_actionable', 'action_changed')
+                """,
+                [episode_id],
+            )
 
     def _resolve_ready_item(self, decision_id: str, ticket_version: int) -> None:
         with self.runtime.transaction() as connection:
@@ -435,6 +389,28 @@ class DecisionInboxRepository:
 def telegram_message(payload: dict[str, Any]) -> str:
     """Format an owner message without secrets or full evidence packets."""
 
+    if payload.get("state_transition") in CANONICAL_TRANSITIONS:
+        ticker = str(payload.get("ticker") or payload.get("symbol") or "TICKER")
+        transition = str(payload["state_transition"])
+        action = str(payload.get("action") or "NO_TRADE").upper()
+        parts = [f"{ticker} · {transition}", f"Action: {action}"]
+        expression = str(payload.get("selected_expression_kind") or "").strip()
+        if expression and action != "NO_TRADE":
+            parts.append(f"Expression: {expression}")
+        expires = payload.get("expires_at")
+        if expires:
+            parts.append(f"Valid until: {expires}")
+        blocker = str(payload.get("primary_blocker") or "").strip()
+        if blocker:
+            parts.append(f"Blocker: {blocker}")
+        next_action = str(payload.get("next_action") or "").strip()
+        if next_action:
+            parts.append(f"Next: {next_action}")
+        detail_url = str(payload.get("detail_url") or "").strip()
+        if detail_url:
+            parts.append(detail_url)
+        return "\n".join(parts)[:4096]
+
     parts = [
         f"{str(payload.get('symbol') or 'OPTION')} · {str(payload.get('structure') or 'option').replace('_', ' ')} · {str(payload.get('lane') or 'radar')}",
         str(payload.get("state") or payload.get("event_type") or "UPDATE").upper(),
@@ -460,6 +436,104 @@ def telegram_message(payload: dict[str, Any]) -> str:
     return "\n".join(parts)[:4096]
 
 
+def _current_rows_after_activation(
+    rows: list[dict[str, Any]], activation_at: datetime, reference: datetime,
+) -> list[dict[str, Any]]:
+    by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for raw in rows:
+        try:
+            row = dict(raw)
+        except (TypeError, ValueError):
+            continue
+        ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+        episode_id = str(row.get("opportunity_episode_id") or "").strip()
+        revision = str(row.get("decision_revision") or "").strip()
+        policy_version = str(row.get("policy_version") or "").strip()
+        published_at = _parse_time(row.get("published_at"))
+        if not ticker or not episode_id or not revision or not policy_version or published_at is None:
+            continue
+        if published_at <= activation_at or published_at > reference:
+            continue
+        as_of = _parse_time(row.get("as_of"))
+        if as_of is not None and as_of > reference:
+            continue
+        if row.get("status") is not None and str(row["status"]).lower() != "published":
+            continue
+        by_ticker.setdefault(ticker, []).append(row)
+    unique = [items[0] for items in by_ticker.values() if len(items) == 1]
+    by_episode: dict[str, list[dict[str, Any]]] = {}
+    for row in unique:
+        by_episode.setdefault(str(row["opportunity_episode_id"]), []).append(row)
+    duplicate_episodes = {
+        episode_id for episode_id, items in by_episode.items() if len(items) > 1
+    }
+    return sorted(
+        (row for row in unique if str(row["opportunity_episode_id"]) not in duplicate_episodes),
+        key=lambda row: (
+            _parse_time(row["published_at"]) or datetime.min.replace(tzinfo=UTC),
+            str(row.get("ticker") or row.get("symbol") or ""),
+        ),
+    )
+
+
+def _canonical_event_payload(
+    row: dict[str, Any],
+    plan: Any,
+    *,
+    transition: str,
+    published_at: datetime | None,
+    blocker: str | None,
+    next_action: str | None,
+) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+    payload: dict[str, Any] = {
+        "ticker": ticker,
+        "symbol": ticker,
+        "opportunity_episode_id": str(row["opportunity_episode_id"]),
+        "decision_revision": str(row["decision_revision"]),
+        "policy_version": str(row["policy_version"]),
+        "state_transition": transition,
+        "state": "ACTIONABLE" if transition in ACTIONABLE_TRANSITIONS else "NO_TRADE",
+        "action": plan.action if transition in ACTIONABLE_TRANSITIONS and plan is not None else "NO_TRADE",
+        "authorization_mode": (
+            plan.authorization_mode
+            if transition in ACTIONABLE_TRANSITIONS and plan is not None
+            else "NONE"
+        ),
+        "detail_url": f"/tickers/{ticker}" if ticker else "/tickers",
+    }
+    if published_at is not None:
+        payload["published_at"] = published_at.isoformat()
+    if transition in ACTIONABLE_TRANSITIONS and plan is not None:
+        payload.update({
+            "eligibility": plan.eligibility,
+            "data_quality": plan.data_quality,
+            "trade_plan_id": plan.trade_plan_id,
+            "selected_expression_kind": plan.selected_expression_kind.value,
+            "selected_expression_identity": plan.selected_expression_identity,
+            "expires_at": plan.expiry.isoformat() if plan.expiry is not None else None,
+            "rationale": _compact_text(plan.rationale),
+        })
+    elif transition == "thesis_invalidated":
+        payload["lifecycle"] = "INVALIDATED"
+    else:
+        payload.update({
+            "eligibility": "BLOCKED",
+            "primary_blocker": _compact_text(blocker),
+            "blockers": [_compact_text(blocker)],
+            "next_action": _compact_text(next_action),
+        })
+    return payload
+
+
+def _canonical_dedupe_key(
+    episode_id: str, decision_revision: str, transition: str, policy_version: str,
+) -> str:
+    return "canonical:" + json.dumps(
+        [episode_id, decision_revision, transition, policy_version], separators=(",", ":"),
+    )
+
+
 def _ticket_event_payload(source: dict[str, Any], ticket: dict[str, Any]) -> dict[str, Any]:
     blockers = [str(value) for value in ticket.get("blockers") or source.get("blockers") or [] if str(value)]
     entry = dict(ticket.get("entry") or {})
@@ -479,27 +553,14 @@ def _ticket_event_payload(source: dict[str, Any], ticket: dict[str, Any]) -> dic
     }
 
 
-def _is_high_priority_research(payload: dict[str, Any], ticket: dict[str, Any]) -> bool:
-    """Return true only for a published, non-executable setup worth preserving.
-
-    This is an observation/delivery classification.  It does not change the
-    ticket, quantity, paper status, or any promotion gate.
-    """
-
-    state = str(ticket.get("state") or payload.get("state") or "").upper()
-    source_state = str(payload.get("state") or "").upper()
-    tier = str(payload.get("tier") or "").lower()
-    data_status = str(payload.get("data_contract_status") or "").lower()
-    is_setup = state in {"RESEARCH", "SETUP"} or source_state == "SETUP"
-    is_research = tier in {"research", "setup", ""}
-    is_repair = data_status in {"repair_required", "invalid", "failed"}
-    return bool(is_setup and is_research and not is_repair)
-
-
 def _dedupe_key(*, event_type: str, opportunity_id: str | None, ticket_version: int | None, paper_order_id: str | None) -> str:
     owner = opportunity_id or paper_order_id or "global"
     version = "-" if ticket_version is None else str(ticket_version)
     return f"{owner}:{version}:{event_type}"
+
+
+def _compact_text(value: Any, limit: int = 500) -> str:
+    return str(value or "").strip()[:limit]
 
 
 def _safe_payload(value: dict[str, Any]) -> dict[str, Any]:
