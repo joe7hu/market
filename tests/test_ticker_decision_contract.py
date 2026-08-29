@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 
 import pytest
@@ -438,6 +438,33 @@ def test_stale_account_authority_blocks_resolution() -> None:
     assert decision.selected_expression.kind is ExpressionKind.CASH
     assert "portfolio_nav" in {request.field for request in decision.data_requests}
     assert any("update_broker_account" in request.why_it_matters for request in decision.data_requests)
+
+
+@pytest.mark.parametrize("observation_field", ("observed_at", "updated_at"))
+def test_stale_account_observation_does_not_use_fresh_ingestion_time(observation_field: str) -> None:
+    decision = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{
+                "symbol": "ACME",
+                "net_liquidation": 100_000,
+                "available_at": AS_OF,
+                observation_field: AS_OF - timedelta(hours=1),
+            }],
+            "decision_queue": [{
+                "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+                "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+                "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+    )
+
+    assert decision.resolution is not None
+    assert decision.resolution.action.value == "NO_TRADE"
+    assert decision.resolution.is_blocked is True
+    assert "fresh_postgres_account_facts_required" in decision.resolution.blockers
 
 
 def test_account_policy_blocker_suppresses_positive_expression_terms() -> None:

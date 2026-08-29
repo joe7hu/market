@@ -2663,10 +2663,10 @@ def build_ticker_decision(
         "buying_power": _pick(portfolio, "buying_power"),
         "account_source": _pick(portfolio, "account_source", "account_facts_source", "provider", "source_id"),
     }
-    account_observed_at = _pick(portfolio, "account_observed_at")
+    account_observed_at = _pick(portfolio, "account_observed_at", "observed_at", "updated_at")
     available_at = _pick(portfolio, "available_at")
-    if account_observed_at is None and available_at is None:
-        available_at = _pick(portfolio, "observed_at", "updated_at")
+    if account_observed_at is None:
+        account_observed_at = available_at
     if account_observed_at is not None:
         account_facts["account_observed_at"] = account_observed_at
     if available_at is not None:
