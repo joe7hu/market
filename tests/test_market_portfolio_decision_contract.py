@@ -253,6 +253,26 @@ def test_stock_impact_rejects_cross_container_target_identity_conflicts() -> Non
         type(impact).model_validate(payload)
 
 
+def test_unavailable_impact_rejects_target_identity_mismatch_before_early_return() -> None:
+    impact = _decision(
+        portfolio_replay=_valued_replay(stock_evidence=_complete_stock_evidence()),
+    ).portfolio_impacts[ExpressionKind.STOCK]
+    payload = impact.model_dump(mode="python")
+    payload.update({
+        "availability": "unavailable",
+        "availability_status": "missing",
+        "blockers": ("identity_mismatch",),
+    })
+    for location in ("portfolio_before", "portfolio_after"):
+        source = dict(payload[location])
+        source["ticker"] = "OTHER"
+        source["stock_impact"] = {**source["stock_impact"], "ticker": "OTHER"}
+        payload[location] = source
+
+    with pytest.raises(ValueError, match="matching target ticker"):
+        type(impact).model_validate(payload)
+
+
 def test_generic_bear_base_bull_scenarios_do_not_unlock_stock_impact() -> None:
     evidence = _complete_stock_evidence()
     evidence["stress_scenarios"] = {

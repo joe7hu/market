@@ -572,19 +572,6 @@ class PortfolioImpact(BaseModel):
         for lineage in self.input_lineage:
             if _utc(lineage.available_at) > cutoff:
                 raise ValueError("portfolio impact lineage cannot be newer than its cutoff")
-        for source in (self.portfolio_before, self.portfolio_after):
-            if _identity_aliases_conflict(_target_identity_aliases(source)):
-                raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
-        if self.availability not in {"available", "unavailable"}:
-            raise ValueError("portfolio impact availability must be available or unavailable")
-        if self.availability == "available" and self.availability_status is not AvailabilityStatus.AVAILABLE:
-            raise ValueError("available portfolio impacts require available evidence status")
-        if self.availability == "unavailable":
-            if not self.blockers:
-                raise ValueError("unavailable portfolio impacts require blockers")
-            return self
-        if self.blockers:
-            raise ValueError("available portfolio impacts cannot have blockers")
         before = self.portfolio_before
         after = self.portfolio_after
         container_aliases = tuple(
@@ -596,6 +583,16 @@ class PortfolioImpact(BaseModel):
             raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
         if any(identity != target_ticker for _, identity in container_aliases):
             raise ValueError("portfolio impact requires a matching target ticker across containers")
+        if self.availability not in {"available", "unavailable"}:
+            raise ValueError("portfolio impact availability must be available or unavailable")
+        if self.availability == "available" and self.availability_status is not AvailabilityStatus.AVAILABLE:
+            raise ValueError("available portfolio impacts require available evidence status")
+        if self.availability == "unavailable":
+            if not self.blockers:
+                raise ValueError("unavailable portfolio impacts require blockers")
+            return self
+        if self.blockers:
+            raise ValueError("available portfolio impacts cannot have blockers")
         book_identity = str(before.get("book_identity") or "")
         if (
             not book_identity
