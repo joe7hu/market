@@ -1274,8 +1274,12 @@ def test_agent_context_applies_cutoff_to_quote_catalyst_and_publication(
                     instrument["id"], Jsonb({"core_thesis": "historical thesis"}),
                     cutoff - timedelta(hours=2), cutoff - timedelta(hours=2),
                     instrument["id"], Jsonb({"core_thesis": "future thesis"}),
-                    cutoff + timedelta(hours=1), cutoff + timedelta(hours=1),
+                    cutoff - timedelta(hours=1), cutoff - timedelta(hours=1),
                 ],
+            )
+            connection.execute(
+                "UPDATE app.thesis SET thesis = %s, updated_at = %s WHERE instrument_id = %s AND revision = 2",
+                [Jsonb({"core_thesis": "post-cutoff mutation"}), cutoff + timedelta(hours=1), instrument["id"]],
             )
             publication_runs = []
             for suffix, finished_at in (("old", cutoff - timedelta(hours=1)), ("future", cutoff + timedelta(hours=1))):
@@ -1316,6 +1320,7 @@ def test_agent_context_applies_cutoff_to_quote_catalyst_and_publication(
         assert context["portfolio"]["price"] == 100.0
         assert context["portfolio"]["quantity"] == 5.0
         assert context["portfolio"]["thesis"]["core_thesis"] == "historical thesis"
+        assert context["portfolio"]["thesis_revision"] == 1
         assert context["published_models"]["agent_context_model"]["value"] == "old"
         assert [item["title"] for item in context["catalysts"]] == ["valid catalyst"]
     finally:

@@ -52,6 +52,8 @@ def ticker_context(
             FROM app.thesis thesis
             WHERE thesis.instrument_id = instrument.id
               AND thesis.created_at <= %s
+              AND thesis.updated_at IS NOT NULL
+              AND thesis.updated_at <= %s
             ORDER BY thesis.created_at DESC, thesis.revision DESC, thesis.id DESC
             LIMIT 1
         ) thesis ON true
@@ -81,7 +83,7 @@ def ticker_context(
         ) quote ON true
         WHERE instrument.symbol = %s
         """,
-        [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, symbol],
+        [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, symbol],
     ).fetchone()
     option = connection.execute(
         """
