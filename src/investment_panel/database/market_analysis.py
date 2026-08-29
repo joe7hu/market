@@ -25,7 +25,7 @@ from investment_panel.core.decision import (
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars, completed_trading_dates
 from investment_panel.database.fundamental_history import hydrate_history
-from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.runtime import DatabaseRuntime
 
 
 _HORIZON_LOOKBACK = {
@@ -202,13 +202,6 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             "snapshot_id": snapshot.snapshot_id,
         },
     )
-    # The market publication is consumed by the same-cycle ticker publication.
-    # Its visibility timestamp must be the bounded input cutoff.
-    with runtime.transaction(JOB_PROFILE) as connection:
-        connection.execute(
-            "UPDATE app.publication SET published_at = %s WHERE id = %s",
-            [as_of, publication_id],
-        )
     return {
         "status": "ok",
         "publication_id": str(publication_id),
@@ -1665,7 +1658,6 @@ def _market_snapshot(
     )
     return MarketStateSnapshot(
         snapshot_id=snapshot_id,
-        publication_id=f"market-publication:{snapshot_id}",
         as_of=reference,
         input_cutoff=reference,
         horizons=dimensions,

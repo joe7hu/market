@@ -546,49 +546,38 @@ class AnalysisRepository:
             ).fetchone()
             if row is None:
                 return None
-            if row["bundle_id"] is not None:
-                payload_rows = connection.execute(
-                    """
-                    SELECT item.model_name, item.rank, payload.payload
-                    FROM app.publication_bundle_item item
-                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
-                    WHERE item.bundle_id = %s
-                    ORDER BY item.model_name, item.rank
-                    """,
-                    [row["bundle_id"]],
-                ).fetchall()
-            else:
-                payload_rows = connection.execute(
-                    """
-                    SELECT item.model_name, item.rank, item.payload
-                    FROM app.publication_item item
-                    WHERE item.publication_id = %s
-                    ORDER BY item.model_name, item.rank
-                    """,
-                    [row["publication_id"]],
-                ).fetchall()
-        run_inputs = dict(row["inputs"] or {})
-        source_lineage = run_inputs.get("source_lineage") or run_inputs.get("lineage") or run_inputs
-        metadata = {
-            "publication_id": str(row["publication_id"]),
-            "publication_status": str(row["status"]),
-            "publication_scope": str(row["scope"]),
-            "input_cutoff": _iso(row["input_cutoff"]),
-            "publication_input_cutoff": _iso(row["input_cutoff"]),
-            "published_at": _iso(row["published_at"]),
-            "publication_published_at": _iso(row["published_at"]),
-            "code_version": row["code_version"],
-            "feature_versions": dict(row["feature_versions"] or {}),
-            "input_hash": row["input_hash"],
-            "source_lineage": _jsonable(source_lineage),
-            "summary": _jsonable(dict(row["summary"] or {})),
-        }
-        models: dict[str, list[dict[str, Any]]] = {}
-        for payload_row in payload_rows:
-            payload = dict(payload_row["payload"] or {})
-            payload.update({key: value for key, value in metadata.items() if key not in payload})
-            models.setdefault(str(payload_row["model_name"]), []).append(payload)
-        return {**metadata, "models": models}
+            payload_rows = _publication_payload_rows(connection, row)
+        return _publication_result(row, payload_rows)
+
+    def publication_by_id(
+        self,
+        scope: str,
+        publication_id: str | UUID,
+    ) -> dict[str, Any] | None:
+        """Return one exact publication without applying a fact cutoff to visibility."""
+
+        try:
+            publication_uuid = UUID(str(publication_id))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        with self.runtime.read() as connection:
+            row = connection.execute(
+                """
+                SELECT publication.id::text AS publication_id, publication.bundle_id,
+                       publication.published_at, publication.status, publication.scope,
+                       run.input_cutoff, run.code_version, run.feature_versions,
+                       run.input_hash, run.inputs, run.summary
+                FROM app.publication publication
+                JOIN analysis.run run ON run.id = publication.analysis_run_id
+                WHERE publication.scope = %s
+                  AND publication.id = %s
+                """,
+                [scope, publication_uuid],
+            ).fetchone()
+            if row is None:
+                return None
+            payload_rows = _publication_payload_rows(connection, row)
+        return _publication_result(row, payload_rows)
 
     def publication_rows_at_or_before(
         self,
@@ -798,6 +787,54 @@ def _replace_current_projection(
         """,
         [scope, publication_id, bundle_id],
     )
+
+
+def _publication_payload_rows(connection: Any, row: Mapping[str, Any]) -> Sequence[Any]:
+    if row["bundle_id"] is not None:
+        return connection.execute(
+            """
+            SELECT item.model_name, item.rank, payload.payload
+            FROM app.publication_bundle_item item
+            JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+            WHERE item.bundle_id = %s
+            ORDER BY item.model_name, item.rank
+            """,
+            [row["bundle_id"]],
+        ).fetchall()
+    return connection.execute(
+        """
+        SELECT item.model_name, item.rank, item.payload
+        FROM app.publication_item item
+        WHERE item.publication_id = %s
+        ORDER BY item.model_name, item.rank
+        """,
+        [row["publication_id"]],
+    ).fetchall()
+
+
+def _publication_result(row: Mapping[str, Any], payload_rows: Sequence[Any]) -> dict[str, Any]:
+    run_inputs = dict(row["inputs"] or {})
+    source_lineage = run_inputs.get("source_lineage") or run_inputs.get("lineage") or run_inputs
+    metadata = {
+        "publication_id": str(row["publication_id"]),
+        "publication_status": str(row["status"]),
+        "publication_scope": str(row["scope"]),
+        "input_cutoff": _iso(row["input_cutoff"]),
+        "publication_input_cutoff": _iso(row["input_cutoff"]),
+        "published_at": _iso(row["published_at"]),
+        "publication_published_at": _iso(row["published_at"]),
+        "code_version": row["code_version"],
+        "feature_versions": dict(row["feature_versions"] or {}),
+        "input_hash": row["input_hash"],
+        "source_lineage": _jsonable(source_lineage),
+        "summary": _jsonable(dict(row["summary"] or {})),
+    }
+    models: dict[str, list[dict[str, Any]]] = {}
+    for payload_row in payload_rows:
+        payload = dict(payload_row["payload"] or {})
+        payload.update({key: value for key, value in metadata.items() if key not in payload})
+        models.setdefault(str(payload_row["model_name"]), []).append(payload)
+    return {**metadata, "models": models}
 
 
 def _hash(value: Mapping[str, Any]) -> str:

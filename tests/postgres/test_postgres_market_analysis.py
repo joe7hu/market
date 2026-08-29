@@ -617,10 +617,14 @@ def test_market_coverage_uses_exact_history_per_horizon(migrated_postgres_dsn: s
         assert consumed is not None
         assert consumed["publication_id"] == result["publication_id"]
         assert datetime.fromisoformat(consumed["input_cutoff"]).astimezone(UTC) == cutoff
-        assert datetime.fromisoformat(consumed["published_at"]).astimezone(UTC) == cutoff
+        assert datetime.fromisoformat(consumed["published_at"]).astimezone(UTC) < cutoff
+        exact = repository.publication_by_id("market", result["publication_id"])
+        assert exact is not None
+        assert exact["publication_id"] == result["publication_id"]
         snapshot = MarketStateSnapshot.model_validate(
             repository.publication_rows("market", "market_state_snapshot")[0]
         )
+        assert snapshot.publication_id is None
 
         states = {
             horizon: next(

@@ -965,7 +965,7 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         decision = TickerDecisionRepository(runtime).latest("PITX")
         assert decision is not None
         assert decision.as_of == observed
-        assert rank_publication["published_at"] <= observed
+        assert rank_publication["published_at"] > observed
         assert rank_publication["input_cutoff"] == observed
         assert len(decision.input_manifest.input_hash) == 64
         with runtime.read() as connection:

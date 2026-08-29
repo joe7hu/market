@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -13,6 +14,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.decision import (
     AlphaSignal,
+    InputLineage,
     InstrumentStateSnapshot,
     OpportunityRank,
     ExpressionKind,
@@ -48,6 +50,7 @@ PUBLISH_INPUT_TABLES = tuple(
     }
 )
 RANKING_SCOPE = "ticker-opportunity-ranking"
+_MARKET_PUBLICATION_ID_UNSET = object()
 
 
 def publish(
@@ -56,6 +59,7 @@ def publish(
     symbols: Iterable[str] | None = None,
     as_of: datetime | None = None,
     limit: int = 2_000,
+    market_state_publication_id: str | None | object = _MARKET_PUBLICATION_ID_UNSET,
 ) -> dict[str, Any]:
     """Build and persist one point-in-time decision per equity or ETF ticker.
 
@@ -92,9 +96,16 @@ def publish(
             # The benchmark is written before the read so its membership is
             # part of the same point-in-time input manifest as the decision.
             seed = build_ticker_decision(symbol, tables, as_of=reference, portfolio_replay=replay)
-            market_publication = analysis_repository.publication_at_or_before(
-                "market", cutoff=reference
-            )
+            if market_state_publication_id is _MARKET_PUBLICATION_ID_UNSET:
+                market_publication = analysis_repository.publication_at_or_before(
+                    "market", cutoff=reference
+                )
+            elif market_state_publication_id is None:
+                market_publication = None
+            else:
+                market_publication = analysis_repository.publication_by_id(
+                    "market", str(market_state_publication_id)
+                )
             snapshot = _market_snapshot_for_decision(market_publication, reference)
             impacts = (
                 portfolio_impacts(seed, snapshot, market_publication["publication_id"], replay)
@@ -140,7 +151,6 @@ def publish(
                 "ranking_version": TICKER_OPPORTUNITY_RANKING_VERSION,
             },
         )
-        _publish_at_cutoff(runtime, ranking_publication_id, reference)
         rank_by_key = {
             (rank.ticker, rank.decision_revision, rank.opportunity_episode_id): rank
             for rank in rank_rows
@@ -192,30 +202,59 @@ def publish(
 
 
 def _market_snapshot_for_decision(publication: dict[str, Any] | None, cutoff: datetime) -> Any:
-    if publication is None:
+    if publication is None or not isinstance(publication, Mapping):
         return None
     reference = _utc(cutoff)
+    publication_id = str(publication.get("publication_id") or "").strip()
+    if not publication_id:
+        return None
+    if str(publication.get("publication_scope") or "") != "market":
+        return None
+    if str(publication.get("publication_status") or "") != "published":
+        return None
     publication_cutoff = _timestamp(publication.get("input_cutoff"))
     publication_published_at = _timestamp(publication.get("published_at"))
-    if publication_cutoff != reference or publication_published_at is None or publication_published_at > reference:
+    if publication_cutoff != reference or publication_published_at is None:
         return None
-    rows = publication.get("models", {}).get("market_state_snapshot") or []
-    if not rows:
+    models = publication.get("models")
+    if not isinstance(models, Mapping):
+        return None
+    rows = models.get("market_state_snapshot")
+    if not isinstance(rows, (list, tuple)) or len(rows) != 1:
         return None
     try:
         snapshot = MarketStateSnapshot.model_validate(rows[0])
     except (TypeError, ValueError):
         return None
+    if snapshot.contract_version != "market-state-snapshot.v1":
+        return None
+    if snapshot.publication_id not in {None, "", publication_id}:
+        return None
     if _utc(snapshot.input_cutoff) != reference or _utc(snapshot.as_of) != reference:
         return None
+    try:
+        source_lineage = tuple(
+            InputLineage.model_validate(item)
+            for item in publication.get("source_lineage") or ()
+        )
+    except (TypeError, ValueError):
+        return None
+    lineages = list(snapshot.input_lineage)
+    for dimensions in snapshot.horizons.values():
+        for dimension in dimensions:
+            lineages.extend(dimension.lineage)
     matrix = snapshot.coverage_matrix
     if matrix is not None:
         if _utc(matrix.as_of) != reference or _utc(matrix.input_cutoff) != reference:
             return None
         if any(row.input_cutoff is not None and _utc(row.input_cutoff) != reference for row in matrix.rows):
             return None
+        for row in matrix.rows:
+            lineages.extend(row.input_lineage)
+    if not all(_lineage_matches_cutoff(item, reference) for item in (*source_lineage, *lineages)):
+        return None
     return snapshot.model_copy(update={
-        "publication_id": publication["publication_id"],
+        "publication_id": publication_id,
         "coverage_matrix": matrix,
     })
 
@@ -391,16 +430,6 @@ def _rank_after_safety(rank: OpportunityRank, decision: Any) -> OpportunityRank:
         "lower_confidence_expected_net_pnl": None,
         "utility": TradeUtility(),
     })
-
-
-def _publish_at_cutoff(runtime: Any, publication_id: Any, cutoff: datetime) -> None:
-    """Make the newly visible rank generation valid at its input cutoff."""
-
-    with runtime.transaction(JOB_PROFILE) as connection:
-        connection.execute(
-            "UPDATE app.publication SET published_at = %s WHERE id = %s",
-            [cutoff, publication_id],
-        )
 
 
 def _alpha_models(decision: Any, tables: dict[str, list[dict[str, Any]]]) -> tuple[InstrumentStateSnapshot, list[AlphaSignal]]:
@@ -755,6 +784,16 @@ def _timestamp(value: Any) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _lineage_matches_cutoff(lineage: InputLineage, cutoff: datetime) -> bool:
+    available_at = _timestamp(lineage.available_at)
+    lineage_cutoff = _timestamp(lineage.cutoff)
+    return (
+        available_at is not None
+        and available_at <= cutoff
+        and (lineage_cutoff is None or lineage_cutoff == cutoff)
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

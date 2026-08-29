@@ -22,7 +22,11 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
     cutoff = datetime.now(UTC)
     options = refresh_options_radar.run_deterministic_only(config_path)
     market = refresh_market_publication(runtime, now=cutoff)
-    tickers = ticker_decisions.publish(config_path, as_of=cutoff)
+    tickers = ticker_decisions.publish(
+        config_path,
+        as_of=cutoff,
+        market_state_publication_id=_market_state_publication_id(market),
+    )
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(runtime, now=cutoff)
     status = "ok" if all(
@@ -98,7 +102,11 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
     cutoff = reference.astimezone(UTC)
     market = refresh_market_publication(runtime, now=cutoff)
-    tickers = ticker_decisions.publish(config_path, as_of=cutoff)
+    tickers = ticker_decisions.publish(
+        config_path,
+        as_of=cutoff,
+        market_state_publication_id=_market_state_publication_id(market),
+    )
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(
         runtime, now=cutoff, use_agent_narrative=True,
@@ -155,12 +163,21 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
 
     config = load_config(config_path)
     publication_cutoff: datetime | None = None
+    market_state_publication_id: str | None = None
 
     def bounded_cutoff() -> datetime:
         nonlocal publication_cutoff
         if publication_cutoff is None:
             publication_cutoff = datetime.now(UTC)
         return publication_cutoff
+
+    def publish_market() -> dict[str, Any]:
+        nonlocal market_state_publication_id
+        result = refresh_market_publication(
+            runtime_for_config(config), now=bounded_cutoff()
+        )
+        market_state_publication_id = _market_state_publication_id(result)
+        return result
 
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
         ("arco_sources", False, lambda: update_arco_sources.run(config_path)),
@@ -172,11 +189,11 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("ibkr_options", False, lambda: update_ibkr_options.run(config_path)),
         ("broker_sources", False, lambda: update_broker_sources.run(config_path)),
         ("options_radar", True, lambda: refresh_options_radar.run(config_path)),
-        ("market_publication", True, lambda: refresh_market_publication(
-            runtime_for_config(config), now=bounded_cutoff()
-        )),
+        ("market_publication", True, publish_market),
         ("ticker_decisions", True, lambda: ticker_decisions.publish(
-            config_path, as_of=bounded_cutoff()
+            config_path,
+            as_of=bounded_cutoff(),
+            market_state_publication_id=market_state_publication_id,
         )),
         (
             "option_outcomes",
@@ -228,6 +245,12 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         "warning_steps": warnings,
         "steps": results,
     }
+
+
+def _market_state_publication_id(result: dict[str, Any]) -> str | None:
+    if str(result.get("status") or "").lower() != "ok":
+        return None
+    return str(result.get("publication_id") or "") or None
 
 
 def main_publish() -> None:

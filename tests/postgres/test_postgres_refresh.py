@@ -32,8 +32,8 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     monkeypatch.setattr(update_ibkr_options, "run", lambda _path: {"status": "gateway_offline"})
     monkeypatch.setattr(update_broker_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh.refresh_options_radar, "run", lambda _path: {"status": "ok"})
-    def publish_tickers(_path, *, as_of=None):
-        assert market_publication["publication_id"] == "market-publication-full-test"
+    def publish_tickers(_path, *, as_of=None, market_state_publication_id=None):
+        assert market_state_publication_id == market_publication["publication_id"]
         events.append(("ticker", as_of))
         return {"status": "ok"}
 
@@ -91,8 +91,8 @@ def test_publish_decisions_consumes_same_cutoff_market_publication(monkeypatch) 
         events.append(("market", now))
         return market_publication
 
-    def publish_tickers(_path, *, as_of=None):
-        assert market_publication["publication_id"] == "market-publication-test"
+    def publish_tickers(_path, *, as_of=None, market_state_publication_id=None):
+        assert market_state_publication_id == market_publication["publication_id"]
         events.append(("ticker", as_of))
         return {"status": "ok"}
 
@@ -110,6 +110,57 @@ def test_publish_decisions_consumes_same_cutoff_market_publication(monkeypatch) 
     )
 
     result = postgres_refresh.publish_decisions("config.yaml")
+
+    assert result["status"] == "ok"
+    assert [name for name, _ in events] == ["market", "ticker", "today"]
+    assert events[0][1] is events[1][1] is events[2][1]
+
+
+def test_premarket_threads_market_publication_id_after_market_publication(monkeypatch) -> None:
+    config = typed_config()
+    events: list[tuple[str, object]] = []
+    market_publication = {"status": "ok", "publication_id": "market-publication-premarket-test"}
+    monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
+    monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(postgres_refresh.refresh_options_radar, "run", lambda _path: {"status": "ok"})
+    monkeypatch.setattr(
+        postgres_refresh.refresh_options_radar,
+        "run_deterministic_only",
+        lambda _path: {"status": "ok"},
+    )
+    monkeypatch.setattr(postgres_refresh.run_option_agents, "run", lambda _path: {"status": "ok"})
+    monkeypatch.setattr(
+        postgres_refresh.run_thesis_monitor,
+        "run",
+        lambda _path, **_kwargs: {"status": "skipped"},
+    )
+
+    def publish_market(_runtime, *, now=None):
+        events.append(("market", now))
+        return market_publication
+
+    def publish_tickers(_path, *, as_of=None, market_state_publication_id=None):
+        assert market_state_publication_id == market_publication["publication_id"]
+        events.append(("ticker", as_of))
+        return {"status": "ok"}
+
+    def publish_today(_runtime, *, now=None, **_kwargs):
+        events.append(("today", now))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(postgres_refresh, "refresh_market_publication", publish_market)
+    monkeypatch.setattr(postgres_refresh.ticker_decisions, "publish", publish_tickers)
+    monkeypatch.setattr(postgres_refresh, "refresh_today_publication", publish_today)
+    monkeypatch.setattr(
+        postgres_refresh.OutcomeRepository,
+        "refresh",
+        lambda _self, **_kwargs: {"status": "ok"},
+    )
+
+    result = postgres_refresh.premarket(
+        "config.yaml",
+        now=datetime(2026, 7, 6, 12, 15, tzinfo=UTC),
+    )
 
     assert result["status"] == "ok"
     assert [name for name, _ in events] == ["market", "ticker", "today"]
