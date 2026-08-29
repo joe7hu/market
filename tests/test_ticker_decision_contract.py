@@ -339,6 +339,63 @@ def test_persisted_ticker_decision_is_not_dropped_by_point_in_time_filtering() -
     assert replay.decision_revision == source.decision_revision
 
 
+def test_persisted_legacy_portfolio_impacts_infer_the_parent_ticker() -> None:
+    source = build_ticker_decision(
+        "ACME",
+        {"decision_queue": [{"symbol": "ACME", "stance": "BULLISH", "available_at": AS_OF}]},
+        as_of=AS_OF,
+    )
+    persisted = source.model_dump(mode="json")
+    for impact in persisted["portfolio_impacts"].values():
+        impact.pop("ticker", None)
+    persisted.update({
+        "ticker_decision_id": "persisted-legacy-impact-id",
+        "contract_version": "ticker-decision.v1",
+        "available_at": AS_OF,
+    })
+
+    replay = build_ticker_decision("ACME", {"ticker_decisions": [persisted]}, as_of=AS_OF)
+
+    assert replay.decision_revision == source.decision_revision
+    assert all(impact.ticker == "ACME" for impact in replay.portfolio_impacts.values())
+
+
+def test_new_portfolio_impact_without_ticker_does_not_use_legacy_inference() -> None:
+    source = build_ticker_decision(
+        "ACME",
+        {"decision_queue": [{"symbol": "ACME", "stance": "BULLISH", "available_at": AS_OF}]},
+        as_of=AS_OF,
+    )
+    impact = source.portfolio_impacts[ExpressionKind.CASH]
+    payload = impact.model_dump(mode="python")
+    payload.pop("ticker")
+
+    with pytest.raises(ValueError, match="ticker"):
+        type(impact).model_validate(payload)
+
+
+def test_legacy_portfolio_impact_inference_rejects_ambiguous_or_unknown_rows() -> None:
+    source = build_ticker_decision(
+        "ACME",
+        {"decision_queue": [{"symbol": "ACME", "stance": "BULLISH", "available_at": AS_OF}]},
+        as_of=AS_OF,
+    )
+    impact = source.portfolio_impacts[ExpressionKind.STOCK]
+    payload = impact.model_dump(mode="python")
+    payload.pop("ticker")
+    before = dict(payload["portfolio_before"])
+    before["symbol"] = "ACME"
+    before["instrument_symbol"] = "OTHER"
+    payload["portfolio_before"] = before
+
+    with pytest.raises(ValueError, match="conflicting"):
+        type(impact).from_legacy(payload, ticker="ACME")
+
+    payload["contract_version"] = "portfolio-impact.v0"
+    with pytest.raises(ValueError, match="portfolio-impact.v1"):
+        type(impact).from_legacy(payload, ticker="ACME")
+
+
 def test_persisted_ticker_decision_rechecks_current_account_authority() -> None:
     source = build_ticker_decision(
         "ACME",

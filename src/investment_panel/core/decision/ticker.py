@@ -37,7 +37,44 @@ TRADE_EXPRESSION_CONTRACT_VERSION = "trade-expression.v1"
 TRADE_PLAN_CONTRACT_VERSION = "trade-plan.v1"
 OUTCOME_ATTRIBUTION_CONTRACT_VERSION = "outcome-attribution.v1"
 OUTCOME_ATTRIBUTION_EVALUATION_VERSION = "ticker-outcome-attribution-v1"
+PORTFOLIO_IMPACT_CONTRACT_VERSION = "portfolio-impact.v1"
 _CONTEXT_UNSET = object()
+_INSTRUMENT_IDENTITY_KEYS = ("ticker", "symbol", "instrument_symbol")
+
+
+def _identity_aliases(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        return ()
+    aliases: list[tuple[str, str]] = []
+    for key in _INSTRUMENT_IDENTITY_KEYS:
+        raw = value.get(key)
+        if raw is None:
+            continue
+        rendered = str(raw).strip()
+        if rendered:
+            aliases.append((key, normalize_symbol(rendered)))
+    return tuple(aliases)
+
+
+def _target_identity_aliases(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        return ()
+    aliases = list(_identity_aliases(value))
+    aliases.extend(_identity_aliases(value.get("stock_impact")))
+    return tuple(aliases)
+
+
+def _all_portfolio_impact_identity_aliases(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        return ()
+    aliases = list(_target_identity_aliases(value))
+    for key in ("portfolio_before", "portfolio_after"):
+        aliases.extend(_target_identity_aliases(value.get(key)))
+    return tuple(aliases)
+
+
+def _identity_aliases_conflict(aliases: Iterable[tuple[str, str]]) -> bool:
+    return len({identity for _, identity in aliases}) > 1
 
 
 class Stance(StrEnum):
@@ -443,7 +480,7 @@ class PortfolioImpact(BaseModel):
 
     model_config = ConfigDict(extra="allow", frozen=True)
 
-    contract_version: str = "portfolio-impact.v1"
+    contract_version: str = PORTFOLIO_IMPACT_CONTRACT_VERSION
     impact_id: str = Field(min_length=1)
     ticker: str = Field(min_length=1)
     opportunity_episode_id: str = Field(min_length=1)
@@ -500,6 +537,10 @@ class PortfolioImpact(BaseModel):
     def compose(cls, **kwargs: Any) -> "PortfolioImpact":
         return compose_portfolio_impact(**kwargs)
 
+    @classmethod
+    def from_legacy(cls, value: Any, *, ticker: str) -> "PortfolioImpact":
+        return _portfolio_impact_from_legacy(value, ticker=ticker)
+
     @model_validator(mode="before")
     @classmethod
     def normalize_aliases(cls, value: Any) -> Any:
@@ -514,6 +555,8 @@ class PortfolioImpact(BaseModel):
         }.items():
             if new not in result and old in result:
                 result[new] = result[old]
+        if _identity_aliases_conflict(_target_identity_aliases(result)):
+            raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
         if isinstance(result.get("ticker"), str):
             result["ticker"] = normalize_symbol(result["ticker"])
         return result
@@ -529,6 +572,9 @@ class PortfolioImpact(BaseModel):
         for lineage in self.input_lineage:
             if _utc(lineage.available_at) > cutoff:
                 raise ValueError("portfolio impact lineage cannot be newer than its cutoff")
+        for source in (self.portfolio_before, self.portfolio_after):
+            if _identity_aliases_conflict(_target_identity_aliases(source)):
+                raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
         if self.availability not in {"available", "unavailable"}:
             raise ValueError("portfolio impact availability must be available or unavailable")
         if self.availability == "available" and self.availability_status is not AvailabilityStatus.AVAILABLE:
@@ -583,13 +629,8 @@ class PortfolioImpact(BaseModel):
             for source in (before, after):
                 if not isinstance(source, Mapping):
                     continue
-                source_ticker = _pick(source, "ticker", "symbol", "instrument_symbol")
-                nested = source.get("stock_impact")
-                nested_ticker = _pick(nested, "ticker", "symbol") if isinstance(nested, Mapping) else None
-                if any(
-                    candidate is not None and normalize_symbol(str(candidate)) != target_ticker
-                    for candidate in (source_ticker, nested_ticker)
-                ):
+                aliases = _target_identity_aliases(source)
+                if any(identity != target_ticker for _, identity in aliases):
                     raise ValueError("available stock portfolio impacts require a matching target ticker")
             btc_required = _stock_btc_scenarios_required(
                 evidence,
@@ -2564,6 +2605,58 @@ def _portfolio_impact_id(impact: PortfolioImpact) -> str:
     return f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
 
 
+def _portfolio_impact_from_legacy(value: Any, *, ticker: str) -> PortfolioImpact:
+    """Adapt only an explicitly versioned persisted v1 row missing its target ticker."""
+
+    if isinstance(value, PortfolioImpact):
+        return value
+    raw = value.model_dump(mode="python") if isinstance(value, BaseModel) else dict(value or {})
+    if not isinstance(raw, Mapping):
+        return PortfolioImpact.model_validate(raw)
+    raw = dict(raw)
+    if raw.get("ticker") is not None and str(raw["ticker"]).strip():
+        return PortfolioImpact.model_validate(raw)
+    if raw.get("contract_version") != PORTFOLIO_IMPACT_CONTRACT_VERSION:
+        raise ValueError("legacy portfolio impact ticker inference requires portfolio-impact.v1")
+    target_ticker = normalize_symbol(str(ticker))
+    if SYMBOL_RE.fullmatch(target_ticker) is None:
+        raise ValueError("legacy portfolio impact ticker inference requires a valid parent ticker")
+    aliases = _all_portfolio_impact_identity_aliases(raw)
+    if _identity_aliases_conflict(aliases):
+        raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
+    if any(identity != target_ticker for _, identity in aliases):
+        raise ValueError("legacy portfolio impact aliases must match the parent ticker")
+    raw["ticker"] = target_ticker
+    return PortfolioImpact.model_validate(raw)
+
+
+def _persisted_portfolio_impact(value: Any, *, ticker: str) -> Any:
+    if isinstance(value, Mapping) and (
+        value.get("ticker") is None or not str(value.get("ticker")).strip()
+    ):
+        return PortfolioImpact.from_legacy(value, ticker=ticker)
+    return value
+
+
+def _persisted_portfolio_impacts(value: Any, *, ticker: str) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    return {
+        kind: _persisted_portfolio_impact(impact, ticker=ticker)
+        for kind, impact in value.items()
+    }
+
+
+def _persisted_trade_plan(value: Any, *, ticker: str) -> Any:
+    if not isinstance(value, Mapping) or not isinstance(value.get("portfolio_impact"), Mapping):
+        return value
+    result = dict(value)
+    result["portfolio_impact"] = _persisted_portfolio_impact(
+        result["portfolio_impact"], ticker=ticker,
+    )
+    return result
+
+
 def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) -> MarketStateSnapshot:
     reference = _utc(cutoff)
     encoded = json.dumps(
@@ -2689,6 +2782,7 @@ _STOCK_SCENARIO_SHOCKS = {
     "symbol": (-20.0, -30.0),
     "btc": (-15.0,),
 }
+_STOCK_BTC_IDENTITIES = frozenset({"BTC-USD", "BITCOIN", "BITCOIN-USD"})
 _STOCK_CASH_COMPARISON_KEYS = (
     "expected_return", "expected_pnl", "cash_return", "cash_yield", "return",
     "pnl", "opportunity_cost", "expected_value",
@@ -2782,15 +2876,15 @@ def _stock_btc_scenarios_required(
         isinstance(position, Mapping)
         and (
             _stock_crypto_signal(position)
-            or _stock_position_identity(position) in {"BTC-USD", "BITCOIN", "BITCOIN-USD"}
-            or _stock_position_identity(position) in _STOCK_CRYPTO_SENSITIVE_SYMBOLS
+            or bool(_stock_position_identities(position) & _STOCK_BTC_IDENTITIES)
+            or bool(_stock_position_identities(position) & _STOCK_CRYPTO_SENSITIVE_SYMBOLS)
         )
         for position in position_rows
     )
 
 
-def _stock_position_identity(position: Mapping[str, Any]) -> str:
-    return normalize_symbol(str(_pick(position, "ticker", "symbol", "instrument_symbol") or ""))
+def _stock_position_identities(position: Mapping[str, Any]) -> frozenset[str]:
+    return frozenset(identity for _, identity in _identity_aliases(position))
 
 
 def _stock_scenario_magnitudes(value: Mapping[str, Any]) -> tuple[float, ...] | None:
@@ -3652,6 +3746,15 @@ def build_ticker_decision(
                     expires_at=persisted_resolution.expires_at,
                     blocked=True,
                 )
+            persisted_impacts = _persisted_portfolio_impacts(
+                persisted.get("portfolio_impacts") or {}, ticker=symbol,
+            )
+            persisted_trade_plan = None
+            if not authority_blockers:
+                raw_trade_plan = persisted.get("trade_plan") or (
+                    persisted.get("input_manifest") or {}
+                ).get("trade_plan")
+                persisted_trade_plan = _persisted_trade_plan(raw_trade_plan, ticker=symbol)
             return TickerDecision.model_validate({
                 "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
                 "ticker": symbol,
@@ -3672,15 +3775,11 @@ def build_ticker_decision(
                 "risk_policy_snapshot": persisted_policy_snapshot,
                 "market_state_publication_id": persisted.get("market_state_publication_id") or None,
                 "market_state_snapshot": persisted.get("market_state_snapshot") or None,
-                "portfolio_impacts": persisted.get("portfolio_impacts") or {},
+                "portfolio_impacts": persisted_impacts,
                 "instrument_state_snapshot": persisted.get("instrument_state_snapshot") or None,
                 "alpha_signals": persisted.get("alpha_signals") or [],
                 "opportunity_rank": persisted.get("opportunity_rank") or None,
-                "trade_plan": (
-                    None
-                    if authority_blockers
-                    else persisted.get("trade_plan") or (persisted.get("input_manifest") or {}).get("trade_plan")
-                ),
+                "trade_plan": persisted_trade_plan,
             })
         except Exception:
             # A malformed persisted row is visible to source-health/learning

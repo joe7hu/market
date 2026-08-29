@@ -222,6 +222,23 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
     assert impact.availability == "available"
 
 
+@pytest.mark.parametrize("location", ["impact", "portfolio_before", "portfolio_after"])
+def test_stock_impact_rejects_conflicting_target_identity_aliases(location: str) -> None:
+    impact = _decision(
+        portfolio_replay=_valued_replay(stock_evidence=_complete_stock_evidence()),
+    ).portfolio_impacts[ExpressionKind.STOCK]
+    payload = impact.model_dump(mode="python")
+    if location == "impact":
+        payload["symbol"] = "OTHER"
+    else:
+        source = dict(payload[location])
+        source["symbol"] = "OTHER"
+        payload[location] = source
+
+    with pytest.raises(ValueError, match="conflicting"):
+        type(impact).model_validate(payload)
+
+
 def test_generic_bear_base_bull_scenarios_do_not_unlock_stock_impact() -> None:
     evidence = _complete_stock_evidence()
     evidence["stress_scenarios"] = {
@@ -461,6 +478,36 @@ def test_stock_impact_requires_btc_for_ticker_only_crypto_position_identity() ->
             "valuation_status": "market_quotes",
         },
     ]
+    replay["eligible_position_count"] = 2
+    replay["valued_position_count"] = 2
+
+    impact = _decision(portfolio_replay=replay).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert "stock_stress_scenarios_missing" in impact.blockers
+
+
+@pytest.mark.parametrize("btc_alias", ["symbol", "instrument_symbol"])
+def test_stock_impact_requires_btc_when_any_position_identity_alias_is_btc(btc_alias: str) -> None:
+    replay = _valued_replay(stock_evidence=_complete_stock_evidence())
+    position = {
+        "instrument_id": 2,
+        "ticker": "NOT-BTC",
+        btc_alias: "BTC-USD",
+        "sector": "Technology",
+        "quantity": 1.0,
+        "avg_cost": 500.0,
+        "price": 500.0,
+        "market_value": 500.0,
+        "source_id": "test",
+        "currency": "USD",
+        "source_kind": "daily_bars",
+        "trading_date": "2026-08-22",
+        "observed_at": AS_OF,
+        "available_at": AS_OF,
+        "valuation_status": "market_quotes",
+    }
+    replay["positions"] = [*replay["positions"], position]
     replay["eligible_position_count"] = 2
     replay["valued_position_count"] = 2
 
