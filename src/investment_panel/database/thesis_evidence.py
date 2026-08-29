@@ -26,7 +26,7 @@ def thesis_source_evidence(
         """
         WITH evidence_rows AS (
             SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
-                   item.id AS item_id, item.source_id,
+                   item.id AS item_id, item.source_id, signal.source_signal_id,
                    CASE WHEN source.kind = 'news' THEN lower(source.name) ELSE source.name END AS source_name,
                    CASE WHEN source.family IN ('social', 'private_graph') THEN 'thesis' ELSE source.family END AS source_family,
                    item.kind AS source_type, item.title,
@@ -47,7 +47,8 @@ def thesis_source_evidence(
             JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
             JOIN ingest.source source ON source.id = item.source_id
             LEFT JOIN LATERAL (
-                SELECT signal.thesis, signal.sentiment, signal.observed_at, signal.available_at
+                SELECT signal.id AS source_signal_id, signal.thesis, signal.sentiment,
+                       signal.observed_at, signal.available_at
                 FROM analysis.source_signal signal
                 JOIN analysis.run signal_run ON signal_run.id = signal.run_id
                 WHERE signal.content_item_id = item.id AND signal.instrument_id = instrument.id
@@ -79,7 +80,7 @@ def thesis_source_evidence(
             FROM evidence_rows WHERE source_rank <= 2
         )
         SELECT symbol, source_id, source_name, source_family, source_type,
-               title, summary, sentiment, observed_at, reference
+               source_signal_id, title, summary, sentiment, observed_at, reference
         FROM balanced
         WHERE symbol_rank <= %s
         ORDER BY symbol, observed_at DESC, source_id, reference, item_id

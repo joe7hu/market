@@ -748,11 +748,11 @@ def _request_evidence_refs(
         if not isinstance(item, dict):
             continue
         reference = str(item.get("reference") or "").strip()
-        source_id = str(item.get("source_id") or "").strip()
+        source_signal_id = str(item.get("source_signal_id") or "").strip()
         if reference:
             refs.append({"type": "source_evidence", "id": reference})
-        if source_id:
-            refs.append({"type": "source_signal", "id": source_id})
+        if source_signal_id:
+            refs.append({"type": "source_signal", "id": source_signal_id})
     return list({(item["type"], item["id"]): item for item in refs}.values())[:24]
 
 

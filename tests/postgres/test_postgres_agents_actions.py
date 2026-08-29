@@ -1063,11 +1063,49 @@ def test_agent_context_rejects_unavailable_or_unfinished_signal_runs(postgres_ds
                         f"invalid signal {signal_name}",
                     ],
                 )
+            valid_signal = connection.execute(
+                """
+                INSERT INTO analysis.source_signal
+                    (run_id, content_item_id, instrument_id, observed_at, available_at, event_at,
+                     published_at, signal_type, sentiment, thesis)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'valid-signal', 'positive', 'valid signal truth')
+                RETURNING id
+                """,
+                [
+                    analysis_runs[2], item["id"], instrument["id"], cutoff - timedelta(minutes=20),
+                    cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), cutoff - timedelta(hours=2),
+                ],
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO analysis.decision
+                    (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+                VALUES (%s, 'pits-source-signal-context', 'option', %s, %s, 'WATCH', %s)
+                """,
+                [analysis_runs[2], instrument["id"], cutoff, "d" * 64],
+            )
 
         with runtime.read() as connection:
             evidence = thesis_source_evidence(connection, ["PITS"], cutoff=cutoff)
-        assert evidence["PITS"][0]["summary"] == "PITS raw truth"
-        assert evidence["PITS"][0]["sentiment"] == "neutral"
+            selected_signal = evidence["PITS"][0]
+        assert selected_signal["summary"] == "valid signal truth"
+        assert selected_signal["sentiment"] == "positive"
+        assert selected_signal["source_signal_id"] == valid_signal["id"]
+        queued = AgentRepository(runtime).queue_thesis("PITS", trigger="source-signal-reference")
+        source_signal_refs = {
+            ref["id"]
+            for ref in queued["request_envelope"]["evidence_refs"]
+            if ref["type"] == "source_signal"
+        }
+        assert source_signal_refs == {str(valid_signal["id"])}
+        assert source_id not in source_signal_refs
+        forged = _option_thesis_result("PITS", request_id=queued["request_id"])
+        forged["evidence_refs"] = [
+            {"type": "agent_request", "id": queued["request_id"]},
+            {"type": "source_signal", "id": source_id},
+        ]
+        with pytest.raises(ValueError, match="unknown or unavailable evidence"):
+            AgentRepository(runtime).submit("option_thesis", forged)
     finally:
         runtime.close()
 
