@@ -250,6 +250,49 @@ def test_agent_queue_uses_the_exact_published_decision(postgres_dsn: str) -> Non
         runtime.close()
 
 
+def test_agent_queue_tied_decisions_use_latest_identity(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, asset_class) VALUES ('TIED', 'equity') RETURNING id"
+            ).fetchone()["id"]
+            run_id = connection.execute(
+                """
+                INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, input_hash, started_at, status)
+                VALUES ('tied-decision-test', %s, 'test', %s, %s, 'succeeded')
+                RETURNING id
+                """,
+                [datetime(2026, 8, 28, 15, tzinfo=UTC), "a" * 64, datetime(2026, 8, 28, 14, tzinfo=UTC)],
+            ).fetchone()["id"]
+            decision_ids = [
+                connection.execute(
+                    """
+                    INSERT INTO analysis.decision
+                        (id, run_id, decision_key, kind, instrument_id, as_of, state, score, input_hash)
+                    VALUES (%s, %s, %s, 'option', %s, %s, 'WATCH', 0.5, %s)
+                    RETURNING id
+                    """,
+                    [
+                        f"00000000-0000-0000-0000-{index + 1:012d}", run_id, f"tied-{index}", instrument_id,
+                        datetime(2026, 8, 28, 15, tzinfo=UTC), character * 64,
+                    ],
+                ).fetchone()["id"]
+                for index, character in enumerate(("a", "b"))
+            ]
+        queued = AgentRepository(runtime).queue_thesis("TIED", trigger="tied-decision")
+        with runtime.read() as connection:
+            stored = connection.execute(
+                "SELECT decision_id FROM analysis.agent_task WHERE id = %s", [queued["request_id"]]
+            ).fetchone()
+        assert stored["decision_id"] == decision_ids[1]
+    finally:
+        runtime.close()
+
+
 def test_current_candidate_queue_counts_unique_symbols_not_structure_rows(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
@@ -716,6 +759,60 @@ def test_agent_context_excludes_source_from_future_ingest_run(postgres_dsn: str)
         runtime.close()
 
 
+def test_agent_source_evidence_duplicate_urls_have_stable_order(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+    source_id = f"agent-duplicate-url-{uuid4().hex}"
+    try:
+        with runtime.transaction() as connection:
+            instrument = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('PITD', 'PITD', 'equity') "
+                "RETURNING id"
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO ingest.source
+                    (id, name, family, kind, operational_state, health_owner, freshness_seconds)
+                VALUES (%s, 'PITD test source', 'news', 'news', 'active', 'test', 3600)
+                """,
+                [source_id],
+            )
+            ingest_run = connection.execute(
+                """
+                INSERT INTO ingest.run (source_id, capability, started_at, finished_at, status)
+                VALUES (%s, 'news', %s, %s, 'succeeded') RETURNING id
+                """,
+                [source_id, cutoff - timedelta(hours=3), cutoff - timedelta(hours=2)],
+            ).fetchone()
+            for title in ("PITD first", "PITD second"):
+                item = connection.execute(
+                    """
+                    INSERT INTO raw.content_item
+                        (source_id, ingest_run_id, source_key, kind, title, url, published_at, observed_at, summary)
+                    VALUES (%s, %s, %s, 'article', %s, 'https://example.test/duplicate', %s, %s, %s)
+                    RETURNING id
+                    """,
+                    [
+                        source_id, ingest_run["id"], title.lower().replace(" ", "-"), title,
+                        cutoff - timedelta(hours=1), cutoff - timedelta(hours=1), title,
+                    ],
+                ).fetchone()
+                connection.execute(
+                    "INSERT INTO raw.content_item_instrument (content_item_id, instrument_id) VALUES (%s, %s)",
+                    [item["id"], instrument["id"]],
+                )
+        with runtime.read() as connection:
+            first = thesis_source_evidence(connection, ["PITD"], max_per_symbol=2, cutoff=cutoff)
+            second = thesis_source_evidence(connection, ["PITD"], max_per_symbol=2, cutoff=cutoff)
+        first_titles = [item["title"] for item in first["PITD"]]
+        assert first_titles == [item["title"] for item in second["PITD"]]
+        assert first_titles == ["PITD first", "PITD second"]
+    finally:
+        runtime.close()
+
+
 def test_agent_context_rejects_unavailable_or_unfinished_signal_runs(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
@@ -971,6 +1068,19 @@ def test_agent_context_without_cutoff_is_unavailable(postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(postgres_dsn)
     runtime.open()
     try:
+        with runtime.transaction() as connection:
+            instrument = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('MISSING-CUTOFF', 'Mutable', 'equity') "
+                "RETURNING id"
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO app.portfolio_position (instrument_id, quantity, average_cost, notes) VALUES (%s, 5, 10, 'mutable')",
+                [instrument["id"]],
+            )
+            connection.execute(
+                "INSERT INTO app.thesis (instrument_id, revision, status, thesis) VALUES (%s, 1, 'current', %s)",
+                [instrument["id"], Jsonb({"core_thesis": "mutable thesis"})],
+            )
         with runtime.read() as connection:
             context = ticker_context(connection, "MISSING-CUTOFF", cutoff=None)
         assert context["context_status"] == {"cutoff": None, "cutoff_available": False}

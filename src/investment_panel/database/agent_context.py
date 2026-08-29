@@ -26,6 +26,16 @@ def ticker_context(
 ) -> dict[str, Any]:
     enabled = context_sources or {}
 
+    if cutoff is None:
+        return {
+            "context_status": {"cutoff": None, "cutoff_available": False},
+            "portfolio": {},
+            "option_opportunity": {},
+            "published_models": {},
+            "catalysts": [],
+            "source_evidence": [],
+        }
+
     def include(key: str) -> bool:
         return bool(enabled.get(key, True))
 

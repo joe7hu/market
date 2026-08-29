@@ -26,7 +26,7 @@ def thesis_source_evidence(
         """
         WITH evidence_rows AS (
             SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
-                   item.source_id,
+                   item.id AS item_id, item.source_id,
                    CASE WHEN source.kind = 'news' THEN lower(source.name) ELSE source.name END AS source_name,
                    CASE WHEN source.family IN ('social', 'private_graph') THEN 'thesis' ELSE source.family END AS source_family,
                    item.kind AS source_type, item.title,
@@ -73,14 +73,16 @@ def thesis_source_evidence(
               AND COALESCE(item.published_at, item.observed_at) <= %s
         ), balanced AS (
             SELECT evidence_rows.*,
-                   row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC, source_id, reference) AS symbol_rank
+                   row_number() OVER (
+                       PARTITION BY symbol ORDER BY observed_at DESC, source_id, reference, item_id
+                   ) AS symbol_rank
             FROM evidence_rows WHERE source_rank <= 2
         )
         SELECT symbol, source_id, source_name, source_family, source_type,
                title, summary, sentiment, observed_at, reference
         FROM balanced
         WHERE symbol_rank <= %s
-        ORDER BY symbol, observed_at DESC, source_id, reference
+        ORDER BY symbol, observed_at DESC, source_id, reference, item_id
         """,
         [cutoff, cutoff, cutoff, cutoff, cutoff, symbols, cutoff, cutoff, cutoff, max(1, int(max_per_symbol))],
     ).fetchall()

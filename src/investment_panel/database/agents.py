@@ -53,7 +53,7 @@ class AgentRepository:
                 JOIN catalog.instrument candidate ON candidate.id = decision.instrument_id
                 WHERE candidate.symbol = %s
                   AND (CAST(%s AS uuid) IS NULL OR decision.id = CAST(%s AS uuid))
-                ORDER BY decision.as_of DESC, decision.score DESC NULLS LAST LIMIT 1
+                ORDER BY decision.as_of DESC, decision.score DESC NULLS LAST, decision.id DESC LIMIT 1
                 """,
                 [symbol, published_decision_id, published_decision_id],
             ).fetchone()
