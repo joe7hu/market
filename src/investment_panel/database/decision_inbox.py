@@ -1121,11 +1121,13 @@ def _validated_portfolio_risk_cards(
         normalized_id = card_id.strip()
         normalized_type = risk_type.strip().lower()
         normalized_severity = severity.strip().lower()
+        correlation_parts = normalized_id.split(":")
         canonical_identity = (
             (normalized_id == "largest-position" and normalized_type == "concentration")
             or (
-                normalized_id.startswith("correlation:")
-                and len(normalized_id) > len("correlation:")
+                len(correlation_parts) == 3
+                and correlation_parts[0] == "correlation"
+                and all(part.strip() for part in correlation_parts[1:])
                 and normalized_type == "correlation"
             )
             or (normalized_id == "portfolio-drawdown" and normalized_type == "drawdown")

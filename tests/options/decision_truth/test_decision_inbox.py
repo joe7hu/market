@@ -1055,6 +1055,7 @@ def test_current_portfolio_risk_rejects_ambiguous_input_and_rolls_back(
         future_summary = _risk_summary(reference)
         future_summary["available_at"] = reference + timedelta(minutes=1)
         unknown = _risk_card("provider-failure")
+        malformed_correlation = _risk_card("correlation:TSLA")
         mismatched = _risk_card()
         mismatched["risk_type"] = "drawdown"
         naive_summary = _risk_summary(reference)
@@ -1068,7 +1069,8 @@ def test_current_portfolio_risk_rejects_ambiguous_input_and_rolls_back(
         reversed_card["available_at"] = (reference - timedelta(minutes=1)).isoformat()
         for invalid_cards, invalid_summary in (
             ([malformed], summary), (duplicate, summary), (nonfinite, summary), ([future], summary),
-            ([card], future_summary), ([unknown], summary), ([mismatched], summary),
+            ([card], future_summary), ([unknown], summary), ([malformed_correlation], summary),
+            ([mismatched], summary),
             ([card], naive_summary), ([card], reversed_summary), ([naive_card], summary),
             ([reversed_card], summary),
         ):
