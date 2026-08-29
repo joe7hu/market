@@ -13,6 +13,7 @@ from investment_panel.core.decision import (
     build_ticker_decision,
     trade_expression_identity,
 )
+from investment_panel.core.decision.ticker import _portfolio_impact_id
 
 
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
@@ -134,6 +135,13 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
     assert impact.gross_exposure_after > impact.gross_exposure_before
     assert "stock_beta_evidence_missing" in impact.blockers
     assert impact.availability == "unavailable"
+
+
+def test_stock_impact_identity_changes_when_contract_fields_change() -> None:
+    impact = _decision().portfolio_impacts[ExpressionKind.STOCK]
+    changed = impact.model_copy(update={"position_weight_after": 0.25})
+
+    assert _portfolio_impact_id(changed) != impact.impact_id
 
 
 def test_supplied_policy_snapshot_must_match_canonical_point_in_time_authority() -> None:
