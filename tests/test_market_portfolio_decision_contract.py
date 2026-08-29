@@ -78,17 +78,26 @@ def _valued_replay(*, stock_evidence: dict[str, object]) -> dict[str, object]:
     return replay
 
 
-def _complete_stock_evidence(*, btc_applicable: bool = False) -> dict[str, object]:
+def _complete_stock_evidence(*, include_btc: bool = False) -> dict[str, object]:
     scenarios: dict[str, object] = {
-        "SPY": {"pnl": -1_000.0},
-        "QQQ": {"pnl": -900.0},
-        "sector": {"pnl": -800.0},
-        "symbol": {"pnl": -1_200.0},
-        "earnings-gap": {"pnl": -1_500.0},
-        "liquidity": {"pnl": -500.0},
+        "SPY": {"pnl": -1_000.0, "shock_pct": [-5.0, -10.0]},
+        "QQQ": {"pnl": -900.0, "shock_pct": [-5.0, -10.0]},
+        "sector": {"pnl": -800.0, "shock_pct": -10.0},
+        "symbol": {"pnl": -1_200.0, "shock_pct": [-20.0, -30.0]},
+        "earnings-gap": {
+            "pnl": -1_500.0,
+            "largest_holding": "ACME",
+            "earnings_gap": True,
+        },
+        "liquidity": {
+            "pnl": -500.0,
+            "spread_multiplier": 2.0,
+            "slippage_multiplier": 2.0,
+            "adv_haircut_pct": 50.0,
+        },
     }
-    if btc_applicable:
-        scenarios["BTC"] = {"pnl": -700.0}
+    if include_btc:
+        scenarios["BTC"] = {"pnl": -700.0, "shock_pct": -15.0}
     return {
         "sector": "Technology",
         "beta": 1.1,
@@ -96,12 +105,39 @@ def _complete_stock_evidence(*, btc_applicable: bool = False) -> dict[str, objec
         "correlation_cluster_delta": 0.01,
         "adv_participation_limit": 0.10,
         "stress_scenarios": scenarios,
-        "btc_scenarios_applicable": btc_applicable,
         "risk_budget": {"available": 2_000.0, "consumed": 1_000.0},
         "cash_comparator": {"status": "available", "expected_return": 0.0},
-        "top_alternative": "cash",
+        "top_alternative": "QQQ",
+        "verified_tickers": ["QQQ"],
         "funding_source_or_position_to_trim": "cash",
     }
+
+
+def _crypto_replay(*, stock_evidence: dict[str, object]) -> dict[str, object]:
+    replay = _valued_replay(stock_evidence=stock_evidence)
+    replay["positions"] = [
+        *replay["positions"],
+        {
+            "instrument_id": 2,
+            "symbol": "BTC-USD",
+            "asset_class": "crypto",
+            "sector": "Crypto",
+            "quantity": 1.0,
+            "avg_cost": 500.0,
+            "price": 500.0,
+            "market_value": 500.0,
+            "source_id": "test",
+            "currency": "USD",
+            "source_kind": "daily_bars",
+            "trading_date": "2026-08-22",
+            "observed_at": AS_OF,
+            "available_at": AS_OF,
+            "valuation_status": "market_quotes",
+        },
+    ]
+    replay["eligible_position_count"] = 2
+    replay["valued_position_count"] = 2
+    return replay
 
 
 def test_market_snapshot_has_four_horizons_and_unavailable_dimensions() -> None:
@@ -173,7 +209,7 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
     assert impact.risk_budget_consumed == pytest.approx(1_000.0)
     assert impact.liquidity["adv_participation_limit"] == pytest.approx(0.10)
     assert impact.cash_comparator == {"status": "available", "expected_return": 0.0}
-    assert impact.top_alternative == "cash"
+    assert impact.top_alternative == "QQQ"
     assert impact.funding_source_or_position_to_trim == "cash"
     assert impact.availability == "available"
 
@@ -192,9 +228,42 @@ def test_generic_bear_base_bull_scenarios_do_not_unlock_stock_impact() -> None:
     assert impact.scenario_pnl is None
 
 
+@pytest.mark.parametrize(
+    ("scenario", "replacement"),
+    [
+        ("SPY", {"pnl": -1_000.0, "shock_pct": [-5.0, -9.0]}),
+        ("QQQ", {"pnl": -900.0, "shock_pct": [-5.0, -9.0]}),
+        ("sector", {"pnl": -800.0, "shock_pct": -9.0}),
+        ("symbol", {"pnl": -1_200.0, "shock_pct": [-20.0, -29.0]}),
+        ("earnings-gap", {"pnl": -1_500.0, "largest_holding": "OTHER", "earnings_gap": True}),
+        (
+            "liquidity",
+            {"pnl": -500.0, "spread_multiplier": 2.0, "slippage_multiplier": 1.0, "adv_haircut_pct": 50.0},
+        ),
+    ],
+)
+def test_stock_impact_requires_the_exact_stress_scenario_matrix(
+    scenario: str,
+    replacement: dict[str, object],
+) -> None:
+    evidence = _complete_stock_evidence()
+    scenarios = dict(evidence["stress_scenarios"])
+    scenarios[scenario] = replacement
+    evidence["stress_scenarios"] = scenarios
+
+    impact = _decision(
+        portfolio_replay=_valued_replay(stock_evidence=evidence),
+    ).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert "stock_stress_scenarios_missing" in impact.blockers
+    assert impact.scenario_pnl is None
+
+
 def test_stock_impact_requires_a_real_top_alternative() -> None:
     evidence = _complete_stock_evidence()
-    evidence.pop("top_alternative")
+    evidence["top_alternative"] = "ZZZZ"
+    evidence.pop("verified_tickers")
     impact = _decision(portfolio_replay=_valued_replay(stock_evidence=evidence)).portfolio_impacts[ExpressionKind.STOCK]
 
     assert impact.availability == "unavailable"
@@ -203,21 +272,48 @@ def test_stock_impact_requires_a_real_top_alternative() -> None:
 
 
 def test_stock_impact_requires_btc_scenario_when_btc_is_applicable() -> None:
-    evidence = _complete_stock_evidence(btc_applicable=True)
+    evidence = _complete_stock_evidence(include_btc=True)
+    evidence["btc_scenarios_applicable"] = False
     scenarios = dict(evidence["stress_scenarios"])
     scenarios.pop("BTC")
     evidence["stress_scenarios"] = scenarios
-    replay = _valued_replay(stock_evidence=evidence)
+    replay = _crypto_replay(stock_evidence=evidence)
     impact = _decision(portfolio_replay=replay).portfolio_impacts[ExpressionKind.STOCK]
 
     assert impact.availability == "unavailable"
     assert "stock_stress_scenarios_missing" in impact.blockers
 
+    evidence = _complete_stock_evidence(include_btc=True)
+    evidence["btc_scenarios_applicable"] = False
+    scenarios = dict(evidence["stress_scenarios"])
+    scenarios["BTC"] = {"pnl": -700.0, "shock_pct": -14.0}
+    evidence["stress_scenarios"] = scenarios
+    wrong_magnitude = _decision(
+        portfolio_replay=_crypto_replay(stock_evidence=evidence),
+    ).portfolio_impacts[ExpressionKind.STOCK]
+    assert wrong_magnitude.availability == "unavailable"
+    assert "stock_stress_scenarios_missing" in wrong_magnitude.blockers
+
     complete = _decision(
-        portfolio_replay=_valued_replay(stock_evidence=_complete_stock_evidence(btc_applicable=True))
+        portfolio_replay=_crypto_replay(stock_evidence=_complete_stock_evidence(include_btc=True))
     ).portfolio_impacts[ExpressionKind.STOCK]
     assert complete.availability == "available"
     assert "BTC" in complete.scenario_pnl
+
+
+def test_stock_impact_derives_btc_requirement_from_crypto_sensitive_equity() -> None:
+    evidence = _complete_stock_evidence()
+    replay = _valued_replay(stock_evidence=evidence)
+    replay["positions"][0] = {
+        **replay["positions"][0],
+        "asset_class": "equity",
+        "category": "crypto-infrastructure",
+    }
+
+    impact = _decision(portfolio_replay=replay).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert "stock_stress_scenarios_missing" in impact.blockers
 
 
 def test_stock_impact_missing_institutional_evidence_stays_unavailable() -> None:
