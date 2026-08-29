@@ -575,8 +575,15 @@ class PortfolioImpact(BaseModel):
                 raise ValueError("available stock portfolio impacts require stock evidence")
             positions = before.get("positions") or ()
             stock_impact = before.get("stock_impact")
-            impact_ticker = _pick(stock_impact, "ticker", "symbol") if isinstance(stock_impact, Mapping) else None
-            btc_required = _stock_btc_scenarios_required(evidence, positions, str(impact_ticker or ""))
+            impact_ticker = _pick(before, "ticker", "symbol", "instrument_symbol")
+            if impact_ticker is None and isinstance(stock_impact, Mapping):
+                impact_ticker = _pick(stock_impact, "ticker", "symbol")
+            btc_required = _stock_btc_scenarios_required(
+                evidence,
+                positions,
+                str(impact_ticker or ""),
+                portfolio_before=before,
+            )
             scenario_pnl = _stock_scenario_pnl(
                 evidence,
                 btc_required=btc_required,
@@ -621,7 +628,7 @@ class PortfolioImpact(BaseModel):
                 or not any(_number(cash.get(key)) is not None for key in _STOCK_CASH_COMPARISON_KEYS)
             ):
                 raise ValueError("available stock portfolio impacts require a cash comparison")
-            top_alternative = _stock_top_alternative(evidence, cash)
+            top_alternative = _stock_top_alternative(evidence, cash, before)
             if top_alternative is None or self.top_alternative != top_alternative:
                 raise ValueError("available stock portfolio impacts require a top alternative")
             if _stock_evidence_label(self.funding_source_or_position_to_trim) is None:
@@ -2677,7 +2684,9 @@ def _stock_scenario_key(value: Any) -> str:
     return str(value).strip().lower().replace("-", "_").replace(" ", "_")
 
 
-_STOCK_VERIFIED_TICKERS = frozenset(
+# The built-in universe is the canonical configured catalog.  Other symbols
+# must arrive from a catalog/position row carrying an instrument identity.
+_STOCK_CATALOG_TICKERS = frozenset(
     normalize_symbol(str(item.get("symbol") or ""))
     for item in DEFAULT_WATCHLIST
     if item.get("symbol")
@@ -2719,15 +2728,36 @@ def _stock_btc_scenarios_required(
     evidence: Mapping[str, Any],
     positions: Iterable[Any] = (),
     ticker: str | None = None,
+    *,
+    portfolio_before: Mapping[str, Any] | None = None,
 ) -> bool:
+    position_rows = tuple(positions)
     if any(evidence.get(key) is True for key in ("btc_scenarios_applicable", "btc_scenario_required", "btc_exposure")):
         return True
     if _number(evidence.get("btc_exposure"), 0.0) > 0:
         return True
-    normalized_ticker = normalize_symbol(str(ticker or ""))
-    if normalized_ticker in {"BTC", "BTC-USD", "BITCOIN", "BITCOIN-USD"}:
+    authoritative_sources = (portfolio_before, evidence)
+    candidate_tickers = {
+        normalize_symbol(str(candidate or ""))
+        for source in authoritative_sources
+        if isinstance(source, Mapping)
+        for candidate in (
+            ticker,
+            _pick(source, "ticker", "symbol", "instrument_symbol"),
+        )
+        if candidate
+    }
+    candidate_tickers.update(
+        normalize_symbol(str(_pick(source[nested], "ticker", "symbol") or ""))
+        for source in authoritative_sources
+        if isinstance(source, Mapping)
+        for nested in ("instrument", "target_instrument")
+        if isinstance(source.get(nested), Mapping)
+        if _pick(source[nested], "ticker", "symbol")
+    )
+    if candidate_tickers & ({"BTC-USD", "BITCOIN", "BITCOIN-USD"} | _STOCK_CRYPTO_SENSITIVE_SYMBOLS):
         return True
-    if normalized_ticker in _STOCK_CRYPTO_SENSITIVE_SYMBOLS or _stock_crypto_signal(evidence):
+    if _stock_crypto_signal(evidence) or _stock_crypto_signal(portfolio_before):
         return True
     return any(
         isinstance(position, Mapping)
@@ -2738,7 +2768,7 @@ def _stock_btc_scenarios_required(
             }
             or normalize_symbol(str(position.get("symbol") or "")) in _STOCK_CRYPTO_SENSITIVE_SYMBOLS
         )
-        for position in positions
+        for position in position_rows
     )
 
 
@@ -2764,29 +2794,69 @@ def _stock_scenario_magnitudes(value: Mapping[str, Any]) -> tuple[float, ...] | 
     return tuple(magnitudes)
 
 
-def _stock_matches_shocks(value: Mapping[str, Any], expected: tuple[float, ...]) -> bool:
-    actual = _stock_scenario_magnitudes(value)
+def _stock_pnl_cases(value: Mapping[str, Any]) -> Mapping[Any, Any] | None:
+    raw = _pick(value, "pnl_by_shock", "pnl_by_magnitude", "pnl_by_percent", "pnl_by_pct")
+    if raw is None and isinstance(value.get("pnl"), Mapping):
+        raw = value["pnl"]
+    if raw is None:
+        raw = _pick(value, "pnl_by_scenario", "values")
+    return raw if isinstance(raw, Mapping) else None
+
+
+def _stock_pnl_by_shock(value: Mapping[str, Any]) -> dict[float, float] | None:
+    cases = _stock_pnl_cases(value)
+    if cases is None:
+        return None
+    result: dict[float, float] = {}
+    for raw_shock, raw_pnl in cases.items():
+        shock = _number(raw_shock)
+        pnl = _number(raw_pnl)
+        if shock is None or pnl is None or any(
+            math.isclose(shock, existing, rel_tol=1e-9, abs_tol=1e-9)
+            for existing in result
+        ):
+            return None
+        result[shock] = pnl
+    return result
+
+
+def _stock_numeric_keys_match(values: Mapping[float, Any] | None, expected: tuple[float, ...]) -> bool:
     return (
-        actual is not None
-        and len(actual) == len(expected)
+        values is not None
+        and len(values) == len(expected)
         and all(
-            math.isclose(left, right, rel_tol=1e-9, abs_tol=1e-9)
-            for left, right in zip(sorted(actual), sorted(expected))
+            any(math.isclose(actual, wanted, rel_tol=1e-9, abs_tol=1e-9) for actual in values)
+            for wanted in expected
         )
     )
 
 
-def _stock_has_pnl(value: Any) -> bool:
+def _stock_matches_shocks(value: Mapping[str, Any], expected: tuple[float, ...]) -> bool:
+    actual = _stock_scenario_magnitudes(value)
+    if actual is not None:
+        return (
+            len(actual) == len(expected)
+            and all(
+                math.isclose(left, right, rel_tol=1e-9, abs_tol=1e-9)
+                for left, right in zip(sorted(actual), sorted(expected))
+            )
+        )
+    return _stock_numeric_keys_match(_stock_pnl_by_shock(value), expected)
+
+
+def _stock_has_pnl(value: Any, expected: tuple[float, ...] | None = None) -> bool:
     if not isinstance(value, Mapping):
         return _number(value) is not None
     pnl = _pick(value, "pnl", "pnl_usd", "value")
+    if expected is not None and len(expected) > 1:
+        return _stock_numeric_keys_match(_stock_pnl_by_shock(value), expected)
     if _number(pnl) is not None:
         return True
-    pnl_cases = _pick(value, "pnl_by_shock", "pnl_by_scenario", "values")
-    return (
-        isinstance(pnl_cases, Mapping)
-        and bool(pnl_cases)
-        and all(_number(item) is not None for item in pnl_cases.values())
+    if expected is not None:
+        return _stock_numeric_keys_match(_stock_pnl_by_shock(value), expected)
+    pnl_cases = _stock_pnl_cases(value)
+    return isinstance(pnl_cases, Mapping) and bool(pnl_cases) and all(
+        _number(item) is not None for item in pnl_cases.values()
     )
 
 
@@ -2942,11 +3012,12 @@ def _stock_scenario_pnl(
         if key is None:
             return None
         value = raw[key]
-        if not _stock_has_pnl(value):
+        expected_shocks = _STOCK_SCENARIO_SHOCKS.get(name)
+        if not _stock_has_pnl(value, expected_shocks):
             return None
-        if name in _STOCK_SCENARIO_SHOCKS and not isinstance(value, Mapping):
+        if expected_shocks is not None and not isinstance(value, Mapping):
             return None
-        if name in _STOCK_SCENARIO_SHOCKS and not _stock_matches_shocks(value, _STOCK_SCENARIO_SHOCKS[name]):
+        if expected_shocks is not None and not _stock_matches_shocks(value, expected_shocks):
             return None
         if name == "earnings_gap":
             if not isinstance(value, Mapping) or not _stock_earnings_gap_complete(value, largest_holding):
@@ -2974,14 +3045,58 @@ def _stock_evidence_label(value: Any) -> str | None:
     return None if label.lower() in _STOCK_PLACEHOLDER_LABELS else label
 
 
-def _stock_verified_ticker(value: Any, evidence: Mapping[str, Any]) -> str | None:
-    explicit_verified = False
-    candidate = value
-    if isinstance(value, Mapping):
-        candidate = _pick(value, "ticker", "symbol")
-        if any(key in value and value.get(key) is not True for key in ("verified", "catalog_verified")):
-            return None
-        explicit_verified = any(value.get(key) is True for key in ("verified", "catalog_verified"))
+def _stock_catalog_entry_ticker(value: Any, fallback: Any = None) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    if (
+        value.get("instrument_id") is None
+        and value.get("catalog_instrument_id") is None
+        and value.get("id") is None
+    ):
+        return None
+    ticker = normalize_symbol(str(_pick(value, "ticker", "symbol") or fallback or ""))
+    return (
+        ticker
+        if ticker
+        and SYMBOL_RE.fullmatch(ticker) is not None
+        and ticker.lower() not in _STOCK_TOP_ALTERNATIVE_PLACEHOLDERS
+        else None
+    )
+
+
+def _stock_authoritative_catalog_tickers(*sources: Any) -> set[str]:
+    tickers = set(_STOCK_CATALOG_TICKERS)
+    containers = (
+        "instrument", "target_instrument", "instrument_catalog", "catalog_instruments",
+        "catalog", "instruments",
+    )
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for position in source.get("positions") or ():
+            ticker = _stock_catalog_entry_ticker(position)
+            if ticker is not None:
+                tickers.add(ticker)
+        for container in containers:
+            entries = source.get(container)
+            ticker = _stock_catalog_entry_ticker(entries)
+            if ticker is not None:
+                tickers.add(ticker)
+            if isinstance(entries, Mapping):
+                for key, entry in entries.items():
+                    ticker = _stock_catalog_entry_ticker(entry, fallback=key)
+                    if ticker is not None:
+                        tickers.add(ticker)
+            elif isinstance(entries, (list, tuple, set, frozenset)):
+                for entry in entries:
+                    ticker = _stock_catalog_entry_ticker(entry)
+                    if ticker is not None:
+                        tickers.add(ticker)
+    return tickers
+
+
+def _stock_verified_ticker(value: Any, authoritative_tickers: set[str]) -> str | None:
+    candidate = _pick(value, "ticker", "symbol") if isinstance(value, Mapping) else value
     ticker = normalize_symbol(str(candidate or ""))
     if (
         not ticker
@@ -2989,34 +3104,23 @@ def _stock_verified_ticker(value: Any, evidence: Mapping[str, Any]) -> str | Non
         or ticker.lower() in _STOCK_TOP_ALTERNATIVE_PLACEHOLDERS
     ):
         return None
-    if explicit_verified:
-        return ticker
-    verified_tickers = evidence.get("verified_tickers")
-    if isinstance(verified_tickers, Mapping):
-        marker = next(
-            (item for key, item in verified_tickers.items() if normalize_symbol(str(key or "")) == ticker),
-            None,
-        )
-        explicit_verified = marker is True or (
-            isinstance(marker, Mapping)
-            and (marker.get("verified") is True or marker.get("status") == "verified")
-        )
-        return ticker if explicit_verified else None
-    elif isinstance(verified_tickers, (list, tuple, set, frozenset)):
-        return ticker if any(normalize_symbol(str(item or "")) == ticker for item in verified_tickers) else None
-    return ticker if ticker in _STOCK_VERIFIED_TICKERS else None
+    return ticker if ticker in authoritative_tickers else None
 
 
 def _stock_top_alternative(
     evidence: Mapping[str, Any],
     cash_comparator: Mapping[str, Any] | None,
+    portfolio_before: Mapping[str, Any] | None = None,
 ) -> str | None:
+    authoritative_tickers = _stock_authoritative_catalog_tickers(
+        evidence, portfolio_before, cash_comparator,
+    )
     if "top_alternative" in evidence:
-        return _stock_verified_ticker(evidence.get("top_alternative"), evidence)
+        return _stock_verified_ticker(evidence.get("top_alternative"), authoritative_tickers)
     if isinstance(cash_comparator, Mapping):
         for key in ("top_alternative", "alternative"):
             if key in cash_comparator:
-                return _stock_verified_ticker(cash_comparator.get(key), evidence)
+                return _stock_verified_ticker(cash_comparator.get(key), authoritative_tickers)
     return None
 
 
@@ -3192,7 +3296,7 @@ def _stock_impact_values(
     funding, trim = _stock_funding_evidence(evidence)
     if funding is None:
         blockers.append("stock_funding_evidence_missing")
-    top_alternative = _stock_top_alternative(evidence, cash_comparator)
+    top_alternative = _stock_top_alternative(evidence, cash_comparator, replay)
     if top_alternative is None:
         blockers.append("stock_top_alternative_missing")
     if funding is not None:
@@ -3254,8 +3358,7 @@ def compose_portfolio_impact(
     elif kind is ExpressionKind.STOCK and not blockers:
         before_book = dict(before)
         before_metrics, after_metrics, stock_values, stock_blockers = _stock_impact_values(expression, before)
-        after = dict(before)
-        after["stock_impact"] = after_metrics
+        after = {**before, "ticker": expression.ticker, "stock_impact": after_metrics}
         blockers.extend(stock_blockers)
         availability = "unavailable" if blockers else "available"
         values = {
@@ -3269,7 +3372,7 @@ def compose_portfolio_impact(
             },
             **stock_values,
         }
-        before = {**before_book, "stock_impact": before_metrics}
+        before = {**before_book, "ticker": expression.ticker, "stock_impact": before_metrics}
     else:
         after = {}
         availability = "unavailable"
