@@ -26,12 +26,19 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     tables, _ = load_postgres_tables(config, ("ticker_decisions",), runtime_profile=JOB_PROFILE)
     repository = DecisionInboxRepository(runtime_for_config(config))
     synced = repository.sync_current_decisions(tables["ticker_decisions"])
+    paper_lifecycle = repository.sync_ticker_paper_lifecycle()
     if not settings.telegram_notifications_enabled:
-        return {"status": "ok", "synced": synced, "delivery": {"skipped": 1, "reason": "telegram_notifications_enabled_false"}}
+        return {
+            "status": "ok", "synced": synced, "paper_lifecycle": paper_lifecycle,
+            "delivery": {"skipped": 1, "reason": "telegram_notifications_enabled_false"},
+        }
     dry_run = bool(settings.telegram_notifications_dry_run)
     sender: Callable[[str], None] | None = None if dry_run else _fixed_owner_sender()
     delivery = repository.deliver_outbox(sender=sender, dry_run=dry_run)
-    return {"status": "ok", "synced": synced, "delivery": delivery, "telegram_dry_run": dry_run}
+    return {
+        "status": "ok", "synced": synced, "paper_lifecycle": paper_lifecycle,
+        "delivery": delivery, "telegram_dry_run": dry_run,
+    }
 
 
 def _fixed_owner_sender() -> Callable[[str], None]:

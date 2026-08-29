@@ -6,13 +6,16 @@ risk events.  Provider, scheduler, and agent failures remain health data.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import base64
 import json
 from datetime import UTC, datetime, timedelta
+import math
 from typing import Any, Callable
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.core.decision import TradePlan
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import plan_authority
 
@@ -29,6 +32,8 @@ CANONICAL_TRANSITIONS = frozenset({
 })
 ACTIONABLE_TRANSITIONS = frozenset({"newly_actionable", "action_changed"})
 CANONICAL_STATE_KEY = "canonical_decision_transition"
+TICKER_PAPER_TRANSITIONS = frozenset({"paper_staged", "paper_filled", "paper_exited"})
+TICKER_PAPER_STATE_KEY = "canonical_ticker_paper_lifecycle"
 
 
 class DecisionInboxRepository:
@@ -82,7 +87,7 @@ class DecisionInboxRepository:
         if normalized_type not in INBOX_EVENT_TYPES:
             raise ValueError("unsupported decision Inbox event type")
         normalized_lane = (lane or str(payload.get("lane") or "")).lower() or None
-        if normalized_lane not in {None, "radar", "qqq", "recovery"}:
+        if normalized_lane not in {None, "radar", "qqq", "recovery", "ticker"}:
             raise ValueError("unsupported paper lane")
         if severity not in {"info", "warning", "critical"}:
             raise ValueError("unsupported decision Inbox severity")
@@ -254,6 +259,140 @@ class DecisionInboxRepository:
             assert existing is not None
             return existing["activated_at"], False
 
+    def sync_ticker_paper_lifecycle(
+        self, *, now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Record post-activation lifecycle facts for canonical ticker paper orders."""
+
+        reference = _utc(now)
+        activation_at, is_bootstrap = self._paper_lifecycle_activation(reference)
+        created = {transition: 0 for transition in TICKER_PAPER_TRANSITIONS}
+        if is_bootstrap:
+            return created
+
+        with self.runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT id::text, created_at, status, quantity, filled_quantity,
+                       filled_at, actual_fill_price, exited_quantity, exit_at,
+                       exit_price, fees, lane, paper_only, ticker_decision_revision,
+                       policy_result, policy_snapshot, thesis_snapshot, ticket_snapshot
+                FROM app.paper_order
+                WHERE lane = 'ticker' AND paper_only = TRUE
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+
+        candidates: dict[str, list[dict[str, Any]]] = {}
+        for raw in rows:
+            order = _validated_ticker_paper_order(dict(raw))
+            if order is None:
+                continue
+            events = _ticker_paper_events(order, activation_at, reference)
+            if events:
+                candidates[str(order["id"])] = events
+
+        for paper_order_id in sorted(candidates):
+            with self.runtime.transaction() as connection:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    [f"paper-order:decision-inbox:ticker-lifecycle:{paper_order_id}"],
+                )
+                row = connection.execute(
+                    """
+                    SELECT id::text, created_at, status, quantity, filled_quantity,
+                           filled_at, actual_fill_price, exited_quantity, exit_at,
+                           exit_price, fees, lane, paper_only, ticker_decision_revision,
+                           policy_result, policy_snapshot, thesis_snapshot, ticket_snapshot
+                    FROM app.paper_order
+                    WHERE id = %s::uuid AND lane = 'ticker' AND paper_only = TRUE
+                    FOR UPDATE
+                    """,
+                    [paper_order_id],
+                ).fetchone()
+                order = _validated_ticker_paper_order(dict(row)) if row is not None else None
+                if order is None:
+                    continue
+                for event in _ticker_paper_events(order, activation_at, reference):
+                    transition = str(event["state_transition"])
+                    emitted = self._emit_in_transaction(
+                        connection,
+                        event_type={"paper_staged": "ready", "paper_filled": "paper_filled", "paper_exited": "paper_exited"}[transition],
+                        payload=event,
+                        paper_order_id=paper_order_id,
+                        lane="ticker",
+                        severity="info",
+                        dedupe_key=_ticker_paper_dedupe_key(
+                            paper_order_id,
+                            str(event["trade_plan_id"]),
+                            str(event["decision_revision"]),
+                            str(event["policy_version"]),
+                            transition,
+                        ),
+                    )
+                    self._resolve_ticker_paper_items(connection, event)
+                    created[transition] += int(emitted["created"])
+        return created
+
+    def _paper_lifecycle_activation(self, reference: datetime) -> tuple[datetime, bool]:
+        """Return the durable ticker paper lifecycle watermark and bootstrap state."""
+
+        with self.runtime.transaction() as connection:
+            inserted = connection.execute(
+                """
+                INSERT INTO app.decision_inbox_sync_state (state_key, activated_at)
+                VALUES (%s, %s)
+                ON CONFLICT (state_key) DO NOTHING
+                RETURNING activated_at
+                """,
+                [TICKER_PAPER_STATE_KEY, reference],
+            ).fetchone()
+            if inserted is not None:
+                return inserted["activated_at"], True
+            existing = connection.execute(
+                "SELECT activated_at FROM app.decision_inbox_sync_state WHERE state_key = %s",
+                [TICKER_PAPER_STATE_KEY],
+            ).fetchone()
+            assert existing is not None
+            return existing["activated_at"], False
+
+    def _resolve_ticker_paper_items(self, connection: Any, event: dict[str, Any]) -> None:
+        transition = str(event["state_transition"])
+        paper_order_id = str(event["paper_order_id"])
+        if transition == "paper_staged":
+            connection.execute(
+                """
+                UPDATE app.decision_inbox_item
+                SET status = 'resolved', resolved_at = now()
+                WHERE status = 'active' AND event_type = 'ready'
+                  AND payload->>'ticker' = %s
+                  AND payload->>'opportunity_episode_id' = %s
+                  AND payload->>'trade_plan_id' = %s
+                  AND payload->>'decision_revision' = %s
+                  AND payload->>'policy_version' = %s
+                  AND payload->>'state_transition' IN ('newly_actionable', 'action_changed')
+                """,
+                [
+                    event["ticker"], event["opportunity_episode_id"],
+                    event["trade_plan_id"], event["decision_revision"],
+                    event["policy_version"],
+                ],
+            )
+            return
+        transitions = {
+            "paper_filled": ("paper_staged",),
+            "paper_exited": ("paper_staged", "paper_filled"),
+        }[transition]
+        connection.execute(
+            """
+            UPDATE app.decision_inbox_item
+            SET status = 'resolved', resolved_at = now()
+            WHERE status = 'active' AND paper_order_id = %s::uuid
+              AND payload->>'state_transition' = ANY(%s::text[])
+            """,
+            [paper_order_id, list(transitions)],
+        )
+
     def _latest_canonical_state(self, episode_id: str, activation_at: datetime) -> dict[str, Any] | None:
         with self.runtime.read() as connection:
             rows = connection.execute(
@@ -424,6 +563,28 @@ class DecisionInboxRepository:
 def telegram_message(payload: dict[str, Any]) -> str:
     """Format an owner message without secrets or full evidence packets."""
 
+    if payload.get("state_transition") in TICKER_PAPER_TRANSITIONS:
+        ticker = str(payload.get("ticker") or "TICKER")
+        parts = ["PAPER ONLY", f"{ticker} · {payload['state_transition']}"]
+        for key, label in (
+            ("paper_order_id", "Paper order"),
+            ("trade_plan_id", "TradePlan"),
+            ("quantity", "Quantity"),
+            ("filled_quantity", "Filled quantity"),
+            ("exited_quantity", "Exited quantity"),
+            ("fill_price", "Fill price"),
+            ("exit_price", "Exit price"),
+            ("fees", "Fees"),
+            ("reason", "Reason"),
+        ):
+            value = payload.get(key)
+            if value is not None and str(value).strip():
+                parts.append(f"{label}: {value}")
+        detail_url = str(payload.get("detail_url") or "").strip()
+        if detail_url:
+            parts.append(detail_url)
+        return "\n".join(parts)[:4096]
+
     if payload.get("state_transition") in CANONICAL_TRANSITIONS:
         ticker = str(payload.get("ticker") or payload.get("symbol") or "TICKER")
         transition = str(payload["state_transition"])
@@ -569,6 +730,201 @@ def _canonical_dedupe_key(
     )
 
 
+def _validated_ticker_paper_order(row: dict[str, Any]) -> dict[str, Any] | None:
+    if str(row.get("lane") or "").strip().lower() != "ticker" or row.get("paper_only") is not True:
+        return None
+    paper_order_id = str(row.get("id") or "").strip()
+    revision = str(row.get("ticker_decision_revision") or "").strip()
+    expression_kind = str(row.get("expression_kind") or "").strip().upper()
+    if not paper_order_id or not revision or not expression_kind:
+        return None
+    if _parse_time(row.get("created_at")) is None or not str(row.get("status") or "").strip():
+        return None
+
+    plans: list[TradePlan] = []
+    for field in ("policy_snapshot", "policy_result", "ticket_snapshot", "thesis_snapshot"):
+        container = row.get(field)
+        if not isinstance(container, Mapping) or "trade_plan" not in container:
+            continue
+        raw_plan = container.get("trade_plan")
+        if not isinstance(raw_plan, Mapping):
+            return None
+        try:
+            plans.append(TradePlan.model_validate(raw_plan))
+        except (KeyError, TypeError, ValueError):
+            return None
+    if not plans or any(plan.model_dump(mode="json") != plans[0].model_dump(mode="json") for plan in plans[1:]):
+        return None
+    plan = plans[0]
+    publication_id = str(plan.publication_id or "").strip()
+    if (
+        not publication_id
+        or plan.eligibility != "ACTIONABLE"
+        or plan.authorization_mode != "PAPER"
+        or plan.decision_revision != revision
+        or str(row.get("expression_kind") or "").upper() != plan.selected_expression_kind.value
+    ):
+        return None
+
+    policy_sources = [
+        value for field in ("policy_snapshot", "policy_result")
+        if isinstance((value := row.get(field)), Mapping) and value
+    ]
+    if not policy_sources:
+        return None
+    owners = [str(source.get("owner") or "").strip() for source in policy_sources if source.get("owner") is not None]
+    if not owners or any(owner != "ticker-first" for owner in owners):
+        return None
+    expected_policy = {
+        "decision_revision": plan.decision_revision,
+        "policy_version": plan.policy_version,
+        "trade_plan_id": plan.trade_plan_id,
+        "trade_plan_publication_id": publication_id,
+        "expression_kind": plan.selected_expression_kind.value,
+    }
+    for key, expected in expected_policy.items():
+        values = [source.get(key) for source in policy_sources if source.get(key) not in (None, "")]
+        if not values or any(str(value) != str(expected) for value in values):
+            return None
+    expected_identity = {
+        "paper_order_id": paper_order_id,
+        "ticker": plan.ticker,
+        "opportunity_episode_id": plan.opportunity_episode_id,
+        "selected_expression_identity": plan.selected_expression_identity,
+    }
+    for source in policy_sources:
+        rank = source.get("opportunity_rank")
+        if rank is not None and not isinstance(rank, Mapping):
+            return None
+        for key, expected in expected_identity.items():
+            if key in source and str(source.get(key) or "") != str(expected):
+                return None
+        if isinstance(rank, Mapping):
+            for key in ("ticker", "opportunity_episode_id", "selected_expression_identity"):
+                if key in rank and str(rank.get(key) or "") != str(expected_identity[key]):
+                    return None
+    for field in ("ticket_snapshot", "thesis_snapshot"):
+        snapshot = row.get(field)
+        if not isinstance(snapshot, Mapping):
+            continue
+        for key, expected in (
+            ("ticker", plan.ticker),
+            ("opportunity_episode_id", plan.opportunity_episode_id),
+            ("decision_revision", plan.decision_revision),
+            ("policy_version", plan.policy_version),
+        ):
+            if key in snapshot and str(snapshot.get(key) or "") != str(expected):
+                return None
+    result = dict(row)
+    result["_trade_plan"] = plan
+    return result
+
+
+def _ticker_paper_events(
+    order: dict[str, Any], activation_at: datetime, reference: datetime,
+) -> list[dict[str, Any]]:
+    plan = order["_trade_plan"]
+    quantity = _positive_finite_number(order.get("quantity"))
+    created_at = _parse_time(order.get("created_at"))
+    if quantity is None or created_at is None or created_at > reference:
+        return []
+
+    def post_activation(stamp: datetime | None) -> bool:
+        return stamp is not None and activation_at < stamp <= reference
+
+    events: list[dict[str, Any]] = []
+    if post_activation(created_at):
+        events.append(_ticker_paper_payload(order, plan, "paper_staged", created_at, quantity))
+
+    filled_quantity = _positive_finite_number(order.get("filled_quantity"))
+    filled_at = _parse_time(order.get("filled_at"))
+    if (
+        filled_quantity is not None
+        and filled_quantity <= quantity
+        and filled_at is not None
+        and created_at <= filled_at <= reference
+        and post_activation(filled_at)
+    ):
+        events.append(
+            _ticker_paper_payload(
+                order, plan, "paper_filled", filled_at, quantity,
+                filled_quantity=filled_quantity,
+            )
+        )
+
+    exited_quantity = _positive_finite_number(order.get("exited_quantity"))
+    exit_at = _parse_time(order.get("exit_at"))
+    if (
+        str(order.get("status") or "").lower() == "exited"
+        and filled_quantity is not None
+        and exited_quantity is not None
+        and exited_quantity <= filled_quantity
+        and filled_at is not None
+        and exit_at is not None
+        and filled_at <= exit_at <= reference
+        and post_activation(exit_at)
+    ):
+        events.append(
+            _ticker_paper_payload(
+                order, plan, "paper_exited", exit_at, quantity,
+                filled_quantity=filled_quantity, exited_quantity=exited_quantity,
+            )
+        )
+    return events
+
+
+def _ticker_paper_payload(
+    order: dict[str, Any], plan: TradePlan, transition: str, transition_at: datetime,
+    quantity: float, *, filled_quantity: float | None = None,
+    exited_quantity: float | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "paper_only": True,
+        "ticker": plan.ticker,
+        "state_transition": transition,
+        "paper_order_id": str(order["id"]),
+        "trade_plan_id": plan.trade_plan_id,
+        "trade_plan_publication_id": str(plan.publication_id),
+        "opportunity_episode_id": plan.opportunity_episode_id,
+        "decision_revision": plan.decision_revision,
+        "policy_version": plan.policy_version,
+        "selected_expression_kind": plan.selected_expression_kind.value,
+        "selected_expression_identity": plan.selected_expression_identity,
+        "transition_at": transition_at.isoformat(),
+        "quantity": quantity,
+        "detail_url": f"/tickers/{plan.ticker}",
+    }
+    if filled_quantity is not None:
+        payload["filled_quantity"] = filled_quantity
+    if exited_quantity is not None:
+        payload["exited_quantity"] = exited_quantity
+    if transition in {"paper_filled", "paper_exited"}:
+        fill_price = _positive_finite_number(order.get("actual_fill_price"))
+        if fill_price is not None:
+            payload["fill_price"] = fill_price
+    if transition == "paper_exited":
+        exit_price = _positive_finite_number(order.get("exit_price"))
+        if exit_price is not None:
+            payload["exit_price"] = exit_price
+    fees = _finite_number(order.get("fees"))
+    if fees is not None:
+        payload["fees"] = fees
+    reason = _compact_text(order.get("unfilled_reason"))
+    if reason:
+        payload["reason"] = reason
+    return payload
+
+
+def _ticker_paper_dedupe_key(
+    paper_order_id: str, trade_plan_id: str, decision_revision: str,
+    policy_version: str, transition: str,
+) -> str:
+    return "ticker-paper:" + json.dumps(
+        [paper_order_id, trade_plan_id, decision_revision, policy_version, transition],
+        separators=(",", ":"),
+    )
+
+
 def _ticket_event_payload(source: dict[str, Any], ticket: dict[str, Any]) -> dict[str, Any]:
     blockers = [str(value) for value in ticket.get("blockers") or source.get("blockers") or [] if str(value)]
     entry = dict(ticket.get("entry") or {})
@@ -658,8 +1014,18 @@ def _int(value: Any) -> int | None:
 def _number(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _finite_number(value: Any) -> float | None:
+    number = _number(value)
+    return number if number is not None and math.isfinite(number) else None
+
+
+def _positive_finite_number(value: Any) -> float | None:
+    number = _finite_number(value)
+    return number if number is not None and number > 0 else None
 
 
 def _first(value: Any) -> str | None:

@@ -423,3 +423,48 @@ def test_decision_inbox_rejects_invalid_current_rows_and_duplicate_authority(
         assert inbox.rows()["items"] == []
     finally:
         runtime.close()
+
+
+def test_ticker_paper_lifecycle_projection_is_bounded_and_ordered() -> None:
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    plan = SimpleNamespace(
+        ticker="TSLA", trade_plan_id="trade-plan:tsla", publication_id="publication:tsla",
+        opportunity_episode_id="episode-tsla", decision_revision="revision-tsla",
+        policy_version="risk-policy.v2:tsla",
+        selected_expression_kind=SimpleNamespace(value="STOCK"),
+        selected_expression_identity="STOCK:tsla",
+    )
+    order = {
+        "id": str(uuid4()), "_trade_plan": plan, "quantity": 2,
+        "created_at": reference + timedelta(minutes=1),
+        "filled_quantity": 2, "filled_at": reference + timedelta(minutes=2),
+        "exited_quantity": 2, "exit_at": reference + timedelta(minutes=3),
+        "status": "exited", "actual_fill_price": 101.25, "exit_price": 105.5,
+        "fees": 0.25, "unfilled_reason": None,
+    }
+
+    events = decision_inbox_module._ticker_paper_events(
+        order, reference, reference + timedelta(minutes=4),
+    )
+
+    assert [event["state_transition"] for event in events] == [
+        "paper_staged", "paper_filled", "paper_exited",
+    ]
+    assert events[0]["quantity"] == 2.0
+    assert events[1]["filled_quantity"] == 2.0
+    assert events[2]["exited_quantity"] == 2.0
+    assert events[2]["transition_at"] == (reference + timedelta(minutes=3)).isoformat()
+
+
+def test_ticker_paper_message_is_paper_only_and_excludes_untrusted_fields() -> None:
+    message = telegram_message({
+        "paper_only": True, "ticker": "TSLA", "state_transition": "paper_filled",
+        "paper_order_id": str(uuid4()), "trade_plan_id": "trade-plan:tsla",
+        "quantity": 2, "filled_quantity": 2, "fill_price": 101.25, "fees": 0.25,
+        "detail_url": "/tickers/TSLA", "evidence": {"secret": "drop"},
+    })
+
+    assert "PAPER ONLY" in message
+    assert "paper_filled" in message
+    assert "LIVE" not in message
+    assert "evidence" not in message.lower()
