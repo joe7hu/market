@@ -1,17 +1,34 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+import hashlib
+import json
 from threading import Barrier
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from psycopg.types.json import Jsonb
 
+from investment_panel.core.decision import (
+    ExpressionDecision,
+    ExpressionKind,
+    Horizon,
+    InputLineage,
+    Invalidation,
+    PortfolioImpact,
+    PriceRange,
+    Stance,
+    TradePlan,
+    trade_expression_identity,
+)
 from investment_panel.database import decision_inbox as decision_inbox_module
 from investment_panel.database.decision_inbox import DecisionInboxRepository, telegram_message
+from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.jobs import decision_inbox as decision_inbox_job
 
 
 def test_decision_inbox_dedupes_actionable_ticket_events_and_dry_runs_delivery(
@@ -131,6 +148,140 @@ def _row(
         "_plan": plan or _plan(),
         "_plan_blocker": plan_blocker,
     }
+
+
+def _paper_plan(ticker: str, cutoff: datetime) -> TradePlan:
+    lineage = InputLineage(
+        field="decision", source_id="decision-inbox-test",
+        available_at=cutoff - timedelta(minutes=5), cutoff=cutoff,
+    )
+    expression = ExpressionDecision(
+        kind=ExpressionKind.STOCK, ticker=ticker, horizon=Horizon.TACTICAL,
+        thesis_revision=f"thesis:{ticker}", stance=Stance.BULLISH,
+        entry_range=PriceRange(low=99, high=101),
+        target_range=PriceRange(low=110, high=120),
+        invalidation=Invalidation(kind="price", value=90, statement="below 90"),
+        quantity=2, loss_budget=20, max_loss_per_unit=10, planned_loss=20,
+        status="eligible", selected=True, rationale="test plan",
+    )
+    identity = trade_expression_identity(expression)
+    impact = PortfolioImpact(
+        impact_id=f"impact:{ticker}", opportunity_episode_id=f"episode:{ticker}",
+        expression_kind=ExpressionKind.STOCK, expression_identity=identity,
+        decision_revision=f"revision:{ticker}", risk_policy_version=f"policy:{ticker}",
+        market_snapshot_id=f"snapshot:{ticker}",
+        market_state_publication_id=f"market-publication:{ticker}", cutoff=cutoff,
+        input_lineage=(lineage,), availability="unavailable", blockers=("test-only",),
+    )
+    values: dict[str, Any] = {
+        "contract_version": "trade-plan.v1", "publication_id": f"publication:{ticker}",
+        "ticker": ticker, "opportunity_episode_id": f"episode:{ticker}",
+        "decision_revision": f"revision:{ticker}", "policy_version": f"policy:{ticker}",
+        "cutoff": cutoff, "input_lineage": (lineage,),
+        "selected_expression_kind": ExpressionKind.STOCK,
+        "selected_expression_identity": identity, "selected_expression": expression,
+        "rank_id": f"rank:{ticker}", "alpha_signal_id": f"signal:{ticker}",
+        "portfolio_impact_id": impact.impact_id, "market_snapshot_id": f"snapshot:{ticker}",
+        "market_state_publication_id": f"market-publication:{ticker}",
+        "action": "BUY", "eligibility": "ACTIONABLE", "authorization_mode": "PAPER",
+        "data_quality": "FRESH", "rationale": "test plan", "primary_blocker": None,
+        "blockers": (),
+        "next_action": "observe", "entry": expression.entry_range, "entry_limit": 100.0,
+        "quantity": 2, "max_loss_per_unit": 10.0, "planned_loss": 20.0,
+        "invalidation": expression.invalidation, "profit_exit": expression.target_range,
+        "expiry": cutoff.date() + timedelta(days=10), "portfolio_impact": impact,
+    }
+    values["trade_plan_id"] = _paper_plan_id({
+        key: value for key, value in values.items() if key != "publication_id"
+    })
+    return TradePlan.model_validate(values)
+
+
+def _paper_plan_id(value: Any) -> str:
+    def jsonable(item: Any) -> Any:
+        if hasattr(item, "model_dump"):
+            return item.model_dump(mode="json")
+        if isinstance(item, dict):
+            return {str(key): jsonable(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [jsonable(child) for child in item]
+        if isinstance(item, (datetime, date)):
+            return item.isoformat().replace("+00:00", "Z") if isinstance(item, datetime) else item.isoformat()
+        if hasattr(item, "value"):
+            return item.value
+        return item
+
+    encoded = json.dumps(jsonable(value), sort_keys=True, separators=(",", ":"))
+    return "trade-plan.v1:" + hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _paper_policy(plan: TradePlan) -> dict[str, Any]:
+    return {
+        "owner": "ticker-first", "decision_revision": plan.decision_revision,
+        "policy_version": plan.policy_version, "expression_kind": plan.selected_expression_kind.value,
+        "trade_plan_id": plan.trade_plan_id,
+        "trade_plan_publication_id": plan.publication_id,
+        "opportunity_rank": {
+            "ticker": plan.ticker, "opportunity_episode_id": plan.opportunity_episode_id,
+            "selected_expression_identity": plan.selected_expression_identity,
+        },
+        "trade_plan": plan.model_dump(mode="json"),
+    }
+
+
+def _insert_ticker_paper_order(
+    runtime: DatabaseRuntime,
+    plan: TradePlan,
+    *,
+    created_at: datetime,
+    instrument_symbol: str | None = None,
+    lane: str = "ticker",
+    paper_only: bool = True,
+    status: str = "staged",
+    filled_quantity: float | None = None,
+    filled_at: datetime | None = None,
+    actual_fill_price: float | None = None,
+    exited_quantity: float = 0,
+    exit_at: datetime | None = None,
+    exit_price: float | None = None,
+    fees: float = 0,
+    unfilled_reason: str | None = None,
+    policy_result: dict[str, Any] | None = None,
+) -> str:
+    policy = policy_result or _paper_policy(plan)
+    snapshot = {"trade_plan": plan.model_dump(mode="json"), "ticker": plan.ticker}
+    symbol = instrument_symbol or plan.ticker
+    with runtime.transaction() as connection:
+        instrument_id = reconcile_instrument(
+            connection, symbol, name=symbol, asset_class="equity", category="test",
+        )
+        row = connection.execute(
+            """
+            INSERT INTO app.paper_order (
+                instrument_id, created_at, side, quantity, limit_price, status,
+                policy_result, policy_snapshot, lane, ticker_decision_revision,
+                expression_kind, thesis_snapshot, ticket_snapshot, paper_only,
+                filled_quantity, filled_at, actual_fill_price, exited_quantity,
+                exit_at, exit_price, fees, unfilled_reason
+            ) VALUES (
+                %s, %s, 'buy', 2, 100, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            RETURNING id::text
+            """,
+            [
+                instrument_id, created_at, status, Jsonb(policy), Jsonb(policy), lane,
+                plan.decision_revision, plan.selected_expression_kind.value,
+                Jsonb(snapshot), Jsonb(snapshot), paper_only, filled_quantity, filled_at,
+                actual_fill_price, exited_quantity, exit_at, exit_price, fees, unfilled_reason,
+            ],
+        ).fetchone()
+    assert row is not None
+    return str(row["id"])
+
+
+def _zero_paper_transitions() -> dict[str, int]:
+    return {"paper_staged": 0, "paper_filled": 0, "paper_exited": 0}
 
 
 def _stub_plan_authority(row: dict[str, object]) -> tuple[object | None, str | None]:
@@ -425,12 +576,269 @@ def test_decision_inbox_rejects_invalid_current_rows_and_duplicate_authority(
         runtime.close()
 
 
+def test_ticker_paper_lifecycle_postgres_activation_filtering_and_dedupe(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        assert inbox.sync_ticker_paper_lifecycle(now=reference) == _zero_paper_transitions()
+        old_plan = _paper_plan("OLD", reference - timedelta(minutes=2))
+        _insert_ticker_paper_order(
+            runtime, old_plan, created_at=reference - timedelta(minutes=1),
+        )
+        current_plan = _paper_plan("TSLA", reference)
+        current_order_id = _insert_ticker_paper_order(
+            runtime, current_plan, created_at=reference + timedelta(minutes=1),
+        )
+        _insert_ticker_paper_order(
+            runtime, current_plan, created_at=reference + timedelta(minutes=1), lane="radar",
+        )
+        _insert_ticker_paper_order(
+            runtime, current_plan, created_at=reference + timedelta(minutes=1), paper_only=False,
+        )
+        invalid_policy = _paper_policy(current_plan)
+        invalid_policy["trade_plan"] = {
+            **invalid_policy["trade_plan"], "ticker": "WRONG",
+        }
+        _insert_ticker_paper_order(
+            runtime, current_plan, created_at=reference + timedelta(minutes=1),
+            policy_result=invalid_policy,
+        )
+
+        result = inbox.sync_ticker_paper_lifecycle(now=reference + timedelta(minutes=2))
+        assert result == {"paper_staged": 1, "paper_filled": 0, "paper_exited": 0}
+        assert inbox.sync_ticker_paper_lifecycle(now=reference + timedelta(minutes=3)) == _zero_paper_transitions()
+        with runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT paper_order_id::text, dedupe_key, payload, status
+                FROM app.decision_inbox_item
+                WHERE lane = 'ticker'
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["paper_order_id"] == current_order_id
+        assert rows[0]["dedupe_key"] == decision_inbox_module._ticker_paper_dedupe_key(
+            current_order_id, current_plan.trade_plan_id,
+            current_plan.decision_revision, current_plan.policy_version, "paper_staged",
+        )
+        assert rows[0]["payload"]["paper_only"] is True
+    finally:
+        runtime.close()
+
+
+def test_ticker_paper_lifecycle_postgres_missed_poll_resolves_current_item(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    plan = _paper_plan("TSLA", reference)
+    try:
+        assert inbox.sync_ticker_paper_lifecycle(now=reference) == _zero_paper_transitions()
+        order_id = _insert_ticker_paper_order(
+            runtime, plan, created_at=reference + timedelta(minutes=1), status="exited",
+            filled_quantity=2, filled_at=reference + timedelta(minutes=2), actual_fill_price=101.25,
+            exited_quantity=2, exit_at=reference + timedelta(minutes=3), exit_price=105.5,
+            fees=0.25, unfilled_reason="missed poll",
+        )
+        inbox.emit(
+            event_type="ready", lane="ticker",
+            payload={
+                "ticker": plan.ticker, "opportunity_episode_id": plan.opportunity_episode_id,
+                "trade_plan_id": plan.trade_plan_id, "decision_revision": plan.decision_revision,
+                "policy_version": plan.policy_version, "state_transition": "newly_actionable",
+            },
+        )
+
+        result = inbox.sync_ticker_paper_lifecycle(now=reference + timedelta(minutes=4))
+        assert result == {"paper_staged": 1, "paper_filled": 1, "paper_exited": 1}
+        with runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_type, paper_order_id::text, payload, status, dedupe_key
+                FROM app.decision_inbox_item
+                WHERE lane = 'ticker'
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+        by_transition = {row["payload"]["state_transition"]: row for row in rows}
+        assert by_transition["newly_actionable"]["status"] == "resolved"
+        assert by_transition["paper_staged"]["status"] == "resolved"
+        assert by_transition["paper_filled"]["status"] == "resolved"
+        assert by_transition["paper_exited"]["status"] == "active"
+        for transition in ("paper_staged", "paper_filled", "paper_exited"):
+            row = by_transition[transition]
+            assert row["paper_order_id"] == order_id
+            assert row["dedupe_key"] == decision_inbox_module._ticker_paper_dedupe_key(
+                order_id, plan.trade_plan_id, plan.decision_revision, plan.policy_version, transition,
+            )
+            assert row["payload"]["paper_only"] is True
+            assert "trade_plan" not in row["payload"]
+            assert "evidence" not in row["payload"]
+        assert by_transition["paper_exited"]["payload"]["reason"] == "missed poll"
+        assert by_transition["paper_filled"]["payload"]["fill_price"] == 101.25
+        assert by_transition["paper_exited"]["payload"]["exit_price"] == 105.5
+    finally:
+        runtime.close()
+
+
+def test_ticker_paper_lifecycle_postgres_rejects_bad_sequence_identity_ticker_and_future_plan(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        assert inbox.sync_ticker_paper_lifecycle(now=reference) == _zero_paper_transitions()
+        sequence_plan = _paper_plan("SEQUENCE", reference)
+        _insert_ticker_paper_order(
+            runtime, sequence_plan, created_at=reference + timedelta(minutes=3), status="exited",
+            filled_quantity=2, filled_at=reference + timedelta(minutes=2),
+            exited_quantity=2, exit_at=reference + timedelta(minutes=4),
+        )
+        mismatch_plan = _paper_plan("PLAN", reference)
+        _insert_ticker_paper_order(
+            runtime, mismatch_plan, created_at=reference + timedelta(minutes=1),
+            instrument_symbol="INSTRUMENT",
+        )
+        future_plan = _paper_plan("FUTURE", reference + timedelta(minutes=10))
+        _insert_ticker_paper_order(
+            runtime, future_plan, created_at=reference + timedelta(minutes=20),
+        )
+
+        result = inbox.sync_ticker_paper_lifecycle(now=reference + timedelta(minutes=5))
+        assert result == {"paper_staged": 1, "paper_filled": 0, "paper_exited": 0}
+        assert len(inbox.rows()["items"]) == 1
+    finally:
+        runtime.close()
+
+
+def test_ticker_paper_lifecycle_postgres_advisory_lock_dedupes_overlap(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    plan = _paper_plan("OVERLAP", reference)
+    try:
+        inbox.sync_ticker_paper_lifecycle(now=reference)
+        _insert_ticker_paper_order(
+            runtime, plan, created_at=reference + timedelta(minutes=1),
+        )
+        barrier = Barrier(2)
+        original_activation = DecisionInboxRepository._paper_lifecycle_activation
+
+        def synchronized_activation(
+            repository: DecisionInboxRepository, value: datetime,
+        ) -> tuple[datetime, bool]:
+            result = original_activation(repository, value)
+            barrier.wait(timeout=5)
+            return result
+
+        monkeypatch.setattr(DecisionInboxRepository, "_paper_lifecycle_activation", synchronized_activation)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    DecisionInboxRepository(runtime).sync_ticker_paper_lifecycle,
+                    now=reference + timedelta(minutes=2),
+                )
+                for _ in range(2)
+            ]
+            results = [future.result(timeout=10) for future in futures]
+        assert sum(result["paper_staged"] for result in results) == 1
+        with runtime.read() as connection:
+            assert connection.execute(
+                "SELECT count(*) AS count FROM app.decision_inbox_item WHERE lane = 'ticker'"
+            ).fetchone()["count"] == 1
+    finally:
+        runtime.close()
+
+
+def test_ticker_paper_lifecycle_postgres_rolls_back_emit_and_retries(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    plan = _paper_plan("ROLLBACK", reference)
+    try:
+        inbox.sync_ticker_paper_lifecycle(now=reference)
+        _insert_ticker_paper_order(
+            runtime, plan, created_at=reference + timedelta(minutes=1),
+        )
+
+        original_resolution = DecisionInboxRepository._resolve_ticker_paper_items
+
+        def fail_resolution(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("resolution failed")
+
+        monkeypatch.setattr(DecisionInboxRepository, "_resolve_ticker_paper_items", fail_resolution)
+        with pytest.raises(RuntimeError, match="resolution failed"):
+            inbox.sync_ticker_paper_lifecycle(now=reference + timedelta(minutes=2))
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM app.decision_inbox_item").fetchone()["count"] == 0
+            assert connection.execute("SELECT count(*) AS count FROM app.notification_outbox").fetchone()["count"] == 0
+
+        monkeypatch.setattr(DecisionInboxRepository, "_resolve_ticker_paper_items", original_resolution)
+        assert inbox.sync_ticker_paper_lifecycle(now=reference + timedelta(minutes=2))["paper_staged"] == 1
+    finally:
+        runtime.close()
+
+
+def test_decision_inbox_job_calls_paper_lifecycle_once_after_decisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    settings = SimpleNamespace(
+        decision_inbox_enabled=True, telegram_notifications_enabled=False,
+    )
+    config = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=settings))
+
+    class FakeRepository:
+        def __init__(self, _runtime: object) -> None:
+            pass
+
+        def sync_current_decisions(self, rows: list[object]) -> dict[str, int]:
+            calls.append("decisions")
+            assert rows == []
+            return {"newly_actionable": 0}
+
+        def sync_ticker_paper_lifecycle(self) -> dict[str, int]:
+            calls.append("paper_lifecycle")
+            return _zero_paper_transitions()
+
+    monkeypatch.setattr(decision_inbox_job, "load_config", lambda _path: config)
+    monkeypatch.setattr(
+        decision_inbox_job, "load_postgres_tables", lambda *_args, **_kwargs: ({"ticker_decisions": []}, None),
+    )
+    monkeypatch.setattr(decision_inbox_job, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(decision_inbox_job, "DecisionInboxRepository", FakeRepository)
+
+    result = decision_inbox_job.run()
+
+    assert calls == ["decisions", "paper_lifecycle"]
+    assert result["paper_lifecycle"] == _zero_paper_transitions()
+    assert result["delivery"]["skipped"] == 1
+
+
 def test_ticker_paper_lifecycle_projection_is_bounded_and_ordered() -> None:
     reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
     plan = SimpleNamespace(
         ticker="TSLA", trade_plan_id="trade-plan:tsla", publication_id="publication:tsla",
         opportunity_episode_id="episode-tsla", decision_revision="revision-tsla",
         policy_version="risk-policy.v2:tsla",
+        cutoff=reference,
         selected_expression_kind=SimpleNamespace(value="STOCK"),
         selected_expression_identity="STOCK:tsla",
     )

@@ -273,13 +273,16 @@ class DecisionInboxRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                SELECT id::text, created_at, status, quantity, filled_quantity,
-                       filled_at, actual_fill_price, exited_quantity, exit_at,
-                       exit_price, fees, lane, paper_only, ticker_decision_revision,
-                       policy_result, policy_snapshot, thesis_snapshot, ticket_snapshot
-                FROM app.paper_order
-                WHERE lane = 'ticker' AND paper_only = TRUE
-                ORDER BY created_at, id
+                SELECT paper.id::text, instrument.symbol AS instrument_symbol,
+                       paper.created_at, paper.status, paper.quantity, paper.filled_quantity,
+                       paper.filled_at, paper.actual_fill_price, paper.exited_quantity, paper.exit_at,
+                       paper.exit_price, paper.fees, paper.unfilled_reason, paper.lane, paper.paper_only,
+                       paper.ticker_decision_revision, paper.expression_kind, paper.policy_result,
+                       paper.policy_snapshot, paper.thesis_snapshot, paper.ticket_snapshot
+                FROM app.paper_order paper
+                JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
+                WHERE paper.lane = 'ticker' AND paper.paper_only = TRUE
+                ORDER BY paper.created_at, paper.id
                 """
             ).fetchall()
 
@@ -300,12 +303,15 @@ class DecisionInboxRepository:
                 )
                 row = connection.execute(
                     """
-                    SELECT id::text, created_at, status, quantity, filled_quantity,
-                           filled_at, actual_fill_price, exited_quantity, exit_at,
-                           exit_price, fees, lane, paper_only, ticker_decision_revision,
-                           policy_result, policy_snapshot, thesis_snapshot, ticket_snapshot
-                    FROM app.paper_order
-                    WHERE id = %s::uuid AND lane = 'ticker' AND paper_only = TRUE
+                    SELECT paper.id::text, instrument.symbol AS instrument_symbol,
+                           paper.created_at, paper.status, paper.quantity, paper.filled_quantity,
+                           paper.filled_at, paper.actual_fill_price, paper.exited_quantity, paper.exit_at,
+                           paper.exit_price, paper.fees, paper.unfilled_reason, paper.lane, paper.paper_only,
+                           paper.ticker_decision_revision, paper.expression_kind, paper.policy_result,
+                           paper.policy_snapshot, paper.thesis_snapshot, paper.ticket_snapshot
+                    FROM app.paper_order paper
+                    JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
+                    WHERE paper.id = %s::uuid AND paper.lane = 'ticker' AND paper.paper_only = TRUE
                     FOR UPDATE
                     """,
                     [paper_order_id],
@@ -738,7 +744,8 @@ def _validated_ticker_paper_order(row: dict[str, Any]) -> dict[str, Any] | None:
     expression_kind = str(row.get("expression_kind") or "").strip().upper()
     if not paper_order_id or not revision or not expression_kind:
         return None
-    if _parse_time(row.get("created_at")) is None or not str(row.get("status") or "").strip():
+    created_at = _parse_time(row.get("created_at"))
+    if created_at is None or not str(row.get("status") or "").strip():
         return None
 
     plans: list[TradePlan] = []
@@ -757,12 +764,16 @@ def _validated_ticker_paper_order(row: dict[str, Any]) -> dict[str, Any] | None:
         return None
     plan = plans[0]
     publication_id = str(plan.publication_id or "").strip()
+    plan_cutoff = _parse_time(plan.cutoff)
     if (
         not publication_id
+        or plan_cutoff is None
+        or plan_cutoff > created_at
         or plan.eligibility != "ACTIONABLE"
         or plan.authorization_mode != "PAPER"
         or plan.decision_revision != revision
         or str(row.get("expression_kind") or "").upper() != plan.selected_expression_kind.value
+        or str(row.get("instrument_symbol") or "").strip() != plan.ticker
     ):
         return None
 
@@ -826,7 +837,14 @@ def _ticker_paper_events(
     plan = order["_trade_plan"]
     quantity = _positive_finite_number(order.get("quantity"))
     created_at = _parse_time(order.get("created_at"))
-    if quantity is None or created_at is None or created_at > reference:
+    plan_cutoff = _parse_time(plan.cutoff)
+    if (
+        quantity is None
+        or created_at is None
+        or plan_cutoff is None
+        or plan_cutoff > reference
+        or created_at > reference
+    ):
         return []
 
     def post_activation(stamp: datetime | None) -> bool:
@@ -861,7 +879,7 @@ def _ticker_paper_events(
         and exited_quantity <= filled_quantity
         and filled_at is not None
         and exit_at is not None
-        and filled_at <= exit_at <= reference
+        and created_at <= filled_at <= exit_at <= reference
         and post_activation(exit_at)
     ):
         events.append(
