@@ -31,7 +31,7 @@ def test_blocked_resolution_has_one_safe_primary_blocker() -> None:
 
     assert resolution.action == "NO_TRADE"
     assert resolution.primary_blocker == "paper_assignment_permission_required"
-    assert resolution.blockers == ["paper_assignment_permission_required"]
+    assert resolution.blockers == ["target_range", "paper_assignment_permission_required"]
     assert capital_action_from_resolution(resolution).action == "AVOID"
 
 

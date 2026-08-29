@@ -1627,6 +1627,12 @@ export interface components {
          * @enum {string}
          */
         AuthorizationMode: "NONE" | "ADVISORY" | "PAPER" | "LIVE";
+        /**
+         * AvailabilityStatus
+         * @description Typed evidence availability; absence is never treated as available.
+         * @enum {string}
+         */
+        AvailabilityStatus: "available" | "unsupported" | "missing" | "stale" | "not_calibrated" | "policy_blocked" | "error" | "not_applicable" | "pending";
         /** CapitalAction */
         CapitalAction: {
             action: components["schemas"]["CapitalActionType"];
@@ -1902,6 +1908,43 @@ export interface components {
             term_shift?: number | null;
             /** W1 Shift */
             w1_shift?: number | null;
+        };
+        /**
+         * EligibleUniverseSnapshot
+         * @description Point-in-time universe coverage used to gate trade ranks.
+         */
+        EligibleUniverseSnapshot: {
+            /**
+             * Available
+             * @default []
+             */
+            available: string[];
+            /**
+             * Coverage Ratio
+             * @default 0
+             */
+            coverage_ratio: number;
+            /** Excluded Reasons */
+            excluded_reasons?: {
+                [key: string]: string;
+            };
+            /**
+             * Intended
+             * @default []
+             */
+            intended: string[];
+            /**
+             * Systemic Failure
+             * @default false
+             */
+            systemic_failure: boolean;
+            /**
+             * Threshold
+             * @default 1
+             */
+            threshold: number;
+        } & {
+            [key: string]: unknown;
         };
         /** EventScoutEventsResponse */
         EventScoutEventsResponse: {
@@ -2340,6 +2383,8 @@ export interface components {
          * @description One typed market dimension at one point-in-time horizon.
          */
         MarketDimensionState: {
+            /** @default missing */
+            availability_status: components["schemas"]["AvailabilityStatus"];
             /**
              * Blockers
              * @default []
@@ -2421,6 +2466,8 @@ export interface components {
              * @default unavailable
              */
             availability: string;
+            /** @default missing */
+            availability_status: components["schemas"]["AvailabilityStatus"];
             /**
              * Blockers
              * @default []
@@ -2517,6 +2564,7 @@ export interface components {
             cutoff: string;
             /** Decision Revision */
             decision_revision: string;
+            eligible_universe?: components["schemas"]["EligibleUniverseSnapshot"] | null;
             /**
              * Evaluated Universe Complete
              * @default false
@@ -4127,6 +4175,8 @@ export interface components {
              * @default unavailable
              */
             availability: string;
+            /** @default missing */
+            availability_status: components["schemas"]["AvailabilityStatus"];
             /**
              * Blockers
              * @default []

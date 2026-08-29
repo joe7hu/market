@@ -156,9 +156,9 @@ class DecisionResolutionV2(BaseModel):
             raise ValueError("live authorization is not supported by DecisionResolutionV2")
         if self.eligibility is ResolutionEligibility.BLOCKED:
             if not self.primary_blocker:
-                raise ValueError("blocked resolution requires exactly one primary blocker")
-            if len(self.blockers) != 1 or self.blockers[0] != self.primary_blocker:
-                raise ValueError("blocked resolution must expose exactly one primary blocker")
+                raise ValueError("blocked resolution requires a primary blocker")
+            if self.primary_blocker not in self.blockers:
+                raise ValueError("blocked resolution must expose its primary blocker")
             if _is_order_action(self.action):
                 raise ValueError("blocked resolution cannot contain an order action")
             if isinstance(self.size, (int, float)) and self.size > 0:
@@ -267,7 +267,6 @@ def build_decision_resolution(
     )
     if eligibility is ResolutionEligibility.BLOCKED:
         action = ResolutionAction.NO_TRADE.value
-        clean_blockers = [primary] if primary else []
         authorization_mode = AuthorizationMode.NONE.value
         size = None
     return DecisionResolutionV2(

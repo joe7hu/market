@@ -29,6 +29,34 @@ OPPORTUNITY_RANK_CONTRACT_VERSION = "opportunity-rank.v1"
 TICKER_OPPORTUNITY_RANKING_VERSION = "ticker-opportunity-ranking.v1"
 
 
+class EligibleUniverseSnapshot(BaseModel):
+    """Point-in-time universe coverage used to gate trade ranks."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    intended: tuple[str, ...] = ()
+    available: tuple[str, ...] = ()
+    excluded_reasons: dict[str, str] = Field(default_factory=dict)
+    coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    threshold: float = Field(default=1.0, ge=0.0, le=1.0)
+    systemic_failure: bool = False
+
+    @model_validator(mode="after")
+    def validate_membership(self) -> "EligibleUniverseSnapshot":
+        intended = set(self.intended)
+        available = set(self.available)
+        if not available <= intended:
+            raise ValueError("eligible universe available symbols must be intended")
+        if not set(self.excluded_reasons) <= intended - available:
+            raise ValueError("eligible universe exclusions must be unavailable intended symbols")
+        expected_ratio = len(available) / len(intended) if intended else 0.0
+        if abs(self.coverage_ratio - expected_ratio) > 1e-9:
+            raise ValueError("eligible universe coverage ratio must match membership")
+        if set(self.excluded_reasons) != intended - available:
+            raise ValueError("eligible universe must explain every excluded symbol")
+        return self
+
+
 class InstrumentStateSnapshot(BaseModel):
     """One ticker's bounded point-in-time state, without neutral fallbacks."""
 
@@ -175,6 +203,7 @@ class OpportunityRank(BaseModel):
     trade_utility: float | None = None
     evaluated_universe_complete: bool = False
     ranking_universe_incomplete: bool = True
+    eligible_universe: EligibleUniverseSnapshot | None = None
     blockers: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -356,12 +385,24 @@ def calculate_trade_utility(
 def rank_opportunities(
     candidates: Iterable[Mapping[str, Any]],
     *,
-    evaluated_universe_complete: bool,
+    evaluated_universe_complete: bool | None = None,
+    eligible_universe: EligibleUniverseSnapshot | Mapping[str, Any] | None = None,
     ranking_version: str = TICKER_OPPORTUNITY_RANKING_VERSION,
 ) -> list[OpportunityRank]:
     """Return dense research ranks and fail-closed book trade ranks."""
 
     raw_rows = [dict(candidate) for candidate in candidates]
+    universe = (
+        EligibleUniverseSnapshot.model_validate(eligible_universe)
+        if eligible_universe is not None
+        else None
+    )
+    snapshot_complete = (
+        universe is not None
+        and not universe.systemic_failure
+        and universe.coverage_ratio >= universe.threshold
+    )
+    universe_complete = snapshot_complete if universe is not None else bool(evaluated_universe_complete)
     rows: list[dict[str, Any]] = []
     for candidate in raw_rows:
         utility_inputs = dict(candidate.get("utility") or {})
@@ -373,13 +414,14 @@ def rank_opportunities(
             if name not in utility_inputs and name in candidate:
                 utility_inputs[name] = candidate[name]
         utility = calculate_trade_utility(**utility_inputs)
-        reason = _unavailable_reason(candidate, utility, evaluated_universe_complete)
+        reason = _unavailable_reason(candidate, utility, universe_complete)
         row = {
             **candidate,
             "utility": utility,
             "trade_rank_unavailable_reason": reason,
-            "evaluated_universe_complete": evaluated_universe_complete,
-            "ranking_universe_incomplete": not evaluated_universe_complete,
+            "evaluated_universe_complete": universe_complete,
+            "ranking_universe_incomplete": not universe_complete,
+            "eligible_universe": universe.model_dump(mode="json") if universe else None,
             "research_priority_score": _research_score(candidate),
             "ranking_version": ranking_version,
         }
@@ -424,6 +466,7 @@ def rank_opportunities(
             "utility": utility.model_dump(mode="json"),
             "evaluated_universe_complete": row["evaluated_universe_complete"],
             "ranking_universe_incomplete": row["ranking_universe_incomplete"],
+            "eligible_universe": row.get("eligible_universe"),
             "blockers": list(row.get("blockers") or ()),
         }
         output.append(OpportunityRank(

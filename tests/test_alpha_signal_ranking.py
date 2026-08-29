@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from investment_panel.core.decision import (
+    AvailabilityStatus,
     ExpressionKind,
     apply_opportunity_rank_safety,
     build_instrument_state_snapshot,
@@ -16,6 +17,13 @@ from investment_panel.core.decision import (
 
 
 CUTOFF = datetime(2026, 8, 25, 14, tzinfo=UTC)
+
+
+def test_availability_status_exposes_all_typed_states() -> None:
+    assert {item.value for item in AvailabilityStatus} == {
+        "available", "unsupported", "missing", "stale", "not_calibrated",
+        "policy_blocked", "error", "not_applicable", "pending",
+    }
 
 
 def _candidate(

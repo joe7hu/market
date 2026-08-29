@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.decision import (
     AlphaSignal,
+    EligibleUniverseSnapshot,
     InputLineage,
     InstrumentStateSnapshot,
     OpportunityRank,
@@ -140,7 +141,13 @@ def publish(
             models,
             validation={
                 "scope": RANKING_SCOPE,
-                "evaluated_universe_complete": not failures,
+                "evaluated_universe_complete": bool(
+                    rank_rows
+                    and rank_rows[0].eligible_universe is not None
+                    and rank_rows[0].eligible_universe.coverage_ratio
+                    >= rank_rows[0].eligible_universe.threshold
+                    and not rank_rows[0].eligible_universe.systemic_failure
+                ),
                 "paper_only": True,
                 "live_order_submission": False,
             },
@@ -322,7 +329,17 @@ def _rank_records(
             "diversification_benefit": impact_payload.get("diversification_benefit"),
             "capital_at_risk": planned_loss,
         })
-    ranks = rank_opportunities(candidates, evaluated_universe_complete=not failures)
+    intended = tuple(sorted({str(record["decision"].ticker) for record in records} | {item["ticker"] for item in failures}))
+    available = tuple(sorted(str(record["decision"].ticker) for record in records))
+    eligible_universe = EligibleUniverseSnapshot(
+        intended=intended,
+        available=available,
+        excluded_reasons={item["ticker"]: item["error"] for item in failures},
+        coverage_ratio=len(available) / len(intended) if intended else 0.0,
+        threshold=0.8,
+        systemic_failure=not available,
+    )
+    ranks = rank_opportunities(candidates, eligible_universe=eligible_universe)
     ranks_by_key = {
         (rank.ticker, rank.decision_revision, rank.opportunity_episode_id): rank
         for rank in ranks

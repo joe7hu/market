@@ -97,6 +97,20 @@ class SignalEvidenceState(StrEnum):
     HYPOTHESIS = "HYPOTHESIS"
 
 
+class AvailabilityStatus(StrEnum):
+    """Typed evidence availability; absence is never treated as available."""
+
+    AVAILABLE = "available"
+    UNSUPPORTED = "unsupported"
+    MISSING = "missing"
+    STALE = "stale"
+    NOT_CALIBRATED = "not_calibrated"
+    POLICY_BLOCKED = "policy_blocked"
+    ERROR = "error"
+    NOT_APPLICABLE = "not_applicable"
+    PENDING = "pending"
+
+
 class NumericRange(BaseModel):
     low: float
     high: float
@@ -264,6 +278,7 @@ class MarketDimensionState(BaseModel):
     state: str | None = None
     change_drivers: tuple[str, ...] = ()
     evidence_status: str = "unavailable"
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     uncertainty: str | None = None
     quality: str | None = None
     blockers: tuple[str, ...] = ()
@@ -271,6 +286,16 @@ class MarketDimensionState(BaseModel):
     probability: float | None = Field(default=None, ge=0, le=1)
     probability_method: str | None = None
     probability_model_version: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_availability_status(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "availability_status" not in value:
+            result = dict(value)
+            if str(result.get("evidence_status") or "").lower() == "available":
+                result["availability_status"] = AvailabilityStatus.AVAILABLE
+            return result
+        return value
 
     @model_validator(mode="after")
     def probability_has_method(self) -> "MarketDimensionState":
@@ -345,7 +370,18 @@ class MarketStateSnapshot(BaseModel):
     coverage_matrix: CoverageMatrix | None = None
     input_lineage: tuple[InputLineage, ...] = ()
     availability: str = "unavailable"
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_availability_status(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "availability_status" not in value:
+            result = dict(value)
+            if str(result.get("availability") or "").lower() == "available":
+                result["availability_status"] = AvailabilityStatus.AVAILABLE
+            return result
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -428,7 +464,18 @@ class PortfolioImpact(BaseModel):
     greeks: dict[str, Any] | None = None
     liquidity: dict[str, Any] | None = None
     availability: str = "unavailable"
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_availability_status(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "availability_status" not in value:
+            result = dict(value)
+            if str(result.get("availability") or "").lower() == "available":
+                result["availability_status"] = AvailabilityStatus.AVAILABLE
+            return result
+        return value
 
     @classmethod
     def compose(cls, **kwargs: Any) -> "PortfolioImpact":
@@ -790,8 +837,8 @@ class TradePlan(BaseModel):
                 raise ValueError("blocked trade plan must be NO_TRADE")
             if self.authorization_mode != "NONE":
                 raise ValueError("blocked trade plan cannot be paper authorized")
-            if not self.primary_blocker or self.blockers != (self.primary_blocker,):
-                raise ValueError("blocked trade plan must expose exactly one primary blocker")
+            if not self.primary_blocker or self.primary_blocker not in self.blockers:
+                raise ValueError("blocked trade plan must expose its primary blocker")
             if self.quantity is not None and self.quantity > 0:
                 raise ValueError("blocked trade plan cannot contain a positive quantity")
         elif self.eligibility == "ACTIONABLE":
@@ -2179,7 +2226,7 @@ def build_trade_plan(
         eligibility = "BLOCKED"
         authorization = "NONE"
         data_quality = "INCOMPLETE"
-        blockers = (reason,)
+        blockers = tuple(dict.fromkeys((*(current_resolution.blockers if current_resolution else ()), reason)))
         entry = None
         entry_limit = None
         quantity = None
@@ -2234,7 +2281,11 @@ def build_trade_plan(
         "authorization_mode": authorization,
         "data_quality": data_quality,
         "rationale": current_resolution.rationale if current_resolution is not None else decision.capital_action.rationale,
-        "primary_blocker": blockers[0] if blockers else None,
+        "primary_blocker": (
+            current_resolution.primary_blocker
+            if current_resolution is not None and current_resolution.primary_blocker in blockers
+            else blockers[0] if blockers else None
+        ),
         "blockers": blockers,
         "next_action": next_action or next_action_for(blockers[0] if blockers else None),
         "entry": entry,
@@ -2605,7 +2656,10 @@ def _context_blockers_for(
         blockers.append("risk_policy_snapshot_missing")
     else:
         blockers.extend(policy.blockers)
-    expected = set(expressions) | {ExpressionKind.CASH}
+    selected = next((kind for kind, expression in expressions.items() if expression.selected), ExpressionKind.CASH)
+    expected = [selected]
+    if selected is not ExpressionKind.CASH:
+        expected.append(ExpressionKind.CASH)
     for kind in expected:
         impact = impacts.get(kind)
         if impact is None:

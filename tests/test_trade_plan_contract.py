@@ -170,6 +170,21 @@ def test_blocked_plan_is_cash_no_trade_with_one_blocker() -> None:
     assert plan.blockers == (plan.primary_blocker,)
 
 
+def test_blocked_resolution_preserves_diagnostic_blockers() -> None:
+    resolution = build_decision_resolution(
+        action="NO_TRADE",
+        decision_revision="revision:diagnostics",
+        policy_version="risk-policy.test",
+        ticker="ACME",
+        provenance={},
+        blockers=["alternate_expression_unavailable", "market_state_unavailable"],
+        blocked=True,
+    )
+
+    assert resolution.primary_blocker == "alternate_expression_unavailable"
+    assert resolution.blockers == ["alternate_expression_unavailable", "market_state_unavailable"]
+
+
 def test_binding_reuses_exact_plan_terms_in_resolution() -> None:
     decision, _, _, plan, _ = _actionable_plan()
     bound = bind_trade_plan(decision, plan)

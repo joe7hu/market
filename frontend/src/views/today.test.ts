@@ -182,6 +182,7 @@ const plan = (overrides: Partial<TradePlan> = {}): TradePlan => ({
   policy_version: "risk-policy.v2",
   portfolio_impact: {
     availability: "available",
+    availability_status: "available",
     blockers: [],
     contract_version: "portfolio-impact.v1",
     cutoff: "2026-08-28T13:30:00Z",

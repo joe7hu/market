@@ -878,6 +878,22 @@
         "title": "AuthorizationMode",
         "type": "string"
       },
+      "AvailabilityStatus": {
+        "description": "Typed evidence availability; absence is never treated as available.",
+        "enum": [
+          "available",
+          "unsupported",
+          "missing",
+          "stale",
+          "not_calibrated",
+          "policy_blocked",
+          "error",
+          "not_applicable",
+          "pending"
+        ],
+        "title": "AvailabilityStatus",
+        "type": "string"
+      },
       "CapitalAction": {
         "properties": {
           "action": {
@@ -1520,6 +1536,56 @@
           "details"
         ],
         "title": "DistributionShiftResponse",
+        "type": "object"
+      },
+      "EligibleUniverseSnapshot": {
+        "additionalProperties": true,
+        "description": "Point-in-time universe coverage used to gate trade ranks.",
+        "properties": {
+          "available": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Available",
+            "type": "array"
+          },
+          "coverage_ratio": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Coverage Ratio",
+            "type": "number"
+          },
+          "excluded_reasons": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Excluded Reasons",
+            "type": "object"
+          },
+          "intended": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Intended",
+            "type": "array"
+          },
+          "systemic_failure": {
+            "default": false,
+            "title": "Systemic Failure",
+            "type": "boolean"
+          },
+          "threshold": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Threshold",
+            "type": "number"
+          }
+        },
+        "title": "EligibleUniverseSnapshot",
         "type": "object"
       },
       "EventScoutEventsResponse": {
@@ -2872,6 +2938,10 @@
         "additionalProperties": true,
         "description": "One typed market dimension at one point-in-time horizon.",
         "properties": {
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus",
+            "default": "missing"
+          },
           "blockers": {
             "default": [],
             "items": {
@@ -3081,6 +3151,10 @@
             "title": "Availability",
             "type": "string"
           },
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus",
+            "default": "missing"
+          },
           "blockers": {
             "default": [],
             "items": {
@@ -3283,6 +3357,16 @@
             "minLength": 1,
             "title": "Decision Revision",
             "type": "string"
+          },
+          "eligible_universe": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EligibleUniverseSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "evaluated_universe_complete": {
             "default": false,
@@ -8439,6 +8523,10 @@
             "default": "unavailable",
             "title": "Availability",
             "type": "string"
+          },
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus",
+            "default": "missing"
           },
           "blockers": {
             "default": [],

@@ -153,6 +153,7 @@ from investment_panel.core.decision.alpha import (
     OPPORTUNITY_RANK_CONTRACT_VERSION,
     TICKER_OPPORTUNITY_RANKING_VERSION,
     AlphaSignal,
+    EligibleUniverseSnapshot,
     InstrumentStateSnapshot,
     OpportunityRank,
     TradeUtility,
@@ -161,6 +162,7 @@ from investment_panel.core.decision.alpha import (
     calculate_trade_utility,
     rank_opportunities,
 )
+from investment_panel.core.decision.ticker import AvailabilityStatus
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 
 __all__ = [
@@ -297,6 +299,8 @@ __all__ = [
     "OPPORTUNITY_RANK_CONTRACT_VERSION",
     "TICKER_OPPORTUNITY_RANKING_VERSION",
     "AlphaSignal",
+    "AvailabilityStatus",
+    "EligibleUniverseSnapshot",
     "InstrumentStateSnapshot",
     "OpportunityRank",
     "TradeUtility",
