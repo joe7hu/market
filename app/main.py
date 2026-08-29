@@ -27,9 +27,13 @@ APP_TITLE = "Personal Investment Panel"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    config = dependencies.get_config()
+    config_provider = _app.dependency_overrides.get(dependencies.get_config, dependencies.get_config)
+    config = config_provider()
     dsn = database_url(config)
-    mark_stale_running_jobs(dsn)
+    try:
+        mark_stale_running_jobs(dsn)
+    except Exception:
+        logging.getLogger("market.startup").exception("could not reconcile stale refresh jobs")
     scheduler_task: asyncio.Task | None = None
     if scheduler_enabled():
         scheduler_task = asyncio.create_task(run_scheduler(dsn))

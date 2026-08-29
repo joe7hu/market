@@ -206,7 +206,7 @@ def test_chain_row_is_store_options_chain_compatible() -> None:
     assert row["market_data"] == "live"
 
 
-def test_update_ibkr_skips_unquoted_offhours_snapshot(tmp_path: Path, monkeypatch) -> None:
+def test_update_ibkr_skips_unquoted_offhours_snapshot(tmp_path: Path, monkeypatch, migrated_postgres_dsn: str) -> None:
     """Off-hours the delayed feed returns OI but no bid/ask. Such a quote-less pull
     must NOT be persisted — it would supersede the last good market-hours snapshot
     and poison the radar with null-spread 'data gap' contracts."""
@@ -217,7 +217,7 @@ def test_update_ibkr_skips_unquoted_offhours_snapshot(tmp_path: Path, monkeypatc
     config_path.write_text(
         f"""
 database:
-  url: postgresql:///market
+  url: "{migrated_postgres_dsn}"
 nas:
   status_dir: {tmp_path / "status"}
 data_sources:

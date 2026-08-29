@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Any
 
@@ -17,7 +18,7 @@ def create_verified_backup(
     database_url: str,
     destination_dir: str | Path,
     *,
-    postgres_bin_dir: str | Path = "/opt/homebrew/opt/postgresql@18/bin",
+    postgres_bin_dir: str | Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     reference = now or datetime.now(UTC)
@@ -26,17 +27,21 @@ def create_verified_backup(
     stamp = reference.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     dump_path = destination / f"market-{stamp}.dump"
     manifest_path = destination / f"market-{stamp}.json"
-    binary_dir = Path(postgres_bin_dir)
+    binary_dir = Path(postgres_bin_dir) if postgres_bin_dir else None
+    pg_dump = str(binary_dir / "pg_dump") if binary_dir else shutil.which("pg_dump")
+    pg_restore = str(binary_dir / "pg_restore") if binary_dir else shutil.which("pg_restore")
+    if not pg_dump or not pg_restore:
+        raise FileNotFoundError("pg_dump and pg_restore must be installed or postgres_bin_dir must be set")
     safe_database_url, dump_environment = _credential_safe_connection(database_url)
     subprocess.run(
-        [str(binary_dir / "pg_dump"), "--format=custom", "--compress=9", "--file", str(dump_path), safe_database_url],
+        [pg_dump, "--format=custom", "--compress=9", "--file", str(dump_path), safe_database_url],
         check=True,
         capture_output=True,
         text=True,
         env=dump_environment,
     )
     listing = subprocess.run(
-        [str(binary_dir / "pg_restore"), "--list", str(dump_path)],
+        [pg_restore, "--list", str(dump_path)],
         check=True,
         capture_output=True,
         text=True,

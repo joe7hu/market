@@ -17,7 +17,7 @@ from investment_panel.core.decision import (
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.portfolio_ledger import replay_portfolio_at
-from investment_panel.database.runtime import DatabaseRuntime, RuntimeProfile
+from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE, RuntimeProfile
 from investment_panel.database.ticker_decisions import (
     HORIZON_SESSIONS,
     TickerDecisionRepository,
@@ -1051,7 +1051,7 @@ def test_peer_return_materializes_large_confirmed_peer_set_once(
         ingestion = IngestionRepository(runtime)
         ingestion.register_source(source_id, name="Ticker peer performance", family="test", kind="daily_bars")
         run_id = ingestion.start_run(source_id, "price_bars", started_at=as_of)
-        with runtime.transaction() as connection:
+        with runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
                 """
                 INSERT INTO catalog.instrument (symbol, name, asset_class, sector)

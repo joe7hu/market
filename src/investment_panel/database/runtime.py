@@ -35,7 +35,7 @@ class DatabaseRuntime:
         *,
         min_size: int = 1,
         max_size: int = 8,
-        pool_timeout_seconds: float = 2.0,
+        pool_timeout_seconds: float = 5.0,
     ) -> None:
         if not dsn.startswith(("postgresql://", "postgresql+psycopg://")) and not dsn.startswith("dbname="):
             raise ValueError("Market database URL must identify PostgreSQL")

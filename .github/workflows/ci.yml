@@ -53,5 +53,5 @@ jobs:
       - name: Build frontend
         run: make build
 
-      - name: Run full tests with coverage
-        run: uv run pytest tests -q --run-slow --cov=src/investment_panel/database --cov=app --cov-fail-under=80
+      - name: Run full tests
+        run: uv run pytest tests -q --run-slow

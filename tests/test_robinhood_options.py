@@ -446,14 +446,14 @@ def test_authorization_server_metadata_falls_back_to_origin_well_known(monkeypat
     assert calls[-1] == "https://agent.robinhood.com/.well-known/oauth-authorization-server"
 
 
-def test_update_robinhood_options_reports_auth_required(tmp_path: Path, monkeypatch) -> None:
+def test_update_robinhood_options_reports_auth_required(tmp_path: Path, monkeypatch, migrated_postgres_dsn: str) -> None:
     monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
     monkeypatch.setattr(update_robinhood_options, "set_source_operational_state", lambda *_args, **_kwargs: None)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         f"""
 database:
-  url: postgresql:///market
+  url: "{migrated_postgres_dsn}"
 nas:
   status_dir: {tmp_path / "status"}
 data_sources:
@@ -474,13 +474,13 @@ data_sources:
     assert result["auth_command"] == "market-update-robinhood-options --auth"
 
 
-def test_update_robinhood_options_reports_provider_error(tmp_path: Path, monkeypatch) -> None:
+def test_update_robinhood_options_reports_provider_error(tmp_path: Path, monkeypatch, migrated_postgres_dsn: str) -> None:
     monkeypatch.setattr(update_robinhood_options, "set_source_operational_state", lambda *_args, **_kwargs: None)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         f"""
 database:
-  url: postgresql:///market
+  url: "{migrated_postgres_dsn}"
 nas:
   status_dir: {tmp_path / "status"}
 data_sources:

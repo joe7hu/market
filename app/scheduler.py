@@ -158,7 +158,10 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     # Reconcile stale single-flight records before scheduling.  This also
     # releases jobs stranded by a prior process exit without touching a healthy
     # heartbeat.
-    await asyncio.to_thread(mark_stale_running_jobs, db_path)
+    try:
+        await asyncio.to_thread(mark_stale_running_jobs, db_path)
+    except Exception:
+        logger.exception("could not reconcile stale refresh jobs")
     try:
         overdue_jobs = await asyncio.to_thread(overdue_source_refresh_jobs, db_path)
     except Exception:
