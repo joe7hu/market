@@ -158,6 +158,15 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
     postgres_dsn = f"postgresql://{credentials}@{info.host}:{info.port}/{info.dbname}"
     upgrade_database(postgres_dsn)
     _use_postgres_api(monkeypatch, postgres_dsn)
+
+    def panel_scope(_config: AppConfig | None, scope: str) -> PanelData:
+        return PanelData(
+            status=DataStatus(True, "test", "postgresql"),
+            tables={name: [] for name in PANEL_SCOPE_TABLES[scope]},
+        )
+
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", panel_scope)
+    monkeypatch.setattr(loaders_owner, "load_market_panel_data", lambda config: panel_scope(config, "market"))
     client = TestClient(app)
     try:
         paths = [
@@ -516,7 +525,16 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
     assert response.json()["status"]["ready"] is True
 
 
-def test_market_snapshot_only_returns_market_tables() -> None:
+def test_market_snapshot_only_returns_market_tables(monkeypatch) -> None:
+    panel_owner.invalidate_context_cache()
+    monkeypatch.setattr(
+        loaders_owner,
+        "load_market_panel_data",
+        lambda _config: PanelData(
+            status=DataStatus(True, "test", "postgresql"),
+            tables={name: [] for name in PANEL_SCOPE_TABLES["market"]},
+        ),
+    )
     client = TestClient(app)
 
     response = client.get("/api/panel-snapshot?scope=market")
@@ -623,7 +641,16 @@ def test_settings_snapshot_returns_no_panel_tables() -> None:
     assert payload["status"]["source"] == "postgresql"
 
 
-def test_options_radar_snapshot_returns_radar_tables() -> None:
+def test_options_radar_snapshot_returns_radar_tables(monkeypatch) -> None:
+    panel_owner.invalidate_context_cache()
+    monkeypatch.setattr(
+        loaders_owner,
+        "load_panel_scope_data",
+        lambda _config, scope: PanelData(
+            status=DataStatus(True, "test", "postgresql"),
+            tables={name: [] for name in PANEL_SCOPE_TABLES[scope]},
+        ),
+    )
     client = TestClient(app)
 
     response = client.get("/api/panel-snapshot?scope=options-radar")
