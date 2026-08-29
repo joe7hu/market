@@ -477,6 +477,78 @@ def test_account_policy_blocker_suppresses_positive_expression_terms() -> None:
     assert decision.resolution.exit is None
 
 
+def test_policy_blocker_rehashes_sanitized_portfolio_impacts() -> None:
+    source = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "decision_queue": [{
+                "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+                "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+                "conviction_tier": "STANDARD", "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+    )
+    assert source.risk_policy_snapshot is not None
+    supplied_policy = source.risk_policy_snapshot.model_copy(update={"cash_balance": 1.0})
+
+    decision = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "decision_queue": [{
+                "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+                "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+                "conviction_tier": "STANDARD", "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+        risk_policy_snapshot=supplied_policy,
+        portfolio_impacts=source.portfolio_impacts,
+    )
+
+    for kind, impact in decision.portfolio_impacts.items():
+        assert impact.expression_identity == ticker_module._expression_identity_for(
+            decision.expressions[kind], kind, decision.ticker, decision.decision_revision
+        )
+        assert impact.impact_id == ticker_module._portfolio_impact_id(impact)
+        if kind is not ExpressionKind.CASH:
+            assert impact.impact_id != source.portfolio_impacts[kind].impact_id
+
+
+def test_policy_blocker_without_resolution_forces_blocked_no_trade() -> None:
+    source = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "decision_queue": [{
+                "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+                "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+                "conviction_tier": "STANDARD", "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+    )
+    payload = source.model_dump(mode="python")
+    payload["resolution"] = None
+    payload["risk_policy_snapshot"] = source.risk_policy_snapshot.model_copy(
+        update={"blockers": ("policy_blocker",)}
+    )
+
+    decision = ticker_module.TickerDecision.model_validate(payload)
+
+    assert decision.capital_action.action is CapitalActionType.AVOID
+    assert decision.resolution is not None
+    assert decision.resolution.action.value == "NO_TRADE"
+    assert decision.resolution.is_blocked is True
+    assert decision.resolution.blockers == ["policy_blocker"]
+    assert decision.resolution.size is None
+
+
 def test_typed_decision_contract_rejects_soft_final_actions_and_blocker_text() -> None:
     decision = build_ticker_decision(
         "ACME",

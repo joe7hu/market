@@ -1683,6 +1683,10 @@ class TickerDecision(BaseModel):
                 for kind, impact in normalized.items()
                 for expression in [safe_expressions[kind]]
             }
+            normalized = {
+                kind: impact.model_copy(update={"impact_id": _portfolio_impact_id(impact)})
+                for kind, impact in normalized.items()
+            }
             self.portfolio_impacts = normalized
             expected = dict(safe_expressions)
         context_blockers = _context_blockers_for(
@@ -1732,7 +1736,25 @@ class TickerDecision(BaseModel):
                     expires_at=existing.expires_at,
                     blocked=True,
                 )
-                self.capital_action = capital_action_from_resolution(self.resolution)
+            else:
+                self.resolution = build_decision_resolution(
+                    action="NO_TRADE",
+                    decision_revision=self.decision_revision,
+                    policy_version=self.policy_version,
+                    ticker=self.ticker,
+                    blockers=[context_blockers[0]],
+                    provenance={},
+                    portfolio_context=normalized[ExpressionKind.CASH].model_dump(mode="json"),
+                    data_quality="INCOMPLETE",
+                    authorization_mode="NONE",
+                    rationale=self.capital_action.rationale,
+                    owned=self.capital_action.owned,
+                    price_condition=self.capital_action.price_condition,
+                    catalyst=self.capital_action.catalyst,
+                    expires_at=self.capital_action.expires_at,
+                    blocked=True,
+                )
+            self.capital_action = capital_action_from_resolution(self.resolution)
             self.trade_plan = safe_trade_plan
         elif self.resolution is not None and self.resolution.is_actionable and context_blockers:
             self.resolution = build_decision_resolution(
@@ -2320,6 +2342,31 @@ def _missing_portfolio_impact(
     )
 
 
+def _portfolio_impact_id(impact: PortfolioImpact) -> str:
+    payload = {
+        "book_identity": impact.portfolio_before.get("book_identity"),
+        "opportunity_episode_id": impact.opportunity_episode_id,
+        "expression_kind": impact.expression_kind.value,
+        "expression_identity": impact.expression_identity,
+        "decision_revision": impact.decision_revision,
+        "risk_policy_version": impact.risk_policy_version,
+        "market_snapshot_id": impact.market_snapshot_id,
+        "market_state_publication_id": impact.market_state_publication_id,
+        "cutoff": impact.cutoff,
+        "portfolio_before": impact.portfolio_before,
+        "portfolio_after": impact.portfolio_after,
+        "values": {
+            "marginal_risk": impact.marginal_risk,
+            "risk_budget_consumed": impact.risk_budget_consumed,
+            "scenario_pnl": impact.scenario_pnl,
+            "factor_exposure": impact.factor_exposure,
+            "greeks": impact.greeks,
+            "liquidity": impact.liquidity,
+        },
+    }
+    return f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+
+
 def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) -> MarketStateSnapshot:
     reference = _utc(cutoff)
     encoded = json.dumps(
@@ -2486,23 +2533,8 @@ def compose_portfolio_impact(
             "greeks": None,
             "liquidity": None,
         }
-    payload = {
-        "book_identity": before.get("book_identity"),
-        "opportunity_episode_id": episode.episode_id,
-        "expression_kind": kind.value,
-        "expression_identity": expression_identity,
-        "decision_revision": episode.decision_revision,
-        "risk_policy_version": policy_version,
-        "market_snapshot_id": snapshot.snapshot_id,
-        "market_state_publication_id": snapshot.publication_id,
-        "cutoff": episode.cutoff,
-        "portfolio_before": before,
-        "portfolio_after": after,
-        "values": values,
-    }
-    impact_id = f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
-    return PortfolioImpact(
-        impact_id=impact_id,
+    impact = PortfolioImpact(
+        impact_id="pending",
         opportunity_episode_id=episode.episode_id,
         expression_kind=kind,
         expression_identity=expression_identity,
@@ -2518,6 +2550,7 @@ def compose_portfolio_impact(
         blockers=tuple(dict.fromkeys(blockers)),
         **values,
     )
+    return impact.model_copy(update={"impact_id": _portfolio_impact_id(impact)})
 
 
 def _local_portfolio_impacts(
