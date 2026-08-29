@@ -22,6 +22,7 @@ from investment_panel.database.strategy_learning import StrategyLearningReposito
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
 from investment_panel.database.thesis_evidence import thesis_source_evidence
 from investment_panel.jobs.option_agent_workflow import compact_agent_batch
+from app.response_contracts import AgentOverviewResponse
 
 
 def _option_thesis_result(ticker: str, *, request_id: str | None = None) -> dict[str, object]:
@@ -187,6 +188,31 @@ def test_agent_queue_external_execution_and_manual_submission(postgres_dsn: str)
         assert overview["runs"][0]["status"] == "succeeded"
         assert overview["materialization"]["materialized"] == 2
         assert overview["materialization"]["historical_unmaterialized"] == 0
+    finally:
+        runtime.close()
+
+
+def test_agent_overview_normalizes_null_token_counts_from_both_run_sources(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            option_run = connection.execute(
+                "INSERT INTO analysis.agent_run (provider, model, trigger, started_at, status) "
+                "VALUES ('codex', 'test', 'manual', now(), 'succeeded') RETURNING id",
+            ).fetchone()
+            thesis_run = connection.execute(
+                "INSERT INTO app.thesis_automation_run (input_symbol, model, trigger, status) "
+                "VALUES ('NULLTOK', 'test', 'manual', 'succeeded') RETURNING id",
+            ).fetchone()
+
+        overview = AgentRepository(runtime).overview()
+        AgentOverviewResponse.model_validate(overview)
+        runs = {str(run["id"]): run for run in overview["runs"]}
+        for run_id in (option_run["id"], thesis_run["id"]):
+            assert runs[str(run_id)]["input_tokens"] == 0
+            assert runs[str(run_id)]["output_tokens"] == 0
     finally:
         runtime.close()
 

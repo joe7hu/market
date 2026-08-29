@@ -656,6 +656,8 @@ class AgentRepository:
             item.update({
                 "id": str(item["id"]),
                 "est_cost_usd": float(item.pop("cost_usd") or 0),
+                "input_tokens": int(item.pop("input_tokens") or 0),
+                "output_tokens": int(item.pop("output_tokens") or 0),
                 "tokens_estimated": item.get("provider") == "codex",
                 "thesis_attempted": int(summary.get("thesis_attempted") or (1 if item["workflow"] == "thesis_monitor" else 0)),
                 "thesis_accepted": int(summary.get("thesis_accepted") or (summary.get("completed") if item["workflow"] == "thesis_monitor" else 0) or 0),
