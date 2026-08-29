@@ -1097,12 +1097,17 @@ def _validated_portfolio_risk_cards(
     if not isinstance(summary, Mapping) or _contains_nonfinite(summary):
         return None
 
-    summary_times: dict[str, str] = {}
+    parsed_summary_times: dict[str, datetime] = {}
     for name in ("as_of", "available_at"):
-        parsed = _parse_time(summary.get(name))
+        parsed = _strict_parse_time(summary.get(name))
         if parsed is None or parsed > reference:
             return None
-        summary_times[name] = parsed.isoformat()
+        parsed_summary_times[name] = parsed
+    if parsed_summary_times["as_of"] > parsed_summary_times["available_at"]:
+        return None
+    summary_times = {
+        name: parsed.isoformat() for name, parsed in parsed_summary_times.items()
+    }
 
     current: dict[str, dict[str, Any]] = {}
     for raw in cards:
@@ -1116,7 +1121,17 @@ def _validated_portfolio_risk_cards(
         normalized_id = card_id.strip()
         normalized_type = risk_type.strip().lower()
         normalized_severity = severity.strip().lower()
-        if normalized_severity not in {"critical", "watch", "info"} or (
+        canonical_identity = (
+            (normalized_id == "largest-position" and normalized_type == "concentration")
+            or (
+                normalized_id.startswith("correlation:")
+                and len(normalized_id) > len("correlation:")
+                and normalized_type == "correlation"
+            )
+            or (normalized_id == "portfolio-drawdown" and normalized_type == "drawdown")
+            or (normalized_id == "stale-owned-quotes" and normalized_type == "data_freshness")
+        )
+        if not canonical_identity or normalized_severity not in {"critical", "watch", "info"} or (
             normalized_type == "data_freshness" and normalized_severity == "critical"
         ):
             return None
@@ -1146,11 +1161,19 @@ def _validated_portfolio_risk_cards(
                 return None
             normalized_symbols.add(symbol.strip().upper())
 
+        card_times: dict[str, datetime] = {}
         for name in ("as_of", "available_at", "updated_at", "created_at"):
             if name in raw and raw[name] is not None:
-                parsed = _parse_time(raw[name])
+                parsed = _strict_parse_time(raw[name])
                 if parsed is None or parsed > reference:
                     return None
+                card_times[name] = parsed
+        if (
+            "as_of" in card_times
+            and "available_at" in card_times
+            and card_times["as_of"] > card_times["available_at"]
+        ):
+            return None
 
         current[normalized_id] = {
             "card_id": normalized_id,
@@ -1238,6 +1261,18 @@ def _parse_time(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(str(value))
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def _strict_parse_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None and value.utcoffset() is not None else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
     except (TypeError, ValueError):
         return None
 

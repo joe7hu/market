@@ -299,9 +299,14 @@ def _risk_summary(reference: datetime) -> dict[str, Any]:
 def _risk_card(
     card_id: str = "largest-position", *, severity: str = "critical",
 ) -> dict[str, Any]:
+    risk_type = {
+        "largest-position": "concentration",
+        "portfolio-drawdown": "drawdown",
+        "stale-owned-quotes": "data_freshness",
+    }.get(card_id, "correlation" if card_id.startswith("correlation:") else "concentration")
     return {
         "card_id": card_id,
-        "risk_type": "concentration",
+        "risk_type": risk_type,
         "severity": severity,
         "score": 90,
         "title": "TSLA dominates the portfolio",
@@ -880,6 +885,64 @@ def test_decision_inbox_job_calls_paper_lifecycle_once_after_decisions(
     assert result["delivery"]["skipped"] == 1
 
 
+def test_decision_inbox_job_produces_portfolio_risk_before_enabled_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    settings = SimpleNamespace(
+        decision_inbox_enabled=True,
+        telegram_notifications_enabled=True,
+        telegram_notifications_dry_run=True,
+    )
+    config = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=settings))
+
+    class FakeRepository:
+        def __init__(self, _runtime: object) -> None:
+            pass
+
+        def sync_current_decisions(self, rows: list[object]) -> dict[str, int]:
+            calls.append("decisions")
+            assert rows == []
+            return {"newly_actionable": 0}
+
+        def sync_ticker_paper_lifecycle(self) -> dict[str, int]:
+            calls.append("paper_lifecycle")
+            return _zero_paper_transitions()
+
+        def sync_current_portfolio_risk(
+            self, cards: list[object] | None, summary: dict[str, object] | None,
+        ) -> dict[str, int]:
+            calls.append("portfolio_risk")
+            assert cards == []
+            assert summary is None
+            return _zero_portfolio_risk()
+
+        def deliver_outbox(
+            self, *, sender: object, dry_run: bool,
+        ) -> dict[str, int]:
+            calls.append("delivery")
+            assert sender is None
+            assert dry_run is True
+            return {"sent": 0, "failed": 0, "dry_run": 0}
+
+    monkeypatch.setattr(decision_inbox_job, "load_config", lambda _path: config)
+    monkeypatch.setattr(
+        decision_inbox_job,
+        "load_postgres_tables",
+        lambda _config, table_names, **_kwargs: (
+            {name: [] for name in table_names}, {"unavailable_models": []}
+        ),
+    )
+    monkeypatch.setattr(decision_inbox_job, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(decision_inbox_job, "DecisionInboxRepository", FakeRepository)
+
+    result = decision_inbox_job.run()
+
+    assert calls == ["decisions", "paper_lifecycle", "portfolio_risk", "delivery"]
+    assert result["portfolio_risk"] == _zero_portfolio_risk()
+    assert result["delivery"] == {"sent": 0, "failed": 0, "dry_run": 0}
+
+
 def test_current_portfolio_risk_notifies_once_and_tracks_recurrence(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -929,6 +992,46 @@ def test_current_portfolio_risk_notifies_once_and_tracks_recurrence(
         runtime.close()
 
 
+def test_current_portfolio_risk_requires_critical_canonical_cards_and_resolves_absence(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    summary = _risk_summary(reference)
+    try:
+        for advisory in (
+            _risk_card(severity="info"),
+            _risk_card(severity="watch"),
+            _risk_card("stale-owned-quotes", severity="info"),
+            _risk_card("stale-owned-quotes", severity="watch"),
+            _risk_card("stale-owned-quotes"),
+        ):
+            assert inbox.sync_current_portfolio_risk([advisory], summary, now=reference) == _zero_portfolio_risk()
+
+        cards = [
+            _risk_card(),
+            _risk_card("portfolio-drawdown"),
+            _risk_card("correlation:TSLA:QQQ"),
+        ]
+        assert inbox.sync_current_portfolio_risk(cards, summary, now=reference) == {"breached": 3, "resolved": 0}
+        assert inbox.sync_current_portfolio_risk(cards[:2], summary, now=reference) == {"breached": 0, "resolved": 1}
+        assert inbox.sync_current_portfolio_risk([], summary, now=reference) == {"breached": 0, "resolved": 2}
+
+        with runtime.read() as connection:
+            rows = connection.execute(
+                "SELECT status FROM app.decision_inbox_item WHERE event_type = 'portfolio_critical'"
+            ).fetchall()
+            outbox_count = connection.execute(
+                "SELECT count(*) AS count FROM app.notification_outbox"
+            ).fetchone()["count"]
+        assert len(rows) == outbox_count == 3
+        assert {row["status"] for row in rows} == {"resolved"}
+    finally:
+        runtime.close()
+
+
 def test_current_portfolio_risk_rejects_ambiguous_input_and_rolls_back(
     migrated_postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -951,9 +1054,23 @@ def test_current_portfolio_risk_rejects_ambiguous_input_and_rolls_back(
         future["updated_at"] = reference + timedelta(minutes=1)
         future_summary = _risk_summary(reference)
         future_summary["available_at"] = reference + timedelta(minutes=1)
+        unknown = _risk_card("provider-failure")
+        mismatched = _risk_card()
+        mismatched["risk_type"] = "drawdown"
+        naive_summary = _risk_summary(reference)
+        naive_summary["as_of"] = reference.replace(tzinfo=None).isoformat()
+        reversed_summary = _risk_summary(reference)
+        reversed_summary["available_at"] = reference - timedelta(minutes=1)
+        naive_card = _risk_card()
+        naive_card["updated_at"] = reference.replace(tzinfo=None).isoformat()
+        reversed_card = _risk_card()
+        reversed_card["as_of"] = reference.isoformat()
+        reversed_card["available_at"] = (reference - timedelta(minutes=1)).isoformat()
         for invalid_cards, invalid_summary in (
             ([malformed], summary), (duplicate, summary), (nonfinite, summary), ([future], summary),
-            ([card], future_summary),
+            ([card], future_summary), ([unknown], summary), ([mismatched], summary),
+            ([card], naive_summary), ([card], reversed_summary), ([naive_card], summary),
+            ([reversed_card], summary),
         ):
             assert inbox.sync_current_portfolio_risk(
                 invalid_cards, invalid_summary, now=reference,
