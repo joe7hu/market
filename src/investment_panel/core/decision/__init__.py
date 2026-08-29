@@ -142,6 +142,9 @@ from investment_panel.core.decision.ticker import (
     trade_expression_identity,
     outcome_attribution_id,
     outcome_attribution_stable_key,
+    portfolio_impact_from_persisted,
+    portfolio_impacts_from_persisted,
+    trade_plan_from_persisted,
 )
 from investment_panel.core.decision.ticker_learning import (
     TICKER_LEARNING_VERSION,
@@ -288,6 +291,9 @@ __all__ = [
     "trade_expression_identity",
     "outcome_attribution_id",
     "outcome_attribution_stable_key",
+    "portfolio_impact_from_persisted",
+    "portfolio_impacts_from_persisted",
+    "trade_plan_from_persisted",
     "build_decision_resolution",
     "capital_action_from_resolution",
     "next_action_for",

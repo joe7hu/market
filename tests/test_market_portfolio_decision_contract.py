@@ -239,6 +239,20 @@ def test_stock_impact_rejects_conflicting_target_identity_aliases(location: str)
         type(impact).model_validate(payload)
 
 
+def test_stock_impact_rejects_cross_container_target_identity_conflicts() -> None:
+    impact = _decision(
+        portfolio_replay=_valued_replay(stock_evidence=_complete_stock_evidence()),
+    ).portfolio_impacts[ExpressionKind.STOCK]
+    payload = impact.model_dump(mode="python")
+    after = dict(payload["portfolio_after"])
+    after.pop("ticker", None)
+    after["symbol"] = "OTHER"
+    payload["portfolio_after"] = after
+
+    with pytest.raises(ValueError, match="conflicting"):
+        type(impact).model_validate(payload)
+
+
 def test_generic_bear_base_bull_scenarios_do_not_unlock_stock_impact() -> None:
     evidence = _complete_stock_evidence()
     evidence["stress_scenarios"] = {
@@ -429,6 +443,7 @@ def test_stock_impact_rechecks_btc_without_optional_nested_ticker() -> None:
     with pytest.raises(ValueError, match="matching target ticker"):
         type(impact).model_validate(mismatched_target)
 
+
     without_target_identity = dict(without_nested_identity)
     identity_free_before = dict(before)
     identity_free_before.pop("ticker", None)
@@ -455,6 +470,32 @@ def test_stock_impact_rechecks_btc_without_optional_nested_ticker() -> None:
 
     with pytest.raises(ValueError, match="complete stress scenarios"):
         type(impact).model_validate(bad_payload)
+
+
+@pytest.mark.parametrize(
+    ("container", "alias"),
+    [
+        ("evidence", "symbol"),
+        ("evidence", "instrument_symbol"),
+        ("instrument", "instrument_symbol"),
+        ("target_instrument", "symbol"),
+    ],
+)
+def test_stock_impact_derives_btc_from_every_evidence_identity_alias(
+    container: str,
+    alias: str,
+) -> None:
+    evidence = _complete_stock_evidence()
+    if container == "evidence":
+        evidence.update({"ticker": "ACME", alias: "BTC-USD"})
+    else:
+        evidence[container] = {"ticker": "ACME", alias: "BTC-USD"}
+    impact = _decision(
+        portfolio_replay=_valued_replay(stock_evidence=evidence),
+    ).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert "stock_stress_scenarios_missing" in impact.blockers
 
 
 def test_stock_impact_requires_btc_for_ticker_only_crypto_position_identity() -> None:

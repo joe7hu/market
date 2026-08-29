@@ -587,6 +587,15 @@ class PortfolioImpact(BaseModel):
             raise ValueError("available portfolio impacts cannot have blockers")
         before = self.portfolio_before
         after = self.portfolio_after
+        container_aliases = tuple(
+            alias
+            for source in (before, after)
+            for alias in _target_identity_aliases(source)
+        )
+        if _identity_aliases_conflict(container_aliases):
+            raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
+        if any(identity != target_ticker for _, identity in container_aliases):
+            raise ValueError("portfolio impact requires a matching target ticker across containers")
         book_identity = str(before.get("book_identity") or "")
         if (
             not book_identity
@@ -626,12 +635,6 @@ class PortfolioImpact(BaseModel):
             if not isinstance(evidence, Mapping):
                 raise ValueError("available stock portfolio impacts require stock evidence")
             positions = before.get("positions") or ()
-            for source in (before, after):
-                if not isinstance(source, Mapping):
-                    continue
-                aliases = _target_identity_aliases(source)
-                if any(identity != target_ticker for _, identity in aliases):
-                    raise ValueError("available stock portfolio impacts require a matching target ticker")
             btc_required = _stock_btc_scenarios_required(
                 evidence,
                 positions,
@@ -2630,7 +2633,7 @@ def _portfolio_impact_from_legacy(value: Any, *, ticker: str) -> PortfolioImpact
     return PortfolioImpact.model_validate(raw)
 
 
-def _persisted_portfolio_impact(value: Any, *, ticker: str) -> Any:
+def portfolio_impact_from_persisted(value: Any, *, ticker: str) -> Any:
     if isinstance(value, Mapping) and (
         value.get("ticker") is None or not str(value.get("ticker")).strip()
     ):
@@ -2638,20 +2641,20 @@ def _persisted_portfolio_impact(value: Any, *, ticker: str) -> Any:
     return value
 
 
-def _persisted_portfolio_impacts(value: Any, *, ticker: str) -> Any:
+def portfolio_impacts_from_persisted(value: Any, *, ticker: str) -> Any:
     if not isinstance(value, Mapping):
         return value
     return {
-        kind: _persisted_portfolio_impact(impact, ticker=ticker)
+        kind: portfolio_impact_from_persisted(impact, ticker=ticker)
         for kind, impact in value.items()
     }
 
 
-def _persisted_trade_plan(value: Any, *, ticker: str) -> Any:
+def trade_plan_from_persisted(value: Any, *, ticker: str) -> Any:
     if not isinstance(value, Mapping) or not isinstance(value.get("portfolio_impact"), Mapping):
         return value
     result = dict(value)
-    result["portfolio_impact"] = _persisted_portfolio_impact(
+    result["portfolio_impact"] = portfolio_impact_from_persisted(
         result["portfolio_impact"], ticker=ticker,
     )
     return result
@@ -2850,25 +2853,18 @@ def _stock_btc_scenarios_required(
     if _number(evidence.get("btc_exposure"), 0.0) > 0:
         return True
     authoritative_sources = (portfolio_before, evidence)
-    candidate_tickers = {
-        normalize_symbol(str(candidate or ""))
-        for source in authoritative_sources
-        if isinstance(source, Mapping)
-        for candidate in (
-            ticker,
-            _pick(source, "ticker", "symbol", "instrument_symbol"),
-        )
-        if candidate
-    }
-    candidate_tickers.update(
-        normalize_symbol(str(_pick(source[nested], "ticker", "symbol") or ""))
-        for source in authoritative_sources
-        if isinstance(source, Mapping)
-        for nested in ("instrument", "target_instrument")
-        if isinstance(source.get(nested), Mapping)
-        if _pick(source[nested], "ticker", "symbol")
-    )
-    if candidate_tickers & ({"BTC-USD", "BITCOIN", "BITCOIN-USD"} | _STOCK_CRYPTO_SENSITIVE_SYMBOLS):
+    candidate_tickers: set[str] = {
+        normalize_symbol(str(ticker))
+    } if ticker else set()
+    for source in authoritative_sources:
+        if not isinstance(source, Mapping):
+            continue
+        candidate_tickers.update(identity for _, identity in _identity_aliases(source))
+        for nested in ("instrument", "target_instrument"):
+            candidate_tickers.update(
+                identity for _, identity in _identity_aliases(source.get(nested))
+            )
+    if candidate_tickers & (_STOCK_BTC_IDENTITIES | _STOCK_CRYPTO_SENSITIVE_SYMBOLS):
         return True
     if _stock_crypto_signal(evidence) or _stock_crypto_signal(portfolio_before):
         return True
@@ -3746,7 +3742,7 @@ def build_ticker_decision(
                     expires_at=persisted_resolution.expires_at,
                     blocked=True,
                 )
-            persisted_impacts = _persisted_portfolio_impacts(
+            persisted_impacts = portfolio_impacts_from_persisted(
                 persisted.get("portfolio_impacts") or {}, ticker=symbol,
             )
             persisted_trade_plan = None
@@ -3754,7 +3750,7 @@ def build_ticker_decision(
                 raw_trade_plan = persisted.get("trade_plan") or (
                     persisted.get("input_manifest") or {}
                 ).get("trade_plan")
-                persisted_trade_plan = _persisted_trade_plan(raw_trade_plan, ticker=symbol)
+                persisted_trade_plan = trade_plan_from_persisted(raw_trade_plan, ticker=symbol)
             return TickerDecision.model_validate({
                 "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
                 "ticker": symbol,
@@ -5211,4 +5207,6 @@ __all__ = [
     "PaperExecutionOutcome", "OutcomeAttribution", "outcome_attribution_id",
     "outcome_attribution_stable_key",
     "SignalDeclaration", "SignalEvidenceState", "build_ticker_decision",
+    "portfolio_impact_from_persisted", "portfolio_impacts_from_persisted",
+    "trade_plan_from_persisted",
 ]

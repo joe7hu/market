@@ -394,6 +394,75 @@ def test_opportunity_episode_persists_ticker_and_option_expressions(analysis_con
     assert row["opportunity_episode"]["decision_revision"] == decision.decision_revision
 
 
+def test_ticker_decision_latest_adapts_and_rejects_legacy_portfolio_impact_rows(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    with runtime.transaction() as connection:
+        connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('LEGACY', 'Legacy Test', 'equity')"
+        )
+    decision = build_ticker_decision(
+        "LEGACY",
+        {
+            "quotes": [{
+                "symbol": "LEGACY", "price": 100,
+                "available_at": "2026-07-11T12:00:00Z", "confirmed": True,
+            }],
+            "portfolio_summary": [{
+                "net_liquidation": 100_000,
+                "available_at": "2026-07-11T12:00:00Z",
+            }],
+            "decision_queue": [{
+                "symbol": "LEGACY", "stance": "BULLISH", "available_at": "2026-07-11T12:00:00Z",
+            }],
+        },
+        as_of=datetime(2026, 7, 11, 12, 15, tzinfo=UTC),
+    )
+    repository = TickerDecisionRepository(runtime)
+    repository.publish(decision)
+
+    with runtime.transaction() as connection:
+        row = connection.execute(
+            "SELECT portfolio_impacts FROM analysis.ticker_decision WHERE decision_revision = %s",
+            [decision.decision_revision],
+        ).fetchone()
+        legacy_impacts = {
+            kind: {**impact, "contract_version": "portfolio-impact.v1"}
+            for kind, impact in dict(row["portfolio_impacts"]).items()
+        }
+        for impact in legacy_impacts.values():
+            impact.pop("ticker", None)
+        connection.execute(
+            "UPDATE analysis.ticker_decision SET portfolio_impacts = %s::jsonb WHERE decision_revision = %s",
+            [Jsonb(legacy_impacts), decision.decision_revision],
+        )
+
+    replay = repository.latest("LEGACY")
+    assert replay is not None
+    assert all(impact.ticker == "LEGACY" for impact in replay.portfolio_impacts.values())
+
+    ambiguous = {kind: dict(impact) for kind, impact in legacy_impacts.items()}
+    cash = dict(ambiguous["CASH"])
+    before = dict(cash["portfolio_before"])
+    before.update({"symbol": "LEGACY", "instrument_symbol": "OTHER"})
+    cash["portfolio_before"] = before
+    ambiguous["CASH"] = cash
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.ticker_decision SET portfolio_impacts = %s::jsonb WHERE decision_revision = %s",
+            [Jsonb(ambiguous), decision.decision_revision],
+        )
+    assert repository.latest("LEGACY") is None
+
+    mismatched_version = {kind: dict(impact) for kind, impact in legacy_impacts.items()}
+    mismatched_version["CASH"]["contract_version"] = "portfolio-impact.v0"
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.ticker_decision SET portfolio_impacts = %s::jsonb WHERE decision_revision = %s",
+            [Jsonb(mismatched_version), decision.decision_revision],
+        )
+    assert repository.latest("LEGACY") is None
+
+
 def test_publication_validation_failure_never_exposes_partial_state(analysis_context, postgres_dsn: str) -> None:
     repository: AnalysisRepository = analysis_context["analysis"]
     first_run = _start_run(repository, "first")

@@ -26,6 +26,8 @@ from investment_panel.core.decision import (
     outcome_attribution_stable_key,
     resolution_from_legacy,
     is_us_market_day,
+    portfolio_impacts_from_persisted,
+    trade_plan_from_persisted,
 )
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.options_paper_quotes import is_credit_structure, package_price
@@ -1580,10 +1582,16 @@ def _attribution_surface_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _decision_from_row(row: Any) -> TickerDecision:
     resolution = resolution_from_legacy(dict(row))
+    ticker = str(row["ticker"]).strip().upper()
     manifest = dict(row["input_manifest"] or {})
+    portfolio_impacts = portfolio_impacts_from_persisted(
+        row.get("portfolio_impacts") if hasattr(row, "get") else {},
+        ticker=ticker,
+    )
+    trade_plan = trade_plan_from_persisted(manifest.get("trade_plan"), ticker=ticker)
     return TickerDecision.model_validate({
         "decision_contract_version": row["contract_version"],
-        "ticker": row["ticker"],
+        "ticker": ticker,
         "as_of": row["as_of"],
         "decision_revision": row["decision_revision"],
         "tactical": row["tactical"],
@@ -1600,7 +1608,7 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "input_manifest": manifest,
         "market_state_publication_id": row.get("market_state_publication_id") if hasattr(row, "get") else None,
         "market_state_snapshot": row.get("market_state_snapshot") if hasattr(row, "get") else None,
-        "portfolio_impacts": row.get("portfolio_impacts") if hasattr(row, "get") else {},
+        "portfolio_impacts": portfolio_impacts,
         "risk_policy_snapshot": row.get("risk_policy_snapshot") if hasattr(row, "get") else None,
         "opportunity_episode": (
             row.get("opportunity_episode") if hasattr(row, "get") else None
@@ -1608,7 +1616,7 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "instrument_state_snapshot": manifest.get("instrument_state_snapshot"),
         "alpha_signals": manifest.get("alpha_signals") or [],
         "opportunity_rank": manifest.get("opportunity_rank"),
-        "trade_plan": manifest.get("trade_plan"),
+        "trade_plan": trade_plan,
     })
 
 
