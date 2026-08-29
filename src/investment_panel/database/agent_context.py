@@ -22,6 +22,7 @@ def ticker_context(
     symbol: str,
     *,
     context_sources: dict[str, bool] | None = None,
+    cutoff: Any | None = None,
 ) -> dict[str, Any]:
     enabled = context_sources or {}
 
@@ -37,11 +38,14 @@ def ticker_context(
         LEFT JOIN app.thesis thesis ON thesis.instrument_id = instrument.id AND thesis.status = 'current'
         LEFT JOIN LATERAL (
             SELECT price, observed_at FROM raw.quote
-            WHERE instrument_id = instrument.id ORDER BY observed_at DESC LIMIT 1
+            WHERE instrument_id = instrument.id
+              AND CAST(%s AS timestamptz) IS NOT NULL
+              AND observed_at <= %s AND available_at <= %s
+            ORDER BY observed_at DESC LIMIT 1
         ) quote ON true
         WHERE instrument.symbol = %s
         """,
-        [symbol],
+        [cutoff, cutoff, cutoff, symbol],
     ).fetchone()
     option = connection.execute(
         """
@@ -51,9 +55,10 @@ def ticker_context(
         WHERE publication.scope = 'options-radar' AND publication.status = 'published'
           AND item.model_name = 'option_radar_opportunity'
           AND coalesce(item.payload->>'ticker', item.payload->>'symbol') = %s
+          AND CAST(%s AS timestamptz) IS NOT NULL AND publication.published_at <= %s
         ORDER BY publication.published_at DESC NULLS LAST, item.rank LIMIT 1
         """,
-        [symbol],
+        [symbol, cutoff, cutoff],
     ).fetchone()
     published = connection.execute(
         """
@@ -63,23 +68,29 @@ def ticker_context(
         WHERE publication.status = 'published'
           AND coalesce(item.payload->>'symbol', item.payload->>'ticker', item.payload->>'underlying') = %s
           AND item.model_name <> ALL(%s)
+          AND CAST(%s AS timestamptz) IS NOT NULL AND publication.published_at <= %s
         ORDER BY item.model_name, publication.published_at DESC NULLS LAST, item.rank
         LIMIT 24
         """,
-        [symbol, sorted(_DUPLICATE_MODELS | {"candidate_event", "option_features", "option_snapshot"})],
+        [symbol, sorted(_DUPLICATE_MODELS | {"candidate_event", "option_features", "option_snapshot"}), cutoff, cutoff],
     ).fetchall()
     catalysts = connection.execute(
         """
         SELECT catalyst.starts_at, catalyst.title, catalyst.expected_impact, catalyst.notes
         FROM app.catalyst catalyst
         JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
-        WHERE instrument.symbol = %s AND catalyst.status = 'current' AND catalyst.starts_at >= now()
+        WHERE instrument.symbol = %s AND catalyst.status = 'current'
+          AND CAST(%s AS timestamptz) IS NOT NULL AND catalyst.created_at <= %s AND catalyst.starts_at >= %s
         ORDER BY catalyst.starts_at LIMIT 5
         """,
-        [symbol],
+        [symbol, cutoff, cutoff, cutoff],
     ).fetchall()
-    evidence = thesis_source_evidence(connection, [symbol], max_per_symbol=24).get(symbol, [])
+    evidence = thesis_source_evidence(connection, [symbol], max_per_symbol=24, cutoff=cutoff).get(symbol, [])
     return {
+        "context_status": {
+            "cutoff": cutoff.isoformat() if cutoff is not None else None,
+            "cutoff_available": cutoff is not None,
+        },
         "portfolio": _bounded_value(dict(state)) if state and include("portfolio") else {},
         "option_opportunity": option_opportunity_context(dict(option["payload"] or {})) if option else {},
         "published_models": {

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+
+
+_DEFAULT_CUTOFF = object()
 
 
 def thesis_source_evidence(
@@ -10,9 +14,14 @@ def thesis_source_evidence(
     symbols: list[str],
     *,
     max_per_symbol: int = 12,
+    cutoff: Any = _DEFAULT_CUTOFF,
 ) -> dict[str, list[dict[str, Any]]]:
     if not symbols:
         return {}
+    if cutoff is _DEFAULT_CUTOFF:
+        cutoff = datetime.now(UTC)
+    if cutoff is None:
+        return {str(symbol): [] for symbol in symbols}
     rows = connection.execute(
         """
         WITH evidence_rows AS (
@@ -38,13 +47,15 @@ def thesis_source_evidence(
                 SELECT signal.thesis, signal.sentiment, signal.observed_at
                 FROM analysis.source_signal signal
                 WHERE signal.content_item_id = item.id AND signal.instrument_id = instrument.id
+                  AND COALESCE(signal.available_at, signal.observed_at) <= %s
+                  AND signal.observed_at <= %s
                 ORDER BY signal.observed_at DESC LIMIT 1
             ) signal ON true
             WHERE regexp_replace(upper(instrument.symbol), '[.]+$', '') = ANY(%s)
               AND source.enabled
               AND source.operational_state = 'active'
-              AND item.observed_at <= now()
-              AND COALESCE(item.published_at, item.observed_at) <= now()
+              AND item.observed_at <= %s
+              AND COALESCE(item.published_at, item.observed_at) <= %s
         ), balanced AS (
             SELECT evidence_rows.*,
                    row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC, source_id, reference) AS symbol_rank
@@ -54,7 +65,7 @@ def thesis_source_evidence(
                title, summary, sentiment, observed_at, reference
         FROM balanced WHERE symbol_rank <= %s ORDER BY symbol, observed_at DESC
         """,
-        [symbols, max(1, int(max_per_symbol))],
+        [cutoff, cutoff, symbols, cutoff, cutoff, max(1, int(max_per_symbol))],
     ).fetchall()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for raw_row in rows:

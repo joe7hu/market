@@ -839,7 +839,7 @@ def test_agent_thesis_post_fulfills_request_and_validates(migrated_postgres_dsn:
             "invalidation": ["stock breaks below $80 without recovery"],
             "bear_case": "Demand weakness and pricing pressure can keep the stock below trend.",
             "confidence": 0.72,
-            "evidence_refs": [{"type": "source_signal", "id": "source-tsla-api-proof"}],
+            "evidence_refs": [{"type": "agent_request", "id": queued["request_id"]}],
         },
     )
 

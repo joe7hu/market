@@ -74,7 +74,13 @@ class AgentRepository:
             ).fetchone()
             if existing:
                 return {"request_id": str(existing["id"]), "status": existing["status"], **dict(existing["request"])}
-            resolved_context = ticker_context(connection, symbol, context_sources=context_sources)
+            include_decision = (context_sources or {}).get("decision", True)
+            decision_identity = dict(decision) if decision else {}
+            decision_context = decision_identity if include_decision else {}
+            cutoff = decision_identity.get("as_of")
+            resolved_context = ticker_context(
+                connection, symbol, context_sources=context_sources, cutoff=cutoff,
+            )
             if context:
                 resolved_context["option_opportunity"] = option_opportunity_context(context)
             request = {
@@ -82,11 +88,7 @@ class AgentRepository:
                 "trigger": trigger,
                 "custom_prompt": prompt,
                 "instrument_id": instrument["id"] if instrument else None,
-                "decision": (
-                    dict(decision)
-                    if decision and (context_sources or {}).get("decision", True)
-                    else {}
-                ),
+                "decision": decision_context,
                 "context": _jsonable(resolved_context),
                 "authority": "hypothesis_only",
             }
@@ -98,6 +100,16 @@ class AgentRepository:
                 """,
                 [decision["id"] if decision else None, Jsonb(_jsonable(request))],
             ).fetchone()
+            request_id = str(row["id"])
+            evidence_refs = _request_evidence_refs(resolved_context, decision_identity, request_id)
+            request["request_id"] = request_id
+            request["request_envelope"] = _request_envelope(
+                request_id, symbol, cutoff, decision_identity, evidence_refs,
+            )
+            connection.execute(
+                "UPDATE analysis.agent_task SET request = %s WHERE id = %s",
+                [Jsonb(_jsonable(request)), row["id"]],
+            )
         return {"request_id": str(row["id"]), "status": "queued", **request}
 
     def queue_current_candidates(
@@ -198,7 +210,15 @@ class AgentRepository:
         )
         if not request_id:
             raise ValueError("request_id is required")
-        _validate_result(task_kind, payload)
+        task = connection.execute(
+            "SELECT id, task_kind, request FROM analysis.agent_task WHERE id = %s FOR UPDATE",
+            [request_id],
+        ).fetchone()
+        if task is None or str(task["task_kind"]) != task_kind:
+            raise ValueError(f"agent request not found: {request_id}")
+        _validate_result(
+            task_kind, payload, request=dict(task["request"] or {}), task_id=str(task["id"]),
+        )
         row = accept_agent_task_result(connection, task_id=request_id, task_kind=task_kind, result=payload)
         if row is None:
             raise ValueError(f"agent request not found: {request_id}")
@@ -446,13 +466,16 @@ class AgentRepository:
                 break
             try:
                 process = subprocess.run(
-                    _command_args(command), input=json.dumps(_jsonable(dict(task["request"]))),
+                    _command_args(command), input=json.dumps(_jsonable(_task_input_payload(task))),
                     text=True, capture_output=True, timeout=timeout_seconds, check=False, env=child_env,
                 )
                 if process.returncode != 0:
                     raise RuntimeError((process.stderr or process.stdout or f"exit {process.returncode}")[-2000:])
                 result = json.loads(process.stdout)
-                _validate_result(str(task["task_kind"]), result)
+                _validate_result(
+                    str(task["task_kind"]), result,
+                    request=dict(task["request"] or {}), task_id=str(task["id"]),
+                )
                 with self.runtime.transaction() as connection:
                     accept_agent_task_result(
                         connection, task_id=str(task["id"]), task_kind=str(task["task_kind"]), result=result,
@@ -496,7 +519,9 @@ class AgentRepository:
                 result = by_kind[kind][index]
                 if not isinstance(result, dict):
                     raise ValueError("agent result must be an object")
-                _validate_result(kind, result)
+                _validate_result(
+                    kind, result, request=dict(task["request"] or {}), task_id=str(task["id"]),
+                )
                 with self.runtime.transaction() as connection:
                     accept_agent_task_result(
                         connection, task_id=str(task["id"]), task_kind=kind, result=result,
@@ -663,11 +688,9 @@ def _batch_payload(tasks: Sequence[Any]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = {"thesis": [], "postmortem": []}
     for task in tasks:
         stored = dict(task["request"] or {})
+        envelope = _task_envelope(task, stored)
         request = {
-            "request": {
-                **{key: value for key, value in stored.items() if key not in {"context", "custom_prompt"}},
-                "request_id": str(task["id"]),
-            },
+            "request": envelope,
             "prompt": str(stored.get("custom_prompt") or ""),
             "context": stored.get("context") or stored.get("decision") or {},
             "guardrails": {"authority": stored.get("authority") or "advisory_only"},
@@ -685,3 +708,71 @@ def _batch_payload(tasks: Sequence[Any]) -> dict[str, Any]:
 
 
 command_args = _command_args
+
+
+def _request_envelope(
+    request_id: str,
+    ticker: str,
+    cutoff: Any,
+    decision: dict[str, Any],
+    evidence_refs: list[dict[str, str]],
+) -> dict[str, Any]:
+    return {
+        "request": request_id,
+        "request_id": request_id,
+        "task": "option_thesis",
+        "role": "expression-specialist",
+        "objective": "falsifiable_option_thesis",
+        "ticker": ticker,
+        "decision_id": str(decision.get("id") or "") or None,
+        "cutoff": cutoff.isoformat() if cutoff is not None else None,
+        "evidence_refs": evidence_refs,
+        "authority": "hypothesis_only",
+    }
+
+
+def _request_evidence_refs(
+    context: dict[str, Any], decision: dict[str, Any], request_id: str,
+) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = [{"type": "agent_request", "id": request_id}]
+    decision_id = str(decision.get("id") or "").strip()
+    if decision_id:
+        refs.append({"type": "decision", "id": decision_id})
+    for item in list(context.get("source_evidence") or []):
+        if not isinstance(item, dict):
+            continue
+        reference = str(item.get("reference") or "").strip()
+        source_id = str(item.get("source_id") or "").strip()
+        if reference:
+            refs.append({"type": "source_evidence", "id": reference})
+        if source_id:
+            refs.append({"type": "source_signal", "id": source_id})
+    return list({(item["type"], item["id"]): item for item in refs}.values())[:24]
+
+
+def _task_envelope(task: Any, stored: dict[str, Any]) -> dict[str, Any]:
+    envelope = stored.get("request_envelope")
+    if isinstance(envelope, dict):
+        return {**envelope, "request": str(task["id"])}
+    return {
+        "request": str(task["id"]),
+        "task": str(task["task_kind"]),
+        "role": "expression-specialist" if str(task["task_kind"]) == "option_thesis" else "postmortem",
+        "objective": "falsifiable_option_thesis" if str(task["task_kind"]) == "option_thesis" else "proposal_only",
+        "ticker": str(stored.get("ticker") or "").upper(),
+        "decision_id": str(stored.get("decision_id") or "") or None,
+        "cutoff": None,
+        "evidence_refs": [{"type": "agent_request", "id": str(task["id"])}],
+        "authority": stored.get("authority") or "advisory_only",
+    }
+
+
+def _task_input_payload(task: Any) -> dict[str, Any]:
+    stored = dict(task["request"] or {})
+    return {
+        **stored,
+        "request": _task_envelope(task, stored),
+        "prompt": str(stored.get("custom_prompt") or ""),
+        "context": stored.get("context") or stored.get("decision") or {},
+        "guardrails": {"authority": stored.get("authority") or "advisory_only"},
+    }

@@ -146,6 +146,7 @@ def test_agent_queue_external_execution_and_manual_submission(postgres_dsn: str)
         command_code = (
             "import json,sys; request=json.load(sys.stdin); "
             f"result={template!r}; result['ticker']=request['ticker']; "
+            "result['request_id']=request['request_id']; "
             "result['core_thesis']=request['ticker'] + ' thesis'; print(json.dumps(result))"
         )
         command = f"{shlex.quote(sys.executable)} -c {shlex.quote(command_code)}"
@@ -241,6 +242,11 @@ def test_agent_queue_uses_the_exact_published_decision(postgres_dsn: str) -> Non
             ).fetchone()
         assert stored_without_decision["decision_id"] == decision_ids[0]
         assert stored_without_decision["request_decision"] == {}
+        envelope = connection.execute(
+            "SELECT request->'request_envelope' AS envelope FROM analysis.agent_task WHERE id = %s",
+            [without_decision["request_id"]],
+        ).fetchone()["envelope"]
+        assert envelope["decision_id"] == str(decision_ids[0])
     finally:
         runtime.close()
 
@@ -341,7 +347,7 @@ def test_agent_repository_claims_sequential_tasks_only_when_execution_starts(
             request = json.loads(input)
             return SimpleNamespace(
                 returncode=0,
-                stdout=json.dumps(_option_thesis_result(request["ticker"])),
+                stdout=json.dumps(_option_thesis_result(request["ticker"], request_id=request["request_id"])),
                 stderr="",
             )
 
@@ -376,7 +382,9 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
                 returncode=0,
                 stdout=json.dumps({
                     "thesis": [
-                        _option_thesis_result(item["request"]["ticker"])
+                        _option_thesis_result(
+                            item["request"]["ticker"], request_id=item["request"]["request_id"],
+                        )
                         for item in payload["thesis"]
                     ],
                     "postmortem": [],
@@ -437,9 +445,15 @@ def test_consolidated_agent_enforces_scheduled_daily_run_cap(
         repository.queue_thesis("NVDA", trigger="scheduled")
         monkeypatch.setattr(
             "investment_panel.database.agents.subprocess.run",
-            lambda *_args, **_kwargs: SimpleNamespace(
+            lambda *_args, input, **_kwargs: SimpleNamespace(
                 returncode=0,
-                stdout=json.dumps({"thesis": [_option_thesis_result("NVDA")], "postmortem": []}),
+                stdout=json.dumps({
+                    "thesis": [_option_thesis_result(
+                        json.loads(input)["thesis"][0]["request"]["ticker"],
+                        request_id=json.loads(input)["thesis"][0]["request"]["request_id"],
+                    )],
+                    "postmortem": [],
+                }),
                 stderr="",
             ),
         )
@@ -489,6 +503,49 @@ def test_option_agent_context_keeps_decision_fields_without_copying_the_full_tic
         "expected_value": 42,
         "blockers": ["calibrated_probability_required"],
     }
+
+
+def test_agent_thesis_request_envelope_is_bounded_and_hypothesis_only(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        queued = AgentRepository(runtime).queue_thesis("NVDA", trigger="envelope")
+        with runtime.read() as connection:
+            request = connection.execute(
+                "SELECT request FROM analysis.agent_task WHERE id = %s", [queued["request_id"]]
+            ).fetchone()["request"]
+        envelope = request["request_envelope"]
+        assert envelope["request"] == envelope["request_id"] == queued["request_id"]
+        assert envelope["task"] == "option_thesis"
+        assert envelope["role"] == "expression-specialist"
+        assert envelope["objective"] == "falsifiable_option_thesis"
+        assert envelope["ticker"] == "NVDA"
+        assert envelope["cutoff"] is None
+        assert envelope["authority"] == "hypothesis_only"
+        assert envelope["evidence_refs"] == [{"type": "agent_request", "id": queued["request_id"]}]
+    finally:
+        runtime.close()
+
+
+def test_option_agent_rejects_unknown_reference_before_materialization(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        queued = AgentRepository(runtime).queue_thesis("NVDA", trigger="forged-reference")
+        result = _option_thesis_result("NVDA", request_id=queued["request_id"])
+        result["evidence_refs"] = [{"type": "source_signal", "id": "forged"}]
+        with pytest.raises(ValueError, match="unknown or unavailable evidence"):
+            AgentRepository(runtime).submit("option_thesis", result)
+        with runtime.read() as connection:
+            task = connection.execute(
+                "SELECT status, result FROM analysis.agent_task WHERE id = %s", [queued["request_id"]]
+            ).fetchone()
+        assert task["status"] == "queued"
+        assert task["result"] is None
+    finally:
+        runtime.close()
 
 
 def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_dsn: str) -> None:

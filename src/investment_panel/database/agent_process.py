@@ -84,7 +84,13 @@ def jsonable(value: Any) -> Any:
     return value
 
 
-def validate_result(task_kind: str, payload: dict[str, Any]) -> None:
+def validate_result(
+    task_kind: str,
+    payload: dict[str, Any],
+    *,
+    request: dict[str, Any] | None = None,
+    task_id: str | None = None,
+) -> None:
     if task_kind == "option_thesis":
         required = {
             "ticker": str(payload.get("ticker") or "").strip().upper(),
@@ -146,9 +152,72 @@ def validate_result(task_kind: str, payload: dict[str, Any]) -> None:
                 missing.append("scenario_probabilities")
         if missing:
             raise ValueError(f"agent thesis missing or invalid required fields: {', '.join(sorted(set(missing)))}")
+        if request is not None:
+            _validate_thesis_identity(payload, request, task_id)
     elif task_kind == "option_postmortem":
         if not str(payload.get("failure_type") or payload.get("outcome_type") or "").strip():
             raise ValueError("agent postmortem requires failure_type or outcome_type")
+
+
+def _validate_thesis_identity(
+    payload: dict[str, Any], request: dict[str, Any], task_id: str | None,
+) -> None:
+    envelope = request.get("request_envelope")
+    envelope = envelope if isinstance(envelope, dict) else {}
+    expected_id = str(
+        task_id or request.get("request_id") or envelope.get("request_id") or envelope.get("request") or ""
+    ).strip()
+    if not expected_id:
+        raise ValueError("agent thesis request identity is unavailable")
+    for stored_id in (request.get("request_id"), envelope.get("request_id"), envelope.get("request")):
+        if stored_id and str(stored_id).strip() != expected_id:
+            raise ValueError("agent thesis request identity mismatch")
+    request_ticker = str(request.get("ticker") or "").strip().upper()
+    envelope_ticker = str(envelope.get("ticker") or "").strip().upper()
+    if request_ticker and envelope_ticker and request_ticker != envelope_ticker:
+        raise ValueError("agent thesis ticker identity mismatch")
+    ticker = request_ticker or envelope_ticker
+    if str(payload.get("ticker") or "").strip().upper() != ticker:
+        raise ValueError(f"agent thesis ticker mismatch: expected {ticker}")
+    supplied_task = str(payload.get("task_kind") or payload.get("task") or "").strip()
+    if supplied_task and supplied_task != "option_thesis":
+        raise ValueError("agent thesis task identity mismatch")
+    if envelope.get("task") and str(envelope["task"]).strip() != "option_thesis":
+        raise ValueError("agent thesis task identity mismatch")
+    supplied_id = str(payload.get("request_id") or "").strip()
+    references = payload.get("evidence_refs")
+    if not isinstance(references, list):
+        raise ValueError("agent thesis evidence_refs must be an array")
+    normalized: list[tuple[str, str]] = []
+    for reference in references:
+        if not isinstance(reference, dict):
+            raise ValueError("agent thesis evidence reference must be an object")
+        reference_type = str(reference.get("type") or "").strip()
+        reference_id = str(reference.get("id") or "").strip()
+        if not reference_type or not reference_id:
+            raise ValueError("agent thesis evidence reference is malformed")
+        normalized.append((reference_type, reference_id))
+    if supplied_id and supplied_id != expected_id:
+        raise ValueError("agent thesis request identity mismatch")
+    if supplied_id != expected_id and ("agent_request", expected_id) not in normalized:
+        raise ValueError("agent thesis request identity is missing")
+    request_decision = str(
+        request.get("decision_id") or (request.get("decision") or {}).get("id") or ""
+    ).strip()
+    envelope_decision = str(envelope.get("decision_id") or "").strip()
+    if request_decision and envelope_decision and request_decision != envelope_decision:
+        raise ValueError("agent thesis decision identity mismatch")
+    expected_decision = request_decision or envelope_decision
+    supplied_decision = str(payload.get("decision_id") or "").strip()
+    if supplied_decision and supplied_decision != expected_decision:
+        raise ValueError("agent thesis decision identity mismatch")
+    allowed = {
+        (str(item.get("type") or ""), str(item.get("id") or ""))
+        for item in list(envelope.get("evidence_refs") or [])
+        if isinstance(item, dict) and item.get("type") and item.get("id")
+    }
+    if not set(normalized) <= allowed:
+        raise ValueError("agent thesis references unknown or unavailable evidence")
 
 
 def market_day_start_utc(now: datetime) -> datetime:
