@@ -445,6 +445,7 @@ class PortfolioImpact(BaseModel):
 
     contract_version: str = "portfolio-impact.v1"
     impact_id: str = Field(min_length=1)
+    ticker: str = Field(min_length=1)
     opportunity_episode_id: str = Field(min_length=1)
     expression_kind: ExpressionKind
     expression_identity: str = Field(min_length=1)
@@ -513,12 +514,17 @@ class PortfolioImpact(BaseModel):
         }.items():
             if new not in result and old in result:
                 result[new] = result[old]
+        if isinstance(result.get("ticker"), str):
+            result["ticker"] = normalize_symbol(result["ticker"])
         return result
 
     @model_validator(mode="after")
     def enforce_cutoff(self) -> "PortfolioImpact":
         if self.cutoff.tzinfo is None:
             raise ValueError("portfolio impact cutoff must be timezone-aware")
+        target_ticker = normalize_symbol(self.ticker)
+        if SYMBOL_RE.fullmatch(target_ticker) is None:
+            raise ValueError("portfolio impact ticker must be a valid target ticker")
         cutoff = _utc(self.cutoff)
         for lineage in self.input_lineage:
             if _utc(lineage.available_at) > cutoff:
@@ -574,14 +580,21 @@ class PortfolioImpact(BaseModel):
             if not isinstance(evidence, Mapping):
                 raise ValueError("available stock portfolio impacts require stock evidence")
             positions = before.get("positions") or ()
-            stock_impact = before.get("stock_impact")
-            impact_ticker = _pick(before, "ticker", "symbol", "instrument_symbol")
-            if impact_ticker is None and isinstance(stock_impact, Mapping):
-                impact_ticker = _pick(stock_impact, "ticker", "symbol")
+            for source in (before, after):
+                if not isinstance(source, Mapping):
+                    continue
+                source_ticker = _pick(source, "ticker", "symbol", "instrument_symbol")
+                nested = source.get("stock_impact")
+                nested_ticker = _pick(nested, "ticker", "symbol") if isinstance(nested, Mapping) else None
+                if any(
+                    candidate is not None and normalize_symbol(str(candidate)) != target_ticker
+                    for candidate in (source_ticker, nested_ticker)
+                ):
+                    raise ValueError("available stock portfolio impacts require a matching target ticker")
             btc_required = _stock_btc_scenarios_required(
                 evidence,
                 positions,
-                str(impact_ticker or ""),
+                target_ticker,
                 portfolio_before=before,
             )
             scenario_pnl = _stock_scenario_pnl(
@@ -922,6 +935,8 @@ class TradePlan(BaseModel):
                 raise ValueError("trade plan portfolio impact id must match the impact")
             if self.portfolio_impact.opportunity_episode_id != self.opportunity_episode_id:
                 raise ValueError("trade plan portfolio impact episode must match the plan")
+            if normalize_symbol(self.portfolio_impact.ticker) != normalize_symbol(self.ticker):
+                raise ValueError("trade plan portfolio impact ticker must match the plan")
             if self.portfolio_impact.decision_revision != self.decision_revision:
                 raise ValueError("trade plan portfolio impact revision must match the plan")
             if self.portfolio_impact.risk_policy_version != self.policy_version:
@@ -1792,6 +1807,8 @@ class TickerDecision(BaseModel):
                 )
             if impact.opportunity_episode_id != self.opportunity_episode_id:
                 raise ValueError("portfolio impact episode must match the ticker decision")
+            if normalize_symbol(impact.ticker) != normalize_symbol(self.ticker):
+                raise ValueError("portfolio impact ticker must match the ticker decision")
             if impact.expression_kind is not kind:
                 raise ValueError("portfolio impact expression kind must match its key")
             if impact.decision_revision != self.decision_revision:
@@ -2489,6 +2506,7 @@ def _missing_portfolio_impact(
     identity = _expression_identity_for(expression, kind, episode.ticker, episode.decision_revision)
     return PortfolioImpact(
         impact_id=f"missing-impact:{episode.episode_id}:{kind.value}",
+        ticker=episode.ticker,
         opportunity_episode_id=episode.episode_id,
         expression_kind=kind,
         expression_identity=identity,
@@ -2506,6 +2524,7 @@ def _missing_portfolio_impact(
 def _portfolio_impact_id(impact: PortfolioImpact) -> str:
     payload = {
         "book_identity": impact.portfolio_before.get("book_identity"),
+        "ticker": impact.ticker,
         "opportunity_episode_id": impact.opportunity_episode_id,
         "expression_kind": impact.expression_kind.value,
         "expression_identity": impact.expression_identity,
@@ -2763,13 +2782,15 @@ def _stock_btc_scenarios_required(
         isinstance(position, Mapping)
         and (
             _stock_crypto_signal(position)
-            or normalize_symbol(str(position.get("symbol") or "")) in {
-                "BTC", "BTC-USD", "BITCOIN", "BITCOIN-USD",
-            }
-            or normalize_symbol(str(position.get("symbol") or "")) in _STOCK_CRYPTO_SENSITIVE_SYMBOLS
+            or _stock_position_identity(position) in {"BTC-USD", "BITCOIN", "BITCOIN-USD"}
+            or _stock_position_identity(position) in _STOCK_CRYPTO_SENSITIVE_SYMBOLS
         )
         for position in position_rows
     )
+
+
+def _stock_position_identity(position: Mapping[str, Any]) -> str:
+    return normalize_symbol(str(_pick(position, "ticker", "symbol", "instrument_symbol") or ""))
 
 
 def _stock_scenario_magnitudes(value: Mapping[str, Any]) -> tuple[float, ...] | None:
@@ -3045,16 +3066,12 @@ def _stock_evidence_label(value: Any) -> str | None:
     return None if label.lower() in _STOCK_PLACEHOLDER_LABELS else label
 
 
-def _stock_catalog_entry_ticker(value: Any, fallback: Any = None) -> str | None:
+def _stock_catalog_entry_ticker(value: Any) -> str | None:
     if not isinstance(value, Mapping):
         return None
-    if (
-        value.get("instrument_id") is None
-        and value.get("catalog_instrument_id") is None
-        and value.get("id") is None
-    ):
+    if value.get("instrument_id") is None and value.get("catalog_instrument_id") is None:
         return None
-    ticker = normalize_symbol(str(_pick(value, "ticker", "symbol") or fallback or ""))
+    ticker = normalize_symbol(str(_pick(value, "ticker", "symbol") or ""))
     return (
         ticker
         if ticker
@@ -3064,34 +3081,15 @@ def _stock_catalog_entry_ticker(value: Any, fallback: Any = None) -> str | None:
     )
 
 
-def _stock_authoritative_catalog_tickers(*sources: Any) -> set[str]:
+def _stock_authoritative_catalog_tickers(portfolio_before: Mapping[str, Any] | None = None) -> set[str]:
+    """Return only configured symbols and replay rows with instrument identity."""
+
     tickers = set(_STOCK_CATALOG_TICKERS)
-    containers = (
-        "instrument", "target_instrument", "instrument_catalog", "catalog_instruments",
-        "catalog", "instruments",
-    )
-    for source in sources:
-        if not isinstance(source, Mapping):
-            continue
-        for position in source.get("positions") or ():
+    if isinstance(portfolio_before, Mapping):
+        for position in portfolio_before.get("positions") or ():
             ticker = _stock_catalog_entry_ticker(position)
             if ticker is not None:
                 tickers.add(ticker)
-        for container in containers:
-            entries = source.get(container)
-            ticker = _stock_catalog_entry_ticker(entries)
-            if ticker is not None:
-                tickers.add(ticker)
-            if isinstance(entries, Mapping):
-                for key, entry in entries.items():
-                    ticker = _stock_catalog_entry_ticker(entry, fallback=key)
-                    if ticker is not None:
-                        tickers.add(ticker)
-            elif isinstance(entries, (list, tuple, set, frozenset)):
-                for entry in entries:
-                    ticker = _stock_catalog_entry_ticker(entry)
-                    if ticker is not None:
-                        tickers.add(ticker)
     return tickers
 
 
@@ -3112,9 +3110,7 @@ def _stock_top_alternative(
     cash_comparator: Mapping[str, Any] | None,
     portfolio_before: Mapping[str, Any] | None = None,
 ) -> str | None:
-    authoritative_tickers = _stock_authoritative_catalog_tickers(
-        evidence, portfolio_before, cash_comparator,
-    )
+    authoritative_tickers = _stock_authoritative_catalog_tickers(portfolio_before)
     if "top_alternative" in evidence:
         return _stock_verified_ticker(evidence.get("top_alternative"), authoritative_tickers)
     if isinstance(cash_comparator, Mapping):
@@ -3400,6 +3396,7 @@ def compose_portfolio_impact(
         }
     impact = PortfolioImpact(
         impact_id="pending",
+        ticker=episode.ticker,
         opportunity_episode_id=episode.episode_id,
         expression_kind=kind,
         expression_identity=expression_identity,

@@ -8877,6 +8877,11 @@
             ],
             "title": "Symbol Concentration Delta"
           },
+          "ticker": {
+            "minLength": 1,
+            "title": "Ticker",
+            "type": "string"
+          },
           "top_alternative": {
             "anyOf": [
               {
@@ -8891,6 +8896,7 @@
         },
         "required": [
           "impact_id",
+          "ticker",
           "opportunity_episode_id",
           "expression_kind",
           "expression_identity",

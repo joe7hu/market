@@ -195,6 +195,7 @@ const plan = (overrides: Partial<TradePlan> = {}): TradePlan => ({
     opportunity_episode_id: "episode-1",
     positions_most_correlated: ["MSFT"],
     risk_policy_version: "risk-policy.v2",
+    ticker: "AAA",
     marginal_risk: 0.2,
     risk_budget_consumed: 0.1,
     diversification_benefit: 0.05,

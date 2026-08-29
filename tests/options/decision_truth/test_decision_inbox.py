@@ -166,7 +166,7 @@ def _paper_plan(ticker: str, cutoff: datetime) -> TradePlan:
     )
     identity = trade_expression_identity(expression)
     impact = PortfolioImpact(
-        impact_id=f"impact:{ticker}", opportunity_episode_id=f"episode:{ticker}",
+        impact_id=f"impact:{ticker}", ticker=ticker, opportunity_episode_id=f"episode:{ticker}",
         expression_kind=ExpressionKind.STOCK, expression_identity=identity,
         decision_revision=f"revision:{ticker}", risk_policy_version=f"policy:{ticker}",
         market_snapshot_id=f"snapshot:{ticker}",

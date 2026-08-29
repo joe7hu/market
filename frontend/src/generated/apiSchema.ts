@@ -4281,6 +4281,8 @@ export interface components {
             sector_concentration_delta?: number | null;
             /** Symbol Concentration Delta */
             symbol_concentration_delta?: number | null;
+            /** Ticker */
+            ticker: string;
             /** Top Alternative */
             top_alternative?: string | null;
         } & {

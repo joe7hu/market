@@ -304,6 +304,7 @@ def test_stock_impact_requires_a_catalog_backed_top_alternative(untrusted_altern
     evidence = _complete_stock_evidence()
     evidence["top_alternative"] = untrusted_alternative
     evidence["verified_tickers"] = ["ZZZZ"]
+    evidence["instrument_catalog"] = [{"id": 999, "symbol": "ZZZZ"}]
     impact = _decision(portfolio_replay=_valued_replay(stock_evidence=evidence)).portfolio_impacts[ExpressionKind.STOCK]
 
     assert impact.availability == "unavailable"
@@ -315,11 +316,27 @@ def test_stock_impact_accepts_catalog_backed_top_alternative() -> None:
     evidence = _complete_stock_evidence()
     evidence["top_alternative"] = "ALFA"
     replay = _valued_replay(stock_evidence=evidence)
-    replay["instrument_catalog"] = [{
-        "id": 99,
-        "symbol": "ALFA",
-        "asset_class": "equity",
-    }]
+    replay["positions"] = [
+        *replay["positions"],
+        {
+            "instrument_id": 99,
+            "symbol": "ALFA",
+            "sector": "Technology",
+            "quantity": 1.0,
+            "avg_cost": 10.0,
+            "price": 10.0,
+            "market_value": 10.0,
+            "source_id": "test",
+            "currency": "USD",
+            "source_kind": "daily_bars",
+            "trading_date": "2026-08-22",
+            "observed_at": AS_OF,
+            "available_at": AS_OF,
+            "valuation_status": "market_quotes",
+        },
+    ]
+    replay["eligible_position_count"] = 2
+    replay["valued_position_count"] = 2
 
     impact = _decision(portfolio_replay=replay).portfolio_impacts[ExpressionKind.STOCK]
 
@@ -385,9 +402,27 @@ def test_stock_impact_rechecks_btc_without_optional_nested_ticker() -> None:
     payload = impact.model_dump(mode="python")
     before = dict(payload["portfolio_before"])
     before.pop("stock_impact")
-    payload["portfolio_before"] = before
-    rebuilt = type(impact).model_validate(payload)
+    without_nested_identity = dict(payload)
+    without_nested_identity["portfolio_before"] = before
+    rebuilt = type(impact).model_validate(without_nested_identity)
     assert rebuilt.availability == "available"
+
+    mismatched_target = dict(without_nested_identity)
+    mismatched_target["ticker"] = "ACME"
+    with pytest.raises(ValueError, match="matching target ticker"):
+        type(impact).model_validate(mismatched_target)
+
+    without_target_identity = dict(without_nested_identity)
+    identity_free_before = dict(before)
+    identity_free_before.pop("ticker", None)
+    identity_free_after = dict(payload["portfolio_after"])
+    identity_free_after.pop("ticker", None)
+    identity_free_after.pop("stock_impact", None)
+    without_target_identity["portfolio_before"] = identity_free_before
+    without_target_identity["portfolio_after"] = identity_free_after
+    without_target_identity.pop("ticker", None)
+    with pytest.raises(ValueError, match="ticker"):
+        type(impact).model_validate(without_target_identity)
 
     bad_before = dict(before)
     bad_evidence = dict(bad_before["stock_evidence"])
@@ -395,13 +430,44 @@ def test_stock_impact_rechecks_btc_without_optional_nested_ticker() -> None:
     bad_scenarios.pop("BTC")
     bad_evidence["stress_scenarios"] = bad_scenarios
     bad_before["stock_evidence"] = bad_evidence
-    payload["portfolio_before"] = bad_before
-    payload["scenario_pnl"] = bad_scenarios | {
+    bad_payload = dict(without_nested_identity)
+    bad_payload["portfolio_before"] = bad_before
+    bad_payload["scenario_pnl"] = bad_scenarios | {
         key: value for key, value in payload["scenario_pnl"].items() if key != "BTC"
     }
 
     with pytest.raises(ValueError, match="complete stress scenarios"):
-        type(impact).model_validate(payload)
+        type(impact).model_validate(bad_payload)
+
+
+def test_stock_impact_requires_btc_for_ticker_only_crypto_position_identity() -> None:
+    replay = _valued_replay(stock_evidence=_complete_stock_evidence())
+    replay["positions"] = [
+        *replay["positions"],
+        {
+            "instrument_id": 2,
+            "ticker": "BTC-USD",
+            "sector": "Technology",
+            "quantity": 1.0,
+            "avg_cost": 500.0,
+            "price": 500.0,
+            "market_value": 500.0,
+            "source_id": "test",
+            "currency": "USD",
+            "source_kind": "daily_bars",
+            "trading_date": "2026-08-22",
+            "observed_at": AS_OF,
+            "available_at": AS_OF,
+            "valuation_status": "market_quotes",
+        },
+    ]
+    replay["eligible_position_count"] = 2
+    replay["valued_position_count"] = 2
+
+    impact = _decision(portfolio_replay=replay).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert "stock_stress_scenarios_missing" in impact.blockers
 
 
 def test_stock_impact_missing_institutional_evidence_stays_unavailable() -> None:
