@@ -2679,6 +2679,11 @@ def build_ticker_decision(
         policy_blockers.append("future_account_revision_not_allowed")
     elif (reference - account_observed_at).total_seconds() > 1800:
         policy_blockers.append("fresh_postgres_account_facts_required")
+    account_source = account_facts["account_source"]
+    if account_source is not None and str(account_source).strip().lower() not in {
+        "postgresql", "postgres", "raw.broker_account_snapshot",
+    }:
+        policy_blockers.append("postgresql_account_facts_required")
     canonical_policy_snapshot = compile_risk_policy_snapshot(
         account_facts=account_facts,
         sleeve_capital=nav,

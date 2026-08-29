@@ -477,6 +477,35 @@ def test_account_policy_blocker_suppresses_positive_expression_terms() -> None:
     assert decision.resolution.exit is None
 
 
+def test_explicit_unsupported_account_source_blocks_ticker_sizing() -> None:
+    decision = build_ticker_decision(
+        "ACME",
+        {
+            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{
+                "net_liquidation": 100_000,
+                "available_at": "2026-08-22T13:55:00Z",
+                "account_observed_at": "2026-08-22T13:55:00Z",
+                "account_source": "unsupported-account-source",
+            }],
+            "decision_queue": [{
+                "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
+                "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+                "conviction_tier": "STANDARD", "available_at": "2026-08-22T13:55:00Z",
+            }],
+        },
+        as_of=AS_OF,
+    )
+
+    assert decision.capital_action.action is CapitalActionType.AVOID
+    assert decision.selected_expression is not None
+    assert decision.selected_expression.kind is ExpressionKind.CASH
+    assert decision.expressions[ExpressionKind.STOCK].quantity is None
+    assert decision.resolution is not None
+    assert decision.resolution.size is None
+    assert "postgresql_account_facts_required" in decision.context_blockers
+
+
 def test_policy_blocker_rehashes_sanitized_portfolio_impacts() -> None:
     source = build_ticker_decision(
         "ACME",
