@@ -15,7 +15,7 @@ from investment_panel.database.actions import ActionRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.agents import AgentRepository, command_args
 from investment_panel.database.agent_process import market_day_start_utc, validate_result
-from investment_panel.database.agent_context import option_opportunity_context
+from investment_panel.database.agent_context import option_opportunity_context, ticker_context
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
@@ -142,6 +142,7 @@ def test_agent_queue_external_execution_and_manual_submission(postgres_dsn: str)
         queued = repository.queue_thesis("NVDA", prompt="focus on invalidation", trigger="ondemand")
         duplicate = repository.queue_thesis("NVDA", prompt="duplicate", trigger="ondemand")
         assert duplicate["request_id"] == queued["request_id"]
+        assert duplicate["request_envelope"] == queued["request_envelope"]
 
         template = _option_thesis_result("NVDA")
         command_code = (
@@ -363,6 +364,33 @@ def test_legacy_recovered_task_uses_dispatch_fallback_envelope(
             ).fetchone()
         assert recovered["status"] == "completed"
         assert recovered["result"]["request_id"] == task_id
+    finally:
+        runtime.close()
+
+
+def test_legacy_manual_submission_uses_fallback_envelope(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    repository = AgentRepository(runtime)
+    try:
+        with runtime.transaction() as connection:
+            task = connection.execute(
+                """
+                INSERT INTO analysis.agent_task (task_kind, status, request)
+                VALUES ('option_thesis', 'queued', %s) RETURNING id
+                """,
+                [Jsonb({"ticker": "NVDA", "authority": "hypothesis_only"})],
+            ).fetchone()
+        task_id = str(task["id"])
+        result = _option_thesis_result("NVDA", request_id=task_id)
+        result["evidence_refs"] = [{"type": "agent_request", "id": task_id}]
+        assert repository.submit("option_thesis", result) == task_id
+        with runtime.read() as connection:
+            status = connection.execute(
+                "SELECT status FROM analysis.agent_task WHERE id = %s", [task_id]
+            ).fetchone()["status"]
+        assert status == "completed"
     finally:
         runtime.close()
 
@@ -657,6 +685,236 @@ def test_agent_context_excludes_source_from_future_ingest_run(postgres_dsn: str)
         assert evidence.get("PITX", []) == []
     finally:
         runtime.close()
+
+
+def test_agent_context_rejects_unavailable_or_unfinished_signal_runs(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+    source_id = f"agent-signal-{uuid4().hex}"
+    try:
+        with runtime.transaction() as connection:
+            instrument = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('PITS', 'PITS', 'equity') "
+                "RETURNING id"
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO ingest.source
+                    (id, name, family, kind, operational_state, health_owner, freshness_seconds)
+                VALUES (%s, 'PITS test source', 'news', 'news', 'active', 'test', 3600)
+                """,
+                [source_id],
+            )
+            ingest_run = connection.execute(
+                """
+                INSERT INTO ingest.run (source_id, capability, started_at, finished_at, status)
+                VALUES (%s, 'news', %s, %s, 'succeeded') RETURNING id
+                """,
+                [source_id, cutoff - timedelta(hours=3), cutoff - timedelta(hours=2)],
+            ).fetchone()
+            item = connection.execute(
+                """
+                INSERT INTO raw.content_item
+                    (source_id, ingest_run_id, source_key, kind, title, published_at, observed_at, summary)
+                VALUES (%s, %s, 'pits-signal-provenance', 'article', 'PITS raw title', %s, %s, 'PITS raw truth')
+                RETURNING id
+                """,
+                [source_id, ingest_run["id"], cutoff - timedelta(hours=3), cutoff - timedelta(hours=3)],
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO raw.content_item_instrument (content_item_id, instrument_id) VALUES (%s, %s)",
+                [item["id"], instrument["id"]],
+            )
+            analysis_runs = []
+            for status, finished_at in (
+                ("failed", cutoff - timedelta(hours=1)),
+                ("succeeded", cutoff + timedelta(minutes=1)),
+                ("succeeded", cutoff - timedelta(hours=1)),
+            ):
+                analysis_runs.append(connection.execute(
+                    """
+                    INSERT INTO analysis.run
+                        (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+                    VALUES ('agent-signal-test', %s, 'test', %s, %s, %s, %s) RETURNING id
+                    """,
+                    [cutoff, "a" * 64, finished_at - timedelta(minutes=1), finished_at, status],
+                ).fetchone()["id"])
+            for index, (run_id, available_at) in enumerate(zip(
+                analysis_runs,
+                (cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), None),
+            )):
+                connection.execute(
+                    """
+                    INSERT INTO analysis.source_signal
+                        (run_id, content_item_id, instrument_id, observed_at, available_at,
+                         signal_type, sentiment, thesis)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'positive', %s)
+                    """,
+                    [
+                        run_id, item["id"], instrument["id"], cutoff - timedelta(minutes=index + 1),
+                        available_at, f"invalid-signal-{index}", f"invalid signal {index}",
+                    ],
+                )
+
+        with runtime.read() as connection:
+            evidence = thesis_source_evidence(connection, ["PITS"], cutoff=cutoff)
+        assert evidence["PITS"][0]["summary"] == "PITS raw truth"
+        assert evidence["PITS"][0]["sentiment"] == "neutral"
+    finally:
+        runtime.close()
+
+
+def test_agent_context_applies_cutoff_to_quote_catalyst_and_publication(
+    postgres_dsn: str,
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    cutoff = datetime(2026, 8, 28, 15, tzinfo=UTC)
+    source_id = f"agent-context-{uuid4().hex}"
+    try:
+        with runtime.transaction() as connection:
+            instrument = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('PITC', 'PITC', 'equity') "
+                "RETURNING id"
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO ingest.source
+                    (id, name, family, kind, operational_state, health_owner, freshness_seconds)
+                VALUES (%s, 'PITC test source', 'price', 'price', 'active', 'test', 3600)
+                """,
+                [source_id],
+            )
+            ingest_run = connection.execute(
+                """
+                INSERT INTO ingest.run (source_id, capability, started_at, finished_at, status)
+                VALUES (%s, 'prices', %s, %s, 'succeeded') RETURNING id
+                """,
+                [source_id, cutoff - timedelta(hours=4), cutoff - timedelta(hours=3)],
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO raw.quote
+                    (instrument_id, source_id, ingest_run_id, observed_at, available_at, price)
+                VALUES
+                    (%s, %s, %s, %s, %s, 100),
+                    (%s, %s, %s, %s, %s, 200)
+                """,
+                [
+                    instrument["id"], source_id, ingest_run["id"], cutoff - timedelta(hours=2),
+                    cutoff - timedelta(hours=2), instrument["id"], source_id, ingest_run["id"],
+                    cutoff + timedelta(hours=1), cutoff + timedelta(hours=1),
+                ],
+            )
+            connection.execute(
+                """
+                INSERT INTO app.catalyst (instrument_id, starts_at, title, created_at)
+                VALUES
+                    (%s, %s, 'valid catalyst', %s),
+                    (%s, %s, 'past catalyst', %s),
+                    (%s, %s, 'future-created catalyst', %s)
+                """,
+                [
+                    instrument["id"], cutoff + timedelta(hours=1), cutoff - timedelta(hours=1),
+                    instrument["id"], cutoff - timedelta(hours=1), cutoff - timedelta(hours=1),
+                    instrument["id"], cutoff + timedelta(hours=2), cutoff + timedelta(hours=1),
+                ],
+            )
+            publication_runs = []
+            for suffix in ("old", "future"):
+                publication_runs.append(connection.execute(
+                    """
+                    INSERT INTO analysis.run
+                        (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+                    VALUES ('agent-context-test', %s, 'test', %s, %s, %s, 'succeeded') RETURNING id
+                    """,
+                    [cutoff, ("a" if suffix == "old" else "b") * 64,
+                     cutoff - timedelta(hours=2), cutoff - timedelta(hours=1)],
+                ).fetchone()["id"])
+            for run_id, published_at, scope, stable_key, value in (
+                (publication_runs[0], cutoff - timedelta(hours=1), "agent-context-test-old", "old", "old"),
+                (publication_runs[1], cutoff + timedelta(hours=1), "agent-context-test-future", "future", "future"),
+            ):
+                publication = connection.execute(
+                    """
+                    INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+                    VALUES (%s, %s, 'published', %s) RETURNING id
+                    """,
+                    [scope, run_id, published_at],
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO app.publication_item
+                        (publication_id, model_name, stable_key, rank, instrument_id, payload)
+                    VALUES (%s, 'agent_context_model', %s, 1, %s, %s)
+                    """,
+                    [
+                        publication["id"], stable_key, instrument["id"],
+                        Jsonb({"ticker": "PITC", "value": value}),
+                    ],
+                )
+
+        with runtime.read() as connection:
+            context = ticker_context(connection, "PITC", cutoff=cutoff)
+        assert context["portfolio"]["price"] == 100.0
+        assert context["published_models"]["agent_context_model"]["value"] == "old"
+        assert [item["title"] for item in context["catalysts"]] == ["valid catalyst"]
+    finally:
+        runtime.close()
+
+
+def test_agent_context_without_cutoff_is_unavailable(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.read() as connection:
+            context = ticker_context(connection, "MISSING-CUTOFF", cutoff=None)
+        assert context["context_status"] == {"cutoff": None, "cutoff_available": False}
+        assert context["portfolio"] == {}
+        assert context["option_opportunity"] == {}
+        assert context["published_models"] == {}
+        assert context["catalysts"] == []
+        assert context["source_evidence"] == []
+    finally:
+        runtime.close()
+
+
+def test_agent_thesis_identity_mismatches_fail_closed() -> None:
+    request = {
+        "ticker": "NVDA",
+        "request_id": "request-1",
+        "request_envelope": {
+            "request": "request-1",
+            "request_id": "request-1",
+            "task": "option_thesis",
+            "ticker": "NVDA",
+            "decision_id": "decision-1",
+            "evidence_refs": [
+                {"type": "agent_request", "id": "request-1"},
+                {"type": "decision", "id": "decision-1"},
+            ],
+        },
+    }
+    valid = _option_thesis_result("NVDA", request_id="request-1")
+    valid["decision_id"] = "decision-1"
+    valid["evidence_refs"] = [
+        {"type": "agent_request", "id": "request-1"},
+        {"type": "decision", "id": "decision-1"},
+    ]
+    validate_result("option_thesis", valid, request=request, task_id="request-1")
+    for field, value in (
+        ("ticker", "MSFT"),
+        ("request_id", "request-2"),
+        ("decision_id", "decision-2"),
+    ):
+        invalid = dict(valid)
+        invalid[field] = value
+        with pytest.raises(ValueError):
+            validate_result("option_thesis", invalid, request=request, task_id="request-1")
 
 
 def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_dsn: str) -> None:

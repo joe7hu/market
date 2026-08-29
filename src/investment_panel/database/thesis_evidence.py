@@ -47,9 +47,14 @@ def thesis_source_evidence(
             LEFT JOIN LATERAL (
                 SELECT signal.thesis, signal.sentiment, signal.observed_at
                 FROM analysis.source_signal signal
+                JOIN analysis.run signal_run ON signal_run.id = signal.run_id
                 WHERE signal.content_item_id = item.id AND signal.instrument_id = instrument.id
-                  AND COALESCE(signal.available_at, signal.observed_at) <= %s
+                  AND signal.available_at IS NOT NULL
+                  AND signal.available_at <= %s
                   AND signal.observed_at <= %s
+                  AND signal_run.status IN ('succeeded', 'partial')
+                  AND signal_run.finished_at IS NOT NULL
+                  AND signal_run.finished_at <= %s
                 ORDER BY signal.observed_at DESC LIMIT 1
             ) signal ON true
             WHERE regexp_replace(upper(instrument.symbol), '[.]+$', '') = ANY(%s)
@@ -69,7 +74,7 @@ def thesis_source_evidence(
                title, summary, sentiment, observed_at, reference
         FROM balanced WHERE symbol_rank <= %s ORDER BY symbol, observed_at DESC
         """,
-        [cutoff, cutoff, symbols, cutoff, cutoff, cutoff, max(1, int(max_per_symbol))],
+        [cutoff, cutoff, cutoff, symbols, cutoff, cutoff, cutoff, max(1, int(max_per_symbol))],
     ).fetchall()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for raw_row in rows:

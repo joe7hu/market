@@ -217,7 +217,7 @@ class AgentRepository:
         if task is None or str(task["task_kind"]) != task_kind:
             raise ValueError(f"agent request not found: {request_id}")
         _validate_result(
-            task_kind, payload, request=dict(task["request"] or {}), task_id=str(task["id"]),
+            task_kind, payload, request=_task_request(task), task_id=str(task["id"]),
         )
         row = accept_agent_task_result(connection, task_id=request_id, task_kind=task_kind, result=payload)
         if row is None:
