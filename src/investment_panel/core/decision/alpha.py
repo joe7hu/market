@@ -15,7 +15,12 @@ from typing import Any, Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from investment_panel.core.decision.ticker import InputLineage, MarketStateSnapshot, NumericRange
+from investment_panel.core.decision.ticker import (
+    InputLineage,
+    MarketStateSnapshot,
+    NumericRange,
+    trade_expression_identity,
+)
 
 
 INSTRUMENT_STATE_SNAPSHOT_CONTRACT_VERSION = "instrument-state-snapshot.v1"
@@ -496,26 +501,49 @@ def _lineage_matches(
     signal: Mapping[str, Any],
 ) -> bool:
     pairs = (
-        ("ticker", signal.get("ticker")),
-        ("opportunity_episode_id", impact.get("opportunity_episode_id")),
-        ("decision_revision", impact.get("decision_revision")),
-        ("market_snapshot_id", impact.get("market_snapshot_id")),
-        ("market_state_publication_id", impact.get("market_state_publication_id")),
-        ("policy_version", policy.get("policy_version")),
-        ("instrument_state_snapshot_id", signal.get("instrument_state_snapshot_id")),
-        ("alpha_signal_id", signal.get("signal_id")),
-        ("portfolio_impact_id", impact.get("impact_id")),
+        (candidate.get("ticker"), signal.get("ticker")),
+        (candidate.get("opportunity_episode_id"), signal.get("opportunity_episode_id")),
+        (candidate.get("decision_revision"), signal.get("decision_revision")),
+        (candidate.get("instrument_state_snapshot_id"), signal.get("instrument_state_snapshot_id")),
+        (candidate.get("alpha_signal_id"), signal.get("signal_id")),
+        (candidate.get("opportunity_episode_id"), impact.get("opportunity_episode_id")),
+        (candidate.get("decision_revision"), impact.get("decision_revision")),
+        (candidate.get("market_snapshot_id"), impact.get("market_snapshot_id")),
+        (candidate.get("market_state_publication_id"), impact.get("market_state_publication_id")),
+        (candidate.get("portfolio_impact_id"), impact.get("impact_id")),
+        (candidate.get("policy_version"), policy.get("policy_version")),
+        (candidate.get("policy_version"), impact.get("risk_policy_version")),
+        (candidate.get("risk_policy_version"), policy.get("policy_version")),
+        (candidate.get("risk_policy_version"), impact.get("risk_policy_version")),
     )
-    if not all(not expected or str(candidate.get(name) or "") == str(expected) for name, expected in pairs):
+    if not all(_identity_equal(left, right) for left, right in pairs):
         return False
+
+    for value in (candidate.get("cutoff"), signal.get("as_of"), signal.get("input_cutoff"), impact.get("cutoff")):
+        if not _identity_present(value):
+            return False
+    if not _timestamps_equal(candidate["cutoff"], signal["as_of"], signal["input_cutoff"], impact["cutoff"]):
+        return False
+    if not _identity_equal(candidate.get("input_lineage"), signal.get("input_lineage")):
+        return False
+    if not _identity_equal(candidate.get("input_lineage"), impact.get("input_lineage")):
+        return False
+
     expression = _model_dump(candidate.get("expression"))
-    if candidate.get("selected_expression_kind") and expression:
-        if str(expression.get("kind") or "") != str(candidate["selected_expression_kind"]):
-            return False
-    if candidate.get("selected_expression_identity") and impact.get("expression_identity"):
-        if str(candidate["selected_expression_identity"]) != str(impact["expression_identity"]):
-            return False
-    return True
+    if not expression:
+        return False
+    if not _identity_equal(candidate.get("ticker"), expression.get("ticker")):
+        return False
+    if not _identity_equal(candidate.get("selected_expression_kind"), expression.get("kind")):
+        return False
+    if not _identity_equal(candidate.get("selected_expression_kind"), impact.get("expression_kind")):
+        return False
+    if not _identity_equal(candidate.get("selected_expression_identity"), impact.get("expression_identity")):
+        return False
+    try:
+        return _identity_equal(candidate.get("selected_expression_identity"), trade_expression_identity(expression))
+    except (TypeError, ValueError, KeyError):
+        return False
 
 
 def _research_score(candidate: Mapping[str, Any]) -> float | None:
@@ -550,22 +578,21 @@ def _latest_row(
     ticker: str,
     cutoff: datetime,
 ) -> dict[str, Any] | None:
-    rows: list[dict[str, Any]] = []
+    reference = _aware_timestamp(cutoff)
+    rows: list[tuple[datetime, tuple[str, str], dict[str, Any]]] = []
     for name in names:
         for raw in tables.get(name) or ():
             row = dict(raw)
             row_ticker = str(row.get("ticker") or row.get("symbol") or row.get("underlying") or "").strip().upper()
             if row_ticker and row_ticker != ticker:
                 continue
-            available_at = row.get("available_at") or row.get("as_of")
-            if available_at is not None:
-                try:
-                    if _timestamp(available_at) > cutoff:
-                        continue
-                except (TypeError, ValueError):
-                    continue
-            rows.append(row)
-    return max(rows, key=lambda row: str(row.get("available_at") or row.get("as_of") or ""), default=None)
+            try:
+                available_at = _aware_timestamp(row["available_at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if available_at <= reference:
+                rows.append((available_at, _row_identity(row), row))
+    return max(rows, key=lambda item: (item[0], item[1]), default=None)[2] if rows else None
 
 
 def _model_dump(value: Any) -> dict[str, Any]:
@@ -607,6 +634,53 @@ def _timestamp(value: Any) -> datetime:
     if isinstance(value, datetime):
         return _utc(value)
     return _utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+
+
+def _aware_timestamp(value: Any) -> datetime:
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return parsed.astimezone(UTC)
+
+
+def _identity_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (Mapping, list, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _identity_equal(left: Any, right: Any) -> bool:
+    if not _identity_present(left) or not _identity_present(right):
+        return False
+    if isinstance(left, (Mapping, list, tuple, set)) or isinstance(right, (Mapping, list, tuple, set)):
+        return json.dumps(_jsonable(left), sort_keys=True, separators=(",", ":"), default=str) == json.dumps(
+            _jsonable(right), sort_keys=True, separators=(",", ":"), default=str,
+        )
+    return str(left).strip() == str(right).strip()
+
+
+def _timestamps_equal(*values: Any) -> bool:
+    try:
+        parsed = tuple(_aware_timestamp(value) for value in values)
+    except (TypeError, ValueError):
+        return False
+    return bool(parsed) and len(set(parsed)) == 1
+
+
+def _row_identity(row: Mapping[str, Any]) -> tuple[str, str]:
+    primary = str(
+        row.get("id")
+        or row.get("stable_key")
+        or row.get("source_id")
+        or row.get("source")
+        or ""
+    )
+    encoded = json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":"), default=str)
+    return primary, encoded
 
 
 def _utc(value: datetime) -> datetime:

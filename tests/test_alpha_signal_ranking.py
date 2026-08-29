@@ -11,6 +11,7 @@ from investment_panel.core.decision import (
     build_ticker_decision,
     calculate_trade_utility,
     rank_opportunities,
+    trade_expression_identity,
 )
 
 
@@ -31,12 +32,22 @@ def _candidate(
     impact = f"impact:{ticker}"
     signal = f"signal:{ticker}"
     lineage = [{"field": "quote", "source_id": "quotes", "available_at": CUTOFF}]
+    expression = {
+        "kind": kind,
+        "ticker": ticker,
+        "horizon": "FUNDAMENTAL",
+        "thesis_revision": revision,
+        "stance": "BULLISH",
+        "status": "eligible",
+        "rationale": "test expression",
+    }
+    expression_identity = trade_expression_identity(expression)
     return {
         "ticker": ticker,
         "opportunity_episode_id": episode,
         "decision_revision": revision,
         "policy_version": "risk-policy.test",
-        "selected_expression_identity": f"{kind}:{ticker}",
+        "selected_expression_identity": expression_identity,
         "selected_expression_kind": kind,
         "portfolio_impact_id": impact,
         "risk_policy_version": "risk-policy.test",
@@ -59,16 +70,26 @@ def _candidate(
             "calibration_state": "calibrated_exact_cohort",
             "model_version": "model.test",
             "evaluation_stage": evaluation_stage,
+            "as_of": CUTOFF,
+            "input_cutoff": CUTOFF,
+            "input_lineage": lineage,
         },
         "portfolio_impact": {
+            "impact_id": impact,
             "opportunity_episode_id": episode,
+            "expression_kind": kind,
+            "expression_identity": expression_identity,
             "decision_revision": revision,
+            "risk_policy_version": "risk-policy.test",
             "market_snapshot_id": snapshot,
             "market_state_publication_id": publication,
+            "cutoff": CUTOFF,
+            "input_lineage": lineage,
             "availability": "available",
             "blockers": [],
         },
         "risk_policy_snapshot": {"policy_version": "risk-policy.test", "blockers": []},
+        "expression": expression,
         "execution_feasible": True,
         "lower_confidence_expected_gross_pnl": utility * 100,
         "expected_transaction_costs": 0.0,
@@ -120,6 +141,44 @@ def test_rank_is_dense_when_complete_and_cash_when_unavailable() -> None:
     )
     assert all(row.trade_rank is None for row in incomplete)
     assert all(row.trade_rank_unavailable_reason == "ranking_universe_incomplete" for row in incomplete)
+
+
+@pytest.mark.parametrize(
+    ("nested", "field"),
+    [
+        ("alpha_signal", "signal_id"),
+        ("portfolio_impact", "impact_id"),
+        ("risk_policy_snapshot", "policy_version"),
+    ],
+)
+def test_rank_rejects_missing_nested_identity(nested: str, field: str) -> None:
+    candidate = _candidate("AAA")
+    candidate[nested].pop(field)  # type: ignore[index]
+
+    rank = rank_opportunities([candidate], evaluated_universe_complete=True)[0]
+
+    assert rank.trade_rank is None
+    assert rank.trade_rank_unavailable_reason == "publication_lineage_mismatch"
+
+
+def test_rank_rejects_missing_expression_identity() -> None:
+    candidate = _candidate("AAA")
+    candidate.pop("expression")
+
+    rank = rank_opportunities([candidate], evaluated_universe_complete=True)[0]
+
+    assert rank.trade_rank is None
+    assert rank.trade_rank_unavailable_reason == "publication_lineage_mismatch"
+
+
+def test_rank_rejects_missing_market_publication_identity() -> None:
+    candidate = _candidate("AAA")
+    candidate["portfolio_impact"].pop("market_state_publication_id")  # type: ignore[index]
+
+    rank = rank_opportunities([candidate], evaluated_universe_complete=True)[0]
+
+    assert rank.trade_rank is None
+    assert rank.trade_rank_unavailable_reason == "publication_lineage_mismatch"
 
 
 def test_cash_is_a_zero_utility_comparator() -> None:
@@ -181,3 +240,22 @@ def test_instrument_snapshot_excludes_rows_newer_than_cutoff() -> None:
 
     assert snapshot.fundamental is not None
     assert snapshot.fundamental["revision"] == "old"
+
+
+def test_instrument_snapshot_requires_aware_availability_and_tie_breaks_by_identity() -> None:
+    snapshot = build_instrument_state_snapshot(
+        "AAA",
+        {
+            "fundamentals": [
+                {"symbol": "AAA", "revision": "missing"},
+                {"symbol": "AAA", "revision": "naive", "available_at": datetime(2026, 8, 25, 14)},
+                {"symbol": "AAA", "revision": "invalid", "available_at": "not-a-timestamp"},
+                {"id": "a", "symbol": "AAA", "revision": "offset", "available_at": "2026-08-25T10:00:00-04:00"},
+                {"id": "b", "symbol": "AAA", "revision": "utc-tie", "available_at": "2026-08-25T14:00:00Z"},
+            ],
+        },
+        as_of=CUTOFF,
+    )
+
+    assert snapshot.fundamental is not None
+    assert snapshot.fundamental["revision"] == "utc-tie"

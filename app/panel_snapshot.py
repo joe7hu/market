@@ -1,17 +1,14 @@
 """Panel snapshot owner.
 
-This module owns cache lifetime, scoped last-good fallback, pagination metadata,
-and freshness markers. It does not own SQL or write actions.
+This module owns read-model cache lifetime, pagination metadata, and freshness
+markers. It does not own SQL or write actions.
 """
 
 from __future__ import annotations
 
-from copy import deepcopy
 import inspect
 import json
-from datetime import datetime
 from hashlib import sha256
-from pathlib import Path
 from threading import RLock
 import time
 from typing import Any, Callable
@@ -23,23 +20,12 @@ from app.data_access.payloads import panel_snapshot_payload, table_payload
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
 from investment_panel.database.authority import database_url
-from investment_panel.database.migrations import HEAD_REVISION
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
 SOURCE_FRESHNESS_DEFAULT_LIMIT = 100
 _CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key": None, "value": None}
 _CONTEXT_LOCK = RLock()
-_LAST_GOOD_SCOPE_SNAPSHOTS: dict[str, dict[str, Any]] = {}
-_SCOPE_SNAPSHOT_FALLBACK_TABLES = {
-    "today": {"ticker_decisions", "portfolio", "preopen_daily_brief", "daily_brief", "portfolio_risk_cards"},
-    "watchlist": {"universe_screen", "manual_watchlist", "portfolio"},
-    "watchlist-watched": {"universe_screen", "manual_watchlist", "portfolio"},
-    "watchlist-unwatched": {"universe_screen", "manual_watchlist", "portfolio"},
-    "portfolio": {"portfolio", "portfolio_summary", "portfolio_performance"},
-    "research": {"research_packets", "theses", "thesis_monitor", "news"},
-    "options-radar": {"option_radar_summary", "option_radar_opportunity", "decision_truth", "event_decision_packets", "event_scout_events"},
-}
 _HOUSEKEEPING_REFRESH_STEPS = frozenset({"retention_prune", "database_snapshot"})
 
 
@@ -121,108 +107,21 @@ def scope_snapshot_payload(
     *,
     offset: int = 0,
     limit: int | None = None,
-    cache_path_loader: Callable[[dict[str, Any], str], Path] | None = None,
 ) -> dict[str, Any]:
-    path_loader = cache_path_loader or _scope_snapshot_cache_path
     payload = panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
-    if scope not in _SCOPE_SNAPSHOT_FALLBACK_TABLES:
-        return payload
     status = payload.get("status")
     if isinstance(status, dict) and status.get("ready") is True:
         _mark_snapshot_state(payload, "current")
-        _store_last_good_scope_snapshot(
-            config, scope, payload, offset=offset, limit=limit, cache_path_loader=path_loader,
-        )
         return payload
-    fallback = _load_last_good_scope_snapshot(
-        config, scope, offset=offset, limit=limit, cache_path_loader=path_loader,
-    )
-    if fallback is None:
-        message = str(status.get("message") if isinstance(status, dict) else "") or "No current or last-good snapshot is available."
-        raise HTTPException(status_code=503, detail=message)
-    status = dict(fallback.get("status") or {})
-    captured_at = str(status.get("metadata", {}).get("last_good_at") or "") if isinstance(status.get("metadata"), dict) else ""
-    status.update({"ready": True, "source": "panel-snapshot-cache", "message": f"Serving last-good {scope} data while PostgreSQL is unavailable."})
-    fallback["status"] = status
-    error_status = payload.get("status")
-    error = error_status.get("message") if isinstance(error_status, dict) else "PostgreSQL read models unavailable."
-    _mark_snapshot_state(fallback, "stale", error=str(error), last_good_at=captured_at)
-    return fallback
+    message = str(status.get("message") if isinstance(status, dict) else "") or "PostgreSQL read models unavailable."
+    raise HTTPException(status_code=503, detail=message)
 
 
-def _scope_snapshot_has_rows(scope: str, payload: dict[str, Any]) -> bool:
-    tables = payload.get("tables")
-    if not isinstance(tables, dict):
-        return False
-    for table_name in _SCOPE_SNAPSHOT_FALLBACK_TABLES.get(scope, set()):
-        table = tables.get(table_name)
-        rows = table.get("rows") if isinstance(table, dict) else None
-        if isinstance(rows, list) and rows:
-            return True
-    return False
-
-
-def _store_last_good_scope_snapshot(
-    config: AppConfig, scope: str, payload: dict[str, Any], *, offset: int = 0,
-    limit: int | None = None, cache_path_loader: Callable[[dict[str, Any], str], Path],
-) -> None:
-    snapshot = deepcopy(payload)
-    _mark_snapshot_state(snapshot, "current", last_good_at=datetime.now().astimezone().isoformat())
-    key = _scope_snapshot_cache_key(scope, offset, limit)
-    _LAST_GOOD_SCOPE_SNAPSHOTS[key] = snapshot
-    path = cache_path_loader(config, key)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_suffix(f"{path.suffix}.tmp")
-        temp_path.write_text(json.dumps(snapshot, ensure_ascii=False, default=str), encoding="utf-8")
-        temp_path.replace(path)
-    except Exception:
-        return
-
-
-def _load_last_good_scope_snapshot(
-    config: AppConfig, scope: str, *, offset: int = 0, limit: int | None = None,
-    cache_path_loader: Callable[[dict[str, Any], str], Path],
-) -> dict[str, Any] | None:
-    key = _scope_snapshot_cache_key(scope, offset, limit)
-    cached = _LAST_GOOD_SCOPE_SNAPSHOTS.get(key)
-    if cached is not None:
-        return deepcopy(cached) if _snapshot_schema_is_compatible(cached) else None
-    path = cache_path_loader(config, key)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(payload, dict) or not _snapshot_schema_is_compatible(payload):
-        return None
-    _LAST_GOOD_SCOPE_SNAPSHOTS[key] = payload
-    return deepcopy(payload)
-
-
-def _snapshot_schema_is_compatible(payload: dict[str, Any]) -> bool:
-    metadata = ((payload.get("status") or {}).get("metadata") or {})
-    schema_revision = str(metadata.get("schema_revision") or "") if isinstance(metadata, dict) else ""
-    contract_revision = str(metadata.get("panel_contract_revision") or "") if isinstance(metadata, dict) else ""
-    return not schema_revision or (schema_revision == HEAD_REVISION and contract_revision == PANEL_SNAPSHOT_CONTRACT_REVISION)
-
-
-def _scope_snapshot_cache_key(scope: str, offset: int, limit: int | None) -> str:
-    suffix = f"-{offset}-{limit}" if offset or limit is not None else ""
-    return f"{scope}{suffix}"
-
-
-def _scope_snapshot_cache_path(config: AppConfig, cache_key: str) -> Path:
-    del config
-    return Path(__file__).resolve().parents[1] / "data" / "api-cache" / f"panel-snapshot-{cache_key}.json"
-
-
-def _mark_snapshot_state(payload: dict[str, Any], state: str, *, error: str | None = None, last_good_at: str | None = None) -> None:
+def _mark_snapshot_state(payload: dict[str, Any], state: str, *, error: str | None = None) -> None:
     status = dict(payload.get("status") or {})
     metadata = dict(status.get("metadata") or {})
     metadata["snapshot_state"] = state
     metadata["panel_contract_revision"] = PANEL_SNAPSHOT_CONTRACT_REVISION
-    if last_good_at:
-        metadata["last_good_at"] = last_good_at
     if error:
         metadata["snapshot_error"] = error
     status["metadata"] = metadata

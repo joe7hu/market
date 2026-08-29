@@ -129,11 +129,12 @@ def today(
         int(row.get("research_rank") or 0) if row.get("research_rank") is not None else 0,
         str(row.get("ticker")),
     ))
-    queue_items = capital_actions
-    queue_items.extend(decision_inbox_queue(_read_inbox(option_actions)))
-    queue_items.extend(_portfolio_risk_queue(panel_data.rows("portfolio_risk_cards")))
-    queue_items.extend(research_queue(panel_data.rows("feed_signals")))
-    queue_items = dedupe_queue(queue_items)[:ACTION_QUEUE_LIMIT]
+    queue_items = _bounded_today_queue(
+        capital_actions,
+        decision_inbox_queue(_read_inbox(option_actions)),
+        _portfolio_risk_queue(panel_data.rows("portfolio_risk_cards")),
+        research_queue(panel_data.rows("feed_signals")),
+    )
     timestamps = [item["current_at"] for item in queue_items if item.get("current_at") is not None]
     timestamps.extend(
         timestamp
@@ -318,6 +319,23 @@ def dedupe_queue(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(identity)
         output.append(row)
     return output
+
+
+def _bounded_today_queue(
+    capital_actions: list[dict[str, Any]],
+    inbox_actions: list[dict[str, Any]],
+    portfolio_risk_actions: list[dict[str, Any]],
+    research_actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep capital priority while reserving one slot for each other source."""
+
+    secondary = (inbox_actions, portfolio_risk_actions, research_actions)
+    reserved = [rows[0] for rows in secondary if rows]
+    capital_limit = max(0, ACTION_QUEUE_LIMIT - len(reserved))
+    queue = [*capital_actions[:capital_limit], *reserved]
+    queue.extend(capital_actions[capital_limit:])
+    queue.extend(row for rows in secondary for row in rows[1:])
+    return dedupe_queue(queue)[:ACTION_QUEUE_LIMIT]
 
 
 def _queue_value(row: dict[str, Any], payload: dict[str, Any], *names: str) -> Any:

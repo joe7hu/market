@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.thesis_evidence import thesis_source_evidence
 
 
@@ -42,11 +43,18 @@ def ticker_context(
 
     state = connection.execute(
         """
-        SELECT position.quantity, position.average_cost, position.notes AS portfolio_notes,
-               thesis.thesis, quote.price, quote.observed_at AS quote_observed_at
+        SELECT thesis.thesis, thesis.revision AS thesis_revision,
+               thesis.created_at AS thesis_created_at, thesis.updated_at AS thesis_updated_at,
+               quote.price, quote.observed_at AS quote_observed_at
         FROM catalog.instrument instrument
-        LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
-        LEFT JOIN app.thesis thesis ON thesis.instrument_id = instrument.id AND thesis.status = 'current'
+        LEFT JOIN LATERAL (
+            SELECT thesis.thesis, thesis.revision, thesis.created_at, thesis.updated_at
+            FROM app.thesis thesis
+            WHERE thesis.instrument_id = instrument.id
+              AND thesis.created_at <= %s
+            ORDER BY thesis.created_at DESC, thesis.revision DESC, thesis.id DESC
+            LIMIT 1
+        ) thesis ON true
         LEFT JOIN LATERAL (
             SELECT quote.price, quote.observed_at
             FROM raw.quote quote
@@ -73,7 +81,7 @@ def ticker_context(
         ) quote ON true
         WHERE instrument.symbol = %s
         """,
-        [cutoff, cutoff, cutoff, cutoff, cutoff, symbol],
+        [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, symbol],
     ).fetchone()
     option = connection.execute(
         """
@@ -148,12 +156,25 @@ def ticker_context(
         [cutoff, cutoff, cutoff, symbol, cutoff, cutoff, cutoff, cutoff],
     ).fetchall()
     evidence = thesis_source_evidence(connection, [symbol], max_per_symbol=24, cutoff=cutoff).get(symbol, [])
+    portfolio = {}
+    if state and include("portfolio"):
+        portfolio = dict(state)
+        replay = replay_portfolio_at(None, cutoff, connection=connection)
+        position = next(
+            (
+                item for item in replay.get("positions") or []
+                if str(item.get("symbol") or "").strip().upper() == str(symbol).strip().upper()
+            ),
+            None,
+        )
+        if position:
+            portfolio = {**position, **portfolio}
     return {
         "context_status": {
             "cutoff": cutoff.isoformat() if cutoff is not None else None,
             "cutoff_available": cutoff is not None,
         },
-        "portfolio": _bounded_value(dict(state)) if state and include("portfolio") else {},
+        "portfolio": _bounded_value(portfolio),
         "option_opportunity": option_opportunity_context(dict(option["payload"] or {})) if option else {},
         "published_models": {
             str(row["model_name"]): _bounded_value(dict(row["payload"] or {}))

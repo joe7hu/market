@@ -1233,6 +1233,50 @@ def test_agent_context_applies_cutoff_to_quote_catalyst_and_publication(
                     instrument["id"], source_id, cutoff + timedelta(hours=2), cutoff + timedelta(hours=1),
                 ],
             )
+            connection.execute(
+                """
+                INSERT INTO app.portfolio_transaction
+                    (instrument_id, transaction_type, quantity, price, amount,
+                     executed_at, created_at, notes, idempotency_key)
+                VALUES (%s, 'opening_balance', 5, 100, 500, %s, %s, 'historical position', 'pitc-old-position')
+                """,
+                [
+                    instrument["id"], cutoff - timedelta(hours=2), cutoff - timedelta(hours=2),
+                ],
+            )
+            connection.execute(
+                """
+                INSERT INTO app.portfolio_transaction
+                    (instrument_id, transaction_type, quantity, price, amount,
+                     executed_at, created_at, notes, idempotency_key)
+                VALUES (%s, 'buy', 7, 100, 700, %s, %s, 'post-cutoff position', 'pitc-future-position')
+                """,
+                [
+                    instrument["id"], cutoff + timedelta(hours=1), cutoff + timedelta(hours=1),
+                ],
+            )
+            connection.execute(
+                """
+                INSERT INTO app.portfolio_position
+                    (instrument_id, quantity, average_cost, notes, updated_at)
+                VALUES (%s, 12, 100, 'future projection', %s)
+                """,
+                [instrument["id"], cutoff + timedelta(hours=1)],
+            )
+            connection.execute(
+                """
+                INSERT INTO app.thesis
+                    (instrument_id, revision, status, thesis, created_at, updated_at)
+                VALUES (%s, 1, 'superseded', %s, %s, %s),
+                       (%s, 2, 'current', %s, %s, %s)
+                """,
+                [
+                    instrument["id"], Jsonb({"core_thesis": "historical thesis"}),
+                    cutoff - timedelta(hours=2), cutoff - timedelta(hours=2),
+                    instrument["id"], Jsonb({"core_thesis": "future thesis"}),
+                    cutoff + timedelta(hours=1), cutoff + timedelta(hours=1),
+                ],
+            )
             publication_runs = []
             for suffix, finished_at in (("old", cutoff - timedelta(hours=1)), ("future", cutoff + timedelta(hours=1))):
                 publication_runs.append(connection.execute(
@@ -1270,6 +1314,8 @@ def test_agent_context_applies_cutoff_to_quote_catalyst_and_publication(
         with runtime.read() as connection:
             context = ticker_context(connection, "PITC", cutoff=cutoff)
         assert context["portfolio"]["price"] == 100.0
+        assert context["portfolio"]["quantity"] == 5.0
+        assert context["portfolio"]["thesis"]["core_thesis"] == "historical thesis"
         assert context["published_models"]["agent_context_model"]["value"] == "old"
         assert [item["title"] for item in context["catalysts"]] == ["valid catalyst"]
     finally:

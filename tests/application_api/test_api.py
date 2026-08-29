@@ -97,6 +97,61 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     assert payload["actions"][0]["resolution"]["action"] == "NO_TRADE"
 
 
+def test_today_keeps_other_sources_when_ticker_capital_exceeds_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "bounded-today.json")
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_options_actions,
+        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {
+            "items": [{
+                "id": "inbox-fair",
+                "event_type": "ready",
+                "status": "active",
+                "created_at": "2026-08-28T14:00:00Z",
+                "payload": {},
+            }],
+        }),
+    )
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={
+            "ticker_decisions": [
+                {
+                    "symbol": f"T{index:03d}",
+                    "decision_revision": f"ticker-decision.v1:{index}",
+                    "capital_action": {"action": "BUY", "owned": False},
+                    "as_of": "2026-08-28T14:00:00Z",
+                }
+                for index in range(150)
+            ],
+            "portfolio_risk_cards": [{
+                "card_id": "risk-fair",
+                "severity": "critical",
+                "title": "Risk exception",
+                "updated_at": "2026-08-28T14:00:00Z",
+            }],
+            "feed_signals": [{
+                "id": "research-fair",
+                "source_family": "research",
+                "title": "Research update",
+                "date": "2026-08-28T14:00:00Z",
+            }],
+        },
+    )
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+
+    response = TestClient(app).get("/api/today")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 100
+    assert {item["source"] for item in payload["actions"]} == {
+        "capital_action", "decision_inbox", "portfolio_risk", "research",
+    }
+
+
 def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     info = postgresql.info
     credentials = info.user if not info.password else f"{info.user}:{info.password}"
@@ -578,11 +633,19 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
     assert set(payload["tables"]) == set(PANEL_SCOPE_TABLES["options-radar"])
 
 
-def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "fallback-api.json"
+def test_options_radar_snapshot_does_not_cache_reads_or_fallback(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "read-only-api.json"
     _use_temp_api_db(monkeypatch, db_path)
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     calls = 0
+    cache_writes: list[Path] = []
+    original_write_text = Path.write_text
+
+    def record_cache_write(path: Path, *args: Any, **kwargs: Any) -> int:
+        if path.name.startswith("panel-snapshot-"):
+            cache_writes.append(path)
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", record_cache_write)
 
     def fake_scope_loader(_config: dict[str, object], scope: str) -> PanelData:
         nonlocal calls
@@ -604,22 +667,18 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
     first = client.get("/api/panel-snapshot?scope=options-radar")
     assert first.status_code == 200
     assert first.json()["tables"]["option_radar_opportunity"]["rows"] == [{"decision_id": "event-1"}]
+    assert cache_writes == []
 
     panel_owner.invalidate_context_cache()
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     second = client.get("/api/panel-snapshot?scope=options-radar")
 
-    assert second.status_code == 200
-    payload = second.json()
-    assert payload["status"]["source"] == "panel-snapshot-cache"
-    assert payload["tables"]["option_radar_opportunity"]["rows"] == [{"decision_id": "event-1"}]
+    assert second.status_code == 503
+    assert second.json()["detail"] == "PostgreSQL unavailable"
 
 
-def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(tmp_path, monkeypatch) -> None:
+def test_watchlist_snapshot_returns_503_when_postgresql_unavailable(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "unavailable-watchlist-api.json"
     _use_temp_api_db(monkeypatch, db_path)
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    panel_owner._scope_snapshot_cache_path(typed_config(), "watchlist").unlink(missing_ok=True)
     monkeypatch.setattr(
         loaders_owner,
         "load_panel_scope_data",
@@ -635,11 +694,6 @@ def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(t
 def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailable(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "ready-empty-api.json"
     _use_temp_api_db(monkeypatch, db_path)
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS["options-radar"] = {
-        "status": {"ready": True, "source": "old"},
-        "tables": {"option_radar_opportunity": {"rows": [{"decision_id": "stale"}], "count": 1}},
-    }
 
     monkeypatch.setattr(
         loaders_owner,
@@ -657,59 +711,6 @@ def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailab
     assert payload["status"]["source"] == "postgresql"
     assert "option_strategy_versions" not in payload["tables"]
     assert payload["tables"]["option_radar_opportunity"]["rows"] == []
-
-
-def test_scope_snapshot_rejects_known_stale_schema_cache(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "stale-schema-api.json"
-    _use_temp_api_db(monkeypatch, db_path)
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    monkeypatch.setattr(panel_owner, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS["today"] = {
-        "status": {
-            "ready": True,
-            "source": "old",
-            "metadata": {"schema_revision": "20260803_0025"},
-        },
-        "tables": {"portfolio": {"rows": [{"symbol": "TSLA"}], "count": 1}},
-    }
-    monkeypatch.setattr(
-        loaders_owner,
-        "load_panel_scope_data",
-        lambda _config, _scope: PanelData(status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}),
-    )
-
-    response = TestClient(app).get("/api/panel-snapshot?scope=today")
-
-    assert response.status_code == 503
-    assert response.json()["detail"] == "PostgreSQL timed out"
-
-
-def test_scope_snapshot_rejects_known_schema_cache_with_old_panel_contract(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "stale-contract-api.json"
-    _use_temp_api_db(monkeypatch, db_path)
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    monkeypatch.setattr(panel_owner, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
-    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS["today"] = {
-        "status": {
-            "ready": True,
-            "source": "old",
-            "metadata": {
-                "schema_revision": panel_owner.HEAD_REVISION,
-                "panel_contract_revision": "obsolete-contract",
-            },
-        },
-        "tables": {"portfolio": {"rows": [{"symbol": "TSLA"}], "count": 1}},
-    }
-    monkeypatch.setattr(
-        loaders_owner,
-        "load_panel_scope_data",
-        lambda _config, _scope: PanelData(status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}),
-    )
-
-    response = TestClient(app).get("/api/panel-snapshot?scope=today")
-
-    assert response.status_code == 503
-    assert response.json()["detail"] == "PostgreSQL timed out"
 
 
 def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -> None:
