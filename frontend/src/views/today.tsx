@@ -12,6 +12,7 @@ import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/typ
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
 import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
+import { TradePlanCard } from "./TradePlanCard";
 
 type TodayPageProps = {
   data: PanelData;
@@ -28,6 +29,10 @@ type TodayPageProps = {
 
 type JsonObject = { [key: string]: JsonValue };
 type TodayAction = NonNullable<TodayResponse["actions"]>[number];
+
+export function tradePlanForAction(item: TodayAction) {
+  return item.source === "capital_action" ? item.trade_plan ?? null : undefined;
+}
 
 const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCategories.map((category) => [category.key, category]));
 export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLoading, actionQueueError, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
@@ -122,6 +127,7 @@ function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onOpenTick
   const statusLabel = item.transition ?? item.action ?? item.lifecycle_state;
   const expiry = item.expires_at ? new Date(item.expires_at).toLocaleDateString() : null;
   const ticker = item.ticker;
+  const plan = tradePlanForAction(item);
   return (
     <Card role="listitem" className={cn("min-w-0", toneBorder(tone))}>
       <CardContent className="space-y-3 p-4">
@@ -134,7 +140,7 @@ function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onOpenTick
         {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {item.primary_blocker}</p> : null}
         <p className="text-sm"><span className="font-semibold">Next:</span> {item.next_action}</p>
         {expiry ? <p className="text-xs text-muted-foreground">Expires {expiry}</p> : null}
-        {item.trade_plan ? <p className="text-xs text-muted-foreground">TradePlan {item.trade_plan.trade_plan_id}</p> : null}
+        {plan !== undefined ? <TradePlanCard plan={plan} /> : null}
         {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Open drill-down</a> : null}
       </CardContent>
     </Card>

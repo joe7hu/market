@@ -50,7 +50,6 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
   const publication = recordOf(detail?.publication);
   const symbol = textField(ticket, ["symbol"], textField(signal, ["ticker", "symbol"]));
   const state = textField(ticket, ["state"], "RESEARCH").toUpperCase();
-  const ready = state === "READY";
   const entry = recordOf(ticket.entry);
   const risk = recordOf(ticket.risk);
   const thesis = recordOf(ticket.thesis);
@@ -69,11 +68,11 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge tone={toneFromText(state)}>{titleLabel(state)}</StatusBadge>
             <StatusBadge tone="info">{textField(ticket, ["lane"], "radar")}</StatusBadge>
-            <StatusBadge tone={ready ? "good" : "warn"}>{ready ? "Paper entry eligible" : "Research / resolve blocker"}</StatusBadge>
+            <StatusBadge tone="info">Immutable ticket detail</StatusBadge>
           </div>
           <SheetTitle>{symbol || "Option decision"}</SheetTitle>
           <SheetDescription>
-            Immutable decision {decisionId ?? ""}. {ready ? "Use paper-entry controls only after this ticket is revalidated." : "This is not a trade instruction."}
+            Immutable decision {decisionId ?? ""}. The canonical current action is on the ticker view.
           </SheetDescription>
         </SheetHeader>
 
@@ -88,14 +87,14 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
           ) : null}
           {!loading && !error ? (
             <>
-              <DetailSection title={ready ? "Paper entry" : "Research action"}>
+              <DetailSection title="Recorded ticket terms">
                 <MetricGrid values={[
                   ["Structure", textField(ticket, ["structure"], "—").replaceAll("_", " ")],
                   ["Limit", formatMoney(numberField(entry, ["limit_price"], Number.NaN))],
                   ["Maximum risk", formatMoney(numberField(risk, ["one_unit_max_loss", "one_unit_collateral"], Number.NaN))],
                   ["Quote expires", textField(ticket, ["expires_at"], textField(entry, ["valid_until"], "—"))],
                   ["Lower-confidence EV / risk", decimal(numberField(ticket, ["lower_confidence_expectancy_per_max_risk"], Number.NaN))],
-                  ["Next action", textField(ticket, ["required_next_action"], ready ? "Revalidate before paper entry" : "Resolve blockers")],
+                  ["Next action", textField(ticket, ["required_next_action"], "Resolve blockers")],
                   ["Resolution", `${textField(resolution, ["eligibility"], "UNKNOWN")} · ${textField(resolution, ["lifecycle"], "—")}`],
                   ["Authorization", textField(resolution, ["authorization_mode"], "—")],
                   ["Policy", textField(ticket, ["policy_version", "risk_policy_version"], "—")],
@@ -144,7 +143,7 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
                 ]} /> : <p className="text-sm text-muted-foreground">No agent advisory is attached to this ticket.</p>}
               </DetailSection>
 
-              {symbol ? <Button type="button" variant="outline" onClick={() => onOpenTicker(symbol)}>Open ticker context</Button> : null}
+              {symbol ? <Button type="button" variant="outline" onClick={() => onOpenTicker(symbol)}>Open canonical ticker action</Button> : null}
             </>
           ) : null}
         </div>

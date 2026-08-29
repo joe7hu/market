@@ -7,6 +7,7 @@ import type { components } from "@/generated/apiSchema";
 import type { JsonValue, RowRecord, TickerDossier, TickerLearning, TickerPayload } from "@/types";
 import { displayField, listField, symbolList, textField, titleLabel, toneFromText } from "@/views/rowFormat";
 import type { OpenTicker } from "@/views/workspacePage";
+import { TradePlanCard } from "@/views/TradePlanCard";
 
 import { CoverageBadge, DecisionStat, MetricGrid, ReasonList, SimpleTable } from "./cells";
 import {
@@ -116,48 +117,12 @@ export function TickerDecisionPanel({
         signals={alphaSignals ?? []}
         rank={opportunityRank}
       />
-      <TradePlanPanel plan={tradePlan ?? decision.trade_plan ?? null} />
+      <TradePlanCard plan={tradePlan ?? decision.trade_plan ?? null} />
       {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
       <SelectedPortfolioImpact decision={decision} />
       {disagreement ? <DisagreementPanel learning={learning} /> : null}
       {learning ? <LearningLoopPanel learning={learning} /> : null}
     </>
-  );
-}
-
-function TradePlanPanel({ plan }: { plan?: TradePlanContract | null }) {
-  const blocked = !plan || plan.eligibility === "BLOCKED";
-  return (
-    <DataTableFrame
-      title="Canonical trade plan"
-      action={<StatusBadge tone={blocked ? "warn" : "good"}>{blocked ? "NO TRADE" : "PAPER ONLY"}</StatusBadge>}
-    >
-      {!plan ? (
-        <div className="p-4 text-sm text-muted-foreground">NO TRADE · trade plan unavailable. Refresh the ticker decision.</div>
-      ) : blocked ? (
-        <div className="grid gap-3 p-4 text-sm sm:grid-cols-3">
-          <KeyValue label="State" value="NO TRADE" />
-          <KeyValue label="Blocker" value={plan.primary_blocker ?? "Trade plan blocked"} />
-          <KeyValue label="Next action" value={plan.next_action} />
-          <KeyValue label="Plan" value={plan.trade_plan_id.slice(-16)} />
-        </div>
-      ) : (
-        <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-          <KeyValue label="State" value="PAPER ONLY" />
-          <KeyValue label="Action" value={plan.action} />
-          <KeyValue label="Expression" value={plan.selected_expression_kind} />
-          <KeyValue label="Entry limit" value={money(plan.entry_limit)} />
-          <KeyValue label="Quantity" value={plan.quantity == null ? "—" : plan.quantity.toLocaleString()} />
-          <KeyValue label="Maximum loss" value={money(plan.max_loss_per_unit)} />
-          <KeyValue label="Planned loss" value={money(plan.planned_loss)} />
-          <KeyValue label="Invalidation" value={invalidation(plan.invalidation)} />
-          <KeyValue label="Profit exit" value={priceRange(plan.profit_exit)} />
-          <KeyValue label="Expiry" value={String(plan.expiry ?? "—")} />
-          <KeyValue label="Portfolio effect" value={plan.portfolio_impact?.marginal_risk == null ? "Unavailable" : String(plan.portfolio_impact.marginal_risk)} />
-          <KeyValue label="Plan" value={plan.trade_plan_id.slice(-16)} />
-        </div>
-      )}
-    </DataTableFrame>
   );
 }
 
