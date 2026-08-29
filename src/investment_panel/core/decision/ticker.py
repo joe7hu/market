@@ -97,6 +97,20 @@ class SignalEvidenceState(StrEnum):
     HYPOTHESIS = "HYPOTHESIS"
 
 
+class AvailabilityStatus(StrEnum):
+    """Typed evidence availability; absence is never treated as available."""
+
+    AVAILABLE = "available"
+    UNSUPPORTED = "unsupported"
+    MISSING = "missing"
+    STALE = "stale"
+    NOT_CALIBRATED = "not_calibrated"
+    POLICY_BLOCKED = "policy_blocked"
+    ERROR = "error"
+    NOT_APPLICABLE = "not_applicable"
+    PENDING = "pending"
+
+
 class NumericRange(BaseModel):
     low: float
     high: float
@@ -264,6 +278,7 @@ class MarketDimensionState(BaseModel):
     state: str | None = None
     change_drivers: tuple[str, ...] = ()
     evidence_status: str = "unavailable"
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     uncertainty: str | None = None
     quality: str | None = None
     blockers: tuple[str, ...] = ()
@@ -271,6 +286,16 @@ class MarketDimensionState(BaseModel):
     probability: float | None = Field(default=None, ge=0, le=1)
     probability_method: str | None = None
     probability_model_version: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_availability_status(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "availability_status" not in value:
+            result = dict(value)
+            if str(result.get("evidence_status") or "").lower() == "available":
+                result["availability_status"] = AvailabilityStatus.AVAILABLE
+            return result
+        return value
 
     @model_validator(mode="after")
     def probability_has_method(self) -> "MarketDimensionState":
@@ -345,7 +370,18 @@ class MarketStateSnapshot(BaseModel):
     coverage_matrix: CoverageMatrix | None = None
     input_lineage: tuple[InputLineage, ...] = ()
     availability: str = "unavailable"
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_availability_status(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "availability_status" not in value:
+            result = dict(value)
+            if str(result.get("availability") or "").lower() == "available":
+                result["availability_status"] = AvailabilityStatus.AVAILABLE
+            return result
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -428,7 +464,18 @@ class PortfolioImpact(BaseModel):
     greeks: dict[str, Any] | None = None
     liquidity: dict[str, Any] | None = None
     availability: str = "unavailable"
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_availability_status(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "availability_status" not in value:
+            result = dict(value)
+            if str(result.get("availability") or "").lower() == "available":
+                result["availability_status"] = AvailabilityStatus.AVAILABLE
+            return result
+        return value
 
     @classmethod
     def compose(cls, **kwargs: Any) -> "PortfolioImpact":
@@ -790,8 +837,8 @@ class TradePlan(BaseModel):
                 raise ValueError("blocked trade plan must be NO_TRADE")
             if self.authorization_mode != "NONE":
                 raise ValueError("blocked trade plan cannot be paper authorized")
-            if not self.primary_blocker or self.blockers != (self.primary_blocker,):
-                raise ValueError("blocked trade plan must expose exactly one primary blocker")
+            if not self.primary_blocker or self.primary_blocker not in self.blockers:
+                raise ValueError("blocked trade plan must expose its primary blocker")
             if self.quantity is not None and self.quantity > 0:
                 raise ValueError("blocked trade plan cannot contain a positive quantity")
         elif self.eligibility == "ACTIONABLE":
@@ -1610,6 +1657,30 @@ class TickerDecision(BaseModel):
         unexpected = set(normalized) - set(expected)
         if unexpected:
             raise ValueError("ticker decision contains an impact for an unknown expression")
+        safe_expressions: dict[ExpressionKind, ExpressionDecision] | None = None
+        if policy.blockers:
+            cash = _cash_expression(self.ticker, self.cutoff, self.input_manifest.input_hash).model_copy(
+                update={"selected": True}
+            )
+            safe_expressions = {
+                kind: (
+                    cash
+                    if kind is ExpressionKind.CASH
+                    else expression.model_copy(update={
+                        "entry_range": None,
+                        "target_range": None,
+                        "invalidation": None,
+                        "quantity": None,
+                        "loss_budget": None,
+                        "max_loss_per_unit": None,
+                        "planned_loss": None,
+                        "legs": [],
+                        "selected": False,
+                        "status": "blocked",
+                    })
+                )
+                for kind, expression in expected.items()
+            }
         for kind, expression in expected.items():
             impact = normalized.get(kind)
             if impact is None:
@@ -1635,17 +1706,114 @@ class TickerDecision(BaseModel):
                 raise ValueError("portfolio impact cutoff must match the ticker decision")
             if tuple(impact.input_lineage) != tuple(self.input_lineage):
                 raise ValueError("portfolio impact lineage must match the ticker decision")
-            if impact.expression_identity != _expression_identity_for(expression, kind, self.ticker, self.decision_revision):
-                raise ValueError("portfolio impact expression identity must match the expression")
+            expected_identity = _expression_identity_for(expression, kind, self.ticker, self.decision_revision)
+            if impact.expression_identity != expected_identity:
+                safe_expression = safe_expressions.get(kind) if safe_expressions is not None else None
+                if (
+                    safe_expression is None
+                    or impact.expression_identity
+                    != _expression_identity_for(safe_expression, kind, self.ticker, self.decision_revision)
+                ):
+                    raise ValueError("portfolio impact expression identity must match the expression")
             normalized[kind] = impact
         self.portfolio_impacts = normalized
+        if policy.blockers:
+            assert safe_expressions is not None
+            self.expressions = safe_expressions
+            self.selected_expression = cash
+            self.opportunity_episode = build_opportunity_episode(
+                ticker=self.ticker,
+                decision_revision=self.decision_revision,
+                policy_version=self.policy_version,
+                cutoff=self.cutoff,
+                input_lineage=self.input_lineage,
+                expressions=safe_expressions,
+                selected_expression=ExpressionKind.CASH,
+                episode_id=self.opportunity_episode_id,
+            )
+            normalized = {
+                kind: impact.model_copy(update={
+                    "expression_identity": _expression_identity_for(
+                        expression, kind, self.ticker, self.decision_revision
+                    ),
+                })
+                for kind, impact in normalized.items()
+                for expression in [safe_expressions[kind]]
+            }
+            normalized = {
+                kind: impact.model_copy(update={"impact_id": _portfolio_impact_id(impact)})
+                for kind, impact in normalized.items()
+            }
+            self.portfolio_impacts = normalized
+            expected = dict(safe_expressions)
         context_blockers = _context_blockers_for(
             snapshot=snapshot,
             policy=policy,
             impacts=normalized,
             expressions=expected,
         )
-        if self.resolution is not None and self.resolution.is_actionable and context_blockers:
+        if policy.blockers:
+            existing = self.resolution
+            safe_trade_plan = self.trade_plan
+            if safe_trade_plan is not None and (
+                safe_trade_plan.action != "NO_TRADE"
+                or safe_trade_plan.eligibility != "BLOCKED"
+                or safe_trade_plan.selected_expression_kind is not ExpressionKind.CASH
+                or any(
+                    value is not None
+                    for value in (
+                        safe_trade_plan.entry,
+                        safe_trade_plan.entry_limit,
+                        safe_trade_plan.quantity,
+                        safe_trade_plan.max_loss_per_unit,
+                        safe_trade_plan.planned_loss,
+                        safe_trade_plan.invalidation,
+                        safe_trade_plan.profit_exit,
+                    )
+                )
+            ):
+                safe_trade_plan = None
+            if existing is not None:
+                blocker = existing.primary_blocker or context_blockers[0]
+                self.resolution = build_decision_resolution(
+                    action="NO_TRADE",
+                    decision_revision=self.decision_revision,
+                    policy_version=self.policy_version,
+                    trade_plan_id=safe_trade_plan.trade_plan_id if safe_trade_plan else None,
+                    provenance=existing.provenance,
+                    ticker=self.ticker,
+                    blockers=[blocker],
+                    ttl=existing.ttl,
+                    portfolio_context=normalized[ExpressionKind.CASH].model_dump(mode="json"),
+                    data_quality="INCOMPLETE",
+                    authorization_mode="NONE",
+                    rationale=existing.rationale,
+                    owned=existing.owned,
+                    catalyst=existing.catalyst,
+                    expires_at=existing.expires_at,
+                    blocked=True,
+                )
+            else:
+                self.resolution = build_decision_resolution(
+                    action="NO_TRADE",
+                    decision_revision=self.decision_revision,
+                    policy_version=self.policy_version,
+                    ticker=self.ticker,
+                    blockers=[context_blockers[0]],
+                    provenance={},
+                    portfolio_context=normalized[ExpressionKind.CASH].model_dump(mode="json"),
+                    data_quality="INCOMPLETE",
+                    authorization_mode="NONE",
+                    rationale=self.capital_action.rationale,
+                    owned=self.capital_action.owned,
+                    price_condition=self.capital_action.price_condition,
+                    catalyst=self.capital_action.catalyst,
+                    expires_at=self.capital_action.expires_at,
+                    blocked=True,
+                )
+            self.capital_action = capital_action_from_resolution(self.resolution)
+            self.trade_plan = safe_trade_plan
+        elif self.resolution is not None and self.resolution.is_actionable and context_blockers:
             self.resolution = build_decision_resolution(
                 action="NO_TRADE",
                 decision_revision=self.decision_revision,
@@ -2058,7 +2226,7 @@ def build_trade_plan(
         eligibility = "BLOCKED"
         authorization = "NONE"
         data_quality = "INCOMPLETE"
-        blockers = (reason,)
+        blockers = tuple(dict.fromkeys((*(current_resolution.blockers if current_resolution else ()), reason)))
         entry = None
         entry_limit = None
         quantity = None
@@ -2113,7 +2281,11 @@ def build_trade_plan(
         "authorization_mode": authorization,
         "data_quality": data_quality,
         "rationale": current_resolution.rationale if current_resolution is not None else decision.capital_action.rationale,
-        "primary_blocker": blockers[0] if blockers else None,
+        "primary_blocker": (
+            current_resolution.primary_blocker
+            if current_resolution is not None and current_resolution.primary_blocker in blockers
+            else blockers[0] if blockers else None
+        ),
         "blockers": blockers,
         "next_action": next_action or next_action_for(blockers[0] if blockers else None),
         "entry": entry,
@@ -2229,6 +2401,31 @@ def _missing_portfolio_impact(
         availability="unavailable",
         blockers=(f"portfolio_impact_missing:{kind.value}",),
     )
+
+
+def _portfolio_impact_id(impact: PortfolioImpact) -> str:
+    payload = {
+        "book_identity": impact.portfolio_before.get("book_identity"),
+        "opportunity_episode_id": impact.opportunity_episode_id,
+        "expression_kind": impact.expression_kind.value,
+        "expression_identity": impact.expression_identity,
+        "decision_revision": impact.decision_revision,
+        "risk_policy_version": impact.risk_policy_version,
+        "market_snapshot_id": impact.market_snapshot_id,
+        "market_state_publication_id": impact.market_state_publication_id,
+        "cutoff": impact.cutoff,
+        "portfolio_before": impact.portfolio_before,
+        "portfolio_after": impact.portfolio_after,
+        "values": {
+            "marginal_risk": impact.marginal_risk,
+            "risk_budget_consumed": impact.risk_budget_consumed,
+            "scenario_pnl": impact.scenario_pnl,
+            "factor_exposure": impact.factor_exposure,
+            "greeks": impact.greeks,
+            "liquidity": impact.liquidity,
+        },
+    }
+    return f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
 
 
 def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) -> MarketStateSnapshot:
@@ -2397,23 +2594,8 @@ def compose_portfolio_impact(
             "greeks": None,
             "liquidity": None,
         }
-    payload = {
-        "book_identity": before.get("book_identity"),
-        "opportunity_episode_id": episode.episode_id,
-        "expression_kind": kind.value,
-        "expression_identity": expression_identity,
-        "decision_revision": episode.decision_revision,
-        "risk_policy_version": policy_version,
-        "market_snapshot_id": snapshot.snapshot_id,
-        "market_state_publication_id": snapshot.publication_id,
-        "cutoff": episode.cutoff,
-        "portfolio_before": before,
-        "portfolio_after": after,
-        "values": values,
-    }
-    impact_id = f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
-    return PortfolioImpact(
-        impact_id=impact_id,
+    impact = PortfolioImpact(
+        impact_id="pending",
         opportunity_episode_id=episode.episode_id,
         expression_kind=kind,
         expression_identity=expression_identity,
@@ -2429,6 +2611,7 @@ def compose_portfolio_impact(
         blockers=tuple(dict.fromkeys(blockers)),
         **values,
     )
+    return impact.model_copy(update={"impact_id": _portfolio_impact_id(impact)})
 
 
 def _local_portfolio_impacts(
@@ -2473,7 +2656,10 @@ def _context_blockers_for(
         blockers.append("risk_policy_snapshot_missing")
     else:
         blockers.extend(policy.blockers)
-    expected = set(expressions) | {ExpressionKind.CASH}
+    selected = next((kind for kind, expression in expressions.items() if expression.selected), ExpressionKind.CASH)
+    expected = [selected]
+    if selected is not ExpressionKind.CASH:
+        expected.append(ExpressionKind.CASH)
     for kind in expected:
         impact = impacts.get(kind)
         if impact is None:
@@ -2508,46 +2694,6 @@ def build_ticker_decision(
         for name, rows in tables.items()
     }
     persisted = _latest(usable, "ticker_decisions")
-    if persisted:
-        try:
-            # Published revisions are immutable decision truth. The composed
-            # fallback below is only for symbols that have not yet been
-            # materialized by the ticker decision job.
-            persisted_resolution = resolution_from_legacy({
-                **persisted,
-                "ticker": symbol,
-                "resolution": persisted.get("resolution"),
-            })
-            return TickerDecision.model_validate({
-                "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
-                "ticker": symbol,
-                "as_of": persisted.get("as_of") or reference,
-                "decision_revision": persisted.get("decision_revision"),
-                "tactical": persisted.get("tactical"),
-                "fundamental": persisted.get("fundamental"),
-                "capital_action": capital_action_from_resolution(persisted_resolution),
-                "resolution": persisted_resolution,
-                "policy_version": persisted.get("policy_version") or (persisted.get("risk_policy") or {}).get("policy_version") or "risk-policy.v2:legacy",
-                "risk_policy": persisted.get("risk_policy"),
-                "expressions": persisted.get("expressions") or {},
-                "selected_expression": persisted.get("selected_expression"),
-                "opportunity_episode": persisted.get("opportunity_episode") or None,
-                "data_requests": persisted.get("data_requests") or [],
-                "learning_history": persisted.get("learning_history") or [],
-                "input_manifest": persisted.get("input_manifest") or {},
-                "risk_policy_snapshot": persisted.get("risk_policy_snapshot") or None,
-                "market_state_publication_id": persisted.get("market_state_publication_id") or None,
-                "market_state_snapshot": persisted.get("market_state_snapshot") or None,
-                "portfolio_impacts": persisted.get("portfolio_impacts") or {},
-                "instrument_state_snapshot": persisted.get("instrument_state_snapshot") or None,
-                "alpha_signals": persisted.get("alpha_signals") or [],
-                "opportunity_rank": persisted.get("opportunity_rank") or None,
-                "trade_plan": persisted.get("trade_plan") or (persisted.get("input_manifest") or {}).get("trade_plan"),
-            })
-        except Exception:
-            # A malformed persisted row is visible to source-health/learning
-            # diagnostics, but it must not make the ticker route disappear.
-            pass
     manifest = _build_manifest(usable, reference, code_version, experiment_id)
     decision_row = _latest(usable, "symbol_decision_snapshot", "symbol_decision_snapshots", "decision_queue", "opportunities_ranked", "candidates")
     quote = _latest(usable, "quotes")
@@ -2570,7 +2716,158 @@ def build_ticker_decision(
     nav, nav_age = _portfolio_nav(portfolio, reference)
     tactical_stance = _stance(decision_row, Horizon.TACTICAL, usable)
     fundamental_stance = _stance(decision_row, Horizon.FUNDAMENTAL, usable)
-    risk_policy = _risk_policy(decision_row, usable, nav)
+    confidence = _number(_pick(decision_row, "confidence", "confidence_score"))
+    if confidence is not None and confidence > 1:
+        confidence /= 100
+    conviction_tier = _conviction(decision_row, confidence, "EXPLORATORY")
+    account_facts = {
+        "broker_net_liquidation": _pick(portfolio, "broker_net_liquidation", "net_liquidation"),
+        "broker_available_capital": _pick(portfolio, "broker_available_capital"),
+        "cash_balance": _pick(portfolio, "cash_balance"),
+        "buying_power": _pick(portfolio, "buying_power"),
+        "account_source": _pick(portfolio, "account_source", "account_facts_source", "provider", "source_id"),
+    }
+    account_observed_at = _pick(portfolio, "account_observed_at", "observed_at", "updated_at")
+    available_at = _pick(portfolio, "available_at")
+    if account_observed_at is None:
+        account_observed_at = available_at
+    if account_observed_at is not None:
+        account_facts["account_observed_at"] = account_observed_at
+    if available_at is not None:
+        account_facts["available_at"] = available_at
+    account_observed_at = _parse_datetime(_pick(account_facts, "account_observed_at", "available_at"))
+    policy_blockers: list[str] = []
+    if account_observed_at is None or nav is None:
+        policy_blockers.append("fresh_postgres_account_facts_required")
+    elif account_observed_at > reference:
+        policy_blockers.append("future_account_revision_not_allowed")
+    elif (reference - account_observed_at).total_seconds() > 1800:
+        policy_blockers.append("fresh_postgres_account_facts_required")
+    account_source = account_facts["account_source"]
+    if account_source is not None and str(account_source).strip().lower() not in {
+        "postgresql", "postgres", "raw.broker_account_snapshot",
+    }:
+        policy_blockers.append("postgresql_account_facts_required")
+    canonical_policy_snapshot = compile_risk_policy_snapshot(
+        account_facts=account_facts,
+        sleeve_capital=nav,
+        conviction_tier=conviction_tier,
+        policy_kind="ticker",
+        additional_blockers=policy_blockers,
+    )
+    risk_policy = _risk_policy(canonical_policy_snapshot)
+
+    if persisted:
+        try:
+            # Published revisions remain immutable, but current account
+            # authority must still gate their use.
+            persisted_resolution = resolution_from_legacy({
+                **persisted,
+                "ticker": symbol,
+                "resolution": persisted.get("resolution"),
+            })
+            persisted_policy_snapshot = None
+            if persisted.get("risk_policy_snapshot") is not None:
+                try:
+                    persisted_policy_snapshot = (
+                        persisted["risk_policy_snapshot"]
+                        if isinstance(persisted["risk_policy_snapshot"], RiskPolicySnapshot)
+                        else RiskPolicySnapshot.model_validate(persisted["risk_policy_snapshot"])
+                    )
+                except Exception:
+                    pass
+            authority_blockers = list(canonical_policy_snapshot.blockers)
+            if (
+                persisted_policy_snapshot is None
+                or persisted_policy_snapshot.model_dump(mode="json")
+                != canonical_policy_snapshot.model_dump(mode="json")
+            ):
+                authority_blockers.append("risk_policy_snapshot_mismatch")
+            if risk_policy_snapshot is not _CONTEXT_UNSET:
+                if risk_policy_snapshot is None:
+                    authority_blockers.append("risk_policy_snapshot_missing")
+                else:
+                    try:
+                        supplied_policy_snapshot = (
+                            risk_policy_snapshot
+                            if isinstance(risk_policy_snapshot, RiskPolicySnapshot)
+                            else RiskPolicySnapshot.model_validate(risk_policy_snapshot)
+                        )
+                    except Exception:
+                        supplied_policy_snapshot = None
+                    if (
+                        supplied_policy_snapshot is None
+                        or supplied_policy_snapshot.model_dump(mode="json")
+                        != canonical_policy_snapshot.model_dump(mode="json")
+                    ):
+                        authority_blockers.append("risk_policy_snapshot_mismatch")
+            authority_blockers = list(dict.fromkeys(authority_blockers))
+            stored_policy_version = (
+                persisted.get("policy_version")
+                or (persisted.get("risk_policy") or {}).get("policy_version")
+                or "risk-policy.v2:legacy"
+            )
+            if persisted_policy_snapshot is None:
+                persisted_policy_snapshot = RiskPolicySnapshot(
+                    policy_version=stored_policy_version,
+                    blockers=tuple(authority_blockers + ["risk_policy_snapshot_missing"]),
+                )
+            elif authority_blockers:
+                persisted_policy_snapshot = persisted_policy_snapshot.model_copy(update={
+                    "blockers": tuple(dict.fromkeys((*persisted_policy_snapshot.blockers, *authority_blockers))),
+                })
+            if authority_blockers:
+                persisted_resolution = build_decision_resolution(
+                    action="NO_TRADE",
+                    decision_revision=persisted_resolution.decision_revision,
+                    policy_version=stored_policy_version,
+                    trade_plan_id=persisted_resolution.trade_plan_id,
+                    provenance=persisted_resolution.provenance,
+                    ticker=symbol,
+                    blockers=[authority_blockers[0]],
+                    data_quality="INCOMPLETE",
+                    authorization_mode="NONE",
+                    rationale=persisted_resolution.rationale,
+                    owned=persisted_resolution.owned,
+                    price_condition=persisted_resolution.price_condition,
+                    catalyst=persisted_resolution.catalyst,
+                    expires_at=persisted_resolution.expires_at,
+                    blocked=True,
+                )
+            return TickerDecision.model_validate({
+                "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
+                "ticker": symbol,
+                "as_of": persisted.get("as_of") or reference,
+                "decision_revision": persisted.get("decision_revision"),
+                "tactical": persisted.get("tactical"),
+                "fundamental": persisted.get("fundamental"),
+                "capital_action": capital_action_from_resolution(persisted_resolution),
+                "resolution": persisted_resolution,
+                "policy_version": stored_policy_version,
+                "risk_policy": persisted.get("risk_policy"),
+                "expressions": persisted.get("expressions") or {},
+                "selected_expression": persisted.get("selected_expression"),
+                "opportunity_episode": persisted.get("opportunity_episode") or None,
+                "data_requests": persisted.get("data_requests") or [],
+                "learning_history": persisted.get("learning_history") or [],
+                "input_manifest": persisted.get("input_manifest") or {},
+                "risk_policy_snapshot": persisted_policy_snapshot,
+                "market_state_publication_id": persisted.get("market_state_publication_id") or None,
+                "market_state_snapshot": persisted.get("market_state_snapshot") or None,
+                "portfolio_impacts": persisted.get("portfolio_impacts") or {},
+                "instrument_state_snapshot": persisted.get("instrument_state_snapshot") or None,
+                "alpha_signals": persisted.get("alpha_signals") or [],
+                "opportunity_rank": persisted.get("opportunity_rank") or None,
+                "trade_plan": (
+                    None
+                    if authority_blockers
+                    else persisted.get("trade_plan") or (persisted.get("input_manifest") or {}).get("trade_plan")
+                ),
+            })
+        except Exception:
+            # A malformed persisted row is visible to source-health/learning
+            # diagnostics, but it must not make the ticker route disappear.
+            pass
 
     requests: list[DataRequest] = []
     if current_price is None:
@@ -2668,20 +2965,30 @@ def build_ticker_decision(
             if isinstance(market_state_snapshot, MarketStateSnapshot)
             else MarketStateSnapshot.model_validate(market_state_snapshot)
         )
+    policy_snapshot_mismatch = False
     if risk_policy_snapshot is _CONTEXT_UNSET:
-        policy_snapshot = compile_risk_policy_snapshot(
-            sleeve_capital=nav,
-            conviction_tier=risk_policy.conviction_tier,
-            policy_kind="ticker",
-        )
+        policy_snapshot = canonical_policy_snapshot
     elif risk_policy_snapshot is None:
         policy_snapshot = None
     else:
-        policy_snapshot = (
-            risk_policy_snapshot
-            if isinstance(risk_policy_snapshot, RiskPolicySnapshot)
-            else RiskPolicySnapshot.model_validate(risk_policy_snapshot)
+        try:
+            supplied_policy_snapshot = (
+                risk_policy_snapshot
+                if isinstance(risk_policy_snapshot, RiskPolicySnapshot)
+                else RiskPolicySnapshot.model_validate(risk_policy_snapshot)
+            )
+        except Exception:
+            supplied_policy_snapshot = None
+        policy_snapshot_mismatch = (
+            supplied_policy_snapshot is None
+            or supplied_policy_snapshot.model_dump(mode="json")
+            != canonical_policy_snapshot.model_dump(mode="json")
         )
+        policy_snapshot = canonical_policy_snapshot
+        if policy_snapshot_mismatch:
+            policy_snapshot = policy_snapshot.model_copy(update={
+                "blockers": tuple(dict.fromkeys((*policy_snapshot.blockers, "risk_policy_snapshot_mismatch"))),
+            })
     if portfolio_impacts is _CONTEXT_UNSET:
         impacts = _local_portfolio_impacts(
             episode=episode,
@@ -2710,7 +3017,7 @@ def build_ticker_decision(
             expressions=expressions,
         )
         if context_supplied
-        else []
+        else list(canonical_policy_snapshot.blockers)
     )
     selected_entry = selected.entry_range if selected is not None else None
     selected_invalidation = selected.invalidation if selected is not None else None
@@ -3827,21 +4134,17 @@ def _add_business_days(start: date, count: int) -> date:
     return current
 
 
-def _risk_policy(row: Mapping[str, Any], tables: Mapping[str, list[dict[str, Any]]], nav: float | None) -> RiskPolicy:
-    confidence = _number(_pick(row, "confidence", "confidence_score"))
-    if confidence is not None and confidence > 1:
-        confidence /= 100
-    tier = _conviction(row, confidence, "EXPLORATORY")
-    pct = {"EXPLORATORY": 0.005, "STANDARD": 0.01, "HIGH": 0.02}[tier]
-    snapshot = compile_risk_policy_snapshot(
-        sleeve_capital=nav,
-        conviction_tier=tier,
-        policy_kind="ticker",
-    )
+def _risk_policy(snapshot: RiskPolicySnapshot) -> RiskPolicy:
+    pct = snapshot.ticker_loss_budget_pct
+    conviction_tier = {
+        0.005: "EXPLORATORY",
+        0.01: "STANDARD",
+        0.02: "HIGH",
+    }.get(pct, "EXPLORATORY")
     return RiskPolicy(
-        conviction_tier=tier,
+        conviction_tier=conviction_tier,
         loss_budget_pct=pct,
-        loss_budget=nav * pct if nav is not None else None,
+        loss_budget=snapshot.sleeve_capital * pct if snapshot.sleeve_capital is not None and pct is not None else None,
         max_ticker_loss_pct=snapshot.ticker_max_loss_pct,
         max_total_open_planned_loss_pct=snapshot.ticker_total_open_loss_pct,
         position_limit_pct=snapshot.ticker_position_limit_pct,
