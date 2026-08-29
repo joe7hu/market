@@ -454,6 +454,19 @@ class PortfolioImpact(BaseModel):
     input_lineage: tuple[InputLineage, ...] = ()
     portfolio_before: dict[str, Any] = Field(default_factory=dict)
     portfolio_after: dict[str, Any] = Field(default_factory=dict)
+    position_weight_before: float | None = None
+    position_weight_after: float | None = None
+    gross_exposure_before: float | None = None
+    gross_exposure_after: float | None = None
+    net_exposure_before: float | None = None
+    net_exposure_after: float | None = None
+    symbol_concentration_delta: float | None = None
+    sector_concentration_delta: float | None = None
+    beta_delta: float | None = None
+    correlation_cluster_delta: float | None = None
+    planned_loss: float | None = Field(default=None, ge=0)
+    adv_participation: float | None = Field(default=None, ge=0)
+    days_to_exit: float | None = Field(default=None, ge=0)
     marginal_risk: float | None = None
     diversification_benefit: float | None = None
     risk_budget_consumed: float | None = None
@@ -463,6 +476,9 @@ class PortfolioImpact(BaseModel):
     factor_exposure: dict[str, Any] | None = None
     greeks: dict[str, Any] | None = None
     liquidity: dict[str, Any] | None = None
+    cash_comparator: dict[str, Any] | None = None
+    top_alternative: str | None = None
+    funding_source_or_position_to_trim: str | None = None
     availability: str = "unavailable"
     availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
