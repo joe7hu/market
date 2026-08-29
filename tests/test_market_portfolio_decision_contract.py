@@ -78,6 +78,32 @@ def _valued_replay(*, stock_evidence: dict[str, object]) -> dict[str, object]:
     return replay
 
 
+def _complete_stock_evidence(*, btc_applicable: bool = False) -> dict[str, object]:
+    scenarios: dict[str, object] = {
+        "SPY": {"pnl": -1_000.0},
+        "QQQ": {"pnl": -900.0},
+        "sector": {"pnl": -800.0},
+        "symbol": {"pnl": -1_200.0},
+        "earnings-gap": {"pnl": -1_500.0},
+        "liquidity": {"pnl": -500.0},
+    }
+    if btc_applicable:
+        scenarios["BTC"] = {"pnl": -700.0}
+    return {
+        "sector": "Technology",
+        "beta": 1.1,
+        "avg_dollar_volume": 1_000_000.0,
+        "correlation_cluster_delta": 0.01,
+        "adv_participation_limit": 0.10,
+        "stress_scenarios": scenarios,
+        "btc_scenarios_applicable": btc_applicable,
+        "risk_budget": {"available": 2_000.0, "consumed": 1_000.0},
+        "cash_comparator": {"status": "available", "expected_return": 0.0},
+        "top_alternative": "cash",
+        "funding_source_or_position_to_trim": "cash",
+    }
+
+
 def test_market_snapshot_has_four_horizons_and_unavailable_dimensions() -> None:
     snapshot = _decision().market_state_snapshot
 
@@ -131,21 +157,7 @@ def test_book_identity_changes_every_bound_impact_and_never_unlocks_non_cash() -
 
 
 def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
-    replay = _valued_replay(stock_evidence={
-            "sector": "Technology",
-            "beta": 1.1,
-            "avg_dollar_volume": 1_000_000.0,
-            "correlation_cluster_delta": 0.01,
-            "adv_participation_limit": 0.10,
-            "stress_scenarios": {
-                "bear": {"pnl": -1_000.0},
-                "base": {"pnl": 100.0},
-                "bull": {"pnl": 1_500.0},
-            },
-            "risk_budget": {"available": 2_000.0, "consumed": 1_000.0},
-            "cash_comparator": {"status": "available", "expected_return": 0.0},
-            "funding_source_or_position_to_trim": "cash",
-        })
+    replay = _valued_replay(stock_evidence=_complete_stock_evidence())
     decision = _decision(portfolio_replay=replay)
     impact = decision.portfolio_impacts[ExpressionKind.STOCK]
 
@@ -161,8 +173,51 @@ def test_stock_impact_reports_first_order_exposure_from_cutoff_book() -> None:
     assert impact.risk_budget_consumed == pytest.approx(1_000.0)
     assert impact.liquidity["adv_participation_limit"] == pytest.approx(0.10)
     assert impact.cash_comparator == {"status": "available", "expected_return": 0.0}
+    assert impact.top_alternative == "cash"
     assert impact.funding_source_or_position_to_trim == "cash"
     assert impact.availability == "available"
+
+
+def test_generic_bear_base_bull_scenarios_do_not_unlock_stock_impact() -> None:
+    evidence = _complete_stock_evidence()
+    evidence["stress_scenarios"] = {
+        "bear": {"pnl": -1_000.0},
+        "base": {"pnl": 100.0},
+        "bull": {"pnl": 1_500.0},
+    }
+    impact = _decision(portfolio_replay=_valued_replay(stock_evidence=evidence)).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert "stock_stress_scenarios_missing" in impact.blockers
+    assert impact.scenario_pnl is None
+
+
+def test_stock_impact_requires_a_real_top_alternative() -> None:
+    evidence = _complete_stock_evidence()
+    evidence.pop("top_alternative")
+    impact = _decision(portfolio_replay=_valued_replay(stock_evidence=evidence)).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert "stock_top_alternative_missing" in impact.blockers
+    assert impact.top_alternative is None
+
+
+def test_stock_impact_requires_btc_scenario_when_btc_is_applicable() -> None:
+    evidence = _complete_stock_evidence(btc_applicable=True)
+    scenarios = dict(evidence["stress_scenarios"])
+    scenarios.pop("BTC")
+    evidence["stress_scenarios"] = scenarios
+    replay = _valued_replay(stock_evidence=evidence)
+    impact = _decision(portfolio_replay=replay).portfolio_impacts[ExpressionKind.STOCK]
+
+    assert impact.availability == "unavailable"
+    assert "stock_stress_scenarios_missing" in impact.blockers
+
+    complete = _decision(
+        portfolio_replay=_valued_replay(stock_evidence=_complete_stock_evidence(btc_applicable=True))
+    ).portfolio_impacts[ExpressionKind.STOCK]
+    assert complete.availability == "available"
+    assert "BTC" in complete.scenario_pnl
 
 
 def test_stock_impact_missing_institutional_evidence_stays_unavailable() -> None:
@@ -180,6 +235,7 @@ def test_stock_impact_missing_institutional_evidence_stays_unavailable() -> None
         "stock_risk_budget_evidence_missing",
         "stock_adv_participation_limit_missing",
         "stock_cash_comparator_missing",
+        "stock_top_alternative_missing",
         "stock_funding_evidence_missing",
     } <= set(impact.blockers)
     assert impact.scenario_pnl is None

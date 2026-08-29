@@ -571,7 +571,8 @@ class PortfolioImpact(BaseModel):
             evidence = before.get("stock_evidence")
             if not isinstance(evidence, Mapping):
                 raise ValueError("available stock portfolio impacts require stock evidence")
-            scenario_pnl = _stock_scenario_pnl(evidence)
+            btc_required = _stock_btc_scenarios_required(evidence, before.get("positions") or ())
+            scenario_pnl = _stock_scenario_pnl(evidence, btc_required=btc_required)
             if scenario_pnl is None or self.scenario_pnl != scenario_pnl:
                 raise ValueError("available stock portfolio impacts require complete stress scenarios")
             budget_available, budget_consumed = _stock_risk_budget(evidence)
@@ -611,6 +612,11 @@ class PortfolioImpact(BaseModel):
                 or not any(_number(cash.get(key)) is not None for key in _STOCK_CASH_COMPARISON_KEYS)
             ):
                 raise ValueError("available stock portfolio impacts require a cash comparison")
+            top_alternative = _stock_evidence_label(evidence.get("top_alternative"))
+            if top_alternative is None and isinstance(cash, Mapping):
+                top_alternative = _stock_evidence_label(_pick(cash, "top_alternative", "alternative"))
+            if top_alternative is None or self.top_alternative != top_alternative:
+                raise ValueError("available stock portfolio impacts require a top alternative")
             if _stock_evidence_label(self.funding_source_or_position_to_trim) is None:
                 raise ValueError("available stock portfolio impacts require funding or trim evidence")
         else:
@@ -2641,7 +2647,8 @@ def _portfolio_book_blockers(replay: Mapping[str, Any], cutoff: datetime) -> lis
     return list(dict.fromkeys(blockers))
 
 
-_STOCK_SCENARIO_NAMES = ("bear", "base", "bull")
+_STOCK_SCENARIO_NAMES = ("spy", "qqq", "sector", "symbol", "earnings_gap", "liquidity")
+_STOCK_BTC_SCENARIO_NAMES = ("btc",)
 _STOCK_CASH_COMPARISON_KEYS = (
     "expected_return", "expected_pnl", "cash_return", "cash_yield", "return",
     "pnl", "opportunity_cost", "expected_value",
@@ -2649,23 +2656,58 @@ _STOCK_CASH_COMPARISON_KEYS = (
 _STOCK_PLACEHOLDER_LABELS = {"", "cash comparator", "cash_comparator", "none", "unknown", "tbd"}
 
 
-def _stock_scenario_pnl(evidence: Mapping[str, Any]) -> dict[str, Any] | None:
+def _stock_scenario_key(value: Any) -> str:
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _stock_btc_scenarios_required(
+    evidence: Mapping[str, Any],
+    positions: Iterable[Any] = (),
+    ticker: str | None = None,
+) -> bool:
+    if any(evidence.get(key) is True for key in ("btc_scenarios_applicable", "btc_scenario_required", "btc_exposure")):
+        return True
+    if _stock_scenario_key(ticker) in {"btc", "btc_usd", "bitcoin", "bitcoin_usd"}:
+        return True
+    if _stock_scenario_key(evidence.get("asset_class")) == "crypto":
+        return True
+    return any(
+        isinstance(position, Mapping)
+        and (
+            _stock_scenario_key(position.get("asset_class")) == "crypto"
+            or _stock_scenario_key(position.get("symbol")) in {"btc", "btc_usd", "bitcoin", "bitcoin_usd"}
+        )
+        for position in positions
+    )
+
+
+def _stock_scenario_pnl(
+    evidence: Mapping[str, Any],
+    *,
+    btc_required: bool = False,
+) -> dict[str, Any] | None:
     raw = evidence.get("stress_scenarios")
     if raw is None:
         raw = evidence.get("scenario_pnl")
     if not isinstance(raw, Mapping):
         return None
-    result: dict[str, Any] = {}
-    for name in _STOCK_SCENARIO_NAMES:
-        key = next((candidate for candidate in raw if str(candidate).lower() == name), None)
+    required = (*_STOCK_SCENARIO_NAMES, *_STOCK_BTC_SCENARIO_NAMES) if btc_required else _STOCK_SCENARIO_NAMES
+    keys: dict[str, Any] = {}
+    for key in raw:
+        normalized = _stock_scenario_key(key)
+        if normalized in required:
+            if normalized in keys:
+                return None
+            keys[normalized] = key
+    for name in required:
+        key = keys.get(name)
         if key is None:
             return None
         value = raw[key]
         pnl = _pick(value, "pnl", "pnl_usd", "value") if isinstance(value, Mapping) else value
         if _number(pnl) is None:
             return None
-        result[name] = value
-    return result
+    return dict(raw)
 
 
 def _stock_risk_budget(evidence: Mapping[str, Any]) -> tuple[float | None, float | None]:
@@ -2773,7 +2815,8 @@ def _stock_impact_values(
     beta_delta = beta * (added_value / nav) if beta is not None and nav else None
     if beta_delta is None:
         blockers.append("stock_beta_evidence_missing")
-    stress_scenarios = _stock_scenario_pnl(evidence)
+    btc_required = _stock_btc_scenarios_required(evidence, positions, expression.ticker)
+    stress_scenarios = _stock_scenario_pnl(evidence, btc_required=btc_required)
     if stress_scenarios is None:
         blockers.append("stock_stress_scenarios_missing")
     budget_available, budget_consumed = _stock_risk_budget(evidence)
@@ -2853,6 +2896,8 @@ def _stock_impact_values(
     top_alternative = _stock_evidence_label(evidence.get("top_alternative"))
     if top_alternative is None and cash_comparator is not None:
         top_alternative = _stock_evidence_label(_pick(cash_comparator, "top_alternative", "alternative"))
+    if top_alternative is None:
+        blockers.append("stock_top_alternative_missing")
     if funding is not None:
         after["funding_source_or_position_to_trim"] = funding
     if trim is not None:
