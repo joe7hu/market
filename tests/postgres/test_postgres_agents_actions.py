@@ -238,17 +238,14 @@ def test_agent_queue_uses_the_exact_published_decision(postgres_dsn: str) -> Non
         )
         with runtime.read() as connection:
             stored_without_decision = connection.execute(
-                "SELECT decision_id, request->'decision' AS request_decision "
+                "SELECT decision_id, request->'decision' AS request_decision, "
+                "request->'request_envelope' AS envelope "
                 "FROM analysis.agent_task WHERE id = %s",
                 [without_decision["request_id"]],
             ).fetchone()
         assert stored_without_decision["decision_id"] == decision_ids[0]
         assert stored_without_decision["request_decision"] == {}
-        envelope = connection.execute(
-            "SELECT request->'request_envelope' AS envelope FROM analysis.agent_task WHERE id = %s",
-            [without_decision["request_id"]],
-        ).fetchone()["envelope"]
-        assert envelope["decision_id"] == str(decision_ids[0])
+        assert stored_without_decision["envelope"]["decision_id"] == str(decision_ids[0])
     finally:
         runtime.close()
 
@@ -741,20 +738,25 @@ def test_agent_context_rejects_unavailable_or_unfinished_signal_runs(postgres_ds
                     """,
                     [cutoff, "a" * 64, finished_at - timedelta(minutes=1), finished_at, status],
                 ).fetchone()["id"])
-            for index, (run_id, available_at) in enumerate(zip(
-                analysis_runs,
-                (cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), None),
-            )):
+            signal_specs = [
+                (analysis_runs[0], cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), "failed-run"),
+                (analysis_runs[1], cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), "future-run"),
+                (analysis_runs[2], None, cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), "missing-availability"),
+                (analysis_runs[2], cutoff - timedelta(hours=2), cutoff + timedelta(hours=1), cutoff - timedelta(hours=2), "future-event"),
+                (analysis_runs[2], cutoff - timedelta(hours=2), cutoff - timedelta(hours=2), cutoff + timedelta(hours=1), "future-publication"),
+            ]
+            for index, (run_id, available_at, event_at, published_at, signal_name) in enumerate(signal_specs):
                 connection.execute(
                     """
                     INSERT INTO analysis.source_signal
-                        (run_id, content_item_id, instrument_id, observed_at, available_at,
-                         signal_type, sentiment, thesis)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'positive', %s)
+                        (run_id, content_item_id, instrument_id, observed_at, available_at, event_at,
+                         published_at, signal_type, sentiment, thesis)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'positive', %s)
                     """,
                     [
                         run_id, item["id"], instrument["id"], cutoff - timedelta(minutes=index + 1),
-                        available_at, f"invalid-signal-{index}", f"invalid signal {index}",
+                        available_at, event_at, published_at, f"invalid-signal-{signal_name}",
+                        f"invalid signal {signal_name}",
                     ],
                 )
 
@@ -795,36 +797,77 @@ def test_agent_context_applies_cutoff_to_quote_catalyst_and_publication(
                 """,
                 [source_id, cutoff - timedelta(hours=4), cutoff - timedelta(hours=3)],
             ).fetchone()
-            connection.execute(
+            old_quote = connection.execute(
                 """
                 INSERT INTO raw.quote
                     (instrument_id, source_id, ingest_run_id, observed_at, available_at, price)
                 VALUES
-                    (%s, %s, %s, %s, %s, 100),
-                    (%s, %s, %s, %s, %s, 200)
+                    (%s, %s, %s, %s, %s, 100)
+                RETURNING id, available_at
                 """,
                 [
                     instrument["id"], source_id, ingest_run["id"], cutoff - timedelta(hours=2),
-                    cutoff - timedelta(hours=2), instrument["id"], source_id, ingest_run["id"],
-                    cutoff + timedelta(hours=1), cutoff + timedelta(hours=1),
+                    cutoff - timedelta(hours=2),
                 ],
+            ).fetchone()
+            future_quote = connection.execute(
+                """
+                INSERT INTO raw.quote
+                    (instrument_id, source_id, ingest_run_id, observed_at, available_at, price)
+                VALUES (%s, %s, %s, %s, %s, 200)
+                RETURNING id, available_at
+                """,
+                [
+                    instrument["id"], source_id, ingest_run["id"], cutoff + timedelta(hours=1),
+                    cutoff + timedelta(hours=1),
+                ],
+            ).fetchone()
+            for quote in (old_quote, future_quote):
+                connection.execute(
+                    """
+                    INSERT INTO raw.quote_fact_availability (fact_id, fact_available_at, ingest_run_id)
+                    VALUES (%s, %s, %s)
+                    """,
+                    [quote["id"], quote["available_at"], ingest_run["id"]],
+                )
+            event = connection.execute(
+                """
+                INSERT INTO raw.market_event
+                    (instrument_id, source_id, ingest_run_id, source_key, event_scope, event_kind,
+                     title, starts_at, verification_status, available_at)
+                VALUES (%s, %s, %s, 'pitc-event', 'ticker', 'earnings', 'valid catalyst', %s, 'confirmed', %s)
+                RETURNING id
+                """,
+                [instrument["id"], source_id, ingest_run["id"], cutoff + timedelta(hours=1), cutoff - timedelta(hours=2)],
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO raw.market_event_version
+                    (market_event_id, instrument_id, source_id, ingest_run_id, source_key,
+                     event_scope, event_kind, title, starts_at, verification_status, available_at)
+                VALUES (%s, %s, %s, %s, 'pitc-event-v1', 'ticker', 'earnings',
+                        'valid catalyst', %s, 'confirmed', %s)
+                """,
+                [event["id"], instrument["id"], source_id, ingest_run["id"],
+                 cutoff + timedelta(hours=1), cutoff - timedelta(hours=2)],
             )
             connection.execute(
                 """
-                INSERT INTO app.catalyst (instrument_id, starts_at, title, created_at)
+                INSERT INTO app.catalyst
+                    (instrument_id, market_event_id, event_key, source_id, starts_at, title, created_at)
                 VALUES
-                    (%s, %s, 'valid catalyst', %s),
-                    (%s, %s, 'past catalyst', %s),
-                    (%s, %s, 'future-created catalyst', %s)
+                    (%s, %s, 'pitc-valid', %s, %s, 'valid catalyst', %s),
+                    (%s, NULL, 'pitc-past', %s, %s, 'past catalyst', %s),
+                    (%s, NULL, 'pitc-future', %s, %s, 'future-created catalyst', %s)
                 """,
                 [
-                    instrument["id"], cutoff + timedelta(hours=1), cutoff - timedelta(hours=1),
-                    instrument["id"], cutoff - timedelta(hours=1), cutoff - timedelta(hours=1),
-                    instrument["id"], cutoff + timedelta(hours=2), cutoff + timedelta(hours=1),
+                    instrument["id"], event["id"], source_id, cutoff + timedelta(hours=1), cutoff - timedelta(hours=1),
+                    instrument["id"], source_id, cutoff - timedelta(hours=1), cutoff - timedelta(hours=1),
+                    instrument["id"], source_id, cutoff + timedelta(hours=2), cutoff + timedelta(hours=1),
                 ],
             )
             publication_runs = []
-            for suffix in ("old", "future"):
+            for suffix, finished_at in (("old", cutoff - timedelta(hours=1)), ("future", cutoff + timedelta(hours=1))):
                 publication_runs.append(connection.execute(
                     """
                     INSERT INTO analysis.run
@@ -832,7 +875,7 @@ def test_agent_context_applies_cutoff_to_quote_catalyst_and_publication(
                     VALUES ('agent-context-test', %s, 'test', %s, %s, %s, 'succeeded') RETURNING id
                     """,
                     [cutoff, ("a" if suffix == "old" else "b") * 64,
-                     cutoff - timedelta(hours=2), cutoff - timedelta(hours=1)],
+                     finished_at - timedelta(minutes=1), finished_at],
                 ).fetchone()["id"])
             for run_id, published_at, scope, stable_key, value in (
                 (publication_runs[0], cutoff - timedelta(hours=1), "agent-context-test-old", "old", "old"),

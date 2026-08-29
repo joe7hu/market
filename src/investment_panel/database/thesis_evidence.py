@@ -37,7 +37,9 @@ def thesis_source_evidence(
                    row_number() OVER (
                        PARTITION BY regexp_replace(upper(instrument.symbol), '[.]+$', ''),
                                     CASE WHEN source.kind = 'news' THEN lower(source.name) ELSE source.id END
-                       ORDER BY COALESCE(signal.observed_at, item.observed_at) DESC, item.id DESC
+                       ORDER BY COALESCE(signal.observed_at, item.observed_at) DESC,
+                                COALESCE(signal.available_at, item.observed_at) DESC,
+                                item.id DESC
                    ) AS source_rank
             FROM raw.content_item_instrument link
             JOIN raw.content_item item ON item.id = link.content_item_id
@@ -45,17 +47,21 @@ def thesis_source_evidence(
             JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
             JOIN ingest.source source ON source.id = item.source_id
             LEFT JOIN LATERAL (
-                SELECT signal.thesis, signal.sentiment, signal.observed_at
+                SELECT signal.thesis, signal.sentiment, signal.observed_at, signal.available_at
                 FROM analysis.source_signal signal
                 JOIN analysis.run signal_run ON signal_run.id = signal.run_id
                 WHERE signal.content_item_id = item.id AND signal.instrument_id = instrument.id
                   AND signal.available_at IS NOT NULL
                   AND signal.available_at <= %s
                   AND signal.observed_at <= %s
+                  AND (signal.event_at IS NULL OR signal.event_at <= %s)
+                  AND (signal.published_at IS NULL OR signal.published_at <= %s)
                   AND signal_run.status IN ('succeeded', 'partial')
                   AND signal_run.finished_at IS NOT NULL
                   AND signal_run.finished_at <= %s
-                ORDER BY signal.observed_at DESC LIMIT 1
+                ORDER BY signal.observed_at DESC, signal.available_at DESC,
+                         signal_run.finished_at DESC, signal.id DESC
+                LIMIT 1
             ) signal ON true
             WHERE regexp_replace(upper(instrument.symbol), '[.]+$', '') = ANY(%s)
               AND source.enabled
@@ -72,9 +78,11 @@ def thesis_source_evidence(
         )
         SELECT symbol, source_id, source_name, source_family, source_type,
                title, summary, sentiment, observed_at, reference
-        FROM balanced WHERE symbol_rank <= %s ORDER BY symbol, observed_at DESC
+        FROM balanced
+        WHERE symbol_rank <= %s
+        ORDER BY symbol, observed_at DESC, source_id, reference
         """,
-        [cutoff, cutoff, cutoff, symbols, cutoff, cutoff, cutoff, max(1, int(max_per_symbol))],
+        [cutoff, cutoff, cutoff, cutoff, cutoff, symbols, cutoff, cutoff, cutoff, max(1, int(max_per_symbol))],
     ).fetchall()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for raw_row in rows:

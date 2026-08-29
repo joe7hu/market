@@ -37,53 +37,94 @@ def ticker_context(
         LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
         LEFT JOIN app.thesis thesis ON thesis.instrument_id = instrument.id AND thesis.status = 'current'
         LEFT JOIN LATERAL (
-            SELECT price, observed_at FROM raw.quote
-            WHERE instrument_id = instrument.id
+            SELECT quote.price, quote.observed_at
+            FROM raw.quote quote
+            JOIN ingest.run quote_run ON quote_run.id = quote.ingest_run_id
+            JOIN LATERAL (
+                SELECT 1
+                FROM raw.quote_fact_availability availability
+                JOIN ingest.run confirmation_run ON confirmation_run.id = availability.ingest_run_id
+                WHERE availability.fact_id = quote.id
+                  AND availability.fact_available_at = quote.available_at
+                  AND confirmation_run.status IN ('succeeded', 'partial')
+                  AND confirmation_run.finished_at IS NOT NULL
+                  AND confirmation_run.finished_at <= %s
+                ORDER BY confirmation_run.finished_at, confirmation_run.id
+                LIMIT 1
+            ) quote_confirmation ON true
+            WHERE quote.instrument_id = instrument.id
               AND CAST(%s AS timestamptz) IS NOT NULL
-              AND observed_at <= %s AND available_at <= %s
-            ORDER BY observed_at DESC LIMIT 1
+              AND quote.observed_at <= %s AND quote.available_at <= %s
+              AND quote_run.status IN ('succeeded', 'partial')
+              AND quote_run.finished_at IS NOT NULL AND quote_run.finished_at <= %s
+            ORDER BY quote.observed_at DESC, quote.available_at DESC, quote.source_id, quote.id DESC
+            LIMIT 1
         ) quote ON true
         WHERE instrument.symbol = %s
         """,
-        [cutoff, cutoff, cutoff, symbol],
+        [cutoff, cutoff, cutoff, cutoff, cutoff, symbol],
     ).fetchone()
     option = connection.execute(
         """
         SELECT item.payload
         FROM app.publication publication
         JOIN app.publication_content_item item ON item.publication_id = publication.id
+        JOIN analysis.run publication_run ON publication_run.id = publication.analysis_run_id
         WHERE publication.scope = 'options-radar' AND publication.status = 'published'
           AND item.model_name = 'option_radar_opportunity'
           AND coalesce(item.payload->>'ticker', item.payload->>'symbol') = %s
           AND CAST(%s AS timestamptz) IS NOT NULL AND publication.published_at <= %s
-        ORDER BY publication.published_at DESC NULLS LAST, item.rank LIMIT 1
+          AND publication_run.status IN ('succeeded', 'partial')
+          AND publication_run.finished_at IS NOT NULL AND publication_run.finished_at <= %s
+        ORDER BY publication.published_at DESC NULLS LAST, publication.id DESC, item.rank, item.stable_key
+        LIMIT 1
         """,
-        [symbol, cutoff, cutoff],
+        [symbol, cutoff, cutoff, cutoff],
     ).fetchone()
     published = connection.execute(
         """
         SELECT DISTINCT ON (item.model_name) item.model_name, item.payload
         FROM app.publication publication
         JOIN app.publication_content_item item ON item.publication_id = publication.id
+        JOIN analysis.run publication_run ON publication_run.id = publication.analysis_run_id
         WHERE publication.status = 'published'
           AND coalesce(item.payload->>'symbol', item.payload->>'ticker', item.payload->>'underlying') = %s
           AND item.model_name <> ALL(%s)
           AND CAST(%s AS timestamptz) IS NOT NULL AND publication.published_at <= %s
-        ORDER BY item.model_name, publication.published_at DESC NULLS LAST, item.rank
+          AND publication_run.status IN ('succeeded', 'partial')
+          AND publication_run.finished_at IS NOT NULL AND publication_run.finished_at <= %s
+        ORDER BY item.model_name, publication.published_at DESC NULLS LAST,
+                 publication.id DESC, item.rank, item.stable_key
         LIMIT 24
         """,
-        [symbol, sorted(_DUPLICATE_MODELS | {"candidate_event", "option_features", "option_snapshot"}), cutoff, cutoff],
+        [symbol, sorted(_DUPLICATE_MODELS | {"candidate_event", "option_features", "option_snapshot"}), cutoff, cutoff, cutoff],
     ).fetchall()
     catalysts = connection.execute(
         """
         SELECT catalyst.starts_at, catalyst.title, catalyst.expected_impact, catalyst.notes
         FROM app.catalyst catalyst
         JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
+        JOIN LATERAL (
+            SELECT event_version.available_at, event_version.source_id
+            FROM raw.market_event_version event_version
+            JOIN ingest.run event_run ON event_run.id = event_version.ingest_run_id
+            WHERE event_version.market_event_id = catalyst.market_event_id
+              AND (catalyst.source_id IS NULL OR event_version.source_id = catalyst.source_id)
+              AND event_version.available_at <= %s
+              AND event_version.starts_at >= %s
+              AND event_run.status IN ('succeeded', 'partial')
+              AND event_run.finished_at IS NOT NULL
+              AND event_run.finished_at <= %s
+            ORDER BY event_version.available_at DESC, event_version.source_id, event_version.id DESC
+            LIMIT 1
+        ) event_lineage ON true
         WHERE instrument.symbol = %s AND catalyst.status = 'current'
           AND CAST(%s AS timestamptz) IS NOT NULL AND catalyst.created_at <= %s AND catalyst.starts_at >= %s
-        ORDER BY catalyst.starts_at LIMIT 5
+        ORDER BY catalyst.starts_at, event_lineage.available_at DESC, event_lineage.source_id,
+                 catalyst.version, catalyst.id
+        LIMIT 5
         """,
-        [symbol, cutoff, cutoff, cutoff],
+        [cutoff, cutoff, cutoff, symbol, cutoff, cutoff, cutoff],
     ).fetchall()
     evidence = thesis_source_evidence(connection, [symbol], max_per_symbol=24, cutoff=cutoff).get(symbol, [])
     return {
