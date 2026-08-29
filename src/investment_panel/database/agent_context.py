@@ -105,7 +105,8 @@ def ticker_context(
         FROM app.catalyst catalyst
         JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
         JOIN LATERAL (
-            SELECT event_version.available_at, event_version.source_id
+            SELECT event_version.available_at, event_version.source_id,
+                   event_version.title, event_version.starts_at
             FROM raw.market_event_version event_version
             JOIN ingest.run event_run ON event_run.id = event_version.ingest_run_id
             WHERE event_version.market_event_id = catalyst.market_event_id
@@ -118,13 +119,18 @@ def ticker_context(
             ORDER BY event_version.available_at DESC, event_version.source_id, event_version.id DESC
             LIMIT 1
         ) event_lineage ON true
-        WHERE instrument.symbol = %s AND catalyst.status = 'current'
-          AND CAST(%s AS timestamptz) IS NOT NULL AND catalyst.created_at <= %s AND catalyst.starts_at >= %s
+        WHERE instrument.symbol = %s
+          AND CAST(%s AS timestamptz) IS NOT NULL
+          AND catalyst.created_at <= %s
+          AND (catalyst.superseded_at IS NULL OR catalyst.superseded_at > %s)
+          AND catalyst.starts_at >= %s
+          AND catalyst.title = event_lineage.title
+          AND catalyst.starts_at = event_lineage.starts_at
         ORDER BY catalyst.starts_at, event_lineage.available_at DESC, event_lineage.source_id,
                  catalyst.version, catalyst.id
         LIMIT 5
         """,
-        [cutoff, cutoff, cutoff, symbol, cutoff, cutoff, cutoff],
+        [cutoff, cutoff, cutoff, symbol, cutoff, cutoff, cutoff, cutoff],
     ).fetchall()
     evidence = thesis_source_evidence(connection, [symbol], max_per_symbol=24, cutoff=cutoff).get(symbol, [])
     return {

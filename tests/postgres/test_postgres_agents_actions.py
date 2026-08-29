@@ -392,6 +392,38 @@ def test_legacy_manual_submission_uses_fallback_envelope(postgres_dsn: str) -> N
         runtime.close()
 
 
+def test_completed_agent_submission_rejects_conflicting_replay(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    repository = AgentRepository(runtime)
+    try:
+        queued = repository.queue_thesis("NVDA", trigger="completed-replay")
+        first = _option_thesis_result("NVDA", request_id=queued["request_id"])
+        first["evidence_refs"] = [{"type": "agent_request", "id": queued["request_id"]}]
+        assert repository.submit("option_thesis", first) == queued["request_id"]
+        assert repository.submit("option_thesis", first) == queued["request_id"]
+        conflicting = {**first, "core_thesis": "conflicting replay"}
+        with pytest.raises(ValueError, match="conflicting replay"):
+            repository.submit("option_thesis", conflicting)
+        with runtime.read() as connection:
+            stored = connection.execute(
+                "SELECT result FROM analysis.agent_task WHERE id = %s", [queued["request_id"]]
+            ).fetchone()
+            current_count = connection.execute(
+                """
+                SELECT count(*) AS count
+                FROM app.thesis thesis
+                JOIN catalog.instrument instrument ON instrument.id = thesis.instrument_id
+                WHERE instrument.symbol = 'NVDA' AND thesis.status = 'current'
+                """
+            ).fetchone()["count"]
+        assert stored["result"] == first
+        assert current_count == 1
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -851,18 +883,43 @@ def test_agent_context_applies_cutoff_to_quote_catalyst_and_publication(
                 [event["id"], instrument["id"], source_id, ingest_run["id"],
                  cutoff + timedelta(hours=1), cutoff - timedelta(hours=2)],
             )
+            historical_catalyst = connection.execute(
+                """
+                INSERT INTO app.catalyst
+                    (instrument_id, market_event_id, event_key, source_id, starts_at, title, created_at,
+                     version, status, superseded_at)
+                VALUES (%s, %s, 'pitc-valid', %s, %s, 'valid catalyst', %s, 1, 'superseded', %s)
+                RETURNING id
+                """,
+                [
+                    instrument["id"], event["id"], source_id, cutoff + timedelta(hours=1),
+                    cutoff - timedelta(hours=1), cutoff + timedelta(minutes=30),
+                ],
+            ).fetchone()
             connection.execute(
                 """
                 INSERT INTO app.catalyst
-                    (instrument_id, market_event_id, event_key, source_id, starts_at, title, created_at)
-                VALUES
-                    (%s, %s, 'pitc-valid', %s, %s, 'valid catalyst', %s),
-                    (%s, NULL, 'pitc-past', %s, %s, 'past catalyst', %s),
-                    (%s, NULL, 'pitc-future', %s, %s, 'future-created catalyst', %s)
+                    (instrument_id, market_event_id, event_key, source_id, starts_at, title, created_at,
+                     version, status, supersedes_id)
+                VALUES (%s, %s, 'pitc-valid', %s, %s, 'changed later', %s, 2, 'current', %s)
                 """,
                 [
-                    instrument["id"], event["id"], source_id, cutoff + timedelta(hours=1), cutoff - timedelta(hours=1),
+                    instrument["id"], event["id"], source_id, cutoff + timedelta(hours=2),
+                    cutoff + timedelta(hours=1), historical_catalyst["id"],
+                ],
+            )
+            connection.execute(
+                """
+                INSERT INTO app.catalyst
+                    (instrument_id, event_key, source_id, starts_at, title, created_at)
+                VALUES
+                    (%s, 'pitc-past', %s, %s, 'past catalyst', %s),
+                    (%s, 'pitc-mismatch', %s, %s, 'mismatched catalyst', %s),
+                    (%s, 'pitc-future', %s, %s, 'future-created catalyst', %s)
+                """,
+                [
                     instrument["id"], source_id, cutoff - timedelta(hours=1), cutoff - timedelta(hours=1),
+                    instrument["id"], source_id, cutoff + timedelta(hours=2), cutoff - timedelta(hours=1),
                     instrument["id"], source_id, cutoff + timedelta(hours=2), cutoff + timedelta(hours=1),
                 ],
             )
