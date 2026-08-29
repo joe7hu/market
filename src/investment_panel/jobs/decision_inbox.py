@@ -23,13 +23,29 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     settings = config.analysis.options_decision_system
     if not settings.decision_inbox_enabled:
         return {"status": "skipped", "reason": "decision_inbox_enabled_false"}
-    tables, _ = load_postgres_tables(config, ("ticker_decisions",), runtime_profile=JOB_PROFILE)
+    tables, metadata = load_postgres_tables(
+        config,
+        (
+            "ticker_decisions", "portfolio_summary", "portfolio_performance",
+            "correlation_edges", "portfolio_risk_cards",
+        ),
+        runtime_profile=JOB_PROFILE,
+    )
     repository = DecisionInboxRepository(runtime_for_config(config))
     synced = repository.sync_current_decisions(tables["ticker_decisions"])
     paper_lifecycle = repository.sync_ticker_paper_lifecycle()
+    required_risk_models = {
+        "portfolio_summary", "portfolio_performance", "correlation_edges", "portfolio_risk_cards",
+    }
+    unavailable = set((metadata or {}).get("unavailable_models") or ())
+    risk_cards = tables.get("portfolio_risk_cards") if not unavailable.intersection(required_risk_models) else None
+    summary_rows = tables.get("portfolio_summary") if risk_cards is not None else None
+    summary = summary_rows[0] if isinstance(summary_rows, list) and len(summary_rows) == 1 else None
+    portfolio_risk = repository.sync_current_portfolio_risk(risk_cards, summary)
     if not settings.telegram_notifications_enabled:
         return {
             "status": "ok", "synced": synced, "paper_lifecycle": paper_lifecycle,
+            "portfolio_risk": portfolio_risk,
             "delivery": {"skipped": 1, "reason": "telegram_notifications_enabled_false"},
         }
     dry_run = bool(settings.telegram_notifications_dry_run)
@@ -37,6 +53,7 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     delivery = repository.deliver_outbox(sender=sender, dry_run=dry_run)
     return {
         "status": "ok", "synced": synced, "paper_lifecycle": paper_lifecycle,
+        "portfolio_risk": portfolio_risk,
         "delivery": delivery, "telegram_dry_run": dry_run,
     }
 

@@ -174,6 +174,8 @@ def decision_inbox_queue(rows: list[dict[str, Any]], *, now: datetime | None = N
             continue
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         event_type = _queue_text(row.get("event_type"), "transition").lower()
+        if event_type == "portfolio_critical":
+            continue
         identifier = _queue_text(row.get("id"))
         opportunity = _queue_text(row.get("opportunity_id"))
         ticket_version = _queue_text(row.get("ticket_version"))

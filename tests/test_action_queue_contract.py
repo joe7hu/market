@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from app.routers import panel as panel_router
 from app.routers.panel import dedupe_queue, decision_inbox_queue, research_queue
 
 
@@ -40,3 +41,28 @@ def test_missing_inbox_identity_is_explicit_and_non_actionable() -> None:
     assert item["lifecycle_state"] == "unavailable"
     assert item["primary_blocker"] == "decision_inbox_identity_missing"
     assert item["action"] == "NO_TRADE"
+
+
+def test_action_queue_does_not_duplicate_portfolio_risk_inbox_audit() -> None:
+    reference = datetime(2026, 8, 27, 15, tzinfo=UTC)
+    inbox = decision_inbox_queue([
+        {
+            "id": "inbox-risk-1",
+            "event_type": "portfolio_critical",
+            "status": "active",
+            "created_at": reference.isoformat(),
+            "payload": {"card_id": "largest-position", "title": "TSLA risk"},
+        },
+    ], now=reference)
+    risk = panel_router._portfolio_risk_queue([
+        {
+            "card_id": "largest-position",
+            "severity": "critical",
+            "title": "TSLA risk",
+            "symbol": "TSLA",
+        },
+    ], now=reference)
+
+    assert inbox == []
+    assert len(dedupe_queue([*inbox, *risk])) == 1
+    assert risk[0]["source"] == "portfolio_risk"

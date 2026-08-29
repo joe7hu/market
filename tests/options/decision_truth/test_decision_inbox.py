@@ -284,6 +284,34 @@ def _zero_paper_transitions() -> dict[str, int]:
     return {"paper_staged": 0, "paper_filled": 0, "paper_exited": 0}
 
 
+def _zero_portfolio_risk() -> dict[str, int]:
+    return {"breached": 0, "resolved": 0}
+
+
+def _risk_summary(reference: datetime) -> dict[str, Any]:
+    return {
+        "as_of": reference.isoformat(),
+        "available_at": reference.isoformat(),
+        "portfolio_value": 100_000.0,
+    }
+
+
+def _risk_card(
+    card_id: str = "largest-position", *, severity: str = "critical",
+) -> dict[str, Any]:
+    return {
+        "card_id": card_id,
+        "risk_type": "concentration",
+        "severity": severity,
+        "score": 90,
+        "title": "TSLA dominates the portfolio",
+        "summary": "One position dominates portfolio outcomes.",
+        "symbols": ["tsla", "TSLA"],
+        "impact": "72.0% of current value",
+        "next_step": "Review the maximum intended weight.",
+    }
+
+
 def _stub_plan_authority(row: dict[str, object]) -> tuple[object | None, str | None]:
     return row.get("_plan"), row.get("_plan_blocker")  # type: ignore[return-value]
 
@@ -800,6 +828,7 @@ def test_decision_inbox_job_calls_paper_lifecycle_once_after_decisions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
+    loaded_tables: list[tuple[str, ...]] = []
     settings = SimpleNamespace(
         decision_inbox_enabled=True, telegram_notifications_enabled=False,
     )
@@ -818,18 +847,168 @@ def test_decision_inbox_job_calls_paper_lifecycle_once_after_decisions(
             calls.append("paper_lifecycle")
             return _zero_paper_transitions()
 
+        def sync_current_portfolio_risk(
+            self, cards: list[object] | None, summary: dict[str, object] | None,
+        ) -> dict[str, int]:
+            calls.append("portfolio_risk")
+            assert cards == []
+            assert summary is None
+            return _zero_portfolio_risk()
+
     monkeypatch.setattr(decision_inbox_job, "load_config", lambda _path: config)
+
+    def fake_load_postgres_tables(_config: object, table_names: tuple[str, ...], **_kwargs: Any) -> tuple[dict[str, list[object]], dict[str, list[str]]]:
+        loaded_tables.append(table_names)
+        return {name: [] for name in table_names}, {"unavailable_models": []}  # type: ignore[return-value]
+
     monkeypatch.setattr(
-        decision_inbox_job, "load_postgres_tables", lambda *_args, **_kwargs: ({"ticker_decisions": []}, None),
+        decision_inbox_job,
+        "load_postgres_tables",
+        fake_load_postgres_tables,
     )
     monkeypatch.setattr(decision_inbox_job, "runtime_for_config", lambda _config: object())
     monkeypatch.setattr(decision_inbox_job, "DecisionInboxRepository", FakeRepository)
 
     result = decision_inbox_job.run()
 
-    assert calls == ["decisions", "paper_lifecycle"]
+    assert loaded_tables == [
+        ("ticker_decisions", "portfolio_summary", "portfolio_performance", "correlation_edges", "portfolio_risk_cards"),
+    ]
+    assert calls == ["decisions", "paper_lifecycle", "portfolio_risk"]
     assert result["paper_lifecycle"] == _zero_paper_transitions()
+    assert result["portfolio_risk"] == _zero_portfolio_risk()
     assert result["delivery"]["skipped"] == 1
+
+
+def test_current_portfolio_risk_notifies_once_and_tracks_recurrence(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    summary = _risk_summary(reference)
+    card = _risk_card()
+    try:
+        assert inbox.sync_current_portfolio_risk([card], summary, now=reference) == {"breached": 1, "resolved": 0}
+        assert inbox.sync_current_portfolio_risk([card], summary, now=reference + timedelta(minutes=1)) == _zero_portfolio_risk()
+        assert inbox.sync_current_portfolio_risk([_risk_card(severity="watch")], summary, now=reference + timedelta(minutes=2)) == {"breached": 0, "resolved": 1}
+        assert inbox.sync_current_portfolio_risk([card], summary, now=reference + timedelta(minutes=3)) == {"breached": 1, "resolved": 0}
+
+        with runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload, status
+                FROM app.decision_inbox_item
+                WHERE event_type = 'portfolio_critical'
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+            outbox_count = connection.execute(
+                "SELECT count(*) AS count FROM app.notification_outbox"
+            ).fetchone()["count"]
+        assert len(rows) == outbox_count == 2
+        assert [row["status"] for row in rows] == ["resolved", "active"]
+        assert rows[0]["payload"]["breach_sequence"] == 1
+        assert rows[1]["payload"]["breach_sequence"] == 2
+        assert set(rows[1]["payload"]) == {
+            "card_id", "risk_type", "severity", "title", "summary", "symbols",
+            "impact", "next_action", "as_of", "available_at", "breach_sequence",
+            "state_transition", "detail_url",
+        }
+        assert rows[1]["payload"]["symbols"] == ["TSLA"]
+        message = telegram_message(rows[1]["payload"])
+        assert "PORTFOLIO RISK · CRITICAL" in message
+        assert "TSLA dominates the portfolio" in message
+        assert "Symbols: TSLA" in message
+        assert "Impact: 72.0% of current value" in message
+        assert "Next: Review the maximum intended weight." in message
+        assert message.endswith("/portfolio")
+        assert "BUY" not in message and "SELL" not in message and "ORDER" not in message
+    finally:
+        runtime.close()
+
+
+def test_current_portfolio_risk_rejects_ambiguous_input_and_rolls_back(
+    migrated_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    summary = _risk_summary(reference)
+    card = _risk_card()
+    try:
+        assert inbox.sync_current_portfolio_risk([card], summary, now=reference) == {"breached": 1, "resolved": 0}
+
+        malformed = _risk_card()
+        malformed.pop("title")
+        duplicate = [_risk_card(), _risk_card()]
+        nonfinite = _risk_card()
+        nonfinite["score"] = float("nan")
+        future = _risk_card()
+        future["updated_at"] = reference + timedelta(minutes=1)
+        future_summary = _risk_summary(reference)
+        future_summary["available_at"] = reference + timedelta(minutes=1)
+        for invalid_cards, invalid_summary in (
+            ([malformed], summary), (duplicate, summary), (nonfinite, summary), ([future], summary),
+            ([card], future_summary),
+        ):
+            assert inbox.sync_current_portfolio_risk(
+                invalid_cards, invalid_summary, now=reference,
+            ) == _zero_portfolio_risk()
+
+        replacement = _risk_card("portfolio-drawdown")
+        def fail_resolution(*_args: Any, **_kwargs: Any) -> int:
+            raise RuntimeError("risk resolution failed")
+
+        monkeypatch.setattr(inbox, "_resolve_portfolio_risk_items", fail_resolution)
+        with pytest.raises(RuntimeError, match="risk resolution failed"):
+            inbox.sync_current_portfolio_risk([replacement], summary, now=reference)
+
+        with runtime.read() as connection:
+            rows = connection.execute(
+                "SELECT payload, status FROM app.decision_inbox_item WHERE event_type = 'portfolio_critical'"
+            ).fetchall()
+            outbox_count = connection.execute(
+                "SELECT count(*) AS count FROM app.notification_outbox"
+            ).fetchone()["count"]
+        assert len(rows) == outbox_count == 1
+        assert rows[0]["payload"]["card_id"] == "largest-position"
+        assert rows[0]["status"] == "active"
+    finally:
+        runtime.close()
+
+
+def test_current_portfolio_risk_advisory_lock_dedupes_overlapping_runs(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    card = _risk_card("portfolio-drawdown")
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    DecisionInboxRepository(runtime).sync_current_portfolio_risk,
+                    [card], _risk_summary(reference), now=reference,
+                )
+                for _ in range(2)
+            ]
+            results = [future.result(timeout=10) for future in futures]
+        assert sum(result["breached"] for result in results) == 1
+        with runtime.read() as connection:
+            assert connection.execute(
+                "SELECT count(*) AS count FROM app.decision_inbox_item WHERE event_type = 'portfolio_critical'"
+            ).fetchone()["count"] == 1
+            assert connection.execute(
+                "SELECT count(*) AS count FROM app.decision_inbox_item WHERE event_type = 'portfolio_critical' AND status = 'active'"
+            ).fetchone()["count"] == 1
+    finally:
+        runtime.close()
 
 
 def test_ticker_paper_lifecycle_projection_is_bounded_and_ordered() -> None:

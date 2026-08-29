@@ -34,6 +34,8 @@ ACTIONABLE_TRANSITIONS = frozenset({"newly_actionable", "action_changed"})
 CANONICAL_STATE_KEY = "canonical_decision_transition"
 TICKER_PAPER_TRANSITIONS = frozenset({"paper_staged", "paper_filled", "paper_exited"})
 TICKER_PAPER_STATE_KEY = "canonical_ticker_paper_lifecycle"
+PORTFOLIO_RISK_STATE_TRANSITION = "portfolio_risk_breached"
+PORTFOLIO_RISK_LOCK_KEY = "decision-inbox:portfolio-risk"
 
 
 class DecisionInboxRepository:
@@ -362,6 +364,85 @@ class DecisionInboxRepository:
             assert existing is not None
             return existing["activated_at"], False
 
+    def sync_current_portfolio_risk(
+        self,
+        cards: list[dict[str, Any]] | None,
+        summary: Mapping[str, Any] | list[dict[str, Any]] | None,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Record only current critical portfolio-risk cards."""
+
+        reference = _utc(now)
+        current = _validated_portfolio_risk_cards(cards, summary, reference)
+        if current is None:
+            return {"breached": 0, "resolved": 0}
+        current_by_id, summary_times = current
+
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                [PORTFOLIO_RISK_LOCK_KEY],
+            )
+            active_rows = connection.execute(
+                """
+                SELECT id::text, payload
+                FROM app.decision_inbox_item
+                WHERE event_type = 'portfolio_critical' AND status = 'active'
+                ORDER BY created_at DESC, id DESC
+                FOR UPDATE
+                """
+            ).fetchall()
+            history_rows = connection.execute(
+                """
+                SELECT payload
+                FROM app.decision_inbox_item
+                WHERE event_type = 'portfolio_critical'
+                FOR UPDATE
+                """
+            ).fetchall()
+
+            highest_sequence: dict[str, int] = {}
+            for row in history_rows:
+                payload = row.get("payload")
+                if not isinstance(payload, Mapping):
+                    continue
+                card_id = _compact_text(payload.get("card_id"))
+                sequence = _int(payload.get("breach_sequence"))
+                if card_id and sequence is not None and sequence > highest_sequence.get(card_id, 0):
+                    highest_sequence[card_id] = sequence
+
+            active_by_card: dict[str, list[str]] = {}
+            for row in active_rows:
+                payload = row.get("payload")
+                card_id = _compact_text(payload.get("card_id")) if isinstance(payload, Mapping) else ""
+                if card_id:
+                    active_by_card.setdefault(card_id, []).append(str(row["id"]))
+
+            breached = 0
+            for card_id, card in current_by_id.items():
+                if card["severity"] != "critical" or card_id in active_by_card:
+                    continue
+                sequence = highest_sequence.get(card_id, 0) + 1
+                payload = _portfolio_risk_payload(card, summary_times, sequence)
+                event = self._emit_in_transaction(
+                    connection,
+                    event_type="portfolio_critical",
+                    payload=payload,
+                    severity="critical",
+                    dedupe_key=_portfolio_risk_dedupe_key(card_id, sequence),
+                )
+                breached += int(event["created"])
+
+            stale_item_ids: list[str] = []
+            for card_id, item_ids in active_by_card.items():
+                if current_by_id.get(card_id, {}).get("severity") == "critical":
+                    stale_item_ids.extend(item_ids[1:])
+                else:
+                    stale_item_ids.extend(item_ids)
+            resolved = self._resolve_portfolio_risk_items(connection, stale_item_ids)
+        return {"breached": breached, "resolved": resolved}
+
     def _resolve_ticker_paper_items(self, connection: Any, event: dict[str, Any]) -> None:
         transition = str(event["state_transition"])
         paper_order_id = str(event["paper_order_id"])
@@ -439,6 +520,19 @@ class DecisionInboxRepository:
             """,
             [episode_id, exclude_dedupe_key],
         )
+
+    def _resolve_portfolio_risk_items(self, connection: Any, item_ids: list[str]) -> int:
+        if not item_ids:
+            return 0
+        result = connection.execute(
+            """
+            UPDATE app.decision_inbox_item
+            SET status = 'resolved', resolved_at = now()
+            WHERE id = ANY(%s::uuid[]) AND status = 'active'
+            """,
+            [item_ids],
+        )
+        return int(result.rowcount)
 
     def _resolve_ready_item(self, decision_id: str, ticket_version: int) -> None:
         with self.runtime.transaction() as connection:
@@ -587,6 +681,29 @@ def telegram_message(payload: dict[str, Any]) -> str:
             if value is not None and str(value).strip():
                 parts.append(f"{label}: {value}")
         detail_url = str(payload.get("detail_url") or "").strip()
+        if detail_url:
+            parts.append(detail_url)
+        return "\n".join(parts)[:4096]
+
+    if payload.get("state_transition") == PORTFOLIO_RISK_STATE_TRANSITION:
+        parts = [
+            "PORTFOLIO RISK · CRITICAL",
+            _compact_text(payload.get("title")) or "Portfolio risk exception",
+        ]
+        symbols = payload.get("symbols")
+        if isinstance(symbols, (list, tuple)):
+            symbol_text = ", ".join(str(symbol).strip() for symbol in symbols if str(symbol).strip())
+        else:
+            symbol_text = str(symbols or "").strip()
+        if symbol_text:
+            parts.append(f"Symbols: {symbol_text}")
+        impact = _compact_text(payload.get("impact"))
+        if impact:
+            parts.append(f"Impact: {impact}")
+        next_action = _compact_text(payload.get("next_action"))
+        if next_action:
+            parts.append(f"Next: {next_action}")
+        detail_url = _compact_text(payload.get("detail_url"))
         if detail_url:
             parts.append(detail_url)
         return "\n".join(parts)[:4096]
@@ -943,6 +1060,109 @@ def _ticker_paper_dedupe_key(
     )
 
 
+def _portfolio_risk_dedupe_key(card_id: str, breach_sequence: int) -> str:
+    return "portfolio-risk:" + json.dumps([card_id, breach_sequence], separators=(",", ":"))
+
+
+def _portfolio_risk_payload(
+    card: Mapping[str, Any], summary_times: Mapping[str, str], breach_sequence: int,
+) -> dict[str, Any]:
+    return {
+        "card_id": card["card_id"],
+        "risk_type": card["risk_type"],
+        "severity": card["severity"],
+        "title": card["title"],
+        "summary": card["summary"],
+        "symbols": card["symbols"],
+        "impact": card["impact"],
+        "next_action": card["next_action"],
+        **summary_times,
+        "breach_sequence": breach_sequence,
+        "state_transition": PORTFOLIO_RISK_STATE_TRANSITION,
+        "detail_url": "/portfolio",
+    }
+
+
+def _validated_portfolio_risk_cards(
+    cards: list[dict[str, Any]] | None,
+    summary: Mapping[str, Any] | list[dict[str, Any]] | None,
+    reference: datetime,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
+    if not isinstance(cards, list) or _contains_nonfinite(cards):
+        return None
+    if isinstance(summary, list):
+        if len(summary) != 1 or not isinstance(summary[0], Mapping):
+            return None
+        summary = summary[0]
+    if not isinstance(summary, Mapping) or _contains_nonfinite(summary):
+        return None
+
+    summary_times: dict[str, str] = {}
+    for name in ("as_of", "available_at"):
+        parsed = _parse_time(summary.get(name))
+        if parsed is None or parsed > reference:
+            return None
+        summary_times[name] = parsed.isoformat()
+
+    current: dict[str, dict[str, Any]] = {}
+    for raw in cards:
+        if not isinstance(raw, Mapping):
+            return None
+        card_id = raw.get("card_id")
+        risk_type = raw.get("risk_type")
+        severity = raw.get("severity")
+        if not all(isinstance(value, str) and value.strip() for value in (card_id, risk_type, severity)):
+            return None
+        normalized_id = card_id.strip()
+        normalized_type = risk_type.strip().lower()
+        normalized_severity = severity.strip().lower()
+        if normalized_severity not in {"critical", "watch", "info"} or (
+            normalized_type == "data_freshness" and normalized_severity == "critical"
+        ):
+            return None
+        if normalized_id in current:
+            return None
+
+        values: dict[str, str] = {}
+        for name in ("title", "summary", "impact"):
+            value = raw.get(name)
+            if not isinstance(value, str) or not value.strip():
+                return None
+            values[name] = _compact_text(value)
+        next_action = raw.get("next_action")
+        next_step = raw.get("next_step")
+        if next_action is not None and next_step is not None and str(next_action).strip() != str(next_step).strip():
+            return None
+        next_value = next_action if next_action is not None else next_step
+        if not isinstance(next_value, str) or not next_value.strip():
+            return None
+
+        symbols = raw.get("symbols")
+        if not isinstance(symbols, list):
+            return None
+        normalized_symbols: set[str] = set()
+        for symbol in symbols:
+            if not isinstance(symbol, str) or not symbol.strip():
+                return None
+            normalized_symbols.add(symbol.strip().upper())
+
+        for name in ("as_of", "available_at", "updated_at", "created_at"):
+            if name in raw and raw[name] is not None:
+                parsed = _parse_time(raw[name])
+                if parsed is None or parsed > reference:
+                    return None
+
+        current[normalized_id] = {
+            "card_id": normalized_id,
+            "risk_type": normalized_type,
+            "severity": normalized_severity,
+            **values,
+            "symbols": sorted(normalized_symbols),
+            "next_action": _compact_text(next_value),
+        }
+    return current, summary_times
+
+
 def _ticket_event_payload(source: dict[str, Any], ticket: dict[str, Any]) -> dict[str, Any]:
     blockers = [str(value) for value in ticket.get("blockers") or source.get("blockers") or [] if str(value)]
     entry = dict(ticket.get("entry") or {})
@@ -1044,6 +1264,16 @@ def _finite_number(value: Any) -> float | None:
 def _positive_finite_number(value: Any) -> float | None:
     number = _finite_number(value)
     return number if number is not None and number > 0 else None
+
+
+def _contains_nonfinite(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(_contains_nonfinite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_nonfinite(item) for item in value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return not math.isfinite(value)
+    return False
 
 
 def _first(value: Any) -> str | None:
