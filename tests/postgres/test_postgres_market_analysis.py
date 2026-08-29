@@ -587,8 +587,7 @@ def test_market_coverage_uses_exact_history_per_horizon(migrated_postgres_dsn: s
         ingestion = IngestionRepository(runtime)
         ingestion.register_source("market-horizon-test", name="Market horizon test", family="test", kind="quote")
         run_id = ingestion.start_run("market-horizon-test", "quotes")
-        cutoff = datetime.now(UTC) + timedelta(minutes=1)
-        dates = completed_trading_dates(cutoff, count=252)
+        dates = completed_trading_dates(datetime.now(UTC), count=252)
         rows = [
             {
                 "symbol": symbol,
@@ -609,18 +608,16 @@ def test_market_coverage_uses_exact_history_per_horizon(migrated_postgres_dsn: s
             asset_classes={"SPY": "etf", "QQQ": "etf", "NVDA": "equity"},
         )
         ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=3)
+        cutoff = datetime.now(UTC)
 
         result = refresh_market_publication(runtime, now=cutoff)
         assert result["available_coverage_rows"] == 5
         repository = AnalysisRepository(runtime)
-        consumed = repository.publication_at_or_before("market", cutoff=cutoff)
+        consumed = repository.publication_by_id("market", result["publication_id"])
         assert consumed is not None
         assert consumed["publication_id"] == result["publication_id"]
         assert datetime.fromisoformat(consumed["input_cutoff"]).astimezone(UTC) == cutoff
-        assert datetime.fromisoformat(consumed["published_at"]).astimezone(UTC) < cutoff
-        exact = repository.publication_by_id("market", result["publication_id"])
-        assert exact is not None
-        assert exact["publication_id"] == result["publication_id"]
+        assert datetime.fromisoformat(consumed["published_at"]).astimezone(UTC) > cutoff
         snapshot = MarketStateSnapshot.model_validate(
             repository.publication_rows("market", "market_state_snapshot")[0]
         )

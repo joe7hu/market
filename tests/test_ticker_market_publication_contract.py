@@ -48,6 +48,7 @@ def test_market_snapshot_accepts_actual_visibility_after_fact_cutoff() -> None:
         ("publication_scope", "ticker"),
         ("publication_status", "superseded"),
         ("input_cutoff", (CUTOFF - timedelta(minutes=1)).isoformat()),
+        ("published_at", CUTOFF.isoformat()),
         ("published_at", None),
     ),
 )
@@ -67,4 +68,9 @@ def test_market_snapshot_rejects_mismatched_identity_and_future_lineage() -> Non
     publication = _publication()
     snapshot = publication["models"]["market_state_snapshot"][0]  # type: ignore[index]
     snapshot["input_lineage"][0]["cutoff"] = (CUTOFF - timedelta(minutes=1)).isoformat()  # type: ignore[index]
+    assert ticker_decisions._market_snapshot_for_decision(publication, CUTOFF) is None
+
+    publication = _publication()
+    snapshot = publication["models"]["market_state_snapshot"][0]  # type: ignore[index]
+    snapshot["input_lineage"][0]["cutoff"] = None  # type: ignore[index]
     assert ticker_decisions._market_snapshot_for_decision(publication, CUTOFF) is None

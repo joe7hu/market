@@ -214,7 +214,11 @@ def _market_snapshot_for_decision(publication: dict[str, Any] | None, cutoff: da
         return None
     publication_cutoff = _timestamp(publication.get("input_cutoff"))
     publication_published_at = _timestamp(publication.get("published_at"))
-    if publication_cutoff != reference or publication_published_at is None:
+    if (
+        publication_cutoff != reference
+        or publication_published_at is None
+        or publication_published_at <= reference
+    ):
         return None
     models = publication.get("models")
     if not isinstance(models, Mapping):
@@ -792,7 +796,7 @@ def _lineage_matches_cutoff(lineage: InputLineage, cutoff: datetime) -> bool:
     return (
         available_at is not None
         and available_at <= cutoff
-        and (lineage_cutoff is None or lineage_cutoff == cutoff)
+        and lineage_cutoff == cutoff
     )
 
 
