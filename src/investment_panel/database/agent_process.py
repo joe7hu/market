@@ -85,6 +85,15 @@ def jsonable(value: Any) -> Any:
     return value
 
 
+def _numeric_value(value: Any, fallback: float) -> float:
+    if isinstance(value, bool):
+        return fallback
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def validate_result(
     task_kind: str,
     payload: dict[str, Any],
@@ -102,10 +111,7 @@ def validate_result(
         missing = [key for key, value in required.items() if not value]
         targets: dict[str, float] = {}
         for key in ("bull_target_price", "base_target_price", "bear_target_price"):
-            try:
-                value = float(payload.get(key))
-            except (TypeError, ValueError):
-                value = 0.0
+            value = _numeric_value(payload.get(key), 0.0)
             targets[key] = value
             if not math.isfinite(value) or value <= 0:
                 missing.append(key)
@@ -131,10 +137,7 @@ def validate_result(
         }
         if direction in direction_structures and not structures.issubset(direction_structures[direction]):
             missing.append("preferred_structures_direction")
-        try:
-            confidence = float(payload.get("confidence"))
-        except (TypeError, ValueError):
-            confidence = -1.0
+        confidence = _numeric_value(payload.get("confidence"), -1.0)
         if not math.isfinite(confidence) or confidence < 0 or confidence > 1:
             missing.append("confidence")
         try:
@@ -146,8 +149,8 @@ def validate_result(
             missing.append("scenario_probabilities")
         else:
             try:
-                values = [float(probabilities[key]) for key in ("base", "bull", "bear")]
-            except (KeyError, TypeError, ValueError):
+                values = [_numeric_value(probabilities[key], float("nan")) for key in ("base", "bull", "bear")]
+            except KeyError:
                 values = []
             if (
                 len(values) != 3

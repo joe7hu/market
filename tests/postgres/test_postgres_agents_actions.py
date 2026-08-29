@@ -553,17 +553,23 @@ def test_completed_agent_submission_rejects_conflicting_replay(postgres_dsn: str
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        ("bull_target_price", True),
         ("confidence", float("nan")),
         ("confidence", float("inf")),
+        ("confidence", True),
         ("bull_target_price", float("nan")),
         ("bull_target_price", float("inf")),
         ("scenario_probabilities", {"base": float("nan"), "bull": 0.25, "bear": 0.20}),
         ("scenario_probabilities", {"base": float("inf"), "bull": 0.25, "bear": 0.20}),
+        ("scenario_probabilities", {"base": True, "bull": 0.0, "bear": 0.0}),
     ],
 )
 def test_option_agent_rejects_non_finite_numeric_fields(field: str, value: object) -> None:
     result = _option_thesis_result("NVDA")
     result[field] = value
+    if field == "bull_target_price" and value is True:
+        result["base_target_price"] = 0.5
+        result["bear_target_price"] = 0.2
     with pytest.raises(ValueError):
         validate_result("option_thesis", result)
 
