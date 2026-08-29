@@ -8519,6 +8519,18 @@
         "additionalProperties": true,
         "description": "Frozen before/after portfolio impact for one exact expression.",
         "properties": {
+          "adv_participation": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adv Participation"
+          },
           "availability": {
             "default": "unavailable",
             "title": "Availability",
@@ -8528,6 +8540,17 @@
             "$ref": "#/components/schemas/AvailabilityStatus",
             "default": "missing"
           },
+          "beta_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beta Delta"
+          },
           "blockers": {
             "default": [],
             "items": {
@@ -8536,15 +8559,50 @@
             "title": "Blockers",
             "type": "array"
           },
+          "cash_comparator": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cash Comparator"
+          },
           "contract_version": {
             "default": "portfolio-impact.v1",
             "title": "Contract Version",
             "type": "string"
           },
+          "correlation_cluster_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlation Cluster Delta"
+          },
           "cutoff": {
             "format": "date-time",
             "title": "Cutoff",
             "type": "string"
+          },
+          "days_to_exit": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days To Exit"
           },
           "decision_revision": {
             "minLength": 1,
@@ -8582,6 +8640,17 @@
             ],
             "title": "Factor Exposure"
           },
+          "funding_source_or_position_to_trim": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funding Source Or Position To Trim"
+          },
           "greeks": {
             "anyOf": [
               {
@@ -8593,6 +8662,28 @@
               }
             ],
             "title": "Greeks"
+          },
+          "gross_exposure_after": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gross Exposure After"
+          },
+          "gross_exposure_before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gross Exposure Before"
           },
           "impact_id": {
             "minLength": 1,
@@ -8646,10 +8737,44 @@
             ],
             "title": "Market State Publication Id"
           },
+          "net_exposure_after": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Exposure After"
+          },
+          "net_exposure_before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Exposure Before"
+          },
           "opportunity_episode_id": {
             "minLength": 1,
             "title": "Opportunity Episode Id",
             "type": "string"
+          },
+          "planned_loss": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Loss"
           },
           "portfolio_after": {
             "additionalProperties": true,
@@ -8671,6 +8796,28 @@
               }
             ],
             "title": "Position To Trim Or Replace"
+          },
+          "position_weight_after": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Weight After"
+          },
+          "position_weight_before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Weight Before"
           },
           "positions_most_correlated": {
             "default": [],
@@ -8707,6 +8854,39 @@
               }
             ],
             "title": "Scenario Pnl"
+          },
+          "sector_concentration_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sector Concentration Delta"
+          },
+          "symbol_concentration_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol Concentration Delta"
+          },
+          "top_alternative": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Alternative"
           }
         },
         "required": [
