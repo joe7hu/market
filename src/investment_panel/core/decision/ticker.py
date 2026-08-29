@@ -2560,6 +2560,75 @@ def _portfolio_book_blockers(replay: Mapping[str, Any], cutoff: datetime) -> lis
     return list(dict.fromkeys(blockers))
 
 
+def _stock_impact_values(
+    expression: ExpressionDecision,
+    replay: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
+    """Calculate deterministic first-order stock impact from one cutoff book."""
+
+    blockers: list[str] = []
+    positions = [item for item in replay.get("positions", ()) if isinstance(item, Mapping)]
+    nav = float(replay.get("portfolio_value") or 0)
+    entry = expression.entry_range
+    quantity = expression.quantity
+    price = (entry.low + entry.high) / 2 if entry is not None else None
+    if price is None or price <= 0:
+        blockers.append("stock_entry_price_missing")
+    if quantity is None or quantity <= 0:
+        blockers.append("stock_quantity_missing")
+    if nav <= 0:
+        blockers.append("stock_nav_missing")
+    added_value = float(price or 0) * int(quantity or 0)
+    owned = next(
+        (float(item.get("market_value") or 0) for item in positions
+         if str(item.get("symbol") or "").upper() == expression.ticker.upper()),
+        0.0,
+    )
+    before_gross = sum(abs(float(item.get("market_value") or 0)) for item in positions) / nav if nav else 0.0
+    before_net = sum(float(item.get("market_value") or 0) for item in positions) / nav if nav else 0.0
+    after_weight = (owned + added_value) / nav if nav else None
+    after_gross = before_gross + added_value / nav if nav else None
+    after_net = before_net + added_value / nav if nav else None
+    planned_loss = expression.planned_loss
+    if planned_loss is None and expression.max_loss_per_unit is not None and quantity:
+        planned_loss = expression.max_loss_per_unit * quantity
+    blockers.extend(("stock_sector_evidence_missing", "stock_beta_evidence_missing"))
+    blockers.extend(("stock_adv_evidence_missing", "stock_correlation_evidence_missing"))
+    before = {
+        "position_weight": owned / nav if nav else None,
+        "gross_exposure": before_gross,
+        "net_exposure": before_net,
+        "symbol_concentration": owned / nav if nav else None,
+    }
+    after = {
+        "position_weight": after_weight,
+        "gross_exposure": after_gross,
+        "net_exposure": after_net,
+        "symbol_concentration": after_weight,
+        "funding_source_or_position_to_trim": "cash comparator",
+    }
+    values = {
+        "position_weight_before": before["position_weight"],
+        "position_weight_after": after["position_weight"],
+        "gross_exposure_before": before["gross_exposure"],
+        "gross_exposure_after": after["gross_exposure"],
+        "net_exposure_before": before["net_exposure"],
+        "net_exposure_after": after["net_exposure"],
+        "symbol_concentration_delta": (after_weight - before["position_weight"]) if after_weight is not None else None,
+        "sector_concentration_delta": None,
+        "beta_delta": None,
+        "correlation_cluster_delta": None,
+        "planned_loss": planned_loss,
+        "adv_participation": None,
+        "days_to_exit": None,
+        "cash_comparator": {"status": "available", "planned_loss": 0.0},
+        "top_alternative": "CASH",
+        "funding_source_or_position_to_trim": "cash comparator",
+        "impact_method": "stock_portfolio_impact.v1:first_order",
+    }
+    return before, after, values, list(dict.fromkeys(blockers))
+
+
 def compose_portfolio_impact(
     *,
     episode: OpportunityEpisode,
@@ -2585,6 +2654,25 @@ def compose_portfolio_impact(
             "greeks": None,
             "liquidity": {"status": "not_applicable"},
         }
+    elif kind is ExpressionKind.STOCK and not blockers:
+        before_book = dict(before)
+        before_metrics, after_metrics, stock_values, stock_blockers = _stock_impact_values(expression, before)
+        after = dict(before)
+        after["stock_impact"] = after_metrics
+        blockers.extend(stock_blockers)
+        availability = "unavailable" if blockers else "available"
+        values = {
+            **{
+                "marginal_risk": expression.planned_loss,
+                "risk_budget_consumed": expression.planned_loss,
+                "scenario_pnl": {"status": "first_order_stock", "pnl": 0.0},
+                "factor_exposure": None,
+                "greeks": None,
+                "liquidity": {"status": "unavailable"},
+            },
+            **stock_values,
+        }
+        before = {**before_book, "stock_impact": before_metrics}
     else:
         after = {}
         availability = "unavailable"

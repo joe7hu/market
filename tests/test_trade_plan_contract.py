@@ -141,7 +141,7 @@ def test_trade_plan_id_is_deterministic_and_excludes_bundle_publication() -> Non
     assert first.eligibility == "BLOCKED"
     assert first.action == "NO_TRADE"
     assert first.authorization_mode == "NONE"
-    assert first.primary_blocker == "portfolio_marginal_risk_unsupported"
+    assert first.primary_blocker == "stock_nav_missing"
 
 
 def test_trade_plan_id_binds_identity_and_economic_terms() -> None:

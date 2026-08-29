@@ -86,7 +86,7 @@ def test_every_expression_has_one_portfolio_impact_including_cash() -> None:
     assert cash.risk_budget_consumed == 0
     non_cash = next(impact for kind, impact in decision.portfolio_impacts.items() if kind is not ExpressionKind.CASH)
     assert non_cash.availability == "unavailable"
-    assert "portfolio_marginal_risk_unsupported" in non_cash.blockers
+    assert "stock_nav_missing" in non_cash.blockers
 
 
 def test_book_identity_changes_every_bound_impact_and_never_unlocks_non_cash() -> None:
