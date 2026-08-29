@@ -2857,6 +2857,23 @@ def build_ticker_decision(
         name: _usable_rows(rows, symbol, reference)
         for name, rows in tables.items()
     }
+    if portfolio_replay is not None:
+        replay = dict(portfolio_replay)
+        evidence = dict(replay.get("stock_evidence") or {})
+        for table_name in ("fundamentals", "technicals", "liquidity", "portfolio"):
+            row = _latest(usable, table_name)
+            for target, keys in {
+                "sector": ("sector",),
+                "beta": ("beta", "market_beta", "beta_1y"),
+                "avg_dollar_volume": ("avg_dollar_volume", "average_dollar_volume"),
+                "correlation_cluster_delta": ("correlation_cluster_delta",),
+            }.items():
+                if target not in evidence:
+                    value = _pick(row, *keys)
+                    if value is not None:
+                        evidence[target] = value
+        replay["stock_evidence"] = evidence
+        portfolio_replay = replay
     persisted = _latest(usable, "ticker_decisions")
     manifest = _build_manifest(usable, reference, code_version, experiment_id)
     decision_row = _latest(usable, "symbol_decision_snapshot", "symbol_decision_snapshots", "decision_queue", "opportunities_ranked", "candidates")
