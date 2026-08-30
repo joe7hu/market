@@ -30,7 +30,8 @@ def monitored_thesis_rows(
         current_prices AS (
             SELECT NULL::bigint AS instrument_id,
                    NULL::double precision AS price,
-                   NULL::timestamptz AS observed_at
+                   NULL::timestamptz AS observed_at,
+                   NULL::timestamptz AS available_at
             WHERE false
         )
     """
