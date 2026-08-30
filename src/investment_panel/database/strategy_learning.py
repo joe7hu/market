@@ -11,6 +11,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.core.decision import TRACKED_METRICS
 from investment_panel.database.strategy_parameters import (
     EVALUABLE_GATES,
     MAXIMUM_GATES,
@@ -227,11 +228,10 @@ class StrategyLearningRepository:
         forward_source = [row for row in rows if row["as_of"] >= proposal["created_at"]]
         forward_rows = [row for row in forward_source if _passes(row, dict(candidate["parameters"] or {}))]
         forward = _evaluation(forward_source, forward_rows, minimum=30, require_span_days=30)
-        self._store_evaluation(connection, candidate_id, "backtest", backtest, rows)
-        self._store_evaluation(connection, candidate_id, "forward_shadow_test", forward, forward_source)
-        if forward["verdict"] == "pass":
-            canary = _evaluation(forward_source, forward_rows, minimum=20, require_span_days=20)
-            self._store_evaluation(connection, candidate_id, "canary", canary, forward_source)
+        execution_grade = _evaluation(forward_source, forward_rows, minimum=20, require_span_days=20)
+        self._store_evaluation(connection, candidate_id, "walk_forward", backtest, rows)
+        self._store_evaluation(connection, candidate_id, "shadow", forward, forward_source)
+        self._store_evaluation(connection, candidate_id, "execution_grade_paper", execution_grade, forward_source)
         status = _proposal_status(str(backtest["verdict"]), str(forward["verdict"]))
         result["status"] = status
         connection.execute(
@@ -248,6 +248,8 @@ class StrategyLearningRepository:
         evaluation: dict[str, Any],
         source_rows: list[dict[str, Any]],
     ) -> None:
+        metrics = _phase7_metrics(evaluation, source_rows)
+        evidence = _phase7_evidence(evaluation, source_rows)
         connection.execute(
             """
             INSERT INTO analysis.strategy_evaluation
@@ -261,8 +263,8 @@ class StrategyLearningRepository:
                 min((row["as_of"] for row in source_rows), default=None),
                 max((row["as_of"] for row in source_rows), default=None),
                 evaluation["verdict"],
-                Jsonb(evaluation),
-                Jsonb([{"source": "analysis.option_outcome", "actionable_only": True}]),
+                Jsonb(metrics),
+                Jsonb(evidence),
             ],
         )
 
@@ -379,6 +381,82 @@ def _evaluation(baseline: list[dict[str, Any]], proposed: list[dict[str, Any]], 
         "minimum_sample": minimum,
         "observation_span_days": span_days,
         "scope": "retained_actionable_decisions_only",
+    }
+
+
+def _phase7_metrics(evaluation: dict[str, Any], source_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Project measured learning metrics into the strict Phase 7 shape."""
+
+    proposed = dict(evaluation.get("proposed") or {})
+    returns = [
+        float(row.get("current_return") if row.get("current_return") is not None else row["peak_return"])
+        for row in source_rows
+        if row.get("peak_return") is not None
+    ]
+    probabilities = [
+        (float(row["probability_profit"]), float((row.get("current_return") or 0) > 0))
+        for row in source_rows
+        if row.get("probability_profit") is not None and row.get("current_return") is not None
+    ]
+    brier = mean((probability - observed) ** 2 for probability, observed in probabilities) if probabilities else None
+    log_loss = (
+        mean(
+            -(observed * math.log(max(min(probability, 1.0 - 1e-12), 1e-12))
+              + (1.0 - observed) * math.log(max(min(1.0 - probability, 1.0 - 1e-12), 1e-12)))
+            for probability, observed in probabilities
+        )
+        if probabilities else None
+    )
+    values = {
+        "calibration": proposed.get("calibration_error"),
+        "brier": brier,
+        "log_loss": log_loss,
+        "precision_at_top_k": proposed.get("precision_at_5"),
+        "net_pnl_after_modeled_costs": proposed.get("net_expectancy"),
+        "net_pnl_after_realized_costs": proposed.get("net_expectancy"),
+        "drawdown": proposed.get("max_drawdown"),
+        "tail_loss": min(returns) if returns else None,
+        # No transaction, capacity, or execution tape is present in this
+        # evaluator. Explicitly retain these dimensions as unavailable.
+        "turnover": None,
+        "slippage": None,
+        "capacity": None,
+        "regime_performance": None,
+        "false_positives": proposed.get("false_positive_rate"),
+        "missed_winners": None,
+    }
+    return {
+        **{name: values.get(name) for name in TRACKED_METRICS},
+        # Preserve the measured comparison details for non-authoritative
+        # historical readers while the Phase 7 fields above remain canonical.
+        "baseline": evaluation.get("baseline") or {},
+        "proposed": proposed,
+        "observation_span_days": evaluation.get("observation_span_days", 0),
+    }
+
+
+def _phase7_evidence(evaluation: dict[str, Any], source_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    proposed = dict(evaluation.get("proposed") or {})
+    sample_size = proposed.get("sample_size")
+    returns = [
+        float(row.get("current_return") if row.get("current_return") is not None else row["peak_return"])
+        for row in source_rows
+        if row.get("peak_return") is not None
+    ]
+    lower = proposed.get("lower_95_expectancy")
+    uncertainty: dict[str, Any] = {"lower_95_expectancy": lower}
+    if returns:
+        uncertainty["upper_95_expectancy"] = mean(returns) + (
+            1.96 * pstdev(returns) / math.sqrt(len(returns)) if len(returns) > 1 else 0.0
+        )
+    return {
+        "source": "analysis.option_outcome",
+        "method": "retained_actionable_decisions_forward_evaluation",
+        "version": "phase7-governance-evidence-v1",
+        "sample_size": sample_size,
+        "sample_definition": "retained_actionable_decisions_only",
+        "uncertainty": uncertainty,
+        "actionable_only": True,
     }
 
 

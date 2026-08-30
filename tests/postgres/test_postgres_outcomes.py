@@ -50,7 +50,7 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
         with runtime.read() as connection:
             evaluation = connection.execute(
                 "SELECT metrics FROM analysis.strategy_evaluation "
-                "WHERE evaluation_type = 'backtest'"
+                    "WHERE evaluation_type = 'walk_forward'"
             ).fetchone()
         assert evaluation["metrics"]["baseline"]["sample_size"] == 0
 

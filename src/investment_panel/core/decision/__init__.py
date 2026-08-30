@@ -167,6 +167,7 @@ from investment_panel.core.decision.governance import (
     classify_outcome_evidence,
     promotion_readiness,
     transition_dedupe_key,
+    valid_outcome_error_type,
 )
 from investment_panel.core.decision.alpha import (
     ALPHA_SIGNAL_CONTRACT_VERSION,
@@ -214,6 +215,7 @@ __all__ = [
     "classify_outcome_evidence",
     "promotion_readiness",
     "transition_dedupe_key",
+    "valid_outcome_error_type",
     "apply_blocking_penalties",
     "best_freshness",
     "catalyst_window",

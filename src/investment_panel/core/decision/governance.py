@@ -153,6 +153,12 @@ def classify_outcome_error(
     return None
 
 
+def valid_outcome_error_type(value: Any) -> str | None:
+    """Return only an exact Phase 7 error label from persisted data."""
+
+    return value if isinstance(value, str) and value in OUTCOME_ERROR_TYPES else None
+
+
 def classify_outcome_evidence(evidence: Mapping[str, Any] | None) -> str | None:
     """Classify a validated outcome only when every check is explicit.
 
@@ -217,12 +223,24 @@ def _real_evidence(row: Mapping[str, Any]) -> bool:
     evidence = row.get("evidence")
     if isinstance(evidence, Mapping):
         sample = evidence.get("sample_size") or evidence.get("observation_count")
-        return bool(evidence.get("source") and _positive_int(sample))
+        uncertainty = evidence.get("uncertainty")
+        return bool(
+            evidence.get("source")
+            and evidence.get("method")
+            and evidence.get("version")
+            and _positive_int(sample)
+            and isinstance(uncertainty, Mapping)
+            and any(_metric_valid(value) for value in uncertainty.values())
+        )
     if isinstance(evidence, list):
         return bool(evidence) and all(
             isinstance(item, Mapping)
             and item.get("source")
+            and item.get("method")
+            and item.get("version")
             and _positive_int(item.get("sample_size") or item.get("observation_count"))
+            and isinstance(item.get("uncertainty"), Mapping)
+            and any(_metric_valid(value) for value in item["uncertainty"].values())
             for item in evidence
         )
     return bool(row.get("source")) and _positive_int(

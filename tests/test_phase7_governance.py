@@ -11,6 +11,7 @@ from investment_panel.core.decision.governance import (
     transition_dedupe_key,
 )
 from investment_panel.database import ticker_decisions
+from investment_panel.database import decision_inbox
 
 
 def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
@@ -23,7 +24,13 @@ def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
         "verdict": "pass",
         "evaluated_at": datetime(2026, 8, 30, 12, tzinfo=UTC),
         "available_at": datetime(2026, 8, 30, 12, tzinfo=UTC),
-        "evidence": {"sample_size": 30, "source": "realized_paper_outcomes"},
+        "evidence": {
+            "sample_size": 30,
+            "source": "realized_paper_outcomes",
+            "method": "walk-forward-evaluation",
+            "version": "phase7-governance-evidence-v1",
+            "uncertainty": {"lower_95_expectancy": 0.01},
+        },
         "metrics": metrics,
     }
 
@@ -92,3 +99,15 @@ def test_legacy_correct_outcomes_are_unavailable_not_phase7_errors() -> None:
         stance="BULLISH", action="BUY", selected_kind="OPTION",
         selected_return=None, stock_return=0.10, alternate_return=None,
     ) == (None, {})
+
+
+def test_ticker_paper_dedupe_ignores_order_and_plan_identity() -> None:
+    first = decision_inbox._ticker_paper_dedupe_key(
+        "paper-order-1", "trade-plan-1", "revision-1", "policy-1", "paper_filled",
+        episode_id="episode-1",
+    )
+    second = decision_inbox._ticker_paper_dedupe_key(
+        "paper-order-2", "trade-plan-2", "revision-1", "policy-1", "paper_filled",
+        episode_id="episode-1",
+    )
+    assert first == second

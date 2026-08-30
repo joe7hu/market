@@ -1498,7 +1498,12 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                     "INSERT INTO analysis.strategy_evaluation "
                     "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics, evidence) "
                     "VALUES (%s, %s, now(), 'pass', %s, %s)",
-                    [candidate_id, evaluation_type, Jsonb(metrics), Jsonb({"sample_size": 30, "source": "realized_paper_outcomes"})],
+                    [candidate_id, evaluation_type, Jsonb(metrics), Jsonb({
+                        "sample_size": 30, "source": "realized_paper_outcomes",
+                        "method": "walk-forward-evaluation",
+                        "version": "phase7-governance-evidence-v1",
+                        "uncertainty": {"lower_95_expectancy": 0.01},
+                    })],
                 )
             analysis_run_id = connection.execute(
                 "INSERT INTO analysis.run "
@@ -1609,7 +1614,7 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
             ).fetchall()
             verdicts = connection.execute(
                 "SELECT verdict FROM analysis.strategy_evaluation "
-                "WHERE evaluation_type = 'backtest' ORDER BY evaluated_at"
+                    "WHERE evaluation_type = 'walk_forward' ORDER BY evaluated_at"
             ).fetchall()
         assert tightened["strategy_backtests"] == 1
         assert unsupported["strategy_backtests"] == 1

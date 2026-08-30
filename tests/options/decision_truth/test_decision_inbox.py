@@ -724,6 +724,7 @@ def test_ticker_paper_lifecycle_postgres_activation_filtering_and_dedupe(
         assert rows[0]["dedupe_key"] == decision_inbox_module._ticker_paper_dedupe_key(
             current_order_id, current_plan.trade_plan_id,
             current_plan.decision_revision, current_plan.policy_version, "paper_staged",
+            episode_id=current_plan.opportunity_episode_id,
         )
         assert rows[0]["payload"]["paper_only"] is True
     finally:
@@ -776,6 +777,7 @@ def test_ticker_paper_lifecycle_postgres_missed_poll_resolves_current_item(
             assert row["paper_order_id"] == order_id
             assert row["dedupe_key"] == decision_inbox_module._ticker_paper_dedupe_key(
                 order_id, plan.trade_plan_id, plan.decision_revision, plan.policy_version, transition,
+                episode_id=plan.opportunity_episode_id,
             )
             assert row["payload"]["paper_only"] is True
             assert "trade_plan" not in row["payload"]

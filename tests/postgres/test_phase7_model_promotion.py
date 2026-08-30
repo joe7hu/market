@@ -43,7 +43,12 @@ def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
                     """,
                     [
                         strategy_id, stage, Jsonb(metrics),
-                        Jsonb({"sample_size": 30, "source": "realized_paper_outcomes"}),
+                        Jsonb({
+                            "sample_size": 30, "source": "realized_paper_outcomes",
+                            "method": "walk-forward-evaluation",
+                            "version": "phase7-governance-evidence-v1",
+                            "uncertainty": {"lower_95_expectancy": 0.01},
+                        }),
                     ],
                 )
         result = StrategyGovernanceRepository(runtime).promotion_readiness(strategy_id)

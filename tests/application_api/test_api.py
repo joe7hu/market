@@ -988,7 +988,9 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
             "SELECT evaluation_type, verdict FROM analysis.strategy_evaluation ORDER BY evaluation_type"
         ).fetchall()
     assert proposal["result"]["status"] == "backtest_required"
-    assert [row["evaluation_type"] for row in evaluations] == ["backtest", "forward_shadow_test"]
+    assert [row["evaluation_type"] for row in evaluations] == [
+        "execution_grade_paper", "shadow", "walk_forward",
+    ]
     assert {row["verdict"] for row in evaluations} == {
         "requires_rejected_or_shadow_outcomes", "collecting_data",
     }
@@ -1020,8 +1022,12 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
                 ) VALUES (%s, %s, clock_timestamp(), now() - interval '30 days',
                           now(), 'pass', %s, %s)
                 """,
-                [ready_result["candidate_revision_id"], stage, Jsonb(metrics),
-                 Jsonb({"sample_size": 30, "source": "realized_paper_outcomes"})],
+                [ready_result["candidate_revision_id"], stage, Jsonb(metrics), Jsonb({
+                    "sample_size": 30, "source": "realized_paper_outcomes",
+                    "method": "walk-forward-evaluation",
+                    "version": "phase7-governance-evidence-v1",
+                    "uncertainty": {"lower_95_expectancy": 0.01},
+                })],
             )
     promoted = client.post(
         f"/api/strategy-mutation-proposals/{proposal['id']}/promote",
@@ -1092,8 +1098,12 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
                 "INSERT INTO analysis.strategy_evaluation "
                 "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics, evidence) "
                 "VALUES (%s, %s, now(), 'pass', %s, %s)",
-                [candidate_id, evaluation_type, Jsonb(metrics),
-                 Jsonb({"sample_size": 30, "source": "realized_paper_outcomes"})],
+                [candidate_id, evaluation_type, Jsonb(metrics), Jsonb({
+                    "sample_size": 30, "source": "realized_paper_outcomes",
+                    "method": "walk-forward-evaluation",
+                    "version": "phase7-governance-evidence-v1",
+                    "uncertainty": {"lower_95_expectancy": 0.01},
+                })],
             )
 
     unapproved = client.post(

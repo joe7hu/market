@@ -465,6 +465,7 @@ class DecisionInboxRepository:
                             str(event["decision_revision"]),
                             str(event["policy_version"]),
                             transition,
+                            episode_id=str(event["opportunity_episode_id"]),
                         ),
                     )
                     self._resolve_ticker_paper_items(connection, event)
@@ -1187,11 +1188,16 @@ def _ticker_paper_payload(
 
 def _ticker_paper_dedupe_key(
     paper_order_id: str, trade_plan_id: str, decision_revision: str,
-    policy_version: str, transition: str,
+    policy_version: str, transition: str, *, episode_id: str | None = None,
 ) -> str:
-    return "ticker-paper:" + json.dumps(
-        [paper_order_id, trade_plan_id, decision_revision, policy_version, transition],
-        separators=(",", ":"),
+    del paper_order_id
+    phase7_transition = {
+        "paper_staged": "staged", "paper_filled": "filled", "paper_exited": "exited",
+    }.get(transition)
+    if phase7_transition is None:
+        raise ValueError("unsupported ticker paper lifecycle transition")
+    return transition_dedupe_key(
+        str(episode_id or trade_plan_id), decision_revision, phase7_transition, policy_version,
     )
 
 

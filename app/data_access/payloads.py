@@ -25,6 +25,7 @@ from investment_panel.core.decision import (
     opportunity_episode_from_legacy,
     market_evidence_for_decision,
     ticker_decision_brief,
+    valid_outcome_error_type,
 )
 from investment_panel.database.ticker_decisions import select_current_outcome_attributions
 
@@ -820,6 +821,10 @@ def ticker_learning_payload(
         else list(outcomes)
     )
     display_outcomes = [row for row in display_outcomes if row]
+    display_outcomes = [
+        {**row, "error_type": valid_outcome_error_type(row.get("error_type"))}
+        for row in display_outcomes
+    ]
     episode_ids = {
         str(row.get("ticker_decision_id") or row.get("decision_id") or "")
         for row in display_outcomes
@@ -961,7 +966,7 @@ def _attribution_learning_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "cash_return": cash.get("gross_return"),
         "metadata": metadata,
         "scenarios": metadata.get("scenarios") or [],
-        "error_type": value.get("mistake_classification"),
+        "error_type": valid_outcome_error_type(value.get("mistake_classification")),
         "mistake_card": value.get("mistake_card") or {},
         "evidence_state": value.get("evidence_state"),
         "sample_eligible": bool(value.get("sample_eligible")),
