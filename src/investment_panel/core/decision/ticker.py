@@ -3851,7 +3851,7 @@ def _crypto_quote_blockers(
         blockers.append("crypto_evidence_observed_at_missing")
     elif observed_at > _utc(cutoff):
         blockers.append("crypto_evidence_future")
-    price = _number(_pick(evidence, "price", "mark", "mid", "last", "close"))
+    price = _crypto_quote_price(evidence)
     if price is None:
         blockers.append("crypto_evidence_price_missing")
     elif price <= 0:
@@ -3864,6 +3864,11 @@ def _crypto_quote_blockers(
         elif ask < bid:
             blockers.append("crypto_perpetual_quote_inverted")
     return blockers
+
+
+def _crypto_quote_price(evidence: Mapping[str, Any]) -> float | None:
+    """Normalize the one bounded crypto quote value used by every path."""
+    return _number(_pick(evidence, "price", "mark", "mid", "last", "close"))
 
 
 def _crypto_impact_values(
@@ -3907,7 +3912,7 @@ def _crypto_impact_values(
         blockers.append("crypto_risk_evidence_missing")
     nav = _number(replay.get("portfolio_value"), 0.0) or 0.0
     quantity = expression.quantity or 0
-    price = _number(_pick(evidence, "price", "mark", "mid"), 0.0) or 0.0
+    price = _crypto_quote_price(evidence) or 0.0
     added_value = price * quantity
     positions = [item for item in replay.get("positions", ()) if isinstance(item, Mapping)]
     owned = sum(
@@ -4774,7 +4779,7 @@ def _build_expressions(
         details = row.get("details") if isinstance(row.get("details"), Mapping) else {}
         quote = dict(details)
         quote.update(row)
-        price = _number(_pick(quote, "price", "mid", "mark", "last", "close"))
+        price = _crypto_quote_price(quote)
         quote_blockers = _crypto_quote_blockers(quote, kind, cutoff)
         executable = not quote_blockers
         blockers = () if executable else tuple(dict.fromkeys(("crypto_evidence_unavailable", *quote_blockers)))
