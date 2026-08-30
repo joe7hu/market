@@ -1703,44 +1703,65 @@ def _market_snapshot(
 def market_dimension_v2_fields(row: MarketDimensionState) -> dict[str, Any]:
     source_priority = MARKET_SOURCE_PRIORITY.get(row.dimension, ())
     selected_source = row.lineage[0].source_id if row.lineage else None
-    sample_count = (
-        getattr(row, "available_member_count", None)
-        or getattr(row, "eligible_member_count", None)
-        or len(row.lineage)
-        or 0
-    )
-    distribution = {
-        "defensive": 1.0 if row.state == "defensive" else 0.0,
-        "mixed": 1.0 if row.state == "mixed" else 0.0,
-        "constructive": 1.0 if row.state == "constructive" else 0.0,
-    } if row.state in {"defensive", "mixed", "constructive"} else {}
-    sufficient = bool(
-        str(row.evidence_status).lower() == "available"
-        and distribution
-        and row.uncertainty
-        and sample_count >= 20
-    )
+    baseline = _claim_support({
+        "distribution": row.regime_distribution,
+        "method": row.regime_probability_method,
+        "version": row.regime_model_version,
+        "sample_count": row.regime_sample_count,
+        "uncertainty": row.uncertainty,
+    }) if str(row.evidence_status).lower() == "available" else None
+    challenger = _claim_support({
+        "distribution": getattr(row, "challenger_distribution", {}),
+        "method": getattr(row, "challenger_probability_method", None),
+        "version": getattr(row, "challenger_model_version", None),
+        "sample_count": getattr(row, "challenger_sample_count", None),
+        "uncertainty": getattr(row, "challenger_uncertainty", None),
+    }) if str(row.evidence_status).lower() == "available" else None
+    sample_count = row.regime_sample_count
     return {
         "source_priority": source_priority,
         "selected_source": selected_source,
-        "regime_distribution": distribution if sufficient else {},
-        "regime_probability_method": "threshold-posture-v1" if sufficient else None,
-        "regime_model_version": "market-regime-v2" if sufficient else None,
+        "regime_distribution": baseline["distribution"] if baseline else {},
+        "regime_probability_method": baseline["method"] if baseline else None,
+        "regime_model_version": baseline["version"] if baseline else None,
         "regime_sample_count": sample_count,
         "baseline_result": {
-            **({"method": "threshold-posture-v1", "version": "market-baseline-v1", "state": row.state}
-               if sufficient else {}),
-            "status": "available" if sufficient else "unavailable",
-            "advisory": not sufficient, "sample_count": sample_count,
+            **({"method": baseline["method"], "version": baseline["version"], "state": row.state}
+               if baseline else {}),
+            "status": "available" if baseline else "unavailable",
+            "advisory": baseline is None,
+            "sample_count": baseline["sample_count"] if baseline else None,
+            "uncertainty": baseline["uncertainty"] if baseline else None,
         },
         "challenger_result": {
-            **({"method": "empirical-regime-shadow-v1", "version": "market-challenger-v1"}
-               if sufficient else {}),
-            "status": "advisory" if sufficient else "unavailable",
+            **({"method": challenger["method"], "version": challenger["version"]} if challenger else {}),
+            "status": "advisory" if challenger else "unavailable",
             "advisory": True, "promotion_eligible": False,
-            "sample_count": sample_count, "distribution": distribution if sufficient else {},
+            "sample_count": challenger["sample_count"] if challenger else None,
+            "uncertainty": challenger["uncertainty"] if challenger else None,
+            "distribution": challenger["distribution"] if challenger else {},
         },
     }
+
+
+def _claim_support(value: dict[str, Any]) -> dict[str, Any] | None:
+    distribution = value.get("distribution")
+    sample_count = value.get("sample_count")
+    if not isinstance(distribution, dict) or not distribution:
+        return None
+    try:
+        probabilities = [float(item) for item in distribution.values()]
+        sample_count = int(sample_count)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        not value.get("method") or not value.get("version") or not value.get("uncertainty")
+        or sample_count < 20
+        or any(not math.isfinite(item) or item < 0 for item in probabilities)
+        or not math.isclose(sum(probabilities), 1.0, rel_tol=1e-6, abs_tol=1e-6)
+    ):
+        return None
+    return {**value, "sample_count": sample_count}
 
 
 def _regime_distributions(
@@ -1749,32 +1770,31 @@ def _regime_distributions(
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for horizon in MARKET_HORIZONS:
-        score = _number(horizon_evidence.get(horizon, {}).get("risk_score"))
-        distribution: dict[str, float] = {}
-        if score is not None:
-            distribution = {
-                "defensive": max(0.0, (50.0 - score) / 50.0),
-                "mixed": max(0.0, 1.0 - abs(score - 50.0) / 50.0),
-                "constructive": max(0.0, (score - 50.0) / 50.0),
-            }
-            total = sum(distribution.values())
-            if total:
-                distribution = {key: value / total for key, value in distribution.items()}
-        sample_count = int(horizon_evidence.get(horizon, {}).get("available_member_count") or 0)
-        sufficient = bool(distribution and horizon_evidence.get(horizon, {}).get("uncertainty") and sample_count >= 20)
+        evidence = horizon_evidence.get(horizon, {})
+        baseline = _claim_support({
+            "distribution": evidence.get("regime_distribution"),
+            "method": evidence.get("regime_probability_method"),
+            "version": evidence.get("regime_model_version"),
+            "sample_count": evidence.get("regime_sample_count"),
+            "uncertainty": evidence.get("regime_uncertainty"),
+        })
+        challenger = _claim_support({
+            "distribution": evidence.get("challenger_distribution"),
+            "method": evidence.get("challenger_probability_method"),
+            "version": evidence.get("challenger_model_version"),
+            "sample_count": evidence.get("challenger_sample_count"),
+            "uncertainty": evidence.get("challenger_uncertainty"),
+        })
         result[horizon] = {
-            "distribution": distribution if sufficient else {},
-            "sample_count": sample_count,
-            "status": "available" if sufficient else "advisory",
-            "advisory": not sufficient,
+            "distribution": baseline["distribution"] if baseline else {},
+            "sample_count": baseline["sample_count"] if baseline else None,
+            "status": "available" if baseline else "advisory",
+            "advisory": baseline is None,
+            "uncertainty": baseline["uncertainty"] if baseline else "insufficient point-in-time evidence",
             **({
-                "method": "threshold-posture-v1",
-                "version": "market-regime-v2",
-                "uncertainty": "historical empirical estimate; not a forward forecast",
-                "baseline": "threshold-posture-v1",
-                "challenger": "empirical-regime-shadow-v1",
-                "challenger_available": bool(volatility_evidence.get(horizon, {}).get("available")),
-            } if sufficient else {"uncertainty": "insufficient point-in-time evidence", "challenger_available": False}),
+                "method": baseline["method"], "version": baseline["version"],
+                "challenger_available": challenger is not None,
+            } if baseline else {"challenger_available": False}),
         }
     return result
 
@@ -1785,22 +1805,34 @@ def _baseline_challenger(
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for horizon in MARKET_HORIZONS:
-        sample_count = int(horizon_evidence.get(horizon, {}).get("available_member_count") or 0)
-        sufficient = bool(
-            horizon_evidence.get(horizon, {}).get("available")
-            and horizon_evidence.get(horizon, {}).get("uncertainty")
-            and sample_count >= 20
-        )
+        baseline = _claim_support({
+            "distribution": horizon_evidence.get(horizon, {}).get("regime_distribution"),
+            "method": horizon_evidence.get(horizon, {}).get("regime_probability_method"),
+            "version": horizon_evidence.get(horizon, {}).get("regime_model_version"),
+            "sample_count": horizon_evidence.get(horizon, {}).get("regime_sample_count"),
+            "uncertainty": horizon_evidence.get(horizon, {}).get("regime_uncertainty"),
+        })
+        challenger = _claim_support({
+            "distribution": volatility_evidence.get(horizon, {}).get("challenger_distribution"),
+            "method": volatility_evidence.get(horizon, {}).get("challenger_probability_method"),
+            "version": volatility_evidence.get(horizon, {}).get("challenger_model_version"),
+            "sample_count": volatility_evidence.get(horizon, {}).get("challenger_sample_count"),
+            "uncertainty": volatility_evidence.get(horizon, {}).get("challenger_uncertainty"),
+        })
         result[horizon] = {
             "baseline": {
-                **({"method": "threshold-posture-v1", "version": "market-baseline-v1"} if sufficient else {}),
-                "status": "available" if sufficient else "unavailable",
-                "advisory": not sufficient, "sample_count": sample_count,
+                **({"method": baseline["method"], "version": baseline["version"]} if baseline else {}),
+                "status": "available" if baseline else "unavailable",
+                "advisory": baseline is None,
+                "sample_count": baseline["sample_count"] if baseline else None,
+                "uncertainty": baseline["uncertainty"] if baseline else None,
             },
             "challenger": {
-                **({"method": "empirical-regime-shadow-v1", "version": "market-challenger-v1"} if sufficient else {}),
-                "status": "advisory" if sufficient and volatility_evidence.get(horizon, {}).get("available") else "unavailable",
-                "advisory": True, "promotion_eligible": False, "sample_count": sample_count,
+                **({"method": challenger["method"], "version": challenger["version"]} if challenger else {}),
+                "status": "advisory" if challenger else "unavailable",
+                "advisory": True, "promotion_eligible": False,
+                "sample_count": challenger["sample_count"] if challenger else None,
+                "uncertainty": challenger["uncertainty"] if challenger else None,
             },
         }
     return result

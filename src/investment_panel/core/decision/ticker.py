@@ -596,6 +596,51 @@ def market_required_dimensions(
     return MARKET_REQUIRED_DIMENSIONS_BY_HORIZON.get(horizon_name, MARKET_REQUIRED_DIMENSIONS)[kind]
 
 
+def _v2_dimension_evidence_valid(
+    snapshot: MarketStateSnapshot,
+    market_horizon: str,
+    dimension: str,
+) -> bool:
+    """Validate the one state/coverage pair used by a V2 decision gate."""
+
+    state_rows = [
+        item for item in snapshot.horizons.get(market_horizon, ())
+        if item.dimension == dimension and item.horizon == market_horizon
+    ]
+    coverage_rows = [
+        item for item in snapshot.coverage_matrix.rows  # type: ignore[union-attr]
+        if item.dimension == dimension and item.horizon == market_horizon
+    ]
+    if len(state_rows) != 1 or len(coverage_rows) != 1:
+        return False
+    state, coverage = state_rows[0], coverage_rows[0]
+    if (
+        str(state.evidence_status).lower() != "available"
+        or str(getattr(state.availability_status, "value", state.availability_status)).lower() != "available"
+        or not state.state
+        or not state.uncertainty
+        or state.blockers
+        or not state.selected_source
+        or not state.lineage
+        or str(coverage.current_status).lower() != "available"
+        or not coverage.point_in_time_safe
+        or coverage.blockers
+        or not coverage.selected_source
+        or not coverage.input_lineage
+    ):
+        return False
+    cutoff = _utc(snapshot.input_cutoff)
+    state_sources = {item.source_id for item in state.lineage}
+    coverage_sources = {item.source_id for item in coverage.input_lineage}
+    return (
+        state.selected_source in state_sources
+        and coverage.selected_source in coverage_sources
+        and all(_utc(item.available_at) <= cutoff for item in state.lineage)
+        and all(_utc(item.available_at) <= cutoff for item in coverage.input_lineage)
+        and (coverage.input_cutoff is None or _utc(coverage.input_cutoff) == cutoff)
+    )
+
+
 def market_evidence_for_decision(
     snapshot: MarketStateSnapshot | None,
     expression_kind: ExpressionKind | str,
@@ -618,10 +663,6 @@ def market_evidence_for_decision(
             advisory_dimensions=advisory,
             status="not_applicable",
         )
-    rows = {
-        item.dimension: item
-        for item in (snapshot.horizons.get(market_horizon, ()) if snapshot is not None else ())
-    }
     coverage_rows = () if snapshot is None or snapshot.coverage_matrix is None else snapshot.coverage_matrix.rows
     coverage_version_ok = bool(
         snapshot is not None
@@ -630,21 +671,30 @@ def market_evidence_for_decision(
         and snapshot.coverage_matrix.contract_version == "coverage-matrix.v2"
         and _utc(snapshot.coverage_matrix.input_cutoff) == _utc(snapshot.input_cutoff)
     )
-    coverage_by_dimension = [
-        row for row in coverage_rows
-        if row.horizon == market_horizon and row.dimension in required
-    ]
+    coverage_by_dimension = [row for row in coverage_rows if row.horizon == market_horizon]
     coverage_counts = {dimension: sum(row.dimension == dimension for row in coverage_by_dimension) for dimension in required}
-    coverage_valid = coverage_version_ok and all(coverage_counts[dimension] == 1 for dimension in required)
-    coverage_status = "available" if coverage_valid else "invalid" if snapshot is not None else "missing"
-    available = tuple(
+    valid_dimensions = tuple(
         dimension for dimension in MARKET_DIMENSIONS
-        if str(getattr(rows.get(dimension), "evidence_status", "")).lower() == "available"
-        and (snapshot is None or snapshot.contract_version != "market-state-snapshot.v2" or any(
-            row.dimension == dimension and str(row.current_status).lower() == "available"
-            for row in coverage_by_dimension
-        ))
+        if snapshot is not None
+        and snapshot.contract_version == "market-state-snapshot.v2"
+        and coverage_version_ok
+        and _v2_dimension_evidence_valid(snapshot, market_horizon, dimension)
     )
+    coverage_valid = coverage_version_ok and all(
+        coverage_counts[dimension] == 1 and dimension in valid_dimensions for dimension in required
+    )
+    coverage_status = "available" if coverage_valid else "invalid" if snapshot is not None else "missing"
+    if snapshot is not None and snapshot.contract_version == "market-state-snapshot.v2":
+        available = valid_dimensions
+    else:
+        rows = {
+            item.dimension: item
+            for item in (snapshot.horizons.get(market_horizon, ()) if snapshot is not None else ())
+        }
+        available = tuple(
+            dimension for dimension in MARKET_DIMENSIONS
+            if str(getattr(rows.get(dimension), "evidence_status", "")).lower() == "available"
+        )
     blocking = tuple(dimension for dimension in required if dimension not in available)
     if snapshot is not None and snapshot.contract_version == "market-state-snapshot.v2" and not coverage_valid:
         blocking = required
@@ -1963,6 +2013,7 @@ class TickerDecision(BaseModel):
     risk_policy_snapshot: RiskPolicySnapshot | None = None
     market_state_publication_id: str | None = None
     market_state_snapshot: MarketStateSnapshot | None = None
+    market_evidence_assessment: MarketEvidenceAssessment | None = None
     portfolio_impacts: dict[ExpressionKind, PortfolioImpact] = Field(default_factory=dict)
     instrument_state_snapshot: dict[str, Any] | None = None
     alpha_signals: list[dict[str, Any]] = Field(default_factory=list)
@@ -2001,6 +2052,16 @@ class TickerDecision(BaseModel):
         if self.resolution.policy_version != self.policy_version:
             raise ValueError("ticker resolution policy must match the ticker decision")
         self.capital_action = capital_action_from_resolution(self.resolution)
+        return self
+
+    @model_validator(mode="after")
+    def bind_market_evidence_assessment(self) -> "TickerDecision":
+        selected = self.selected_expression
+        self.market_evidence_assessment = market_evidence_for_decision(
+            self.market_state_snapshot,
+            selected.kind if selected is not None else ExpressionKind.CASH,
+            selected.horizon if selected is not None else Horizon.FUNDAMENTAL,
+        )
         return self
 
     @model_validator(mode="after")

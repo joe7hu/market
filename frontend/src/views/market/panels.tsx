@@ -93,10 +93,12 @@ export function MarketEnvironmentPanel({
   );
 }
 
-function MarketStateProjection({ snapshotRows, coverageRows }: { snapshotRows: RowRecord[]; coverageRows: RowRecord[] }) {
+export function MarketStateProjection({ snapshotRows, coverageRows }: { snapshotRows: RowRecord[]; coverageRows: RowRecord[] }) {
   const snapshot = snapshotRows[0];
   const horizons = snapshot && isRecord(snapshot.horizons) ? snapshot.horizons : {};
   const horizonEntries = Object.entries(horizons);
+  const regimes = snapshot && isRecord(snapshot.regime_distributions) ? snapshot.regime_distributions : {};
+  const comparisons = snapshot && isRecord(snapshot.baseline_challenger) ? snapshot.baseline_challenger : {};
   return (
     <div className="space-y-3 rounded-md border border-border/80 bg-background/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -126,12 +128,34 @@ function MarketStateProjection({ snapshotRows, coverageRows }: { snapshotRows: R
           ))}
         </div>
       ) : <EmptyChart label="Market state is unavailable at this cutoff" />}
+      <div className="grid gap-2 sm:grid-cols-2">
+        {Object.entries(regimes).map(([horizon, value]) => {
+          const regime = isRecord(value) ? value : {};
+          const distribution = isRecord(regime.distribution) ? Object.entries(regime.distribution).map(([key, item]) => `${key} ${String(item)}`).join(" · ") : "unavailable";
+          return <div key={`regime:${horizon}`} className="rounded border border-border/70 p-2 text-[11px] text-muted-foreground">
+            <p className="font-semibold text-foreground">{horizon} regime evidence</p>
+            <p>{typeof regime.status === "string" ? regime.status : "advisory"} · distribution: {distribution}</p>
+            <p>method/version: {typeof regime.method === "string" ? regime.method : "unavailable"} / {typeof regime.version === "string" ? regime.version : "unavailable"} · sample: {regime.sample_count == null ? "unavailable" : String(regime.sample_count)}</p>
+            <p>uncertainty: {typeof regime.uncertainty === "string" ? regime.uncertainty : "unavailable"}</p>
+          </div>;
+        })}
+        {Object.entries(comparisons).map(([horizon, value]) => {
+          const comparison = isRecord(value) ? value : {};
+          const baseline = isRecord(comparison.baseline) ? comparison.baseline : {};
+          const challenger = isRecord(comparison.challenger) ? comparison.challenger : {};
+          return <div key={`comparison:${horizon}`} className="rounded border border-border/70 p-2 text-[11px] text-muted-foreground">
+            <p className="font-semibold text-foreground">{horizon} baseline / challenger</p>
+            <p>baseline: {String(baseline.status ?? "unavailable")} · {String(baseline.method ?? "method unavailable")} / {String(baseline.version ?? "version unavailable")} · sample {baseline.sample_count == null ? "unavailable" : String(baseline.sample_count)}</p>
+            <p>challenger: {String(challenger.status ?? "unavailable")} · {String(challenger.method ?? "method unavailable")} / {String(challenger.version ?? "version unavailable")} · sample {challenger.sample_count == null ? "unavailable" : String(challenger.sample_count)}</p>
+          </div>;
+        })}
+      </div>
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Coverage matrix · {coverageRows.length} rows</p>
         <div className="grid gap-1 sm:grid-cols-2">
           {coverageRows.map((row, index) => (
             <p key={`${textField(row, ["horizon"])}:${textField(row, ["dimension"])}:${index}`} className="text-[11px] text-muted-foreground">
-              <span className="text-foreground">{textField(row, ["horizon"])} / {textField(row, ["dimension"])}</span> · {textField(row, ["current_status"], "unavailable")} · {textField(row, ["selected_source"], "source unavailable")}
+              <span className="text-foreground">{textField(row, ["horizon"])} / {textField(row, ["dimension"])}</span> · {textField(row, ["current_status"], "unavailable")} · {textField(row, ["decision_impact"], "context")} · {textField(row, ["selected_source"], "source unavailable")}
             </p>
           ))}
         </div>

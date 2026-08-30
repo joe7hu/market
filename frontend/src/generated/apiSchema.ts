@@ -5659,6 +5659,7 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            market_evidence_assessment?: components["schemas"]["MarketEvidenceAssessment"] | null;
             /** Market State Publication Id */
             market_state_publication_id?: string | null;
             market_state_snapshot?: components["schemas"]["MarketStateSnapshot"] | null;
@@ -5723,6 +5724,7 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            market_evidence_assessment?: components["schemas"]["MarketEvidenceAssessment"] | null;
             /** Market State Publication Id */
             market_state_publication_id?: string | null;
             market_state_snapshot?: components["schemas"]["MarketStateSnapshot"] | null;

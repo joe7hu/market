@@ -28,7 +28,6 @@ from investment_panel.core.decision import (
     capital_action_from_resolution,
     evaluate_ticker_policy,
     outcome_attribution_stable_key,
-    market_evidence_for_decision,
     resolution_from_legacy,
     is_us_market_day,
     portfolio_impacts_from_persisted,
@@ -334,11 +333,7 @@ class TickerDecisionRepository:
                 continue
             snapshot = decision.market_state_snapshot
             selected = decision.selected_expression
-            assessment = (
-                market_evidence_for_decision(snapshot, selected.kind, selected.horizon)
-                if selected is not None and snapshot is not None
-                else None
-            )
+            assessment = decision.market_evidence_assessment
             cash_selected = selected is None or selected.kind is ExpressionKind.CASH
             facts_available = bool(
                 decision.opportunity_episode

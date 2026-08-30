@@ -128,10 +128,7 @@ export function TickerDecisionPanel({
 }
 
 function TickerMarketEvidence({ decision }: { decision: TickerDecisionContract }) {
-  const selected = decision.selected_expression;
-  const assessment = selected && decision.market_state_snapshot?.decision_evidence?.find(
-    item => item.expression_kind === selected.kind && item.decision_horizon === selected.horizon,
-  );
+  const assessment = decision.market_evidence_assessment;
   return (
     <DataTableFrame title="Market evidence for this decision" action={<StatusBadge tone="muted">No global readiness</StatusBadge>}>
       <div className="grid gap-2 p-4 text-xs sm:grid-cols-2">

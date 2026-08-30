@@ -12663,6 +12663,16 @@
             "title": "Learning History",
             "type": "array"
           },
+          "market_evidence_assessment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketEvidenceAssessment"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "market_state_publication_id": {
             "anyOf": [
               {
@@ -12856,6 +12866,16 @@
             },
             "title": "Learning History",
             "type": "array"
+          },
+          "market_evidence_assessment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketEvidenceAssessment"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "market_state_publication_id": {
             "anyOf": [
