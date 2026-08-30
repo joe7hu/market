@@ -794,7 +794,11 @@ def load_postgres_tables(
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
-    tables = _published_tables(runtime, requested, row_limits=query_row_limits)
+    tables = (
+        _published_tables(runtime, requested, row_limits=query_row_limits)
+        if query_row_limits
+        else _published_tables(runtime, requested)
+    )
     if {"option_radar_opportunity", "option_radar_summary"}.intersection(tables):
         from investment_panel.database.option_ticket_read import reconcile_loaded_radar_tables
 

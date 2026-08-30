@@ -25,6 +25,15 @@ DAILY_RESEARCH_TABLES = (
 )
 
 DAILY_RESEARCH_QUERY_LIMITS = {
+    "preopen_daily_brief": 1,
+    "daily_brief": 12,
+    "portfolio_summary": 1,
+    "portfolio_risk_cards": 8,
+    "review_actions": 8,
+    "exposure_clusters": 100,
+    "decision_queue": 100,
+    "market_environment_model": 12,
+    "market_environment_assets": 80,
     "fundamentals": 400,
     "technicals": 100,
     "analyst_estimates": 100,
