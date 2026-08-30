@@ -740,3 +740,46 @@ def test_v2_available_row_without_safe_support_blocks_required_dimension(coverag
 
     assert assessment.status == "blocking"
     assert assessment.blocking_dimensions == ("equity internals",)
+
+
+@pytest.mark.parametrize("state_source,coverage_source", [
+    ("prices", "different-prices"),
+    ("unapproved-prices", "unapproved-prices"),
+])
+def test_v2_state_and_coverage_require_shared_approved_provenance(
+    state_source: str,
+    coverage_source: str,
+) -> None:
+    seed = _decision().market_state_snapshot
+    assert seed is not None and seed.coverage_matrix is not None
+    state_lineage = InputLineage(field="equity internals", source_id=state_source, source_version="v1", available_at=AS_OF)
+    coverage_lineage = InputLineage(field="equity internals", source_id=coverage_source, source_version="v1", available_at=AS_OF)
+    state_rows = {
+        horizon: tuple(
+            item.model_copy(update={
+                "evidence_status": "available", "availability_status": "available", "state": "constructive",
+                "uncertainty": "confirmed daily facts", "lineage": (state_lineage,),
+                "selected_source": state_source,
+            }) if horizon == "1-5 trading days" and item.dimension == "equity internals" else item
+            for item in rows
+        )
+        for horizon, rows in seed.horizons.items()
+    }
+    coverage_rows = tuple(
+        item.model_copy(update={
+            "point_in_time_safe": True, "current_status": "available", "input_lineage": (coverage_lineage,),
+            "selected_source": coverage_source,
+        }) if item.horizon == "1-5 trading days" and item.dimension == "equity internals" else item
+        for item in seed.coverage_matrix.rows
+    )
+    snapshot = seed.model_copy(update={
+        "contract_version": "market-state-snapshot.v2", "horizons": state_rows,
+        "coverage_matrix": seed.coverage_matrix.model_copy(update={
+            "contract_version": "coverage-matrix.v2", "rows": coverage_rows,
+        }),
+    })
+
+    assessment = market_evidence_for_decision(snapshot, ExpressionKind.STOCK, "TACTICAL")
+
+    assert assessment.status == "blocking"
+    assert assessment.blocking_dimensions == ("equity internals",)

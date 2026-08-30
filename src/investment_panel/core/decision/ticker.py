@@ -627,17 +627,25 @@ def _v2_dimension_evidence_valid(
         or coverage.blockers
         or not coverage.selected_source
         or not coverage.input_lineage
+        or not state.source_priority
+        or not coverage.source_priority
     ):
         return False
     cutoff = _utc(snapshot.input_cutoff)
     state_sources = {item.source_id for item in state.lineage}
     coverage_sources = {item.source_id for item in coverage.input_lineage}
     return (
-        state.selected_source in state_sources
+        state.selected_source == coverage.selected_source
+        and state.selected_source in state_sources
         and coverage.selected_source in coverage_sources
+        and state.selected_source in state.source_priority
+        and coverage.selected_source in coverage.source_priority
+        and tuple(_input_lineage_identity(item) for item in state.lineage)
+        == tuple(_input_lineage_identity(item) for item in coverage.input_lineage)
         and all(_utc(item.available_at) <= cutoff for item in state.lineage)
         and all(_utc(item.available_at) <= cutoff for item in coverage.input_lineage)
-        and (coverage.input_cutoff is None or _utc(coverage.input_cutoff) == cutoff)
+        and coverage.input_cutoff is not None
+        and _utc(coverage.input_cutoff) == cutoff
     )
 
 
@@ -2055,16 +2063,6 @@ class TickerDecision(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def bind_market_evidence_assessment(self) -> "TickerDecision":
-        selected = self.selected_expression
-        self.market_evidence_assessment = market_evidence_for_decision(
-            self.market_state_snapshot,
-            selected.kind if selected is not None else ExpressionKind.CASH,
-            selected.horizon if selected is not None else Horizon.FUNDAMENTAL,
-        )
-        return self
-
-    @model_validator(mode="after")
     def opportunity_episode_is_authority(self) -> "TickerDecision":
         if self.opportunity_episode is None:
             self.opportunity_episode = opportunity_episode_from_legacy(self)
@@ -2302,6 +2300,18 @@ class TickerDecision(BaseModel):
                 blocked=True,
             )
             self.capital_action = capital_action_from_resolution(self.resolution)
+        return self
+
+    @model_validator(mode="after")
+    def bind_market_evidence_assessment(self) -> "TickerDecision":
+        """Bind evidence after policy and portfolio gates finalize selection."""
+
+        selected = self.selected_expression
+        self.market_evidence_assessment = market_evidence_for_decision(
+            self.market_state_snapshot,
+            selected.kind if selected is not None else ExpressionKind.CASH,
+            selected.horizon if selected is not None else Horizon.FUNDAMENTAL,
+        )
         return self
 
     @model_validator(mode="after")

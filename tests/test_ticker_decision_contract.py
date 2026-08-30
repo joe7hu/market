@@ -442,6 +442,9 @@ def test_persisted_ticker_decision_rechecks_current_account_authority() -> None:
     assert "fresh_postgres_account_facts_required" in replay.context_blockers
     assert replay.selected_expression is not None
     assert replay.selected_expression.kind is ExpressionKind.CASH
+    assert replay.market_evidence_assessment is not None
+    assert replay.market_evidence_assessment.expression_kind is ExpressionKind.CASH
+    assert replay.market_evidence_assessment.status == "not_applicable"
     persisted_stock = replay.expressions[ExpressionKind.STOCK]
     assert persisted_stock.quantity is None
     assert persisted_stock.entry_range is None
