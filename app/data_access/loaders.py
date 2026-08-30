@@ -140,6 +140,8 @@ def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
     active_config = config if config is not None else load_config()
     if scope == "portfolio":
         return load_portfolio_scope_data(active_config)
+    if scope == "opportunities":
+        return load_opportunities_scope_data(active_config)
     requested = tuple(tables_for_scope(scope))
     query_row_limits = {
         table: limit
@@ -147,6 +149,17 @@ def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
         if table in requested
     }
     return load_panel_data(active_config, table_names=requested, query_row_limits=query_row_limits or None)
+
+
+def load_opportunities_scope_data(config: AppConfig | None = None) -> PanelData:
+    """Load the opportunity queue and its secondary screener without the dashboard bundle."""
+
+    active_config = config if config is not None else load_config()
+    return load_panel_data(
+        active_config,
+        table_names=("opportunities_ranked", "screener"),
+        query_row_limits={"screener": 120},
+    )
 
 
 def load_portfolio_scope_data(config: AppConfig | None = None) -> PanelData:
