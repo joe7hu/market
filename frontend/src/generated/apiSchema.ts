@@ -5931,6 +5931,8 @@ export interface components {
             actions?: components["schemas"]["TodayCapitalAction"][];
             /** As Of */
             as_of?: string | null;
+            /** Book Actions */
+            book_actions?: components["schemas"]["TodayCapitalAction"][];
             /**
              * Count
              * @default 0

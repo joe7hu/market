@@ -53,6 +53,8 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
       {announcement ? <div role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{announcement}</div> : null}
       {!model.holdings.length ? <EmptyPortfolio onAddTrade={() => setTradeOpen(true)} /> : null}
 
+      <PortfolioDecisionPanels data={data} />
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <PerformancePanel rows={performanceRows} range={range} onRangeChange={setRange} method={summary.performanceMethod} />
         <AttentionPanel rows={viewModel.riskRows} onOpenTicker={onOpenTicker} />
@@ -81,6 +83,18 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
       <AddTradeSheet open={tradeOpen} onOpenChange={setTradeOpen} holdings={model.holdings} onRecorded={async (symbol) => { try { await onRefresh(true); setAnnouncement(`${symbol} trade recorded. Portfolio, P&L, and risk are reconciled.`); } catch { setAnnouncement(`${symbol} trade recorded, but the displayed portfolio could not refresh. Refresh before recording another trade.`); } }} />
     </WorkspacePage>
   );
+}
+
+function PortfolioDecisionPanels({ data }: { data: PanelData }) {
+  const risks = data.portfolioRiskCards?.rows ?? [];
+  const reviews = data.reviewActions?.rows ?? [];
+  const plans = data.tradePlan?.rows ?? data.tickerDecisions?.rows ?? [];
+  return <section className="grid gap-4 xl:grid-cols-2" aria-label="Portfolio decision context">
+    <Card><CardHeader><CardTitle>Exposures and risk budgets</CardTitle></CardHeader><CardContent className="space-y-2">{[...(data.exposureClusters?.rows ?? []).slice(0, 5), ...risks.slice(0, 3)].length ? [...(data.exposureClusters?.rows ?? []).slice(0, 5), ...risks.slice(0, 3)].map((row, index) => <div key={`${textField(row, ["cluster_id", "card_id", "title"], "risk")}:${index}`} className="flex items-center justify-between gap-3 rounded-md border border-border p-3 text-sm"><span>{textField(row, ["cluster_name", "title", "risk_type"], "Portfolio risk")}</span><span className="text-right text-muted-foreground">{displayField(row, ["portfolio_weight", "budget", "utilization", "summary"], "Unavailable")}</span></div>) : <p className="text-sm text-muted-foreground">No exposure or risk-budget rows are available.</p>}</CardContent></Card>
+    <Card><CardHeader><CardTitle>Scenario matrix</CardTitle></CardHeader><CardContent><div className="overflow-x-auto"><table className="w-full min-w-[420px] text-sm"><thead className="border-b border-border text-left text-xs text-muted-foreground"><tr><th className="py-2 pr-3">Scenario</th><th className="py-2 pr-3">Portfolio impact</th><th className="py-2">Evidence</th></tr></thead><tbody>{risks.slice(0, 6).map((row, index) => <tr key={index} className="border-b border-border"><td className="py-2 pr-3 font-medium">{textField(row, ["scenario", "scenario_name", "title"], "Current risk case")}</td><td className="py-2 pr-3">{displayField(row, ["scenario_impact", "impact", "portfolio_impact"], "Unavailable")}</td><td className="py-2 text-muted-foreground">{displayField(row, ["probability", "data_status", "as_of"], "Unavailable")}</td></tr>)}</tbody></table>{!risks.length ? <p className="pt-3 text-sm text-muted-foreground">No scenario matrix is currently published.</p> : null}</div></CardContent></Card>
+    <Card><CardHeader><CardTitle>Active plans and proposed before / after impacts</CardTitle></CardHeader><CardContent className="space-y-2">{plans.slice(0, 6).map((row, index) => <div key={`${textField(row, ["trade_plan_id", "ticker", "symbol"], "plan")}:${index}`} className="rounded-md border border-border p-3 text-sm"><div className="flex justify-between gap-3 font-medium"><span>{textField(row, ["ticker", "symbol"], "Active plan")}</span><StatusBadge tone={toneFromText(textField(row, ["eligibility", "status", "action"], "review"))}>{titleLabel(textField(row, ["eligibility", "status", "action"], "review"))}</StatusBadge></div><p className="mt-1 text-muted-foreground">Before: {displayField(row, ["portfolio_before", "before"])} · After: {displayField(row, ["portfolio_after", "after"])}</p></div>)}{!plans.length ? <p className="text-sm text-muted-foreground">No active plan is published.</p> : null}</CardContent></Card>
+    <Card><CardHeader><CardTitle>Replacement and funding recommendations</CardTitle></CardHeader><CardContent className="space-y-2">{reviews.slice(0, 6).map((row, index) => <div key={`${textField(row, ["id", "title"], "recommendation")}:${index}`} className="rounded-md border border-border p-3 text-sm"><p className="font-medium">{textField(row, ["title", "action"], "Review recommendation")}</p><p className="mt-1 text-muted-foreground">{displayField(row, ["next_step", "recommendation", "summary"], "No next step recorded.")}</p></div>)}{!reviews.length ? <p className="text-sm text-muted-foreground">No replacement or funding recommendation is published.</p> : null}</CardContent></Card>
+  </section>;
 }
 
 function PerformancePanel({ rows, range, onRangeChange, method }: { rows: RowRecord[]; range: PerformanceRange; onRangeChange: (value: PerformanceRange) => void; method: string }) {

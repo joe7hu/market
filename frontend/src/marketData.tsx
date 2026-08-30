@@ -5,7 +5,7 @@ import { mergeSnapshot, withScopeStatus } from "./apiPanelData";
 import { buildModel, type AppModel } from "./model";
 import type { PanelData, ScopeSnapshotStatus } from "./types";
 
-export type PanelScope = "feed" | "today" | "watchlist" | "watchlist-watched" | "watchlist-unwatched" | "sources" | "superinvestors" | "market" | "portfolio" | "research" | "thesis-monitor" | "options-radar" | "filings" | "calendar" | "health" | "settings";
+export type PanelScope = "feed" | "today" | "watchlist" | "watchlist-watched" | "watchlist-unwatched" | "sources" | "superinvestors" | "market" | "portfolio" | "research" | "opportunities" | "thesis-monitor" | "options-radar" | "filings" | "calendar" | "health" | "settings";
 
 type MarketDataContextValue = {
   data: PanelData;

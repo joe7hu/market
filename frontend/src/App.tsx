@@ -8,6 +8,7 @@ import { CalendarRoute } from "./pages/CalendarRoute";
 import { HealthRoute } from "./pages/HealthRoute";
 import { MarketRoute } from "./pages/MarketRoute";
 import { NotFoundRoute } from "./pages/NotFoundRoute";
+import { OpportunitiesRoute } from "./pages/OpportunitiesRoute";
 import { OptionsRadarRoute } from "./pages/OptionsRadarRoute";
 import { PortfolioRoute } from "./pages/PortfolioRoute";
 import { SettingsRoute } from "./pages/SettingsRoute";
@@ -16,7 +17,6 @@ import { SuperinvestorsRoute } from "./pages/SuperinvestorsRoute";
 import { ThesisMonitorRoute } from "./pages/ThesisMonitorRoute";
 import { TickerRoute } from "./pages/TickerRoute";
 import { TodayRoute } from "./pages/TodayRoute";
-import { WatchlistRoute } from "./pages/WatchlistRoute";
 
 const OptionsChainRoute = lazy(async () => ({ default: (await import("./pages/OptionsChainRoute")).OptionsChainRoute }));
 
@@ -29,13 +29,13 @@ export function App() {
           <Route path="feed" element={<Navigate to="/today" replace />} />
           <Route path="today" element={<TodayRoute />} />
           <Route path="dashboard" element={<Navigate to="/today" replace />} />
-          <Route path="watchlist" element={<WatchlistRoute />} />
+          <Route path="watchlist" element={<Navigate to="/opportunities" replace />} />
           <Route path="sources" element={<SourcesRoute />} />
           <Route path="superinvestors" element={<SuperinvestorsRoute />} />
           <Route path="market" element={<MarketRoute />} />
-          <Route path="opportunities" element={<Navigate to="/watchlist" replace />} />
+          <Route path="opportunities" element={<OpportunitiesRoute />} />
           <Route path="portfolio" element={<PortfolioRoute />} />
-          <Route path="research" element={<Navigate to="/sources" replace />} />
+          <Route path="research" element={<SourcesRoute />} />
           <Route path="research-queue" element={<Navigate to="/sources" replace />} />
           <Route path="options-radar" element={<OptionsRadarRoute />} />
           <Route path="options-chain" element={<Suspense fallback={<p className="text-sm text-muted-foreground">Loading option-chain workstation…</p>}><OptionsChainRoute /></Suspense>} />

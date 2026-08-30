@@ -6,7 +6,7 @@ describe("primary navigation", () => {
   it("keeps the five Command Center destinations on desktop and mobile", () => {
     expect(navItems.map(({ label, to }) => [label, to])).toEqual([
       ["Command Center", "/today"],
-      ["Opportunities", "/watchlist"],
+      ["Opportunities", "/opportunities"],
       ["Portfolio", "/portfolio"],
       ["Research", "/sources"],
       ["System", "/health"],

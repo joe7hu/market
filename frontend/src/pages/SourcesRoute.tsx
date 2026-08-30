@@ -10,6 +10,7 @@ import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { rows, tickerSymbol } from "@/utils";
 import { displayField, numberField, textField, titleLabel, toneFromText } from "@/views/rowFormat";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
+import { DataGridSection } from "@/views/dataGridSection";
 
 type SourceFamily = "all" | "filing" | "transcript" | "podcast" | "blog" | "private_graph" | "market_data" | "other";
 type RankingMode = "discussed" | "bullish" | "bearish" | "conviction";
@@ -37,6 +38,11 @@ export function SourcesRoute() {
   const [family, setFamily] = useState<SourceFamily>("all");
   const [query, setQuery] = useState("");
   usePanelScope("sources");
+  usePanelScope("research");
+  usePanelScope("filings");
+  usePanelScope("calendar");
+  usePanelScope("superinvestors");
+  usePanelScope("market");
 
   const rankingRows = useMemo(() => rows(data.sourceTickerRankings), [data.sourceTickerRankings]);
   const sourceRows = useMemo(() => rows(data.sources), [data.sources]);
@@ -53,9 +59,9 @@ export function SourcesRoute() {
 
   return (
     <WorkspacePage
-      eyebrow="Evidence"
-      title="Sources"
-      subtitle="Ticker rankings and source consensus from independent source contributions."
+      eyebrow="Evidence workbench"
+      title="Research"
+      subtitle="Evidence, market diagnostics, thesis state, filings, calendar, superinvestors, model diagnostics, and agent history in one research workflow."
       metrics={metrics}
       actions={
         <div className="relative w-full min-w-64 sm:w-80">
@@ -93,8 +99,22 @@ export function SourcesRoute() {
         })}
       </div>
       <SourceDirectoryTable rows={filteredSources.slice(0, 120)} />
+      <ResearchPanels data={data} onOpenTicker={openTicker} />
     </WorkspacePage>
   );
+}
+
+function ResearchPanels({ data, onOpenTicker }: { data: ReturnType<typeof useMarketData>["data"]; onOpenTicker: (symbol: string) => void }) {
+  const panelRows = [
+    ["Market diagnostics", [...rows(data.marketStateSnapshot), ...rows(data.coverageMatrix)]],
+    ["Thesis monitor", rows(data.thesisMonitor)],
+    ["Filings", rows(data.disclosures)],
+    ["Calendar", [...rows(data.catalysts), ...rows(data.earnings)]],
+    ["Superinvestors", [...rows(data.superinvestorPortfolios), ...rows(data.ownershipConsensus)]],
+    ["Model diagnostics", [...rows(data.opportunitiesRanked), ...rows(data.agentThesisValidation)]],
+    ["Agent research history", [...rows(data.agentThesisRequest), ...rows(data.agentPostmortemRequest), ...rows(data.agentPostmortem)]],
+  ] as const;
+  return <section className="grid min-w-0 gap-4 xl:grid-cols-2" aria-label="Integrated research panels">{panelRows.map(([title, panel]) => <DataGridSection key={title} title={title} rows={panel.slice(0, 80)} onOpenTicker={onOpenTicker} />)}</section>;
 }
 
 function TickerRankingTable({ mode, rows: rankingRows, onOpenTicker }: { mode: RankingMode; rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {

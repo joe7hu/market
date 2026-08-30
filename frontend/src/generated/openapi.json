@@ -13561,6 +13561,13 @@
             ],
             "title": "As Of"
           },
+          "book_actions": {
+            "items": {
+              "$ref": "#/components/schemas/TodayCapitalAction"
+            },
+            "title": "Book Actions",
+            "type": "array"
+          },
           "count": {
             "default": 0,
             "title": "Count",

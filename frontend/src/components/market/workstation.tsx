@@ -5,6 +5,7 @@ import {
   Home,
   Landmark,
   Menu,
+  MessageCircle,
   Mic,
   RefreshCw,
   Search,
@@ -33,7 +34,7 @@ type NavItem = {
 
 export const navItems: NavItem[] = [
   { to: "/today", label: "Command Center", icon: Home, aliases: ["/", "/dashboard"] },
-  { to: "/watchlist", label: "Opportunities", icon: Eye, aliases: ["/opportunities"] },
+  { to: "/opportunities", label: "Opportunities", icon: Eye, aliases: ["/watchlist"] },
   { to: "/portfolio", label: "Portfolio", icon: Landmark },
   { to: "/sources", label: "Research", icon: Mic, aliases: ["/research", "/research-queue"] },
   { to: "/health", label: "System", icon: HeartPulse, aliases: ["/system"] },
@@ -45,7 +46,7 @@ export function AppShell() {
   const { model, loading, lastRefresh } = useMarketData();
   const [query, setQuery] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
-  const widePage = location.pathname.startsWith("/watchlist") || location.pathname.startsWith("/options-radar") || location.pathname.startsWith("/options-chain");
+  const widePage = location.pathname.startsWith("/watchlist") || location.pathname.startsWith("/opportunities") || location.pathname.startsWith("/options-radar") || location.pathname.startsWith("/options-chain");
 
   const onSearch = (event: FormEvent) => {
     event.preventDefault();
@@ -88,6 +89,8 @@ export function AppShell() {
               <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker or symbol" aria-label="Search tickers" />
             </form>
 
+            <ContextualAgentDrawer />
+
             {location.pathname.startsWith("/health") ? (
               <div className="ml-auto hidden items-center gap-2 text-xs text-muted-foreground md:flex">
                 <SourceHealthBadge />
@@ -105,6 +108,28 @@ export function AppShell() {
         </main>
       </div>
     </div>
+  );
+}
+
+function ContextualAgentDrawer() {
+  const location = useLocation();
+  return (
+    <Sheet>
+      <SheetTrigger asChild>
+        <Button type="button" variant="outline" size="icon" aria-label="Open contextual agent drawer" title="Ask agent about this page"><MessageCircle /></Button>
+      </SheetTrigger>
+      <SheetContent side="right" className="w-full sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>Contextual agent</SheetTitle>
+          <SheetDescription>Research help for the current Market surface.</SheetDescription>
+        </SheetHeader>
+        <div className="space-y-4 py-5 text-sm">
+          <div className="rounded-lg border border-border bg-card p-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Current context</p><p className="mt-2 font-medium">{location.pathname}</p><p className="mt-1 text-muted-foreground">The agent should use the visible recommendation, source evidence, and blocker as context.</p></div>
+          <p className="text-muted-foreground">Agent actions remain advisory and paper-only. Open the full workspace to submit a bounded research request.</p>
+          <Button asChild className="w-full"><Link to={`/agent?context=${encodeURIComponent(location.pathname)}`}>Open agent workspace</Link></Button>
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 

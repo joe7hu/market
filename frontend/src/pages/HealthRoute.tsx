@@ -20,6 +20,7 @@ import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api/options
 import { loadDecisionFunnel, type DecisionFunnel } from "@/api/panel";
 import { numberFromRecord, recordField } from "@/views/optionsRadarData";
 import { DecisionFunnelPanel } from "@/views/health/decisionFunnel";
+import { displayField } from "@/views/rowFormat";
 
 export function HealthRoute() {
   const { data, loadScope, scopeStatus } = useMarketData();
@@ -93,8 +94,8 @@ export function HealthRoute() {
   return (
     <WorkspacePage
       eyebrow="Control plane"
-      title="Source Health"
-      subtitle="Operational source checks, data recency, coverage, and the exact jobs that own each refresh path."
+      title="System"
+      subtitle="Decision funnel, coverage, source and job health, broker status, model and policy versions, settings, and agent telemetry."
       metrics={metrics}
       actions={
         <Button type="button" variant="outline" size="sm" onClick={() => void reload()} disabled={reloading}>
@@ -112,6 +113,8 @@ export function HealthRoute() {
       <DataFlowDiagram stages={flowStages} />
 
       <DecisionFunnelPanel funnel={decisionFunnel} />
+
+      <SystemPosture data={data} />
 
       <SourceHealthControlPlane sourceRows={sourceRows} jobs={jobs} />
 
@@ -141,6 +144,17 @@ export function HealthRoute() {
       </details>
     </WorkspacePage>
   );
+}
+
+function SystemPosture({ data }: { data: ReturnType<typeof useMarketData>["data"] }) {
+  const broker = data.brokerStatus?.rows?.[0];
+  const source = data.sourceHealth?.rows?.[0] ?? data.sourceFreshness?.rows?.[0];
+  const runs = data.providerRuns?.rows ?? data.sourceRuns?.rows ?? [];
+  return <section className="grid gap-4 xl:grid-cols-3" aria-label="System posture">
+    <div className="rounded-xl border border-border bg-card p-4"><h2 className="text-base font-semibold">Broker status</h2><p className="mt-2 text-sm">{displayField(broker, ["status", "health", "state"], "Unavailable")}</p><p className="mt-1 text-xs text-muted-foreground">{displayField(broker, ["as_of", "checked_at", "updated_at"], "No observation")}</p></div>
+    <div className="rounded-xl border border-border bg-card p-4"><h2 className="text-base font-semibold">Model and policy versions</h2><dl className="mt-2 space-y-2 text-sm"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">Model</dt><dd>{displayField(source, ["model_version", "model", "version"], "Unavailable")}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted-foreground">Policy</dt><dd>{displayField(source, ["policy_version", "risk_policy_version"], "Unavailable")}</dd></div></dl></div>
+    <div className="rounded-xl border border-border bg-card p-4"><h2 className="text-base font-semibold">Settings and agent telemetry</h2><p className="mt-2 text-sm">{runs.length.toLocaleString()} provider/job observations loaded.</p><p className="mt-1 text-xs text-muted-foreground">{displayField(runs[0], ["status", "run_status", "agent_status"], "Telemetry unavailable")}</p><Link className="mt-3 inline-block text-sm font-medium text-primary hover:underline" to="/settings">Open settings →</Link></div>
+  </section>;
 }
 
 function formatBytes(value: number): string { return value >= 1024 * 1024 ? `${(value / (1024 * 1024)).toFixed(1)} MB` : `${(value / 1024).toFixed(1)} KB`; }

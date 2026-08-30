@@ -126,6 +126,7 @@ class TodayResponse(BaseModel):
     status: ApiStatusResponse
     as_of: datetime | None = None
     actions: list[TodayCapitalAction] = Field(default_factory=list)
+    book_actions: list[TodayCapitalAction] = Field(default_factory=list)
     count: int = 0
 
 

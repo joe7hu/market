@@ -146,8 +146,55 @@ def today(
         "status": payloads.status_payload(panel_data),
         "as_of": as_of,
         "actions": queue_items,
+        "book_actions": book_action_queue(capital_actions),
         "count": len(queue_items),
     }
+
+
+def book_action_queue(rows: list[dict[str, Any]], *, limit: int = ACTION_QUEUE_LIMIT) -> list[dict[str, Any]]:
+    """Rank current opportunity actions against the explicit cash alternative."""
+
+    opportunities = sorted(
+        (row for row in rows if row.get("source") == "capital_action" and row.get("ticker")),
+        key=lambda row: (
+            0 if row.get("trade_rank") is not None else 1,
+            int(row.get("trade_rank") or 0) if row.get("trade_rank") is not None else 0,
+            0 if row.get("research_rank") is not None else 1,
+            int(row.get("research_rank") or 0) if row.get("research_rank") is not None else 0,
+            str(row.get("ticker")),
+        ),
+    )
+    output = [dict(row) for row in opportunities[: max(0, limit - 1)]]
+    output.append({
+        "projection_identity": "capital:book:CASH",
+        "source_authority": "book:CASH",
+        "source": "cash",
+        "title": "Cash",
+        "lifecycle_state": "current",
+        "transition": None,
+        "current_at": None,
+        "primary_blocker": None,
+        "next_action": "Hold cash until a qualified opportunity is published.",
+        "drill_down": "/today",
+        "ticker": None,
+        "action": "CASH",
+        "owned": False,
+        "rationale": "No capital action is authorized without a current qualified rank and plan.",
+        "decision_revision": None,
+        "policy_version": "risk-policy.v2:book",
+        "selected_expression": "CASH",
+        "price_condition": None,
+        "catalyst": None,
+        "expires_at": None,
+        "research_rank": None,
+        "trade_rank": None,
+        "trade_rank_unavailable_reason": None,
+        "trade_utility": 0.0,
+        "trade_plan": None,
+    })
+    for rank, row in enumerate(output, start=1):
+        row["book_rank"] = rank
+    return output
 
 
 def _read_inbox(option_actions: Any) -> list[dict[str, Any]]:
