@@ -796,6 +796,7 @@ class PortfolioImpact(BaseModel):
     cash_comparator: dict[str, Any] | None = None
     top_alternative: str | None = None
     funding_source_or_position_to_trim: str | None = None
+    execution_evidence: dict[str, Any] = Field(default_factory=dict)
     availability: str = "unavailable"
     availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
@@ -902,6 +903,12 @@ class PortfolioImpact(BaseModel):
                     "available crypto portfolio impacts require bounded quote evidence: "
                     + ", ".join(quote_blockers)
                 )
+        elif self.expression_kind in {ExpressionKind.CALL, ExpressionKind.PUT, ExpressionKind.DEBIT_SPREAD, ExpressionKind.CASH_SECURED_PUT}:
+            evidence = self.portfolio_before.get("option_evidence")
+            if not isinstance(evidence, Mapping) or not self.portfolio_before.get("option_impact"):
+                raise ValueError("available option portfolio impacts require option evidence")
+            if evidence.get("status") != "available":
+                raise ValueError("available option portfolio impacts require execution-grade evidence")
         elif self.expression_kind is ExpressionKind.STOCK:
             required = (
                 self.position_weight_before,
@@ -1031,6 +1038,9 @@ class ExpressionDecision(BaseModel):
     spread_pct: float | None = Field(default=None, ge=0)
     fill_probability: float | None = Field(default=None, ge=0, le=1)
     horizon_fit: float | None = Field(default=None, ge=0, le=1)
+    # Phase 6 evidence stays on the canonical expression so the same object
+    # flows through episode, rank, impact, resolution, and plan.
+    execution_evidence: dict[str, Any] = Field(default_factory=dict)
     status: str = Field(pattern="^(eligible|blocked|unavailable|not_selected)$")
     availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
@@ -3015,6 +3025,7 @@ def _portfolio_impact_id(impact: PortfolioImpact) -> str:
             "top_alternative": impact.top_alternative,
             "position_to_trim_or_replace": impact.position_to_trim_or_replace,
             "funding_source_or_position_to_trim": impact.funding_source_or_position_to_trim,
+            "execution_evidence": impact.execution_evidence,
         },
     }
     return f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
@@ -3871,6 +3882,90 @@ def _crypto_quote_price(evidence: Mapping[str, Any]) -> float | None:
     return _number(_pick(evidence, "price", "mark", "mid", "last", "close"))
 
 
+def _execution_pick(row: Mapping[str, Any], details: Mapping[str, Any], *keys: str) -> Any:
+    value = _pick(row, *keys)
+    return _pick(details, *keys) if value is None else value
+
+
+def _execution_evidence_for(
+    kind: ExpressionKind,
+    row: Mapping[str, Any],
+    details: Mapping[str, Any],
+    legs: list[dict[str, Any]],
+    cutoff: datetime,
+) -> dict[str, Any]:
+    """Normalize execution-grade fields without creating a second authority."""
+    merged = dict(details)
+    merged.update(row)
+    blockers: list[str] = []
+    hard_blockers: list[str] = []
+    observed = _parse_datetime(_execution_pick(row, details, "observed_at", "quote_time", "available_at"))
+    if observed is None:
+        hard_blockers.append("execution_evidence_observed_at_missing")
+    elif observed > _utc(cutoff):
+        hard_blockers.append("execution_evidence_future")
+    if kind in {ExpressionKind.CALL, ExpressionKind.PUT, ExpressionKind.DEBIT_SPREAD, ExpressionKind.CASH_SECURED_PUT}:
+        if not legs:
+            hard_blockers.append("option_execution_legs_missing")
+        for index, leg in enumerate(legs):
+            bid = _number(_pick(leg, "bid"))
+            ask = _number(_pick(leg, "ask"))
+            size_bid = _number(_pick(leg, "bid_size", "size_available", "bid_size_available"))
+            size_ask = _number(_pick(leg, "ask_size", "size_available", "ask_size_available"))
+            leg_observed = _parse_datetime(_pick(leg, "quote_time", "observed_at", "available_at"))
+            if bid is None or ask is None or ask < bid or size_bid is None or size_ask is None:
+                hard_blockers.append(f"option_execution_quote_invalid:{index}")
+            if leg_observed is None:
+                hard_blockers.append(f"option_execution_quote_time_missing:{index}")
+            elif leg_observed > _utc(cutoff):
+                hard_blockers.append(f"option_execution_quote_future:{index}")
+        values = {
+            "delta": _number(_execution_pick(row, details, "delta", "provider_delta")),
+            "gamma": _number(_execution_pick(row, details, "gamma", "provider_gamma")),
+            "vega": _number(_execution_pick(row, details, "vega", "provider_vega")),
+            "theta": _number(_execution_pick(row, details, "theta", "provider_theta")),
+            "skew": _execution_pick(row, details, "skew", "skew_25", "iv_skew", "put_call_iv_skew"),
+            "term_structure": _execution_pick(row, details, "term_structure", "term_structure_slope", "term_slope"),
+            "event_gap_scenarios": _execution_pick(row, details, "event_gap_scenarios", "event_gap", "gap_scenarios"),
+            "assignment": _execution_pick(row, details, "assignment", "assignment_policy", "assignment_risk"),
+            "collateral": _execution_pick(row, details, "collateral", "collateral_required", "reserved_collateral"),
+            "slippage": _execution_pick(row, details, "slippage", "expected_slippage", "slippage_bps"),
+            "days_to_exit": _number(_execution_pick(row, details, "days_to_exit", "exit_days")),
+            "capacity": _execution_pick(row, details, "capacity", "capacity_limit", "max_quantity"),
+        }
+        values["multi_leg_liquidity"] = _execution_pick(row, details, "multi_leg_liquidity", "liquidity")
+        required = ("delta", "gamma", "vega", "theta", "skew", "term_structure", "event_gap_scenarios", "assignment", "collateral", "slippage", "days_to_exit", "capacity", "multi_leg_liquidity")
+        blockers.extend(f"option_execution_{key}_missing" for key in required if values.get(key) is None)
+        evidence = {"asset_class": "options", **values}
+    elif kind in {ExpressionKind.CRYPTO_SPOT, ExpressionKind.CRYPTO_PERPETUAL}:
+        values = {
+            "btc_beta": _number(_execution_pick(row, details, "btc_beta", "beta_btc")),
+            "eth_beta": _number(_execution_pick(row, details, "eth_beta", "beta_eth")),
+            "funding": _execution_pick(row, details, "funding", "funding_rate"),
+            "basis": _execution_pick(row, details, "basis", "basis_rate"),
+            "open_interest": _execution_pick(row, details, "open_interest", "oi"),
+            "liquidation_regime": _execution_pick(row, details, "liquidation_regime", "liquidations"),
+            "venue_risk": _execution_pick(row, details, "venue_risk", "venue"),
+            "counterparty_risk": _execution_pick(row, details, "counterparty_risk", "counterparty"),
+            "stablecoin_liquidity": _execution_pick(row, details, "stablecoin_liquidity", "stablecoin"),
+            "ttl_seconds": _number(_execution_pick(row, details, "ttl_seconds", "freshness_ttl_seconds")),
+        }
+        blockers.extend(f"crypto_execution_{key}_missing" for key in values if values[key] is None)
+        evidence = {"asset_class": "crypto", **values}
+    else:
+        return {}
+    blockers = list(dict.fromkeys((*hard_blockers, *blockers)))
+    evidence.update({
+        "version": "execution-grade.v1",
+        "status": "available" if not blockers else "unavailable" if hard_blockers else "advisory",
+        "blockers": tuple(blockers),
+        "observed_at": observed,
+        "cutoff": _utc(cutoff),
+        "freshness_status": "available" if observed is not None and not hard_blockers else "unavailable",
+    })
+    return evidence
+
+
 def _crypto_impact_values(
     expression: ExpressionDecision,
     replay: Mapping[str, Any],
@@ -3910,6 +4005,11 @@ def _crypto_impact_values(
         or consumed_budget is None
     ):
         blockers.append("crypto_risk_evidence_missing")
+    execution_evidence = _execution_evidence_for(
+        expression.kind, evidence, {}, [], cutoff,
+    )
+    if execution_evidence.get("status") != "available":
+        blockers.extend(execution_evidence.get("blockers") or ("crypto_execution_evidence_unavailable",))
     nav = _number(replay.get("portfolio_value"), 0.0) or 0.0
     quantity = expression.quantity or 0
     price = _crypto_quote_price(evidence) or 0.0
@@ -3954,6 +4054,81 @@ def _crypto_impact_values(
         "factor_exposure": {"asset_class": "crypto"},
         "greeks": None,
         "crypto_impact": True,
+        "execution_evidence": execution_evidence,
+    }
+    return before, after, values, list(dict.fromkeys(blockers))
+
+
+def _option_impact_values(
+    expression: ExpressionDecision,
+    replay: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
+    """Calculate bounded option impact from the canonical option evidence."""
+    blockers: list[str] = []
+    evidence = expression.execution_evidence
+    if not isinstance(evidence, Mapping) or evidence.get("status") != "available":
+        blockers.append("option_execution_evidence_unavailable")
+        evidence = dict(evidence) if isinstance(evidence, Mapping) else {}
+    nav = _number(replay.get("portfolio_value"), 0.0) or 0.0
+    entry = expression.entry_range
+    price = (entry.low + entry.high) / 2 if entry is not None else None
+    quantity = expression.quantity
+    if price is None or price <= 0:
+        blockers.append("option_entry_price_missing")
+    if quantity is None or quantity <= 0:
+        blockers.append("option_quantity_missing")
+    if nav <= 0:
+        blockers.append("option_nav_missing")
+    planned_loss = expression.planned_loss
+    if planned_loss is None or planned_loss <= 0:
+        blockers.append("option_planned_loss_missing")
+    added_value = float(price or 0) * int(quantity or 0)
+    positions = [item for item in replay.get("positions", ()) if isinstance(item, Mapping)]
+    owned = sum(
+        _number(item.get("market_value"), 0.0) or 0.0
+        for item in positions
+        if str(item.get("symbol") or "").upper() == expression.ticker.upper()
+    )
+    before_weight = owned / nav if nav > 0 else None
+    after_weight = (owned + added_value) / nav if nav > 0 else None
+    before = {
+        "ticker": expression.ticker,
+        "position_weight": before_weight,
+        "gross_exposure": before_weight,
+        "net_exposure": before_weight,
+        "option_evidence": dict(evidence),
+        "option_impact": True,
+    }
+    after = {
+        **before,
+        "position_weight": after_weight,
+        "gross_exposure": after_weight,
+        "net_exposure": after_weight,
+    }
+    risk_budget = replay.get("risk_budget")
+    risk_budget = risk_budget if isinstance(risk_budget, Mapping) else {}
+    available = _number(_pick(risk_budget, "available", "available_budget", "risk_budget_available"))
+    consumed = _number(_pick(risk_budget, "consumed", "consumed_budget", "risk_budget_consumed"))
+    if available is None or consumed is None or planned_loss is None or available < planned_loss or not math.isclose(consumed, planned_loss, abs_tol=1e-6):
+        blockers.append("option_risk_budget_evidence_missing")
+    values = {
+        "position_weight_before": before_weight,
+        "position_weight_after": after_weight,
+        "gross_exposure_before": before_weight,
+        "gross_exposure_after": after_weight,
+        "net_exposure_before": before_weight,
+        "net_exposure_after": after_weight,
+        "symbol_concentration_delta": (after_weight - before_weight) if after_weight is not None and before_weight is not None else None,
+        "planned_loss": planned_loss,
+        "marginal_risk": consumed,
+        "risk_budget_consumed": consumed,
+        "expected_transaction_costs": expression.expected_transaction_costs,
+        "greeks": {key: evidence.get(key) for key in ("delta", "gamma", "vega", "theta")},
+        "scenario_pnl": evidence.get("event_gap_scenarios"),
+        "liquidity": evidence.get("multi_leg_liquidity"),
+        "days_to_exit": evidence.get("days_to_exit"),
+        "execution_evidence": dict(evidence),
+        "impact_method": "option_execution_grade.v1:first_order",
     }
     return before, after, values, list(dict.fromkeys(blockers))
 
@@ -3986,6 +4161,10 @@ def compose_portfolio_impact(
     elif kind in {ExpressionKind.CRYPTO_SPOT, ExpressionKind.CRYPTO_PERPETUAL} and not blockers:
         before, after, values, crypto_blockers = _crypto_impact_values(expression, before, episode.cutoff)
         blockers.extend(crypto_blockers)
+        availability = "unavailable" if blockers else "available"
+    elif kind in {ExpressionKind.CALL, ExpressionKind.PUT, ExpressionKind.DEBIT_SPREAD, ExpressionKind.CASH_SECURED_PUT} and not blockers:
+        before, after, values, option_blockers = _option_impact_values(expression, before)
+        blockers.extend(option_blockers)
         availability = "unavailable" if blockers else "available"
     elif kind is ExpressionKind.STOCK and not blockers:
         before_book = dict(before)
@@ -4745,6 +4924,7 @@ def _build_expressions(
             spread_pct=_number(_pick(row, "spread_pct", "spread")),
             fill_probability=_bounded(_number(_pick(row, "fill_probability", "fill_prob")), 0, 1),
             horizon_fit=_bounded(_number(_pick(row, "horizon_fit")), 0, 1),
+            execution_evidence=_execution_evidence_for(kind, row, details, legs, cutoff),
             status=status,
             rationale=(
                 f"{kind.value.replace('_', ' ').title()} is compared against stock on the same "
@@ -4806,6 +4986,7 @@ def _build_expressions(
             spread_pct=_number(_pick(row, "spread_pct", "spread")),
             fill_probability=_bounded(_number(_pick(row, "fill_probability", "fill_prob")), 0, 1),
             horizon_fit=_bounded(_number(_pick(row, "horizon_fit")), 0, 1),
+            execution_evidence=_execution_evidence_for(kind, row, details, [], cutoff),
             status="eligible" if executable else "unavailable",
             blockers=blockers,
             rationale=(

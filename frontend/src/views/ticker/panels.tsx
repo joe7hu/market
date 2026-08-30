@@ -109,6 +109,9 @@ export function TickerDecisionPanel({
               <HorizonCard view={decision.fundamental} label="FUNDAMENTAL · 3–18 months" />
             </div>
             <ExpressionTable expressions={expressions} />
+            <ExecutionEvidencePanel
+              executionEvidence={decision.selected_expression?.execution_evidence as Record<string, unknown> | undefined}
+            />
           </div>
         </div>
       </DataTableFrame>
@@ -124,6 +127,40 @@ export function TickerDecisionPanel({
       {disagreement ? <DisagreementPanel learning={learning} /> : null}
       {learning ? <LearningLoopPanel learning={learning} /> : null}
     </>
+  );
+}
+
+export function ExecutionEvidencePanel({
+  executionEvidence,
+}: {
+  executionEvidence?: Record<string, unknown> | null;
+}) {
+  const evidence = executionEvidence ?? {};
+  const fields = [
+    ["Status", evidence.status],
+    ["Version", evidence.version],
+    ["Observed at", evidence.observed_at],
+    ["Freshness", evidence.freshness_status],
+    ["Delta", evidence.delta],
+    ["Gamma", evidence.gamma],
+    ["Vega", evidence.vega],
+    ["Theta", evidence.theta],
+    ["BTC beta", evidence.btc_beta],
+    ["ETH beta", evidence.eth_beta],
+    ["Funding", evidence.funding],
+    ["Basis", evidence.basis],
+    ["Open interest", evidence.open_interest],
+    ["Days to exit", evidence.days_to_exit],
+    ["Capacity", evidence.capacity],
+  ].filter(([, value]) => value != null);
+  const blockers = Array.isArray(evidence.blockers) ? evidence.blockers.map(String) : [];
+  return (
+    <DataTableFrame title="Execution-grade evidence" action={<StatusBadge tone={evidence.status === "available" ? "good" : "warn"}>{String(evidence.status ?? "unavailable")}</StatusBadge>}>
+      <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
+        {fields.map(([label, value]) => <KeyValue key={String(label)} label={String(label)} value={typeof value === "object" ? JSON.stringify(value) : String(value)} />)}
+      </div>
+      {blockers.length ? <ReasonList title="Evidence blockers" rows={blockers} empty="No blockers" /> : null}
+    </DataTableFrame>
   );
 }
 

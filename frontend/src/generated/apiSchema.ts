@@ -2260,6 +2260,10 @@ export interface components {
             /** Data Requests */
             data_requests?: components["schemas"]["DataRequest"][];
             entry_range?: components["schemas"]["PriceRange"] | null;
+            /** Execution Evidence */
+            execution_evidence?: {
+                [key: string]: unknown;
+            };
             /** Expected Transaction Costs */
             expected_transaction_costs?: number | null;
             /** Fill Probability */
@@ -4497,6 +4501,10 @@ export interface components {
             decision_revision: string;
             /** Diversification Benefit */
             diversification_benefit?: number | null;
+            /** Execution Evidence */
+            execution_evidence?: {
+                [key: string]: unknown;
+            };
             /** Expected Transaction Costs */
             expected_transaction_costs?: number | null;
             /** Expression Identity */

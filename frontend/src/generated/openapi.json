@@ -2496,6 +2496,11 @@
               }
             ]
           },
+          "execution_evidence": {
+            "additionalProperties": true,
+            "title": "Execution Evidence",
+            "type": "object"
+          },
           "expected_transaction_costs": {
             "anyOf": [
               {
@@ -9381,6 +9386,11 @@
               }
             ],
             "title": "Diversification Benefit"
+          },
+          "execution_evidence": {
+            "additionalProperties": true,
+            "title": "Execution Evidence",
+            "type": "object"
           },
           "expected_transaction_costs": {
             "anyOf": [
