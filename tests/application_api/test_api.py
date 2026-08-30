@@ -1343,7 +1343,7 @@ def test_ticker_decision_brief_uses_specific_source_gap_language() -> None:
 
 
 def test_frontend_fallback_serves_spa_deep_links_after_build() -> None:
-    dist_index = Path(__file__).resolve().parents[1] / "frontend" / "dist" / "index.html"
+    dist_index = Path(__file__).resolve().parents[2] / "frontend" / "dist" / "index.html"
     if not dist_index.exists():
         pytest.skip("frontend build output is not present")
 
@@ -1374,3 +1374,21 @@ def test_frontend_fallback_serves_spa_deep_links_after_build() -> None:
         assert response.headers["cache-control"] == "no-cache"
         assert response.headers["content-type"].startswith("text/html")
         assert '<div id="root">' in response.text
+
+
+def test_frontend_fallback_does_not_serve_files_outside_dist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dist_dir = tmp_path / "frontend" / "dist"
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text('<div id="root"></div>', encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("not-for-the-browser", encoding="utf-8")
+    monkeypatch.setattr(app_main, "__file__", str(tmp_path / "app" / "main.py"))
+    test_app = app_main.FastAPI()
+    app_main._mount_frontend(test_app)
+
+    response = TestClient(test_app).get("/%2e%2e/%2e%2e/secret.txt")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.text == '<div id="root"></div>'

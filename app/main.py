@@ -69,7 +69,7 @@ def create_app() -> FastAPI:
 
 
 def _mount_frontend(app: FastAPI) -> None:
-    dist_dir = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+    dist_dir = (Path(__file__).resolve().parents[1] / "frontend" / "dist").resolve()
     index_path = dist_dir / "index.html"
     index_headers = {"Cache-Control": "no-cache"}
     if not index_path.exists():
@@ -83,8 +83,8 @@ def _mount_frontend(app: FastAPI) -> None:
     def frontend(path: str = "") -> FileResponse:
         if path == "api" or path.startswith("api/"):
             raise HTTPException(status_code=404, detail="API route not found")
-        requested = dist_dir / path
-        if requested.is_file():
+        requested = (dist_dir / path).resolve()
+        if requested.is_relative_to(dist_dir) and requested.is_file():
             return FileResponse(requested)
         return FileResponse(index_path, headers=index_headers)
 
