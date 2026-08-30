@@ -120,7 +120,17 @@ class ExpressionKind(StrEnum):
     PUT = "PUT"
     DEBIT_SPREAD = "DEBIT_SPREAD"
     CASH_SECURED_PUT = "CASH_SECURED_PUT"
+    CRYPTO_SPOT = "CRYPTO_SPOT"
+    CRYPTO_PERPETUAL = "CRYPTO_PERPETUAL"
     CASH = "CASH"
+
+
+class OpportunityEpisodeStatus(StrEnum):
+    DISCOVERED = "DISCOVERED"
+    UNDERWRITING = "UNDERWRITING"
+    SETUP = "SETUP"
+    ACTIVE = "ACTIVE"
+    CLOSED = "CLOSED"
 
 
 class EvidencePolarity(StrEnum):
@@ -368,6 +378,8 @@ MARKET_REQUIRED_DIMENSIONS: dict[ExpressionKind, tuple[str, ...]] = {
     ExpressionKind.PUT: ("equity internals", "volatility"),
     ExpressionKind.DEBIT_SPREAD: ("equity internals", "volatility"),
     ExpressionKind.CASH_SECURED_PUT: ("equity internals", "volatility"),
+    ExpressionKind.CRYPTO_SPOT: ("crypto liquidity",),
+    ExpressionKind.CRYPTO_PERPETUAL: ("crypto liquidity", "volatility"),
 }
 
 MARKET_REQUIRED_DIMENSIONS_BY_HORIZON: dict[str, dict[ExpressionKind, tuple[str, ...]]] = {
@@ -876,7 +888,11 @@ class PortfolioImpact(BaseModel):
                 or self.liquidity != {"status": "not_applicable"}
             ):
                 raise ValueError("CASH portfolio impact must be exact zero change")
-        elif self.expression_kind is ExpressionKind.STOCK:
+        elif self.expression_kind in {
+            ExpressionKind.STOCK,
+            ExpressionKind.CRYPTO_SPOT,
+            ExpressionKind.CRYPTO_PERPETUAL,
+        }:
             required = (
                 self.position_weight_before,
                 self.position_weight_after,
@@ -998,6 +1014,7 @@ class ExpressionDecision(BaseModel):
     loss_budget: float | None = Field(default=None, ge=0)
     max_loss_per_unit: float | None = Field(default=None, ge=0)
     planned_loss: float | None = Field(default=None, ge=0)
+    expected_transaction_costs: float | None = Field(default=None, ge=0)
     net_expected_value_per_loss_dollar: float | None = None
     lower_confidence_expectancy: float | None = None
     liquidity_score: float | None = Field(default=None, ge=0, le=1)
@@ -1076,6 +1093,18 @@ class OpportunityEpisode(BaseModel):
     input_lineage: list[InputLineage] = Field(min_length=1)
     expressions: dict[ExpressionKind, TradeExpression] = Field(min_length=1)
     selected_expression: TradeExpression | None = None
+    # Lifecycle fields are deliberately part of the existing episode boundary.
+    # They are persisted in the existing JSONB envelope; decision_revision is
+    # the revision of this observation, never the durable episode identity.
+    thesis_identity: str = ""
+    first_seen_at: datetime | None = None
+    last_updated_at: datetime | None = None
+    status: OpportunityEpisodeStatus = OpportunityEpisodeStatus.DISCOVERED
+    horizon: Horizon | None = None
+    catalyst_window: str | None = None
+    current_revision: str = ""
+    closed_reason: str | None = None
+    superseded_by: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1095,6 +1124,14 @@ class OpportunityEpisode(BaseModel):
             result["ticker"] = result["symbol"]
         if isinstance(result.get("ticker"), str):
             result["ticker"] = result["ticker"].strip().upper()
+        if not result.get("thesis_identity") and result.get("ticker"):
+            result["thesis_identity"] = f"ticker:{str(result['ticker']).strip().upper()}"
+        if not result.get("current_revision") and result.get("decision_revision"):
+            result["current_revision"] = result["decision_revision"]
+        if result.get("first_seen_at") is None and result.get("cutoff") is not None:
+            result["first_seen_at"] = result["cutoff"]
+        if result.get("last_updated_at") is None and result.get("cutoff") is not None:
+            result["last_updated_at"] = result["cutoff"]
 
         expressions = result.get("expressions")
         selected = result.get("selected_expression")
@@ -1117,6 +1154,14 @@ class OpportunityEpisode(BaseModel):
         if self.cutoff.tzinfo is None:
             raise ValueError("opportunity episode cutoff must be timezone-aware")
         cutoff = _utc(self.cutoff)
+        self.thesis_identity = self.thesis_identity or f"ticker:{self.ticker}"
+        self.current_revision = self.current_revision or self.decision_revision
+        self.first_seen_at = _utc(self.first_seen_at or cutoff)
+        self.last_updated_at = _utc(self.last_updated_at or cutoff)
+        if self.last_updated_at < self.first_seen_at:
+            raise ValueError("opportunity episode last_updated_at cannot precede first_seen_at")
+        if self.status is OpportunityEpisodeStatus.CLOSED and not self.closed_reason:
+            raise ValueError("closed opportunity episodes require a closed_reason")
         lineage_keys: set[tuple[Any, ...]] = set()
         for lineage in self.input_lineage:
             if _utc(lineage.available_at) > cutoff:
@@ -1771,9 +1816,22 @@ def outcome_attribution_id(payload: Mapping[str, Any]) -> str:
     return _outcome_attribution_id(payload)
 
 
-def opportunity_episode_id(ticker: str, decision_revision: str) -> str:
+def opportunity_episode_id(
+    ticker: str,
+    decision_revision: str | None = None,
+    *,
+    thesis_identity: str | None = None,
+) -> str:
+    """Return the durable economic-episode identity.
+
+    ``decision_revision`` remains a compatibility argument for V1 callers. It
+    is intentionally not included in the identity, so signal revisions and
+    expression changes continue one episode. A caller may provide a stable
+    thesis identity when more than one thesis exists for a ticker.
+    """
+    stable_thesis = thesis_identity or f"ticker:{ticker.strip().upper()}"
     encoded = json.dumps(
-        {"ticker": ticker.strip().upper(), "decision_revision": decision_revision},
+        {"ticker": ticker.strip().upper(), "thesis_identity": stable_thesis},
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -1790,6 +1848,14 @@ def build_opportunity_episode(
     expressions: Mapping[ExpressionKind | str, TradeExpression | Mapping[str, Any]],
     selected_expression: TradeExpression | ExpressionKind | str | None = None,
     episode_id: str | None = None,
+    thesis_identity: str | None = None,
+    first_seen_at: datetime | None = None,
+    last_updated_at: datetime | None = None,
+    status: OpportunityEpisodeStatus = OpportunityEpisodeStatus.DISCOVERED,
+    horizon: Horizon | None = None,
+    catalyst_window: str | None = None,
+    closed_reason: str | None = None,
+    superseded_by: str | None = None,
 ) -> OpportunityEpisode:
     canonical_expressions = {
         ExpressionKind(kind): trade_expression_from_legacy(expression)
@@ -1804,12 +1870,15 @@ def build_opportunity_episode(
             if isinstance(selected_expression, Mapping)
             else ExpressionKind(selected_expression)
         )
-    canonical_episode_id = episode_id or opportunity_episode_id(ticker, decision_revision)
+    canonical_thesis = thesis_identity or f"ticker:{ticker.strip().upper()}"
+    canonical_episode_id = episode_id or opportunity_episode_id(
+        ticker, decision_revision, thesis_identity=canonical_thesis,
+    )
     canonical_lineage = []
     for item in input_lineage:
         lineage = item if isinstance(item, InputLineage) else InputLineage.model_validate(item)
         canonical_lineage.append(lineage.model_copy(update={
-            "opportunity_episode_id": lineage.opportunity_episode_id or canonical_episode_id,
+            "opportunity_episode_id": canonical_episode_id,
             "decision_revision": lineage.decision_revision or decision_revision,
             "policy_version": lineage.policy_version or policy_version,
             "cutoff": lineage.cutoff or cutoff,
@@ -1825,6 +1894,19 @@ def build_opportunity_episode(
         selected_expression=(
             canonical_expressions.get(selected_kind) if selected_kind is not None else None
         ),
+        thesis_identity=canonical_thesis,
+        first_seen_at=first_seen_at or cutoff,
+        last_updated_at=last_updated_at or cutoff,
+        status=status,
+        horizon=horizon or (
+            canonical_expressions.get(selected_kind).horizon
+            if selected_kind is not None and canonical_expressions.get(selected_kind) is not None
+            else None
+        ),
+        catalyst_window=catalyst_window,
+        current_revision=decision_revision,
+        closed_reason=closed_reason,
+        superseded_by=superseded_by,
     )
 
 
@@ -3764,7 +3846,11 @@ def compose_portfolio_impact(
             "greeks": None,
             "liquidity": {"status": "not_applicable"},
         }
-    elif kind is ExpressionKind.STOCK and not blockers:
+    elif kind in {
+        ExpressionKind.STOCK,
+        ExpressionKind.CRYPTO_SPOT,
+        ExpressionKind.CRYPTO_PERPETUAL,
+    } and not blockers:
         before_book = dict(before)
         before_metrics, after_metrics, stock_values, stock_blockers = _stock_impact_values(expression, before)
         after = {**before, "ticker": expression.ticker, "stock_impact": after_metrics}
@@ -4493,6 +4579,7 @@ def _build_expressions(
             loss_budget=loss_budget,
             max_loss_per_unit=max_loss,
             planned_loss=planned_loss,
+            expected_transaction_costs=_number(_pick(row, "expected_transaction_costs", "transaction_costs", "estimated_fees") or _pick(details, "expected_transaction_costs", "transaction_costs", "estimated_fees")),
             net_expected_value_per_loss_dollar=_number(_pick(row, "net_expected_value_per_loss_dollar", "ev_per_loss_dollar", "expected_value") or _pick(details, "net_expected_value_per_loss_dollar", "ev_per_loss_dollar")),
             lower_confidence_expectancy=_number(_pick(row, "lower_confidence_expectancy", "lower_95_expected_value") or _pick(details, "lower_confidence_expectancy", "lower_95_expected_value")),
             liquidity_score=_bounded(_number(_pick(row, "liquidity_score", "liquidity")), 0, 1),
@@ -4507,6 +4594,70 @@ def _build_expressions(
                 else "Option expression remains blocked until a complete executable bid/ask and size package is available."
             ),
             data_requests=[request for request in requests if request.field in {"option_quote", "portfolio_nav"}],
+        )
+    # Crypto expressions use only rows already present in the bounded input
+    # snapshot. There is no fallback provider or synthetic quote. An incomplete
+    # row is retained as unavailable evidence and therefore cannot authorize a
+    # position or replace the canonical CASH comparator.
+    crypto_rows = [
+        *usable.get("crypto_spot", []),
+        *usable.get("crypto_spot_quotes", []),
+        *usable.get("crypto_perpetual", []),
+        *usable.get("crypto_perpetual_quotes", []),
+        *usable.get("crypto_expressions", []),
+    ]
+    for row in crypto_rows:
+        structure = str(_pick(row, "expression_kind", "expression", "kind", "instrument_type", "market_type") or "").lower().replace("-", "_").replace(" ", "_")
+        kind = (
+            ExpressionKind.CRYPTO_SPOT
+            if structure in {"crypto_spot", "spot", "crypto", "crypto_asset"}
+            else ExpressionKind.CRYPTO_PERPETUAL
+            if structure in {"crypto_perpetual", "perpetual", "perp", "crypto_perp"}
+            else None
+        )
+        if kind is None:
+            continue
+        details = row.get("details") if isinstance(row.get("details"), Mapping) else {}
+        price = _number(_pick(row, "price", "mid", "mark", "last", "close") or _pick(details, "price", "mid", "mark"))
+        bid = _number(_pick(row, "bid") or _pick(details, "bid"))
+        ask = _number(_pick(row, "ask") or _pick(details, "ask"))
+        observed_at = _pick(row, "quote_time", "observed_at", "available_at")
+        executable = price is not None and price > 0 and observed_at is not None
+        if kind is ExpressionKind.CRYPTO_PERPETUAL:
+            executable = executable and bid is not None and ask is not None and ask >= bid
+        blockers = () if executable else ("crypto_evidence_unavailable",)
+        expected_value = _number(_pick(row, "net_utility", "net_expected_value_per_loss_dollar", "expected_value") or _pick(details, "net_utility", "expected_value"))
+        costs = _number(_pick(row, "expected_transaction_costs", "transaction_costs", "fees") or _pick(details, "expected_transaction_costs", "transaction_costs", "fees"))
+        if expected_value is not None and costs is not None:
+            expected_value -= costs
+        output[kind] = ExpressionDecision(
+            kind=kind,
+            ticker=symbol,
+            horizon=horizon,
+            thesis_revision=thesis_revision,
+            stance=stance,
+            scenarios=list(scenarios),
+            entry_range=PriceRange(low=price, high=price) if price is not None and price >= 0 else None,
+            target_range=target_range,
+            invalidation=invalidation,
+            quantity=1 if executable else None,
+            loss_budget=loss_budget,
+            max_loss_per_unit=_number(_pick(row, "max_loss", "max_loss_per_unit")),
+            planned_loss=_number(_pick(row, "planned_loss")),
+            expected_transaction_costs=costs,
+            net_expected_value_per_loss_dollar=expected_value,
+            lower_confidence_expectancy=_number(_pick(row, "lower_confidence_expectancy", "lower_95_expected_value")),
+            liquidity_score=_bounded(_number(_pick(row, "liquidity_score", "liquidity")), 0, 1),
+            spread_pct=_number(_pick(row, "spread_pct", "spread")),
+            fill_probability=_bounded(_number(_pick(row, "fill_probability", "fill_prob")), 0, 1),
+            horizon_fit=_bounded(_number(_pick(row, "horizon_fit")), 0, 1),
+            status="eligible" if executable else "unavailable",
+            blockers=blockers,
+            rationale=(
+                f"{kind.value.replace('_', ' ').title()} is compared against stock on the same ticker thesis."
+                if executable else "Crypto expression remains unavailable until bounded executable evidence is present."
+            ),
+            data_requests=[request for request in requests if request.field in {"crypto_quote", "portfolio_nav"}],
         )
     output.setdefault(ExpressionKind.CASH, ExpressionDecision(
         kind=ExpressionKind.CASH,
@@ -5143,6 +5294,10 @@ def _expression_stance(tactical: HorizonDecision, fundamental: HorizonDecision) 
 
 def _expression_kind(row: Mapping[str, Any]) -> ExpressionKind | None:
     structure = str(_pick(row, "structure", "expression", "kind", "option_type") or "").lower().replace("-", "_").replace(" ", "_")
+    if structure in {"crypto_spot", "spot", "crypto", "crypto_asset"}:
+        return ExpressionKind.CRYPTO_SPOT
+    if structure in {"crypto_perpetual", "perpetual", "perp", "crypto_perp"}:
+        return ExpressionKind.CRYPTO_PERPETUAL
     if structure in {"call", "long_call", "call_option"}:
         return ExpressionKind.CALL
     if structure in {"put", "long_put", "put_option"}:
@@ -5535,7 +5690,7 @@ __all__ = [
     "OUTCOME_ATTRIBUTION_CONTRACT_VERSION", "OUTCOME_ATTRIBUTION_EVALUATION_VERSION",
     "CapitalAction", "CapitalActionType",
     "capital_action_from_resolution", "DataRequest", "EvidenceItem", "EvidencePolarity",
-    "ExpressionDecision", "ExpressionKind", "TradeExpression", "trade_expression_from_legacy",
+    "ExpressionDecision", "ExpressionKind", "OpportunityEpisodeStatus", "TradeExpression", "trade_expression_from_legacy",
     "trade_expression_from_expression_decision", "expression_decision_from_trade_expression",
     "expression_decision_to_trade_expression", "Horizon", "HorizonDecision", "InputManifest",
     "InputLineage", "Invalidation", "NumericRange", "OpportunityEpisode",

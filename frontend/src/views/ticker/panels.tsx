@@ -244,6 +244,8 @@ function ExpressionTable({ expressions }: { expressions: components["schemas"]["
     state: expression.selected ? "SELECTED" : expression.status.toUpperCase(),
     quantity: expression.quantity == null ? "—" : expression.quantity.toLocaleString(),
     loss: money(expression.planned_loss),
+    utility: numberText(expression.net_expected_value_per_loss_dollar),
+    costs: money(expression.expected_transaction_costs),
     fit: expression.horizon_fit == null ? "—" : percent(expression.horizon_fit),
   }));
   return (
@@ -252,7 +254,7 @@ function ExpressionTable({ expressions }: { expressions: components["schemas"]["
         <h3 className="text-sm font-semibold">Expression tournament</h3>
         <span className="text-xs text-muted-foreground">same thesis · same invalidation</span>
       </div>
-      <SimpleTable rows={rows} empty="No expression comparison is available." columns={[["expression", "Expression"], ["state", "State"], ["quantity", "Qty"], ["loss", "Planned loss"], ["fit", "Horizon"]]} />
+      <SimpleTable rows={rows} empty="No expression comparison is available." columns={[["expression", "Expression"], ["state", "State"], ["quantity", "Qty"], ["loss", "Planned loss"], ["utility", "Net utility"], ["costs", "Costs"], ["fit", "Horizon"]]} />
     </div>
   );
 }

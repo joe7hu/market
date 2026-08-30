@@ -2496,6 +2496,18 @@
               }
             ]
           },
+          "expected_transaction_costs": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Transaction Costs"
+          },
           "fill_probability": {
             "anyOf": [
               {
@@ -2703,6 +2715,8 @@
           "PUT",
           "DEBIT_SPREAD",
           "CASH_SECURED_PUT",
+          "CRYPTO_SPOT",
+          "CRYPTO_PERPETUAL",
           "CASH"
         ],
         "title": "ExpressionKind",
@@ -3865,9 +3879,36 @@
         "additionalProperties": true,
         "description": "One point-in-time ticker thesis with competing trade expressions.",
         "properties": {
+          "catalyst_window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst Window"
+          },
+          "closed_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed Reason"
+          },
           "contract_version": {
             "default": "opportunity-episode.v1",
             "title": "Contract Version",
+            "type": "string"
+          },
+          "current_revision": {
+            "default": "",
+            "title": "Current Revision",
             "type": "string"
           },
           "cutoff": {
@@ -3896,6 +3937,28 @@
             "title": "Expressions",
             "type": "object"
           },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
+          "horizon": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Horizon"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "input_lineage": {
             "items": {
               "$ref": "#/components/schemas/InputLineage"
@@ -3903,6 +3966,18 @@
             "minItems": 1,
             "title": "Input Lineage",
             "type": "array"
+          },
+          "last_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Updated At"
           },
           "policy_version": {
             "minLength": 1,
@@ -3918,6 +3993,26 @@
                 "type": "null"
               }
             ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/OpportunityEpisodeStatus",
+            "default": "DISCOVERED"
+          },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By"
+          },
+          "thesis_identity": {
+            "default": "",
+            "title": "Thesis Identity",
+            "type": "string"
           },
           "ticker": {
             "minLength": 1,
@@ -3936,6 +4031,17 @@
         ],
         "title": "OpportunityEpisode",
         "type": "object"
+      },
+      "OpportunityEpisodeStatus": {
+        "enum": [
+          "DISCOVERED",
+          "UNDERWRITING",
+          "SETUP",
+          "ACTIVE",
+          "CLOSED"
+        ],
+        "title": "OpportunityEpisodeStatus",
+        "type": "string"
       },
       "OpportunityRank": {
         "additionalProperties": true,

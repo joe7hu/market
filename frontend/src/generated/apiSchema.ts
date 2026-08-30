@@ -2260,6 +2260,8 @@ export interface components {
             /** Data Requests */
             data_requests?: components["schemas"]["DataRequest"][];
             entry_range?: components["schemas"]["PriceRange"] | null;
+            /** Expected Transaction Costs */
+            expected_transaction_costs?: number | null;
             /** Fill Probability */
             fill_probability?: number | null;
             horizon: components["schemas"]["Horizon"];
@@ -2309,7 +2311,7 @@ export interface components {
          * ExpressionKind
          * @enum {string}
          */
-        ExpressionKind: "STOCK" | "CALL" | "PUT" | "DEBIT_SPREAD" | "CASH_SECURED_PUT" | "CASH";
+        ExpressionKind: "STOCK" | "CALL" | "PUT" | "DEBIT_SPREAD" | "CASH_SECURED_PUT" | "CRYPTO_SPOT" | "CRYPTO_PERPETUAL" | "CASH";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2759,11 +2761,20 @@ export interface components {
          * @description One point-in-time ticker thesis with competing trade expressions.
          */
         OpportunityEpisode: {
+            /** Catalyst Window */
+            catalyst_window?: string | null;
+            /** Closed Reason */
+            closed_reason?: string | null;
             /**
              * Contract Version
              * @default opportunity-episode.v1
              */
             contract_version: string;
+            /**
+             * Current Revision
+             * @default
+             */
+            current_revision: string;
             /**
              * Cutoff
              * Format: date-time
@@ -2777,16 +2788,35 @@ export interface components {
             expressions: {
                 [key: string]: components["schemas"]["ExpressionDecision"];
             };
+            /** First Seen At */
+            first_seen_at?: string | null;
+            horizon?: components["schemas"]["Horizon"] | null;
             /** Input Lineage */
             input_lineage: components["schemas"]["InputLineage"][];
+            /** Last Updated At */
+            last_updated_at?: string | null;
             /** Policy Version */
             policy_version: string;
             selected_expression?: components["schemas"]["ExpressionDecision"] | null;
+            /** @default DISCOVERED */
+            status: components["schemas"]["OpportunityEpisodeStatus"];
+            /** Superseded By */
+            superseded_by?: string | null;
+            /**
+             * Thesis Identity
+             * @default
+             */
+            thesis_identity: string;
             /** Ticker */
             ticker: string;
         } & {
             [key: string]: unknown;
         };
+        /**
+         * OpportunityEpisodeStatus
+         * @enum {string}
+         */
+        OpportunityEpisodeStatus: "DISCOVERED" | "UNDERWRITING" | "SETUP" | "ACTIVE" | "CLOSED";
         /**
          * OpportunityRank
          * @description Book-level research and trade rank for one ticker opportunity.

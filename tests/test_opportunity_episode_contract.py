@@ -10,9 +10,12 @@ from investment_panel.core.decision import (
     Horizon,
     InputLineage,
     OpportunityEpisode,
+    OpportunityEpisodeStatus,
     Stance,
     TradeExpression,
     build_ticker_decision,
+    build_opportunity_episode,
+    opportunity_episode_id,
 )
 
 
@@ -83,6 +86,55 @@ def test_episode_has_multiple_trade_expressions_and_one_selection() -> None:
     assert episode.selected_expression.kind is ExpressionKind.CALL
     assert sum(expression.selected for expression in episode.expressions.values()) == 1
     assert episode.input_lineage[0].opportunity_episode_id == episode.episode_id
+
+
+def test_episode_identity_is_durable_across_decision_revisions() -> None:
+    first = opportunity_episode_id("ACME", "decision-1")
+    revised = opportunity_episode_id("ACME", "decision-2")
+    assert first == revised
+    episode = build_opportunity_episode(
+        ticker="ACME",
+        decision_revision="decision-2",
+        policy_version="policy-1",
+        cutoff=CUTOFF,
+        input_lineage=[_lineage(decision_revision="decision-2")],
+        expressions={ExpressionKind.CALL: _expression(ExpressionKind.CALL, selected=True)},
+        selected_expression=ExpressionKind.CALL,
+        thesis_identity="thesis:acme-growth",
+        first_seen_at=CUTOFF - timedelta(days=2),
+        status=OpportunityEpisodeStatus.UNDERWRITING,
+        catalyst_window="earnings:2026-10-01",
+    )
+    assert episode.episode_id == opportunity_episode_id("ACME", "other", thesis_identity="thesis:acme-growth")
+    assert episode.first_seen_at == CUTOFF - timedelta(days=2)
+    assert episode.current_revision == "decision-2"
+    assert episode.status is OpportunityEpisodeStatus.UNDERWRITING
+
+
+def test_crypto_expressions_are_bounded_and_fail_closed_without_quotes() -> None:
+    decision = build_ticker_decision(
+        "BTC-USD",
+        {
+            "decision_queue": [{"symbol": "BTC-USD", "stance": "BULLISH", "available_at": "2026-08-22T13:55:00Z"}],
+            "crypto_spot_quotes": [{"symbol": "BTC-USD", "kind": "spot", "price": 100, "available_at": "2026-08-22T13:55:00Z", "expected_value": 0.3}],
+            "crypto_perpetual_quotes": [{"symbol": "BTC-USD", "kind": "perpetual", "price": 100, "bid": 99.9, "ask": 100.1, "available_at": "2026-08-22T13:55:00Z", "expected_value": 0.4}],
+        },
+        as_of=CUTOFF,
+    )
+    assert decision.expressions[ExpressionKind.CRYPTO_SPOT].availability_status.value == "available"
+    assert decision.expressions[ExpressionKind.CRYPTO_PERPETUAL].availability_status.value == "available"
+    assert decision.selected_expression is not None
+
+    unavailable = build_ticker_decision(
+        "BTC-USD",
+        {
+            "decision_queue": [{"symbol": "BTC-USD", "stance": "BULLISH", "available_at": "2026-08-22T13:55:00Z"}],
+            "crypto_spot_quotes": [{"symbol": "BTC-USD", "kind": "spot", "available_at": "2026-08-22T13:55:00Z"}],
+        },
+        as_of=CUTOFF,
+    )
+    assert unavailable.expressions[ExpressionKind.CRYPTO_SPOT].status in {"unavailable", "blocked"}
+    assert unavailable.expressions[ExpressionKind.CRYPTO_SPOT].blockers
 
 
 @pytest.mark.parametrize(

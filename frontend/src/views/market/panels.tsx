@@ -155,7 +155,7 @@ export function MarketStateProjection({ snapshotRows, coverageRows }: { snapshot
         <div className="grid gap-1 sm:grid-cols-2">
           {coverageRows.map((row, index) => (
             <p key={`${textField(row, ["horizon"])}:${textField(row, ["dimension"])}:${index}`} className="text-[11px] text-muted-foreground">
-              <span className="text-foreground">{textField(row, ["horizon"])} / {textField(row, ["dimension"])}</span> · {textField(row, ["current_status"], "unavailable")} · {textField(row, ["decision_impact"], "context")} · {textField(row, ["selected_source"], "source unavailable")}
+              <span className="text-foreground">{textField(row, ["horizon"])} / {textField(row, ["dimension"])}</span> · {textField(row, ["current_status"], "unavailable")} · {textField(row, ["decision_impact"], "context")} · {textField(row, ["selected_source"], "source unavailable")} · priority {textField(row, ["source_priority"], "unavailable")} · PIT {String(row.point_in_time_safe ?? "unavailable")} · {textField(row, ["blockers"], "no blockers")}
             </p>
           ))}
         </div>
