@@ -6,6 +6,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision.governance import TRACKED_METRICS
 from investment_panel.database.runtime import DatabaseRuntime
+import investment_panel.database.strategy_governance as strategy_governance
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
 
 
@@ -138,6 +139,45 @@ def test_promotion_rejects_structural_paper_counts_without_database_links(
         result = StrategyGovernanceRepository(runtime).promotion_readiness(strategy_id)
         assert result["promotion_eligible"] is False
         assert "execution_grade_paper_evidence_not_real" in result["blockers"]
+    finally:
+        runtime.close()
+
+
+def test_automatic_promotion_ignores_other_authority_group(
+    migrated_postgres_dsn: str, monkeypatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    monkeypatch.setattr(strategy_governance, "_promotion_evidence_passes", lambda evaluations: True)
+    try:
+        with runtime.transaction() as connection:
+            base_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, authority_group) "
+                "VALUES ('unrelated-base', 1, 'base', 'active', %s, 'unrelated-group') RETURNING id",
+                [Jsonb({})],
+            ).fetchone()["id"]
+            candidate_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
+                "VALUES ('unrelated-candidate', 2, 'candidate', 'candidate', %s, %s, 'unrelated-group') RETURNING id",
+                [Jsonb({"max_spread_pct": 0.2}), base_id],
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT INTO analysis.agent_task (task_kind, status, request, result) "
+                "VALUES ('strategy_mutation_proposal', 'completed', %s, %s)",
+                [Jsonb({}), Jsonb({
+                    "candidate_revision_id": candidate_id,
+                    "proposed_parameter_changes": {"max_spread_pct": 0.2},
+                })],
+            )
+        assert StrategyGovernanceRepository(runtime).automatic_promote_eligible() == 0
+        with runtime.read() as connection:
+            statuses = connection.execute(
+                "SELECT status FROM analysis.strategy_revision WHERE id IN (%s, %s) ORDER BY id",
+                [base_id, candidate_id],
+            ).fetchall()
+        assert [row["status"] for row in statuses] == ["active", "candidate"]
     finally:
         runtime.close()
 

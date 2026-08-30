@@ -33,9 +33,9 @@ class StrategyGovernanceRepository:
                 """,
                 [strategy_revision_id, cutoff, cutoff, cutoff, cutoff],
             ).fetchall()
-        evaluations = [dict(row) for row in rows]
-        _quarantine_unverified_paper_evaluations(connection, strategy_revision_id, evaluations)
-        return promotion_readiness(evaluations, now=cutoff)
+            evaluations = [dict(row) for row in rows]
+            _quarantine_unverified_paper_evaluations(connection, strategy_revision_id, evaluations)
+            return promotion_readiness(evaluations, now=cutoff)
 
     def automatic_promote_eligible(self, *, enabled: bool = True) -> int:
         if not enabled:
@@ -53,11 +53,14 @@ class StrategyGovernanceRepository:
                 WHERE task.task_kind = 'strategy_mutation_proposal'
                   AND task.status = 'completed'
                   AND candidate.status IN ('candidate', 'testing', 'approved')
+                  AND candidate.authority_group = 'options-radar-core'
                   AND COALESCE(task.validation->>'status', '') <> 'promoted'
                 ORDER BY task.created_at
                 """
             ).fetchall()
             for proposal in proposals:
+                if proposal["authority_group"] != "options-radar-core":
+                    continue
                 evaluations = [dict(row) for row in connection.execute(
                     """
                     SELECT evaluation_type, verdict, metrics, evidence,
@@ -84,8 +87,7 @@ class StrategyGovernanceRepository:
                 )
                 active = connection.execute(
                     "SELECT id FROM analysis.strategy_revision "
-                    "WHERE authority_group = %s AND status = 'active' FOR UPDATE",
-                    [proposal["authority_group"]],
+                    "WHERE authority_group = 'options-radar-core' AND status = 'active' FOR UPDATE",
                 ).fetchall()
                 if len(active) != 1 or active[0]["id"] != proposal["supersedes_id"]:
                     continue
