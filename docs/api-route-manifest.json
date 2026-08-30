@@ -6,6 +6,7 @@
   "/api/agent/experiments/current": ["GET"],
   "/api/agent/research-prompt": ["GET"],
   "/api/decision-inbox": ["GET"],
+  "/api/decision-funnel": ["GET"],
   "/api/event-scout": ["GET"],
   "/api/event-scout/packets": ["GET"],
   "/api/event-scout/replay": ["GET", "POST"],

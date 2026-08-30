@@ -158,6 +158,7 @@ const plan = (overrides: Partial<TradePlan> = {}): TradePlan => ({
   action: "BUY",
   alpha_signal_id: "signal-1",
   authorization_mode: "PAPER",
+  availability_status: "available",
   blockers: [],
   contract_version: "trade-plan.v1",
   cutoff: "2026-08-28T13:30:00Z",
@@ -207,6 +208,8 @@ const plan = (overrides: Partial<TradePlan> = {}): TradePlan => ({
   rank_id: "rank-1",
   rationale: "Stored rationale.",
   selected_expression: {
+    availability_status: "available",
+    blockers: [],
     horizon: "TACTICAL",
     kind: "CALL",
     legs: [{ contract_id: "contract-1", option_type: "call", side: "long", strike: 105, expiration: "2026-09-19" }],

@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from investment_panel.core.decision import (
+    AvailabilityStatus,
     ExpressionKind,
+    OpportunityRank,
+    apply_opportunity_rank_safety,
     TradePlan,
     bind_trade_plan,
     build_decision_resolution,
@@ -183,6 +186,66 @@ def test_blocked_resolution_preserves_diagnostic_blockers() -> None:
 
     assert resolution.primary_blocker == "alternate_expression_unavailable"
     assert resolution.blockers == ["alternate_expression_unavailable", "market_state_unavailable"]
+
+
+@pytest.mark.parametrize(
+    ("blocker", "expected"),
+    (
+        ("selected_expression_unsupported", AvailabilityStatus.UNSUPPORTED),
+        ("market_state_missing", AvailabilityStatus.MISSING),
+        ("market_state_stale", AvailabilityStatus.STALE),
+        ("alpha_oos_evaluation_missing", AvailabilityStatus.NOT_CALIBRATED),
+        ("risk_policy_blocked", AvailabilityStatus.POLICY_BLOCKED),
+        ("publication_lineage_mismatch", AvailabilityStatus.ERROR),
+        ("cash_selected", AvailabilityStatus.NOT_APPLICABLE),
+    ),
+)
+def test_blocked_trade_plan_projects_typed_primary_without_losing_details(
+    blocker: str, expected: AvailabilityStatus,
+) -> None:
+    decision, rank, signal = _decision()
+    resolution = build_decision_resolution(
+        action="NO_TRADE",
+        decision_revision=decision.decision_revision,
+        policy_version=decision.policy_version,
+        provenance={"as_of": AS_OF},
+        ticker=decision.ticker,
+        blockers=[blocker, "zz_secondary_diagnostic"],
+        blocked=True,
+    )
+
+    plan = build_trade_plan(
+        decision=decision, rank=rank, alpha_signal=signal, resolution=resolution,
+    )
+
+    assert plan.availability_status is expected
+    assert plan.primary_blocker == blocker
+    assert plan.blockers == (blocker, "zz_secondary_diagnostic")
+
+
+def test_rank_safety_reprojects_primary_status_and_preserves_all_blockers() -> None:
+    from investment_panel.jobs import ticker_decisions
+
+    decision, rank_payload, _signal = _decision()
+    rank = OpportunityRank.model_construct(
+        **rank_payload,
+        cutoff=AS_OF,
+        input_cutoff=AS_OF,
+        blockers=("existing_rank_diagnostic",),
+        availability_status=AvailabilityStatus.AVAILABLE,
+    )
+    safe = apply_opportunity_rank_safety(
+        decision, {"trade_rank_unavailable_reason": "alpha_oos_evaluation_missing"},
+    )
+
+    projected = ticker_decisions._rank_after_safety(rank, safe)
+
+    assert projected.availability_status is AvailabilityStatus.NOT_CALIBRATED
+    assert projected.primary_blocker == "alpha_oos_evaluation_missing"
+    assert projected.blockers == (
+        "existing_rank_diagnostic",
+        "alpha_oos_evaluation_missing",
+    )
 
 
 def test_binding_reuses_exact_plan_terms_in_resolution() -> None:

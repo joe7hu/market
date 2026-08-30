@@ -165,7 +165,7 @@ from investment_panel.core.decision.alpha import (
     calculate_trade_utility,
     rank_opportunities,
 )
-from investment_panel.core.decision.ticker import AvailabilityStatus
+from investment_panel.core.decision.ticker import AvailabilityStatus, availability_status_for_blockers
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 
 __all__ = [
@@ -306,6 +306,7 @@ __all__ = [
     "TICKER_OPPORTUNITY_RANKING_VERSION",
     "AlphaSignal",
     "AvailabilityStatus",
+    "availability_status_for_blockers",
     "EligibleUniverseSnapshot",
     "InstrumentStateSnapshot",
     "OpportunityRank",

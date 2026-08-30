@@ -129,6 +129,34 @@ class TodayResponse(BaseModel):
     count: int = 0
 
 
+class DecisionFunnelBlocker(BaseModel):
+    reason: str
+    count: int
+    affected_symbols: list[str] = Field(default_factory=list)
+
+
+class DecisionFunnelStage(BaseModel):
+    stage: str
+    count: int
+    total: int
+    percentage: float = Field(ge=0, le=1)
+    unavailable_count: int
+    affected_symbols: list[str] = Field(default_factory=list)
+    top_blockers: list[DecisionFunnelBlocker] = Field(default_factory=list)
+    owner: str
+    retry: str
+
+
+class DecisionFunnelResponse(BaseModel):
+    policy_version: str
+    generated_at: datetime
+    published_at: datetime | None = None
+    age_seconds: float | None = None
+    total: int
+    actionable: int
+    stages: list[DecisionFunnelStage] = Field(default_factory=list)
+
+
 class TickerBenchmarkResponse(FlexibleResponse):
     status: ApiStatusResponse
     benchmark_key: str | None = None
@@ -630,6 +658,7 @@ __all__ = [
     "ApiStatusResponse",
     "DashboardResponse",
     "DecisionInboxResponse",
+    "DecisionFunnelResponse",
     "EventScoutEventsResponse",
     "EventScoutPacketsResponse",
     "EventScoutReplayResponse",

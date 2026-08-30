@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
@@ -10,6 +11,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision import (
+    AvailabilityStatus,
     Horizon,
     OUTCOME_ATTRIBUTION_CONTRACT_VERSION,
     OUTCOME_ATTRIBUTION_EVALUATION_VERSION,
@@ -21,6 +23,7 @@ from investment_panel.core.decision import (
     TickerDecision,
     TradePlan,
     InputLineage,
+    bind_trade_plan,
     capital_action_from_resolution,
     evaluate_ticker_policy,
     outcome_attribution_stable_key,
@@ -41,6 +44,7 @@ HORIZON_SESSIONS = {
 }
 STOCK_COST_MODEL_VERSION = "stock-close-estimated-cost-v1"
 STOCK_COST_PER_SIDE_BPS = 10.0
+TICKER_RANKING_SCOPE = "ticker-opportunity-ranking"
 
 
 def select_current_outcome_attributions(
@@ -232,8 +236,25 @@ class TickerDecisionRepository:
         return {"status": "published", "ticker_decision_id": decision_id, "decision_revision": decision.decision_revision}
 
     def latest(self, ticker: str) -> TickerDecision | None:
+        rows = self._current_decision_rows(
+            reference=datetime.now(UTC), ticker=ticker.strip().upper(),
+        )
+        if not rows:
+            return None
+        try:
+            return _decision_from_row(rows[0])
+        except (TypeError, ValueError, KeyError):
+            # Legacy rows remain readable through the raw panel model, but a
+            # malformed row must not block a new canonical publication.
+            return None
+
+    def _current_decision_rows(
+        self, *, reference: datetime, ticker: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read the one canonical current row per ticker at a bounded time."""
+
         with self.runtime.read() as connection:
-            row = connection.execute(
+            rows = connection.execute(
                 """
                 WITH current_candidates AS (
                     SELECT instrument.symbol AS ticker, decision.contract_version,
@@ -262,9 +283,9 @@ class TickerDecisionRepository:
                       AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
                       AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
                       AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
-                      AND decision.as_of <= now()
+                      AND decision.as_of <= %s
                       AND decision.published_at IS NOT NULL
-                      AND decision.published_at <= now()
+                      AND decision.published_at <= %s
                       AND jsonb_typeof(decision.tactical) = 'object'
                       AND jsonb_typeof(decision.fundamental) = 'object'
                       AND jsonb_typeof(decision.capital_action) = 'object'
@@ -272,7 +293,7 @@ class TickerDecisionRepository:
                       AND jsonb_typeof(decision.expressions) = 'object'
                       AND jsonb_typeof(decision.input_manifest) = 'object'
                 )
-                SELECT ticker, contract_version,
+                SELECT DISTINCT ON (ticker) ticker, contract_version,
                        as_of, decision_revision,
                        tactical, fundamental, capital_action,
                        resolution, policy_version,
@@ -282,24 +303,57 @@ class TickerDecisionRepository:
                        learning_history, input_manifest,
                        market_state_publication_id,
                        market_state_snapshot, portfolio_impacts,
-                       risk_policy_snapshot
+                       risk_policy_snapshot, published_at
                 FROM current_candidates
-                WHERE ticker = %s
-                  AND authority_count = 1
+                WHERE authority_count = 1
                   AND opportunity_authority_count = 1
-                ORDER BY as_of DESC, published_at DESC, created_at DESC, id DESC
-                LIMIT 1
+                  AND (%s::text IS NULL OR ticker = %s)
+                ORDER BY ticker, as_of DESC, published_at DESC, created_at DESC, id DESC
                 """,
-                [ticker.strip().upper()],
-            ).fetchone()
-        if not row:
-            return None
-        try:
-            return _decision_from_row(row)
-        except (TypeError, ValueError, KeyError):
-            # Legacy rows remain readable through the raw panel model, but a
-            # malformed row must not block a new canonical publication.
-            return None
+                [reference, reference, ticker, ticker],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def decision_funnel(
+        self, *, now: datetime | None = None, action_queue: Iterable[Mapping[str, Any]] = (),
+    ) -> dict[str, Any]:
+        """Summarize the current backend-owned ticker decision lane."""
+
+        reference = _utc(now or datetime.now(UTC))
+        analysis = AnalysisRepository(self.runtime)
+        alpha_rows = analysis.publication_rows(TICKER_RANKING_SCOPE, "alpha_signal", include_lineage=True)
+        rank_rows = analysis.publication_rows(TICKER_RANKING_SCOPE, "opportunity_rank", include_lineage=True)
+        plan_rows = analysis.publication_rows(TICKER_RANKING_SCOPE, "trade_plan", include_lineage=True)
+        decisions: list[dict[str, Any]] = []
+        for row in self._current_decision_rows(reference=reference):
+            try:
+                decision = _decision_from_row(row)
+            except (TypeError, ValueError, KeyError):
+                continue
+            snapshot = decision.market_state_snapshot
+            facts_available = bool(
+                decision.opportunity_episode
+                and decision.input_lineage
+                and snapshot is not None
+                and snapshot.availability_status is AvailabilityStatus.AVAILABLE
+                and decision.market_state_publication_id
+                and decision.market_state_publication_id == snapshot.publication_id
+            )
+            decisions.append({
+                **decision.model_dump(mode="json"),
+                "published_at": row["published_at"],
+                "point_in_time_facts_available": facts_available,
+                "point_in_time_fact_blockers": (
+                    []
+                    if facts_available
+                    else list(snapshot.blockers) if snapshot is not None and snapshot.blockers
+                    else ["point_in_time_facts_unavailable"]
+                ),
+            })
+        return decision_funnel_payload(
+            decisions, alpha_rows, rank_rows, plan_rows,
+            action_queue_rows=list(action_queue), now=reference,
+        )
 
     def refresh_outcomes(
         self,
@@ -1164,6 +1218,8 @@ def plan_authority(row: Any) -> tuple[TradePlan | None, str | None]:
     plan = decision.trade_plan
     if plan is None:
         return None, "trade_plan_missing"
+    if plan.eligibility != "ACTIONABLE" or plan.availability_status is not AvailabilityStatus.AVAILABLE:
+        return plan, plan.primary_blocker or "trade_plan_unavailable"
     if not plan.publication_id:
         return plan, "trade_plan_publication_missing"
     manifest = dict(row.get("input_manifest") or {}) if hasattr(row, "get") else {}
@@ -1593,8 +1649,9 @@ def _decision_from_row(row: Any) -> TickerDecision:
         row.get("portfolio_impacts") if hasattr(row, "get") else {},
         ticker=ticker,
     )
-    trade_plan = trade_plan_from_persisted(manifest.get("trade_plan"), ticker=ticker)
-    return TickerDecision.model_validate({
+    trade_plan_value = trade_plan_from_persisted(manifest.get("trade_plan"), ticker=ticker)
+    trade_plan = TradePlan.model_validate(trade_plan_value) if trade_plan_value is not None else None
+    decision = TickerDecision.model_validate({
         "decision_contract_version": row["contract_version"],
         "ticker": ticker,
         "as_of": row["as_of"],
@@ -1621,8 +1678,9 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "instrument_state_snapshot": manifest.get("instrument_state_snapshot"),
         "alpha_signals": manifest.get("alpha_signals") or [],
         "opportunity_rank": manifest.get("opportunity_rank"),
-        "trade_plan": trade_plan,
+        "trade_plan": None,
     })
+    return bind_trade_plan(decision, trade_plan) if trade_plan is not None else decision
 
 
 def _uuid_or_none(value: Any) -> UUID | None:
@@ -1804,6 +1862,145 @@ def _learning_metadata(
     }
 
 
+def decision_funnel_payload(
+    decisions: list[dict[str, Any]],
+    alpha_rows: list[dict[str, Any]],
+    rank_rows: list[dict[str, Any]],
+    plan_rows: list[dict[str, Any]],
+    *,
+    action_queue_rows: list[dict[str, Any]] | None = None,
+    now: datetime,
+) -> dict[str, Any]:
+    symbols = sorted({
+        str(row.get("ticker") or row.get("symbol") or "").upper()
+        for rows in (decisions, alpha_rows, rank_rows, plan_rows)
+        for row in rows
+        if str(row.get("ticker") or row.get("symbol") or "").strip()
+    })
+    total = len(symbols)
+    decision_by_symbol = {str(row.get("ticker") or "").upper(): row for row in decisions}
+    alpha_by_symbol = {str(row.get("ticker") or "").upper(): row for row in alpha_rows}
+    rank_by_symbol = {str(row.get("ticker") or "").upper(): row for row in rank_rows}
+    plan_by_symbol = {str(row.get("ticker") or "").upper(): row for row in plan_rows}
+    queue_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in action_queue_rows or ():
+        symbol = str(row.get("ticker") or "").upper()
+        if symbol and row.get("source") == "capital_action":
+            queue_by_symbol.setdefault(symbol, []).append(row)
+
+    def details(stage: str, symbol: str) -> tuple[bool, list[str]]:
+        decision = decision_by_symbol.get(symbol, {})
+        if stage == "point_in_time_facts":
+            available = decision.get("point_in_time_facts_available") is True
+            blockers = list(decision.get("point_in_time_fact_blockers") or ())
+            return available, blockers or ([] if available else ["point_in_time_facts_unavailable"])
+        if stage == "qualified_stock_alpha":
+            row = alpha_by_symbol.get(symbol, {})
+            available = row.get("availability_status") == "available"
+            return available, list(row.get("blockers") or (["qualified_stock_alpha_missing"] if not available else []))
+        if stage == "stock_expression":
+            expressions = decision.get("expressions") if isinstance(decision.get("expressions"), Mapping) else {}
+            row = expressions.get("STOCK") or expressions.get("stock") or {}
+            available = isinstance(row, Mapping) and row.get("availability_status") == "available"
+            blockers = list(row.get("blockers") or ()) if isinstance(row, Mapping) else []
+            return available, blockers or ([] if available else ["stock_expression_unavailable"])
+        if stage == "portfolio_impact":
+            impacts = decision.get("portfolio_impacts") if isinstance(decision.get("portfolio_impacts"), Mapping) else {}
+            row = impacts.get("STOCK") or impacts.get("stock") or {}
+            available = isinstance(row, Mapping) and row.get("availability_status") == "available"
+            blockers = list(row.get("blockers") or ()) if isinstance(row, Mapping) else []
+            return available, blockers or ([] if available else ["stock_portfolio_impact_unavailable"])
+        if stage == "trade_rank":
+            row = rank_by_symbol.get(symbol, {})
+            available = row.get("availability_status") == "available" and row.get("trade_rank") is not None
+            blocker = row.get("primary_blocker") or row.get("trade_rank_unavailable_reason")
+            return available, [] if available else [str(blocker or "trade_rank_unavailable")]
+        if stage == "decision_resolution":
+            row = decision.get("resolution") if isinstance(decision.get("resolution"), Mapping) else {}
+            available = row.get("eligibility") == "ACTIONABLE" and row.get("action") not in {"NO_TRADE", "AVOID"}
+            return available, list(row.get("blockers") or ([] if available else ["decision_resolution_blocked"]))
+        if stage == "action_queue":
+            rows = queue_by_symbol.get(symbol, [])
+            available = any(
+                row.get("lifecycle_state") == "actionable"
+                and row.get("selected_expression") == "STOCK"
+                and isinstance(row.get("trade_plan"), Mapping)
+                for row in rows
+            )
+            blockers = [
+                str(row.get("primary_blocker"))
+                for row in rows
+                if row.get("primary_blocker")
+            ]
+            return available, blockers or ([] if available else ["action_queue_unavailable"])
+        row = plan_by_symbol.get(symbol, {})
+        available = row.get("availability_status") == "available" and row.get("eligibility") == "ACTIONABLE"
+        blockers = list(row.get("blockers") or ([] if available else ["trade_plan_unavailable"]))
+        return available, blockers
+
+    owners = {
+        "point_in_time_facts": ("ticker-decisions", "Refresh source facts and MarketState."),
+        "qualified_stock_alpha": ("strategy-governance", "Publish a passed OOS ticker-stock-alpha revision."),
+        "stock_expression": ("ticker-decisions", "Refresh the ticker decision inputs."),
+        "portfolio_impact": ("portfolio-impact", "Refresh the point-in-time portfolio book."),
+        "trade_rank": ("ticker-ranking", "Publish the ticker opportunity ranking."),
+        "decision_resolution": ("decision-policy", "Resolve the selected expression against CASH."),
+        "trade_plan": ("ticker-decisions", "Publish a complete paper TradePlan."),
+        "action_queue": ("today-action-queue", "Refresh ticker decisions and /api/today."),
+    }
+    stages = []
+    for stage in owners:
+        passed: list[str] = []
+        failed: list[tuple[str, str]] = []
+        for symbol in symbols:
+            available, blockers = details(stage, symbol)
+            if available:
+                passed.append(symbol)
+            else:
+                failed.extend((str(blocker), symbol) for blocker in blockers or [f"{stage}_unavailable"])
+        counts = Counter(reason for reason, _symbol in failed)
+        top_blockers = [
+            {
+                "reason": reason,
+                "count": count,
+                "affected_symbols": sorted({symbol for item, symbol in failed if item == reason})[:20],
+            }
+            for reason, count in counts.most_common(5)
+        ]
+        owner, retry = owners[stage]
+        stages.append({
+            "stage": stage,
+            "count": len(passed),
+            "total": total,
+            "percentage": len(passed) / total if total else 0.0,
+            "unavailable_count": total - len(passed),
+            "affected_symbols": sorted({symbol for _reason, symbol in failed})[:20],
+            "top_blockers": top_blockers,
+            "owner": owner,
+            "retry": retry,
+        })
+    published_values = [
+        parsed
+        for rows in (alpha_rows, rank_rows, plan_rows, decisions)
+        for row in rows
+        if (parsed := _parse_datetime(row.get("publication_published_at") or row.get("published_at"))) is not None
+    ]
+    published_at = max(published_values, default=None)
+    policy_version = next(
+        (str(row.get("ranking_version")) for row in rank_rows if row.get("ranking_version")),
+        "ticker-opportunity-ranking.v1",
+    )
+    return {
+        "policy_version": policy_version,
+        "generated_at": now,
+        "published_at": published_at,
+        "age_seconds": max(0.0, (now - published_at).total_seconds()) if published_at else None,
+        "total": total,
+        "actionable": stages[-1]["count"] if stages else 0,
+        "stages": stages,
+    }
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return _utc(value)
@@ -1846,6 +2043,7 @@ def _jsonable(value: Any) -> Any:
 
 
 __all__ = [
-    "HORIZON_SESSIONS", "TickerDecisionRepository", "paper_execution_for_plan", "plan_authority",
+    "HORIZON_SESSIONS", "TickerDecisionRepository", "decision_funnel_payload",
+    "paper_execution_for_plan", "plan_authority",
     "select_current_outcome_attributions",
 ]

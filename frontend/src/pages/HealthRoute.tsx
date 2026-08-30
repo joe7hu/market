@@ -17,7 +17,9 @@ import { TopErrorsPanel } from "@/views/health/categoryPanels";
 import { RefreshHistoryTable } from "@/views/health/tables";
 import { formatDateTime } from "@/views/health/format";
 import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api/options";
-import {numberFromRecord, recordField } from "@/views/optionsRadarData";
+import { loadDecisionFunnel, type DecisionFunnel } from "@/api/panel";
+import { numberFromRecord, recordField } from "@/views/optionsRadarData";
+import { DecisionFunnelPanel } from "@/views/health/decisionFunnel";
 
 export function HealthRoute() {
   const { data, loadScope, scopeStatus } = useMarketData();
@@ -26,8 +28,12 @@ export function HealthRoute() {
   const jobs = useRefreshJobs();
   const [reloading, setReloading] = useState(false);
   const [optionHistory, setOptionHistory] = useState<OptionHistoryHealth | null>(null);
+  const [decisionFunnel, setDecisionFunnel] = useState<DecisionFunnel | null>(null);
 
   useEffect(() => { void loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null)); }, []);
+  useEffect(() => {
+    void loadDecisionFunnel().then(setDecisionFunnel).catch(() => setDecisionFunnel(null));
+  }, []);
 
   const sourceRows = useMemo(() => parseSourceCatalog(data), [data]);
   const summary = useMemo(() => summarizeSourceHealth(sourceRows), [sourceRows]);
@@ -73,7 +79,12 @@ export function HealthRoute() {
   const reload = useCallback(async () => {
     setReloading(true);
     try {
-      await Promise.all([loadScope("health").catch(() => undefined), jobs.refresh(), loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null))]);
+      await Promise.all([
+        loadScope("health").catch(() => undefined),
+        jobs.refresh(),
+        loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null)),
+        loadDecisionFunnel().then(setDecisionFunnel).catch(() => setDecisionFunnel(null)),
+      ]);
     } finally {
       setReloading(false);
     }
@@ -99,6 +110,8 @@ export function HealthRoute() {
       ) : null}
       <ScopeStatusNotice status={scopeStatus.health} onRetry={() => void reload()} />
       <DataFlowDiagram stages={flowStages} />
+
+      <DecisionFunnelPanel funnel={decisionFunnel} />
 
       <SourceHealthControlPlane sourceRows={sourceRows} jobs={jobs} />
 

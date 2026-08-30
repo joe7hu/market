@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from investment_panel.core.decision import (
     AvailabilityStatus,
     ExpressionKind,
+    availability_status_for_blockers,
     apply_opportunity_rank_safety,
+    build_alpha_signal,
     build_instrument_state_snapshot,
     build_ticker_decision,
     calculate_trade_utility,
@@ -24,6 +26,72 @@ def test_availability_status_exposes_all_typed_states() -> None:
         "available", "unsupported", "missing", "stale", "not_calibrated",
         "policy_blocked", "error", "not_applicable", "pending",
     }
+    assert {
+        blocker: availability_status_for_blockers((blocker,))
+        for blocker in (
+            "selected_expression_unsupported",
+            "market_state_missing",
+            "market_state_stale",
+            "alpha_oos_evaluation_missing",
+            "alpha_oos_evaluation_not_passed",
+            "alpha_evaluation_lineage_mismatch",
+            "risk_policy_blocked",
+            "publication_lineage_mismatch",
+            "cash_selected",
+        )
+    } == {
+        "selected_expression_unsupported": AvailabilityStatus.UNSUPPORTED,
+        "market_state_missing": AvailabilityStatus.MISSING,
+        "market_state_stale": AvailabilityStatus.STALE,
+        "alpha_oos_evaluation_missing": AvailabilityStatus.NOT_CALIBRATED,
+        "alpha_oos_evaluation_not_passed": AvailabilityStatus.POLICY_BLOCKED,
+        "alpha_evaluation_lineage_mismatch": AvailabilityStatus.ERROR,
+        "risk_policy_blocked": AvailabilityStatus.POLICY_BLOCKED,
+        "publication_lineage_mismatch": AvailabilityStatus.ERROR,
+        "cash_selected": AvailabilityStatus.NOT_APPLICABLE,
+    }
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("artifact_published_at", "evaluation_evaluated_at", "evaluation_available_at"),
+)
+@pytest.mark.parametrize("timestamp_kind", ("future", "naive"))
+def test_available_alpha_rejects_unbounded_qualification_timestamps(
+    field: str, timestamp_kind: str,
+) -> None:
+    timestamps = {
+        "artifact_published_at": CUTOFF,
+        "evaluation_evaluated_at": CUTOFF,
+        "evaluation_available_at": CUTOFF,
+    }
+    timestamps[field] = (
+        CUTOFF + timedelta(microseconds=1)
+        if timestamp_kind == "future"
+        else CUTOFF.replace(tzinfo=None)
+    )
+
+    with pytest.raises(ValueError, match="qualification timestamps"):
+        build_alpha_signal(
+            ticker="ACME",
+            opportunity_episode_id="episode:ACME",
+            decision_revision="revision:ACME",
+            instrument_state_snapshot_id="snapshot:ACME",
+            as_of=CUTOFF,
+            target="expected_return",
+            horizon="TACTICAL",
+            forecast_value=0.1,
+            cohort_id="cohort.test",
+            calibration_state="calibrated_exact_cohort",
+            model_version="model.test",
+            availability_status=AvailabilityStatus.AVAILABLE,
+            strategy_key="ticker-stock-alpha",
+            strategy_revision_id=1,
+            model_artifact_id="artifact.test",
+            strategy_evaluation_id="evaluation.test",
+            evaluation_stage="out_of_sample",
+            **timestamps,
+        )
 
 
 def _candidate(
@@ -76,6 +144,14 @@ def _candidate(
             "forecast_value": 0.1,
             "cohort_id": "cohort.test",
             "calibration_state": "calibrated_exact_cohort",
+            "availability_status": "available",
+            "strategy_key": "ticker-stock-alpha",
+            "strategy_revision_id": 1,
+            "model_artifact_id": "artifact.test",
+            "strategy_evaluation_id": "evaluation.test",
+            "artifact_published_at": CUTOFF,
+            "evaluation_evaluated_at": CUTOFF,
+            "evaluation_available_at": CUTOFF,
             "model_version": "model.test",
             "evaluation_stage": evaluation_stage,
             "as_of": CUTOFF,

@@ -8,12 +8,24 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app import job_control, panel_snapshot
 from app import dependencies
+from app.actions.options import OptionsActions
 from app.contracts import AgentSettingsInput, ResearchSourcesInput
 from app.data_access import loaders, settings as settings_owner
-from app.response_contracts import RefreshJobResponse, RefreshJobsResponse, SettingsResponse
+from app.response_contracts import DecisionFunnelResponse, RefreshJobResponse, RefreshJobsResponse, SettingsResponse
+from app.routers.panel import today as today_action_queue
 from investment_panel.core.config import AppConfig
 
 router = APIRouter()
+
+
+@router.get("/api/decision-funnel", response_model=DecisionFunnelResponse)
+def decision_funnel(
+    runtime=Depends(dependencies.get_runtime),
+    config: AppConfig = Depends(dependencies.get_config),
+    option_actions: OptionsActions = Depends(dependencies.get_options_actions),
+) -> dict[str, Any]:
+    queue = today_action_queue(config, option_actions)
+    return loaders.load_decision_funnel(runtime, action_queue=queue.get("actions") or ())
 
 
 @router.get("/api/refresh-jobs", response_model=RefreshJobsResponse, response_model_exclude_unset=True)

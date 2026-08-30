@@ -34,6 +34,7 @@ export type RefreshJobsPayload = {
 };
 export type SourceCatalogPayload = ApiSchema["SourceCatalogResponse"];
 export type TodayResponse = ApiSchema["TodayResponse"];
+export type DecisionFunnel = ApiSchema["DecisionFunnelResponse"];
 export type SourceCatalogRow = {
   source_id: string;
   source_name: string;
@@ -84,6 +85,10 @@ export async function loadPanelData(): Promise<PanelData> {
 
 export async function loadToday(): Promise<TodayResponse> {
   return getJson<TodayResponse>("/api/today");
+}
+
+export async function loadDecisionFunnel(): Promise<DecisionFunnel> {
+  return getJson<DecisionFunnel>("/api/decision-funnel");
 }
 
 export async function loadPanelScope(

@@ -6,6 +6,7 @@ import sys
 
 import psycopg
 import pytest
+from psycopg.errors import RaiseException
 
 from investment_panel.database.migrations import HEAD_REVISION, downgrade_database, main as migration_main, upgrade_database
 from investment_panel.database.authority import close_cached_runtimes, runtime_for_url
@@ -254,9 +255,132 @@ def test_recovery_cohort_reset_refuses_open_orders_then_quarantines_legacy_audit
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
 
 
-def test_strategy_authority_migration_reconciles_duplicate_active_revisions(
+def test_strategy_evaluation_availability_migration_does_not_invent_history(
     postgres_dsn: str,
 ) -> None:
+    upgrade_database(postgres_dsn, "20260829_0056")
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        revision_id = connection.execute(
+            """
+            INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, authority_group)
+            VALUES (
+                'migration-evaluation', 1, 'migration evaluation', 'active', '{}',
+                'migration-evaluation'
+            )
+            RETURNING id
+            """
+        ).fetchone()[0]
+        evaluation_id = connection.execute(
+            """
+            INSERT INTO analysis.strategy_evaluation
+                (strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics)
+            VALUES (%s, 'out_of_sample', now() - interval '1 year', 'pass', '{}')
+            RETURNING id
+            """,
+            [revision_id],
+        ).fetchone()[0]
+        connection.commit()
+        historical_cutoff = connection.execute("SELECT clock_timestamp()").fetchone()[0]
+
+    upgrade_database(postgres_dsn)
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        available_at = connection.execute(
+            "SELECT available_at FROM analysis.strategy_evaluation WHERE id = %s",
+            [evaluation_id],
+        ).fetchone()[0]
+
+    assert available_at > historical_cutoff
+
+
+def test_strategy_authority_is_append_only_after_immutability_migration(
+    postgres_dsn: str,
+) -> None:
+    upgrade_database(postgres_dsn, "20260830_0057")
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        revision_id = connection.execute(
+            """
+            INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, authority_group)
+            VALUES ('immutable-strategy', 1, 'immutable strategy', 'active',
+                    '{"model":"v1"}', 'immutable-strategy')
+            RETURNING id
+            """
+        ).fetchone()[0]
+        evaluation_id = connection.execute(
+            """
+            INSERT INTO analysis.strategy_evaluation
+                (strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics)
+            VALUES (%s, 'out_of_sample', now(), 'pass', '{}')
+            RETURNING id
+            """,
+            [revision_id],
+        ).fetchone()[0]
+        connection.commit()
+
+    upgrade_database(postgres_dsn)
+    with closing(psycopg.connect(postgres_dsn, autocommit=True)) as connection:
+        with pytest.raises(RaiseException, match="evaluation authority is immutable"):
+            connection.execute(
+                "UPDATE analysis.strategy_evaluation SET verdict = 'fail' WHERE id = %s",
+                [evaluation_id],
+            )
+        with pytest.raises(RaiseException, match="evaluation authority is immutable"):
+            connection.execute(
+                "DELETE FROM analysis.strategy_evaluation WHERE id = %s",
+                [evaluation_id],
+            )
+        with pytest.raises(RaiseException, match="revision parameters are immutable"):
+            connection.execute(
+                "UPDATE analysis.strategy_revision "
+                "SET parameters = '{\"model\":\"v2\"}' WHERE id = %s",
+                [revision_id],
+            )
+
+        connection.execute(
+            "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s",
+            [revision_id],
+        )
+        new_revision_id = connection.execute(
+            """
+            INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, authority_group,
+                 supersedes_id)
+            VALUES ('immutable-strategy', 2, 'immutable strategy', 'active',
+                    '{"model":"v2"}', 'immutable-strategy', %s)
+            RETURNING id
+            """,
+            [revision_id],
+        ).fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO analysis.strategy_evaluation
+                (strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics)
+            VALUES (%s, 'out_of_sample', clock_timestamp(), 'fail', '{}')
+            """,
+            [revision_id],
+        )
+        authority = connection.execute(
+            """
+            SELECT revision, parameters->>'model' AS model
+            FROM analysis.strategy_revision
+            WHERE strategy_key = 'immutable-strategy'
+            ORDER BY revision
+            """
+        ).fetchall()
+        evaluation_count = connection.execute(
+            "SELECT count(*) FROM analysis.strategy_evaluation "
+            "WHERE strategy_revision_id IN (%s, %s)",
+            [revision_id, new_revision_id],
+        ).fetchone()[0]
+
+    assert authority == [(1, "v1"), (2, "v2")]
+    assert evaluation_count == 2
+
+
+def test_strategy_authority_migration_reconciles_duplicate_active_revisions(
+    postgres_dsn: str,
+    ) -> None:
     upgrade_database(postgres_dsn, "20260711_0003")
     with closing(psycopg.connect(postgres_dsn)) as connection:
         base = connection.execute(

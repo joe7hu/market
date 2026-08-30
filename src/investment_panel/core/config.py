@@ -161,6 +161,8 @@ class AnalysisConfig:
     enabled: bool = True
     correlation_lookback_days: int = 180
     max_correlation_peers: int = 8
+    ticker_universe_coverage_threshold: float = 0.8
+    market_publication_max_age_minutes: int = 1_440
     options_decision_system: OptionsDecisionSystemConfig = OptionsDecisionSystemConfig()
 DEFAULT_AGENT_CONTEXT_SOURCES: dict[str, bool] = {
     "fundamentals": True,
@@ -409,6 +411,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         enabled=bool(analysis_raw.get("enabled", True)),
         correlation_lookback_days=int(analysis_raw.get("correlation_lookback_days", 180)),
         max_correlation_peers=int(analysis_raw.get("max_correlation_peers", 8)),
+        ticker_universe_coverage_threshold=float(
+            analysis_raw.get("ticker_universe_coverage_threshold", 0.8)
+        ),
+        market_publication_max_age_minutes=int(
+            analysis_raw.get("market_publication_max_age_minutes", 1_440)
+        ),
         options_decision_system=options_decision_system_config(
             options_decision_raw, _options_decision_mode,
         ),

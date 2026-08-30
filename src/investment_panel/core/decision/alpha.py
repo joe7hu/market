@@ -16,9 +16,11 @@ from typing import Any, Iterable, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from investment_panel.core.decision.ticker import (
+    AvailabilityStatus,
     InputLineage,
     MarketStateSnapshot,
     NumericRange,
+    availability_status_for_blockers,
     trade_expression_identity,
 )
 
@@ -37,8 +39,12 @@ class EligibleUniverseSnapshot(BaseModel):
     intended: tuple[str, ...] = ()
     available: tuple[str, ...] = ()
     excluded_reasons: dict[str, str] = Field(default_factory=dict)
+    excluded_materiality: dict[str, bool] = Field(default_factory=dict)
+    source_failures: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    systemic_failure_reasons: tuple[str, ...] = ()
     coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     threshold: float = Field(default=1.0, ge=0.0, le=1.0)
+    policy_version: str = "ticker-universe-coverage.v1"
     systemic_failure: bool = False
 
     @model_validator(mode="after")
@@ -54,6 +60,10 @@ class EligibleUniverseSnapshot(BaseModel):
             raise ValueError("eligible universe coverage ratio must match membership")
         if set(self.excluded_reasons) != intended - available:
             raise ValueError("eligible universe must explain every excluded symbol")
+        if not set(self.excluded_materiality) <= set(self.excluded_reasons):
+            raise ValueError("eligible universe materiality must reference excluded symbols")
+        if self.systemic_failure and not self.systemic_failure_reasons:
+            raise ValueError("systemic universe failure requires reasons")
         return self
 
 
@@ -111,6 +121,14 @@ class AlphaSignal(BaseModel):
     probability_semantics: str | None = None
     cohort_id: str | None = None
     calibration_state: str | None = None
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
+    strategy_key: str | None = None
+    strategy_revision_id: int | None = None
+    model_artifact_id: str | None = None
+    strategy_evaluation_id: str | None = None
+    artifact_published_at: datetime | None = None
+    evaluation_evaluated_at: datetime | None = None
+    evaluation_available_at: datetime | None = None
     model_version: str | None = None
     feature_version: str | None = None
     evaluation_stage: str | None = None
@@ -142,6 +160,47 @@ class AlphaSignal(BaseModel):
             ]
             if missing:
                 raise ValueError("numerical alpha forecasts require: " + ", ".join(missing))
+        if self.availability_status is AvailabilityStatus.AVAILABLE:
+            qualification_timestamps = (
+                ("artifact_published_at", self.artifact_published_at),
+                ("evaluation_evaluated_at", self.evaluation_evaluated_at),
+                ("evaluation_available_at", self.evaluation_available_at),
+            )
+            missing_artifact = [
+                name for name, value in (
+                    ("strategy_key", self.strategy_key),
+                    ("strategy_revision_id", self.strategy_revision_id),
+                    ("model_artifact_id", self.model_artifact_id),
+                    ("strategy_evaluation_id", self.strategy_evaluation_id),
+                    *qualification_timestamps,
+                ) if value in {None, ""}
+            ]
+            if missing_artifact:
+                raise ValueError("available alpha signals require qualified artifact evidence: " + ", ".join(missing_artifact))
+            naive_timestamps = [
+                name for name, value in qualification_timestamps
+                if value is not None
+                and (value.tzinfo is None or value.utcoffset() is None)
+            ]
+            if naive_timestamps:
+                raise ValueError(
+                    "available alpha qualification timestamps must be timezone-aware: "
+                    + ", ".join(naive_timestamps)
+                )
+            cutoff = _utc(self.input_cutoff)
+            future_timestamps = [
+                name for name, value in qualification_timestamps
+                if value is not None and _utc(value) > cutoff
+            ]
+            if future_timestamps:
+                raise ValueError(
+                    "available alpha qualification timestamps cannot be newer than input_cutoff: "
+                    + ", ".join(future_timestamps)
+                )
+            if self.blockers:
+                raise ValueError("available alpha signals cannot have blockers")
+        elif numerical and not self.blockers:
+            raise ValueError("unavailable numerical alpha signals require blockers")
         if self.forecast_distribution is not None:
             if not self.probability_semantics:
                 raise ValueError("alpha probability distributions require probability semantics")
@@ -198,6 +257,8 @@ class OpportunityRank(BaseModel):
     research_rank: int | None = None
     trade_rank: int | None = None
     trade_rank_unavailable_reason: str | None = None
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
+    primary_blocker: str | None = None
     utility: TradeUtility = Field(default_factory=TradeUtility)
     lower_confidence_expected_net_pnl: float | None = None
     trade_utility: float | None = None
@@ -303,6 +364,14 @@ def build_alpha_signal(
     model_version: str | None = None,
     feature_version: str | None = None,
     evaluation_stage: str | None = None,
+    availability_status: AvailabilityStatus | str = AvailabilityStatus.MISSING,
+    strategy_key: str | None = None,
+    strategy_revision_id: int | None = None,
+    model_artifact_id: str | None = None,
+    strategy_evaluation_id: str | None = None,
+    artifact_published_at: datetime | None = None,
+    evaluation_evaluated_at: datetime | None = None,
+    evaluation_available_at: datetime | None = None,
     blockers: Iterable[str] = (),
 ) -> AlphaSignal:
     reference = _utc(as_of)
@@ -324,6 +393,14 @@ def build_alpha_signal(
         "probability_semantics": probability_semantics,
         "cohort_id": cohort_id,
         "calibration_state": calibration_state,
+        "availability_status": availability_status,
+        "strategy_key": strategy_key,
+        "strategy_revision_id": strategy_revision_id,
+        "model_artifact_id": model_artifact_id,
+        "strategy_evaluation_id": strategy_evaluation_id,
+        "artifact_published_at": artifact_published_at,
+        "evaluation_evaluated_at": evaluation_evaluated_at,
+        "evaluation_available_at": evaluation_available_at,
         "model_version": model_version,
         "feature_version": feature_version,
         "evaluation_stage": evaluation_stage,
@@ -415,10 +492,20 @@ def rank_opportunities(
                 utility_inputs[name] = candidate[name]
         utility = calculate_trade_utility(**utility_inputs)
         reason = _unavailable_reason(candidate, utility, universe_complete)
+        blockers = tuple(dict.fromkeys((
+            *(str(item) for item in candidate.get("blockers") or () if str(item).strip()),
+            *(str(item) for item in _model_dump(candidate.get("alpha_signal")).get("blockers") or () if str(item).strip()),
+            *((reason,) if reason else ()),
+        )))
         row = {
             **candidate,
             "utility": utility,
             "trade_rank_unavailable_reason": reason,
+            "availability_status": availability_status_for_blockers(
+                (reason,) if reason else (), available_when_empty=True,
+            ),
+            "primary_blocker": reason,
+            "blockers": blockers,
             "evaluated_universe_complete": universe_complete,
             "ranking_universe_incomplete": not universe_complete,
             "eligible_universe": universe.model_dump(mode="json") if universe else None,
@@ -463,6 +550,8 @@ def rank_opportunities(
             "research_rank": row.get("research_rank"),
             "trade_rank": row.get("trade_rank"),
             "trade_rank_unavailable_reason": row.get("trade_rank_unavailable_reason"),
+            "availability_status": row.get("availability_status"),
+            "primary_blocker": row.get("primary_blocker"),
             "utility": utility.model_dump(mode="json"),
             "evaluated_universe_complete": row["evaluated_universe_complete"],
             "ranking_universe_incomplete": row["ranking_universe_incomplete"],
@@ -486,6 +575,9 @@ def _unavailable_reason(candidate: Mapping[str, Any], utility: TradeUtility, uni
     if kind == "CASH":
         return "cash_comparator"
     signal = _model_dump(candidate.get("alpha_signal"))
+    if signal.get("availability_status") != AvailabilityStatus.AVAILABLE.value:
+        blockers = [str(item) for item in signal.get("blockers") or () if str(item).strip()]
+        return blockers[0] if blockers else "alpha_signal_unavailable"
     if not _signal_metadata_complete(signal):
         return "alpha_signal_metadata_incomplete"
     calibration = str(signal.get("calibration_state") or candidate.get("calibration_state") or "").lower()

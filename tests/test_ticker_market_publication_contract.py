@@ -36,7 +36,9 @@ def _publication() -> dict[str, object]:
 
 
 def test_market_snapshot_accepts_actual_visibility_after_fact_cutoff() -> None:
-    snapshot = ticker_decisions._market_snapshot_for_decision(_publication(), CUTOFF)
+    snapshot = ticker_decisions._market_snapshot_for_decision(
+        _publication(), CUTOFF + timedelta(seconds=2),
+    )
 
     assert snapshot is not None
     assert snapshot.publication_id == "market-publication:test"
@@ -47,30 +49,39 @@ def test_market_snapshot_accepts_actual_visibility_after_fact_cutoff() -> None:
     (
         ("publication_scope", "ticker"),
         ("publication_status", "superseded"),
-        ("input_cutoff", (CUTOFF - timedelta(minutes=1)).isoformat()),
+        ("input_cutoff", (CUTOFF - timedelta(days=2)).isoformat()),
         ("published_at", CUTOFF.isoformat()),
         ("published_at", None),
+        ("published_at", (CUTOFF + timedelta(minutes=1)).isoformat()),
     ),
 )
 def test_market_snapshot_rejects_invalid_publication_metadata(field: str, value: object) -> None:
     publication = _publication()
     publication[field] = value
 
-    assert ticker_decisions._market_snapshot_for_decision(publication, CUTOFF) is None
+    assert ticker_decisions._market_snapshot_for_decision(
+        publication, CUTOFF + timedelta(seconds=2),
+    ) is None
 
 
 def test_market_snapshot_rejects_mismatched_identity_and_future_lineage() -> None:
     publication = _publication()
     snapshot = publication["models"]["market_state_snapshot"][0]  # type: ignore[index]
     snapshot["publication_id"] = "market-publication:other"  # type: ignore[index]
-    assert ticker_decisions._market_snapshot_for_decision(publication, CUTOFF) is None
+    assert ticker_decisions._market_snapshot_for_decision(
+        publication, CUTOFF + timedelta(seconds=2),
+    ) is None
 
     publication = _publication()
     snapshot = publication["models"]["market_state_snapshot"][0]  # type: ignore[index]
     snapshot["input_lineage"][0]["cutoff"] = (CUTOFF - timedelta(minutes=1)).isoformat()  # type: ignore[index]
-    assert ticker_decisions._market_snapshot_for_decision(publication, CUTOFF) is None
+    assert ticker_decisions._market_snapshot_for_decision(
+        publication, CUTOFF + timedelta(seconds=2),
+    ) is None
 
     publication = _publication()
     snapshot = publication["models"]["market_state_snapshot"][0]  # type: ignore[index]
     snapshot["input_lineage"][0]["cutoff"] = None  # type: ignore[index]
-    assert ticker_decisions._market_snapshot_for_decision(publication, CUTOFF) is None
+    assert ticker_decisions._market_snapshot_for_decision(
+        publication, CUTOFF + timedelta(seconds=2),
+    ) is None

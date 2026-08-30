@@ -377,6 +377,102 @@ class AnalysisRepository:
             ).fetchone()
         return int(row["id"])
 
+    def qualified_stock_alpha_artifact(
+        self,
+        *,
+        cutoff: datetime,
+        horizon: str,
+    ) -> dict[str, Any]:
+        """Return the active stock-alpha artifact and its bounded OOS proof."""
+
+        with self.runtime.read() as connection:
+            row = connection.execute(
+                """
+                SELECT strategy.id AS strategy_revision_id, strategy.strategy_key,
+                       strategy.revision, strategy.parameters, strategy.created_at,
+                       strategy.promoted_at,
+                       evaluation.id::text AS strategy_evaluation_id,
+                       evaluation.evaluation_type, evaluation.evaluated_at,
+                       evaluation.available_at AS evaluation_available_at,
+                       evaluation.period_start, evaluation.period_end,
+                       evaluation.verdict, evaluation.metrics, evaluation.evidence
+                FROM analysis.strategy_revision strategy
+                LEFT JOIN LATERAL (
+                    SELECT candidate.*
+                    FROM analysis.strategy_evaluation candidate
+                    WHERE candidate.strategy_revision_id = strategy.id
+                      AND candidate.evaluation_type IN ('out_of_sample', 'oos')
+                      AND candidate.evaluated_at <= %s
+                      AND candidate.available_at <= %s
+                      AND (candidate.period_end IS NULL OR candidate.period_end <= %s)
+                    ORDER BY candidate.evaluated_at DESC, candidate.id DESC
+                    LIMIT 1
+                ) evaluation ON TRUE
+                WHERE strategy.strategy_key = 'ticker-stock-alpha'
+                  AND strategy.status = 'active'
+                  AND COALESCE(strategy.promoted_at, strategy.created_at) <= %s
+                ORDER BY COALESCE(strategy.promoted_at, strategy.created_at) DESC,
+                         strategy.revision DESC
+                LIMIT 1
+                """,
+                [cutoff, cutoff, cutoff, cutoff],
+            ).fetchone()
+        if row is None:
+            return {
+                "availability_status": "missing",
+                "blockers": ["alpha_strategy_revision_missing"],
+            }
+        parameters = dict(row["parameters"] or {})
+        metrics = dict(row["metrics"] or {})
+        base = {
+            "strategy_key": str(row["strategy_key"]),
+            "strategy_revision_id": int(row["strategy_revision_id"]),
+            "strategy_revision": int(row["revision"]),
+            "artifact_published_at": row["promoted_at"] or row["created_at"],
+            "model_artifact_id": parameters.get("artifact_id"),
+            "model_version": parameters.get("model_version"),
+            "feature_version": parameters.get("feature_version"),
+            "target": parameters.get("target"),
+            "horizon": str(horizon),
+            "cohort_id": parameters.get("cohort_id"),
+            "calibration_state": parameters.get("calibration_state"),
+            "strategy_evaluation_id": row["strategy_evaluation_id"],
+            "evaluation_stage": row["evaluation_type"],
+            "evaluation_evaluated_at": row["evaluated_at"],
+            "evaluation_available_at": row["evaluation_available_at"],
+        }
+        if row["strategy_evaluation_id"] is None:
+            return {**base, "availability_status": "not_calibrated", "blockers": ["alpha_oos_evaluation_missing"]}
+        if str(row["verdict"] or "").lower() != "pass":
+            return {**base, "availability_status": "policy_blocked", "blockers": ["alpha_oos_evaluation_not_passed"]}
+        required = ("artifact_id", "model_version", "feature_version", "target", "cohort_id", "calibration_state")
+        if any(not str(parameters.get(name) or "").strip() for name in required):
+            return {**base, "availability_status": "error", "blockers": ["alpha_artifact_metadata_incomplete"]}
+        configured_horizons = parameters.get("horizons", [parameters.get("horizon")])
+        if isinstance(configured_horizons, str):
+            configured_horizons = [configured_horizons]
+        allowed_horizons = {
+            str(item).upper()
+            for item in configured_horizons
+            if item is not None
+        }
+        if str(parameters.get("expression_kind") or "").upper() != "STOCK" or str(horizon).upper() not in allowed_horizons:
+            return {**base, "availability_status": "policy_blocked", "blockers": ["alpha_artifact_scope_mismatch"]}
+        if any(
+            str(metrics.get(name) or "") != str(parameters.get(name) or "")
+            for name in ("artifact_id", "model_version", "cohort_id")
+        ) or metrics.get("exact_cohort") is not True:
+            return {**base, "availability_status": "error", "blockers": ["alpha_evaluation_lineage_mismatch"]}
+        valid_through = metrics.get("valid_through")
+        if valid_through is not None:
+            try:
+                valid_until = datetime.fromisoformat(str(valid_through).replace("Z", "+00:00"))
+            except ValueError:
+                return {**base, "availability_status": "error", "blockers": ["alpha_evaluation_validity_invalid"]}
+            if valid_until < cutoff:
+                return {**base, "availability_status": "stale", "blockers": ["alpha_evaluation_stale"]}
+        return {**base, "availability_status": "available", "blockers": []}
+
     def start_run(
         self,
         run_type: str,

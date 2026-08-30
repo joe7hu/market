@@ -111,6 +111,8 @@ analysis:
   enabled: true
   correlation_lookback_days: 180
   max_correlation_peers: 8
+  ticker_universe_coverage_threshold: 0.8
+  market_publication_max_age_minutes: 1440
   # Personal runtime: expose the full paper workflow.  This remains local and
   # paper-only; it does not submit broker orders.
   options_decision_system:

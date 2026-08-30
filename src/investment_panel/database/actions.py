@@ -616,8 +616,9 @@ class ActionRepository:
             if parent_id is None or statuses.get(parent_id) != "active":
                 raise ValueError("strategy candidate base is no longer active; reevaluation is required")
             evaluations = connection.execute(
-                "SELECT evaluation_type, verdict FROM analysis.strategy_evaluation "
-                "WHERE strategy_revision_id = %s ORDER BY evaluated_at DESC",
+                "SELECT DISTINCT ON (evaluation_type) evaluation_type, verdict "
+                "FROM analysis.strategy_evaluation WHERE strategy_revision_id = %s "
+                "ORDER BY evaluation_type, evaluated_at DESC, id DESC",
                 [candidate["id"]],
             ).fetchall()
             passed = {

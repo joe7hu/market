@@ -1008,8 +1008,16 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
             [Jsonb(ready_result), proposal["id"]],
         )
         connection.execute(
-            "UPDATE analysis.strategy_evaluation SET verdict = 'pass' "
-            "WHERE strategy_revision_id = %s",
+            """
+            INSERT INTO analysis.strategy_evaluation (
+                strategy_revision_id, evaluation_type, evaluated_at,
+                period_start, period_end, verdict, metrics, evidence
+            )
+            SELECT strategy_revision_id, evaluation_type, clock_timestamp(),
+                   period_start, period_end, 'pass', metrics, evidence
+            FROM analysis.strategy_evaluation
+            WHERE strategy_revision_id = %s
+            """,
             [ready_result["candidate_revision_id"]],
         )
     promoted = client.post(

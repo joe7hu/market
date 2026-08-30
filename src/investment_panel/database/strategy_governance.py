@@ -39,11 +39,13 @@ class StrategyGovernanceRepository:
                     SELECT evaluation_type, verdict, metrics
                     FROM analysis.strategy_evaluation
                     WHERE strategy_revision_id = %s
-                    ORDER BY evaluated_at DESC
+                    ORDER BY evaluated_at DESC, id DESC
                     """,
                     [proposal["candidate_id"]],
                 ).fetchall()
-                latest = {str(row["evaluation_type"]): row for row in evaluations}
+                latest: dict[str, Any] = {}
+                for row in evaluations:
+                    latest.setdefault(str(row["evaluation_type"]), row)
                 if not _promotion_evidence_passes(latest):
                     continue
                 result = dict(proposal["result"] or {})

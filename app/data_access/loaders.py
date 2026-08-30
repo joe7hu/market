@@ -10,6 +10,16 @@ from investment_panel.core.panel import tables_for_scope
 from app.data_access.types import DataStatus, PanelData
 from investment_panel.core.panel import SCOPED_TABLE_ROW_LIMITS, TICKER_INITIAL_TABLES, panel_contract_payload as contract_panel_payload
 from investment_panel.database.panel_models import load_postgres_tables
+from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.ticker_decisions import TickerDecisionRepository
+
+
+def load_decision_funnel(
+    runtime: DatabaseRuntime, *, action_queue: Iterable[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    """Load the backend-owned decision-lane diagnostic."""
+
+    return TickerDecisionRepository(runtime).decision_funnel(action_queue=action_queue)
 
 
 def load_panel_data(

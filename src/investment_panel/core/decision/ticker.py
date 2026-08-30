@@ -150,6 +150,38 @@ class AvailabilityStatus(StrEnum):
     PENDING = "pending"
 
 
+def availability_status_for_blockers(
+    blockers: Iterable[Any], *, available_when_empty: bool = False,
+) -> AvailabilityStatus:
+    """Project one typed availability from the primary detailed blocker."""
+
+    clean = [str(item).strip().lower() for item in blockers if str(item).strip()]
+    if not clean:
+        return AvailabilityStatus.AVAILABLE if available_when_empty else AvailabilityStatus.MISSING
+    primary = clean[0]
+    if primary == "alpha_evaluation_lineage_mismatch":
+        return AvailabilityStatus.ERROR
+    if primary == "alpha_oos_evaluation_not_passed":
+        return AvailabilityStatus.POLICY_BLOCKED
+    if "not_applicable" in primary or primary in {"cash_comparator", "cash_selected"}:
+        return AvailabilityStatus.NOT_APPLICABLE
+    if "unsupported" in primary or (
+        "expression" in primary and "unavailable" in primary
+    ):
+        return AvailabilityStatus.UNSUPPORTED
+    if "stale" in primary:
+        return AvailabilityStatus.STALE
+    if "calibrat" in primary or "evaluation" in primary or "oos" in primary:
+        return AvailabilityStatus.NOT_CALIBRATED
+    if any(token in primary for token in ("error", "invalid", "mismatch", "duplicat")):
+        return AvailabilityStatus.ERROR
+    if any(token in primary for token in ("missing", "incomplete", "required")):
+        return AvailabilityStatus.MISSING
+    if "pending" in primary or "collecting" in primary:
+        return AvailabilityStatus.PENDING
+    return AvailabilityStatus.POLICY_BLOCKED
+
+
 class NumericRange(BaseModel):
     low: float
     high: float
@@ -509,6 +541,9 @@ class PortfolioImpact(BaseModel):
     days_to_exit: float | None = Field(default=None, ge=0)
     marginal_risk: float | None = None
     diversification_benefit: float | None = None
+    expected_transaction_costs: float | None = Field(default=None, ge=0)
+    tail_risk_penalty: float | None = Field(default=None, ge=0)
+    portfolio_overlap_penalty: float | None = Field(default=None, ge=0)
     risk_budget_consumed: float | None = None
     positions_most_correlated: tuple[str, ...] = ()
     position_to_trim_or_replace: str | None = None
@@ -697,7 +732,7 @@ def trade_expression_identity(value: Any) -> str:
 
     expression = trade_expression_from_legacy(value)
     encoded = json.dumps(
-        expression.model_dump(mode="json"),
+        expression.model_dump(mode="json", exclude={"availability_status", "blockers"}),
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -740,9 +775,37 @@ class ExpressionDecision(BaseModel):
     fill_probability: float | None = Field(default=None, ge=0, le=1)
     horizon_fit: float | None = Field(default=None, ge=0, le=1)
     status: str = Field(pattern="^(eligible|blocked|unavailable|not_selected)$")
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
+    blockers: tuple[str, ...] = ()
     selected: bool = False
     rationale: str
     data_requests: list[DataRequest] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def typed_availability(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping) or "availability_status" in value:
+            return value
+        result = dict(value)
+        status = str(result.get("status") or "")
+        result["availability_status"] = (
+            AvailabilityStatus.AVAILABLE
+            if status in {"eligible", "not_selected"}
+            else AvailabilityStatus.UNSUPPORTED
+            if status == "unavailable"
+            else AvailabilityStatus.MISSING
+            if result.get("data_requests")
+            else AvailabilityStatus.POLICY_BLOCKED
+        )
+        return result
+
+    @model_validator(mode="after")
+    def availability_matches_status(self) -> "ExpressionDecision":
+        if self.status in {"eligible", "not_selected"} and self.availability_status is not AvailabilityStatus.AVAILABLE:
+            raise ValueError("usable expressions require available status")
+        if self.availability_status is AvailabilityStatus.AVAILABLE and self.blockers:
+            raise ValueError("available expressions cannot have blockers")
+        return self
 
 
 # The existing expression model is the source of truth.  The aliases and
@@ -898,6 +961,7 @@ class TradePlan(BaseModel):
     market_state_publication_id: str | None = None
     action: str
     eligibility: str
+    availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     authorization_mode: str
     data_quality: str = "UNKNOWN"
     rationale: str = ""
@@ -940,6 +1004,17 @@ class TradePlan(BaseModel):
         for key in ("action", "eligibility", "authorization_mode", "data_quality"):
             if isinstance(result.get(key), str):
                 result[key] = result[key].upper().replace("-", "_")
+        if "availability_status" not in result:
+            result["availability_status"] = (
+                AvailabilityStatus.AVAILABLE
+                if result.get("eligibility") == "ACTIONABLE"
+                else availability_status_for_blockers(
+                    (
+                        result.get("primary_blocker"),
+                        *(result.get("blockers") or ()),
+                    )
+                )
+            )
         return result
 
     @model_validator(mode="after")
@@ -987,6 +1062,12 @@ class TradePlan(BaseModel):
             if self.market_state_publication_id and self.portfolio_impact.market_state_publication_id != self.market_state_publication_id:
                 raise ValueError("trade plan portfolio impact publication must match the plan")
         if self.eligibility == "BLOCKED":
+            if self.availability_status is AvailabilityStatus.AVAILABLE:
+                raise ValueError("blocked trade plan cannot be available")
+            if self.availability_status is not availability_status_for_blockers(
+                (self.primary_blocker, *self.blockers)
+            ):
+                raise ValueError("blocked trade plan availability must match its primary blocker")
             if self.selected_expression_kind is not ExpressionKind.CASH:
                 raise ValueError("blocked trade plan must select CASH")
             if self.action != "NO_TRADE":
@@ -998,6 +1079,8 @@ class TradePlan(BaseModel):
             if self.quantity is not None and self.quantity > 0:
                 raise ValueError("blocked trade plan cannot contain a positive quantity")
         elif self.eligibility == "ACTIONABLE":
+            if self.availability_status is not AvailabilityStatus.AVAILABLE:
+                raise ValueError("actionable trade plan requires available status")
             if self.selected_expression_kind is ExpressionKind.CASH:
                 raise ValueError("actionable trade plan cannot select CASH")
             if self.action in {"NO_TRADE", "AVOID"}:
@@ -1033,7 +1116,9 @@ class TradePlan(BaseModel):
                 raise ValueError("actionable trade plan requires a finite positive planned loss")
             if self.primary_blocker or self.blockers:
                 raise ValueError("actionable trade plan cannot have blockers")
-        expected_id = _trade_plan_id(self.model_dump(mode="json", exclude={"trade_plan_id", "publication_id"}))
+        expected_id = _trade_plan_id(self.model_dump(
+            mode="json", exclude={"trade_plan_id", "publication_id", "availability_status"},
+        ))
         if self.trade_plan_id != expected_id:
             raise ValueError("trade plan id does not match its immutable terms")
         if self.eligibility == "BLOCKED" and any(
@@ -1782,8 +1867,8 @@ class TickerDecision(BaseModel):
     @model_validator(mode="after")
     def portfolio_context_is_authority(self) -> "TickerDecision":
         snapshot = self.market_state_snapshot or _missing_market_snapshot(self.cutoff)
-        if _utc(snapshot.input_cutoff) != _utc(self.cutoff):
-            raise ValueError("market snapshot cutoff must match the ticker decision")
+        if _utc(snapshot.input_cutoff) > _utc(self.cutoff):
+            raise ValueError("market snapshot cutoff cannot be newer than the ticker decision")
         self.market_state_snapshot = snapshot
         self.market_state_publication_id = self.market_state_publication_id or snapshot.publication_id
 
@@ -1940,7 +2025,7 @@ class TickerDecision(BaseModel):
                     trade_plan_id=safe_trade_plan.trade_plan_id if safe_trade_plan else None,
                     provenance=existing.provenance,
                     ticker=self.ticker,
-                    blockers=[blocker],
+                    blockers=tuple(dict.fromkeys((*existing.blockers, *context_blockers))),
                     ttl=existing.ttl,
                     portfolio_context=normalized[ExpressionKind.CASH].model_dump(mode="json"),
                     data_quality="INCOMPLETE",
@@ -1957,7 +2042,7 @@ class TickerDecision(BaseModel):
                     decision_revision=self.decision_revision,
                     policy_version=self.policy_version,
                     ticker=self.ticker,
-                    blockers=[context_blockers[0]],
+                    blockers=context_blockers,
                     provenance={},
                     portfolio_context=normalized[ExpressionKind.CASH].model_dump(mode="json"),
                     data_quality="INCOMPLETE",
@@ -1979,7 +2064,7 @@ class TickerDecision(BaseModel):
                 trade_plan_id=self.resolution.trade_plan_id,
                 provenance=self.resolution.provenance,
                 ticker=self.ticker,
-                blockers=[context_blockers[0]],
+                blockers=tuple(dict.fromkeys((*self.resolution.blockers, *context_blockers))),
                 data_quality="INCOMPLETE",
                 authorization_mode="NONE",
                 rationale=self.resolution.rationale,
@@ -2075,31 +2160,12 @@ class TickerDecision(BaseModel):
 
     @property
     def context_blockers(self) -> tuple[str, ...]:
-        blockers: list[str] = []
-        snapshot = self.market_state_snapshot
-        if snapshot is None:
-            blockers.append("market_state_missing")
-        else:
-            if snapshot.availability != "available":
-                blockers.append("market_state_unavailable")
-            blockers.extend(snapshot.blockers)
-        if not self.market_state_publication_id:
-            blockers.append("market_state_publication_missing")
-        policy = self.risk_policy_snapshot
-        if policy is None:
-            blockers.append("risk_policy_snapshot_missing")
-        else:
-            blockers.extend(policy.blockers)
-        expected = set(self.expressions) | {ExpressionKind.CASH}
-        for kind in expected:
-            impact = self.portfolio_impacts.get(kind)
-            if impact is None:
-                blockers.append(f"portfolio_impact_missing:{kind.value}")
-                continue
-            if impact.availability != "available":
-                blockers.append(f"portfolio_impact_unavailable:{kind.value}")
-            blockers.extend(impact.blockers)
-        return tuple(dict.fromkeys(str(item) for item in blockers if str(item).strip()))
+        return tuple(_context_blockers_for(
+            snapshot=self.market_state_snapshot,
+            policy=self.risk_policy_snapshot,
+            impacts=self.portfolio_impacts,
+            expressions=self.expressions,
+        ))
 
 
 def apply_opportunity_rank_safety(
@@ -2417,6 +2483,11 @@ def build_trade_plan(
         expiry = current_resolution.expires_at or min(decision.tactical.expiry_date, decision.fundamental.expiry_date)
         next_action = current_resolution.next_action
 
+    primary_blocker = (
+        current_resolution.primary_blocker
+        if current_resolution is not None and current_resolution.primary_blocker in blockers
+        else blockers[0] if blockers else None
+    )
     values = {
         "contract_version": TRADE_PLAN_CONTRACT_VERSION,
         "publication_id": publication_id,
@@ -2436,14 +2507,15 @@ def build_trade_plan(
         "market_state_publication_id": decision.market_state_publication_id or (snapshot.publication_id if snapshot else None),
         "action": action,
         "eligibility": eligibility,
+        "availability_status": (
+            AvailabilityStatus.AVAILABLE
+            if eligibility == "ACTIONABLE"
+            else availability_status_for_blockers((primary_blocker, *blockers))
+        ),
         "authorization_mode": authorization,
         "data_quality": data_quality,
         "rationale": current_resolution.rationale if current_resolution is not None else decision.capital_action.rationale,
-        "primary_blocker": (
-            current_resolution.primary_blocker
-            if current_resolution is not None and current_resolution.primary_blocker in blockers
-            else blockers[0] if blockers else None
-        ),
+        "primary_blocker": primary_blocker,
         "blockers": blockers,
         "next_action": next_action or next_action_for(blockers[0] if blockers else None),
         "entry": entry,
@@ -2460,7 +2532,7 @@ def build_trade_plan(
         **values,
         "trade_plan_id": _trade_plan_id({
             key: value for key, value in values.items()
-            if key not in {"trade_plan_id", "publication_id"}
+            if key not in {"trade_plan_id", "publication_id", "availability_status"}
         }),
     })
 
@@ -3402,6 +3474,10 @@ def _stock_impact_values(
         "days_to_exit": days_to_exit,
         "marginal_risk": budget_consumed,
         "risk_budget_consumed": budget_consumed,
+        "expected_transaction_costs": _number(evidence.get("expected_transaction_costs")),
+        "tail_risk_penalty": _number(evidence.get("tail_risk_penalty")),
+        "portfolio_overlap_penalty": _number(evidence.get("portfolio_overlap_penalty")),
+        "diversification_benefit": _number(evidence.get("diversification_benefit")),
         "scenario_pnl": stress_scenarios,
         "liquidity": liquidity,
         "cash_comparator": cash_comparator,
@@ -3932,7 +4008,17 @@ def build_ticker_decision(
     selected_entry = selected.entry_range if selected is not None else None
     selected_invalidation = selected.invalidation if selected is not None else None
     selected_exit = selected.target_range if selected is not None else None
-    resolution_blockers = [request.field for request in requests]
+    resolution_blockers = [
+        request.field
+        for expression in (
+            selected,
+            expressions.get(ExpressionKind.CASH),
+        )
+        if expression is not None
+        for request in expression.data_requests
+    ]
+    if selected is not None:
+        resolution_blockers.extend(selected.blockers)
     resolution_blockers.extend(context_blockers)
     selected_impact = impacts.get(selected.kind) if selected is not None else impacts.get(ExpressionKind.CASH)
     resolution = build_decision_resolution(

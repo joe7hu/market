@@ -637,10 +637,26 @@
         "additionalProperties": true,
         "description": "A forecast with explicit target, horizon, calibration, and lineage.",
         "properties": {
+          "artifact_published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Published At"
+          },
           "as_of": {
             "format": "date-time",
             "title": "As Of",
             "type": "string"
+          },
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus",
+            "default": "missing"
           },
           "blockers": {
             "default": [],
@@ -692,6 +708,30 @@
               }
             ],
             "title": "Direction"
+          },
+          "evaluation_available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Available At"
+          },
+          "evaluation_evaluated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Evaluated At"
           },
           "evaluation_stage": {
             "anyOf": [
@@ -779,6 +819,17 @@
             "title": "Instrument State Snapshot Id",
             "type": "string"
           },
+          "model_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Artifact Id"
+          },
           "model_version": {
             "anyOf": [
               {
@@ -810,6 +861,39 @@
             "minLength": 1,
             "title": "Signal Id",
             "type": "string"
+          },
+          "strategy_evaluation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Evaluation Id"
+          },
+          "strategy_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Key"
+          },
+          "strategy_revision_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Revision Id"
           },
           "target": {
             "anyOf": [
@@ -1226,6 +1310,149 @@
         "title": "DataRequest",
         "type": "object"
       },
+      "DecisionFunnelBlocker": {
+        "properties": {
+          "affected_symbols": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Affected Symbols",
+            "type": "array"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "count"
+        ],
+        "title": "DecisionFunnelBlocker",
+        "type": "object"
+      },
+      "DecisionFunnelResponse": {
+        "properties": {
+          "actionable": {
+            "title": "Actionable",
+            "type": "integer"
+          },
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionFunnelStage"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy_version",
+          "generated_at",
+          "total",
+          "actionable"
+        ],
+        "title": "DecisionFunnelResponse",
+        "type": "object"
+      },
+      "DecisionFunnelStage": {
+        "properties": {
+          "affected_symbols": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Affected Symbols",
+            "type": "array"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "percentage": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Percentage",
+            "type": "number"
+          },
+          "retry": {
+            "title": "Retry",
+            "type": "string"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "top_blockers": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionFunnelBlocker"
+            },
+            "title": "Top Blockers",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "unavailable_count": {
+            "title": "Unavailable Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stage",
+          "count",
+          "total",
+          "percentage",
+          "unavailable_count",
+          "owner",
+          "retry"
+        ],
+        "title": "DecisionFunnelStage",
+        "type": "object"
+      },
       "DecisionInboxResponse": {
         "properties": {
           "authority": {
@@ -1569,6 +1796,13 @@
             "title": "Coverage Ratio",
             "type": "number"
           },
+          "excluded_materiality": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Excluded Materiality",
+            "type": "object"
+          },
           "excluded_reasons": {
             "additionalProperties": {
               "type": "string"
@@ -1584,10 +1818,33 @@
             "title": "Intended",
             "type": "array"
           },
+          "policy_version": {
+            "default": "ticker-universe-coverage.v1",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "source_failures": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Source Failures",
+            "type": "object"
+          },
           "systemic_failure": {
             "default": false,
             "title": "Systemic Failure",
             "type": "boolean"
+          },
+          "systemic_failure_reasons": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Systemic Failure Reasons",
+            "type": "array"
           },
           "threshold": {
             "default": 1.0,
@@ -2068,6 +2325,18 @@
       "ExpressionDecision": {
         "description": "One way to express the same ticker thesis.",
         "properties": {
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus",
+            "default": "missing"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
           "data_requests": {
             "items": {
               "$ref": "#/components/schemas/DataRequest"
@@ -3347,6 +3616,10 @@
             ],
             "title": "Alpha Signal Id"
           },
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus",
+            "default": "missing"
+          },
           "blockers": {
             "default": [],
             "items": {
@@ -3462,6 +3735,17 @@
               }
             ],
             "title": "Portfolio Impact Id"
+          },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
           },
           "rank_id": {
             "minLength": 1,
@@ -8656,6 +8940,18 @@
             ],
             "title": "Diversification Benefit"
           },
+          "expected_transaction_costs": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Transaction Costs"
+          },
           "expression_identity": {
             "minLength": 1,
             "title": "Expression Identity",
@@ -8822,6 +9118,18 @@
             "title": "Portfolio Before",
             "type": "object"
           },
+          "portfolio_overlap_penalty": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Overlap Penalty"
+          },
           "position_to_trim_or_replace": {
             "anyOf": [
               {
@@ -8912,6 +9220,18 @@
               }
             ],
             "title": "Symbol Concentration Delta"
+          },
+          "tail_risk_penalty": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tail Risk Penalty"
           },
           "ticker": {
             "minLength": 1,
@@ -12922,6 +13242,10 @@
             "title": "Authorization Mode",
             "type": "string"
           },
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus",
+            "default": "missing"
+          },
           "blockers": {
             "default": [],
             "items": {
@@ -13569,6 +13893,24 @@
           }
         },
         "summary": "Agent Research Prompt"
+      }
+    },
+    "/api/decision-funnel": {
+      "get": {
+        "operationId": "decision_funnel_api_decision_funnel_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionFunnelResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Decision Funnel"
       }
     },
     "/api/decision-inbox": {

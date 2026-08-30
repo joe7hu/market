@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 from math import isfinite
@@ -24,6 +24,7 @@ from investment_panel.core.decision import (
     TradeUtility,
     TICKER_OPPORTUNITY_RANKING_VERSION,
     TradePlan,
+    availability_status_for_blockers,
     apply_opportunity_rank_safety,
     bind_trade_plan,
     build_alpha_signal,
@@ -77,6 +78,12 @@ def publish(
     benchmark = _freeze_benchmark(runtime, benchmark_symbols, reference)
     repository = TickerDecisionRepository(runtime)
     analysis_repository = AnalysisRepository(runtime)
+    alpha_artifacts = {
+        horizon: analysis_repository.qualified_stock_alpha_artifact(
+            cutoff=reference, horizon=horizon,
+        )
+        for horizon in ("TACTICAL", "FUNDAMENTAL")
+    }
     published: list[dict[str, Any]] = []
     decisions_for_paper: list[Any] = []
     records: list[dict[str, Any]] = []
@@ -108,7 +115,11 @@ def publish(
                 market_publication = analysis_repository.publication_by_id(
                     "market", str(market_state_publication_id)
                 )
-            snapshot = _market_snapshot_for_decision(market_publication, reference)
+            snapshot = _market_snapshot_for_decision(
+                market_publication,
+                reference,
+                max_age=timedelta(minutes=config.analysis.market_publication_max_age_minutes),
+            )
             impacts = (
                 portfolio_impacts(
                     seed, snapshot, market_publication["publication_id"], replay_for_decision
@@ -130,13 +141,27 @@ def publish(
             failures.append({"ticker": symbol, "error": f"{type(exc).__name__}: {exc}"})
     ranking_publication_id = None
     if records:
-        rank_rows, models, ranking_inputs = _rank_records(records, failures, reference)
+        rank_rows, models, ranking_inputs = _rank_records(
+            records,
+            failures,
+            reference,
+            alpha_artifacts=alpha_artifacts,
+            coverage_threshold=config.analysis.ticker_universe_coverage_threshold,
+        )
         ranking_run_id = analysis_repository.start_run(
             RANKING_SCOPE,
             input_cutoff=reference,
             code_version=TICKER_OPPORTUNITY_RANKING_VERSION,
             inputs=ranking_inputs,
             feature_versions={"ranking": TICKER_OPPORTUNITY_RANKING_VERSION},
+            strategy_revision_id=next(
+                (
+                    int(artifact["strategy_revision_id"])
+                    for artifact in alpha_artifacts.values()
+                    if artifact.get("availability_status") == "available"
+                ),
+                None,
+            ),
         )
         ranking_publication_id = analysis_repository.publish(
             ranking_run_id,
@@ -166,13 +191,9 @@ def publish(
             for rank in rank_rows
         }
         for record in records:
-            original = record["decision"]
-            key = (original.ticker, original.decision_revision, original.opportunity_episode_id)
+            current = record["decision"]
+            key = (current.ticker, current.decision_revision, current.opportunity_episode_id)
             rank = rank_by_key[key]
-            if rank.trade_rank is None or rank.trade_rank_unavailable_reason:
-                safe = apply_opportunity_rank_safety(original, rank.model_dump(mode="json"))
-                rank = _rank_after_safety(rank, safe)
-                record["decision"] = safe
             rank_payload = rank.model_dump(mode="json")
             rank_payload["ranking_publication_id"] = str(ranking_publication_id)
             plan = record["plan"].model_copy(update={"publication_id": str(ranking_publication_id)})
@@ -211,7 +232,12 @@ def publish(
     }
 
 
-def _market_snapshot_for_decision(publication: dict[str, Any] | None, cutoff: datetime) -> Any:
+def _market_snapshot_for_decision(
+    publication: dict[str, Any] | None,
+    cutoff: datetime,
+    *,
+    max_age: timedelta = timedelta(days=1),
+) -> Any:
     if publication is None or not isinstance(publication, Mapping):
         return None
     reference = _utc(cutoff)
@@ -225,9 +251,12 @@ def _market_snapshot_for_decision(publication: dict[str, Any] | None, cutoff: da
     publication_cutoff = _timestamp(publication.get("input_cutoff"))
     publication_published_at = _timestamp(publication.get("published_at"))
     if (
-        publication_cutoff != reference
+        publication_cutoff is None
+        or publication_cutoff > reference
+        or reference - publication_cutoff > max_age
         or publication_published_at is None
-        or publication_published_at <= reference
+        or publication_published_at <= publication_cutoff
+        or publication_published_at > reference
     ):
         return None
     models = publication.get("models")
@@ -244,7 +273,7 @@ def _market_snapshot_for_decision(publication: dict[str, Any] | None, cutoff: da
         return None
     if snapshot.publication_id not in {None, "", publication_id}:
         return None
-    if _utc(snapshot.input_cutoff) != reference or _utc(snapshot.as_of) != reference:
+    if _utc(snapshot.input_cutoff) != publication_cutoff or _utc(snapshot.as_of) != publication_cutoff:
         return None
     try:
         source_lineage = tuple(
@@ -259,13 +288,13 @@ def _market_snapshot_for_decision(publication: dict[str, Any] | None, cutoff: da
             lineages.extend(dimension.lineage)
     matrix = snapshot.coverage_matrix
     if matrix is not None:
-        if _utc(matrix.as_of) != reference or _utc(matrix.input_cutoff) != reference:
+        if _utc(matrix.as_of) != publication_cutoff or _utc(matrix.input_cutoff) != publication_cutoff:
             return None
-        if any(row.input_cutoff is not None and _utc(row.input_cutoff) != reference for row in matrix.rows):
+        if any(row.input_cutoff is not None and _utc(row.input_cutoff) != publication_cutoff for row in matrix.rows):
             return None
         for row in matrix.rows:
             lineages.extend(row.input_lineage)
-    if not all(_lineage_matches_cutoff(item, reference) for item in (*source_lineage, *lineages)):
+    if not all(_lineage_matches_cutoff(item, publication_cutoff) for item in (*source_lineage, *lineages)):
         return None
     return snapshot.model_copy(update={
         "publication_id": publication_id,
@@ -277,11 +306,14 @@ def _rank_records(
     records: list[dict[str, Any]],
     failures: list[dict[str, str]],
     reference: datetime,
+    *,
+    alpha_artifacts: Mapping[str, Mapping[str, Any]],
+    coverage_threshold: float,
 ) -> tuple[list[OpportunityRank], dict[str, list[dict[str, Any]]], dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for record in records:
         decision = record["decision"]
-        snapshot, signals = _alpha_models(decision, record["tables"])
+        snapshot, signals = _alpha_models(decision, record["tables"], alpha_artifacts)
         record["snapshot"] = snapshot
         record["signals"] = signals
         selected = decision.selected_expression
@@ -338,9 +370,12 @@ def _rank_records(
         intended=intended,
         available=available,
         excluded_reasons={item["ticker"]: item["error"] for item in failures},
+        excluded_materiality={item["ticker"]: False for item in failures},
+        source_failures={item["ticker"]: (item["error"],) for item in failures},
         coverage_ratio=len(available) / len(intended) if intended else 0.0,
-        threshold=0.8,
+        threshold=coverage_threshold,
         systemic_failure=not available,
+        systemic_failure_reasons=("ticker_universe_unavailable",) if not available else (),
     )
     ranks = rank_opportunities(candidates, eligible_universe=eligible_universe)
     ranks_by_key = {
@@ -444,19 +479,31 @@ def _rank_after_safety(rank: OpportunityRank, decision: Any) -> OpportunityRank:
         if decision.resolution is not None and decision.resolution.primary_blocker
         else rank.trade_rank_unavailable_reason or "opportunity_rank_unavailable"
     )
+    blockers = tuple(dict.fromkeys((
+        *rank.blockers,
+        *(decision.resolution.blockers if decision.resolution is not None else ()),
+        reason,
+    )))
     return rank.model_copy(update={
         "selected_expression_identity": trade_expression_identity(cash) if cash else None,
         "selected_expression_kind": ExpressionKind.CASH.value,
         "portfolio_impact_id": impact.impact_id if impact is not None else None,
         "trade_rank": None,
         "trade_rank_unavailable_reason": reason,
+        "availability_status": availability_status_for_blockers((reason,)),
+        "primary_blocker": reason,
+        "blockers": blockers,
         "trade_utility": None,
         "lower_confidence_expected_net_pnl": None,
         "utility": TradeUtility(),
     })
 
 
-def _alpha_models(decision: Any, tables: dict[str, list[dict[str, Any]]]) -> tuple[InstrumentStateSnapshot, list[AlphaSignal]]:
+def _alpha_models(
+    decision: Any,
+    tables: dict[str, list[dict[str, Any]]],
+    artifacts: Mapping[str, Mapping[str, Any]],
+) -> tuple[InstrumentStateSnapshot, list[AlphaSignal]]:
     snapshot = build_instrument_state_snapshot(
         decision.ticker,
         tables,
@@ -467,13 +514,18 @@ def _alpha_models(decision: Any, tables: dict[str, list[dict[str, Any]]]) -> tup
     )
     signals: list[AlphaSignal] = []
     for view in (decision.tactical, decision.fundamental):
+        artifact = dict(artifacts.get(view.horizon.value) or {})
         expected = view.expected_return_range
         probabilities = {
             scenario.name: scenario.probability
             for scenario in view.scenarios
         }
         distribution = probabilities if all(value is not None for value in probabilities.values()) else None
-        calibration = _latest_calibration(tables, decision.cutoff)
+        availability_status = str(artifact.get("availability_status") or "missing")
+        blockers = list(artifact.get("blockers") or ())
+        if expected is None:
+            availability_status = "missing"
+            blockers.append("forecast_missing")
         signals.append(build_alpha_signal(
             ticker=decision.ticker,
             opportunity_episode_id=decision.opportunity_episode_id,
@@ -481,48 +533,45 @@ def _alpha_models(decision: Any, tables: dict[str, list[dict[str, Any]]]) -> tup
             instrument_state_snapshot_id=snapshot.snapshot_id,
             as_of=decision.cutoff,
             input_lineage=decision.input_lineage,
-            target="expected_return" if expected is not None else None,
+            target=str(artifact.get("target") or "") or None,
             horizon=view.horizon.value,
             direction=view.stance.value,
             forecast_value=((expected.low + expected.high) / 2) if expected is not None else None,
             forecast_range=expected,
             forecast_distribution=distribution,
             probability_semantics="scenario_probability" if distribution is not None else None,
-            cohort_id=str(calibration.get("cohort_id") or "ticker-thesis-v1") if expected is not None else None,
-            calibration_state=str(calibration.get("calibration_state") or "uncalibrated") if expected is not None else None,
-            model_version=decision.input_manifest.experiment_id if expected is not None else None,
-            feature_version=decision.input_manifest.code_version if expected is not None else None,
-            evaluation_stage="research" if expected is not None else None,
-            blockers=(() if expected is not None else ("forecast_missing",)),
+            cohort_id=artifact.get("cohort_id"),
+            calibration_state=artifact.get("calibration_state"),
+            model_version=artifact.get("model_version"),
+            feature_version=artifact.get("feature_version"),
+            evaluation_stage=artifact.get("evaluation_stage"),
+            availability_status=availability_status,
+            strategy_key=artifact.get("strategy_key"),
+            strategy_revision_id=artifact.get("strategy_revision_id"),
+            model_artifact_id=artifact.get("model_artifact_id"),
+            strategy_evaluation_id=artifact.get("strategy_evaluation_id"),
+            artifact_published_at=artifact.get("artifact_published_at"),
+            evaluation_evaluated_at=artifact.get("evaluation_evaluated_at"),
+            evaluation_available_at=artifact.get("evaluation_available_at"),
+            blockers=tuple(dict.fromkeys(blockers)),
         ))
     return snapshot, signals
 
 
-def _latest_calibration(tables: dict[str, list[dict[str, Any]]], cutoff: datetime) -> dict[str, Any]:
-    rows = [
-        dict(row)
-        for name in ("conviction_calibration", "ticker_calibration", "calibration")
-        for row in tables.get(name) or []
-    ]
-    bounded = []
-    for row in rows:
-        available_at = row.get("available_at") or row.get("as_of")
-        if available_at is None:
-            continue
-        try:
-            parsed = _utc(datetime.fromisoformat(str(available_at).replace("Z", "+00:00")))
-        except (TypeError, ValueError):
-            continue
-        if parsed <= cutoff:
-            bounded.append((parsed, row))
-    return max(bounded, key=lambda item: item[0], default=(None, {}))[1]
-
-
 def _same_published_decision(left: Any, right: Any) -> bool:
+    try:
+        same_rank = (
+            OpportunityRank.model_validate(left.opportunity_rank)
+            == OpportunityRank.model_validate(right.opportunity_rank)
+        ) if left.opportunity_rank is not None and right.opportunity_rank is not None else (
+            left.opportunity_rank is None and right.opportunity_rank is None
+        )
+    except (TypeError, ValueError):
+        same_rank = False
     return (
         left.input_manifest.input_hash == right.input_manifest.input_hash
         and left.market_state_publication_id == right.market_state_publication_id
-        and left.opportunity_rank == right.opportunity_rank
+        and same_rank
         and (left.trade_plan.trade_plan_id if left.trade_plan else None)
         == (right.trade_plan.trade_plan_id if right.trade_plan else None)
         and left.selected_expression.kind == right.selected_expression.kind

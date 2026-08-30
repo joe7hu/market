@@ -109,6 +109,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/decision-funnel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Decision Funnel */
+        get: operations["decision_funnel_api_decision_funnel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/decision-inbox": {
         parameters: {
             query?: never;
@@ -1546,11 +1563,15 @@ export interface components {
          * @description A forecast with explicit target, horizon, calibration, and lineage.
          */
         AlphaSignal: {
+            /** Artifact Published At */
+            artifact_published_at?: string | null;
             /**
              * As Of
              * Format: date-time
              */
             as_of: string;
+            /** @default missing */
+            availability_status: components["schemas"]["AvailabilityStatus"];
             /**
              * Blockers
              * @default []
@@ -1569,6 +1590,10 @@ export interface components {
             decision_revision: string;
             /** Direction */
             direction?: string | null;
+            /** Evaluation Available At */
+            evaluation_available_at?: string | null;
+            /** Evaluation Evaluated At */
+            evaluation_evaluated_at?: string | null;
             /** Evaluation Stage */
             evaluation_stage?: string | null;
             /** Feature Version */
@@ -1594,6 +1619,8 @@ export interface components {
             input_lineage: components["schemas"]["InputLineage"][];
             /** Instrument State Snapshot Id */
             instrument_state_snapshot_id: string;
+            /** Model Artifact Id */
+            model_artifact_id?: string | null;
             /** Model Version */
             model_version?: string | null;
             /** Opportunity Episode Id */
@@ -1602,6 +1629,12 @@ export interface components {
             probability_semantics?: string | null;
             /** Signal Id */
             signal_id: string;
+            /** Strategy Evaluation Id */
+            strategy_evaluation_id?: string | null;
+            /** Strategy Key */
+            strategy_key?: string | null;
+            /** Strategy Revision Id */
+            strategy_revision_id?: number | null;
             /** Target */
             target?: string | null;
             /** Ticker */
@@ -1776,6 +1809,56 @@ export interface components {
             /** Why It Matters */
             why_it_matters: string;
         };
+        /** DecisionFunnelBlocker */
+        DecisionFunnelBlocker: {
+            /** Affected Symbols */
+            affected_symbols?: string[];
+            /** Count */
+            count: number;
+            /** Reason */
+            reason: string;
+        };
+        /** DecisionFunnelResponse */
+        DecisionFunnelResponse: {
+            /** Actionable */
+            actionable: number;
+            /** Age Seconds */
+            age_seconds?: number | null;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Published At */
+            published_at?: string | null;
+            /** Stages */
+            stages?: components["schemas"]["DecisionFunnelStage"][];
+            /** Total */
+            total: number;
+        };
+        /** DecisionFunnelStage */
+        DecisionFunnelStage: {
+            /** Affected Symbols */
+            affected_symbols?: string[];
+            /** Count */
+            count: number;
+            /** Owner */
+            owner: string;
+            /** Percentage */
+            percentage: number;
+            /** Retry */
+            retry: string;
+            /** Stage */
+            stage: string;
+            /** Top Blockers */
+            top_blockers?: components["schemas"]["DecisionFunnelBlocker"][];
+            /** Total */
+            total: number;
+            /** Unavailable Count */
+            unavailable_count: number;
+        };
         /** DecisionInboxResponse */
         DecisionInboxResponse: {
             /** Authority */
@@ -1928,6 +2011,10 @@ export interface components {
              * @default 0
              */
             coverage_ratio: number;
+            /** Excluded Materiality */
+            excluded_materiality?: {
+                [key: string]: boolean;
+            };
             /** Excluded Reasons */
             excluded_reasons?: {
                 [key: string]: string;
@@ -1938,10 +2025,24 @@ export interface components {
              */
             intended: string[];
             /**
+             * Policy Version
+             * @default ticker-universe-coverage.v1
+             */
+            policy_version: string;
+            /** Source Failures */
+            source_failures?: {
+                [key: string]: string[];
+            };
+            /**
              * Systemic Failure
              * @default false
              */
             systemic_failure: boolean;
+            /**
+             * Systemic Failure Reasons
+             * @default []
+             */
+            systemic_failure_reasons: string[];
             /**
              * Threshold
              * @default 1
@@ -2112,6 +2213,13 @@ export interface components {
          * @description One way to express the same ticker thesis.
          */
         ExpressionDecision: {
+            /** @default missing */
+            availability_status: components["schemas"]["AvailabilityStatus"];
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
             /** Data Requests */
             data_requests?: components["schemas"]["DataRequest"][];
             entry_range?: components["schemas"]["PriceRange"] | null;
@@ -2551,6 +2659,8 @@ export interface components {
         OpportunityRank: {
             /** Alpha Signal Id */
             alpha_signal_id?: string | null;
+            /** @default missing */
+            availability_status: components["schemas"]["AvailabilityStatus"];
             /**
              * Blockers
              * @default []
@@ -2598,6 +2708,8 @@ export interface components {
             policy_version: string;
             /** Portfolio Impact Id */
             portfolio_impact_id?: string | null;
+            /** Primary Blocker */
+            primary_blocker?: string | null;
             /** Rank Id */
             rank_id: string;
             /**
@@ -4220,6 +4332,8 @@ export interface components {
             decision_revision: string;
             /** Diversification Benefit */
             diversification_benefit?: number | null;
+            /** Expected Transaction Costs */
+            expected_transaction_costs?: number | null;
             /** Expression Identity */
             expression_identity: string;
             expression_kind: components["schemas"]["ExpressionKind"];
@@ -4270,6 +4384,8 @@ export interface components {
             portfolio_before?: {
                 [key: string]: unknown;
             };
+            /** Portfolio Overlap Penalty */
+            portfolio_overlap_penalty?: number | null;
             /** Position To Trim Or Replace */
             position_to_trim_or_replace?: string | null;
             /** Position Weight After */
@@ -4293,6 +4409,8 @@ export interface components {
             sector_concentration_delta?: number | null;
             /** Symbol Concentration Delta */
             symbol_concentration_delta?: number | null;
+            /** Tail Risk Penalty */
+            tail_risk_penalty?: number | null;
             /** Ticker */
             ticker: string;
             /** Top Alternative */
@@ -5694,6 +5812,8 @@ export interface components {
             alpha_signal_id?: string | null;
             /** Authorization Mode */
             authorization_mode: string;
+            /** @default missing */
+            availability_status: components["schemas"]["AvailabilityStatus"];
             /**
              * Blockers
              * @default []
@@ -6006,6 +6126,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentResearchPromptResponse"];
+                };
+            };
+        };
+    };
+    decision_funnel_api_decision_funnel_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionFunnelResponse"];
                 };
             };
         };

@@ -249,10 +249,6 @@ class StrategyLearningRepository:
         source_rows: list[dict[str, Any]],
     ) -> None:
         connection.execute(
-            "DELETE FROM analysis.strategy_evaluation WHERE strategy_revision_id = %s AND evaluation_type = %s",
-            [candidate_id, evaluation_type],
-        )
-        connection.execute(
             """
             INSERT INTO analysis.strategy_evaluation
                 (strategy_revision_id, evaluation_type, evaluated_at, period_start,

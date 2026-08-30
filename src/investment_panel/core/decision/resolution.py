@@ -249,7 +249,7 @@ def build_decision_resolution(
     trade_plan_id: str | None = None,
     blocked: bool = False,
 ) -> DecisionResolutionV2:
-    clean_blockers = [str(item) for item in blockers if str(item).strip()]
+    clean_blockers = list(dict.fromkeys(str(item) for item in blockers if str(item).strip()))
     primary = _choose_blocker(clean_blockers) if clean_blockers else None
     complete_plan = all(not _missing(item) for item in (entry, size, invalidation, exit, ttl, portfolio_context))
     actionable_action = str(action).upper() not in {ResolutionAction.NO_TRADE.value, ResolutionAction.AVOID.value}
