@@ -805,6 +805,7 @@ def ticker_learning_payload(
     """Compose disagreement, expression tournament, mistakes, and policy gates."""
 
     tables = tables or {}
+    from investment_panel.core.decision import promotion_readiness
     fundamental = dict(ticker_decision.get("fundamental") or {})
     expressions = dict(ticker_decision.get("expressions") or {})
     canonical_mode = outcome_attributions is not None or "outcome_attribution" in tables
@@ -854,6 +855,10 @@ def ticker_learning_payload(
         ]))
         strategy_learning["automatic_promotion"] = False
         strategy_learning["status"] = "collecting"
+    governance_row = next(iter(tables.get("ticker_policy_learning") or []), {})
+    governance_evaluations = governance_row.get("governance_evaluations", [])
+    governance = promotion_readiness(governance_evaluations if isinstance(governance_evaluations, list) else [])
+    strategy_learning["governance"] = governance
     payload = {
         "independent_episode_count": len(episode_ids) or (1 if display_outcomes else 0),
         "independent_horizon_episode_count": len({
@@ -897,6 +902,7 @@ def ticker_learning_payload(
             for row in display_outcomes if row.get("error_type") or row.get("mistake_card")
         ],
         "strategy_learning": strategy_learning,
+        "governance": governance,
     }
     if canonical_mode:
         payload["outcome_authority"] = "outcome-attribution.v1"

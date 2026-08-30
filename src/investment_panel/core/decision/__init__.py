@@ -157,6 +157,16 @@ from investment_panel.core.decision.ticker_learning import (
     TICKER_LEARNING_VERSION,
     evaluate_ticker_policy,
 )
+from investment_panel.core.decision.governance import (
+    GOVERNANCE_STAGES,
+    NOTIFIABLE_TRANSITIONS,
+    OUTCOME_ERROR_TYPES,
+    PROMOTION_STAGES,
+    TRACKED_METRICS,
+    classify_outcome_error,
+    promotion_readiness,
+    transition_dedupe_key,
+)
 from investment_panel.core.decision.alpha import (
     ALPHA_SIGNAL_CONTRACT_VERSION,
     INSTRUMENT_STATE_SNAPSHOT_CONTRACT_VERSION,
@@ -194,6 +204,14 @@ __all__ = [
     "is_option_expired",
     "jsonable",
     "action_grade_for",
+    "GOVERNANCE_STAGES",
+    "NOTIFIABLE_TRANSITIONS",
+    "OUTCOME_ERROR_TYPES",
+    "PROMOTION_STAGES",
+    "TRACKED_METRICS",
+    "classify_outcome_error",
+    "promotion_readiness",
+    "transition_dedupe_key",
     "apply_blocking_penalties",
     "best_freshness",
     "catalyst_window",

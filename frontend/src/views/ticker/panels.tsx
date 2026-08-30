@@ -333,6 +333,7 @@ function DisagreementPanel({ learning }: { learning?: TickerLearning }) {
 
 function LearningLoopPanel({ learning }: { learning: TickerLearning }) {
   const policy = learning.strategy_learning;
+  const governance = learning.governance;
   const metrics = policy?.metrics ?? {};
   const expressionRows = (learning.expression_tournament ?? []).map((row) => {
     const outcomes = arrayValue(row.outcomes);
@@ -364,6 +365,16 @@ function LearningLoopPanel({ learning }: { learning: TickerLearning }) {
         {learning.outcome_evidence_label ? ` · Evidence: ${learning.outcome_evidence_label}` : ""}
         {learning.outcome_authority_blocker ? ` · ${learning.outcome_authority_blocker}` : ""}
       </p>
+      {governance ? (
+        <div className="border-b border-border bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span>Governance: <strong className="text-foreground">{textValue(governance.status, "unavailable").toUpperCase()}</strong></span>
+            <span>Paper only: {governance.paper_only ? "YES" : "NO"}</span>
+            <span>Live: {textValue(governance.live_eligibility, "unavailable")}</span>
+          </div>
+          {governance.blockers?.length ? <p className="mt-1">Blocked by: {governance.blockers.map((item) => textValue(item)).join(" · ")}</p> : null}
+        </div>
+      ) : null}
       <div className="grid gap-0 border-b border-border sm:grid-cols-2 xl:grid-cols-5">
         <LearningMetric label="Effective episodes" value={String(learning.effective_sample_count ?? learning.independent_episode_count ?? 0)} detail="one decision-horizon unit" />
         <LearningMetric label="Trading days" value={numberText(metrics.trading_day_count)} detail="independent span" />

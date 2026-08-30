@@ -7,11 +7,32 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.core.decision import promotion_readiness
 
 
 class StrategyGovernanceRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
+
+    def promotion_readiness(
+        self, strategy_revision_id: int, *, cutoff: Any | None = None,
+    ) -> dict[str, Any]:
+        """Read one strategy's point-in-time Phase 7 governance evidence."""
+
+        with self.runtime.read(JOB_PROFILE) as connection:
+            rows = connection.execute(
+                """
+                SELECT evaluation_type, verdict, metrics, evidence,
+                       evaluated_at, available_at, period_start, period_end
+                FROM analysis.strategy_evaluation
+                WHERE strategy_revision_id = %s
+                  AND (%s::timestamptz IS NULL OR evaluated_at <= %s::timestamptz)
+                  AND (%s::timestamptz IS NULL OR available_at <= %s::timestamptz)
+                ORDER BY evaluated_at DESC, id DESC
+                """,
+                [strategy_revision_id, cutoff, cutoff, cutoff, cutoff],
+            ).fetchall()
+        return promotion_readiness([dict(row) for row in rows], now=cutoff)
 
     def automatic_promote_eligible(self, *, enabled: bool = True) -> int:
         if not enabled:

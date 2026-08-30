@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import TradePlan
+from investment_panel.core.decision import TradePlan, transition_dedupe_key
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import plan_authority
 
@@ -41,6 +41,45 @@ PORTFOLIO_RISK_LOCK_KEY = "decision-inbox:portfolio-risk"
 class DecisionInboxRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
+
+    def emit_governance_transition(
+        self,
+        *,
+        episode_id: str,
+        decision_revision: str,
+        transition: str,
+        policy_version: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Emit one allowed Phase 7 transition, with exact identity dedupe.
+
+        The existing Inbox remains the durable notification authority.  This
+        adapter only maps Phase 7 names to its existing event vocabulary.
+        """
+
+        key = transition_dedupe_key(episode_id, decision_revision, transition, policy_version)
+        body = {
+            **dict(payload or {}),
+            "opportunity_episode_id": episode_id,
+            "decision_revision": decision_revision,
+            "policy_version": policy_version,
+            "state_transition": transition,
+        }
+        event_type = {
+            "newly_actionable": "ready", "action_changed": "ready",
+            "thesis_invalidated": "revoked", "blocking_data_degradation": "revoked",
+            "risk_limit_breached": "portfolio_critical", "staged": "ready",
+            "filled": "paper_filled", "exited": "paper_exited",
+        }[transition]
+        severity = "critical" if transition == "risk_limit_breached" else "warning" if event_type == "revoked" else "info"
+        return self.emit(
+            event_type=event_type,
+            payload=body,
+            lane="ticker",
+            severity=severity,
+            enqueue_telegram=True,
+            dedupe_key=key,
+        )
 
     def emit(
         self,

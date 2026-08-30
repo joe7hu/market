@@ -80,6 +80,15 @@ export type TickerDossier = {
 };
 
 export type TickerLearning = {
+  governance?: {
+    status?: string;
+    promotion_eligible?: boolean;
+    paper_only?: boolean;
+    live_eligibility?: string;
+    blockers?: JsonValue[];
+    stages?: Record<string, JsonValue | undefined>;
+    metrics?: Record<string, JsonValue | undefined>;
+  };
   outcome_authority?: string;
   outcome_authority_blocker?: string | null;
   outcome_evidence_label?: string;

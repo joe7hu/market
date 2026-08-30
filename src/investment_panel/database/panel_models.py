@@ -859,9 +859,21 @@ def load_postgres_tables(
                 canonical = AnalysisRepository(runtime).publication_rows(
                     "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
                 )
+                governance_rows = connection.execute(
+                    """
+                    SELECT evaluation_type AS stage, verdict, metrics, evidence,
+                           evaluated_at, available_at, period_start, period_end
+                    FROM analysis.strategy_evaluation evaluation
+                    JOIN analysis.strategy_revision strategy
+                      ON strategy.id = evaluation.strategy_revision_id
+                    WHERE strategy.status = 'active'
+                    ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
+                    """
+                ).fetchall()
                 tables[name] = [{
                     "authority": "outcome-attribution.v1",
                     "episodes": canonical,
+                    "governance_evaluations": [dict(row) for row in governance_rows],
                 }]
                 continue
             if name == "superinvestor_portfolios":
