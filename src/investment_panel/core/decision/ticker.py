@@ -3887,6 +3887,30 @@ def _execution_pick(row: Mapping[str, Any], details: Mapping[str, Any], *keys: s
     return _pick(details, *keys) if value is None else value
 
 
+def _execution_number(value: Any, *, minimum: float | None = None, maximum: float | None = None) -> float | None:
+    """Parse one finite execution metric and enforce its numeric domain."""
+    if isinstance(value, (Mapping, list, tuple, set)):
+        return None
+    number = _number(value)
+    if number is None:
+        return None
+    if minimum is not None and number < minimum:
+        return None
+    if maximum is not None and number > maximum:
+        return None
+    return number
+
+
+def _execution_label(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _execution_object(value: Any) -> Mapping[str, Any] | None:
+    return value if isinstance(value, Mapping) else None
+
+
 def _execution_evidence_for(
     kind: ExpressionKind,
     row: Mapping[str, Any],
@@ -3895,8 +3919,6 @@ def _execution_evidence_for(
     cutoff: datetime,
 ) -> dict[str, Any]:
     """Normalize execution-grade fields without creating a second authority."""
-    merged = dict(details)
-    merged.update(row)
     blockers: list[str] = []
     hard_blockers: list[str] = []
     observed = _parse_datetime(_execution_pick(row, details, "observed_at", "quote_time", "available_at"))
@@ -3908,60 +3930,95 @@ def _execution_evidence_for(
         if not legs:
             hard_blockers.append("option_execution_legs_missing")
         for index, leg in enumerate(legs):
-            bid = _number(_pick(leg, "bid"))
-            ask = _number(_pick(leg, "ask"))
-            size_bid = _number(_pick(leg, "bid_size", "size_available", "bid_size_available"))
-            size_ask = _number(_pick(leg, "ask_size", "size_available", "ask_size_available"))
+            bid = _execution_number(_pick(leg, "bid"), minimum=0)
+            ask = _execution_number(_pick(leg, "ask"), minimum=0)
+            size_bid = _execution_number(_pick(leg, "bid_size", "size_available", "bid_size_available"), minimum=0)
+            size_ask = _execution_number(_pick(leg, "ask_size", "size_available", "ask_size_available"), minimum=0)
             leg_observed = _parse_datetime(_pick(leg, "quote_time", "observed_at", "available_at"))
-            if bid is None or ask is None or ask < bid or size_bid is None or size_ask is None:
+            if bid is None or ask is None or ask < bid or size_bid is None or size_ask is None or size_bid <= 0 or size_ask <= 0:
                 hard_blockers.append(f"option_execution_quote_invalid:{index}")
             if leg_observed is None:
                 hard_blockers.append(f"option_execution_quote_time_missing:{index}")
             elif leg_observed > _utc(cutoff):
                 hard_blockers.append(f"option_execution_quote_future:{index}")
-        values = {
-            "delta": _number(_execution_pick(row, details, "delta", "provider_delta")),
-            "gamma": _number(_execution_pick(row, details, "gamma", "provider_gamma")),
-            "vega": _number(_execution_pick(row, details, "vega", "provider_vega")),
-            "theta": _number(_execution_pick(row, details, "theta", "provider_theta")),
-            "skew": _execution_pick(row, details, "skew", "skew_25", "iv_skew", "put_call_iv_skew"),
+        raw_values = {
+            "delta": (_execution_pick(row, details, "delta", "provider_delta"), -1, 1),
+            "gamma": (_execution_pick(row, details, "gamma", "provider_gamma"), 0, None),
+            "vega": (_execution_pick(row, details, "vega", "provider_vega"), 0, None),
+            "theta": (_execution_pick(row, details, "theta", "provider_theta"), None, None),
+            "skew": (_execution_pick(row, details, "skew", "skew_25", "iv_skew", "put_call_iv_skew"), None, None),
             "term_structure": _execution_pick(row, details, "term_structure", "term_structure_slope", "term_slope"),
             "event_gap_scenarios": _execution_pick(row, details, "event_gap_scenarios", "event_gap", "gap_scenarios"),
             "assignment": _execution_pick(row, details, "assignment", "assignment_policy", "assignment_risk"),
             "collateral": _execution_pick(row, details, "collateral", "collateral_required", "reserved_collateral"),
-            "slippage": _execution_pick(row, details, "slippage", "expected_slippage", "slippage_bps"),
-            "days_to_exit": _number(_execution_pick(row, details, "days_to_exit", "exit_days")),
-            "capacity": _execution_pick(row, details, "capacity", "capacity_limit", "max_quantity"),
+            "slippage": (_execution_pick(row, details, "slippage", "expected_slippage", "slippage_bps"), 0, None),
+            "days_to_exit": (_execution_pick(row, details, "days_to_exit", "exit_days"), 1e-12, None),
+            "capacity": (_execution_pick(row, details, "capacity", "capacity_limit", "max_quantity"), 1e-12, None),
         }
-        values["multi_leg_liquidity"] = _execution_pick(row, details, "multi_leg_liquidity", "liquidity")
-        required = ("delta", "gamma", "vega", "theta", "skew", "term_structure", "event_gap_scenarios", "assignment", "collateral", "slippage", "days_to_exit", "capacity", "multi_leg_liquidity")
-        blockers.extend(f"option_execution_{key}_missing" for key in required if values.get(key) is None)
+        values: dict[str, Any] = {}
+        for key, raw in raw_values.items():
+            if key in {"term_structure", "event_gap_scenarios", "assignment", "collateral"}:
+                value = raw if isinstance(raw, Mapping) else None
+            elif key in {"delta", "gamma", "vega", "theta", "skew", "slippage", "days_to_exit", "capacity"}:
+                source, minimum, maximum = raw
+                value = _execution_number(source, minimum=minimum, maximum=maximum)
+            else:
+                value = raw
+            values[key] = value
+            if value is None:
+                blockers.append(
+                    f"option_execution_{key}_{'missing' if raw is None else 'malformed'}"
+                )
+        liquidity_raw = _execution_pick(row, details, "multi_leg_liquidity", "liquidity")
+        values["multi_leg_liquidity"] = _execution_object(liquidity_raw)
+        if values["multi_leg_liquidity"] is None:
+            blockers.append(
+                "option_execution_multi_leg_liquidity_missing"
+                if liquidity_raw is None else "option_execution_multi_leg_liquidity_malformed"
+            )
         evidence = {"asset_class": "options", **values}
     elif kind in {ExpressionKind.CRYPTO_SPOT, ExpressionKind.CRYPTO_PERPETUAL}:
-        values = {
-            "btc_beta": _number(_execution_pick(row, details, "btc_beta", "beta_btc")),
-            "eth_beta": _number(_execution_pick(row, details, "eth_beta", "beta_eth")),
-            "funding": _execution_pick(row, details, "funding", "funding_rate"),
-            "basis": _execution_pick(row, details, "basis", "basis_rate"),
-            "open_interest": _execution_pick(row, details, "open_interest", "oi"),
+        raw_values = {
+            "btc_beta": (_execution_pick(row, details, "btc_beta", "beta_btc"), None, None),
+            "eth_beta": (_execution_pick(row, details, "eth_beta", "beta_eth"), None, None),
+            "funding": (_execution_pick(row, details, "funding", "funding_rate"), None, None),
+            "basis": (_execution_pick(row, details, "basis", "basis_rate"), None, None),
+            "open_interest": (_execution_pick(row, details, "open_interest", "oi"), 0, None),
             "liquidation_regime": _execution_pick(row, details, "liquidation_regime", "liquidations"),
             "venue_risk": _execution_pick(row, details, "venue_risk", "venue"),
             "counterparty_risk": _execution_pick(row, details, "counterparty_risk", "counterparty"),
             "stablecoin_liquidity": _execution_pick(row, details, "stablecoin_liquidity", "stablecoin"),
-            "ttl_seconds": _number(_execution_pick(row, details, "ttl_seconds", "freshness_ttl_seconds")),
+            "ttl_seconds": (_execution_pick(row, details, "ttl_seconds", "freshness_ttl_seconds"), 1e-12, None),
         }
-        blockers.extend(f"crypto_execution_{key}_missing" for key in values if values[key] is None)
+        values = {}
+        for key, raw in raw_values.items():
+            if key in {"liquidation_regime", "venue_risk", "counterparty_risk", "stablecoin_liquidity"}:
+                value = _execution_label(raw)
+            else:
+                source, minimum, maximum = raw
+                value = _execution_number(source, minimum=minimum, maximum=maximum)
+            values[key] = value
+            if value is None:
+                blockers.append(
+                    f"crypto_execution_{key}_{'missing' if raw is None else 'malformed'}"
+                )
         evidence = {"asset_class": "crypto", **values}
     else:
         return {}
+    if kind in {ExpressionKind.CRYPTO_SPOT, ExpressionKind.CRYPTO_PERPETUAL}:
+        ttl = values.get("ttl_seconds")
+        if observed is not None and isinstance(ttl, (int, float)) and not hard_blockers:
+            age_seconds = (_utc(cutoff) - observed).total_seconds()
+            if age_seconds > ttl:
+                hard_blockers.append("crypto_execution_quote_stale")
     blockers = list(dict.fromkeys((*hard_blockers, *blockers)))
     evidence.update({
         "version": "execution-grade.v1",
-        "status": "available" if not blockers else "unavailable" if hard_blockers else "advisory",
+        "status": "available" if not blockers else "unavailable",
         "blockers": tuple(blockers),
         "observed_at": observed,
         "cutoff": _utc(cutoff),
-        "freshness_status": "available" if observed is not None and not hard_blockers else "unavailable",
+        "freshness_status": "available" if observed is not None and not blockers else "unavailable",
     })
     return evidence
 
@@ -4961,8 +5018,12 @@ def _build_expressions(
         quote.update(row)
         price = _crypto_quote_price(quote)
         quote_blockers = _crypto_quote_blockers(quote, kind, cutoff)
-        executable = not quote_blockers
-        blockers = () if executable else tuple(dict.fromkeys(("crypto_evidence_unavailable", *quote_blockers)))
+        execution_evidence = _execution_evidence_for(kind, row, details, [], cutoff)
+        execution_blockers = tuple(execution_evidence.get("blockers") or ())
+        executable = not quote_blockers and execution_evidence.get("status") == "available"
+        blockers = () if executable else tuple(dict.fromkeys((
+            "crypto_evidence_unavailable", *quote_blockers, *execution_blockers,
+        )))
         costs = _number(_pick(row, "expected_transaction_costs", "transaction_costs", "fees") or _pick(details, "expected_transaction_costs", "transaction_costs", "fees"))
         expected_value = _normalised_net_utility(row, details)
         output[kind] = ExpressionDecision(
@@ -4986,7 +5047,7 @@ def _build_expressions(
             spread_pct=_number(_pick(row, "spread_pct", "spread")),
             fill_probability=_bounded(_number(_pick(row, "fill_probability", "fill_prob")), 0, 1),
             horizon_fit=_bounded(_number(_pick(row, "horizon_fit")), 0, 1),
-            execution_evidence=_execution_evidence_for(kind, row, details, [], cutoff),
+            execution_evidence=execution_evidence,
             status="eligible" if executable else "unavailable",
             blockers=blockers,
             rationale=(

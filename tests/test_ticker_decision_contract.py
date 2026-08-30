@@ -205,6 +205,109 @@ def test_crypto_impact_uses_last_quote_value_for_weight() -> None:
     assert after["position_weight"] == pytest.approx(0.001)
 
 
+def _complete_crypto_execution_evidence(**updates: object) -> dict[str, object]:
+    evidence: dict[str, object] = {
+        "status": "available",
+        "source_id": "crypto-feed",
+        "observed_at": AS_OF,
+        "price": 100,
+        "btc_beta": 1.0,
+        "eth_beta": 0.5,
+        "funding": 0.001,
+        "basis": 0.002,
+        "open_interest": 100,
+        "liquidation_regime": "normal",
+        "venue_risk": "low",
+        "counterparty_risk": "low",
+        "stablecoin_liquidity": "deep",
+        "ttl_seconds": 3600,
+    }
+    evidence.update(updates)
+    return evidence
+
+
+def test_execution_evidence_accepts_complete_crypto_values() -> None:
+    evidence = ticker_module._execution_evidence_for(
+        ExpressionKind.CRYPTO_SPOT,
+        _complete_crypto_execution_evidence(),
+        {},
+        [],
+        AS_OF,
+    )
+    assert evidence["status"] == "available"
+    assert evidence["freshness_status"] == "available"
+    assert evidence["ttl_seconds"] == pytest.approx(3600)
+
+
+def test_execution_evidence_rejects_crypto_quote_older_than_ttl() -> None:
+    evidence = ticker_module._execution_evidence_for(
+        ExpressionKind.CRYPTO_SPOT,
+        _complete_crypto_execution_evidence(
+            observed_at=AS_OF - timedelta(days=2), ttl_seconds=60,
+        ),
+        {},
+        [],
+        AS_OF,
+    )
+    assert evidence["status"] == "unavailable"
+    assert "crypto_execution_quote_stale" in evidence["blockers"]
+
+
+def test_execution_evidence_rejects_crypto_malformed_and_non_positive_values() -> None:
+    evidence = ticker_module._execution_evidence_for(
+        ExpressionKind.CRYPTO_SPOT,
+        _complete_crypto_execution_evidence(
+            funding="not-a-number", btc_beta=float("nan"), ttl_seconds=-1,
+        ),
+        {},
+        [],
+        AS_OF,
+    )
+    assert evidence["status"] == "unavailable"
+    assert "crypto_execution_funding_malformed" in evidence["blockers"]
+    assert "crypto_execution_btc_beta_malformed" in evidence["blockers"]
+    assert "crypto_execution_ttl_seconds_malformed" in evidence["blockers"]
+
+
+def test_execution_evidence_rejects_malformed_option_metrics() -> None:
+    evidence = ticker_module._execution_evidence_for(
+        ExpressionKind.CALL,
+        {
+            "available_at": AS_OF,
+            "delta": object(), "gamma": .1, "vega": .2, "theta": -.03,
+            "skew": .02, "term_structure": {"slope": .1},
+            "event_gap_scenarios": {"gap_down": -1}, "assignment": {"status": "none"},
+            "collateral": {"required": 250}, "slippage": .01,
+            "days_to_exit": 3, "capacity": 100,
+            "multi_leg_liquidity": {"status": "available"},
+        },
+        {},
+        [{"bid": 2, "ask": 2.2, "bid_size": 10, "ask_size": 10, "quote_time": AS_OF}],
+        AS_OF,
+    )
+    assert evidence["status"] == "unavailable"
+    assert "option_execution_delta_malformed" in evidence["blockers"]
+
+
+def test_execution_evidence_accepts_complete_option_values() -> None:
+    evidence = ticker_module._execution_evidence_for(
+        ExpressionKind.CALL,
+        {
+            "available_at": AS_OF,
+            "delta": .4, "gamma": .1, "vega": .2, "theta": -.03,
+            "skew": .02, "term_structure": {"slope": .1},
+            "event_gap_scenarios": {"gap_down": -1}, "assignment": {"status": "none"},
+            "collateral": {"required": 250}, "slippage": .01,
+            "days_to_exit": 3, "capacity": 100,
+            "multi_leg_liquidity": {"status": "available"},
+        },
+        {},
+        [{"bid": 2, "ask": 2.2, "bid_size": 10, "ask_size": 10, "quote_time": AS_OF}],
+        AS_OF,
+    )
+    assert evidence["status"] == "available"
+
+
 def _account_facts(**updates: object) -> dict[str, object]:
     facts: dict[str, object] = {
         "broker_net_liquidation": 100_000,

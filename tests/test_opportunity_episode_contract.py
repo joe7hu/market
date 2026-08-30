@@ -149,8 +149,8 @@ def test_crypto_expressions_are_bounded_and_fail_closed_without_quotes() -> None
         },
         as_of=CUTOFF,
     )
-    assert decision.expressions[ExpressionKind.CRYPTO_SPOT].availability_status.value == "available"
-    assert decision.expressions[ExpressionKind.CRYPTO_PERPETUAL].availability_status.value == "available"
+    assert decision.expressions[ExpressionKind.CRYPTO_SPOT].status in {"unavailable", "blocked"}
+    assert decision.expressions[ExpressionKind.CRYPTO_PERPETUAL].status in {"unavailable", "blocked"}
     assert decision.selected_expression is not None
 
     unavailable = build_ticker_decision(
