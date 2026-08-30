@@ -56,6 +56,24 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
   return next;
 }
 
+export function mergePanelData(existing: PanelData, incoming: PanelData, options: { append?: boolean } = {}): PanelData {
+  const next: PanelData = {
+    ...existing,
+    dashboard: { ...existing.dashboard, ...incoming.dashboard },
+    settings: { ...existing.settings, ...incoming.settings },
+    errors: { ...existing.errors, ...incoming.errors },
+    scopeStatus: { ...existing.scopeStatus, ...incoming.scopeStatus },
+  };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (RESERVED_PANEL_KEYS.has(key) || key === "scopeStatus" || value === undefined) continue;
+    const existingTable = next[key] as TablePayload | undefined;
+    next[key] = options.append && isTablePayload(existingTable) && isTablePayload(value)
+      ? appendTable(existingTable, value)
+      : value;
+  }
+  return next;
+}
+
 export function withScopeStatus(data: PanelData, scope: string, status: ScopeSnapshotStatus): PanelData {
   return { ...data, scopeStatus: { ...data.scopeStatus, [scope]: status } };
 }
@@ -68,6 +86,10 @@ function appendTable(existing: TablePayload, incoming: TablePayload): TablePaylo
     rows: appendUniqueRows(existingRows, incomingRows),
     count: incoming.count ?? existing.count,
   };
+}
+
+function isTablePayload(value: unknown): value is TablePayload {
+  return typeof value === "object" && value !== null && "rows" in value;
 }
 
 function appendUniqueRows(existingRows: RowRecord[], incomingRows: RowRecord[]): RowRecord[] {

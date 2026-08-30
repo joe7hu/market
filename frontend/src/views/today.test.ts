@@ -117,6 +117,17 @@ describe("Today Action Queue", () => {
     expect(markup).not.toContain("2026-09-19");
   });
 
+  it("keeps the three-column queue summary compact", () => {
+    const markup = renderToStaticMarkup(createElement(ActionQueueCard, {
+      item: { ...response.actions![0], action: "BUY", lifecycle_state: "actionable", trade_plan: plan() },
+      onOpenTicker: () => undefined,
+    }));
+
+    expect(markup).toContain("Action:");
+    expect(markup).toContain("Stored rationale.");
+    expect(markup).not.toContain("Canonical trade plan");
+  });
+
   it("keeps numeric terms at stored precision", () => {
     const base = plan();
     const markup = renderToStaticMarkup(createElement(TradePlanCard, {

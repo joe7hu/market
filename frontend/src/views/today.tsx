@@ -7,12 +7,12 @@ import { EmptyState, MetricTile, PageHeader, StatusBadge } from "@/components/ma
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { cn } from "@/lib/utils";
 import type { TodayResponse } from "@/api/panel";
+import type { components } from "@/generated/apiSchema";
 import type { AppModel } from "@/model";
 import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
 import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
-import { TradePlanCard } from "./TradePlanCard";
 
 type TodayPageProps = {
   data: PanelData;
@@ -155,7 +155,7 @@ export function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onO
           {plan === undefined ? <StatusBadge tone={tone}>{statusLabel}</StatusBadge> : null}
         </div>
         {ticker ? <p className="text-sm font-medium">{item.title}</p> : null}
-        {plan !== undefined ? <TradePlanCard plan={plan} /> : (
+        {plan !== undefined ? <CompactPlanSummary plan={plan} /> : (
           <>
             {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{item.rationale}</p> : null}
             {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {item.primary_blocker}</p> : null}
@@ -166,6 +166,21 @@ export function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onO
         {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Open drill-down</a> : null}
       </CardContent>
     </Card>
+  );
+}
+
+type TradePlan = components["schemas"]["TradePlan"];
+
+function CompactPlanSummary({ plan }: { plan: TradePlan | null }) {
+  if (!plan) {
+    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">NO TRADE · CASH</p><p className="mt-1 text-muted-foreground">Unavailable: canonical trade plan is missing.</p></div>;
+  }
+  return (
+    <div className="rounded-md border border-border p-3 text-sm">
+      <p><span className="font-semibold">Action:</span> {plan.action} · <span className="font-semibold">Expression:</span> {plan.selected_expression_kind}</p>
+      <p className="mt-2 text-muted-foreground"><span className="font-semibold text-foreground">Rationale:</span> {plan.rationale}</p>
+      <p className="mt-2"><span className="font-semibold">Next:</span> {plan.next_action}</p>
+    </div>
   );
 }
 

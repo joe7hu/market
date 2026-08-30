@@ -154,6 +154,9 @@ def today(
 def book_action_queue(rows: list[dict[str, Any]], *, limit: int = ACTION_QUEUE_LIMIT) -> list[dict[str, Any]]:
     """Rank current opportunity actions against the explicit cash alternative."""
 
+    if limit <= 0:
+        return []
+
     opportunities = sorted(
         (row for row in rows if row.get("source") == "capital_action" and row.get("ticker")),
         key=lambda row: (
