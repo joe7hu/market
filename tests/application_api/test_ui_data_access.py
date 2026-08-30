@@ -327,6 +327,7 @@ def test_daily_research_loader_bounds_detail_to_active_seed_symbols(monkeypatch)
 
 def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
+    impact = {"impact_id": "impact-tsla", "scenario_pnl": {"market_down_20": -2500}}
 
     def fake_helper(config: dict[str, object], table_names: tuple[str, ...], **kwargs):
         calls.append({"table_names": table_names, **kwargs})
@@ -334,7 +335,14 @@ def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None
             return {
                 "portfolio": [{"symbol": "TSLA"}, {"ticker": "MSFT"}],
             }, {"database": "postgresql", "available_model_count": 1, "unavailable_models": []}
-        return {name: [] for name in table_names}, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
+        tables = {name: [] for name in table_names}
+        if "ticker_decisions" in table_names:
+            tables["ticker_decisions"] = [{
+                "ticker": "TSLA",
+                "selected_expression": {"kind": "STOCK"},
+                "portfolio_impacts": {"STOCK": impact, "CASH": {"impact_id": "cash"}},
+            }]
+        return tables, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
 
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
@@ -347,6 +355,46 @@ def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None
     assert "portfolio" not in calls[1]["table_names"]
     assert calls[1]["query_symbol_filter"] == {"TSLA", "MSFT"}
     assert calls[1]["query_row_limits"] == {"quotes": 24}
+    assert "ticker_decisions" in calls[1]["table_names"]
+    assert panel.rows("ticker_decisions")[0]["portfolio_impacts"]["STOCK"] == impact
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected_symbol"),
+    [("watchlist-watched", "NVDA"), ("watchlist-unwatched", "AMD")],
+)
+def test_watchlist_scope_bounds_current_ticker_decisions_to_selected_symbols(
+    monkeypatch, scope: str, expected_symbol: str,
+) -> None:
+    calls: list[dict[str, object]] = []
+    impact = {"impact_id": f"impact-{expected_symbol.lower()}", "scenario_pnl": {"market_down_20": -1000}}
+
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...], **kwargs):
+        calls.append({"table_names": table_names, **kwargs})
+        if table_names == ("universe_screen", "manual_watchlist", "portfolio"):
+            return {
+                "universe_screen": [
+                    {"symbol": "NVDA", "watch_state": "watched"},
+                    {"symbol": "AMD", "watch_state": "candidate"},
+                ],
+                "manual_watchlist": [],
+                "portfolio": [],
+            }, {"database": "postgresql", "available_model_count": 3, "unavailable_models": []}
+        tables = {name: [] for name in table_names}
+        tables["ticker_decisions"] = [{
+            "ticker": expected_symbol,
+            "selected_expression": {"kind": "STOCK"},
+            "portfolio_impacts": {"STOCK": impact},
+        }]
+        return tables, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
+
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
+
+    panel = loaders_owner.load_watchlist_scope_data(typed_config("postgresql:///test"), scope, limit=1)
+
+    assert calls[1]["query_symbol_filter"] == {expected_symbol}
+    assert "ticker_decisions" in calls[1]["table_names"]
+    assert panel.rows("ticker_decisions")[0]["portfolio_impacts"]["STOCK"] == impact
 
 
 def test_panel_loader_preserves_explicit_empty_symbol_filter(monkeypatch) -> None:
@@ -503,6 +551,13 @@ def test_options_radar_scope_compacts_heavy_learning_tables() -> None:
 
 
 def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
+    nvda_impact = {
+        "impact_id": "impact-nvda-stock",
+        "portfolio_before": {"gross_exposure": 0.8},
+        "portfolio_after": {"gross_exposure": 0.9},
+        "scenario_pnl": {"market_down_20": -1200},
+    }
+    amd_impact = {"impact_id": "impact-amd-stock", "scenario_pnl": {"market_down_20": -800}}
     panel_data = PanelData(
         status=DataStatus(True, "ok", "test"),
         tables={
@@ -514,6 +569,10 @@ def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
             "fundamentals": [{"symbol": "NVDA", "metrics": {"revenue_growth": 0.12}}, {"symbol": "AMD", "metrics": {"revenue_growth": 0.2}}],
             "technicals": [{"symbol": "NVDA", "chart_1y": [1, 2]}, {"symbol": "AMD", "chart_1y": [2, 3]}],
             "valuations": [{"symbol": "NVDA", "upside_pct": 10}, {"symbol": "AMD", "upside_pct": 20}],
+            "ticker_decisions": [
+                {"ticker": "NVDA", "selected_expression": {"kind": "STOCK"}, "portfolio_impacts": {"STOCK": nvda_impact}},
+                {"ticker": "AMD", "selected_expression": {"kind": "STOCK"}, "portfolio_impacts": {"STOCK": amd_impact}},
+            ],
         },
     )
 
@@ -526,6 +585,12 @@ def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
     assert unwatched["tables"]["watchlist_unwatched_fundamentals"]["rows"][0]["symbol"] == "AMD"
     assert watched["tables"]["watchlist_watched_technicals"]["rows"][0]["symbol"] == "NVDA"
     assert unwatched["tables"]["watchlist_unwatched_technicals"]["rows"][0]["symbol"] == "AMD"
+    watched_decisions = watched["tables"]["watchlist_watched_ticker_decisions"]["rows"]
+    unwatched_decisions = unwatched["tables"]["watchlist_unwatched_ticker_decisions"]["rows"]
+    assert [row["ticker"] for row in watched_decisions] == ["NVDA"]
+    assert [row["ticker"] for row in unwatched_decisions] == ["AMD"]
+    assert watched_decisions[0]["portfolio_impacts"]["STOCK"] == nvda_impact
+    assert unwatched_decisions[0]["portfolio_impacts"]["STOCK"] == amd_impact
 
 
 def test_watchlist_unwatched_scope_pages_rows_and_keeps_total_count() -> None:

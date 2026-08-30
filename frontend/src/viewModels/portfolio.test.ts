@@ -57,4 +57,22 @@ describe("portfolio view model", () => {
 
     expect(buildPortfolioViewModel(data, model).summary.totalPnlPct).toBeNull();
   });
+
+  it("keeps the exact held-ticker impact for the selected expression kind", () => {
+    const selectedImpact = { impact_id: "impact-stock", scenario_pnl: { market_down_20: -1200 } };
+    const otherImpact = { impact_id: "impact-cash", scenario_pnl: { market_down_20: 0 } };
+    const data = {
+      tickerDecisions: { count: 1, rows: [{
+        ticker: "NVDA",
+        selected_expression: { kind: "STOCK" },
+        portfolio_impacts: { STOCK: selectedImpact, CASH: otherImpact },
+      }] },
+    } as unknown as PanelData;
+
+    const impacts = buildPortfolioViewModel(data, model).proposedImpacts;
+
+    expect(impacts).toHaveLength(1);
+    expect(impacts[0]).toBe(selectedImpact);
+    expect(impacts[0]).not.toBe(otherImpact);
+  });
 });

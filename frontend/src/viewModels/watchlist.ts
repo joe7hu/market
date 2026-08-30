@@ -1,10 +1,12 @@
 import type { PanelData, RowRecord } from "@/types";
+import type { components } from "@/generated/apiSchema";
 import { rows } from "@/utils";
 import { numberField, textField } from "@/views/rowFormat";
 import { closeVolatilityPct, expensivenessPercentileFromDiscountHistory, firstFinite, freeCashFlowMargin, freeCashFlowYield, inferredFcfMargin, latestValue, modeledAtrTrend, modeledRelativeVolumeBars, movingAverageState, normalizedBars, normalizeRatio, objectField, objectNumber, oneMonthBars, parsePercent, parseRating, periodBars, priceTrendPoints, ratioSeries, safeNumber, seriesPoints } from "./watchlistMath";
 
 export type WatchlistSort = "rank" | "state" | "momentum" | "quality" | "value" | "marketCap" | "drawdown" | "symbol" | "price" | "ps" | "pe" | "forwardPe" | "roic" | "rating" | "returnYtd" | "return1y" | "rsRank1m" | "rsRank3m" | "revenueGrowth" | "fcfYield" | "fcfMargin" | "relVol1m" | "atrPct1m" | "valuationPercentile";
 export type WatchState = "owned" | "watched" | "candidate";
+type PortfolioImpact = components["schemas"]["PortfolioImpact"];
 
 export type WatchlistFilters = {
   query: string;
@@ -67,6 +69,7 @@ export type WatchlistRow = {
   researchLabel: string;
   researchDetail: string;
   researchEvidenceCount: number;
+  portfolioImpact?: PortfolioImpact;
 };
 
 export type WatchlistViewModel = {
@@ -103,7 +106,8 @@ export function buildWatchlistViewModel(data: PanelData, filters: WatchlistFilte
   const researchPacketBySymbol = latestRows([...rows(data.researchPackets), ...rows(data.watchlistWatchedResearchPackets), ...rows(data.watchlistUnwatchedResearchPackets)]);
   const memoBySymbol = latestRows([...rows(data.memos), ...rows(data.watchlistWatchedMemos), ...rows(data.watchlistUnwatchedMemos)]);
   const thesisBySymbol = latestRows([...rows(data.thesisMonitor), ...rows(data.watchlistWatchedThesisMonitor), ...rows(data.watchlistUnwatchedThesisMonitor)]);
-  const allRows = screenRows.map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, screenerBySymbol, fundamentalBySymbol, marketValuationBySymbol, optionsBySymbol, researchPacketBySymbol, memoBySymbol, thesisBySymbol, localStates));
+  const decisionBySymbol = indexRows([...rows(data.watchlistWatchedTickerDecisions), ...rows(data.watchlistUnwatchedTickerDecisions), ...rows(data.tickerDecisions)]);
+  const allRows = screenRows.map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, screenerBySymbol, fundamentalBySymbol, marketValuationBySymbol, optionsBySymbol, researchPacketBySymbol, memoBySymbol, thesisBySymbol, decisionBySymbol, localStates));
   const rowsWithSymbols = assignRelativeStrengthRanks(allRows.filter((row) => row.symbol));
   const counts = tabCounts(rowsWithSymbols);
   const visibleRows = rowsWithSymbols.filter((row) => filterRow(row, filters));
@@ -131,7 +135,7 @@ function filtersAreActive(filters: WatchlistFilters): boolean {
   return Boolean(filters.query.trim() || filters.minRating || filters.maxForwardPe !== null || filters.minRoic !== null);
 }
 
-function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>, technicalBySymbol: Map<string, RowRecord>, valuationBySymbol: Map<string, RowRecord>, screenerBySymbol: Map<string, RowRecord>, fundamentalBySymbol: Map<string, RowRecord>, marketValuationBySymbol: Map<string, RowRecord>, optionsBySymbol: Map<string, RowRecord>, researchPacketBySymbol: Map<string, RowRecord>, memoBySymbol: Map<string, RowRecord>, thesisBySymbol: Map<string, RowRecord>, localStates: Record<string, WatchState | undefined>): WatchlistRow {
+function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>, technicalBySymbol: Map<string, RowRecord>, valuationBySymbol: Map<string, RowRecord>, screenerBySymbol: Map<string, RowRecord>, fundamentalBySymbol: Map<string, RowRecord>, marketValuationBySymbol: Map<string, RowRecord>, optionsBySymbol: Map<string, RowRecord>, researchPacketBySymbol: Map<string, RowRecord>, memoBySymbol: Map<string, RowRecord>, thesisBySymbol: Map<string, RowRecord>, decisionBySymbol: Map<string, RowRecord>, localStates: Record<string, WatchState | undefined>): WatchlistRow {
   const symbol = textField(row, ["symbol", "ticker"]).toUpperCase();
   const quote = quoteBySymbol.get(symbol);
   const technical = technicalBySymbol.get(symbol);
@@ -143,6 +147,7 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
   const researchPacket = researchPacketBySymbol.get(symbol);
   const memo = memoBySymbol.get(symbol);
   const thesis = thesisBySymbol.get(symbol);
+  const portfolioImpact = selectedPortfolioImpact(decisionBySymbol.get(symbol));
   const screenerMetrics = objectField(screener, ["metrics", "values"]);
   const fundamentalMetrics = objectField(fundamental, ["metrics", "values"]);
   const valuationAssumptions = objectField(valuation, ["assumptions"]);
@@ -228,8 +233,21 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     optionsExpectedMovePct: numberField(options, ["expected_move_pct"], Number.NaN),
     optionsSkewSignal: textField(options, ["skew_signal"], "unknown"),
     optionsSpreadQuality: textField(options, ["spread_quality"], "unknown"),
+    portfolioImpact,
     ...researchSignal(researchPacket, memo, thesis),
   };
+}
+
+function selectedPortfolioImpact(decision: RowRecord | undefined): PortfolioImpact | undefined {
+  const selected = decision?.selected_expression;
+  const impacts = decision?.portfolio_impacts;
+  if (!isRecord(selected) || !isRecord(impacts) || typeof selected.kind !== "string") return undefined;
+  const impact = impacts[selected.kind];
+  return isRecord(impact) ? impact as unknown as PortfolioImpact : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function researchSignal(researchPacket: RowRecord | undefined, memo: RowRecord | undefined, thesis: RowRecord | undefined): Pick<WatchlistRow, "researchStatus" | "researchLabel" | "researchDetail" | "researchEvidenceCount"> {

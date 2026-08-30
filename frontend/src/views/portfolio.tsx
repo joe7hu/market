@@ -15,6 +15,7 @@ import type { PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildPortfolioViewModel, performanceRangeRows, type PerformanceRange } from "@/viewModels/portfolio";
 import { booleanField, displayField, formatMoney, formatPct, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
 import { PortfolioPerformanceChart } from "./portfolio/performanceChart";
+import { PortfolioImpactCard } from "./TradePlanCard";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
 type Props = { data: PanelData; model: AppModel; loading: boolean; scopeStatus?: ScopeSnapshotStatus; onOpenTicker: OpenTicker; onRefresh: (force?: boolean) => Promise<void> };
@@ -58,6 +59,18 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
       </div>
 
       <HoldingsPanel holdings={model.holdings} onOpenTicker={onOpenTicker} onAddTrade={() => setTradeOpen(true)} />
+
+      {viewModel.proposedImpacts.length ? (
+        <section className="space-y-2">
+          <div>
+            <h2 className="text-base font-semibold">Proposed portfolio impact</h2>
+            <p className="text-xs text-muted-foreground">Stored before/after impact for each current selected expression.</p>
+          </div>
+          <div className="grid gap-3 xl:grid-cols-2">
+            {viewModel.proposedImpacts.map((impact) => <PortfolioImpactCard key={impact.impact_id} impact={impact} />)}
+          </div>
+        </section>
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-2">
         <CorrelationPanel rows={viewModel.correlationRows} window={correlationWindow} onWindowChange={setCorrelationWindow} onOpenTicker={onOpenTicker} />

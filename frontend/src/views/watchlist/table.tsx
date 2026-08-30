@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { WatchState, WatchlistRow } from "@/viewModels/watchlist";
 import type { OpenTicker } from "@/views/workspacePage";
+import { PortfolioImpactCard } from "@/views/TradePlanCard";
 
 import {
   AtrMiniLine,
@@ -37,6 +38,7 @@ import {
 
 export function WatchlistSection({ title, detail, rows, canLoadMore = false, loadingMore = false, onLoadMore, pendingSymbol, onOpenTicker, onSetWatchState }: { title: string; detail: string; rows: WatchlistRow[]; canLoadMore?: boolean; loadingMore?: boolean; onLoadMore?: () => Promise<void>; pendingSymbol: string | null; onOpenTicker: OpenTicker; onSetWatchState: (symbol: string, currentState: WatchState) => Promise<void> }) {
   if (!rows.length && !canLoadMore) return <EmptyState title={`No ${title.toLowerCase()} matches`} detail="Adjust the filters to widen the ticker set." />;
+  const impacts = rows.flatMap((row) => row.portfolioImpact ? [row.portfolioImpact] : []);
   return (
     <div className="space-y-2">
       <div className="flex items-end justify-between gap-3">
@@ -46,6 +48,14 @@ export function WatchlistSection({ title, detail, rows, canLoadMore = false, loa
         </div>
       </div>
       {rows.length ? <WatchlistTable rows={rows} pendingSymbol={pendingSymbol} onOpenTicker={onOpenTicker} onSetWatchState={onSetWatchState} /> : null}
+      {impacts.length ? (
+        <details className="rounded-md border border-border p-3">
+          <summary className="cursor-pointer text-sm font-semibold">Proposed portfolio impact ({impacts.length.toLocaleString()})</summary>
+          <div className="mt-3 grid gap-3 xl:grid-cols-2">
+            {impacts.map((impact) => <PortfolioImpactCard key={impact.impact_id} impact={impact} />)}
+          </div>
+        </details>
+      ) : null}
       {canLoadMore && onLoadMore ? <LoadMoreSentinel loading={loadingMore} onLoadMore={onLoadMore} /> : null}
     </div>
   );

@@ -210,6 +210,7 @@ def load_watchlist_scope_data(
     detail_names = (
         "quotes", "fundamentals", "technicals", "valuations", "decision_queue",
         "research_packets", "ticker_memos", "thesis_monitor", "options_ticker_signals",
+        "ticker_decisions",
     )
     detail = load_panel_data(
         active_config,

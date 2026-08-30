@@ -4,7 +4,7 @@ import { createElement } from "react";
 
 import type { TodayResponse } from "@/api/panel";
 import type { components } from "@/generated/apiSchema";
-import { TradePlanCard } from "./TradePlanCard";
+import { PortfolioImpactCard, TradePlanCard } from "./TradePlanCard";
 import { ActionQueueCard, tradePlanForAction } from "./today";
 
 type TradePlan = components["schemas"]["TradePlan"];
@@ -132,6 +132,51 @@ describe("Today Action Queue", () => {
     expect(markup).toContain("1,234.56");
     expect(markup).toContain("1,234.56789");
     expect(markup).not.toContain("1,235");
+  });
+
+  it("renders every Phase 1 impact group from the stored contract", () => {
+    const impact = {
+      ...plan().portfolio_impact!,
+      contract_version: "portfolio-impact.v1-review",
+      opportunity_episode_id: "episode-impact-1",
+      expression_identity: "CALL:AAA:impact",
+      cutoff: "2026-08-28T13:29:00Z",
+      input_lineage: [{ available_at: "2026-08-28T13:00:00Z", field: "portfolio", source_id: "impact-source" }],
+      greeks: { delta: 0.42 },
+      gross_exposure_before: 0.7,
+      gross_exposure_after: 0.8,
+      net_exposure_before: 0.5,
+      net_exposure_after: 0.6,
+      position_weight_before: 0.1,
+      position_weight_after: 0.12,
+      portfolio_before: { beta: 1.01 },
+      portfolio_after: { beta: 1.03 },
+      symbol_concentration_delta: 0.02,
+      sector_concentration_delta: 0.01,
+      beta_delta: 0.02,
+      correlation_cluster_delta: 0.03,
+      factor_exposure: { growth: 0.4 },
+      planned_loss: 250,
+      tail_risk_penalty: 0.04,
+      adv_participation: 0.005,
+      days_to_exit: 1.5,
+      expected_transaction_costs: 3.25,
+      liquidity: { average_daily_dollar_volume: 500000000 },
+      scenario_pnl: { market_down_20: -1200 },
+      cash_comparator: { planned_loss: 0 },
+      top_alternative: "MSFT",
+      funding_source_or_position_to_trim: "Trim QQQ",
+    };
+
+    const markup = renderToStaticMarkup(createElement(PortfolioImpactCard, { impact }));
+
+    for (const text of [
+      "Before and after exposure", "Concentration and shared risk", "Loss and risk budget",
+      "Liquidity", "Stress and alternatives", "Core stress scenarios", "Cash comparator",
+      "market_down_20", "average_daily_dollar_volume", "Trim QQQ", "MSFT",
+      "portfolio-impact.v1-review", "episode-impact-1", "CALL:AAA:impact",
+      "2026-08-28T13:29:00Z", "impact-source", "delta", "0.42",
+    ]) expect(markup).toContain(text);
   });
 
   it("does not infer a missing primary blocker from the blocker list", () => {

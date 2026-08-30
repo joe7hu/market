@@ -123,6 +123,7 @@ export const PANEL_TABLE_KEYS = [
   "watchlistUnwatchedScreener",
   "watchlistUnwatchedTechnicals",
   "watchlistUnwatchedThesisMonitor",
+  "watchlistUnwatchedTickerDecisions",
   "watchlistUnwatchedValuations",
   "watchlistWatched",
   "watchlistWatchedDecisionQueue",
@@ -135,6 +136,7 @@ export const PANEL_TABLE_KEYS = [
   "watchlistWatchedScreener",
   "watchlistWatchedTechnicals",
   "watchlistWatchedThesisMonitor",
+  "watchlistWatchedTickerDecisions",
   "watchlistWatchedValuations",
 ] as const;
 

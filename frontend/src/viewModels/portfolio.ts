@@ -1,9 +1,11 @@
 import type { AppModel } from "@/model";
+import type { components } from "@/generated/apiSchema";
 import type { PanelData, RowRecord } from "@/types";
 import { rows } from "@/utils";
 import { numberField, textField } from "@/views/rowFormat";
 
 export type PerformanceRange = "1D" | "1W" | "1M" | "YTD" | "1Y" | "ALL";
+type PortfolioImpact = components["schemas"]["PortfolioImpact"];
 
 export type PortfolioSummary = {
   portfolioValue: number;
@@ -42,11 +44,13 @@ export type PortfolioViewModel = {
   riskRows: RowRecord[];
   reviewRows: RowRecord[];
   exposureClusterRows: RowRecord[];
+  proposedImpacts: PortfolioImpact[];
   topHolding: AppModel["holdings"][number] | undefined;
 };
 
 export function buildPortfolioViewModel(data: PanelData, model: AppModel, correlationWindow = 60): PortfolioViewModel {
   const summaryRow = rows(data.portfolioSummary)[0] ?? {};
+  const decisions = new Map(rows(data.tickerDecisions).map((row) => [textField(row, ["ticker", "symbol"]).toUpperCase(), row]));
   return {
     summary: {
       portfolioValue: numberField(summaryRow, ["portfolio_value"], model.portfolioValue),
@@ -82,8 +86,24 @@ export function buildPortfolioViewModel(data: PanelData, model: AppModel, correl
     riskRows: rows(data.portfolioRiskCards),
     reviewRows: rows(data.reviewActions),
     exposureClusterRows: rows(data.exposureClusters),
+    proposedImpacts: model.holdings.flatMap((holding) => {
+      const impact = selectedPortfolioImpact(decisions.get(holding.ticker.toUpperCase()));
+      return impact ? [impact] : [];
+    }),
     topHolding: model.holdings.slice().sort((a, b) => b.weight - a.weight)[0],
   };
+}
+
+function selectedPortfolioImpact(decision: RowRecord | undefined): PortfolioImpact | undefined {
+  const selected = decision?.selected_expression;
+  const impacts = decision?.portfolio_impacts;
+  if (!isRecord(selected) || !isRecord(impacts) || typeof selected.kind !== "string") return undefined;
+  const impact = impacts[selected.kind];
+  return isRecord(impact) ? impact as unknown as PortfolioImpact : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 export function performanceRangeRows(input: RowRecord[], range: PerformanceRange): RowRecord[] {

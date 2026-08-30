@@ -1,7 +1,9 @@
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import type { components } from "@/generated/apiSchema";
+import type { ReactNode } from "react";
 
 type TradePlan = components["schemas"]["TradePlan"];
+type PortfolioImpact = components["schemas"]["PortfolioImpact"];
 type PriceRange = components["schemas"]["PriceRange"];
 type Invalidation = components["schemas"]["Invalidation"];
 type TradePlanLeg = NonNullable<TradePlan["selected_expression"]["legs"]>[number];
@@ -14,6 +16,19 @@ export function TradePlanCard({ plan }: { plan?: TradePlan | null }) {
       action={<StatusBadge tone={actionable ? "good" : "warn"}>{actionable ? authorizationLabel(plan.authorization_mode) : "NO TRADE"}</StatusBadge>}
     >
       {actionable ? <ActionablePlan plan={plan} /> : <BlockedPlan plan={plan} />}
+    </DataTableFrame>
+  );
+}
+
+export function PortfolioImpactCard({ impact }: { impact: PortfolioImpact }) {
+  return (
+    <DataTableFrame
+      title={`${impact.ticker} proposed impact`}
+      action={<StatusBadge tone={impact.availability_status === "available" ? "good" : "warn"}>{displayText(impact.availability)}</StatusBadge>}
+    >
+      <div className="min-w-0 p-4 text-sm">
+        <PortfolioImpactDetails impact={impact} />
+      </div>
     </DataTableFrame>
   );
 }
@@ -49,17 +64,7 @@ function ActionablePlan({ plan }: { plan: TradePlan }) {
         <p className="mt-2 leading-6 text-muted-foreground">{displayText(plan.rationale)}</p>
       </section>
 
-      <section>
-        <h3 className="text-sm font-semibold">Selected portfolio impact</h3>
-        <dl className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          <Field label="Availability" value={displayText(impact?.availability)} />
-          <Field label="Marginal risk" value={numberValue(impact?.marginal_risk)} />
-          <Field label="Risk budget consumed" value={numberValue(impact?.risk_budget_consumed)} />
-          <Field label="Diversification benefit" value={numberValue(impact?.diversification_benefit)} />
-          <Field label="Position to trim or replace" value={displayText(impact?.position_to_trim_or_replace)} />
-          <Field label="Positions most correlated" value={impact?.positions_most_correlated?.length ? impact.positions_most_correlated.join(", ") : "Unavailable"} />
-        </dl>
-      </section>
+      <PortfolioImpactDetails impact={impact} />
 
       <details className="rounded-md border border-border p-3">
         <summary className="cursor-pointer font-semibold">Provenance</summary>
@@ -77,6 +82,78 @@ function ActionablePlan({ plan }: { plan: TradePlan }) {
           <Field label="Portfolio impact" value={displayText(plan.portfolio_impact_id)} />
         </dl>
       </details>
+    </div>
+  );
+}
+
+function PortfolioImpactDetails({ impact }: { impact?: PortfolioImpact | null }) {
+  return (
+    <section className="space-y-4">
+      <h3 className="text-sm font-semibold">Selected portfolio impact</h3>
+      <ImpactSection title="Before and after exposure">
+        <Field label="Gross exposure before" value={numberValue(impact?.gross_exposure_before)} />
+        <Field label="Gross exposure after" value={numberValue(impact?.gross_exposure_after)} />
+        <Field label="Net exposure before" value={numberValue(impact?.net_exposure_before)} />
+        <Field label="Net exposure after" value={numberValue(impact?.net_exposure_after)} />
+        <Field label="Position weight before" value={numberValue(impact?.position_weight_before)} />
+        <Field label="Position weight after" value={numberValue(impact?.position_weight_after)} />
+        <Field label="Portfolio before" value={jsonValue(impact?.portfolio_before)} />
+        <Field label="Portfolio after" value={jsonValue(impact?.portfolio_after)} />
+      </ImpactSection>
+      <ImpactSection title="Concentration and shared risk">
+        <Field label="Symbol concentration delta" value={numberValue(impact?.symbol_concentration_delta)} />
+        <Field label="Sector concentration delta" value={numberValue(impact?.sector_concentration_delta)} />
+        <Field label="Beta delta" value={numberValue(impact?.beta_delta)} />
+        <Field label="Correlation cluster delta" value={numberValue(impact?.correlation_cluster_delta)} />
+        <Field label="Portfolio overlap penalty" value={numberValue(impact?.portfolio_overlap_penalty)} />
+        <Field label="Diversification benefit" value={numberValue(impact?.diversification_benefit)} />
+        <Field label="Positions most correlated" value={listValue(impact?.positions_most_correlated)} />
+        <Field label="Factor exposure" value={jsonValue(impact?.factor_exposure)} />
+      </ImpactSection>
+      <ImpactSection title="Loss and risk budget">
+        <Field label="Planned loss" value={money(impact?.planned_loss)} />
+        <Field label="Risk budget consumed" value={numberValue(impact?.risk_budget_consumed)} />
+        <Field label="Marginal risk" value={numberValue(impact?.marginal_risk)} />
+        <Field label="Tail risk penalty" value={numberValue(impact?.tail_risk_penalty)} />
+      </ImpactSection>
+      <ImpactSection title="Liquidity">
+        <Field label="ADV participation" value={numberValue(impact?.adv_participation)} />
+        <Field label="Days to exit" value={numberValue(impact?.days_to_exit)} />
+        <Field label="Expected transaction costs" value={money(impact?.expected_transaction_costs)} />
+        <Field label="Liquidity model" value={jsonValue(impact?.liquidity)} />
+      </ImpactSection>
+      <ImpactSection title="Stress and alternatives">
+        <Field label="Core stress scenarios" value={jsonValue(impact?.scenario_pnl)} />
+        <Field label="Cash comparator" value={jsonValue(impact?.cash_comparator)} />
+        <Field label="Top alternative" value={displayText(impact?.top_alternative)} />
+        <Field label="Funding source or position to trim" value={displayText(impact?.funding_source_or_position_to_trim)} />
+        <Field label="Position to trim or replace" value={displayText(impact?.position_to_trim_or_replace)} />
+      </ImpactSection>
+      <ImpactSection title="Authority">
+        <Field label="Contract version" value={displayText(impact?.contract_version)} />
+        <Field label="Availability" value={displayText(impact?.availability)} />
+        <Field label="Blockers" value={listValue(impact?.blockers)} />
+        <Field label="Opportunity episode" value={displayText(impact?.opportunity_episode_id)} />
+        <Field label="Expression" value={displayText(impact?.expression_kind)} />
+        <Field label="Expression identity" value={displayText(impact?.expression_identity)} />
+        <Field label="Cutoff" value={displayText(impact?.cutoff)} />
+        <Field label="Input lineage" value={jsonValue(impact?.input_lineage)} />
+        <Field label="Greeks" value={jsonValue(impact?.greeks)} />
+        <Field label="Impact" value={displayText(impact?.impact_id)} />
+        <Field label="Decision revision" value={displayText(impact?.decision_revision)} />
+        <Field label="Market snapshot" value={displayText(impact?.market_snapshot_id)} />
+        <Field label="Market state publication" value={displayText(impact?.market_state_publication_id)} />
+        <Field label="Risk policy" value={displayText(impact?.risk_policy_version)} />
+      </ImpactSection>
+    </section>
+  );
+}
+
+function ImpactSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div>
+      <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{title}</h4>
+      <dl className="mt-2 grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3">{children}</dl>
     </div>
   );
 }
@@ -142,6 +219,15 @@ function displayText(value: unknown): string {
 
 function numberValue(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 20 }) : "Unavailable";
+}
+
+function listValue(value: string[] | null | undefined): string {
+  return value?.length ? value.join(", ") : "Unavailable";
+}
+
+function jsonValue(value: unknown): string {
+  if (!value || typeof value !== "object" || !Object.keys(value).length) return "Unavailable";
+  return JSON.stringify(value);
 }
 
 function money(value: number | null | undefined): string {

@@ -161,6 +161,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     ),
     "portfolio": (
         "portfolio",
+        "ticker_decisions",
         "portfolio_summary",
         "portfolio_performance",
         "portfolio_transactions",
@@ -252,6 +253,7 @@ WATCHLIST_SECTION_TABLES = (
     "thesis_monitor",
     "portfolio",
     "options_ticker_signals",
+    "ticker_decisions",
 )
 
 TICKER_TABLES = (
@@ -404,6 +406,8 @@ WATCHLIST_SECTION_OUTPUT_TABLES = (
     "watchlist_unwatched_portfolio",
     "watchlist_watched_options",
     "watchlist_unwatched_options",
+    "watchlist_watched_ticker_decisions",
+    "watchlist_unwatched_ticker_decisions",
 )
 
 

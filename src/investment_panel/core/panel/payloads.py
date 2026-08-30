@@ -225,6 +225,7 @@ def watchlist_section_payload(
         f"{prefix}_thesis_monitor": _rows_for_symbols(rows_for_table("thesis_monitor"), symbols),
         f"{prefix}_portfolio": _rows_for_symbols(rows_for_table("portfolio"), symbols),
         f"{prefix}_options": _rows_for_symbols(rows_for_table("options_ticker_signals"), symbols),
+        f"{prefix}_ticker_decisions": _rows_for_symbols(rows_for_table("ticker_decisions"), symbols),
     }
     table_counts = {name: len(rows) for name, rows in table_rows.items()}
     table_counts[prefix] = total_count

@@ -27,6 +27,7 @@ def build_query_policies(queries: Mapping[str, str]) -> dict[str, QueryPolicy]:
         "event_decision_packets", "decision_truth", "event_scout_events",
         "valuations", "disclosures", "ownership_consensus", "liquidity",
         "options_payoff_scenarios", "options_expiries", "ticker_outcomes",
+        "ticker_decisions",
     }
     return {
         name: QueryPolicy(
