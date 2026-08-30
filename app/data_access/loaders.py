@@ -14,6 +14,12 @@ from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 
 
+# These dossier models are useful when present but can require deep historical
+# joins. Keep their timeout or partial state local to the optional panel rather
+# than aborting the complete ticker response and its decision evidence.
+_TICKER_OPTIONAL_DEEP_TABLES = ("liquidity", "options_payoff_scenarios")
+
+
 def load_decision_funnel(
     runtime: DatabaseRuntime, *, action_queue: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
@@ -279,12 +285,36 @@ def load_ticker_panel_data(config: AppConfig | None, ticker: str) -> PanelData:
     if not normalized:
         return PanelData(status=DataStatus(False, "Ticker is required.", "invalid-request"), tables={})
     active_config = config if config is not None else load_config()
+    optional_tables = set(_TICKER_OPTIONAL_DEEP_TABLES)
+    core_tables = tuple(name for name in TICKER_INITIAL_TABLES if name not in optional_tables)
     panel = load_panel_data(
         active_config,
-        table_names=TICKER_INITIAL_TABLES,
+        table_names=core_tables,
         query_symbol_filter={normalized},
-        query_row_limits={name: 24 for name in TICKER_INITIAL_TABLES},
+        query_row_limits={name: 24 for name in core_tables},
     )
+    optional_failures: dict[str, str] = {}
+    for table_name in _TICKER_OPTIONAL_DEEP_TABLES:
+        optional = load_panel_data(
+            active_config,
+            table_names=(table_name,),
+            query_symbol_filter={normalized},
+            query_row_limits={table_name: 24},
+        )
+        panel.tables[table_name] = optional.tables.get(table_name, [])
+        if not optional.status.ready:
+            optional_failures[table_name] = optional.status.message
+    if optional_failures:
+        unavailable = set(panel.metadata.get("unavailable_models") or ())
+        unavailable.update(optional_failures)
+        panel.metadata["unavailable_models"] = sorted(unavailable)
+        panel.metadata["ticker_optional_unavailable"] = optional_failures
+        if panel.status.ready:
+            panel.status = DataStatus(
+                True,
+                "PostgreSQL loaded ticker core; optional dossier evidence is unavailable.",
+                "postgresql-partial",
+            )
     try:
         policy_tables, policy_metadata = load_postgres_tables(
             active_config,

@@ -38,6 +38,39 @@ def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_d
     assert panel_data.rows("technicals") == []
 
 
+def test_ticker_optional_slow_reads_do_not_hide_ready_core(monkeypatch) -> None:
+    def fake_load_panel_data(_config, *, table_names, **_kwargs):
+        names = tuple(table_names)
+        if names in {("liquidity",), ("options_payoff_scenarios",)}:
+            table = names[0]
+            return PanelData(
+                status=DataStatus(False, f"{table}: statement timeout", "postgresql-error"),
+                tables={table: []},
+                metadata={"database": "postgresql", "available_model_count": 0, "unavailable_models": []},
+            )
+        return PanelData(
+            status=DataStatus(True, "PostgreSQL loaded.", "postgresql"),
+            tables={"quotes": [{"symbol": "QQQ", "price": 500}]},
+            metadata={"database": "postgresql", "available_model_count": len(names), "unavailable_models": []},
+        )
+
+    def fake_load_postgres_tables(_config, table_names, **_kwargs):
+        return {name: [] for name in table_names}, {"database": "postgresql", "schema_revision": "test"}
+
+    monkeypatch.setattr(loaders_owner, "load_panel_data", fake_load_panel_data)
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_load_postgres_tables)
+
+    panel_data = loaders_owner.load_ticker_panel_data(typed_config("postgresql://ticker-test"), "QQQ")
+
+    assert panel_data.status.ready is True
+    assert panel_data.status.source == "postgresql-partial"
+    assert panel_data.rows("quotes") == [{"symbol": "QQQ", "price": 500}]
+    assert panel_data.rows("liquidity") == []
+    assert panel_data.rows("options_payoff_scenarios") == []
+    assert set(panel_data.metadata["unavailable_models"]) == {"liquidity", "options_payoff_scenarios"}
+    assert set(panel_data.metadata["ticker_optional_unavailable"]) == {"liquidity", "options_payoff_scenarios"}
+
+
 def test_complete_contract_has_no_unavailable_postgresql_models(migrated_postgres_dsn: str) -> None:
     panel_data = loaders_owner.load_panel_data(typed_config(migrated_postgres_dsn))
 
