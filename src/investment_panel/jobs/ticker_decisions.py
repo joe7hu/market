@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.analysis.stock_alpha import FEATURE_VERSION, research_score
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.decision import (
     AlphaSignal,
@@ -101,6 +102,10 @@ def publish(
             )
             if not metadata.get("available_model_count"):
                 raise RuntimeError("ticker input read models are unavailable")
+            alpha_feature = analysis_repository.stock_alpha_feature(
+                symbol, cutoff=reference, feature_version=FEATURE_VERSION,
+            )
+            tables["stock_alpha_features"] = [alpha_feature] if alpha_feature is not None else []
             # The benchmark is written before the read so its membership is
             # part of the same point-in-time input manifest as the decision.
             seed = build_ticker_decision(symbol, tables, as_of=reference, portfolio_replay=replay)
@@ -523,9 +528,15 @@ def _alpha_models(
         distribution = probabilities if all(value is not None for value in probabilities.values()) else None
         availability_status = str(artifact.get("availability_status") or "missing")
         blockers = list(artifact.get("blockers") or ())
+        feature_rows = tables.get("stock_alpha_features") or []
+        feature = dict(feature_rows[0]) if feature_rows else {}
+        score = research_score(feature)
         if expected is None:
             availability_status = "missing"
             blockers.append("forecast_missing")
+        if score is None:
+            availability_status = "missing"
+            blockers.append("alpha_research_features_missing_or_mismatched")
         signals.append(build_alpha_signal(
             ticker=decision.ticker,
             opportunity_episode_id=decision.opportunity_episode_id,
@@ -553,6 +564,18 @@ def _alpha_models(
             artifact_published_at=artifact.get("artifact_published_at"),
             evaluation_evaluated_at=artifact.get("evaluation_evaluated_at"),
             evaluation_available_at=artifact.get("evaluation_available_at"),
+            oos_period_start=artifact.get("oos_period_start"),
+            oos_period_end=artifact.get("oos_period_end"),
+            cohort_path=artifact.get("cohort_path") or (),
+            fallback_parent=artifact.get("fallback_parent"),
+            effective_sample_size=artifact.get("effective_sample_size"),
+            calibration_metrics=artifact.get("calibration_metrics"),
+            research_score=score,
+            cost_model_version=artifact.get("cost_model_version"),
+            promotion_stage=artifact.get("promotion_stage"),
+            lower_confidence_net_utility_after_costs=artifact.get(
+                "lower_confidence_net_utility_after_costs"
+            ),
             blockers=tuple(dict.fromkeys(blockers)),
         ))
     return snapshot, signals

@@ -186,7 +186,7 @@ function ScenarioRail({ scenarios }: { scenarios: TickerDecisionContract["tactic
   );
 }
 
-function OpportunityRankPanel({
+export function OpportunityRankPanel({
   snapshot,
   signals,
   rank,
@@ -195,7 +195,7 @@ function OpportunityRankPanel({
   signals: AlphaSignalContract[];
   rank?: OpportunityRankContract | null;
 }) {
-  const signal = signals.find((item) => item.forecast_value != null || item.forecast_range != null);
+  const signal = signals.find((item) => item.signal_id === rank?.alpha_signal_id);
   return (
     <DataTableFrame title="Book opportunity rank" action={<StatusBadge tone={rank?.trade_rank ? "good" : "warn"}>{rank?.trade_rank ? `Trade #${rank.trade_rank}` : "Cash"}</StatusBadge>}>
       <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
@@ -204,8 +204,16 @@ function OpportunityRankPanel({
         <KeyValue label="Rank reason" value={rank?.trade_rank_unavailable_reason ?? "Positive current rank"} />
         <KeyValue label="Forecast target" value={signal?.target ?? "Unavailable"} />
         <KeyValue label="Horizon" value={signal?.horizon ?? "Unavailable"} />
-        <KeyValue label="Cohort / calibration" value={signal ? `${signal.cohort_id ?? "-"} · ${signal.calibration_state ?? "-"}` : "Unavailable"} />
-        <KeyValue label="Model" value={signal?.model_version ?? "Unavailable"} />
+        <KeyValue label="Model / features" value={signal ? `${signal.model_version ?? "-"} · ${signal.feature_version ?? "-"}` : "Unavailable"} />
+        <KeyValue label="OOS interval" value={signal?.oos_period_start && signal?.oos_period_end ? `${signal.oos_period_start} → ${signal.oos_period_end}` : "Unavailable"} />
+        <KeyValue label="Cohort path" value={signal?.cohort_path?.join(" → ") ?? "Unavailable"} />
+        <KeyValue label="Fallback parent" value={signal?.fallback_parent ?? "None"} />
+        <KeyValue label="Effective sample" value={signal?.effective_sample_size == null ? "Unavailable" : String(signal.effective_sample_size)} />
+        <KeyValue label="Calibration" value={signal ? `${signal.calibration_state ?? "-"} · Brier ${numberText(signal.calibration_metrics?.brier_score)}` : "Unavailable"} />
+        <KeyValue label="Research score" value={numberText(signal?.research_score)} />
+        <KeyValue label="Cost / slippage" value={signal?.cost_model_version ?? "Unavailable"} />
+        <KeyValue label="Net lower utility" value={numberText(signal?.lower_confidence_net_utility_after_costs)} />
+        <KeyValue label="Promotion stage" value={signal?.promotion_stage ?? "Unavailable"} />
         <KeyValue label="Instrument snapshot" value={snapshot?.snapshot_id ?? "Unavailable"} />
       </div>
     </DataTableFrame>

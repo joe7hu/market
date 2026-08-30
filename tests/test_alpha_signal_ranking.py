@@ -21,6 +21,22 @@ from investment_panel.core.decision import (
 CUTOFF = datetime(2026, 8, 25, 14, tzinfo=UTC)
 
 
+def _phase2_evidence(cutoff: datetime = CUTOFF) -> dict[str, object]:
+    return {
+        "feature_version": "daily-trend-v1",
+        "oos_period_start": cutoff - timedelta(days=30),
+        "oos_period_end": cutoff - timedelta(days=1),
+        "cohort_path": ["cohort:large-liquid"],
+        "fallback_parent": "horizon:FUNDAMENTAL",
+        "effective_sample_size": 40,
+        "calibration_metrics": {"brier_score": 0.2, "calibration_error": 0.1},
+        "research_score": 0.5,
+        "cost_model_version": "stock-cost-slippage.v1",
+        "promotion_stage": "paper",
+        "lower_confidence_net_utility_after_costs": 0.02,
+    }
+
+
 def test_availability_status_exposes_all_typed_states() -> None:
     assert {item.value for item in AvailabilityStatus} == {
         "available", "unsupported", "missing", "stale", "not_calibrated",
@@ -90,6 +106,7 @@ def test_available_alpha_rejects_unbounded_qualification_timestamps(
             model_artifact_id="artifact.test",
             strategy_evaluation_id="evaluation.test",
             evaluation_stage="out_of_sample",
+            **_phase2_evidence(),
             **timestamps,
         )
 
@@ -154,6 +171,7 @@ def _candidate(
             "evaluation_available_at": CUTOFF,
             "model_version": "model.test",
             "evaluation_stage": evaluation_stage,
+            **_phase2_evidence(),
             "as_of": CUTOFF,
             "input_cutoff": CUTOFF,
             "input_lineage": lineage,
@@ -218,6 +236,23 @@ def test_rank_is_dense_when_complete_and_cash_when_unavailable() -> None:
     assert {row.research_rank for row in rows} == {1, 2}
     assert by_ticker["BBB"].trade_rank == 1
     assert by_ticker["BBB"].trade_utility == pytest.approx(0.4)
+
+
+def test_research_rank_ignores_liquidity_fill_portfolio_and_utility() -> None:
+    first = _candidate("AAA", utility=0.2)
+    second = _candidate("BBB", utility=0.4)
+    first["alpha_signal"]["research_score"] = 0.9  # type: ignore[index]
+    second["alpha_signal"]["research_score"] = 0.1  # type: ignore[index]
+    baseline = {row.ticker: row.research_rank for row in rank_opportunities(
+        [first, second], evaluated_universe_complete=True,
+    )}
+    first["expression"].update({"liquidity_score": -999, "fill_probability": -999})  # type: ignore[union-attr]
+    first["portfolio_impact"]["expected_transaction_costs"] = 999  # type: ignore[index]
+    first["lower_confidence_expected_gross_pnl"] = -999
+    changed = {row.ticker: row.research_rank for row in rank_opportunities(
+        [first, second], evaluated_universe_complete=True,
+    )}
+    assert changed == baseline == {"AAA": 1, "BBB": 2}
 
     incomplete = rank_opportunities(
         [_candidate("AAA"), _candidate("BBB")],
@@ -284,6 +319,14 @@ def test_trade_rank_requires_exact_cohort_out_of_sample_evidence(evaluation_stag
 
     assert row.trade_rank is None
     assert row.trade_rank_unavailable_reason == "calibration_not_exact_out_of_sample"
+
+
+def test_non_positive_promoted_artifact_utility_forces_cash() -> None:
+    candidate = _candidate("AAA")
+    candidate["alpha_signal"]["lower_confidence_net_utility_after_costs"] = 0.0  # type: ignore[index]
+    row = rank_opportunities([candidate], evaluated_universe_complete=True)[0]
+    assert row.trade_rank is None
+    assert row.trade_rank_unavailable_reason == "alpha_lower_confidence_net_utility_not_positive"
 
 
 @pytest.mark.parametrize("tail_risk_penalty", [20.0, 25.0])

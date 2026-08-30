@@ -132,6 +132,16 @@ class AlphaSignal(BaseModel):
     model_version: str | None = None
     feature_version: str | None = None
     evaluation_stage: str | None = None
+    oos_period_start: datetime | None = None
+    oos_period_end: datetime | None = None
+    cohort_path: tuple[str, ...] = ()
+    fallback_parent: str | None = None
+    effective_sample_size: int | None = None
+    calibration_metrics: dict[str, float | int | None] = Field(default_factory=dict)
+    research_score: float | None = None
+    cost_model_version: str | None = None
+    promotion_stage: str | None = None
+    lower_confidence_net_utility_after_costs: float | None = None
     as_of: datetime
     input_cutoff: datetime
     input_lineage: tuple[InputLineage, ...] = ()
@@ -177,6 +187,35 @@ class AlphaSignal(BaseModel):
             ]
             if missing_artifact:
                 raise ValueError("available alpha signals require qualified artifact evidence: " + ", ".join(missing_artifact))
+            phase2_missing = [
+                name for name, value in (
+                    ("oos_period_start", self.oos_period_start),
+                    ("oos_period_end", self.oos_period_end),
+                    ("cohort_path", self.cohort_path),
+                    ("effective_sample_size", self.effective_sample_size),
+                    ("calibration_metrics", self.calibration_metrics),
+                    ("research_score", self.research_score),
+                    ("cost_model_version", self.cost_model_version),
+                    ("promotion_stage", self.promotion_stage),
+                    ("lower_confidence_net_utility_after_costs", self.lower_confidence_net_utility_after_costs),
+                ) if value is None or value == "" or value == () or value == {}
+            ]
+            if phase2_missing:
+                raise ValueError("available alpha signals require Phase 2 evidence: " + ", ".join(phase2_missing))
+            if self.effective_sample_size is not None and self.effective_sample_size <= 0:
+                raise ValueError("available alpha effective sample size must be positive")
+            if str(self.promotion_stage or "").lower() not in {"paper", "advisory"}:
+                raise ValueError("available alpha promotion stage must be paper or advisory")
+            oos_timestamps = (self.oos_period_start, self.oos_period_end)
+            if any(value is None or value.tzinfo is None or value.utcoffset() is None for value in oos_timestamps):
+                raise ValueError("available alpha OOS timestamps must be timezone-aware")
+            if self.oos_period_start > self.oos_period_end or _utc(self.oos_period_end) > _utc(self.input_cutoff):
+                raise ValueError("available alpha OOS interval must end at or before input_cutoff")
+            if (
+                self.lower_confidence_net_utility_after_costs is None
+                or not isfinite(self.lower_confidence_net_utility_after_costs)
+            ):
+                raise ValueError("available alpha lower-confidence net utility must be finite")
             naive_timestamps = [
                 name for name, value in qualification_timestamps
                 if value is not None
@@ -364,6 +403,16 @@ def build_alpha_signal(
     model_version: str | None = None,
     feature_version: str | None = None,
     evaluation_stage: str | None = None,
+    oos_period_start: datetime | None = None,
+    oos_period_end: datetime | None = None,
+    cohort_path: Iterable[str] = (),
+    fallback_parent: str | None = None,
+    effective_sample_size: int | None = None,
+    calibration_metrics: Mapping[str, float | int | None] | None = None,
+    research_score: float | None = None,
+    cost_model_version: str | None = None,
+    promotion_stage: str | None = None,
+    lower_confidence_net_utility_after_costs: float | None = None,
     availability_status: AvailabilityStatus | str = AvailabilityStatus.MISSING,
     strategy_key: str | None = None,
     strategy_revision_id: int | None = None,
@@ -404,6 +453,16 @@ def build_alpha_signal(
         "model_version": model_version,
         "feature_version": feature_version,
         "evaluation_stage": evaluation_stage,
+        "oos_period_start": oos_period_start,
+        "oos_period_end": oos_period_end,
+        "cohort_path": list(cohort_path),
+        "fallback_parent": fallback_parent,
+        "effective_sample_size": effective_sample_size,
+        "calibration_metrics": dict(calibration_metrics or {}),
+        "research_score": research_score,
+        "cost_model_version": cost_model_version,
+        "promotion_stage": promotion_stage,
+        "lower_confidence_net_utility_after_costs": lower_confidence_net_utility_after_costs,
         "as_of": reference.isoformat(),
         "input_cutoff": reference.isoformat(),
         "input_lineage": [_jsonable(item) for item in lineage],
@@ -582,14 +641,17 @@ def _unavailable_reason(candidate: Mapping[str, Any], utility: TradeUtility, uni
         return "alpha_signal_metadata_incomplete"
     calibration = str(signal.get("calibration_state") or candidate.get("calibration_state") or "").lower()
     stage = str(signal.get("evaluation_stage") or candidate.get("evaluation_stage") or "").lower()
-    exact_cohort = all(term in calibration for term in ("calibrat", "exact", "cohort"))
+    qualified_calibration = "calibrat" in calibration and bool(signal.get("cohort_path"))
     out_of_sample = stage.replace("-", "_").replace(" ", "_") in {
         "out_of_sample",
         "out_of_sample_evaluation",
         "oos",
     }
-    if not exact_cohort or not out_of_sample:
+    if not qualified_calibration or not out_of_sample:
         return "calibration_not_exact_out_of_sample"
+    artifact_utility = _finite(signal.get("lower_confidence_net_utility_after_costs"))
+    if artifact_utility is None or artifact_utility <= 0:
+        return "alpha_lower_confidence_net_utility_not_positive"
     if utility.lower_confidence_expected_gross_pnl is None or utility.expected_transaction_costs is None:
         return "transaction_cost_model_missing"
     if candidate.get("requires_execution_grade_paper_evidence") and not candidate.get("walk_forward_paper_evidence"):
@@ -626,7 +688,21 @@ def _signal_metadata_complete(signal: Mapping[str, Any]) -> bool:
     numerical = any(signal.get(key) is not None for key in ("forecast_value", "forecast_range", "forecast_distribution"))
     if not numerical:
         return False
-    return all(str(signal.get(key) or "").strip() for key in ("target", "horizon", "cohort_id", "calibration_state", "model_version"))
+    scalar = (
+        "target", "horizon", "cohort_id", "calibration_state", "model_version",
+        "feature_version", "oos_period_start", "oos_period_end", "cost_model_version",
+        "promotion_stage",
+    )
+    if not all(str(signal.get(key) or "").strip() for key in scalar):
+        return False
+    if not signal.get("cohort_path") or not signal.get("calibration_metrics"):
+        return False
+    return (
+        _finite(signal.get("effective_sample_size")) is not None
+        and float(signal["effective_sample_size"]) > 0
+        and _finite(signal.get("research_score")) is not None
+        and _finite(signal.get("lower_confidence_net_utility_after_costs")) is not None
+    )
 
 
 def _lineage_matches(
@@ -682,18 +758,8 @@ def _lineage_matches(
 
 
 def _research_score(candidate: Mapping[str, Any]) -> float | None:
-    for key in ("research_priority_score", "research_score", "discovery_score"):
-        value = _finite(candidate.get(key))
-        if value is not None:
-            return value
-    expression = _model_dump(candidate.get("expression"))
-    lower = _finite(expression.get("lower_confidence_expectancy"))
-    net = _finite(expression.get("net_expected_value_per_loss_dollar"))
-    liquidity = _finite(expression.get("liquidity_score"))
-    fill = _finite(expression.get("fill_probability"))
-    if all(value is None for value in (lower, net, liquidity, fill)):
-        return None
-    return sum(value or 0.0 for value in (lower, net, liquidity, fill))
+    signal = _model_dump(candidate.get("alpha_signal"))
+    return _finite(signal.get("research_score"))
 
 
 def _research_key(row: Mapping[str, Any]) -> tuple[int, float, str, str, str]:

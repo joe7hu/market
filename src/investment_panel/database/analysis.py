@@ -395,7 +395,11 @@ class AnalysisRepository:
                        evaluation.evaluation_type, evaluation.evaluated_at,
                        evaluation.available_at AS evaluation_available_at,
                        evaluation.period_start, evaluation.period_end,
-                       evaluation.verdict, evaluation.metrics, evaluation.evidence
+                       evaluation.verdict, evaluation.metrics, evaluation.evidence,
+                       promotion.id::text AS promotion_evaluation_id,
+                       promotion.evaluated_at AS promotion_evaluated_at,
+                       promotion.available_at AS promotion_available_at,
+                       promotion.metrics AS promotion_metrics
                 FROM analysis.strategy_revision strategy
                 LEFT JOIN LATERAL (
                     SELECT candidate.*
@@ -408,6 +412,17 @@ class AnalysisRepository:
                     ORDER BY candidate.evaluated_at DESC, candidate.id DESC
                     LIMIT 1
                 ) evaluation ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT candidate.*
+                    FROM analysis.strategy_evaluation candidate
+                    WHERE candidate.strategy_revision_id = strategy.id
+                      AND candidate.evaluation_type = 'paper_advisory_promotion'
+                      AND candidate.verdict = 'pass'
+                      AND candidate.evaluated_at <= %s
+                      AND candidate.available_at <= %s
+                    ORDER BY candidate.evaluated_at DESC, candidate.id DESC
+                    LIMIT 1
+                ) promotion ON TRUE
                 WHERE strategy.strategy_key = 'ticker-stock-alpha'
                   AND strategy.status = 'active'
                   AND COALESCE(strategy.promoted_at, strategy.created_at) <= %s
@@ -415,7 +430,7 @@ class AnalysisRepository:
                          strategy.revision DESC
                 LIMIT 1
                 """,
-                [cutoff, cutoff, cutoff, cutoff],
+                [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff],
             ).fetchone()
         if row is None:
             return {
@@ -440,11 +455,30 @@ class AnalysisRepository:
             "evaluation_stage": row["evaluation_type"],
             "evaluation_evaluated_at": row["evaluated_at"],
             "evaluation_available_at": row["evaluation_available_at"],
+            "oos_period_start": row["period_start"],
+            "oos_period_end": row["period_end"],
+            "cohort_path": metrics.get("cohort_path") or [],
+            "fallback_parent": metrics.get("fallback_parent"),
+            "effective_sample_size": metrics.get("effective_sample_size"),
+            "calibration_metrics": metrics.get("calibration_metrics") or {},
+            "cost_model_version": metrics.get("cost_model_version") or parameters.get("cost_model_version"),
+            "lower_confidence_net_utility_after_costs": metrics.get(
+                "lower_confidence_net_utility_after_costs"
+            ),
+            "promotion_stage": (
+                str((row["promotion_metrics"] or {}).get("authorization_mode") or "").lower()
+                if row["promotion_evaluation_id"] is not None else "challenger"
+            ),
+            "promotion_evaluation_id": row["promotion_evaluation_id"],
+            "promotion_evaluated_at": row["promotion_evaluated_at"],
+            "promotion_available_at": row["promotion_available_at"],
         }
         if row["strategy_evaluation_id"] is None:
             return {**base, "availability_status": "not_calibrated", "blockers": ["alpha_oos_evaluation_missing"]}
         if str(row["verdict"] or "").lower() != "pass":
             return {**base, "availability_status": "policy_blocked", "blockers": ["alpha_oos_evaluation_not_passed"]}
+        if row["promotion_evaluation_id"] is None:
+            return {**base, "availability_status": "policy_blocked", "blockers": ["alpha_promotion_evidence_missing"]}
         required = ("artifact_id", "model_version", "feature_version", "target", "cohort_id", "calibration_state")
         if any(not str(parameters.get(name) or "").strip() for name in required):
             return {**base, "availability_status": "error", "blockers": ["alpha_artifact_metadata_incomplete"]}
@@ -458,11 +492,38 @@ class AnalysisRepository:
         }
         if str(parameters.get("expression_kind") or "").upper() != "STOCK" or str(horizon).upper() not in allowed_horizons:
             return {**base, "availability_status": "policy_blocked", "blockers": ["alpha_artifact_scope_mismatch"]}
+        lineage_names = (
+            "artifact_id", "artifact_hash", "input_hash", "model_version",
+            "feature_version", "cohort_id", "cost_model_version",
+        )
         if any(
             str(metrics.get(name) or "") != str(parameters.get(name) or "")
-            for name in ("artifact_id", "model_version", "cohort_id")
-        ) or metrics.get("exact_cohort") is not True:
+            for name in lineage_names
+        ):
             return {**base, "availability_status": "error", "blockers": ["alpha_evaluation_lineage_mismatch"]}
+        promotion_metrics = dict(row["promotion_metrics"] or {})
+        if (
+            str(promotion_metrics.get("artifact_hash") or "") != str(metrics.get("artifact_hash") or "")
+            or str(promotion_metrics.get("input_hash") or "") != str(metrics.get("input_hash") or "")
+            or str(promotion_metrics.get("authorization_mode") or "").upper() not in {"PAPER", "ADVISORY"}
+        ):
+            return {**base, "availability_status": "error", "blockers": ["alpha_promotion_lineage_mismatch"]}
+        phase2_values = {
+            "oos_period_start": row["period_start"],
+            "oos_period_end": row["period_end"],
+            "cohort_path": metrics.get("cohort_path"),
+            "effective_sample_size": metrics.get("effective_sample_size"),
+            "calibration_metrics": metrics.get("calibration_metrics"),
+            "cost_model_version": metrics.get("cost_model_version"),
+            "lower_confidence_net_utility_after_costs": metrics.get("lower_confidence_net_utility_after_costs"),
+        }
+        if any(value is None or value == [] or value == {} for value in phase2_values.values()):
+            return {**base, "availability_status": "error", "blockers": ["alpha_phase2_evidence_incomplete"]}
+        try:
+            if int(metrics["effective_sample_size"]) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return {**base, "availability_status": "error", "blockers": ["alpha_effective_sample_invalid"]}
         valid_through = metrics.get("valid_through")
         if valid_through is not None:
             try:
@@ -472,6 +533,42 @@ class AnalysisRepository:
             if valid_until < cutoff:
                 return {**base, "availability_status": "stale", "blockers": ["alpha_evaluation_stale"]}
         return {**base, "availability_status": "available", "blockers": []}
+
+    def stock_alpha_feature(
+        self,
+        symbol: str,
+        *,
+        cutoff: datetime,
+        feature_version: str,
+    ) -> dict[str, Any] | None:
+        """Return the latest cutoff-valid canonical trend feature for live alpha."""
+
+        with self.runtime.read() as connection:
+            row = connection.execute(
+                """
+                SELECT instrument.symbol, feature.as_of,
+                       analysis_run.input_cutoff AS available_at,
+                       'analysis.symbol_feature' AS source,
+                       feature.feature_version AS source_version,
+                       feature.id::text AS revision,
+                       feature.feature_version, feature.momentum_5d,
+                       feature.momentum_20d, feature.relative_strength_20d,
+                       feature.relative_strength_60d, feature.kaufman_er_20d
+                FROM analysis.symbol_feature feature
+                JOIN analysis.run analysis_run ON analysis_run.id = feature.run_id
+                JOIN catalog.instrument instrument ON instrument.id = feature.instrument_id
+                WHERE instrument.symbol = %s
+                  AND feature.feature_set = 'daily_trend'
+                  AND feature.feature_version = %s
+                  AND feature.as_of <= %s
+                  AND analysis_run.input_cutoff <= %s
+                  AND feature.data_quality_status = 'complete'
+                ORDER BY feature.as_of DESC, analysis_run.input_cutoff DESC, feature.id DESC
+                LIMIT 1
+                """,
+                [symbol.strip().upper(), feature_version, cutoff, cutoff],
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def start_run(
         self,

@@ -666,6 +666,23 @@
             "title": "Blockers",
             "type": "array"
           },
+          "calibration_metrics": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Calibration Metrics",
+            "type": "object"
+          },
           "calibration_state": {
             "anyOf": [
               {
@@ -688,10 +705,29 @@
             ],
             "title": "Cohort Id"
           },
+          "cohort_path": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Cohort Path",
+            "type": "array"
+          },
           "contract_version": {
             "default": "alpha-signal.v1",
             "title": "Contract Version",
             "type": "string"
+          },
+          "cost_model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Model Version"
           },
           "decision_revision": {
             "minLength": 1,
@@ -708,6 +744,17 @@
               }
             ],
             "title": "Direction"
+          },
+          "effective_sample_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Sample Size"
           },
           "evaluation_available_at": {
             "anyOf": [
@@ -743,6 +790,17 @@
               }
             ],
             "title": "Evaluation Stage"
+          },
+          "fallback_parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Parent"
           },
           "feature_version": {
             "anyOf": [
@@ -819,6 +877,17 @@
             "title": "Instrument State Snapshot Id",
             "type": "string"
           },
+          "lower_confidence_net_utility_after_costs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower Confidence Net Utility After Costs"
+          },
           "model_artifact_id": {
             "anyOf": [
               {
@@ -841,6 +910,30 @@
             ],
             "title": "Model Version"
           },
+          "oos_period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oos Period End"
+          },
+          "oos_period_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oos Period Start"
+          },
           "opportunity_episode_id": {
             "minLength": 1,
             "title": "Opportunity Episode Id",
@@ -856,6 +949,28 @@
               }
             ],
             "title": "Probability Semantics"
+          },
+          "promotion_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promotion Stage"
+          },
+          "research_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Score"
           },
           "signal_id": {
             "minLength": 1,

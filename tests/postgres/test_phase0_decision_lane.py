@@ -54,7 +54,10 @@ def _qualified_artifact(
     parameters = {
         "artifact_id": "ticker-stock-alpha:v1",
         "model_version": "ticker-stock-alpha.v1",
-        "feature_version": "stock-features.v1",
+        "feature_version": "daily-trend-v1",
+        "artifact_hash": "phase0-artifact-hash",
+        "input_hash": "phase0-input-hash",
+        "cost_model_version": "stock-cost-slippage.v1",
         "target": "expected_return",
         "cohort_id": "stock-oos-exact-v1",
         "calibration_state": "calibrated_exact_cohort",
@@ -72,7 +75,15 @@ def _qualified_artifact(
         "artifact_id": parameters["artifact_id"],
         "model_version": parameters["model_version"],
         "cohort_id": parameters["cohort_id"],
-        "exact_cohort": True,
+        "feature_version": parameters["feature_version"],
+        "cost_model_version": parameters["cost_model_version"],
+        "artifact_hash": "phase0-artifact-hash",
+        "input_hash": "phase0-input-hash",
+        "cohort_path": ["cohort:stock-oos-exact-v1"],
+        "fallback_parent": "horizon:TACTICAL",
+        "effective_sample_size": 40,
+        "calibration_metrics": {"brier_score": 0.2, "calibration_error": 0.1},
+        "lower_confidence_net_utility_after_costs": 0.02,
         "valid_through": (cutoff + timedelta(days=30)).isoformat(),
     }
     metrics.update(metrics_update or {})
@@ -95,6 +106,26 @@ def _qualified_artifact(
                 Jsonb([{"source": "walk-forward", "paper_only": True}]),
             ],
         ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO analysis.strategy_evaluation (
+                strategy_revision_id, evaluation_type, evaluated_at,
+                period_start, period_end, verdict, metrics, evidence
+            ) VALUES (%s, 'paper_advisory_promotion', %s, %s, %s, 'pass', %s, %s)
+            """,
+            [
+                revision_id,
+                cutoff - timedelta(minutes=1),
+                cutoff - timedelta(days=30),
+                cutoff - timedelta(minutes=3),
+                Jsonb({
+                    "artifact_hash": metrics["artifact_hash"],
+                    "input_hash": metrics["input_hash"],
+                    "authorization_mode": "ADVISORY",
+                }),
+                Jsonb({"paper_only": True, "live_order_submission": False}),
+            ],
+        )
     artifact = repository.qualified_stock_alpha_artifact(cutoff=cutoff, horizon="TACTICAL")
     assert artifact["strategy_evaluation_id"] == row["id"]
     return revision_id, artifact
@@ -293,6 +324,29 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         assert _timestamp(publication["published_at"]) > _timestamp(publication["input_cutoff"])
         decision_cutoff = _timestamp(publication["published_at"])
 
+        feature_run_id = AnalysisRepository(runtime).start_run(
+            "daily-trend", input_cutoff=decision_cutoff,
+            code_version="test", inputs={"symbol": "LANE"},
+            feature_versions={"daily_trend": "daily-trend-v1"},
+        )
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO analysis.symbol_feature (
+                    run_id, instrument_id, as_of, feature_set, feature_version,
+                    momentum_5d, momentum_20d, relative_strength_20d,
+                    relative_strength_60d, kaufman_er_20d,
+                    trend_state, trend_confidence, volatility_state,
+                    data_quality_status, reason_codes
+                )
+                SELECT %s, id, %s, 'daily_trend', 'daily-trend-v1',
+                       0.02, 0.04, 0.03, 0.06, 0.5,
+                       'trend_up', 0.8, 'normal', 'complete', '{}'
+                FROM catalog.instrument WHERE symbol = 'LANE'
+                """,
+                [feature_run_id, decision_cutoff],
+            )
+
         monkeypatch.setattr(ticker_decisions, "load_config", lambda _path: config)
         monkeypatch.setattr(ticker_decisions, "replay_portfolio_at", lambda *_args, **_kwargs: _portfolio_replay(decision_cutoff))
 
@@ -334,6 +388,7 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         assert decision.trade_plan.availability_status is AvailabilityStatus.AVAILABLE
         assert artifact["availability_status"] == "available"
         assert decision.alpha_signals[0]["strategy_revision_id"] == artifact["strategy_revision_id"]
+        assert decision.alpha_signals[0]["research_score"] == pytest.approx(0.195)
         assert all(item.available_at <= decision.cutoff for item in decision.input_lineage)
         assert decision.selected_expression.entry_range == PriceRange(low=99.0, high=101.0)
         assert "999.0" not in json.dumps(decision.input_manifest.inputs, default=str)
@@ -679,6 +734,16 @@ def _rank_candidate(cutoff: datetime, *, gross: float = 100.0, costs: float = 10
         artifact_published_at=cutoff - timedelta(minutes=2),
         evaluation_evaluated_at=cutoff - timedelta(minutes=1),
         evaluation_available_at=cutoff - timedelta(minutes=1),
+        oos_period_start=cutoff - timedelta(days=30),
+        oos_period_end=cutoff - timedelta(minutes=3),
+        cohort_path=("cohort:stock-oos-exact-v1",),
+        fallback_parent="horizon:TACTICAL",
+        effective_sample_size=40,
+        calibration_metrics={"brier_score": 0.2, "calibration_error": 0.1},
+        research_score=0.5,
+        cost_model_version="stock-cost-slippage.v1",
+        promotion_stage="advisory",
+        lower_confidence_net_utility_after_costs=0.02,
     )
     expression = {
         "kind": "STOCK",

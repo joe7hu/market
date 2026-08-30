@@ -1577,25 +1577,40 @@ export interface components {
              * @default []
              */
             blockers: string[];
+            /** Calibration Metrics */
+            calibration_metrics?: {
+                [key: string]: number | null;
+            };
             /** Calibration State */
             calibration_state?: string | null;
             /** Cohort Id */
             cohort_id?: string | null;
             /**
+             * Cohort Path
+             * @default []
+             */
+            cohort_path: string[];
+            /**
              * Contract Version
              * @default alpha-signal.v1
              */
             contract_version: string;
+            /** Cost Model Version */
+            cost_model_version?: string | null;
             /** Decision Revision */
             decision_revision: string;
             /** Direction */
             direction?: string | null;
+            /** Effective Sample Size */
+            effective_sample_size?: number | null;
             /** Evaluation Available At */
             evaluation_available_at?: string | null;
             /** Evaluation Evaluated At */
             evaluation_evaluated_at?: string | null;
             /** Evaluation Stage */
             evaluation_stage?: string | null;
+            /** Fallback Parent */
+            fallback_parent?: string | null;
             /** Feature Version */
             feature_version?: string | null;
             /** Forecast Distribution */
@@ -1619,14 +1634,24 @@ export interface components {
             input_lineage: components["schemas"]["InputLineage"][];
             /** Instrument State Snapshot Id */
             instrument_state_snapshot_id: string;
+            /** Lower Confidence Net Utility After Costs */
+            lower_confidence_net_utility_after_costs?: number | null;
             /** Model Artifact Id */
             model_artifact_id?: string | null;
             /** Model Version */
             model_version?: string | null;
+            /** Oos Period End */
+            oos_period_end?: string | null;
+            /** Oos Period Start */
+            oos_period_start?: string | null;
             /** Opportunity Episode Id */
             opportunity_episode_id: string;
             /** Probability Semantics */
             probability_semantics?: string | null;
+            /** Promotion Stage */
+            promotion_stage?: string | null;
+            /** Research Score */
+            research_score?: number | null;
             /** Signal Id */
             signal_id: string;
             /** Strategy Evaluation Id */
