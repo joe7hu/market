@@ -17,6 +17,7 @@ from investment_panel.database.strategy_parameters import (
     canonical_gate_name,
     normalize_gates,
 )
+from investment_panel.database.strategy_governance import paper_provenance_is_database_backed
 from investment_panel.core.option_trade_ticket import TICKET_VERSION, execution_policy
 from investment_panel.core.decision import is_market_open, promotion_readiness
 from investment_panel.database.options_paper_ledger import (
@@ -622,7 +623,15 @@ class ActionRepository:
                 "ORDER BY evaluation_type, evaluated_at DESC, id DESC",
                 [candidate["id"]],
             ).fetchall()
-            governance = promotion_readiness([dict(row) for row in evaluations])
+            evaluation_rows = [dict(row) for row in evaluations]
+            for row in evaluation_rows:
+                if row.get("stage") != "execution_grade_paper":
+                    continue
+                evidence = row.get("evidence")
+                paper = evidence.get("paper_execution") if isinstance(evidence, dict) else None
+                if not paper_provenance_is_database_backed(connection, candidate["id"], paper):
+                    row["evidence"] = {}
+            governance = promotion_readiness(evaluation_rows)
             if not governance["promotion_eligible"]:
                 raise ValueError(
                     "strategy proposal requires walk-forward, shadow, and execution-grade paper evidence"

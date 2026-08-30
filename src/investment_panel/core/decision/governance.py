@@ -257,11 +257,22 @@ def _evidence_item_real(evidence: Mapping[str, Any], *, stage: str | None) -> bo
     return (
         paper.get("source") == PAPER_EXECUTION_EVIDENCE_SOURCE
         and paper.get("paper_only") is True
+        and paper.get("database_verified") is True
+        and paper.get("strategy_revision_id") is not None
         and _positive_int(paper.get("sample_size"))
         and paper.get("sample_size") == evidence.get("sample_size")
         and _positive_int(paper.get("completed_orders"))
         and paper.get("completed_orders") == paper.get("sample_size")
+        and _linked_ids(paper.get("paper_order_ids"), paper.get("sample_size"))
+        and _linked_ids(paper.get("decision_ids"), paper.get("sample_size"))
     )
+
+
+def _linked_ids(value: Any, sample_size: Any) -> bool:
+    if not isinstance(value, list) or not _positive_int(sample_size) or len(value) != int(sample_size):
+        return False
+    normalized = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return len(normalized) == len(value) and len(set(normalized)) == len(normalized)
 
 
 def _fresh(row: Mapping[str, Any], reference: datetime, max_age: timedelta) -> bool:

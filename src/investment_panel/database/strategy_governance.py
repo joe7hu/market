@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
@@ -32,7 +33,9 @@ class StrategyGovernanceRepository:
                 """,
                 [strategy_revision_id, cutoff, cutoff, cutoff, cutoff],
             ).fetchall()
-        return promotion_readiness([dict(row) for row in rows], now=cutoff)
+        evaluations = [dict(row) for row in rows]
+        _quarantine_unverified_paper_evaluations(connection, strategy_revision_id, evaluations)
+        return promotion_readiness(evaluations, now=cutoff)
 
     def automatic_promote_eligible(self, *, enabled: bool = True) -> int:
         if not enabled:
@@ -55,7 +58,7 @@ class StrategyGovernanceRepository:
                 """
             ).fetchall()
             for proposal in proposals:
-                evaluations = connection.execute(
+                evaluations = [dict(row) for row in connection.execute(
                     """
                     SELECT evaluation_type, verdict, metrics, evidence,
                            evaluated_at, available_at
@@ -64,7 +67,8 @@ class StrategyGovernanceRepository:
                     ORDER BY evaluated_at DESC, id DESC
                     """,
                     [proposal["candidate_id"]],
-                ).fetchall()
+                ).fetchall()]
+                _quarantine_unverified_paper_evaluations(connection, proposal["candidate_id"], evaluations)
                 latest: dict[str, Any] = {}
                 for row in evaluations:
                     latest.setdefault(str(row["evaluation_type"]), row)
@@ -211,3 +215,58 @@ _AUTOMATIC_PARAMETER_ALLOWLIST = {
 
 def _promotion_evidence_passes(evaluations: list[dict[str, Any]]) -> bool:
     return promotion_readiness(evaluations)["promotion_eligible"]
+
+
+def _quarantine_unverified_paper_evaluations(
+    connection: Any, strategy_revision_id: int, evaluations: list[dict[str, Any]],
+) -> None:
+    """Remove execution claims whose IDs do not resolve to immutable DB records."""
+    for row in evaluations:
+        if row.get("evaluation_type") != "execution_grade_paper":
+            continue
+        evidence = row.get("evidence")
+        paper = evidence.get("paper_execution") if isinstance(evidence, dict) else None
+        if not paper_provenance_is_database_backed(connection, strategy_revision_id, paper):
+            row["evidence"] = {}
+
+
+def paper_provenance_is_database_backed(
+    connection: Any, strategy_revision_id: int, paper: Any,
+) -> bool:
+    if not isinstance(paper, dict):
+        return False
+    try:
+        paper_ids = [UUID(value) for value in paper["paper_order_ids"]]
+        decision_ids = [UUID(value) for value in paper["decision_ids"]]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+    sample_size = paper.get("sample_size")
+    if (
+        paper.get("strategy_revision_id") != strategy_revision_id
+        or paper.get("database_verified") is not True
+        or not isinstance(sample_size, int)
+        or sample_size <= 0
+        or len(paper_ids) != sample_size
+        or len(decision_ids) != sample_size
+        or len(set(paper_ids)) != sample_size
+        or len(set(decision_ids)) != sample_size
+    ):
+        return False
+    try:
+        matched = connection.execute(
+            """
+            SELECT count(DISTINCT paper.id) AS paper_count,
+                   count(DISTINCT decision.id) AS decision_count
+            FROM app.paper_order paper
+            JOIN analysis.decision decision ON decision.id = paper.decision_id
+            WHERE decision.strategy_revision_id = %s
+              AND decision.id = ANY(%s::uuid[])
+              AND paper.id = ANY(%s::uuid[])
+              AND paper.paper_only IS TRUE
+              AND paper.status IN ('exited', 'closed')
+            """,
+            [strategy_revision_id, decision_ids, paper_ids],
+        ).fetchone()
+    except Exception:
+        return False
+    return matched is not None and int(matched["paper_count"]) == sample_size and int(matched["decision_count"]) == sample_size

@@ -213,6 +213,10 @@ class StrategyLearningRepository:
             dict(row)
             for row in connection.execute(_OUTCOME_QUERY, [candidate["supersedes_id"]]).fetchall()
         ]
+        candidate_rows = [
+            dict(row)
+            for row in connection.execute(_OUTCOME_QUERY, [candidate_id]).fetchall()
+        ]
         proposed_rows = [row for row in rows if _passes(row, dict(candidate["parameters"] or {}))]
         capability = _evaluation_capability(
             dict(candidate["base_parameters"] or {}),
@@ -228,8 +232,8 @@ class StrategyLearningRepository:
         forward_source = [row for row in rows if row["as_of"] >= proposal["created_at"]]
         forward_rows = [row for row in forward_source if _passes(row, dict(candidate["parameters"] or {}))]
         forward = _evaluation(forward_source, forward_rows, minimum=30, require_span_days=30)
-        execution_source = [row for row in forward_source if _paper_execution_complete(row)]
-        execution_rows = [row for row in forward_rows if _paper_execution_complete(row)]
+        execution_source = [row for row in candidate_rows if _paper_execution_complete(row)]
+        execution_rows = [row for row in candidate_rows if _paper_execution_complete(row) and _passes(row, dict(candidate["parameters"] or {}))]
         execution_grade = _evaluation(execution_source, execution_rows, minimum=20, require_span_days=20)
         self._store_evaluation(connection, candidate_id, "walk_forward", backtest, rows)
         self._store_evaluation(connection, candidate_id, "shadow", forward, forward_source)
@@ -259,7 +263,10 @@ class StrategyLearningRepository:
         execution_grade: bool = False,
     ) -> None:
         metrics = _phase7_metrics(evaluation, source_rows)
-        evidence = _phase7_evidence(evaluation, source_rows, execution_grade=execution_grade)
+        evidence = _phase7_evidence(
+            evaluation, source_rows, execution_grade=execution_grade,
+            candidate_revision_id=candidate_id,
+        )
         connection.execute(
             """
             INSERT INTO analysis.strategy_evaluation
@@ -284,6 +291,7 @@ _OUTCOME_QUERY = """
            feature.iv_percentile, feature.required_move_pct,
            quote.open_interest, quote.volume, outcome.peak_return,
            outcome.current_return, outcome.max_drawdown,
+           decision.id::text AS decision_id, decision.strategy_revision_id,
            option_decision.probability_profit, instrument.symbol AS ticker,
            paper.paper_order_id, paper.paper_only, paper.paper_status,
            paper.filled_at, paper.exit_at, paper.actual_fill_price,
@@ -524,6 +532,7 @@ def _phase7_metrics(evaluation: dict[str, Any], source_rows: list[dict[str, Any]
 
 def _phase7_evidence(
     evaluation: dict[str, Any], source_rows: list[dict[str, Any]], *, execution_grade: bool = False,
+    candidate_revision_id: int | None = None,
 ) -> dict[str, Any]:
     proposed = dict(evaluation.get("proposed") or {})
     sample_size = proposed.get("sample_size")
@@ -553,6 +562,10 @@ def _phase7_evidence(
             "paper_only": True,
             "sample_size": len(source_rows),
             "completed_orders": len(source_rows),
+            "strategy_revision_id": candidate_revision_id,
+            "paper_order_ids": [row["paper_order_id"] for row in source_rows],
+            "decision_ids": [row["decision_id"] for row in source_rows],
+            "database_verified": True,
         }
     return evidence
 

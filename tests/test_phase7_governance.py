@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from investment_panel.core.decision.governance import (
     OUTCOME_ERROR_TYPES,
@@ -12,6 +12,7 @@ from investment_panel.core.decision.governance import (
 )
 from investment_panel.database import ticker_decisions
 from investment_panel.database import decision_inbox
+from investment_panel.database.strategy_learning import StrategyLearningRepository
 
 
 def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
@@ -30,6 +31,9 @@ def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
         evidence["paper_execution"] = {
             "source": "app.paper_order", "paper_only": True,
             "sample_size": 30, "completed_orders": 30,
+            "strategy_revision_id": "candidate-1", "database_verified": True,
+            "paper_order_ids": [f"paper-{index}" for index in range(30)],
+            "decision_ids": [f"decision-{index}" for index in range(30)],
         }
     return {
         "stage": stage,
@@ -156,3 +160,51 @@ def test_ticker_paper_dedupe_ignores_order_and_plan_identity() -> None:
         episode_id="episode-1",
     )
     assert first == second
+
+
+class _LearningResult:
+    def __init__(self, *, one=None, many=None) -> None:
+        self.one = one
+        self.many = many if many is not None else []
+
+    def fetchone(self):
+        return self.one
+
+    def fetchall(self):
+        return self.many
+
+
+def test_strategy_learning_does_not_reuse_parent_paper_execution_for_candidate() -> None:
+    now = datetime(2026, 8, 30, 12, tzinfo=UTC)
+    parent_row = {
+        "as_of": now - timedelta(days=1), "spread_pct": 0.10, "dte": 30,
+        "modeled_delta": 0.5, "iv_percentile": 0.4, "required_move_pct": 0.1,
+        "open_interest": 100, "volume": 100, "peak_return": 0.1,
+        "current_return": 0.1, "max_drawdown": -0.1, "probability_profit": 0.6,
+        "ticker": "QQQ", "decision_id": "parent-decision", "strategy_revision_id": 42,
+        "paper_order_id": "parent-paper", "paper_only": True, "paper_status": "exited",
+        "filled_at": now - timedelta(days=1), "exit_at": now, "actual_fill_price": 100,
+        "exit_price": 110, "filled_quantity": 1, "exited_quantity": 1,
+        "entry_slippage": 0.1, "exit_slippage": 0.1, "fees": 0.5,
+        "hit_rate_2x": 0.5, "false_positive_rate": 0.1,
+    }
+
+    class Connection:
+        def __init__(self) -> None:
+            self.evaluation_types = []
+
+        def execute(self, query, params=None):
+            if "SELECT id, created_at, result" in query:
+                return _LearningResult(one={"id": 1, "created_at": now - timedelta(days=2), "result": {"candidate_revision_id": 43, "proposed_parameter_changes": {}}})
+            if "SELECT candidate.parameters" in query:
+                return _LearningResult(one={"parameters": {}, "supersedes_id": 42, "base_parameters": {}})
+            if "FROM analysis.option_outcome" in query:
+                return _LearningResult(many=[parent_row] if params == [42] else [])
+            if "INSERT INTO analysis.strategy_evaluation" in query:
+                self.evaluation_types.append(params[1])
+            return _LearningResult()
+
+    connection = Connection()
+    repository = object.__new__(StrategyLearningRepository)
+    repository._evaluate(connection, 1)
+    assert connection.evaluation_types == ["walk_forward", "shadow"]

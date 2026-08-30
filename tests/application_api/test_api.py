@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import threading
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from psycopg.types.json import Jsonb
@@ -44,6 +45,36 @@ def _use_postgres_api(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
     config = typed_config(dsn)
     monkeypatch.setitem(app.dependency_overrides, dependencies.get_config, lambda: config)
     monkeypatch.setattr(panel_owner, "load_config", lambda: config)
+
+
+def _seed_phase7_paper_provenance(connection: Any, candidate_id: int, instrument_id: int, sample: int = 30) -> tuple[list[str], list[str]]:
+    run_id = connection.execute(
+        "INSERT INTO analysis.run "
+        "(run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status, strategy_revision_id) "
+        "VALUES ('phase7-evidence', now(), 'test', %s, now(), now(), 'succeeded', %s) RETURNING id",
+        ["0" * 64, candidate_id],
+    ).fetchone()["id"]
+    paper_order_ids: list[str] = []
+    decision_ids: list[str] = []
+    for index in range(sample):
+        decision_id = connection.execute(
+            "INSERT INTO analysis.decision "
+            "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) "
+            "VALUES (%s, %s, %s, 'option', 'resolved', now(), %s, %s) RETURNING id",
+            [run_id, instrument_id, f"phase7-api-{uuid4().hex}-{index}", "1" * 64, candidate_id],
+        ).fetchone()["id"]
+        paper_order_id = connection.execute(
+            "INSERT INTO app.paper_order "
+            "(decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
+            "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, "
+            "fees, entry_slippage, exit_slippage, lane) "
+            "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now(), 100, now(), 110, 1, 1, 0.5, 0.1, 0.1, 'ticker') "
+            "RETURNING id",
+            [decision_id, instrument_id],
+        ).fetchone()["id"]
+        paper_order_ids.append(str(paper_order_id))
+        decision_ids.append(str(decision_id))
+    return paper_order_ids, decision_ids
 
 
 def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
@@ -1009,6 +1040,9 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
             "UPDATE analysis.agent_task SET result = %s WHERE id = %s",
             [Jsonb(ready_result), proposal["id"]],
         )
+        paper_order_ids, decision_ids = _seed_phase7_paper_provenance(
+            connection, ready_result["candidate_revision_id"], instrument["id"],
+        )
         metrics = {
             name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1)
             for name in TRACKED_METRICS
@@ -1030,6 +1064,10 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
                     **({"paper_execution": {
                         "source": "app.paper_order", "paper_only": True,
                         "sample_size": 30, "completed_orders": 30,
+                        "strategy_revision_id": ready_result["candidate_revision_id"],
+                        "database_verified": True,
+                        "paper_order_ids": paper_order_ids,
+                        "decision_ids": decision_ids,
                     }} if stage == "execution_grade_paper" else {}),
                 })],
             )
@@ -1093,6 +1131,13 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
             "'candidate', %s, %s, 'options-radar-core') RETURNING id",
             [Jsonb({}), base_id],
         ).fetchone()["id"]
+        instrument_id = connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity') RETURNING id",
+            [f"P7{uuid4().hex[:8]}", "Phase 7 promotion evidence"],
+        ).fetchone()["id"]
+        paper_order_ids, decision_ids = _seed_phase7_paper_provenance(
+            connection, candidate_id, instrument_id,
+        )
         metrics = {
             name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1)
             for name in TRACKED_METRICS
@@ -1107,10 +1152,14 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
                     "method": "retained_actionable_decisions_forward_evaluation",
                     "version": "phase7-governance-evidence-v1",
                     "uncertainty": {"lower_95_expectancy": 0.01},
-                    **({"paper_execution": {
-                        "source": "app.paper_order", "paper_only": True,
-                        "sample_size": 30, "completed_orders": 30,
-                    }} if evaluation_type == "execution_grade_paper" else {}),
+                        **({"paper_execution": {
+                            "source": "app.paper_order", "paper_only": True,
+                            "sample_size": 30, "completed_orders": 30,
+                            "strategy_revision_id": candidate_id,
+                            "database_verified": True,
+                            "paper_order_ids": paper_order_ids,
+                            "decision_ids": decision_ids,
+                        }} if evaluation_type == "execution_grade_paper" else {}),
                 })],
             )
 

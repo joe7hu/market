@@ -91,7 +91,38 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                     Jsonb({"candidate_revision_id": candidate_id, "proposed_parameter_changes": {"max_spread_pct": .20}}),
                     Jsonb({"status": "ready"}),
                 ],
+                ).fetchone()["id"]
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+                "VALUES (%s, %s, 'equity') RETURNING id",
+                [f"P7{uuid4().hex[:8]}", "Phase 7 evidence"],
             ).fetchone()["id"]
+            run_id = connection.execute(
+                "INSERT INTO analysis.run "
+                "(run_type, input_cutoff, code_version, input_hash, started_at, status, strategy_revision_id) "
+                "VALUES ('phase7-evidence', now(), 'test', %s, now(), 'succeeded', %s) RETURNING id",
+                ["0" * 64, candidate_id],
+            ).fetchone()["id"]
+            paper_order_ids = []
+            decision_ids = []
+            for index in range(100):
+                decision_id = connection.execute(
+                    "INSERT INTO analysis.decision "
+                    "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) "
+                    "VALUES (%s, %s, %s, 'option', 'resolved', now(), %s, %s) RETURNING id",
+                    [run_id, instrument_id, f"phase7-{index}", "1" * 64, candidate_id],
+                ).fetchone()["id"]
+                paper_order_id = connection.execute(
+                    "INSERT INTO app.paper_order "
+                    "(decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
+                    "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, "
+                    "fees, entry_slippage, exit_slippage, lane) "
+                    "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now(), 100, now(), 110, 1, 1, 0.5, 0.1, 0.1, 'ticker') "
+                    "RETURNING id",
+                    [decision_id, instrument_id],
+                ).fetchone()["id"]
+                paper_order_ids.append(str(paper_order_id))
+                decision_ids.append(str(decision_id))
             baseline = {"net_expectancy": .10, "precision_at_5": .50, "max_drawdown": -.20, "calibration_error": .10}
             for evaluation_type, sample, span in (
                 ("walk_forward", 100, 120),
@@ -123,6 +154,8 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                         **({"paper_execution": {
                             "source": "app.paper_order", "paper_only": True,
                             "sample_size": sample, "completed_orders": sample,
+                            "strategy_revision_id": candidate_id, "database_verified": True,
+                            "paper_order_ids": paper_order_ids[:sample], "decision_ids": decision_ids[:sample],
                         }} if evaluation_type == "execution_grade_paper" else {}),
                     })],
                 )
@@ -1498,6 +1531,32 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                 "'options-radar-core') RETURNING id",
                 [Jsonb({"max_spread_pct": 0.2}), base_id],
             ).fetchone()["id"]
+            evidence_run_id = connection.execute(
+                "INSERT INTO analysis.run "
+                "(run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status, strategy_revision_id) "
+                "VALUES ('phase7-evidence', now(), 'test', %s, now(), now(), 'succeeded', %s) RETURNING id",
+                ["0" * 64, candidate_id],
+            ).fetchone()["id"]
+            paper_order_ids = []
+            decision_ids = []
+            for index in range(30):
+                decision_id = connection.execute(
+                    "INSERT INTO analysis.decision "
+                    "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) "
+                    "VALUES (%s, %s, %s, 'option', 'resolved', now(), %s, %s) RETURNING id",
+                    [evidence_run_id, instrument_id, f"phase7-action-{uuid4().hex}-{index}", "1" * 64, candidate_id],
+                ).fetchone()["id"]
+                paper_order_id = connection.execute(
+                    "INSERT INTO app.paper_order "
+                    "(decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
+                    "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, "
+                    "fees, entry_slippage, exit_slippage, lane) "
+                    "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now(), 100, now(), 110, 1, 1, 0.5, 0.1, 0.1, 'ticker') "
+                    "RETURNING id",
+                    [decision_id, instrument_id],
+                ).fetchone()["id"]
+                paper_order_ids.append(str(paper_order_id))
+                decision_ids.append(str(decision_id))
             metrics = {
                 name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1)
                 for name in TRACKED_METRICS
@@ -1515,6 +1574,8 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                         **({"paper_execution": {
                             "source": "app.paper_order", "paper_only": True,
                             "sample_size": 30, "completed_orders": 30,
+                            "strategy_revision_id": candidate_id, "database_verified": True,
+                            "paper_order_ids": paper_order_ids, "decision_ids": decision_ids,
                         }} if evaluation_type == "execution_grade_paper" else {}),
                     })],
                 )
