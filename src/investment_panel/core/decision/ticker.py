@@ -3907,6 +3907,35 @@ def _execution_label(value: Any) -> str | None:
     return value.strip()
 
 
+_EXECUTION_LIQUIDATION_REGIMES = frozenset({"normal", "elevated", "stressed", "extreme"})
+_EXECUTION_RISK_LEVELS = frozenset({"low", "medium", "high", "critical"})
+_EXECUTION_STABLECOIN_LIQUIDITY = frozenset({"deep", "adequate", "thin", "stressed"})
+
+
+def _execution_supported_label(value: Any, supported: frozenset[str]) -> str | None:
+    label = _execution_label(value)
+    normalized = label.lower() if label is not None else None
+    return normalized if normalized in supported else None
+
+
+def _execution_numeric_tree(value: Any) -> bool:
+    """Validate a non-empty nested scenario/curve of finite numbers."""
+    if isinstance(value, Mapping):
+        return bool(value) and all(_execution_numeric_tree(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return bool(value) and all(_execution_numeric_tree(item) for item in value)
+    return _execution_number(value) is not None
+
+
+def _execution_shape(value: Any) -> bool:
+    """Validate nested execution metadata without accepting arbitrary objects."""
+    if isinstance(value, Mapping):
+        return bool(value) and all(_execution_shape(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return bool(value) and all(_execution_shape(item) for item in value)
+    return _execution_number(value) is not None or _execution_label(value) is not None
+
+
 def _execution_object(value: Any) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
@@ -3957,8 +3986,10 @@ def _execution_evidence_for(
         }
         values: dict[str, Any] = {}
         for key, raw in raw_values.items():
-            if key in {"term_structure", "event_gap_scenarios", "assignment", "collateral"}:
-                value = raw if isinstance(raw, Mapping) else None
+            if key in {"term_structure", "event_gap_scenarios"}:
+                value = raw if _execution_numeric_tree(raw) else None
+            elif key in {"assignment", "collateral"}:
+                value = raw if _execution_shape(raw) else None
             elif key in {"delta", "gamma", "vega", "theta", "skew", "slippage", "days_to_exit", "capacity"}:
                 source, minimum, maximum = raw
                 value = _execution_number(source, minimum=minimum, maximum=maximum)
@@ -3992,8 +4023,12 @@ def _execution_evidence_for(
         }
         values = {}
         for key, raw in raw_values.items():
-            if key in {"liquidation_regime", "venue_risk", "counterparty_risk", "stablecoin_liquidity"}:
-                value = _execution_label(raw)
+            if key == "liquidation_regime":
+                value = _execution_supported_label(raw, _EXECUTION_LIQUIDATION_REGIMES)
+            elif key in {"venue_risk", "counterparty_risk"}:
+                value = _execution_supported_label(raw, _EXECUTION_RISK_LEVELS)
+            elif key == "stablecoin_liquidity":
+                value = _execution_supported_label(raw, _EXECUTION_STABLECOIN_LIQUIDITY)
             else:
                 source, minimum, maximum = raw
                 value = _execution_number(source, minimum=minimum, maximum=maximum)

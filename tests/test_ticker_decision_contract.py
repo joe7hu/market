@@ -289,6 +289,68 @@ def test_execution_evidence_rejects_malformed_option_metrics() -> None:
     assert "option_execution_delta_malformed" in evidence["blockers"]
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("liquidation_regime", "???"),
+        ("venue_risk", "???"),
+        ("counterparty_risk", "???"),
+        ("stablecoin_liquidity", "???"),
+    ),
+)
+def test_execution_evidence_rejects_unknown_crypto_labels(field: str, value: object) -> None:
+    evidence = ticker_module._execution_evidence_for(
+        ExpressionKind.CRYPTO_SPOT,
+        _complete_crypto_execution_evidence(**{field: value}),
+        {},
+        [],
+        AS_OF,
+    )
+    assert evidence["status"] == "unavailable"
+    assert f"crypto_execution_{field}_malformed" in evidence["blockers"]
+
+
+def test_execution_evidence_accepts_supported_crypto_labels() -> None:
+    evidence = ticker_module._execution_evidence_for(
+        ExpressionKind.CRYPTO_SPOT,
+        _complete_crypto_execution_evidence(
+            liquidation_regime="stressed", venue_risk="HIGH",
+            counterparty_risk="medium", stablecoin_liquidity="adequate",
+        ),
+        {},
+        [],
+        AS_OF,
+    )
+    assert evidence["status"] == "available"
+    assert evidence["venue_risk"] == "high"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("term_structure", {"slope": "bad"}),
+        ("event_gap_scenarios", {"gap_down": object()}),
+    ),
+)
+def test_execution_evidence_rejects_malformed_nested_option_shapes(field: str, value: object) -> None:
+    evidence = ticker_module._execution_evidence_for(
+        ExpressionKind.CALL,
+        {
+            "available_at": AS_OF,
+            "delta": .4, "gamma": .1, "vega": .2, "theta": -.03,
+            "skew": .02, field: value,
+            "assignment": {"status": "none"}, "collateral": {"required": 250},
+            "slippage": .01, "days_to_exit": 3, "capacity": 100,
+            "multi_leg_liquidity": {"status": "available"},
+        },
+        {},
+        [{"bid": 2, "ask": 2.2, "bid_size": 10, "ask_size": 10, "quote_time": AS_OF}],
+        AS_OF,
+    )
+    assert evidence["status"] == "unavailable"
+    assert f"option_execution_{field}_malformed" in evidence["blockers"]
+
+
 def test_execution_evidence_accepts_complete_option_values() -> None:
     evidence = ticker_module._execution_evidence_for(
         ExpressionKind.CALL,
