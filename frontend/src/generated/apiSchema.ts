@@ -1778,6 +1778,10 @@ export interface components {
         };
         /** DecisionInboxResponse */
         DecisionInboxResponse: {
+            /** Authority */
+            authority?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Count
              * @default 0
@@ -3383,6 +3387,10 @@ export interface components {
             analysis_run_id?: string | null;
             /** As Of */
             as_of?: string | null;
+            /** Authority */
+            authority?: {
+                [key: string]: unknown;
+            } | null;
             /** Capture Generation Id */
             capture_generation_id?: number | null;
             /** Count */
@@ -3421,6 +3429,10 @@ export interface components {
             analysis_run_id?: string | null;
             /** As Of */
             as_of?: string | null;
+            /** Authority */
+            authority?: {
+                [key: string]: unknown;
+            } | null;
             decision_truth?: components["schemas"]["OptionsDecisionTruth"] | null;
             /** Lane */
             lane: string;
@@ -4170,6 +4182,8 @@ export interface components {
          * @description Frozen before/after portfolio impact for one exact expression.
          */
         PortfolioImpact: {
+            /** Adv Participation */
+            adv_participation?: number | null;
             /**
              * Availability
              * @default unavailable
@@ -4177,21 +4191,31 @@ export interface components {
             availability: string;
             /** @default missing */
             availability_status: components["schemas"]["AvailabilityStatus"];
+            /** Beta Delta */
+            beta_delta?: number | null;
             /**
              * Blockers
              * @default []
              */
             blockers: string[];
+            /** Cash Comparator */
+            cash_comparator?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Contract Version
              * @default portfolio-impact.v1
              */
             contract_version: string;
+            /** Correlation Cluster Delta */
+            correlation_cluster_delta?: number | null;
             /**
              * Cutoff
              * Format: date-time
              */
             cutoff: string;
+            /** Days To Exit */
+            days_to_exit?: number | null;
             /** Decision Revision */
             decision_revision: string;
             /** Diversification Benefit */
@@ -4203,10 +4227,16 @@ export interface components {
             factor_exposure?: {
                 [key: string]: unknown;
             } | null;
+            /** Funding Source Or Position To Trim */
+            funding_source_or_position_to_trim?: string | null;
             /** Greeks */
             greeks?: {
                 [key: string]: unknown;
             } | null;
+            /** Gross Exposure After */
+            gross_exposure_after?: number | null;
+            /** Gross Exposure Before */
+            gross_exposure_before?: number | null;
             /** Impact Id */
             impact_id: string;
             /**
@@ -4224,8 +4254,14 @@ export interface components {
             market_snapshot_id: string;
             /** Market State Publication Id */
             market_state_publication_id?: string | null;
+            /** Net Exposure After */
+            net_exposure_after?: number | null;
+            /** Net Exposure Before */
+            net_exposure_before?: number | null;
             /** Opportunity Episode Id */
             opportunity_episode_id: string;
+            /** Planned Loss */
+            planned_loss?: number | null;
             /** Portfolio After */
             portfolio_after?: {
                 [key: string]: unknown;
@@ -4236,6 +4272,10 @@ export interface components {
             };
             /** Position To Trim Or Replace */
             position_to_trim_or_replace?: string | null;
+            /** Position Weight After */
+            position_weight_after?: number | null;
+            /** Position Weight Before */
+            position_weight_before?: number | null;
             /**
              * Positions Most Correlated
              * @default []
@@ -4249,6 +4289,14 @@ export interface components {
             scenario_pnl?: {
                 [key: string]: unknown;
             } | null;
+            /** Sector Concentration Delta */
+            sector_concentration_delta?: number | null;
+            /** Symbol Concentration Delta */
+            symbol_concentration_delta?: number | null;
+            /** Ticker */
+            ticker: string;
+            /** Top Alternative */
+            top_alternative?: string | null;
         } & {
             [key: string]: unknown;
         };

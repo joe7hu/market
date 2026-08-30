@@ -430,8 +430,8 @@ def test_agent_queue_option_context_binds_selected_decision_identity(postgres_ds
                 connection.execute(
                     """
                     INSERT INTO analysis.decision
-                        (run_id, decision_key, kind, instrument_id, as_of, state, score, input_hash)
-                    VALUES (%s, %s, 'option', %s, %s, 'WATCH', 0.5, %s)
+                        (run_id, decision_key, kind, instrument_id, as_of, state, score, input_hash, episode_key)
+                    VALUES (%s, %s, 'option', %s, %s, 'WATCH', 0.5, %s, %s)
                     RETURNING id
                     """,
                     [
@@ -440,6 +440,7 @@ def test_agent_queue_option_context_binds_selected_decision_identity(postgres_ds
                         instrument_id,
                         cutoff - timedelta(hours=2) if index == 0 else cutoff,
                         character * 64,
+                        f"qdec-episode-{index}",
                     ],
                 ).fetchone()["id"]
                 for index, character in enumerate(("b", "c"))
@@ -494,14 +495,38 @@ def test_current_candidate_queue_counts_unique_symbols_not_structure_rows(postgr
         run_id = analysis.start_run(
             "queue-test", input_cutoff=datetime.now(UTC), code_version="test", inputs={},
         )
+        decision_ids: dict[tuple[str, str], str] = {}
+        with runtime.transaction() as connection:
+            for symbol, structure in (
+                ("NVDA", "long_call"), ("NVDA", "call_debit_spread"),
+                ("MSFT", "long_call"), ("AAPL", "long_call"),
+            ):
+                instrument = connection.execute(
+                    """
+                    INSERT INTO catalog.instrument (symbol, asset_class)
+                    VALUES (%s, 'equity')
+                    ON CONFLICT (symbol) DO UPDATE SET asset_class = EXCLUDED.asset_class
+                    RETURNING id
+                    """,
+                    [symbol],
+                ).fetchone()
+                decision_ids[(symbol, structure)] = str(connection.execute(
+                    """
+                    INSERT INTO analysis.decision
+                        (run_id, decision_key, kind, instrument_id, as_of, state, input_hash, episode_key)
+                    VALUES (%s, %s, 'option', %s, now(), 'WATCH', %s, %s)
+                    RETURNING id
+                    """,
+                    [run_id, f"queue-{symbol}-{structure}", instrument["id"], "q" * 64, f"queue:{symbol}:{structure}"],
+                ).fetchone()["id"])
         analysis.publish(
             run_id,
             "options-radar",
             {"option_radar_opportunity": [
-                {"ticker": "NVDA", "structure": "long_call", "ticket": {"legs": [{"large": "payload" * 1000}]}},
-                {"ticker": "NVDA", "structure": "call_debit_spread"},
-                {"ticker": "MSFT", "structure": "long_call"},
-                {"ticker": "AAPL", "structure": "long_call"},
+                {"ticker": "NVDA", "decision_id": decision_ids[("NVDA", "long_call")], "structure": "long_call", "ticket": {"legs": [{"large": "payload" * 1000}]}},
+                {"ticker": "NVDA", "decision_id": decision_ids[("NVDA", "call_debit_spread")], "structure": "call_debit_spread"},
+                {"ticker": "MSFT", "decision_id": decision_ids[("MSFT", "long_call")], "structure": "long_call"},
+                {"ticker": "AAPL", "decision_id": decision_ids[("AAPL", "long_call")], "structure": "long_call"},
             ]},
         )
 

@@ -20,6 +20,329 @@ from investment_panel.database.opportunity_episodes import (
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
+CURRENT_OPTION_PUBLICATION_MODELS = frozenset({
+    ("options-radar", "option_radar_opportunity"),
+    ("options-decision-system", "options_decision_candidate"),
+})
+CURRENT_OPTION_MODEL_NAMES = frozenset(model for _, model in CURRENT_OPTION_PUBLICATION_MODELS)
+
+
+def current_option_publication_answers(
+    connection: Any,
+    *,
+    cutoff: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Read current option answers once across both option publication owners."""
+
+    return list(current_option_publication_answers_result(connection, cutoff=cutoff)["rows"])
+
+
+def current_option_publication_answers_result(
+    connection: Any,
+    *,
+    cutoff: datetime | None = None,
+) -> dict[str, Any]:
+    """Return current option answers and the cross-owner authority state."""
+
+    rows: list[dict[str, Any]] = []
+    owner_diagnostics: list[dict[str, Any]] = []
+    for scope, model_name in sorted(CURRENT_OPTION_PUBLICATION_MODELS):
+        result = current_option_publication_result(
+            connection,
+            scope=scope,
+            model_name=model_name,
+            cutoff=cutoff,
+        )
+        diagnostic = dict(result["authority"])
+        if diagnostic.get("status") != "available":
+            owner_diagnostics.append(diagnostic)
+        rows.extend(
+            {
+                **row,
+                "scope": scope,
+            }
+            for row in result["rows"]
+        )
+    blocking_diagnostics = [
+        diagnostic for diagnostic in owner_diagnostics
+        if diagnostic.get("reason") != "current_option_publication_empty"
+    ]
+    if blocking_diagnostics:
+        return {
+            "rows": [],
+            "authority": {
+                "status": "unavailable",
+                "reason": "current_option_publication_authority_conflict",
+                "owners": blocking_diagnostics,
+            },
+        }
+    counts: dict[str, int] = {}
+    for row in rows:
+        episode_key = str(row.get("episode_key") or "")
+        if episode_key:
+            counts[episode_key] = counts.get(episode_key, 0) + 1
+    answers = [
+        row for row in rows
+        if counts.get(str(row.get("episode_key") or ""), 0) == 1
+    ]
+    if len(answers) != len(rows):
+        return {
+            "rows": [],
+            "authority": {
+                "status": "unavailable",
+                "reason": "current_option_duplicate_episode_authority",
+                "source_row_count": len(rows),
+                "returned_row_count": len(answers),
+            },
+        }
+    if not rows:
+        return {
+            "rows": [],
+            "authority": {
+                "status": "unavailable",
+                "reason": "current_option_publication_empty",
+                "source_row_count": 0,
+                "returned_row_count": 0,
+            },
+        }
+    return {
+        "rows": answers,
+        "authority": {
+            "status": "available",
+            "reason": None,
+            "source_row_count": len(rows),
+            "returned_row_count": len(answers),
+        },
+    }
+
+
+def current_option_publication_result(
+    connection: Any,
+    *,
+    scope: str,
+    model_name: str,
+    cutoff: datetime | None = None,
+    publication_id: UUID | str | None = None,
+) -> dict[str, Any]:
+    """Read one point-in-time option publication with authoritative episode keys.
+
+    Publication payloads are not identity authority.  The option decision row
+    and its PostgreSQL ``episode_key`` are the authority.  Any row without a
+    resolvable decision, with conflicting aliases, or with duplicate episode
+    authority invalidates the complete model projection so a malformed
+    publication cannot become a current answer by selection order.
+    """
+
+    if (scope, model_name) not in CURRENT_OPTION_PUBLICATION_MODELS:
+        raise ValueError("unsupported current option publication model")
+    status_clause = (
+        "publication.status = 'published'"
+        if cutoff is None
+        else "publication.status IN ('published', 'superseded')"
+    )
+    rows = connection.execute(
+        f"""
+        WITH chosen_publication AS MATERIALIZED (
+            SELECT publication.id, publication.bundle_id, publication.published_at,
+                   publication.analysis_run_id
+            FROM app.publication publication
+            JOIN analysis.run run ON run.id = publication.analysis_run_id
+            WHERE publication.scope = %s
+              AND {status_clause}
+              AND publication.published_at IS NOT NULL
+              AND publication.published_at <= COALESCE(%s::timestamptz, now())
+              AND (%s::uuid IS NULL OR publication.id = %s::uuid)
+            ORDER BY publication.published_at DESC, publication.created_at DESC,
+                     publication.id DESC
+            LIMIT 1
+        ), source_rows AS MATERIALIZED (
+            SELECT item.model_name, item.stable_key, item.rank,
+                   chosen.id::text AS publication_id, chosen.published_at,
+                   chosen.analysis_run_id, payload.payload
+            FROM chosen_publication chosen
+            JOIN app.publication_bundle_item item ON item.bundle_id = chosen.bundle_id
+            JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+            WHERE chosen.bundle_id IS NOT NULL AND item.model_name = %s
+            UNION ALL
+            SELECT item.model_name, item.stable_key, item.rank,
+                   chosen.id::text AS publication_id, chosen.published_at,
+                   chosen.analysis_run_id, item.payload
+            FROM chosen_publication chosen
+            JOIN app.publication_item item ON item.publication_id = chosen.id
+            WHERE chosen.bundle_id IS NULL AND item.model_name = %s
+        ), identified_rows AS MATERIALIZED (
+            SELECT source.*,
+                   NULLIF(BTRIM(source.payload->>'decision_id'), '') AS decision_identity,
+                   NULLIF(BTRIM(source.payload->>'opportunity_id'), '') AS opportunity_identity,
+                   NULLIF(BTRIM(source.payload->>'episode_key'), '') AS payload_episode_key,
+                   NULLIF(BTRIM(source.payload->>'ticker'), '') AS payload_ticker,
+                   NULLIF(BTRIM(source.payload->>'symbol'), '') AS payload_symbol
+            FROM source_rows source
+        ), resolved_rows AS MATERIALIZED (
+            SELECT identified.*, decision.id AS authoritative_decision_id,
+                   decision.kind AS authoritative_kind,
+                   decision.run_id AS authoritative_run_id,
+                   decision.episode_key AS authoritative_episode_key,
+                   instrument.symbol AS authoritative_symbol
+            FROM identified_rows identified
+            LEFT JOIN analysis.decision decision
+              ON decision.id::text = COALESCE(
+                   identified.decision_identity, identified.opportunity_identity
+                 )
+            LEFT JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        ), validated_rows AS MATERIALIZED (
+            SELECT resolved.*,
+                   (
+                       resolved.authoritative_decision_id IS NOT NULL
+                       AND resolved.authoritative_kind = 'option'
+                       AND resolved.authoritative_run_id = resolved.analysis_run_id
+                       AND NULLIF(BTRIM(resolved.authoritative_episode_key), '') IS NOT NULL
+                   ) AS authority_valid,
+                   (
+                       resolved.authoritative_decision_id IS NOT NULL
+                       AND resolved.authoritative_kind = 'option'
+                       AND resolved.authoritative_run_id = resolved.analysis_run_id
+                       AND NULLIF(BTRIM(resolved.authoritative_episode_key), '') IS NOT NULL
+                       AND (
+                           resolved.decision_identity IS NOT NULL
+                           OR resolved.opportunity_identity IS NOT NULL
+                       )
+                       AND (
+                           resolved.decision_identity IS NULL
+                           OR resolved.opportunity_identity IS NULL
+                           OR resolved.decision_identity = resolved.opportunity_identity
+                       )
+                       AND (
+                           resolved.payload_episode_key IS NULL
+                           OR resolved.payload_episode_key = resolved.authoritative_episode_key
+                       )
+                       AND (
+                           resolved.payload_ticker IS NULL
+                           OR upper(resolved.payload_ticker) = upper(resolved.authoritative_symbol)
+                       )
+                       AND (
+                           resolved.payload_symbol IS NULL
+                           OR upper(resolved.payload_symbol) = upper(resolved.authoritative_symbol)
+                       )
+                       AND (
+                           resolved.payload_ticker IS NULL
+                           OR resolved.payload_symbol IS NULL
+                           OR upper(resolved.payload_ticker) = upper(resolved.payload_symbol)
+                       )
+                   ) AS row_valid
+            FROM resolved_rows resolved
+        ), counted_rows AS MATERIALIZED (
+            SELECT validated.*,
+                   count(*) OVER () AS source_row_count,
+                   count(*) FILTER (WHERE validated.authority_valid) OVER () AS authoritative_row_count,
+                   count(*) FILTER (WHERE validated.row_valid) OVER () AS valid_row_count,
+                   count(*) FILTER (WHERE validated.authority_valid) OVER (
+                       PARTITION BY validated.authoritative_episode_key
+                   ) AS episode_authority_count
+            FROM validated_rows validated
+        )
+        SELECT payload, publication_id, published_at, rank, stable_key,
+               authoritative_decision_id::text AS authoritative_decision_id,
+               authoritative_episode_key AS episode_key,
+               source_row_count, authoritative_row_count, valid_row_count,
+               episode_authority_count, row_valid
+        FROM counted_rows
+        ORDER BY rank, stable_key
+        """,
+        [scope, cutoff, publication_id, publication_id, model_name, model_name],
+    ).fetchall()
+    normalized = [dict(row) for row in rows]
+    if not normalized:
+        return {
+            "rows": [],
+            "authority": {
+                "status": "unavailable",
+                "scope": scope,
+                "model_name": model_name,
+                "reason": "current_option_publication_empty",
+                "source_row_count": 0,
+                "authoritative_row_count": 0,
+                "valid_row_count": 0,
+                "returned_row_count": 0,
+                "duplicate_episode_count": 0,
+            },
+        }
+    first = normalized[0]
+    source_row_count = int(first["source_row_count"])
+    authoritative_row_count = int(first["authoritative_row_count"])
+    valid_row_count = int(first["valid_row_count"])
+    accepted = [
+        row for row in normalized
+        if bool(row["row_valid"]) and int(row["episode_authority_count"]) == 1
+    ]
+    duplicate_episodes = {
+        str(row["episode_key"])
+        for row in normalized
+        if bool(row["authoritative_decision_id"])
+        and int(row["episode_authority_count"]) > 1
+        and row.get("episode_key")
+    }
+    returned_row_count = len(accepted)
+    complete = (
+        source_row_count == authoritative_row_count == valid_row_count == returned_row_count
+        and not duplicate_episodes
+    )
+    if complete:
+        reason = None
+        status = "available"
+    elif duplicate_episodes:
+        reason = "current_option_duplicate_episode_authority"
+        status = "unavailable"
+    elif authoritative_row_count != source_row_count:
+        reason = "current_option_authority_unresolved"
+        status = "unavailable"
+    elif valid_row_count != source_row_count:
+        reason = "current_option_identity_conflict"
+        status = "unavailable"
+    else:
+        reason = "current_option_projection_incomplete"
+        status = "unavailable"
+    authority = {
+        "status": status,
+        "scope": scope,
+        "model_name": model_name,
+        "reason": reason,
+        "source_row_count": source_row_count,
+        "authoritative_row_count": authoritative_row_count,
+        "valid_row_count": valid_row_count,
+        "returned_row_count": returned_row_count,
+        "duplicate_episode_count": len(duplicate_episodes),
+    }
+    if not complete:
+        return {"rows": [], "authority": authority}
+    for row in accepted:
+        row.pop("source_row_count", None)
+        row.pop("authoritative_row_count", None)
+        row.pop("valid_row_count", None)
+        row.pop("episode_authority_count", None)
+        row.pop("row_valid", None)
+    return {"rows": accepted, "authority": authority}
+
+
+def current_option_publication_rows(
+    connection: Any,
+    *,
+    scope: str,
+    model_name: str,
+    cutoff: datetime | None = None,
+    publication_id: UUID | str | None = None,
+) -> list[dict[str, Any]]:
+    """Return only a complete current option projection."""
+
+    return list(current_option_publication_result(
+        connection,
+        scope=scope,
+        model_name=model_name,
+        cutoff=cutoff,
+        publication_id=publication_id,
+    )["rows"])
+
+
 class AnalysisRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
@@ -261,8 +584,6 @@ class AnalysisRepository:
         strategy_root_key: str | None = None,
     ) -> UUID:
         prepared = _prepare_models(models)
-        bundle_rows = _bundle_rows(prepared)
-        bundle_hash = _hash({"scope": scope, "items": bundle_rows})
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [f"publication:{scope}"])
             if strategy_root_key:
@@ -287,6 +608,8 @@ class AnalysisRepository:
                     raise ValueError(
                         "strategy authority changed during analysis; publication must be recomputed"
                     )
+            bundle_rows = _bundle_rows(prepared)
+            bundle_hash = _hash({"scope": scope, "items": bundle_rows})
             existing = connection.execute(
                 """
                 SELECT publication.id, publication.status, publication.bundle_id
@@ -423,42 +746,47 @@ class AnalysisRepository:
         include_lineage: bool = False,
     ) -> list[dict[str, Any]]:
         with self.runtime.read() as connection:
-            rows = connection.execute(
-                """
-                SELECT payload.payload, publication.id::text AS publication_id,
-                       publication.published_at
-                FROM app.current_publication_item item
-                JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
-                JOIN app.publication publication ON publication.id = item.publication_id
-                WHERE item.scope = %s AND item.model_name = %s AND publication.status = 'published'
-                ORDER BY item.rank
-                """,
-                [scope, model_name],
-            ).fetchall()
-            has_projection = connection.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM app.current_publication_item item
-                    JOIN app.publication publication ON publication.id = item.publication_id
-                    WHERE item.scope = %s AND publication.status = 'published'
-                ) AS exists
-                """,
-                [scope],
-            ).fetchone()["exists"]
-            if not rows and not has_projection:
+            if (scope, model_name) in CURRENT_OPTION_PUBLICATION_MODELS:
+                rows = current_option_publication_rows(
+                    connection, scope=scope, model_name=model_name,
+                )
+            else:
                 rows = connection.execute(
                     """
-                    SELECT item.payload
-                           , publication.id::text AS publication_id,
+                    SELECT payload.payload, publication.id::text AS publication_id,
                            publication.published_at
-                    FROM app.publication publication
-                    JOIN app.publication_item item ON item.publication_id = publication.id
-                    WHERE publication.scope = %s AND publication.status = 'published'
-                      AND item.model_name = %s
+                    FROM app.current_publication_item item
+                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    JOIN app.publication publication ON publication.id = item.publication_id
+                    WHERE item.scope = %s AND item.model_name = %s AND publication.status = 'published'
                     ORDER BY item.rank
                     """,
                     [scope, model_name],
                 ).fetchall()
+                has_projection = connection.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM app.current_publication_item item
+                        JOIN app.publication publication ON publication.id = item.publication_id
+                        WHERE item.scope = %s AND publication.status = 'published'
+                    ) AS exists
+                    """,
+                    [scope],
+                ).fetchone()["exists"]
+                if not rows and not has_projection:
+                    rows = connection.execute(
+                        """
+                        SELECT item.payload
+                               , publication.id::text AS publication_id,
+                               publication.published_at
+                        FROM app.publication publication
+                        JOIN app.publication_item item ON item.publication_id = publication.id
+                        WHERE publication.scope = %s AND publication.status = 'published'
+                          AND item.model_name = %s
+                        ORDER BY item.rank
+                        """,
+                        [scope, model_name],
+                    ).fetchall()
         output: list[dict[str, Any]] = []
         for row in rows:
             payload = dict(row["payload"] or {})
@@ -477,20 +805,31 @@ class AnalysisRepository:
         with self.runtime.read() as connection:
             predecessor = connection.execute(
                 """
-                SELECT publication.id, publication.bundle_id
+                SELECT publication.id, publication.bundle_id, publication.published_at
                 FROM app.publication publication
                 JOIN analysis.run run ON run.id = publication.analysis_run_id
                 WHERE publication.scope = %s
                   AND publication.status IN ('published', 'superseded')
                   AND run.input_cutoff < %s
+                  AND publication.published_at IS NOT NULL
+                  AND publication.published_at <= %s
                   AND (%s::text IS NULL OR run.inputs->>'source_id' = %s)
                 ORDER BY run.input_cutoff DESC, publication.published_at DESC NULLS LAST,
                          publication.id DESC LIMIT 1
                 """,
-                [scope, cutoff, source_id, source_id],
+                [scope, cutoff, cutoff, source_id, source_id],
             ).fetchone()
             if predecessor is None:
                 return []
+            if (scope, model_name) in CURRENT_OPTION_PUBLICATION_MODELS:
+                rows = current_option_publication_rows(
+                    connection,
+                    scope=scope,
+                    model_name=model_name,
+                    cutoff=cutoff,
+                    publication_id=predecessor["id"],
+                )
+                return [dict(row["payload"] or {}) for row in rows]
             if predecessor["bundle_id"] is not None:
                 rows = connection.execute(
                     """
@@ -590,6 +929,16 @@ class AnalysisRepository:
         publication = self.publication_at_or_before(scope, cutoff=cutoff, source_id=source_id)
         if publication is None:
             return []
+        if (scope, model_name) in CURRENT_OPTION_PUBLICATION_MODELS:
+            with self.runtime.read() as connection:
+                rows = current_option_publication_rows(
+                    connection,
+                    scope=scope,
+                    model_name=model_name,
+                    cutoff=cutoff,
+                    publication_id=publication["publication_id"],
+                )
+            return [dict(row["payload"] or {}) for row in rows]
         return list(publication["models"].get(model_name) or [])
 
     def option_signal_detail(self, decision_id: UUID) -> dict[str, Any] | None:
@@ -672,44 +1021,17 @@ class AnalysisRepository:
                 """,
                 [decision_id],
             ).fetchall()
-            current_item = connection.execute(
-                """
-                SELECT payload.payload, item.publication_id::text AS publication_id,
-                       publication.published_at, item.scope
-                FROM app.current_publication_item item
-                JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
-                JOIN app.publication publication ON publication.id = item.publication_id
-                WHERE publication.status = 'published'
-                  AND (
-                    (item.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
-                    OR
-                    (item.scope = 'options-decision-system' AND item.model_name = 'options_decision_candidate')
-                  )
-                  AND payload.payload->>'decision_id' = %s
-                ORDER BY publication.published_at DESC NULLS LAST
-                LIMIT 1
-                """,
-                [str(decision_id)],
-            ).fetchone()
-            if current_item is None:
-                current_item = connection.execute(
-                    """
-                SELECT item.payload, publication.id::text AS publication_id,
-                       publication.published_at, publication.scope
-                FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
-                WHERE publication.status = 'published'
-                  AND (
-                    (publication.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
-                    OR
-                    (publication.scope = 'options-decision-system' AND item.model_name = 'options_decision_candidate')
-                  )
-                  AND item.payload->>'decision_id' = %s
-                ORDER BY publication.published_at DESC NULLS LAST
-                LIMIT 1
-                """,
-                [str(decision_id)],
-            ).fetchone()
+            current_answers = current_option_publication_answers_result(connection)
+            current_matches = [
+                candidate
+                for candidate in current_answers["rows"]
+                if str(
+                    (candidate["payload"] or {}).get("decision_id")
+                    or (candidate["payload"] or {}).get("opportunity_id")
+                    or ""
+                ) == str(decision_id)
+            ]
+            current_item = current_matches[0] if len(current_matches) == 1 else None
         result = _jsonable(dict(row))
         if current_item is not None:
             result.update(_jsonable(dict(current_item["payload"] or {})))
@@ -720,7 +1042,16 @@ class AnalysisRepository:
         else:
             result["current_publication"] = False
             result["execution_ready"] = False
-            result["blockers"] = sorted(set([*list(result.get("blockers") or []), "not_in_current_publication"]))
+            authority = dict(current_answers["authority"])
+            blocker = (
+                "current_option_publication_authority_unavailable"
+                if authority.get("status") != "available"
+                and authority.get("reason") != "current_option_publication_empty"
+                else "not_in_current_publication"
+            )
+            result["blockers"] = sorted(set([*list(result.get("blockers") or []), blocker]))
+            if authority.get("status") != "available":
+                result["authority"] = authority
         result["contract_version"] = 3
         result["evidence"] = [_jsonable(dict(item)) for item in evidence]
         result["alternatives"] = [_jsonable(dict(item)) for item in alternatives]
@@ -737,8 +1068,13 @@ def _prepare_models(models: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[s
         keys: set[str] = set()
         for source in source_rows:
             payload = _jsonable(dict(source))
+            episode_key = str(payload.get("episode_key") or "").strip()
             stable_key = str(
-                payload.get("stable_key") or payload.get("stable_unit_key") or payload.get("decision_id") or payload.get("opportunity_id")
+                f"episode:{episode_key}"
+                if model_name in CURRENT_OPTION_MODEL_NAMES
+                and episode_key
+                else payload.get("stable_key") or payload.get("stable_unit_key")
+                or payload.get("decision_id") or payload.get("opportunity_id")
                 or payload.get("event_id") or payload.get("contract_id") or payload.get("symbol") or _hash(payload)
             )
             if stable_key in keys:

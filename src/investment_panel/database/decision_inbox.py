@@ -141,10 +141,19 @@ class DecisionInboxRepository:
         if after is not None:
             conditions.append("(item.created_at, item.id::text) < (%s, %s)")
             params.extend(after)
-        where = " WHERE " + " AND ".join(conditions) if conditions else ""
         with self.runtime.read() as connection:
             result = connection.execute(
                 f"""
+                WITH active_episode_authority AS MATERIALIZED (
+                    SELECT item.id,
+                           NULLIF(BTRIM(item.payload->>'opportunity_episode_id'), '') AS episode_id,
+                           count(*) OVER (
+                               PARTITION BY item.payload->>'opportunity_episode_id'
+                           ) AS authority_count
+                    FROM app.decision_inbox_item item
+                    WHERE item.status = 'active'
+                      AND NULLIF(BTRIM(item.payload->>'opportunity_episode_id'), '') IS NOT NULL
+                )
                 SELECT item.id::text, item.event_type, item.opportunity_id::text,
                        item.ticket_version, item.paper_order_id::text, item.lane,
                        item.severity, item.status, item.payload, item.created_at,
@@ -158,16 +167,62 @@ class DecisionInboxRepository:
                     WHERE notification.inbox_item_id = item.id
                     ORDER BY notification.created_at DESC LIMIT 1
                 ) outbox ON true
-                {where}
+                LEFT JOIN active_episode_authority authority ON authority.id = item.id
+                WHERE (
+                    item.status <> 'active'
+                    OR item.payload->>'state_transition' IS NULL
+                    OR item.payload->>'state_transition' NOT IN (
+                        'newly_actionable', 'action_changed',
+                        'thesis_invalidated', 'decision_authority_degraded'
+                    )
+                    OR (authority.id IS NOT NULL AND authority.authority_count = 1)
+                )
+                {" AND " + " AND ".join(conditions) if conditions else ""}
                 ORDER BY item.created_at DESC, item.id DESC
                 LIMIT %s
                 """,
                 [*params, bounded_limit + 1],
             ).fetchall()
+            authority_counts = connection.execute(
+                """
+                WITH canonical AS MATERIALIZED (
+                    SELECT NULLIF(BTRIM(item.payload->>'opportunity_episode_id'), '') AS episode_id
+                    FROM app.decision_inbox_item item
+                    WHERE item.status = 'active'
+                      AND item.payload->>'state_transition' IN (
+                          'newly_actionable', 'action_changed',
+                          'thesis_invalidated', 'decision_authority_degraded'
+                      )
+                ), duplicate_episodes AS (
+                    SELECT episode_id
+                    FROM canonical
+                    WHERE episode_id IS NOT NULL
+                    GROUP BY episode_id
+                    HAVING count(*) > 1
+                )
+                SELECT count(*) FILTER (WHERE episode_id IS NULL) AS missing_episode_count,
+                       (SELECT count(*) FROM duplicate_episodes) AS duplicate_episode_count
+                FROM canonical
+                """
+            ).fetchone()
         values = [_row_payload(row) for row in result]
         page = values[:bounded_limit]
         next_cursor = _encode_cursor(page[-1]) if len(values) > bounded_limit and page else None
-        return {"items": page, "count": len(page), "next_cursor": next_cursor}
+        missing_episode_count = int(authority_counts["missing_episode_count"] or 0)
+        duplicate_episode_count = int(authority_counts["duplicate_episode_count"] or 0)
+        authority = {
+            "status": "available" if not missing_episode_count and not duplicate_episode_count else "unavailable",
+            "reason": (
+                "canonical_transition_authority_missing_episode"
+                if missing_episode_count
+                else "canonical_transition_authority_duplicate_episode"
+                if duplicate_episode_count
+                else None
+            ),
+            "missing_episode_count": missing_episode_count,
+            "duplicate_episode_count": duplicate_episode_count,
+        }
+        return {"items": page, "count": len(page), "next_cursor": next_cursor, "authority": authority}
 
     def sync_current_decisions(
         self, rows: list[dict[str, Any]], *, now: datetime | None = None,
@@ -764,7 +819,12 @@ def _current_rows_after_activation(
             row = dict(raw)
         except (TypeError, ValueError):
             continue
-        ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+        aliases = {
+            str(row.get(key) or "").strip().upper()
+            for key in ("ticker", "symbol")
+            if str(row.get(key) or "").strip()
+        }
+        ticker = next(iter(aliases), "") if len(aliases) == 1 else ""
         episode_id = str(row.get("opportunity_episode_id") or "").strip()
         revision = str(row.get("decision_revision") or "").strip()
         policy_version = str(row.get("policy_version") or "").strip()

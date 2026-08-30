@@ -15,10 +15,24 @@ def published_candidates(
     *,
     sleeve_capital: float | None,
 ) -> list[dict[str, Any]]:
+    # The materializer orders contract observations by paper readiness, edge,
+    # and decision id.  A contract ladder is one economic episode, so only
+    # the first ordered observation may become the durable current answer.
+    # Keep the raw rows available for audit, but do not let the publication
+    # writer create several current rows for the same episode.
+    unique_rows: list[Any] = []
+    seen_episodes: set[str] = set()
+    for row in rows:
+        episode_key = str(row.get("episode_key") or "").strip()
+        if episode_key:
+            if episode_key in seen_episodes:
+                continue
+            seen_episodes.add(episode_key)
+        unique_rows.append(row)
     contexts = option_risk_contexts(
         runtime,
-        {str(row["symbol"]) for row in rows},
-        evaluated_at=rows[0]["as_of"] if rows else None,
+        {str(row["symbol"]) for row in unique_rows},
+        evaluated_at=unique_rows[0]["as_of"] if unique_rows else None,
         options_risk_sleeve_capital=sleeve_capital,
     )
     return [
@@ -27,7 +41,7 @@ def published_candidates(
             sleeve_capital=sleeve_capital,
             risk_context=contexts.get(str(row["symbol"]), {}),
         )
-        for row in rows
+        for row in unique_rows
     ]
 
 
@@ -71,9 +85,12 @@ def published_candidate(
             "quote_source": "robinhood_option_history",
             "revisions": {"model": row["model_version"]},
         },
+        episode_key=str(row.get("episode_key") or "").strip() or None,
     )
+    episode_key = str(row.get("episode_key") or "").strip()
     return {
-        "stable_key": str(row["decision_id"]), "decision_id": str(row["decision_id"]),
+        "stable_key": f"episode:{episode_key}" if episode_key else str(row["decision_id"]),
+        "episode_key": episode_key or None, "decision_id": str(row["decision_id"]),
         "instrument_id": int(row["instrument_id"]), "as_of": row["as_of"],
         "paper_state": row["paper_state"], "discovery_lane": row["discovery_lane"],
         "structure": row["structure"], "entry_price": row["entry_price"], "max_loss": row["max_loss"],

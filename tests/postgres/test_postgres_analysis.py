@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 
 from app import dependencies
 from app.routers.options import encode_learning_cursor, router as options_router
-from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.analysis import AnalysisRepository, current_option_publication_result
 from investment_panel.database.actions import ActionRepository
 from investment_panel.core.decision import build_ticker_decision, is_us_market_day
 from investment_panel.database.ingestion import IngestionRepository
@@ -338,6 +338,119 @@ def test_analysis_keeps_features_decisions_and_publication_separate(analysis_con
     assert truth[5].startswith("option-scorecard-truth-v1:")
 
 
+def test_current_option_publication_rejects_duplicate_authoritative_episode(
+    analysis_context,
+) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    run_id = _start_run(repository, "duplicate-episode")
+    decision_ids = [
+        repository.store_option_decision(
+            run_id,
+            decision_key=f"duplicate-episode-{suffix}",
+            instrument_id=analysis_context["instrument_id"],
+            contract_id=analysis_context["contract_id"],
+            snapshot_id=analysis_context["snapshot_id"],
+            quote_observed_at=analysis_context["observed_at"],
+            state="SETUP",
+            score=80,
+            rank=rank,
+            inputs={"rank": rank},
+            details={"quality_status": "complete", "structure": "long_call"},
+        )
+        for rank, suffix in enumerate(("one", "two"), start=1)
+    ]
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(
+        run_id,
+        "options-radar",
+        {
+            "option_radar_opportunity": [
+                {"decision_id": str(decision_id), "symbol": "NVDA"}
+                for decision_id in decision_ids
+            ]
+        },
+    )
+
+    assert repository.publication_rows("options-radar", "option_radar_opportunity") == []
+
+
+def test_current_option_publication_rejects_conflicting_payload_identity(analysis_context) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    run_id = _start_run(repository, "conflicting-option-identity")
+    decision_id = repository.store_option_decision(
+        run_id,
+        decision_key="conflicting-option-identity",
+        instrument_id=analysis_context["instrument_id"],
+        contract_id=analysis_context["contract_id"],
+        snapshot_id=analysis_context["snapshot_id"],
+        quote_observed_at=analysis_context["observed_at"],
+        state="SETUP",
+        score=80,
+        rank=1,
+        inputs={"rank": 1},
+        details={"quality_status": "complete", "structure": "long_call"},
+    )
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(
+        run_id,
+        "options-radar",
+        {"option_radar_opportunity": [{"decision_id": str(decision_id), "symbol": "MSFT"}]},
+    )
+
+    assert repository.publication_rows("options-radar", "option_radar_opportunity") == []
+
+
+def test_current_option_publication_rejects_mixed_duplicate_projection(analysis_context) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    run_id = _start_run(repository, "mixed-duplicate-episode")
+    decision_ids = [
+        repository.store_option_decision(
+            run_id,
+            decision_key=f"mixed-duplicate-episode-{suffix}",
+            instrument_id=analysis_context["instrument_id"],
+            contract_id=analysis_context["contract_id"],
+            snapshot_id=analysis_context["snapshot_id"],
+            quote_observed_at=analysis_context["observed_at"],
+            state="SETUP",
+            score=80,
+            rank=rank,
+            inputs={"rank": rank},
+            details={"quality_status": "complete", "structure": "long_call"},
+        )
+        for rank, suffix in enumerate(("one", "two", "unique"), start=1)
+    ]
+    repository.finish_run(run_id, "succeeded")
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.decision SET episode_key = %s WHERE id = %s",
+            ["qqq:unique-episode", decision_ids[-1]],
+        )
+    repository.publish(
+        run_id,
+        "options-radar",
+        {
+            "option_radar_opportunity": [
+                {"stable_key": f"mixed-row-{index}", "decision_id": str(decision_id), "symbol": "NVDA"}
+                for index, decision_id in enumerate(decision_ids, start=1)
+            ]
+        },
+    )
+
+    with runtime.read() as connection:
+        result = current_option_publication_result(
+            connection,
+            scope="options-radar",
+            model_name="option_radar_opportunity",
+        )
+
+    assert result["rows"] == []
+    assert result["authority"]["status"] == "unavailable"
+    assert result["authority"]["reason"] == "current_option_duplicate_episode_authority"
+    assert result["authority"]["source_row_count"] == 3
+    assert result["authority"]["returned_row_count"] == 1
+
+
 def test_opportunity_episode_persists_ticker_and_option_expressions(analysis_context) -> None:
     runtime: DatabaseRuntime = analysis_context["runtime"]
     with runtime.transaction() as connection:
@@ -392,6 +505,75 @@ def test_opportunity_episode_persists_ticker_and_option_expressions(analysis_con
     assert row["opportunity_episode_id"] == decision.opportunity_episode.episode_id
     assert row["opportunity_cutoff"] == decision.opportunity_episode.cutoff
     assert row["opportunity_episode"]["decision_revision"] == decision.decision_revision
+
+
+def test_ticker_decision_latest_adapts_and_rejects_legacy_portfolio_impact_rows(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    with runtime.transaction() as connection:
+        connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('LEGACY', 'Legacy Test', 'equity')"
+        )
+    decision = build_ticker_decision(
+        "LEGACY",
+        {
+            "quotes": [{
+                "symbol": "LEGACY", "price": 100,
+                "available_at": "2026-07-11T12:00:00Z", "confirmed": True,
+            }],
+            "portfolio_summary": [{
+                "net_liquidation": 100_000,
+                "available_at": "2026-07-11T12:00:00Z",
+            }],
+            "decision_queue": [{
+                "symbol": "LEGACY", "stance": "BULLISH", "available_at": "2026-07-11T12:00:00Z",
+            }],
+        },
+        as_of=datetime(2026, 7, 11, 12, 15, tzinfo=UTC),
+    )
+    repository = TickerDecisionRepository(runtime)
+    repository.publish(decision)
+
+    with runtime.transaction() as connection:
+        row = connection.execute(
+            "SELECT portfolio_impacts FROM analysis.ticker_decision WHERE decision_revision = %s",
+            [decision.decision_revision],
+        ).fetchone()
+        legacy_impacts = {
+            kind: {**impact, "contract_version": "portfolio-impact.v1"}
+            for kind, impact in dict(row["portfolio_impacts"]).items()
+        }
+        for impact in legacy_impacts.values():
+            impact.pop("ticker", None)
+        connection.execute(
+            "UPDATE analysis.ticker_decision SET portfolio_impacts = %s::jsonb WHERE decision_revision = %s",
+            [Jsonb(legacy_impacts), decision.decision_revision],
+        )
+
+    replay = repository.latest("LEGACY")
+    assert replay is not None
+    assert all(impact.ticker == "LEGACY" for impact in replay.portfolio_impacts.values())
+
+    ambiguous = {kind: dict(impact) for kind, impact in legacy_impacts.items()}
+    cash = dict(ambiguous["CASH"])
+    before = dict(cash["portfolio_before"])
+    before.update({"symbol": "LEGACY", "instrument_symbol": "OTHER"})
+    cash["portfolio_before"] = before
+    ambiguous["CASH"] = cash
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.ticker_decision SET portfolio_impacts = %s::jsonb WHERE decision_revision = %s",
+            [Jsonb(ambiguous), decision.decision_revision],
+        )
+    assert repository.latest("LEGACY") is None
+
+    mismatched_version = {kind: dict(impact) for kind, impact in legacy_impacts.items()}
+    mismatched_version["CASH"]["contract_version"] = "portfolio-impact.v0"
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.ticker_decision SET portfolio_impacts = %s::jsonb WHERE decision_revision = %s",
+            [Jsonb(mismatched_version), decision.decision_revision],
+        )
+    assert repository.latest("LEGACY") is None
 
 
 def test_publication_validation_failure_never_exposes_partial_state(analysis_context, postgres_dsn: str) -> None:

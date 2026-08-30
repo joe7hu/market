@@ -166,7 +166,7 @@ def _paper_plan(ticker: str, cutoff: datetime) -> TradePlan:
     )
     identity = trade_expression_identity(expression)
     impact = PortfolioImpact(
-        impact_id=f"impact:{ticker}", opportunity_episode_id=f"episode:{ticker}",
+        impact_id=f"impact:{ticker}", ticker=ticker, opportunity_episode_id=f"episode:{ticker}",
         expression_kind=ExpressionKind.STOCK, expression_identity=identity,
         decision_revision=f"revision:{ticker}", risk_policy_version=f"policy:{ticker}",
         market_snapshot_id=f"snapshot:{ticker}",
@@ -605,6 +605,72 @@ def test_decision_inbox_rejects_invalid_current_rows_and_duplicate_authority(
         result = inbox.sync_current_decisions([*invalid, duplicate, duplicate_other], now=reference + timedelta(minutes=2))
         assert result == _zero_transitions()
         assert inbox.rows()["items"] == []
+    finally:
+        runtime.close()
+
+
+def test_decision_inbox_hides_duplicate_active_episode_answers(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    try:
+        for revision, dedupe_key in (("revision-1", "duplicate-inbox-1"), ("revision-2", "duplicate-inbox-2")):
+            inbox.emit(
+                event_type="ready",
+                lane="ticker",
+                enqueue_telegram=False,
+                dedupe_key=dedupe_key,
+                payload={
+                    "ticker": "DUPINBOX",
+                    "symbol": "DUPINBOX",
+                    "opportunity_episode_id": "episode:duplicate-inbox",
+                    "decision_revision": revision,
+                    "state_transition": "newly_actionable",
+                },
+            )
+
+        assert inbox.rows()["items"] == []
+    finally:
+        runtime.close()
+
+
+def test_decision_inbox_hides_active_canonical_answer_without_episode_identity(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    try:
+        inbox.emit(
+            event_type="ready",
+            lane="ticker",
+            enqueue_telegram=False,
+            dedupe_key="missing-canonical-episode",
+            payload={
+                "ticker": "LEGACY",
+                "state": "ACTIONABLE",
+                "state_transition": "newly_actionable",
+            },
+        )
+        inbox.emit(
+            event_type="paper_filled",
+            lane="ticker",
+            enqueue_telegram=False,
+            dedupe_key="lifecycle-without-episode",
+            payload={"ticker": "LEGACY", "state_transition": "paper_filled"},
+        )
+
+        result = inbox.rows()
+
+        assert [item["payload"]["state_transition"] for item in result["items"]] == ["paper_filled"]
+        assert result["authority"] == {
+            "status": "unavailable",
+            "reason": "canonical_transition_authority_missing_episode",
+            "missing_episode_count": 1,
+            "duplicate_episode_count": 0,
+        }
     finally:
         runtime.close()
 

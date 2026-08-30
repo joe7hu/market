@@ -249,8 +249,23 @@ def test_options_candidate_fill_basis_is_string_for_both_api_routes(
         "option_type": "call",
         "fill_assumption": fill_assumption,
     }
+    authority_row = {
+        "payload": {"decision_id": "decision-1", "symbol": "QQQ"},
+        "publication_id": "publication-1",
+        "published_at": None,
+        "rank": 1,
+        "stable_key": "episode:1",
+        "authoritative_decision_id": "decision-1",
+        "episode_key": "episode:1",
+        "source_row_count": 1,
+        "authoritative_row_count": 1,
+        "valid_row_count": 1,
+        "episode_authority_count": 1,
+        "row_valid": True,
+    }
     responses = iter([
         SimpleNamespace(fetchone=lambda: {"id": "run-1", "summary": {}, "finished_at": None}),
+        SimpleNamespace(fetchall=lambda: [authority_row]),
         SimpleNamespace(fetchone=lambda: {"count": 1}),
         SimpleNamespace(fetchall=lambda: [candidate_row]),
     ])

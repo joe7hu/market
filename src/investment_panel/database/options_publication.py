@@ -292,7 +292,7 @@ def publication_models(
             SELECT decision.id::text AS opportunity_id,
                    decision.id::text AS candidate_event_id,
                    decision.id::text AS event_id, instrument.symbol,
-                   instrument.symbol AS ticker, decision.state, decision.rank,
+                   instrument.symbol AS ticker, decision.episode_key, decision.state, decision.rank,
                    run.input_cutoff AS run_input_cutoff,
                    decision.score, option_decision.tier, option_decision.structure,
                    option_decision.entry_price, option_decision.exit_cost_estimate,
@@ -526,7 +526,9 @@ def publication_models(
         row.update(ticket_recommendation_fields(row))
         row["decision_truth"] = build_options_decision_truth(row)
     actionable = _research_order(_shortlist(_prefer_current_data([
-        row for row in all_rows if row.get("state") != "REJECTED"
+        row for row in all_rows
+        if row.get("state") != "REJECTED"
+        and str(row.get("episode_key") or "").strip()
     ])))
     candidate_changes = candidate_set_changes(actionable, previous_opportunities or [])
     primary_by_ticker: dict[str, dict[str, Any]] = {}
@@ -752,6 +754,7 @@ def _add_contract_fields(
                     "expression": row.get("thesis_expression_id"),
                 },
             },
+            episode_key=str(row.get("episode_key") or "").strip() or None,
         )
         row["ticket"] = ticket
         row["policy_version"] = ticket["policy_version"]
@@ -786,9 +789,14 @@ def _add_contract_fields(
 
 
 def _shortlist(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    best: dict[tuple[str, str], dict[str, Any]] = {}
+    best: dict[tuple[str, ...], dict[str, Any]] = {}
     for row in rows:
-        key = (str(row["ticker"]), str(row["structure"]))
+        episode_key = str(row.get("episode_key") or "").strip()
+        key = (
+            ("episode", episode_key)
+            if episode_key
+            else ("ticker_structure", str(row["ticker"]), str(row["structure"]))
+        )
         current = best.get(key)
         if current is None or _rank_key(row) > _rank_key(current):
             best[key] = row

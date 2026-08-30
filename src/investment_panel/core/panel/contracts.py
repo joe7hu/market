@@ -332,6 +332,7 @@ TICKER_INITIAL_TABLES = (
     "disclosures",
     "ownership_consensus",
     "technicals",
+    "liquidity",
     "options_ticker_signals",
     "options_payoff_scenarios",
     "instrument_state_snapshot",

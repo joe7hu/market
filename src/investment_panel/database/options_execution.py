@@ -96,6 +96,7 @@ class OptionsExecutionRepository:
             sleeve_capital=options_risk_sleeve_capital(self.config),
             **risk_context,
             assignment_policy=candidate.get("assignment_policy"),
+            episode_key=str(candidate.get("episode_key") or "").strip() or None,
             thesis=thesis,
             forecast=forecast,
             provenance={"analysis_evaluated_at": evaluated_at, "revisions": {"model": candidate.get("model_version")}},

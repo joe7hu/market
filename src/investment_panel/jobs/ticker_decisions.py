@@ -97,6 +97,7 @@ def publish(
             # The benchmark is written before the read so its membership is
             # part of the same point-in-time input manifest as the decision.
             seed = build_ticker_decision(symbol, tables, as_of=reference, portfolio_replay=replay)
+            replay_for_decision = _replay_with_seed_stock_evidence(seed, replay)
             if market_state_publication_id is _MARKET_PUBLICATION_ID_UNSET:
                 market_publication = analysis_repository.publication_at_or_before(
                     "market", cutoff=reference
@@ -109,7 +110,9 @@ def publish(
                 )
             snapshot = _market_snapshot_for_decision(market_publication, reference)
             impacts = (
-                portfolio_impacts(seed, snapshot, market_publication["publication_id"], replay)
+                portfolio_impacts(
+                    seed, snapshot, market_publication["publication_id"], replay_for_decision
+                )
                 if snapshot is not None and market_publication is not None
                 else {}
             )
@@ -120,7 +123,7 @@ def publish(
                 market_state_snapshot=snapshot,
                 portfolio_impacts=impacts,
                 risk_policy_snapshot=seed.risk_policy_snapshot,
-                portfolio_replay=replay,
+                portfolio_replay=replay_for_decision,
             )
             records.append({"decision": decision, "tables": tables})
         except Exception as exc:  # one ticker cannot block the universe
@@ -532,6 +535,18 @@ def _finite_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if number == number and abs(number) != float("inf") else None
+
+
+def _replay_with_seed_stock_evidence(seed: Any, replay: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the cutoff-bounded evidence copy created by the seed decision."""
+
+    impact = seed.portfolio_impacts.get(ExpressionKind.STOCK)
+    enriched = impact.portfolio_before if impact is not None else None
+    if isinstance(enriched, Mapping) and "stock_evidence" in enriched:
+        replay = dict(enriched)
+        replay.pop("stock_impact", None)
+        return replay
+    return replay
 
 
 def portfolio_impacts(

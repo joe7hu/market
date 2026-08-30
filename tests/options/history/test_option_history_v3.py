@@ -530,6 +530,37 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         assert neutral_brief["readiness"]["thesis"]["direction"] == "neutral"
         assert neutral_brief["readiness"]["thesis"]["blocker"] == "thesis_direction_required"
         assert neutral_brief["readiness"]["next_required_action"] == "wait_for_directional_qqq_thesis"
+        with runtime.transaction() as connection:
+            duplicate = connection.execute(
+                """
+                SELECT item.bundle_id, item.instrument_id, item.content_hash
+                FROM app.publication_bundle_item item
+                JOIN app.publication publication ON publication.bundle_id = item.bundle_id
+                WHERE publication.scope = 'options-decision-system'
+                  AND publication.status = 'published'
+                  AND item.model_name = 'options_decision_candidate'
+                ORDER BY item.rank LIMIT 1
+                """
+            ).fetchone()
+            assert duplicate is not None
+            connection.execute(
+                """
+                INSERT INTO app.publication_bundle_item
+                    (bundle_id, model_name, stable_key, rank, instrument_id, content_hash)
+                VALUES (%s, 'options_decision_candidate', 'injected-duplicate', 999, %s, %s)
+                """,
+                [duplicate["bundle_id"], duplicate["instrument_id"], duplicate["content_hash"]],
+            )
+        blocked_candidates = repository.candidates(symbol="QQQ")
+        assert blocked_candidates["items"] == []
+        assert blocked_candidates["authority"]["status"] == "unavailable"
+        assert blocked_candidates["authority"]["reason"] == "current_option_duplicate_episode_authority"
+        blocked_brief = repository.decision_brief(symbol="QQQ", lane="thesis")
+        assert blocked_brief["strongest_candidate"] is None
+        assert blocked_brief["authority"]["reason"] == "current_option_duplicate_episode_authority"
+        assert blocked_brief["decision_truth"]["blockers"] == [
+            "current_option_duplicate_episode_authority"
+        ]
     finally:
         runtime.close()
 

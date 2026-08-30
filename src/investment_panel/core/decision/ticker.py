@@ -17,6 +17,8 @@ from typing import Any, Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from investment_panel.core.decision.constants import SYMBOL_RE
+from investment_panel.core.instruments import DEFAULT_WATCHLIST, normalize_symbol
 from investment_panel.core.risk_policy import compile_risk_policy_snapshot
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 from investment_panel.core.decision.resolution import (
@@ -35,7 +37,44 @@ TRADE_EXPRESSION_CONTRACT_VERSION = "trade-expression.v1"
 TRADE_PLAN_CONTRACT_VERSION = "trade-plan.v1"
 OUTCOME_ATTRIBUTION_CONTRACT_VERSION = "outcome-attribution.v1"
 OUTCOME_ATTRIBUTION_EVALUATION_VERSION = "ticker-outcome-attribution-v1"
+PORTFOLIO_IMPACT_CONTRACT_VERSION = "portfolio-impact.v1"
 _CONTEXT_UNSET = object()
+_INSTRUMENT_IDENTITY_KEYS = ("ticker", "symbol", "instrument_symbol")
+
+
+def _identity_aliases(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        return ()
+    aliases: list[tuple[str, str]] = []
+    for key in _INSTRUMENT_IDENTITY_KEYS:
+        raw = value.get(key)
+        if raw is None:
+            continue
+        rendered = str(raw).strip()
+        if rendered:
+            aliases.append((key, normalize_symbol(rendered)))
+    return tuple(aliases)
+
+
+def _target_identity_aliases(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        return ()
+    aliases = list(_identity_aliases(value))
+    aliases.extend(_identity_aliases(value.get("stock_impact")))
+    return tuple(aliases)
+
+
+def _all_portfolio_impact_identity_aliases(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        return ()
+    aliases = list(_target_identity_aliases(value))
+    for key in ("portfolio_before", "portfolio_after"):
+        aliases.extend(_target_identity_aliases(value.get(key)))
+    return tuple(aliases)
+
+
+def _identity_aliases_conflict(aliases: Iterable[tuple[str, str]]) -> bool:
+    return len({identity for _, identity in aliases}) > 1
 
 
 class Stance(StrEnum):
@@ -441,8 +480,9 @@ class PortfolioImpact(BaseModel):
 
     model_config = ConfigDict(extra="allow", frozen=True)
 
-    contract_version: str = "portfolio-impact.v1"
+    contract_version: str = PORTFOLIO_IMPACT_CONTRACT_VERSION
     impact_id: str = Field(min_length=1)
+    ticker: str = Field(min_length=1)
     opportunity_episode_id: str = Field(min_length=1)
     expression_kind: ExpressionKind
     expression_identity: str = Field(min_length=1)
@@ -454,6 +494,19 @@ class PortfolioImpact(BaseModel):
     input_lineage: tuple[InputLineage, ...] = ()
     portfolio_before: dict[str, Any] = Field(default_factory=dict)
     portfolio_after: dict[str, Any] = Field(default_factory=dict)
+    position_weight_before: float | None = None
+    position_weight_after: float | None = None
+    gross_exposure_before: float | None = None
+    gross_exposure_after: float | None = None
+    net_exposure_before: float | None = None
+    net_exposure_after: float | None = None
+    symbol_concentration_delta: float | None = None
+    sector_concentration_delta: float | None = None
+    beta_delta: float | None = None
+    correlation_cluster_delta: float | None = None
+    planned_loss: float | None = Field(default=None, ge=0)
+    adv_participation: float | None = Field(default=None, ge=0)
+    days_to_exit: float | None = Field(default=None, ge=0)
     marginal_risk: float | None = None
     diversification_benefit: float | None = None
     risk_budget_consumed: float | None = None
@@ -463,6 +516,9 @@ class PortfolioImpact(BaseModel):
     factor_exposure: dict[str, Any] | None = None
     greeks: dict[str, Any] | None = None
     liquidity: dict[str, Any] | None = None
+    cash_comparator: dict[str, Any] | None = None
+    top_alternative: str | None = None
+    funding_source_or_position_to_trim: str | None = None
     availability: str = "unavailable"
     availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
@@ -481,6 +537,10 @@ class PortfolioImpact(BaseModel):
     def compose(cls, **kwargs: Any) -> "PortfolioImpact":
         return compose_portfolio_impact(**kwargs)
 
+    @classmethod
+    def from_legacy(cls, value: Any, *, ticker: str) -> "PortfolioImpact":
+        return _portfolio_impact_from_legacy(value, ticker=ticker)
+
     @model_validator(mode="before")
     @classmethod
     def normalize_aliases(cls, value: Any) -> Any:
@@ -495,26 +555,44 @@ class PortfolioImpact(BaseModel):
         }.items():
             if new not in result and old in result:
                 result[new] = result[old]
+        if _identity_aliases_conflict(_target_identity_aliases(result)):
+            raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
+        if isinstance(result.get("ticker"), str):
+            result["ticker"] = normalize_symbol(result["ticker"])
         return result
 
     @model_validator(mode="after")
     def enforce_cutoff(self) -> "PortfolioImpact":
         if self.cutoff.tzinfo is None:
             raise ValueError("portfolio impact cutoff must be timezone-aware")
+        target_ticker = normalize_symbol(self.ticker)
+        if SYMBOL_RE.fullmatch(target_ticker) is None:
+            raise ValueError("portfolio impact ticker must be a valid target ticker")
         cutoff = _utc(self.cutoff)
         for lineage in self.input_lineage:
             if _utc(lineage.available_at) > cutoff:
                 raise ValueError("portfolio impact lineage cannot be newer than its cutoff")
+        before = self.portfolio_before
+        after = self.portfolio_after
+        container_aliases = tuple(
+            alias
+            for source in (before, after)
+            for alias in _target_identity_aliases(source)
+        )
+        if _identity_aliases_conflict(container_aliases):
+            raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
+        if any(identity != target_ticker for _, identity in container_aliases):
+            raise ValueError("portfolio impact requires a matching target ticker across containers")
         if self.availability not in {"available", "unavailable"}:
             raise ValueError("portfolio impact availability must be available or unavailable")
+        if self.availability == "available" and self.availability_status is not AvailabilityStatus.AVAILABLE:
+            raise ValueError("available portfolio impacts require available evidence status")
         if self.availability == "unavailable":
             if not self.blockers:
                 raise ValueError("unavailable portfolio impacts require blockers")
             return self
         if self.blockers:
             raise ValueError("available portfolio impacts cannot have blockers")
-        before = self.portfolio_before
-        after = self.portfolio_after
         book_identity = str(before.get("book_identity") or "")
         if (
             not book_identity
@@ -533,6 +611,82 @@ class PortfolioImpact(BaseModel):
                 or self.liquidity != {"status": "not_applicable"}
             ):
                 raise ValueError("CASH portfolio impact must be exact zero change")
+        elif self.expression_kind is ExpressionKind.STOCK:
+            required = (
+                self.position_weight_before,
+                self.position_weight_after,
+                self.gross_exposure_before,
+                self.gross_exposure_after,
+                self.net_exposure_before,
+                self.net_exposure_after,
+                self.planned_loss,
+                self.adv_participation,
+                self.days_to_exit,
+                self.sector_concentration_delta,
+                self.beta_delta,
+                self.correlation_cluster_delta,
+            )
+            if any(value is None for value in required):
+                raise ValueError("available stock portfolio impacts require complete evidence")
+            evidence = before.get("stock_evidence")
+            if not isinstance(evidence, Mapping):
+                raise ValueError("available stock portfolio impacts require stock evidence")
+            positions = before.get("positions") or ()
+            btc_required = _stock_btc_scenarios_required(
+                evidence,
+                positions,
+                target_ticker,
+                portfolio_before=before,
+            )
+            scenario_pnl = _stock_scenario_pnl(
+                evidence,
+                btc_required=btc_required,
+                largest_holding=_stock_largest_holding(positions),
+            )
+            if scenario_pnl is None or self.scenario_pnl != scenario_pnl:
+                raise ValueError("available stock portfolio impacts require complete stress scenarios")
+            budget_available, budget_consumed = _stock_risk_budget(evidence)
+            if (
+                budget_available is None
+                or budget_consumed is None
+                or self.risk_budget_consumed is None
+                or self.marginal_risk is None
+                or not math.isclose(self.risk_budget_consumed, budget_consumed, rel_tol=1e-9, abs_tol=1e-6)
+                or not math.isclose(self.marginal_risk, budget_consumed, rel_tol=1e-9, abs_tol=1e-6)
+                or not math.isclose(self.planned_loss, budget_consumed, rel_tol=1e-9, abs_tol=1e-6)
+                or budget_available < budget_consumed
+            ):
+                raise ValueError("available stock portfolio impacts require used risk-budget evidence")
+            liquidity = self.liquidity
+            liquidity_status = str(_pick(liquidity or {}, "status", "availability") or "").lower()
+            adv = _number(_pick(liquidity or {}, "avg_dollar_volume", "average_dollar_volume", "adv"))
+            participation_limit = _number(
+                _pick(liquidity or {}, "adv_participation_limit", "max_adv_participation")
+            )
+            if (
+                not isinstance(liquidity, Mapping)
+                or liquidity_status != "available"
+                or adv is None
+                or adv <= 0
+                or participation_limit is None
+                or participation_limit <= 0
+                or participation_limit > 1
+                or self.adv_participation > participation_limit
+            ):
+                raise ValueError("available stock portfolio impacts require usable liquidity evidence")
+            cash = self.cash_comparator
+            cash_status = str(_pick(cash or {}, "status", "availability") or "").lower()
+            if (
+                not isinstance(cash, Mapping)
+                or cash_status != "available"
+                or not any(_number(cash.get(key)) is not None for key in _STOCK_CASH_COMPARISON_KEYS)
+            ):
+                raise ValueError("available stock portfolio impacts require a cash comparison")
+            top_alternative = _stock_top_alternative(evidence, cash, before)
+            if top_alternative is None or self.top_alternative != top_alternative:
+                raise ValueError("available stock portfolio impacts require a top alternative")
+            if _stock_evidence_label(self.funding_source_or_position_to_trim) is None:
+                raise ValueError("available stock portfolio impacts require funding or trim evidence")
         else:
             raise ValueError("non-CASH portfolio impacts require unsupported institutional evidence")
         return self
@@ -822,6 +976,8 @@ class TradePlan(BaseModel):
                 raise ValueError("trade plan portfolio impact id must match the impact")
             if self.portfolio_impact.opportunity_episode_id != self.opportunity_episode_id:
                 raise ValueError("trade plan portfolio impact episode must match the plan")
+            if normalize_symbol(self.portfolio_impact.ticker) != normalize_symbol(self.ticker):
+                raise ValueError("trade plan portfolio impact ticker must match the plan")
             if self.portfolio_impact.decision_revision != self.decision_revision:
                 raise ValueError("trade plan portfolio impact revision must match the plan")
             if self.portfolio_impact.risk_policy_version != self.policy_version:
@@ -1692,6 +1848,8 @@ class TickerDecision(BaseModel):
                 )
             if impact.opportunity_episode_id != self.opportunity_episode_id:
                 raise ValueError("portfolio impact episode must match the ticker decision")
+            if normalize_symbol(impact.ticker) != normalize_symbol(self.ticker):
+                raise ValueError("portfolio impact ticker must match the ticker decision")
             if impact.expression_kind is not kind:
                 raise ValueError("portfolio impact expression kind must match its key")
             if impact.decision_revision != self.decision_revision:
@@ -2389,6 +2547,7 @@ def _missing_portfolio_impact(
     identity = _expression_identity_for(expression, kind, episode.ticker, episode.decision_revision)
     return PortfolioImpact(
         impact_id=f"missing-impact:{episode.episode_id}:{kind.value}",
+        ticker=episode.ticker,
         opportunity_episode_id=episode.episode_id,
         expression_kind=kind,
         expression_identity=identity,
@@ -2406,6 +2565,7 @@ def _missing_portfolio_impact(
 def _portfolio_impact_id(impact: PortfolioImpact) -> str:
     payload = {
         "book_identity": impact.portfolio_before.get("book_identity"),
+        "ticker": impact.ticker,
         "opportunity_episode_id": impact.opportunity_episode_id,
         "expression_kind": impact.expression_kind.value,
         "expression_identity": impact.expression_identity,
@@ -2417,15 +2577,84 @@ def _portfolio_impact_id(impact: PortfolioImpact) -> str:
         "portfolio_before": impact.portfolio_before,
         "portfolio_after": impact.portfolio_after,
         "values": {
+            "position_weight_before": impact.position_weight_before,
+            "position_weight_after": impact.position_weight_after,
+            "gross_exposure_before": impact.gross_exposure_before,
+            "gross_exposure_after": impact.gross_exposure_after,
+            "net_exposure_before": impact.net_exposure_before,
+            "net_exposure_after": impact.net_exposure_after,
+            "symbol_concentration_delta": impact.symbol_concentration_delta,
+            "sector_concentration_delta": impact.sector_concentration_delta,
+            "beta_delta": impact.beta_delta,
+            "correlation_cluster_delta": impact.correlation_cluster_delta,
+            "planned_loss": impact.planned_loss,
+            "adv_participation": impact.adv_participation,
+            "days_to_exit": impact.days_to_exit,
             "marginal_risk": impact.marginal_risk,
             "risk_budget_consumed": impact.risk_budget_consumed,
             "scenario_pnl": impact.scenario_pnl,
             "factor_exposure": impact.factor_exposure,
             "greeks": impact.greeks,
             "liquidity": impact.liquidity,
+            "cash_comparator": impact.cash_comparator,
+            "top_alternative": impact.top_alternative,
+            "position_to_trim_or_replace": impact.position_to_trim_or_replace,
+            "funding_source_or_position_to_trim": impact.funding_source_or_position_to_trim,
         },
     }
     return f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
+
+
+def _portfolio_impact_from_legacy(value: Any, *, ticker: str) -> PortfolioImpact:
+    """Adapt only an explicitly versioned persisted v1 row missing its target ticker."""
+
+    if isinstance(value, PortfolioImpact):
+        return value
+    raw = value.model_dump(mode="python") if isinstance(value, BaseModel) else dict(value or {})
+    if not isinstance(raw, Mapping):
+        return PortfolioImpact.model_validate(raw)
+    raw = dict(raw)
+    if raw.get("ticker") is not None and str(raw["ticker"]).strip():
+        return PortfolioImpact.model_validate(raw)
+    if raw.get("contract_version") != PORTFOLIO_IMPACT_CONTRACT_VERSION:
+        raise ValueError("legacy portfolio impact ticker inference requires portfolio-impact.v1")
+    target_ticker = normalize_symbol(str(ticker))
+    if SYMBOL_RE.fullmatch(target_ticker) is None:
+        raise ValueError("legacy portfolio impact ticker inference requires a valid parent ticker")
+    aliases = _all_portfolio_impact_identity_aliases(raw)
+    if _identity_aliases_conflict(aliases):
+        raise ValueError("portfolio impact contains conflicting ticker/symbol/instrument_symbol aliases")
+    if any(identity != target_ticker for _, identity in aliases):
+        raise ValueError("legacy portfolio impact aliases must match the parent ticker")
+    raw["ticker"] = target_ticker
+    return PortfolioImpact.model_validate(raw)
+
+
+def portfolio_impact_from_persisted(value: Any, *, ticker: str) -> Any:
+    if isinstance(value, Mapping) and (
+        value.get("ticker") is None or not str(value.get("ticker")).strip()
+    ):
+        return PortfolioImpact.from_legacy(value, ticker=ticker)
+    return value
+
+
+def portfolio_impacts_from_persisted(value: Any, *, ticker: str) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    return {
+        kind: portfolio_impact_from_persisted(impact, ticker=ticker)
+        for kind, impact in value.items()
+    }
+
+
+def trade_plan_from_persisted(value: Any, *, ticker: str) -> Any:
+    if not isinstance(value, Mapping) or not isinstance(value.get("portfolio_impact"), Mapping):
+        return value
+    result = dict(value)
+    result["portfolio_impact"] = portfolio_impact_from_persisted(
+        result["portfolio_impact"], ticker=ticker,
+    )
+    return result
 
 
 def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) -> MarketStateSnapshot:
@@ -2544,6 +2773,646 @@ def _portfolio_book_blockers(replay: Mapping[str, Any], cutoff: datetime) -> lis
     return list(dict.fromkeys(blockers))
 
 
+_STOCK_SCENARIO_NAMES = ("spy", "qqq", "sector", "symbol", "earnings_gap", "liquidity")
+_STOCK_BTC_SCENARIO_NAMES = ("btc",)
+_STOCK_SCENARIO_SHOCKS = {
+    "spy": (-5.0, -10.0),
+    "qqq": (-5.0, -10.0),
+    "sector": (-10.0,),
+    "symbol": (-20.0, -30.0),
+    "btc": (-15.0,),
+}
+_STOCK_BTC_IDENTITIES = frozenset({"BTC-USD", "BITCOIN", "BITCOIN-USD"})
+_STOCK_CASH_COMPARISON_KEYS = (
+    "expected_return", "expected_pnl", "cash_return", "cash_yield", "return",
+    "pnl", "opportunity_cost", "expected_value",
+)
+_STOCK_PLACEHOLDER_LABELS = {"", "cash comparator", "cash_comparator", "none", "unknown", "tbd"}
+_STOCK_TOP_ALTERNATIVE_PLACEHOLDERS = _STOCK_PLACEHOLDER_LABELS | {
+    "cash", "usd", "n/a", "na", "not available", "not_applicable",
+}
+
+
+def _stock_scenario_key(value: Any) -> str:
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+# The built-in universe is the canonical configured catalog.  Other symbols
+# must arrive from a catalog/position row carrying an instrument identity.
+_STOCK_CATALOG_TICKERS = frozenset(
+    normalize_symbol(str(item.get("symbol") or ""))
+    for item in DEFAULT_WATCHLIST
+    if item.get("symbol")
+)
+_STOCK_CRYPTO_SENSITIVE_SYMBOLS = frozenset(
+    normalize_symbol(str(item.get("symbol") or ""))
+    for item in DEFAULT_WATCHLIST
+    if any(
+        token in _stock_scenario_key(item.get(field))
+        for field in ("asset_class", "category", "sector", "industry")
+        for token in ("crypto", "bitcoin", "blockchain", "digital_asset")
+    )
+)
+
+
+def _stock_crypto_signal(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    if any(value.get(key) is True for key in ("crypto_sensitive", "crypto_exposure", "btc_exposure")):
+        return True
+    if any(_number(value.get(key), 0.0) > 0 for key in ("crypto_exposure", "btc_exposure")):
+        return True
+    for key in (
+        "asset_class", "asset_type", "category", "sector", "industry", "theme",
+        "classification", "instrument_type", "instrument_category", "tags",
+    ):
+        candidate = value.get(key)
+        candidates = candidate if isinstance(candidate, (list, tuple, set, frozenset)) else (candidate,)
+        if any(
+            any(token in _stock_scenario_key(item) for token in ("crypto", "bitcoin", "blockchain", "digital_asset"))
+            for item in candidates
+            if item is not None
+        ):
+            return True
+    return False
+
+
+def _stock_btc_scenarios_required(
+    evidence: Mapping[str, Any],
+    positions: Iterable[Any] = (),
+    ticker: str | None = None,
+    *,
+    portfolio_before: Mapping[str, Any] | None = None,
+) -> bool:
+    position_rows = tuple(positions)
+    if any(evidence.get(key) is True for key in ("btc_scenarios_applicable", "btc_scenario_required", "btc_exposure")):
+        return True
+    if _number(evidence.get("btc_exposure"), 0.0) > 0:
+        return True
+    authoritative_sources = (portfolio_before, evidence)
+    candidate_tickers: set[str] = {
+        normalize_symbol(str(ticker))
+    } if ticker else set()
+    for source in authoritative_sources:
+        if not isinstance(source, Mapping):
+            continue
+        candidate_tickers.update(identity for _, identity in _identity_aliases(source))
+        for nested in ("instrument", "target_instrument"):
+            candidate_tickers.update(
+                identity for _, identity in _identity_aliases(source.get(nested))
+            )
+    if candidate_tickers & (_STOCK_BTC_IDENTITIES | _STOCK_CRYPTO_SENSITIVE_SYMBOLS):
+        return True
+    if _stock_crypto_signal(evidence) or _stock_crypto_signal(portfolio_before):
+        return True
+    return any(
+        isinstance(position, Mapping)
+        and (
+            _stock_crypto_signal(position)
+            or bool(_stock_position_identities(position) & _STOCK_BTC_IDENTITIES)
+            or bool(_stock_position_identities(position) & _STOCK_CRYPTO_SENSITIVE_SYMBOLS)
+        )
+        for position in position_rows
+    )
+
+
+def _stock_position_identities(position: Mapping[str, Any]) -> frozenset[str]:
+    return frozenset(identity for _, identity in _identity_aliases(position))
+
+
+def _stock_scenario_magnitudes(value: Mapping[str, Any]) -> tuple[float, ...] | None:
+    raw = _pick(
+        value,
+        "shock_pct", "shock_percent", "shock_percentages", "shocks_pct", "shocks",
+        "magnitude_pct", "magnitude_percent", "shock", "drawdown_pct", "drawdown",
+    )
+    if raw is None:
+        return None
+    if isinstance(raw, Mapping):
+        numeric_keys = [_number(key) for key in raw]
+        raw = list(raw) if all(item is not None for item in numeric_keys) else list(raw.values())
+    elif isinstance(raw, (str, bytes)) or not isinstance(raw, Iterable):
+        raw = (raw,)
+    magnitudes: list[float] = []
+    for item in raw:
+        magnitude = _number(item)
+        if magnitude is None:
+            return None
+        magnitudes.append(magnitude)
+    return tuple(magnitudes)
+
+
+def _stock_pnl_cases(value: Mapping[str, Any]) -> Mapping[Any, Any] | None:
+    raw = _pick(value, "pnl_by_shock", "pnl_by_magnitude", "pnl_by_percent", "pnl_by_pct")
+    if raw is None and isinstance(value.get("pnl"), Mapping):
+        raw = value["pnl"]
+    if raw is None:
+        raw = _pick(value, "pnl_by_scenario", "values")
+    return raw if isinstance(raw, Mapping) else None
+
+
+def _stock_pnl_by_shock(value: Mapping[str, Any]) -> dict[float, float] | None:
+    cases = _stock_pnl_cases(value)
+    if cases is None:
+        return None
+    result: dict[float, float] = {}
+    for raw_shock, raw_pnl in cases.items():
+        shock = _number(raw_shock)
+        pnl = _number(raw_pnl)
+        if shock is None or pnl is None or any(
+            math.isclose(shock, existing, rel_tol=1e-9, abs_tol=1e-9)
+            for existing in result
+        ):
+            return None
+        result[shock] = pnl
+    return result
+
+
+def _stock_numeric_keys_match(values: Mapping[float, Any] | None, expected: tuple[float, ...]) -> bool:
+    return (
+        values is not None
+        and len(values) == len(expected)
+        and all(
+            any(math.isclose(actual, wanted, rel_tol=1e-9, abs_tol=1e-9) for actual in values)
+            for wanted in expected
+        )
+    )
+
+
+def _stock_matches_shocks(value: Mapping[str, Any], expected: tuple[float, ...]) -> bool:
+    actual = _stock_scenario_magnitudes(value)
+    if actual is not None:
+        return (
+            len(actual) == len(expected)
+            and all(
+                math.isclose(left, right, rel_tol=1e-9, abs_tol=1e-9)
+                for left, right in zip(sorted(actual), sorted(expected))
+            )
+        )
+    return _stock_numeric_keys_match(_stock_pnl_by_shock(value), expected)
+
+
+def _stock_has_pnl(value: Any, expected: tuple[float, ...] | None = None) -> bool:
+    if not isinstance(value, Mapping):
+        return _number(value) is not None
+    pnl = _pick(value, "pnl", "pnl_usd", "value")
+    if expected is not None and len(expected) > 1:
+        return _stock_numeric_keys_match(_stock_pnl_by_shock(value), expected)
+    if _number(pnl) is not None:
+        return True
+    if expected is not None:
+        return _stock_numeric_keys_match(_stock_pnl_by_shock(value), expected)
+    pnl_cases = _stock_pnl_cases(value)
+    return isinstance(pnl_cases, Mapping) and bool(pnl_cases) and all(
+        _number(item) is not None for item in pnl_cases.values()
+    )
+
+
+def _stock_largest_holding(positions: Iterable[Any]) -> str | None:
+    candidates: list[tuple[float, str]] = []
+    for position in positions:
+        if not isinstance(position, Mapping):
+            continue
+        symbol = normalize_symbol(str(_pick(position, "symbol", "ticker") or ""))
+        market_value = _number(position.get("market_value"))
+        if symbol and market_value is not None:
+            candidates.append((abs(market_value), symbol))
+    return max(candidates, key=lambda item: (item[0], item[1]))[1] if candidates else None
+
+
+def _stock_earnings_gap_complete(value: Mapping[str, Any], largest_holding: str | None) -> bool:
+    if largest_holding is None:
+        return False
+    holding = normalize_symbol(str(_pick(
+        value,
+        "largest_holding", "largest_holding_symbol", "largest_position", "holding", "position",
+    ) or ""))
+    if not holding or holding != largest_holding:
+        return False
+    marker = _pick(
+        value,
+        "earnings_gap", "earnings_gap_pct", "gap_pct", "gap", "event", "shock_type", "scenario_type",
+    )
+    if marker is None:
+        return False
+    if isinstance(marker, bool):
+        return marker
+    if isinstance(marker, Mapping):
+        return marker.get("applied") is True or _number(_pick(marker, "pct", "percent", "value")) is not None
+    if isinstance(marker, str):
+        return _stock_scenario_key(marker) in {
+            "earnings", "earnings_gap", "earnings_event", "earnings_gap_event",
+        } or _number(marker) is not None
+    return _number(marker) is not None
+
+
+def _stock_has_key(sources: Iterable[Any], keys: tuple[str, ...]) -> bool:
+    return any(isinstance(source, Mapping) and any(key in source for key in keys) for source in sources)
+
+
+def _stock_consistent_number(sources: Iterable[Any], keys: tuple[str, ...]) -> float | None:
+    values: list[float] = []
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for key in keys:
+            if key not in source or source.get(key) is None:
+                continue
+            value = _number(source.get(key))
+            if value is None:
+                return None
+            values.append(value)
+    if not values or not all(
+        math.isclose(value, values[0], rel_tol=1e-9, abs_tol=1e-9) for value in values[1:]
+    ):
+        return None
+    return values[0]
+
+
+def _stock_adv_haircut_present(sources: Iterable[Any]) -> bool:
+    found = False
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("adv_multiplier", "adv_haircut_multiplier", "liquidity_multiplier", "adv_haircut_fraction"):
+            if key not in source or source.get(key) is None:
+                continue
+            value = _number(source.get(key))
+            if value is None or not 0 < value < 1:
+                return False
+            found = True
+        for key in ("adv_haircut_pct", "liquidity_haircut_pct"):
+            if key not in source or source.get(key) is None:
+                continue
+            value = _number(source.get(key))
+            if value is None or not 0 < value < 100:
+                return False
+            found = True
+        for key in ("adv_haircut", "liquidity_haircut"):
+            if key not in source or source.get(key) is None:
+                continue
+            value = _number(source.get(key))
+            if value is None or not 0 < value < 100:
+                return False
+            found = True
+    return found
+
+
+def _stock_liquidity_stress_complete(value: Mapping[str, Any], evidence: Mapping[str, Any]) -> bool:
+    nested = [
+        value.get("spread_slippage"), value.get("execution_cost"), value.get("execution_costs"),
+        evidence.get("spread_slippage"), evidence.get("execution_cost"), evidence.get("execution_costs"),
+        evidence.get("liquidity"),
+    ]
+    sources = (value, evidence, *nested)
+    common_keys = (
+        "spread_slippage_multiplier", "spread_and_slippage_multiplier", "execution_cost_multiplier",
+        "cost_multiplier", "spread_slippage",
+    )
+    spread_keys = ("spread_multiplier", "spread_x", "spread_factor")
+    slippage_keys = ("slippage_multiplier", "slippage_x", "slippage_factor")
+    common = _stock_consistent_number(sources, common_keys)
+    spread = _stock_consistent_number(sources, spread_keys)
+    slippage = _stock_consistent_number(sources, slippage_keys)
+    if (_stock_has_key(sources, common_keys) and common is None) or (
+        _stock_has_key(sources, spread_keys) and spread is None
+    ) or (_stock_has_key(sources, slippage_keys) and slippage is None):
+        return False
+    if spread is None:
+        spread = common
+    if slippage is None:
+        slippage = common
+    if common is not None and (
+        (spread is not None and not math.isclose(spread, common, rel_tol=1e-9, abs_tol=1e-9))
+        or (slippage is not None and not math.isclose(slippage, common, rel_tol=1e-9, abs_tol=1e-9))
+    ):
+        return False
+    return (
+        spread is not None
+        and slippage is not None
+        and math.isclose(spread, 2.0, rel_tol=1e-9, abs_tol=1e-9)
+        and math.isclose(slippage, 2.0, rel_tol=1e-9, abs_tol=1e-9)
+        and _stock_adv_haircut_present(sources)
+    )
+
+
+def _stock_scenario_pnl(
+    evidence: Mapping[str, Any],
+    *,
+    btc_required: bool = False,
+    largest_holding: str | None = None,
+) -> dict[str, Any] | None:
+    raw = evidence.get("stress_scenarios")
+    if raw is None:
+        raw = evidence.get("scenario_pnl")
+    if not isinstance(raw, Mapping):
+        return None
+    required = (*_STOCK_SCENARIO_NAMES, *_STOCK_BTC_SCENARIO_NAMES) if btc_required else _STOCK_SCENARIO_NAMES
+    keys: dict[str, Any] = {}
+    for key in raw:
+        normalized = _stock_scenario_key(key)
+        if normalized in required:
+            if normalized in keys:
+                return None
+            keys[normalized] = key
+    for name in required:
+        key = keys.get(name)
+        if key is None:
+            return None
+        value = raw[key]
+        expected_shocks = _STOCK_SCENARIO_SHOCKS.get(name)
+        if not _stock_has_pnl(value, expected_shocks):
+            return None
+        if expected_shocks is not None and not isinstance(value, Mapping):
+            return None
+        if expected_shocks is not None and not _stock_matches_shocks(value, expected_shocks):
+            return None
+        if name == "earnings_gap":
+            if not isinstance(value, Mapping) or not _stock_earnings_gap_complete(value, largest_holding):
+                return None
+        if name == "liquidity":
+            if not isinstance(value, Mapping) or not _stock_liquidity_stress_complete(value, evidence):
+                return None
+    return dict(raw)
+
+
+def _stock_risk_budget(evidence: Mapping[str, Any]) -> tuple[float | None, float | None]:
+    raw = evidence.get("risk_budget")
+    budget = raw if isinstance(raw, Mapping) else {}
+    available = _number(_pick(budget, "available", "limit", "budget"))
+    consumed = _number(_pick(budget, "consumed", "used", "risk_budget_consumed"))
+    if available is None:
+        available = _number(_pick(evidence, "risk_budget_available", "risk_budget_limit"))
+    if consumed is None:
+        consumed = _number(_pick(evidence, "risk_budget_consumed", "risk_budget_used"))
+    return available, consumed
+
+
+def _stock_evidence_label(value: Any) -> str | None:
+    label = str(value or "").strip()
+    return None if label.lower() in _STOCK_PLACEHOLDER_LABELS else label
+
+
+def _stock_catalog_entry_ticker(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("instrument_id") is None and value.get("catalog_instrument_id") is None:
+        return None
+    ticker = normalize_symbol(str(_pick(value, "ticker", "symbol") or ""))
+    return (
+        ticker
+        if ticker
+        and SYMBOL_RE.fullmatch(ticker) is not None
+        and ticker.lower() not in _STOCK_TOP_ALTERNATIVE_PLACEHOLDERS
+        else None
+    )
+
+
+def _stock_authoritative_catalog_tickers(portfolio_before: Mapping[str, Any] | None = None) -> set[str]:
+    """Return only configured symbols and replay rows with instrument identity."""
+
+    tickers = set(_STOCK_CATALOG_TICKERS)
+    if isinstance(portfolio_before, Mapping):
+        for position in portfolio_before.get("positions") or ():
+            ticker = _stock_catalog_entry_ticker(position)
+            if ticker is not None:
+                tickers.add(ticker)
+    return tickers
+
+
+def _stock_verified_ticker(value: Any, authoritative_tickers: set[str]) -> str | None:
+    candidate = _pick(value, "ticker", "symbol") if isinstance(value, Mapping) else value
+    ticker = normalize_symbol(str(candidate or ""))
+    if (
+        not ticker
+        or SYMBOL_RE.fullmatch(ticker) is None
+        or ticker.lower() in _STOCK_TOP_ALTERNATIVE_PLACEHOLDERS
+    ):
+        return None
+    return ticker if ticker in authoritative_tickers else None
+
+
+def _stock_top_alternative(
+    evidence: Mapping[str, Any],
+    cash_comparator: Mapping[str, Any] | None,
+    portfolio_before: Mapping[str, Any] | None = None,
+) -> str | None:
+    authoritative_tickers = _stock_authoritative_catalog_tickers(portfolio_before)
+    if "top_alternative" in evidence:
+        return _stock_verified_ticker(evidence.get("top_alternative"), authoritative_tickers)
+    if isinstance(cash_comparator, Mapping):
+        for key in ("top_alternative", "alternative"):
+            if key in cash_comparator:
+                return _stock_verified_ticker(cash_comparator.get(key), authoritative_tickers)
+    return None
+
+
+def _stock_funding_evidence(evidence: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    raw = evidence.get("funding_source_or_position_to_trim")
+    trim = _stock_evidence_label(evidence.get("position_to_trim_or_replace"))
+    if isinstance(raw, Mapping):
+        source = _pick(raw, "source", "funding_source", "position_to_trim", "position_to_trim_or_replace", "id")
+        if trim is None:
+            trim = _stock_evidence_label(_pick(raw, "position_to_trim", "position_to_trim_or_replace"))
+    else:
+        source = raw
+    if source is None:
+        raw = evidence.get("funding")
+        if isinstance(raw, Mapping):
+            source = _pick(raw, "source", "funding_source", "position_to_trim", "position_to_trim_or_replace", "id")
+            if trim is None:
+                trim = _stock_evidence_label(_pick(raw, "position_to_trim", "position_to_trim_or_replace"))
+        else:
+            source = raw
+    if source is None:
+        source = _pick(evidence, "funding_source", "position_to_trim_or_replace")
+    return _stock_evidence_label(source), trim
+
+
+def _stock_impact_values(
+    expression: ExpressionDecision,
+    replay: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
+    """Calculate deterministic first-order stock impact from one cutoff book."""
+
+    blockers: list[str] = []
+    positions = [item for item in replay.get("positions", ()) if isinstance(item, Mapping)]
+    nav = float(replay.get("portfolio_value") or 0)
+    entry = expression.entry_range
+    quantity = expression.quantity
+    price = (entry.low + entry.high) / 2 if entry is not None else None
+    if price is None or price <= 0:
+        blockers.append("stock_entry_price_missing")
+    if quantity is None or quantity <= 0:
+        blockers.append("stock_quantity_missing")
+    if nav <= 0:
+        blockers.append("stock_nav_missing")
+    added_value = float(price or 0) * int(quantity or 0)
+    owned = next(
+        (float(item.get("market_value") or 0) for item in positions
+         if str(item.get("symbol") or "").upper() == expression.ticker.upper()),
+        0.0,
+    )
+    before_gross = sum(abs(float(item.get("market_value") or 0)) for item in positions) / nav if nav else 0.0
+    before_net = sum(float(item.get("market_value") or 0) for item in positions) / nav if nav else 0.0
+    after_weight = (owned + added_value) / nav if nav else None
+    after_gross = before_gross + added_value / nav if nav else None
+    after_net = before_net + added_value / nav if nav else None
+    planned_loss = expression.planned_loss
+    if planned_loss is None and expression.max_loss_per_unit is not None and quantity:
+        planned_loss = expression.max_loss_per_unit * quantity
+    evidence = replay.get("stock_evidence")
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    before = {
+        "ticker": expression.ticker,
+        "position_weight": owned / nav if nav else None,
+        "gross_exposure": before_gross,
+        "net_exposure": before_net,
+        "symbol_concentration": owned / nav if nav else None,
+    }
+    after = {
+        "ticker": expression.ticker,
+        "position_weight": after_weight,
+        "gross_exposure": after_gross,
+        "net_exposure": after_net,
+        "symbol_concentration": after_weight,
+    }
+    sector = str(evidence.get("sector") or "").strip() or next(
+        (str(item.get("sector") or "").strip() for item in positions
+         if str(item.get("symbol") or "").upper() == expression.ticker.upper()),
+        "",
+    )
+    sector_delta = None
+    if sector and all(str(item.get("sector") or "").strip() for item in positions):
+        before_sector = sum(
+            float(item.get("market_value") or 0) for item in positions
+            if str(item.get("sector") or "").strip() == sector
+        ) / nav if nav else 0.0
+        sector_delta = added_value / nav if nav else None
+        after["sector_concentration"] = before_sector + (sector_delta or 0.0)
+        before["sector_concentration"] = before_sector
+    else:
+        blockers.append("stock_sector_evidence_missing")
+    beta = _number(evidence.get("beta"))
+    beta_delta = beta * (added_value / nav) if beta is not None and nav else None
+    if beta_delta is None:
+        blockers.append("stock_beta_evidence_missing")
+    btc_required = _stock_btc_scenarios_required(evidence, positions, expression.ticker)
+    stress_scenarios = _stock_scenario_pnl(
+        evidence,
+        btc_required=btc_required,
+        largest_holding=_stock_largest_holding(positions),
+    )
+    if stress_scenarios is None:
+        blockers.append("stock_stress_scenarios_missing")
+    budget_available, budget_consumed = _stock_risk_budget(evidence)
+    if (
+        budget_available is None
+        or budget_consumed is None
+        or budget_available < 0
+        or budget_consumed < 0
+    ):
+        blockers.append("stock_risk_budget_evidence_missing")
+    elif planned_loss is None or not math.isclose(budget_consumed, planned_loss, rel_tol=1e-9, abs_tol=1e-6):
+        blockers.append("stock_risk_budget_use_mismatch")
+    elif budget_available < budget_consumed:
+        blockers.append("stock_risk_budget_exceeded")
+    liquidity_evidence = evidence.get("liquidity")
+    liquidity_evidence = liquidity_evidence if isinstance(liquidity_evidence, Mapping) else {}
+    liquidity_status = str(_pick(liquidity_evidence, "status", "availability") or "").lower()
+    if liquidity_status and liquidity_status != "available":
+        blockers.append("stock_liquidity_unavailable")
+    adv = _number(_pick(liquidity_evidence, "avg_dollar_volume", "average_dollar_volume", "adv"))
+    if adv is None:
+        adv = _number(_pick(evidence, "avg_dollar_volume", "average_dollar_volume", "adv"))
+    adv_participation = added_value / adv if adv and adv > 0 else None
+    if adv_participation is None:
+        blockers.append("stock_adv_evidence_missing")
+    participation_limit = _number(
+        _pick(liquidity_evidence, "adv_participation_limit", "max_adv_participation")
+    )
+    if participation_limit is None:
+        participation_limit = _number(
+            _pick(evidence, "adv_participation_limit", "max_adv_participation")
+        )
+    if participation_limit is None or participation_limit <= 0 or participation_limit > 1:
+        blockers.append("stock_adv_participation_limit_missing")
+    if adv_participation is not None and participation_limit is not None and adv_participation > participation_limit:
+        blockers.append("stock_adv_participation_exceeds_limit")
+    liquidity = None
+    days_to_exit = None
+    if (
+        adv is not None
+        and adv > 0
+        and participation_limit is not None
+        and 0 < participation_limit <= 1
+        and adv_participation is not None
+        and adv_participation <= participation_limit
+        and liquidity_status in {"", "available"}
+    ):
+        liquidity = {
+            **dict(liquidity_evidence),
+            "status": "available",
+            "avg_dollar_volume": adv,
+            "adv_participation_limit": participation_limit,
+            "adv_participation": adv_participation,
+        }
+        days_to_exit = (owned + added_value) / (adv * participation_limit)
+    if not liquidity_evidence and not any(
+        evidence.get(key) is not None
+        for key in ("avg_dollar_volume", "average_dollar_volume", "adv", "adv_participation_limit", "max_adv_participation")
+    ):
+        blockers.append("stock_liquidity_evidence_missing")
+    correlation_delta = _number(evidence.get("correlation_cluster_delta"))
+    if correlation_delta is None:
+        blockers.append("stock_correlation_evidence_missing")
+    cash_comparator = evidence.get("cash_comparator")
+    cash_comparator = dict(cash_comparator) if isinstance(cash_comparator, Mapping) else None
+    cash_status = str(_pick(cash_comparator or {}, "status", "availability") or "").lower()
+    if (
+        cash_comparator is None
+        or cash_status != "available"
+        or not any(_number(cash_comparator.get(key)) is not None for key in _STOCK_CASH_COMPARISON_KEYS)
+    ):
+        blockers.append("stock_cash_comparator_missing")
+        cash_comparator = None
+    funding, trim = _stock_funding_evidence(evidence)
+    if funding is None:
+        blockers.append("stock_funding_evidence_missing")
+    top_alternative = _stock_top_alternative(evidence, cash_comparator, replay)
+    if top_alternative is None:
+        blockers.append("stock_top_alternative_missing")
+    if funding is not None:
+        after["funding_source_or_position_to_trim"] = funding
+    if trim is not None:
+        after["position_to_trim_or_replace"] = trim
+    values = {
+        "position_weight_before": before["position_weight"],
+        "position_weight_after": after["position_weight"],
+        "gross_exposure_before": before["gross_exposure"],
+        "gross_exposure_after": after["gross_exposure"],
+        "net_exposure_before": before["net_exposure"],
+        "net_exposure_after": after["net_exposure"],
+        "symbol_concentration_delta": (after_weight - before["position_weight"]) if after_weight is not None else None,
+        "sector_concentration_delta": sector_delta,
+        "beta_delta": beta_delta,
+        "correlation_cluster_delta": correlation_delta,
+        "planned_loss": planned_loss,
+        "adv_participation": adv_participation,
+        "days_to_exit": days_to_exit,
+        "marginal_risk": budget_consumed,
+        "risk_budget_consumed": budget_consumed,
+        "scenario_pnl": stress_scenarios,
+        "liquidity": liquidity,
+        "cash_comparator": cash_comparator,
+        "top_alternative": top_alternative,
+        "position_to_trim_or_replace": trim,
+        "funding_source_or_position_to_trim": funding,
+        "impact_method": "stock_portfolio_impact.v1:first_order",
+    }
+    return before, after, values, list(dict.fromkeys(blockers))
+
+
 def compose_portfolio_impact(
     *,
     episode: OpportunityEpisode,
@@ -2569,6 +3438,24 @@ def compose_portfolio_impact(
             "greeks": None,
             "liquidity": {"status": "not_applicable"},
         }
+    elif kind is ExpressionKind.STOCK and not blockers:
+        before_book = dict(before)
+        before_metrics, after_metrics, stock_values, stock_blockers = _stock_impact_values(expression, before)
+        after = {**before, "ticker": expression.ticker, "stock_impact": after_metrics}
+        blockers.extend(stock_blockers)
+        availability = "unavailable" if blockers else "available"
+        values = {
+            **{
+                "marginal_risk": None,
+                "risk_budget_consumed": None,
+                "scenario_pnl": None,
+                "factor_exposure": None,
+                "greeks": None,
+                "liquidity": None,
+            },
+            **stock_values,
+        }
+        before = {**before_book, "ticker": expression.ticker, "stock_impact": before_metrics}
     else:
         after = {}
         availability = "unavailable"
@@ -2596,6 +3483,7 @@ def compose_portfolio_impact(
         }
     impact = PortfolioImpact(
         impact_id="pending",
+        ticker=episode.ticker,
         opportunity_episode_id=episode.episode_id,
         expression_kind=kind,
         expression_identity=expression_identity,
@@ -2693,6 +3581,23 @@ def build_ticker_decision(
         name: _usable_rows(rows, symbol, reference)
         for name, rows in tables.items()
     }
+    if portfolio_replay is not None:
+        replay = dict(portfolio_replay)
+        evidence = dict(replay.get("stock_evidence") or {})
+        for table_name in ("fundamentals", "technicals", "liquidity", "portfolio"):
+            row = _latest(usable, table_name)
+            for target, keys in {
+                "sector": ("sector",),
+                "beta": ("beta", "market_beta", "beta_1y"),
+                "avg_dollar_volume": ("avg_dollar_volume", "average_dollar_volume"),
+                "correlation_cluster_delta": ("correlation_cluster_delta",),
+            }.items():
+                if target not in evidence:
+                    value = _pick(row, *keys)
+                    if value is not None:
+                        evidence[target] = value
+        replay["stock_evidence"] = evidence
+        portfolio_replay = replay
     persisted = _latest(usable, "ticker_decisions")
     manifest = _build_manifest(usable, reference, code_version, experiment_id)
     decision_row = _latest(usable, "symbol_decision_snapshot", "symbol_decision_snapshots", "decision_queue", "opportunities_ranked", "candidates")
@@ -2834,6 +3739,15 @@ def build_ticker_decision(
                     expires_at=persisted_resolution.expires_at,
                     blocked=True,
                 )
+            persisted_impacts = portfolio_impacts_from_persisted(
+                persisted.get("portfolio_impacts") or {}, ticker=symbol,
+            )
+            persisted_trade_plan = None
+            if not authority_blockers:
+                raw_trade_plan = persisted.get("trade_plan") or (
+                    persisted.get("input_manifest") or {}
+                ).get("trade_plan")
+                persisted_trade_plan = trade_plan_from_persisted(raw_trade_plan, ticker=symbol)
             return TickerDecision.model_validate({
                 "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
                 "ticker": symbol,
@@ -2854,15 +3768,11 @@ def build_ticker_decision(
                 "risk_policy_snapshot": persisted_policy_snapshot,
                 "market_state_publication_id": persisted.get("market_state_publication_id") or None,
                 "market_state_snapshot": persisted.get("market_state_snapshot") or None,
-                "portfolio_impacts": persisted.get("portfolio_impacts") or {},
+                "portfolio_impacts": persisted_impacts,
                 "instrument_state_snapshot": persisted.get("instrument_state_snapshot") or None,
                 "alpha_signals": persisted.get("alpha_signals") or [],
                 "opportunity_rank": persisted.get("opportunity_rank") or None,
-                "trade_plan": (
-                    None
-                    if authority_blockers
-                    else persisted.get("trade_plan") or (persisted.get("input_manifest") or {}).get("trade_plan")
-                ),
+                "trade_plan": persisted_trade_plan,
             })
         except Exception:
             # A malformed persisted row is visible to source-health/learning
@@ -4294,4 +5204,6 @@ __all__ = [
     "PaperExecutionOutcome", "OutcomeAttribution", "outcome_attribution_id",
     "outcome_attribution_stable_key",
     "SignalDeclaration", "SignalEvidenceState", "build_ticker_decision",
+    "portfolio_impact_from_persisted", "portfolio_impacts_from_persisted",
+    "trade_plan_from_persisted",
 ]

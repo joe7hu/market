@@ -249,6 +249,7 @@ class OptionsDecisionBrief(BaseModel):
     strongest_candidate: "OptionsDecisionCandidate | None" = None
     paper_only: bool
     decision_truth: OptionsDecisionTruth | None = None
+    authority: dict[str, Any] | None = None
 
 
 class OptionBlockerCount(BaseModel):
@@ -552,6 +553,7 @@ class OptionsCandidatePage(BaseModel):
     model_revision: str
     scope: str
     analysis_run_id: str | None = None
+    authority: dict[str, Any] | None = None
     # Compatibility aliases for the existing frontend release.
     rows: list[OptionsDecisionCandidate]
     count: int

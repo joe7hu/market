@@ -26,6 +26,8 @@ from investment_panel.core.decision import (
     outcome_attribution_stable_key,
     resolution_from_legacy,
     is_us_market_day,
+    portfolio_impacts_from_persisted,
+    trade_plan_from_persisted,
 )
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.options_paper_quotes import is_credit_structure, package_price
@@ -248,15 +250,18 @@ class TickerDecisionRepository:
                            decision.published_at, decision.created_at, decision.id,
                            count(*) OVER (
                                PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
-                           ) AS authority_count
+                           ) AS authority_count,
+                           count(*) OVER (
+                               PARTITION BY decision.opportunity_episode_id
+                           ) AS opportunity_authority_count
                     FROM analysis.ticker_decision decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                    WHERE instrument.symbol = %s
-                      AND decision.status = 'published'
+                    WHERE decision.status = 'published'
                       AND decision.contract_version = 'ticker-decision.v1'
                       AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
                       AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
                       AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+                      AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
                       AND decision.as_of <= now()
                       AND decision.published_at IS NOT NULL
                       AND decision.published_at <= now()
@@ -279,7 +284,9 @@ class TickerDecisionRepository:
                        market_state_snapshot, portfolio_impacts,
                        risk_policy_snapshot
                 FROM current_candidates
-                WHERE authority_count = 1
+                WHERE ticker = %s
+                  AND authority_count = 1
+                  AND opportunity_authority_count = 1
                 ORDER BY as_of DESC, published_at DESC, created_at DESC, id DESC
                 LIMIT 1
                 """,
@@ -1580,10 +1587,16 @@ def _attribution_surface_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _decision_from_row(row: Any) -> TickerDecision:
     resolution = resolution_from_legacy(dict(row))
+    ticker = str(row["ticker"]).strip().upper()
     manifest = dict(row["input_manifest"] or {})
+    portfolio_impacts = portfolio_impacts_from_persisted(
+        row.get("portfolio_impacts") if hasattr(row, "get") else {},
+        ticker=ticker,
+    )
+    trade_plan = trade_plan_from_persisted(manifest.get("trade_plan"), ticker=ticker)
     return TickerDecision.model_validate({
         "decision_contract_version": row["contract_version"],
-        "ticker": row["ticker"],
+        "ticker": ticker,
         "as_of": row["as_of"],
         "decision_revision": row["decision_revision"],
         "tactical": row["tactical"],
@@ -1600,7 +1613,7 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "input_manifest": manifest,
         "market_state_publication_id": row.get("market_state_publication_id") if hasattr(row, "get") else None,
         "market_state_snapshot": row.get("market_state_snapshot") if hasattr(row, "get") else None,
-        "portfolio_impacts": row.get("portfolio_impacts") if hasattr(row, "get") else {},
+        "portfolio_impacts": portfolio_impacts,
         "risk_policy_snapshot": row.get("risk_policy_snapshot") if hasattr(row, "get") else None,
         "opportunity_episode": (
             row.get("opportunity_episode") if hasattr(row, "get") else None
@@ -1608,7 +1621,7 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "instrument_state_snapshot": manifest.get("instrument_state_snapshot"),
         "alpha_signals": manifest.get("alpha_signals") or [],
         "opportunity_rank": manifest.get("opportunity_rank"),
-        "trade_plan": manifest.get("trade_plan"),
+        "trade_plan": trade_plan,
     })
 
 
