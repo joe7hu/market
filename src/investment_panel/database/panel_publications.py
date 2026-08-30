@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from investment_panel.database.analysis import current_option_publication_rows
 
 
-def published_tables(runtime: Any, requested: tuple[str, ...]) -> dict[str, list[dict[str, Any]]]:
+def published_tables(
+    runtime: Any,
+    requested: tuple[str, ...],
+    *,
+    row_limits: Mapping[str, int] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Read the current item for each requested model with its publication lineage."""
 
     if not requested:
         return {}
     with runtime.read() as connection:
-        rows = connection.execute(
-            """
+        query = """
             WITH compact_latest AS MATERIALIZED (
                 SELECT DISTINCT ON (item.model_name)
                        item.model_name, item.publication_id, publication.published_at
@@ -42,19 +46,39 @@ def published_tables(runtime: Any, requested: tuple[str, ...]) -> dict[str, list
                 WHERE item.model_name = ANY(%s)
                   AND NOT EXISTS (SELECT 1 FROM compact_current compact WHERE compact.model_name = item.model_name)
                 ORDER BY item.model_name, publication.published_at DESC, publication.id DESC
+            ), published_rows AS (
+                SELECT model_name, payload, publication_id, published_at, rank
+                FROM compact_current
+                UNION ALL
+                SELECT item.model_name, item.payload, publication.id::text AS publication_id,
+                       publication.published_at, item.rank
+                FROM latest
+                JOIN app.publication_item item
+                  ON item.publication_id = latest.id AND item.model_name = latest.model_name
+                JOIN current_publication publication ON publication.id = latest.id
             )
-            SELECT model_name, payload, publication_id, published_at, rank
-            FROM compact_current
-            UNION ALL
-            SELECT item.model_name, item.payload, publication.id::text AS publication_id, publication.published_at, item.rank
-            FROM latest
-            JOIN app.publication_item item
-              ON item.publication_id = latest.id AND item.model_name = latest.model_name
-            JOIN current_publication publication ON publication.id = latest.id
-            ORDER BY model_name, rank
-            """,
-            [list(requested), list(requested)],
-        ).fetchall()
+        """
+        params: list[Any] = [list(requested), list(requested)]
+        limited = [(name, max(1, int(limit))) for name, limit in (row_limits or {}).items() if name in requested and limit > 0]
+        if limited:
+            query += """
+                , ranked_rows AS (
+                    SELECT published_rows.*,
+                           row_number() OVER (PARTITION BY model_name ORDER BY rank) AS row_number
+                    FROM published_rows
+                )
+                SELECT ranked_rows.model_name, ranked_rows.payload, ranked_rows.publication_id,
+                       ranked_rows.published_at, ranked_rows.rank
+                FROM ranked_rows
+                JOIN unnest(%s::text[], %s::integer[]) AS requested_limit(model_name, row_limit)
+                  ON requested_limit.model_name = ranked_rows.model_name
+                WHERE ranked_rows.row_number <= requested_limit.row_limit
+                ORDER BY ranked_rows.model_name, ranked_rows.rank
+            """
+            params.extend(([name for name, _ in limited], [limit for _, limit in limited]))
+        else:
+            query += " SELECT model_name, payload, publication_id, published_at, rank FROM published_rows ORDER BY model_name, rank"
+        rows = connection.execute(query, params).fetchall()
         option_rows = (
             current_option_publication_rows(
                 connection,

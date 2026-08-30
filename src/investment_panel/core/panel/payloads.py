@@ -22,6 +22,9 @@ SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
         # The Today route is a decision inbox, not a copy of the full Radar
         # publication.  Its primary screen can act on at most three current
         # opportunities; complete immutable tickets remain available by ID.
+        "ticker_decisions": 100,
+        "opportunity_rank": 100,
+        "trade_plan": 100,
         "option_radar_opportunity": 3,
         "event_decision_packets": 50,
         "decision_truth": 100,
