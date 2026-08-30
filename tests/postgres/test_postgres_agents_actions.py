@@ -115,7 +115,12 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                     "INSERT INTO analysis.strategy_evaluation "
                     "(strategy_revision_id, evaluation_type, evaluated_at, period_start, period_end, verdict, metrics, evidence) "
                     "VALUES (%s, %s, now(), now() - make_interval(days => %s), now(), 'pass', %s, %s)",
-                    [candidate_id, evaluation_type, span, Jsonb({"baseline": baseline, "proposed": proposed, "observation_span_days": span, **phase7_metrics}), Jsonb({"source": "test", "sample_size": sample})],
+                    [candidate_id, evaluation_type, span, Jsonb({"baseline": baseline, "proposed": proposed, "observation_span_days": span, **phase7_metrics}), Jsonb({
+                        "source": "test", "sample_size": sample,
+                        "method": "walk-forward-evaluation",
+                        "version": "phase7-governance-evidence-v1",
+                        "uncertainty": {"lower_95_expectancy": 0.01},
+                    })],
                 )
 
         governance = StrategyGovernanceRepository(runtime)
