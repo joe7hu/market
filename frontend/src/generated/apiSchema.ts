@@ -2623,6 +2623,13 @@ export interface components {
              * @default []
              */
             blocking_dimensions: string[];
+            /**
+             * Coverage Status
+             * @default unavailable
+             */
+            coverage_status: string;
+            /** Decision Horizon */
+            decision_horizon: string;
             expression_kind: components["schemas"]["ExpressionKind"];
             /** Horizon */
             horizon: string;

@@ -584,14 +584,14 @@ def _portfolio_context_blockers(ticker_decision: dict[str, Any]) -> list[str]:
             if snapshot.get("contract_version") == "market-state-snapshot.v1":
                 if snapshot.get("availability") != "available":
                     blockers.append("market_state_unavailable")
-            elif coverage.get("contract_version") == "coverage-matrix.v2":
+            elif snapshot.get("contract_version") == "market-state-snapshot.v2":
                 try:
                     assessment = market_evidence_for_decision(
                         MarketStateSnapshot.model_validate(snapshot), selected_kind, selected_horizon,
                     )
                     blockers.extend(assessment.blockers)
                 except (TypeError, ValueError):
-                    blockers.append("market_state_invalid")
+                    blockers.extend(("market_state_invalid", "market_coverage_matrix_invalid"))
             if not ticker_decision.get("market_state_publication_id"):
                 blockers.append("market_state_publication_missing")
     impacts = ticker_decision.get("portfolio_impacts")

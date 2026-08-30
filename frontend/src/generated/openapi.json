@@ -3586,6 +3586,16 @@
             "title": "Blocking Dimensions",
             "type": "array"
           },
+          "coverage_status": {
+            "default": "unavailable",
+            "title": "Coverage Status",
+            "type": "string"
+          },
+          "decision_horizon": {
+            "minLength": 1,
+            "title": "Decision Horizon",
+            "type": "string"
+          },
           "expression_kind": {
             "$ref": "#/components/schemas/ExpressionKind"
           },
@@ -3610,7 +3620,8 @@
         },
         "required": [
           "expression_kind",
-          "horizon"
+          "horizon",
+          "decision_horizon"
         ],
         "title": "MarketEvidenceAssessment",
         "type": "object"

@@ -1628,7 +1628,7 @@ def _market_snapshot(
                     data_requests=(request,),
                 ))
         dimensions[horizon] = tuple(
-            row.model_copy(update=_market_dimension_v2_fields(row))
+            row.model_copy(update=market_dimension_v2_fields(row))
             for row in horizon_rows
         )
     measured_lineage = _lineage_union(
@@ -1700,7 +1700,7 @@ def _market_snapshot(
     })
 
 
-def _market_dimension_v2_fields(row: MarketDimensionState) -> dict[str, Any]:
+def market_dimension_v2_fields(row: MarketDimensionState) -> dict[str, Any]:
     source_priority = MARKET_SOURCE_PRIORITY.get(row.dimension, ())
     selected_source = row.lineage[0].source_id if row.lineage else None
     sample_count = (
@@ -1714,23 +1714,31 @@ def _market_dimension_v2_fields(row: MarketDimensionState) -> dict[str, Any]:
         "mixed": 1.0 if row.state == "mixed" else 0.0,
         "constructive": 1.0 if row.state == "constructive" else 0.0,
     } if row.state in {"defensive", "mixed", "constructive"} else {}
+    sufficient = bool(
+        str(row.evidence_status).lower() == "available"
+        and distribution
+        and row.uncertainty
+        and sample_count >= 20
+    )
     return {
         "source_priority": source_priority,
         "selected_source": selected_source,
-        "regime_distribution": distribution,
-        "regime_probability_method": "threshold-posture-v1" if distribution else None,
-        "regime_model_version": "market-regime-v2" if distribution else None,
+        "regime_distribution": distribution if sufficient else {},
+        "regime_probability_method": "threshold-posture-v1" if sufficient else None,
+        "regime_model_version": "market-regime-v2" if sufficient else None,
         "regime_sample_count": sample_count,
         "baseline_result": {
-            "method": "threshold-posture-v1", "version": "market-baseline-v1",
-            "status": "available" if row.evidence_status == "available" else "unavailable",
-            "sample_count": sample_count, "state": row.state,
+            **({"method": "threshold-posture-v1", "version": "market-baseline-v1", "state": row.state}
+               if sufficient else {}),
+            "status": "available" if sufficient else "unavailable",
+            "advisory": not sufficient, "sample_count": sample_count,
         },
         "challenger_result": {
-            "method": "empirical-regime-shadow-v1", "version": "market-challenger-v1",
-            "status": "advisory" if row.evidence_status == "available" and sample_count >= 20 else "insufficient_history",
+            **({"method": "empirical-regime-shadow-v1", "version": "market-challenger-v1"}
+               if sufficient else {}),
+            "status": "advisory" if sufficient else "unavailable",
             "advisory": True, "promotion_eligible": False,
-            "sample_count": sample_count, "distribution": distribution,
+            "sample_count": sample_count, "distribution": distribution if sufficient else {},
         },
     }
 
@@ -1753,16 +1761,20 @@ def _regime_distributions(
             if total:
                 distribution = {key: value / total for key, value in distribution.items()}
         sample_count = int(horizon_evidence.get(horizon, {}).get("available_member_count") or 0)
+        sufficient = bool(distribution and horizon_evidence.get(horizon, {}).get("uncertainty") and sample_count >= 20)
         result[horizon] = {
-            "distribution": distribution,
-            "method": "threshold-posture-v1",
-            "version": "market-regime-v2",
+            "distribution": distribution if sufficient else {},
             "sample_count": sample_count,
-            "uncertainty": "historical empirical estimate; not a forward forecast" if distribution else "insufficient point-in-time evidence",
-            "baseline": "threshold-posture-v1",
-            "challenger": "empirical-regime-shadow-v1",
-            "challenger_advisory": True,
-            "challenger_available": bool(volatility_evidence.get(horizon, {}).get("available")) and sample_count >= 20,
+            "status": "available" if sufficient else "advisory",
+            "advisory": not sufficient,
+            **({
+                "method": "threshold-posture-v1",
+                "version": "market-regime-v2",
+                "uncertainty": "historical empirical estimate; not a forward forecast",
+                "baseline": "threshold-posture-v1",
+                "challenger": "empirical-regime-shadow-v1",
+                "challenger_available": bool(volatility_evidence.get(horizon, {}).get("available")),
+            } if sufficient else {"uncertainty": "insufficient point-in-time evidence", "challenger_available": False}),
         }
     return result
 
@@ -1774,14 +1786,20 @@ def _baseline_challenger(
     result: dict[str, dict[str, Any]] = {}
     for horizon in MARKET_HORIZONS:
         sample_count = int(horizon_evidence.get(horizon, {}).get("available_member_count") or 0)
+        sufficient = bool(
+            horizon_evidence.get(horizon, {}).get("available")
+            and horizon_evidence.get(horizon, {}).get("uncertainty")
+            and sample_count >= 20
+        )
         result[horizon] = {
             "baseline": {
-                "method": "threshold-posture-v1", "version": "market-baseline-v1",
-                "status": "available" if sample_count else "unavailable",
+                **({"method": "threshold-posture-v1", "version": "market-baseline-v1"} if sufficient else {}),
+                "status": "available" if sufficient else "unavailable",
+                "advisory": not sufficient, "sample_count": sample_count,
             },
             "challenger": {
-                "method": "empirical-regime-shadow-v1", "version": "market-challenger-v1",
-                "status": "advisory" if volatility_evidence.get(horizon, {}).get("available") and sample_count >= 20 else "insufficient_history",
+                **({"method": "empirical-regime-shadow-v1", "version": "market-challenger-v1"} if sufficient else {}),
+                "status": "advisory" if sufficient and volatility_evidence.get(horizon, {}).get("available") else "unavailable",
                 "advisory": True, "promotion_eligible": False, "sample_count": sample_count,
             },
         }

@@ -9,10 +9,13 @@ from investment_panel.core.decision import (
     InputLineage,
     MARKET_DIMENSIONS,
     MARKET_HORIZONS,
+    MarketDimensionState,
     MarketStateSnapshot,
     build_ticker_decision,
+    market_evidence_for_decision,
     trade_expression_identity,
 )
+from investment_panel.database.market_analysis import market_dimension_v2_fields
 
 
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
@@ -650,3 +653,41 @@ def test_missing_context_blocks_resolution() -> None:
     assert "market_state_missing" in decision.resolution.blockers
     assert "risk_policy_snapshot_missing" in decision.context_blockers
     assert decision.context_blockers
+
+
+def test_v2_coverage_is_fail_closed_per_decision_and_cash_is_not_market_blocked() -> None:
+    seed = _decision()
+    malformed = seed.market_state_snapshot.model_copy(update={
+        "contract_version": "market-state-snapshot.v2",
+        "coverage_matrix": None,
+    })
+
+    stock = market_evidence_for_decision(malformed, ExpressionKind.STOCK, "TACTICAL")
+    cash = market_evidence_for_decision(malformed, ExpressionKind.CASH, "TACTICAL")
+
+    assert stock.status == "blocking"
+    assert stock.coverage_status == "invalid"
+    assert stock.blocking_dimensions == ("equity internals",)
+    assert "market_coverage_matrix_invalid" in stock.blockers
+    assert cash.status == "not_applicable"
+    assert cash.coverage_status == "not_required"
+    assert cash.blocking_dimensions == ()
+
+
+def test_v2_history_claims_are_unavailable_without_sufficient_evidence() -> None:
+    row = MarketDimensionState(
+        dimension="equity internals",
+        horizon="1-5 trading days",
+        state="constructive",
+        evidence_status="available",
+        uncertainty=None,
+    )
+    fields = market_dimension_v2_fields(row)
+
+    assert fields["regime_distribution"] == {}
+    assert fields["regime_probability_method"] is None
+    assert fields["regime_model_version"] is None
+    assert fields["baseline_result"]["status"] == "unavailable"
+    assert "method" not in fields["baseline_result"]
+    assert fields["challenger_result"]["status"] == "unavailable"
+    assert "method" not in fields["challenger_result"]

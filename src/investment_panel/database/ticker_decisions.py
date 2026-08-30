@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision import (
     AvailabilityStatus,
+    ExpressionKind,
     Horizon,
     OUTCOME_ATTRIBUTION_CONTRACT_VERSION,
     OUTCOME_ATTRIBUTION_EVALUATION_VERSION,
@@ -338,13 +339,20 @@ class TickerDecisionRepository:
                 if selected is not None and snapshot is not None
                 else None
             )
+            cash_selected = selected is None or selected.kind is ExpressionKind.CASH
             facts_available = bool(
                 decision.opportunity_episode
                 and decision.input_lineage
-                and snapshot is not None
-                and decision.market_state_publication_id
-                and decision.market_state_publication_id == snapshot.publication_id
-                and (assessment is None or not assessment.blocking_dimensions)
+                and (
+                    cash_selected
+                    or (
+                        snapshot is not None
+                        and decision.market_state_publication_id
+                        and decision.market_state_publication_id == snapshot.publication_id
+                        and assessment is not None
+                        and not assessment.blocking_dimensions
+                    )
+                )
             )
             decisions.append({
                 **decision.model_dump(mode="json"),

@@ -385,6 +385,8 @@ class MarketEvidenceAssessment(BaseModel):
 
     expression_kind: ExpressionKind
     horizon: str = Field(min_length=1)
+    decision_horizon: str = Field(min_length=1)
+    coverage_status: str = "unavailable"
     required_dimensions: tuple[str, ...] = ()
     advisory_dimensions: tuple[str, ...] = ()
     available_dimensions: tuple[str, ...] = ()
@@ -606,16 +608,51 @@ def market_evidence_for_decision(
     market_horizon = MARKET_HORIZON_FOR_DECISION.get(horizon_name, str(horizon).lower())
     required = market_required_dimensions(kind, horizon_name)
     advisory = tuple(dimension for dimension in MARKET_DIMENSIONS if dimension not in required)
+    if not required:
+        return MarketEvidenceAssessment(
+            expression_kind=kind,
+            horizon=market_horizon,
+            decision_horizon=horizon_name,
+            coverage_status="not_required",
+            required_dimensions=(),
+            advisory_dimensions=advisory,
+            status="not_applicable",
+        )
     rows = {
         item.dimension: item
         for item in (snapshot.horizons.get(market_horizon, ()) if snapshot is not None else ())
     }
+    coverage_rows = () if snapshot is None or snapshot.coverage_matrix is None else snapshot.coverage_matrix.rows
+    coverage_version_ok = bool(
+        snapshot is not None
+        and snapshot.contract_version == "market-state-snapshot.v2"
+        and snapshot.coverage_matrix is not None
+        and snapshot.coverage_matrix.contract_version == "coverage-matrix.v2"
+        and _utc(snapshot.coverage_matrix.input_cutoff) == _utc(snapshot.input_cutoff)
+    )
+    coverage_by_dimension = [
+        row for row in coverage_rows
+        if row.horizon == market_horizon and row.dimension in required
+    ]
+    coverage_counts = {dimension: sum(row.dimension == dimension for row in coverage_by_dimension) for dimension in required}
+    coverage_valid = coverage_version_ok and all(coverage_counts[dimension] == 1 for dimension in required)
+    coverage_status = "available" if coverage_valid else "invalid" if snapshot is not None else "missing"
     available = tuple(
         dimension for dimension in MARKET_DIMENSIONS
         if str(getattr(rows.get(dimension), "evidence_status", "")).lower() == "available"
+        and (snapshot is None or snapshot.contract_version != "market-state-snapshot.v2" or any(
+            row.dimension == dimension and str(row.current_status).lower() == "available"
+            for row in coverage_by_dimension
+        ))
     )
     blocking = tuple(dimension for dimension in required if dimension not in available)
+    if snapshot is not None and snapshot.contract_version == "market-state-snapshot.v2" and not coverage_valid:
+        blocking = required
     blockers = tuple(f"market_required_dimension_unavailable:{dimension}" for dimension in blocking)
+    if snapshot is None:
+        blockers = ("market_coverage_matrix_missing",) + blockers
+    elif snapshot.contract_version == "market-state-snapshot.v2" and not coverage_valid:
+        blockers = ("market_coverage_matrix_invalid",) + blockers
     status = "not_applicable" if not required else "blocking" if blocking else (
         "available" if all(dimension in available for dimension in MARKET_DIMENSIONS) else "advisory"
     )
@@ -625,6 +662,8 @@ def market_evidence_for_decision(
     return MarketEvidenceAssessment(
         expression_kind=kind,
         horizon=market_horizon,
+        decision_horizon=horizon_name,
+        coverage_status=coverage_status,
         required_dimensions=required,
         advisory_dimensions=advisory,
         available_dimensions=available,
@@ -2895,7 +2934,9 @@ def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) ->
         for dimension in MARKET_DIMENSIONS
     )
     snapshot = MarketStateSnapshot(
-        contract_version="market-state-snapshot.v2",
+        # The local composer fallback is the readable V1 compatibility shape;
+        # published V2 snapshots must carry a V2 coverage matrix.
+        contract_version="market-state-snapshot.v1",
         snapshot_id=snapshot_id,
         publication_id=f"local-publication:{snapshot_id}",
         as_of=reference,
@@ -3749,11 +3790,7 @@ def _context_blockers_for(
         if selected_kind is not ExpressionKind.CASH:
             if snapshot.contract_version == "market-state-snapshot.v1" and snapshot.availability != "available":
                 blockers.append("market_state_unavailable")
-            if (
-                snapshot.contract_version != "market-state-snapshot.v1"
-                and snapshot.coverage_matrix is not None
-                and snapshot.coverage_matrix.contract_version == "coverage-matrix.v2"
-            ):
+            if snapshot.contract_version == "market-state-snapshot.v2":
                 assessment = market_evidence_for_decision(snapshot, selected_kind, selected.horizon if selected else "FUNDAMENTAL")
                 blockers.extend(assessment.blockers)
             if not snapshot.publication_id:
