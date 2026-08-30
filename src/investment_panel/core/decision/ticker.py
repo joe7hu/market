@@ -3898,7 +3898,12 @@ def _crypto_impact_values(
         risk_budget = evidence
     available_budget = _number(_pick(risk_budget, "available", "available_budget", "risk_budget_available"))
     consumed_budget = _number(_pick(risk_budget, "consumed", "consumed_budget", "risk_budget_consumed"))
-    if available_budget is None or available_budget < expression.planned_loss or consumed_budget is None:
+    if (
+        expression.planned_loss is None
+        or available_budget is None
+        or available_budget < expression.planned_loss
+        or consumed_budget is None
+    ):
         blockers.append("crypto_risk_evidence_missing")
     nav = _number(replay.get("portfolio_value"), 0.0) or 0.0
     quantity = expression.quantity or 0

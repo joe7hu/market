@@ -151,6 +151,28 @@ def test_crypto_impact_fails_closed_on_invalid_bounded_evidence(
     assert expected_blocker in blockers
 
 
+def test_crypto_impact_missing_planned_loss_fails_closed_without_type_error() -> None:
+    expression = _expression_for_impact(ExpressionKind.CRYPTO_SPOT, 0.5).model_copy(
+        update={"max_loss_per_unit": 10.0},
+    )
+    _, _, _, blockers = ticker_module._crypto_impact_values(
+        expression,
+        {
+            "portfolio_value": 100_000,
+            "crypto_evidence": {
+                "status": "available",
+                "source_id": "crypto-feed",
+                "observed_at": AS_OF,
+                "price": 100,
+                "risk_budget": {"available": 100, "consumed": 0},
+            },
+        },
+        AS_OF,
+    )
+    assert "crypto_planned_loss_missing" in blockers
+    assert "crypto_risk_evidence_missing" in blockers
+
+
 def _account_facts(**updates: object) -> dict[str, object]:
     facts: dict[str, object] = {
         "broker_net_liquidation": 100_000,
