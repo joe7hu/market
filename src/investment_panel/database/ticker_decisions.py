@@ -1723,12 +1723,10 @@ def _classify_mistake(
     """Classify one deterministic episode without treating missing marks as loss."""
 
     if action == "AVOID" and stock_return > 0:
-        return "correct_avoidance_opportunity_cost", {
-            "belief": stance,
-            "action": action,
-            "observed_stock_return": stock_return,
-            "proposed_rule_change": "Retain avoidance only when the named bearish invalidation or catalyst risk remains active.",
-        }
+        # Opportunity cost is not one of the seven evidenced Phase 7 error
+        # types. Keep it unavailable rather than leaking a legacy label into
+        # the authoritative outcome taxonomy.
+        return None, {}
     if stance == "BULLISH" and stock_return < 0 or stance == "BEARISH" and stock_return > 0:
         return classify_outcome_evidence({
             "evidence_state": "OBSERVED",
@@ -1744,13 +1742,8 @@ def _classify_mistake(
             "proposed_rule_change": "Re-test the directional evidence against sector, market, and catalyst baselines.",
         }
     if selected_kind not in {"STOCK", "CASH"} and selected_return is None:
-        return "correct_thesis_with_untradeable_expression", {
-            "belief": stance,
-            "action": action,
-            "selected_expression": selected_kind,
-            "observed_stock_return": stock_return,
-            "proposed_rule_change": "Require a later executable option package before selecting an option expression.",
-        }
+        # An untradeable expression does not prove any Phase 7 error class.
+        return None, {}
     if selected_kind not in {"STOCK", "CASH"} and selected_return is not None and stock_return > selected_return + 0.05:
         return classify_outcome_evidence({
             "evidence_state": "OBSERVED",

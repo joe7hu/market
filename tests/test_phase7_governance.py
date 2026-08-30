@@ -10,6 +10,7 @@ from investment_panel.core.decision.governance import (
     promotion_readiness,
     transition_dedupe_key,
 )
+from investment_panel.database import ticker_decisions
 
 
 def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
@@ -80,3 +81,14 @@ def test_phase7_error_taxonomy_and_exact_notification_identity() -> None:
     assert transition_dedupe_key("episode", "revision", "newly_actionable", "policy") == transition_dedupe_key(
         "episode", "revision", "newly_actionable", "policy",
     )
+
+
+def test_legacy_correct_outcomes_are_unavailable_not_phase7_errors() -> None:
+    assert ticker_decisions._classify_mistake(
+        stance="BEARISH", action="AVOID", selected_kind="CASH",
+        selected_return=None, stock_return=0.10, alternate_return=None,
+    ) == (None, {})
+    assert ticker_decisions._classify_mistake(
+        stance="BULLISH", action="BUY", selected_kind="OPTION",
+        selected_return=None, stock_return=0.10, alternate_return=None,
+    ) == (None, {})
