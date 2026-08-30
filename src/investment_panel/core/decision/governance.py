@@ -99,7 +99,8 @@ def promotion_readiness(
         missing = [name for name in TRACKED_METRICS if not _metric_present(metrics, name)]
         malformed = [
             name for name in TRACKED_METRICS
-            if _metric_present(metrics, name) and not _metric_valid(_metric_value(metrics, name))
+            if _metric_present(metrics, name)
+            and not _metric_domain_valid(name, _metric_value(metrics, name))
         ]
         if missing:
             blockers.extend(f"{stage}_{name}_missing" for name in missing)
@@ -296,6 +297,22 @@ def _metric_valid(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return math.isfinite(float(value))
     return False
+
+
+def _metric_domain_valid(name: str, value: Any) -> bool:
+    """Reject finite values outside the domain accepted by governance."""
+    if not _metric_valid(value):
+        return False
+    if name in {"drawdown", "tail_loss"}:
+        return True
+    if isinstance(value, Mapping):
+        return all(_metric_domain_valid(name, item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return all(_metric_domain_valid(name, item) for item in value)
+    try:
+        return float(value) >= 0.0
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _positive_int(value: Any) -> bool:

@@ -74,6 +74,12 @@ def test_outcome_identity_is_content_addressed_and_excludes_publication() -> Non
     assert changed.outcome_attribution_id != first.outcome_attribution_id
 
 
+def test_outcome_quarantines_legacy_mistake_classification() -> None:
+    value = OutcomeAttribution.model_validate(_payload(mistake_classification="direction_error"))
+
+    assert value.mistake_classification is None
+
+
 def test_outcome_rejects_future_available_evidence() -> None:
     with pytest.raises(ValueError, match="after the evaluation cutoff"):
         OutcomeAttribution.model_validate({

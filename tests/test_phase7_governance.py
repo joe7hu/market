@@ -63,6 +63,20 @@ def test_phase7_metric_aliases_are_resolved_without_key_errors() -> None:
     assert result["metrics"]["calibration"] == 0.1
 
 
+def test_phase7_negative_finite_metric_is_not_promotion_evidence() -> None:
+    rows = [_evaluation(stage) for stage in ("walk_forward", "shadow", "execution_grade_paper")]
+    for row in rows:
+        row["metrics"] = {
+            name: ({"risk_on": -0.5} if name == "regime_performance" else -0.1)
+            for name in TRACKED_METRICS
+        }
+
+    result = promotion_readiness(rows, now=datetime(2026, 8, 30, 13, tzinfo=UTC))
+
+    assert result["promotion_eligible"] is False
+    assert "walk_forward_calibration_malformed" in result["blockers"]
+
+
 def test_phase7_transition_identity_cannot_collide_on_colons() -> None:
     assert transition_dedupe_key("a:b", "c", "newly_actionable", "policy") != transition_dedupe_key(
         "a", "b:c", "newly_actionable", "policy",

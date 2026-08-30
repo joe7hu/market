@@ -1615,11 +1615,16 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
         )
         with runtime.read() as connection:
             candidates = connection.execute(
-                "SELECT parameters FROM analysis.strategy_revision WHERE status = 'candidate' ORDER BY id"
+                "SELECT id, parameters FROM analysis.strategy_revision WHERE status = 'candidate' ORDER BY id"
             ).fetchall()
             verdicts = connection.execute(
                 "SELECT verdict FROM analysis.strategy_evaluation "
                     "WHERE evaluation_type = 'walk_forward' ORDER BY evaluated_at"
+            ).fetchall()
+            evaluations = connection.execute(
+                "SELECT evaluation_type, evidence FROM analysis.strategy_evaluation "
+                "WHERE strategy_revision_id = ANY(%s)",
+                [[row["id"] for row in candidates]],
             ).fetchall()
         assert tightened["strategy_backtests"] == 1
         assert unsupported["strategy_backtests"] == 1
@@ -1627,6 +1632,16 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
         assert candidates[0]["parameters"]["gates"]["min_dte"] == 30
         assert candidates[2]["parameters"]["gates"]["max_spread_pct"] == 0.05
         assert "reject_spread_pct" not in candidates[2]["parameters"]["gates"]
+        assert {row["evaluation_type"] for row in evaluations} == {
+            "walk_forward", "shadow", "execution_grade_paper",
+        }
+        assert all(
+            row["evidence"]["method"] == "retained_actionable_decisions_forward_evaluation"
+            and row["evidence"]["version"] == "phase7-governance-evidence-v1"
+            and "uncertainty" in row["evidence"]
+            and isinstance(row["evidence"]["sample_size"], int)
+            for row in evaluations
+        )
         assert [row["verdict"] for row in verdicts] == [
             "collecting_data", "unsupported_parameters", "collecting_data"
         ]

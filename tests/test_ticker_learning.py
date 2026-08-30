@@ -250,6 +250,15 @@ def test_legacy_learning_payload_cannot_promote_without_canonical_evidence() -> 
     assert "canonical_outcome_attribution_missing" in payload["strategy_learning"]["blockers"]
 
 
+def test_ticker_learning_payload_quarantines_legacy_error_labels() -> None:
+    payload = ticker_learning_payload(
+        {"fundamental": {}, "expressions": {}},
+        [{"horizon": "TACTICAL", "error_type": "direction_error", "mistake_card": {}}],
+    )
+
+    assert payload["mistake_cards"] == []
+
+
 def test_ticker_learning_payload_exposes_expression_result_and_policy_gate() -> None:
     payload = ticker_learning_payload(
         {

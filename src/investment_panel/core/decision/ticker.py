@@ -28,6 +28,7 @@ from investment_panel.core.decision.resolution import (
     next_action_for,
     resolution_from_legacy,
 )
+from investment_panel.core.decision.governance import valid_outcome_error_type
 
 
 CONTRACT_VERSION = "ticker-decision.v1"
@@ -1692,6 +1693,10 @@ class OutcomeAttribution(BaseModel):
         }.items():
             if new not in result and old in result:
                 result[new] = result[old]
+        if "mistake_classification" in result:
+            result["mistake_classification"] = valid_outcome_error_type(
+                result.get("mistake_classification"),
+            )
         if isinstance(result.get("ticker"), str):
             result["ticker"] = result["ticker"].strip().upper()
         for key in ("selected_expression_kind", "horizon", "state", "evidence_state"):
