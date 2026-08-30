@@ -164,6 +164,18 @@ def test_crypto_expressions_are_bounded_and_fail_closed_without_quotes() -> None
     assert unavailable.expressions[ExpressionKind.CRYPTO_SPOT].status in {"unavailable", "blocked"}
     assert unavailable.expressions[ExpressionKind.CRYPTO_SPOT].blockers
 
+    malformed = build_ticker_decision(
+        "BTC-USD",
+        {
+            "decision_queue": [{"symbol": "BTC-USD", "stance": "BULLISH", "available_at": "2026-08-22T13:55:00Z"}],
+            "crypto_spot_quotes": [{"symbol": "BTC-USD", "kind": "spot", "price": 0, "available_at": "2026-08-22T13:55:00Z"}],
+            "crypto_perpetual_quotes": [{"symbol": "BTC-USD", "kind": "perpetual", "price": 100, "bid": 101, "ask": 99, "available_at": "2026-08-22T13:55:00Z"}],
+        },
+        as_of=CUTOFF,
+    )
+    assert malformed.expressions[ExpressionKind.CRYPTO_SPOT].status == "blocked"
+    assert malformed.expressions[ExpressionKind.CRYPTO_PERPETUAL].status == "blocked"
+
 
 @pytest.mark.parametrize(
     ("change", "message"),

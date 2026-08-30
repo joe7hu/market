@@ -21,6 +21,8 @@ from investment_panel.core.risk_policy import RiskPolicySnapshot, compile_risk_p
 import investment_panel.jobs.ticker_decisions as ticker_decision_job
 from investment_panel.jobs.ticker_decisions import portfolio_impacts
 
+AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
+
 
 def _expression_for_impact(kind: ExpressionKind, utility: float) -> ExpressionDecision:
     return ExpressionDecision(
@@ -93,7 +95,60 @@ def test_crypto_impact_does_not_authorize_from_stock_evidence() -> None:
     assert "crypto_portfolio_evidence_missing" in blockers
 
 
-AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
+@pytest.mark.parametrize(
+    ("kind", "evidence", "expected_blocker"),
+    (
+        (
+            ExpressionKind.CRYPTO_SPOT,
+            {
+                "status": "available",
+                "source_id": "crypto-feed",
+                "observed_at": AS_OF,
+                "price": 100,
+                "risk_budget": {"available": 0, "consumed": 0},
+            },
+            "crypto_risk_evidence_missing",
+        ),
+        (
+            ExpressionKind.CRYPTO_SPOT,
+            {
+                "status": "available",
+                "source_id": "crypto-feed",
+                "observed_at": AS_OF,
+                "price": 0,
+                "risk_budget": {"available": 100, "consumed": 0},
+            },
+            "crypto_evidence_price_non_positive",
+        ),
+        (
+            ExpressionKind.CRYPTO_PERPETUAL,
+            {
+                "status": "available",
+                "source_id": "crypto-feed",
+                "observed_at": AS_OF,
+                "price": 100,
+                "bid": 101,
+                "ask": 99,
+                "risk_budget": {"available": 100, "consumed": 0},
+            },
+            "crypto_perpetual_quote_inverted",
+        ),
+    ),
+)
+def test_crypto_impact_fails_closed_on_invalid_bounded_evidence(
+    kind: ExpressionKind,
+    evidence: dict[str, object],
+    expected_blocker: str,
+) -> None:
+    expression = _expression_for_impact(kind, 0.5).model_copy(
+        update={"planned_loss": 10.0, "max_loss_per_unit": 10.0},
+    )
+    _, _, _, blockers = ticker_module._crypto_impact_values(
+        expression,
+        {"portfolio_value": 100_000, "crypto_evidence": evidence},
+        AS_OF,
+    )
+    assert expected_blocker in blockers
 
 
 def _account_facts(**updates: object) -> dict[str, object]:

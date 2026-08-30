@@ -896,10 +896,12 @@ class PortfolioImpact(BaseModel):
                 raise ValueError("available crypto portfolio impacts require available crypto evidence")
             if not _pick(evidence, "source_id", "source", "provider") or not _pick(evidence, "observed_at", "available_at", "quote_time"):
                 raise ValueError("available crypto portfolio impacts require source and observation evidence")
-            if self.expression_kind is ExpressionKind.CRYPTO_PERPETUAL and (
-                _number(evidence.get("bid")) is None or _number(evidence.get("ask")) is None
-            ):
-                raise ValueError("available crypto perpetual impacts require bid and ask evidence")
+            quote_blockers = _crypto_quote_blockers(evidence, self.expression_kind, cutoff)
+            if quote_blockers:
+                raise ValueError(
+                    "available crypto portfolio impacts require bounded quote evidence: "
+                    + ", ".join(quote_blockers)
+                )
         elif self.expression_kind is ExpressionKind.STOCK:
             required = (
                 self.position_weight_before,
@@ -3837,6 +3839,33 @@ def _stock_impact_values(
     return before, after, values, list(dict.fromkeys(blockers))
 
 
+def _crypto_quote_blockers(
+    evidence: Mapping[str, Any],
+    kind: ExpressionKind,
+    cutoff: datetime,
+) -> list[str]:
+    """Apply the shared bounded, positive, point-in-time crypto quote rules."""
+    blockers: list[str] = []
+    observed_at = _parse_datetime(_pick(evidence, "observed_at", "available_at", "quote_time"))
+    if observed_at is None:
+        blockers.append("crypto_evidence_observed_at_missing")
+    elif observed_at > _utc(cutoff):
+        blockers.append("crypto_evidence_future")
+    price = _number(_pick(evidence, "price", "mark", "mid", "last", "close"))
+    if price is None:
+        blockers.append("crypto_evidence_price_missing")
+    elif price <= 0:
+        blockers.append("crypto_evidence_price_non_positive")
+    if kind is ExpressionKind.CRYPTO_PERPETUAL:
+        bid = _number(_pick(evidence, "bid"))
+        ask = _number(_pick(evidence, "ask"))
+        if bid is None or ask is None:
+            blockers.append("crypto_perpetual_quote_missing")
+        elif ask < bid:
+            blockers.append("crypto_perpetual_quote_inverted")
+    return blockers
+
+
 def _crypto_impact_values(
     expression: ExpressionDecision,
     replay: Mapping[str, Any],
@@ -3857,17 +3886,7 @@ def _crypto_impact_values(
         blockers.append("crypto_portfolio_evidence_unavailable")
     if not _pick(evidence, "source_id", "source", "provider"):
         blockers.append("crypto_evidence_source_missing")
-    observed_at = _parse_datetime(_pick(evidence, "observed_at", "available_at", "quote_time"))
-    if observed_at is None:
-        blockers.append("crypto_evidence_observed_at_missing")
-    elif observed_at > _utc(cutoff):
-        blockers.append("crypto_evidence_future")
-    if _number(_pick(evidence, "price", "mark", "mid")) is None:
-        blockers.append("crypto_evidence_price_missing")
-    if expression.kind is ExpressionKind.CRYPTO_PERPETUAL and (
-        _number(evidence.get("bid")) is None or _number(evidence.get("ask")) is None
-    ):
-        blockers.append("crypto_perpetual_quote_missing")
+    blockers.extend(_crypto_quote_blockers(evidence, expression.kind, cutoff))
     if expression.quantity is None or expression.quantity <= 0:
         blockers.append("crypto_planned_quantity_missing")
     if expression.max_loss_per_unit is None or expression.max_loss_per_unit <= 0:
@@ -3879,7 +3898,7 @@ def _crypto_impact_values(
         risk_budget = evidence
     available_budget = _number(_pick(risk_budget, "available", "available_budget", "risk_budget_available"))
     consumed_budget = _number(_pick(risk_budget, "consumed", "consumed_budget", "risk_budget_consumed"))
-    if available_budget is None or consumed_budget is None or consumed_budget < expression.planned_loss:
+    if available_budget is None or available_budget < expression.planned_loss or consumed_budget is None:
         blockers.append("crypto_risk_evidence_missing")
     nav = _number(replay.get("portfolio_value"), 0.0) or 0.0
     quantity = expression.quantity or 0
@@ -4358,6 +4377,7 @@ def build_ticker_decision(
         risk_policy=risk_policy,
         current_price=current_price,
         nav=nav,
+        cutoff=reference,
         usable=usable,
         thesis_revision=manifest.input_hash,
         requests=requests,
@@ -4624,6 +4644,7 @@ def _build_expressions(
     risk_policy: RiskPolicy,
     current_price: float | None,
     nav: float | None,
+    cutoff: datetime,
     usable: Mapping[str, list[dict[str, Any]]],
     thesis_revision: str,
     requests: list[DataRequest],
@@ -4746,14 +4767,12 @@ def _build_expressions(
         if kind is None:
             continue
         details = row.get("details") if isinstance(row.get("details"), Mapping) else {}
-        price = _number(_pick(row, "price", "mid", "mark", "last", "close") or _pick(details, "price", "mid", "mark"))
-        bid = _number(_pick(row, "bid") or _pick(details, "bid"))
-        ask = _number(_pick(row, "ask") or _pick(details, "ask"))
-        observed_at = _pick(row, "quote_time", "observed_at", "available_at")
-        executable = price is not None and price > 0 and observed_at is not None
-        if kind is ExpressionKind.CRYPTO_PERPETUAL:
-            executable = executable and bid is not None and ask is not None and ask >= bid
-        blockers = () if executable else ("crypto_evidence_unavailable",)
+        quote = dict(details)
+        quote.update(row)
+        price = _number(_pick(quote, "price", "mid", "mark", "last", "close"))
+        quote_blockers = _crypto_quote_blockers(quote, kind, cutoff)
+        executable = not quote_blockers
+        blockers = () if executable else tuple(dict.fromkeys(("crypto_evidence_unavailable", *quote_blockers)))
         costs = _number(_pick(row, "expected_transaction_costs", "transaction_costs", "fees") or _pick(details, "expected_transaction_costs", "transaction_costs", "fees"))
         expected_value = _normalised_net_utility(row, details)
         output[kind] = ExpressionDecision(
