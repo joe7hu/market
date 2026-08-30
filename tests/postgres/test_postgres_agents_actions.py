@@ -116,10 +116,14 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                     "(strategy_revision_id, evaluation_type, evaluated_at, period_start, period_end, verdict, metrics, evidence) "
                     "VALUES (%s, %s, now(), now() - make_interval(days => %s), now(), 'pass', %s, %s)",
                     [candidate_id, evaluation_type, span, Jsonb({"baseline": baseline, "proposed": proposed, "observation_span_days": span, **phase7_metrics}), Jsonb({
-                        "source": "test", "sample_size": sample,
-                        "method": "walk-forward-evaluation",
+                        "source": "analysis.option_outcome", "sample_size": sample,
+                        "method": "retained_actionable_decisions_forward_evaluation",
                         "version": "phase7-governance-evidence-v1",
                         "uncertainty": {"lower_95_expectancy": 0.01},
+                        **({"paper_execution": {
+                            "source": "app.paper_order", "paper_only": True,
+                            "sample_size": sample, "completed_orders": sample,
+                        }} if evaluation_type == "execution_grade_paper" else {}),
                     })],
                 )
 
@@ -1504,10 +1508,14 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                     "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics, evidence) "
                     "VALUES (%s, %s, now(), 'pass', %s, %s)",
                     [candidate_id, evaluation_type, Jsonb(metrics), Jsonb({
-                        "sample_size": 30, "source": "realized_paper_outcomes",
-                        "method": "walk-forward-evaluation",
+                        "sample_size": 30, "source": "analysis.option_outcome",
+                        "method": "retained_actionable_decisions_forward_evaluation",
                         "version": "phase7-governance-evidence-v1",
                         "uncertainty": {"lower_95_expectancy": 0.01},
+                        **({"paper_execution": {
+                            "source": "app.paper_order", "paper_only": True,
+                            "sample_size": 30, "completed_orders": 30,
+                        }} if evaluation_type == "execution_grade_paper" else {}),
                     })],
                 )
             analysis_run_id = connection.execute(
@@ -1632,9 +1640,7 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
         assert candidates[0]["parameters"]["gates"]["min_dte"] == 30
         assert candidates[2]["parameters"]["gates"]["max_spread_pct"] == 0.05
         assert "reject_spread_pct" not in candidates[2]["parameters"]["gates"]
-        assert {row["evaluation_type"] for row in evaluations} == {
-            "walk_forward", "shadow", "execution_grade_paper",
-        }
+        assert {row["evaluation_type"] for row in evaluations} == {"walk_forward", "shadow"}
         assert all(
             row["evidence"]["method"] == "retained_actionable_decisions_forward_evaluation"
             and row["evidence"]["version"] == "phase7-governance-evidence-v1"
@@ -1642,6 +1648,11 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
             and isinstance(row["evidence"]["sample_size"], int)
             for row in evaluations
         )
+        execution_evidence = [
+            row["evidence"] for row in evaluations
+            if row["evaluation_type"] == "execution_grade_paper"
+        ]
+        assert execution_evidence == []
         assert [row["verdict"] for row in verdicts] == [
             "collecting_data", "unsupported_parameters", "collecting_data"
         ]

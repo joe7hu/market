@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from statistics import mean, pstdev
-from typing import Any
+from typing import Any, Mapping
 
 from psycopg.types.json import Jsonb
 
@@ -228,11 +228,19 @@ class StrategyLearningRepository:
         forward_source = [row for row in rows if row["as_of"] >= proposal["created_at"]]
         forward_rows = [row for row in forward_source if _passes(row, dict(candidate["parameters"] or {}))]
         forward = _evaluation(forward_source, forward_rows, minimum=30, require_span_days=30)
-        execution_grade = _evaluation(forward_source, forward_rows, minimum=20, require_span_days=20)
+        execution_source = [row for row in forward_source if _paper_execution_complete(row)]
+        execution_rows = [row for row in forward_rows if _paper_execution_complete(row)]
+        execution_grade = _evaluation(execution_source, execution_rows, minimum=20, require_span_days=20)
         self._store_evaluation(connection, candidate_id, "walk_forward", backtest, rows)
         self._store_evaluation(connection, candidate_id, "shadow", forward, forward_source)
-        self._store_evaluation(connection, candidate_id, "execution_grade_paper", execution_grade, forward_source)
-        status = _proposal_status(str(backtest["verdict"]), str(forward["verdict"]))
+        if execution_source:
+            self._store_evaluation(
+                connection, candidate_id, "execution_grade_paper", execution_grade,
+                execution_source, execution_grade=True,
+            )
+        status = _proposal_status(
+            str(backtest["verdict"]), str(forward["verdict"]), str(execution_grade["verdict"]),
+        )
         result["status"] = status
         connection.execute(
             "UPDATE analysis.agent_task SET result = %s, validation = %s, updated_at = now() WHERE id = %s",
@@ -247,9 +255,11 @@ class StrategyLearningRepository:
         evaluation_type: str,
         evaluation: dict[str, Any],
         source_rows: list[dict[str, Any]],
+        *,
+        execution_grade: bool = False,
     ) -> None:
         metrics = _phase7_metrics(evaluation, source_rows)
-        evidence = _phase7_evidence(evaluation, source_rows)
+        evidence = _phase7_evidence(evaluation, source_rows, execution_grade=execution_grade)
         connection.execute(
             """
             INSERT INTO analysis.strategy_evaluation
@@ -274,7 +284,11 @@ _OUTCOME_QUERY = """
            feature.iv_percentile, feature.required_move_pct,
            quote.open_interest, quote.volume, outcome.peak_return,
            outcome.current_return, outcome.max_drawdown,
-           option_decision.probability_profit, instrument.symbol AS ticker
+           option_decision.probability_profit, instrument.symbol AS ticker,
+           paper.paper_order_id, paper.paper_only, paper.paper_status,
+           paper.filled_at, paper.exit_at, paper.actual_fill_price,
+           paper.exit_price, paper.filled_quantity, paper.exited_quantity,
+           paper.entry_slippage, paper.exit_slippage, paper.fees
     FROM analysis.option_outcome outcome
     JOIN analysis.decision decision ON decision.id = outcome.decision_id
     JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
@@ -288,6 +302,17 @@ _OUTCOME_QUERY = """
      AND quote.contract_id = option_decision.contract_id
      AND quote.observed_at = option_decision.quote_observed_at
     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+    LEFT JOIN LATERAL (
+        SELECT paper.id::text AS paper_order_id, paper.paper_only,
+               paper.status AS paper_status, paper.filled_at, paper.exit_at,
+               paper.actual_fill_price, paper.exit_price, paper.filled_quantity,
+               paper.exited_quantity, paper.entry_slippage, paper.exit_slippage,
+               paper.fees
+        FROM app.paper_order paper
+        WHERE paper.decision_id = decision.id AND paper.paper_only IS TRUE
+        ORDER BY paper.created_at DESC, paper.id DESC
+        LIMIT 1
+    ) paper ON TRUE
     WHERE outcome.promotion_eligible IS TRUE
       AND outcome.outcome_classification = 'captured'
       AND outcome.peak_return IS NOT NULL
@@ -296,8 +321,50 @@ _OUTCOME_QUERY = """
       AND outcome.sample_eligible IS TRUE
       AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
       AND outcome.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
-      AND decision.strategy_revision_id = %s
+    AND decision.strategy_revision_id = %s
 """
+
+
+def _paper_execution_complete(row: Mapping[str, Any]) -> bool:
+    if row.get("paper_only") is not True or row.get("paper_status") not in {"exited", "closed"}:
+        return False
+    required = (
+        row.get("paper_order_id"), row.get("filled_at"), row.get("exit_at"),
+        row.get("actual_fill_price"), row.get("exit_price"), row.get("filled_quantity"),
+        row.get("exited_quantity"),
+    )
+    if not row.get("paper_order_id") or any(value is None for value in required[1:]):
+        return False
+    try:
+        entry = float(row["actual_fill_price"])
+        exit_price = float(row["exit_price"])
+        filled = float(row["filled_quantity"])
+        exited = float(row["exited_quantity"])
+        fees = float(row.get("fees") or 0)
+        entry_slippage = float(row.get("entry_slippage") or 0)
+        exit_slippage = float(row.get("exit_slippage") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        math.isfinite(entry) and entry > 0
+        and math.isfinite(exit_price) and exit_price > 0
+        and math.isfinite(filled) and filled > 0
+        and math.isfinite(exited) and exited > 0 and exited <= filled
+        and math.isfinite(fees) and fees >= 0
+        and math.isfinite(entry_slippage) and entry_slippage >= 0
+        and math.isfinite(exit_slippage) and exit_slippage >= 0
+    )
+
+
+def _paper_realized_return(row: Mapping[str, Any]) -> float | None:
+    if not _paper_execution_complete(row):
+        return None
+    entry = float(row["actual_fill_price"])
+    exit_price = float(row["exit_price"])
+    quantity = float(row["filled_quantity"])
+    fees = float(row.get("fees") or 0)
+    value = (exit_price - entry) / entry - fees / (entry * quantity)
+    return value if math.isfinite(value) else None
 
 _DEFAULT_PARAMETERS = {
     "feature_version": "option-core-v1",
@@ -425,6 +492,26 @@ def _phase7_metrics(evaluation: dict[str, Any], source_rows: list[dict[str, Any]
         "false_positives": proposed.get("false_positive_rate"),
         "missed_winners": None,
     }
+    if source_rows and all(_paper_execution_complete(row) for row in source_rows):
+        realized_returns = [_paper_realized_return(row) for row in source_rows]
+        realized_returns = [value for value in realized_returns if value is not None]
+        if len(realized_returns) == len(source_rows):
+            values.update({
+                "net_pnl_after_realized_costs": mean(realized_returns),
+                "turnover": mean(
+                    (float(row["actual_fill_price"]) + float(row["exit_price"]))
+                    * float(row["filled_quantity"])
+                    for row in source_rows
+                ),
+                "slippage": mean(
+                    abs(float(row.get("entry_slippage") or 0))
+                    + abs(float(row.get("exit_slippage") or 0))
+                    for row in source_rows
+                ),
+                "capacity": min(float(row["filled_quantity"]) for row in source_rows),
+                "regime_performance": {"paper_execution": mean(realized_returns)},
+                "missed_winners": 0.0,
+            })
     return {
         **{name: values.get(name) for name in TRACKED_METRICS},
         # Preserve the measured comparison details for non-authoritative
@@ -435,7 +522,9 @@ def _phase7_metrics(evaluation: dict[str, Any], source_rows: list[dict[str, Any]
     }
 
 
-def _phase7_evidence(evaluation: dict[str, Any], source_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _phase7_evidence(
+    evaluation: dict[str, Any], source_rows: list[dict[str, Any]], *, execution_grade: bool = False,
+) -> dict[str, Any]:
     proposed = dict(evaluation.get("proposed") or {})
     sample_size = proposed.get("sample_size")
     returns = [
@@ -449,7 +538,7 @@ def _phase7_evidence(evaluation: dict[str, Any], source_rows: list[dict[str, Any
         uncertainty["upper_95_expectancy"] = mean(returns) + (
             1.96 * pstdev(returns) / math.sqrt(len(returns)) if len(returns) > 1 else 0.0
         )
-    return {
+    evidence = {
         "source": "analysis.option_outcome",
         "method": "retained_actionable_decisions_forward_evaluation",
         "version": "phase7-governance-evidence-v1",
@@ -458,6 +547,14 @@ def _phase7_evidence(evaluation: dict[str, Any], source_rows: list[dict[str, Any
         "uncertainty": uncertainty,
         "actionable_only": True,
     }
+    if execution_grade and source_rows and all(_paper_execution_complete(row) for row in source_rows):
+        evidence["paper_execution"] = {
+            "source": "app.paper_order",
+            "paper_only": True,
+            "sample_size": len(source_rows),
+            "completed_orders": len(source_rows),
+        }
+    return evidence
 
 
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -490,7 +587,7 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _proposal_status(backtest: str, forward: str) -> str:
+def _proposal_status(backtest: str, forward: str, execution_grade: str = "unavailable") -> str:
     if backtest == "fail":
         return "backtest_failed"
     if backtest != "pass":
@@ -499,4 +596,6 @@ def _proposal_status(backtest: str, forward: str) -> str:
         return "forward_test_failed"
     if forward != "pass":
         return "forward_test_required"
+    if execution_grade != "pass":
+        return "execution_grade_paper_required"
     return "ready"

@@ -44,10 +44,14 @@ def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
                     [
                         strategy_id, stage, Jsonb(metrics),
                         Jsonb({
-                            "sample_size": 30, "source": "realized_paper_outcomes",
-                            "method": "walk-forward-evaluation",
+                            "sample_size": 30, "source": "analysis.option_outcome",
+                            "method": "retained_actionable_decisions_forward_evaluation",
                             "version": "phase7-governance-evidence-v1",
                             "uncertainty": {"lower_95_expectancy": 0.01},
+                            **({"paper_execution": {
+                                "source": "app.paper_order", "paper_only": True,
+                                "sample_size": 30, "completed_orders": 30,
+                            }} if stage == "execution_grade_paper" else {}),
                         }),
                     ],
                 )

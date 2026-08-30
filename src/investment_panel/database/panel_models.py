@@ -860,14 +860,19 @@ def load_postgres_tables(
                     "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
                 )
                 active_strategies = connection.execute(
-                    "SELECT id FROM analysis.strategy_revision WHERE status = 'active' "
+                    "SELECT id, strategy_key, revision FROM analysis.strategy_revision "
+                    "WHERE authority_group = 'options-radar-core' AND status = 'active' "
                     "ORDER BY id"
                 ).fetchall()
                 governance_rows = []
                 governance_authority = "unavailable"
                 governance_strategy_id = None
+                governance_strategy_key = None
+                governance_strategy_revision = None
                 if len(active_strategies) == 1:
                     governance_strategy_id = int(active_strategies[0]["id"])
+                    governance_strategy_key = str(active_strategies[0]["strategy_key"])
+                    governance_strategy_revision = int(active_strategies[0]["revision"])
                     governance_rows = connection.execute(
                         """
                         SELECT evaluation_type AS stage, verdict, metrics, evidence,
@@ -885,6 +890,8 @@ def load_postgres_tables(
                     "governance_evaluations": [dict(row) for row in governance_rows],
                     "governance_authority": governance_authority,
                     "governance_strategy_revision_id": governance_strategy_id,
+                    "governance_strategy_key": governance_strategy_key,
+                    "governance_strategy_revision": governance_strategy_revision,
                 }]
                 continue
             if name == "superinvestor_portfolios":

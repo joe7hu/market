@@ -19,18 +19,24 @@ def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
     if aliases:
         metrics["calibration_error"] = metrics.pop("calibration")
         metrics["precision_at_5"] = metrics.pop("precision_at_top_k")
+    evidence = {
+        "sample_size": 30,
+        "source": "analysis.option_outcome",
+        "method": "retained_actionable_decisions_forward_evaluation",
+        "version": "phase7-governance-evidence-v1",
+        "uncertainty": {"lower_95_expectancy": 0.01},
+    }
+    if stage == "execution_grade_paper":
+        evidence["paper_execution"] = {
+            "source": "app.paper_order", "paper_only": True,
+            "sample_size": 30, "completed_orders": 30,
+        }
     return {
         "stage": stage,
         "verdict": "pass",
         "evaluated_at": datetime(2026, 8, 30, 12, tzinfo=UTC),
         "available_at": datetime(2026, 8, 30, 12, tzinfo=UTC),
-        "evidence": {
-            "sample_size": 30,
-            "source": "realized_paper_outcomes",
-            "method": "walk-forward-evaluation",
-            "version": "phase7-governance-evidence-v1",
-            "uncertainty": {"lower_95_expectancy": 0.01},
-        },
+        "evidence": evidence,
         "metrics": metrics,
     }
 
@@ -54,6 +60,31 @@ def test_phase7_malformed_or_legacy_claims_are_unavailable() -> None:
     result = promotion_readiness([row], now=datetime(2026, 8, 30, 13, tzinfo=UTC))
     assert result["promotion_eligible"] is False
     assert "walk_forward_evidence_not_real" in result["blockers"]
+
+
+def test_phase7_evidence_contract_rejects_renamed_and_non_paper_claims() -> None:
+    renamed_rows = []
+    for stage, field in zip(
+        ("walk_forward", "shadow", "execution_grade_paper"), ("source", "method", "version"),
+    ):
+        renamed = _evaluation(stage)
+        renamed["evidence"][field] = "renamed-value"
+        renamed_rows.append(renamed)
+
+    result = promotion_readiness(
+        renamed_rows, now=datetime(2026, 8, 30, 13, tzinfo=UTC),
+    )
+
+    assert result["promotion_eligible"] is False
+    assert "walk_forward_evidence_not_real" in result["blockers"]
+    assert "execution_grade_paper_evidence_not_real" in result["blockers"]
+    missing_paper = _evaluation("execution_grade_paper")
+    missing_paper["evidence"].pop("paper_execution")
+    missing_result = promotion_readiness(
+        [_evaluation("walk_forward"), _evaluation("shadow"), missing_paper],
+        now=datetime(2026, 8, 30, 13, tzinfo=UTC),
+    )
+    assert "execution_grade_paper_evidence_not_real" in missing_result["blockers"]
 
 
 def test_phase7_metric_aliases_are_resolved_without_key_errors() -> None:

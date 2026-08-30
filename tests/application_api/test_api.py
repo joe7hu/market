@@ -989,7 +989,7 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
         ).fetchall()
     assert proposal["result"]["status"] == "backtest_required"
     assert [row["evaluation_type"] for row in evaluations] == [
-        "execution_grade_paper", "shadow", "walk_forward",
+        "shadow", "walk_forward",
     ]
     assert {row["verdict"] for row in evaluations} == {
         "requires_rejected_or_shadow_outcomes", "collecting_data",
@@ -1023,10 +1023,14 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
                           now(), 'pass', %s, %s)
                 """,
                 [ready_result["candidate_revision_id"], stage, Jsonb(metrics), Jsonb({
-                    "sample_size": 30, "source": "realized_paper_outcomes",
-                    "method": "walk-forward-evaluation",
+                    "sample_size": 30, "source": "analysis.option_outcome",
+                    "method": "retained_actionable_decisions_forward_evaluation",
                     "version": "phase7-governance-evidence-v1",
                     "uncertainty": {"lower_95_expectancy": 0.01},
+                    **({"paper_execution": {
+                        "source": "app.paper_order", "paper_only": True,
+                        "sample_size": 30, "completed_orders": 30,
+                    }} if stage == "execution_grade_paper" else {}),
                 })],
             )
     promoted = client.post(
@@ -1099,10 +1103,14 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
                 "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics, evidence) "
                 "VALUES (%s, %s, now(), 'pass', %s, %s)",
                 [candidate_id, evaluation_type, Jsonb(metrics), Jsonb({
-                    "sample_size": 30, "source": "realized_paper_outcomes",
-                    "method": "walk-forward-evaluation",
+                    "sample_size": 30, "source": "analysis.option_outcome",
+                    "method": "retained_actionable_decisions_forward_evaluation",
                     "version": "phase7-governance-evidence-v1",
                     "uncertainty": {"lower_95_expectancy": 0.01},
+                    **({"paper_execution": {
+                        "source": "app.paper_order", "paper_only": True,
+                        "sample_size": 30, "completed_orders": 30,
+                    }} if evaluation_type == "execution_grade_paper" else {}),
                 })],
             )
 

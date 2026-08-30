@@ -21,6 +21,10 @@ GOVERNANCE_STAGES = (
     "limited_live",
 )
 PROMOTION_STAGES = ("walk_forward", "shadow", "execution_grade_paper")
+CANONICAL_EVIDENCE_SOURCE = "analysis.option_outcome"
+CANONICAL_EVIDENCE_METHOD = "retained_actionable_decisions_forward_evaluation"
+CANONICAL_EVIDENCE_VERSION = "phase7-governance-evidence-v1"
+PAPER_EXECUTION_EVIDENCE_SOURCE = "app.paper_order"
 TRACKED_METRICS = (
     "calibration",
     "brier",
@@ -88,7 +92,7 @@ def promotion_readiness(
             blockers.append(f"{stage}_evidence_not_passed")
             stages[stage] = stage_result
             continue
-        if not _real_evidence(row):
+        if not _real_evidence(row, stage=stage):
             blockers.append(f"{stage}_evidence_not_real")
             stages[stage] = stage_result
             continue
@@ -220,32 +224,43 @@ def _metrics(row: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
-def _real_evidence(row: Mapping[str, Any]) -> bool:
+def _real_evidence(row: Mapping[str, Any], *, stage: str | None = None) -> bool:
     evidence = row.get("evidence")
     if isinstance(evidence, Mapping):
-        sample = evidence.get("sample_size") or evidence.get("observation_count")
-        uncertainty = evidence.get("uncertainty")
-        return bool(
-            evidence.get("source")
-            and evidence.get("method")
-            and evidence.get("version")
-            and _positive_int(sample)
-            and isinstance(uncertainty, Mapping)
-            and any(_metric_valid(value) for value in uncertainty.values())
-        )
+        return _evidence_item_real(evidence, stage=stage)
     if isinstance(evidence, list):
         return bool(evidence) and all(
-            isinstance(item, Mapping)
-            and item.get("source")
-            and item.get("method")
-            and item.get("version")
-            and _positive_int(item.get("sample_size") or item.get("observation_count"))
-            and isinstance(item.get("uncertainty"), Mapping)
-            and any(_metric_valid(value) for value in item["uncertainty"].values())
+            isinstance(item, Mapping) and _evidence_item_real(item, stage=stage)
             for item in evidence
         )
-    return bool(row.get("source")) and _positive_int(
-        row.get("sample_size") or row.get("observation_count") or row.get("sample")
+    return False
+
+
+def _evidence_item_real(evidence: Mapping[str, Any], *, stage: str | None) -> bool:
+    if (
+        evidence.get("source") != CANONICAL_EVIDENCE_SOURCE
+        or evidence.get("method") != CANONICAL_EVIDENCE_METHOD
+        or evidence.get("version") != CANONICAL_EVIDENCE_VERSION
+        or not _positive_int(evidence.get("sample_size"))
+    ):
+        return False
+    uncertainty = evidence.get("uncertainty")
+    if not isinstance(uncertainty, Mapping) or not uncertainty:
+        return False
+    if not any(_metric_valid(value) for value in uncertainty.values()):
+        return False
+    if stage != "execution_grade_paper":
+        return True
+    paper = evidence.get("paper_execution")
+    if not isinstance(paper, Mapping):
+        return False
+    return (
+        paper.get("source") == PAPER_EXECUTION_EVIDENCE_SOURCE
+        and paper.get("paper_only") is True
+        and _positive_int(paper.get("sample_size"))
+        and paper.get("sample_size") == evidence.get("sample_size")
+        and _positive_int(paper.get("completed_orders"))
+        and paper.get("completed_orders") == paper.get("sample_size")
     )
 
 
