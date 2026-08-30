@@ -34,39 +34,96 @@ def current_option_publication_answers(
 ) -> list[dict[str, Any]]:
     """Read current option answers once across both option publication owners."""
 
+    return list(current_option_publication_answers_result(connection, cutoff=cutoff)["rows"])
+
+
+def current_option_publication_answers_result(
+    connection: Any,
+    *,
+    cutoff: datetime | None = None,
+) -> dict[str, Any]:
+    """Return current option answers and the cross-owner authority state."""
+
     rows: list[dict[str, Any]] = []
+    owner_diagnostics: list[dict[str, Any]] = []
     for scope, model_name in sorted(CURRENT_OPTION_PUBLICATION_MODELS):
+        result = current_option_publication_result(
+            connection,
+            scope=scope,
+            model_name=model_name,
+            cutoff=cutoff,
+        )
+        diagnostic = dict(result["authority"])
+        if diagnostic.get("status") != "available":
+            owner_diagnostics.append(diagnostic)
         rows.extend(
             {
                 **row,
                 "scope": scope,
             }
-            for row in current_option_publication_rows(
-                connection,
-                scope=scope,
-                model_name=model_name,
-                cutoff=cutoff,
-            )
+            for row in result["rows"]
         )
+    blocking_diagnostics = [
+        diagnostic for diagnostic in owner_diagnostics
+        if diagnostic.get("reason") != "current_option_publication_empty"
+    ]
+    if blocking_diagnostics:
+        return {
+            "rows": [],
+            "authority": {
+                "status": "unavailable",
+                "reason": "current_option_publication_authority_conflict",
+                "owners": blocking_diagnostics,
+            },
+        }
     counts: dict[str, int] = {}
     for row in rows:
         episode_key = str(row.get("episode_key") or "")
         if episode_key:
             counts[episode_key] = counts.get(episode_key, 0) + 1
-    return [
+    answers = [
         row for row in rows
         if counts.get(str(row.get("episode_key") or ""), 0) == 1
     ]
+    if len(answers) != len(rows):
+        return {
+            "rows": [],
+            "authority": {
+                "status": "unavailable",
+                "reason": "current_option_duplicate_episode_authority",
+                "source_row_count": len(rows),
+                "returned_row_count": len(answers),
+            },
+        }
+    if not rows:
+        return {
+            "rows": [],
+            "authority": {
+                "status": "unavailable",
+                "reason": "current_option_publication_empty",
+                "source_row_count": 0,
+                "returned_row_count": 0,
+            },
+        }
+    return {
+        "rows": answers,
+        "authority": {
+            "status": "available",
+            "reason": None,
+            "source_row_count": len(rows),
+            "returned_row_count": len(answers),
+        },
+    }
 
 
-def current_option_publication_rows(
+def current_option_publication_result(
     connection: Any,
     *,
     scope: str,
     model_name: str,
     cutoff: datetime | None = None,
     publication_id: UUID | str | None = None,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Read one point-in-time option publication with authoritative episode keys.
 
     Publication payloads are not identity authority.  The option decision row
@@ -185,30 +242,105 @@ def current_option_publication_rows(
             FROM validated_rows validated
         )
         SELECT payload, publication_id, published_at, rank, stable_key,
+               authoritative_decision_id::text AS authoritative_decision_id,
                authoritative_episode_key AS episode_key,
                source_row_count, authoritative_row_count, valid_row_count,
-               episode_authority_count
+               episode_authority_count, row_valid
         FROM counted_rows
-        WHERE row_valid AND episode_authority_count = 1
         ORDER BY rank, stable_key
         """,
         [scope, cutoff, publication_id, publication_id, model_name, model_name],
     ).fetchall()
     normalized = [dict(row) for row in rows]
     if not normalized:
-        return []
+        return {
+            "rows": [],
+            "authority": {
+                "status": "unavailable",
+                "scope": scope,
+                "model_name": model_name,
+                "reason": "current_option_publication_empty",
+                "source_row_count": 0,
+                "authoritative_row_count": 0,
+                "valid_row_count": 0,
+                "returned_row_count": 0,
+                "duplicate_episode_count": 0,
+            },
+        }
     first = normalized[0]
-    if not (
-        int(first["source_row_count"]) == int(first["authoritative_row_count"]) == int(first["valid_row_count"])
-        and all(int(row["episode_authority_count"]) == 1 for row in normalized)
-    ):
-        return []
-    for row in normalized:
+    source_row_count = int(first["source_row_count"])
+    authoritative_row_count = int(first["authoritative_row_count"])
+    valid_row_count = int(first["valid_row_count"])
+    accepted = [
+        row for row in normalized
+        if bool(row["row_valid"]) and int(row["episode_authority_count"]) == 1
+    ]
+    duplicate_episodes = {
+        str(row["episode_key"])
+        for row in normalized
+        if bool(row["authoritative_decision_id"])
+        and int(row["episode_authority_count"]) > 1
+        and row.get("episode_key")
+    }
+    returned_row_count = len(accepted)
+    complete = (
+        source_row_count == authoritative_row_count == valid_row_count == returned_row_count
+        and not duplicate_episodes
+    )
+    if complete:
+        reason = None
+        status = "available"
+    elif duplicate_episodes:
+        reason = "current_option_duplicate_episode_authority"
+        status = "unavailable"
+    elif authoritative_row_count != source_row_count:
+        reason = "current_option_authority_unresolved"
+        status = "unavailable"
+    elif valid_row_count != source_row_count:
+        reason = "current_option_identity_conflict"
+        status = "unavailable"
+    else:
+        reason = "current_option_projection_incomplete"
+        status = "unavailable"
+    authority = {
+        "status": status,
+        "scope": scope,
+        "model_name": model_name,
+        "reason": reason,
+        "source_row_count": source_row_count,
+        "authoritative_row_count": authoritative_row_count,
+        "valid_row_count": valid_row_count,
+        "returned_row_count": returned_row_count,
+        "duplicate_episode_count": len(duplicate_episodes),
+    }
+    if not complete:
+        return {"rows": [], "authority": authority}
+    for row in accepted:
         row.pop("source_row_count", None)
         row.pop("authoritative_row_count", None)
         row.pop("valid_row_count", None)
         row.pop("episode_authority_count", None)
-    return normalized
+        row.pop("row_valid", None)
+    return {"rows": accepted, "authority": authority}
+
+
+def current_option_publication_rows(
+    connection: Any,
+    *,
+    scope: str,
+    model_name: str,
+    cutoff: datetime | None = None,
+    publication_id: UUID | str | None = None,
+) -> list[dict[str, Any]]:
+    """Return only a complete current option projection."""
+
+    return list(current_option_publication_result(
+        connection,
+        scope=scope,
+        model_name=model_name,
+        cutoff=cutoff,
+        publication_id=publication_id,
+    )["rows"])
 
 
 class AnalysisRepository:
@@ -889,9 +1021,10 @@ class AnalysisRepository:
                 """,
                 [decision_id],
             ).fetchall()
+            current_answers = current_option_publication_answers_result(connection)
             current_matches = [
                 candidate
-                for candidate in current_option_publication_answers(connection)
+                for candidate in current_answers["rows"]
                 if str(
                     (candidate["payload"] or {}).get("decision_id")
                     or (candidate["payload"] or {}).get("opportunity_id")
@@ -909,7 +1042,16 @@ class AnalysisRepository:
         else:
             result["current_publication"] = False
             result["execution_ready"] = False
-            result["blockers"] = sorted(set([*list(result.get("blockers") or []), "not_in_current_publication"]))
+            authority = dict(current_answers["authority"])
+            blocker = (
+                "current_option_publication_authority_unavailable"
+                if authority.get("status") != "available"
+                and authority.get("reason") != "current_option_publication_empty"
+                else "not_in_current_publication"
+            )
+            result["blockers"] = sorted(set([*list(result.get("blockers") or []), blocker]))
+            if authority.get("status") != "available":
+                result["authority"] = authority
         result["contract_version"] = 3
         result["evidence"] = [_jsonable(dict(item)) for item in evidence]
         result["alternatives"] = [_jsonable(dict(item)) for item in alternatives]

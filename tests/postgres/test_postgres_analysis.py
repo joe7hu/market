@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 
 from app import dependencies
 from app.routers.options import encode_learning_cursor, router as options_router
-from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.analysis import AnalysisRepository, current_option_publication_result
 from investment_panel.database.actions import ActionRepository
 from investment_panel.core.decision import build_ticker_decision, is_us_market_day
 from investment_panel.database.ingestion import IngestionRepository
@@ -398,6 +398,57 @@ def test_current_option_publication_rejects_conflicting_payload_identity(analysi
     )
 
     assert repository.publication_rows("options-radar", "option_radar_opportunity") == []
+
+
+def test_current_option_publication_rejects_mixed_duplicate_projection(analysis_context) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    run_id = _start_run(repository, "mixed-duplicate-episode")
+    decision_ids = [
+        repository.store_option_decision(
+            run_id,
+            decision_key=f"mixed-duplicate-episode-{suffix}",
+            instrument_id=analysis_context["instrument_id"],
+            contract_id=analysis_context["contract_id"],
+            snapshot_id=analysis_context["snapshot_id"],
+            quote_observed_at=analysis_context["observed_at"],
+            state="SETUP",
+            score=80,
+            rank=rank,
+            inputs={"rank": rank},
+            details={"quality_status": "complete", "structure": "long_call"},
+        )
+        for rank, suffix in enumerate(("one", "two", "unique"), start=1)
+    ]
+    repository.finish_run(run_id, "succeeded")
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.decision SET episode_key = %s WHERE id = %s",
+            ["qqq:unique-episode", decision_ids[-1]],
+        )
+    repository.publish(
+        run_id,
+        "options-radar",
+        {
+            "option_radar_opportunity": [
+                {"stable_key": f"mixed-row-{index}", "decision_id": str(decision_id), "symbol": "NVDA"}
+                for index, decision_id in enumerate(decision_ids, start=1)
+            ]
+        },
+    )
+
+    with runtime.read() as connection:
+        result = current_option_publication_result(
+            connection,
+            scope="options-radar",
+            model_name="option_radar_opportunity",
+        )
+
+    assert result["rows"] == []
+    assert result["authority"]["status"] == "unavailable"
+    assert result["authority"]["reason"] == "current_option_duplicate_episode_authority"
+    assert result["authority"]["source_row_count"] == 3
+    assert result["authority"]["returned_row_count"] == 1
 
 
 def test_opportunity_episode_persists_ticker_and_option_expressions(analysis_context) -> None:

@@ -636,6 +636,45 @@ def test_decision_inbox_hides_duplicate_active_episode_answers(
         runtime.close()
 
 
+def test_decision_inbox_hides_active_canonical_answer_without_episode_identity(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    inbox = DecisionInboxRepository(runtime)
+    try:
+        inbox.emit(
+            event_type="ready",
+            lane="ticker",
+            enqueue_telegram=False,
+            dedupe_key="missing-canonical-episode",
+            payload={
+                "ticker": "LEGACY",
+                "state": "ACTIONABLE",
+                "state_transition": "newly_actionable",
+            },
+        )
+        inbox.emit(
+            event_type="paper_filled",
+            lane="ticker",
+            enqueue_telegram=False,
+            dedupe_key="lifecycle-without-episode",
+            payload={"ticker": "LEGACY", "state_transition": "paper_filled"},
+        )
+
+        result = inbox.rows()
+
+        assert [item["payload"]["state_transition"] for item in result["items"]] == ["paper_filled"]
+        assert result["authority"] == {
+            "status": "unavailable",
+            "reason": "canonical_transition_authority_missing_episode",
+            "missing_episode_count": 1,
+            "duplicate_episode_count": 0,
+        }
+    finally:
+        runtime.close()
+
+
 def test_ticker_paper_lifecycle_postgres_activation_filtering_and_dedupe(
     migrated_postgres_dsn: str,
 ) -> None:

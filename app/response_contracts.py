@@ -207,6 +207,7 @@ class DecisionInboxResponse(BaseModel):
     items: list[Row] = Field(default_factory=list)
     count: int = 0
     next_cursor: str | None = None
+    authority: dict[str, Any] | None = None
 
 
 class OptionHistoryHealthResponse(FlexibleResponse):

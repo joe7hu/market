@@ -1778,6 +1778,10 @@ export interface components {
         };
         /** DecisionInboxResponse */
         DecisionInboxResponse: {
+            /** Authority */
+            authority?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Count
              * @default 0
@@ -3383,6 +3387,10 @@ export interface components {
             analysis_run_id?: string | null;
             /** As Of */
             as_of?: string | null;
+            /** Authority */
+            authority?: {
+                [key: string]: unknown;
+            } | null;
             /** Capture Generation Id */
             capture_generation_id?: number | null;
             /** Count */
@@ -3421,6 +3429,10 @@ export interface components {
             analysis_run_id?: string | null;
             /** As Of */
             as_of?: string | null;
+            /** Authority */
+            authority?: {
+                [key: string]: unknown;
+            } | null;
             decision_truth?: components["schemas"]["OptionsDecisionTruth"] | null;
             /** Lane */
             lane: string;

@@ -1228,6 +1228,18 @@
       },
       "DecisionInboxResponse": {
         "properties": {
+          "authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority"
+          },
           "count": {
             "default": 0,
             "title": "Count",
@@ -5916,6 +5928,18 @@
             ],
             "title": "As Of"
           },
+          "authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority"
+          },
           "capture_generation_id": {
             "anyOf": [
               {
@@ -6060,6 +6084,18 @@
               }
             ],
             "title": "As Of"
+          },
+          "authority": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authority"
           },
           "decision_truth": {
             "anyOf": [

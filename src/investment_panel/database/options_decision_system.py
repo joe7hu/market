@@ -11,6 +11,7 @@ from investment_panel.analysis.history_v3 import MODEL_REVISION, static_arbitrag
 from investment_panel.core.robinhood_options.collector import RobinhoodClient, option_quote_row, payload_list
 from investment_panel.core.option_underwriting import thesis_blocker, thesis_invalidation
 from investment_panel.core.event_scout import OPTIONS_DECISION_ROUTE_VERSION, build_decision_truth
+from investment_panel.database.analysis import current_option_publication_result
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.options_journal import learning_progress, paper_journal, shadow_observations
 from investment_panel.database.options_history_canary import canary_health
@@ -24,46 +25,10 @@ NULLIF(BTRIM(decision.episode_key), '') IS NOT NULL
 AND NOT EXISTS (
     SELECT 1
     FROM analysis.decision duplicate
-    JOIN analysis.option_decision duplicate_option ON duplicate_option.decision_id = duplicate.id
     WHERE duplicate.run_id = decision.run_id
       AND duplicate.kind = 'option'
       AND duplicate.id <> decision.id
       AND duplicate.episode_key = decision.episode_key
-      AND (
-          CASE duplicate_option.paper_state
-              WHEN 'PAPER_READY' THEN 1
-              WHEN 'WATCH' THEN 2
-              WHEN 'COLLECTING' THEN 3
-              ELSE 4
-          END < CASE option_decision.paper_state
-              WHEN 'PAPER_READY' THEN 1
-              WHEN 'WATCH' THEN 2
-              WHEN 'COLLECTING' THEN 3
-              ELSE 4
-          END
-          OR (
-              CASE duplicate_option.paper_state
-                  WHEN 'PAPER_READY' THEN 1
-                  WHEN 'WATCH' THEN 2
-                  WHEN 'COLLECTING' THEN 3
-                  ELSE 4
-              END = CASE option_decision.paper_state
-                  WHEN 'PAPER_READY' THEN 1
-                  WHEN 'WATCH' THEN 2
-                  WHEN 'COLLECTING' THEN 3
-                  ELSE 4
-              END
-              AND (
-                  (duplicate_option.modeled_net_edge IS NOT NULL
-                   AND option_decision.modeled_net_edge IS NULL)
-                  OR duplicate_option.modeled_net_edge > option_decision.modeled_net_edge
-                  OR (
-                      duplicate_option.modeled_net_edge = option_decision.modeled_net_edge
-                      OR (duplicate_option.modeled_net_edge IS NULL AND option_decision.modeled_net_edge IS NULL)
-                  ) AND duplicate.id < decision.id
-              )
-          )
-      )
 )
 """
 
@@ -143,6 +108,30 @@ class OptionsDecisionSystemRepository:
             ).fetchone()
             if latest is None:
                 return _empty_brief(symbol, lane, "No post-fix v3 capture is available yet.", mode=self.mode)
+            current_authority = current_option_publication_result(
+                connection,
+                scope="options-decision-system",
+                model_name="options_decision_candidate",
+            )
+            authority = dict(current_authority["authority"])
+            if authority.get("status") != "available":
+                readiness = _readiness(connection, latest=dict(latest), symbol=symbol.upper())
+                reason = str(authority.get("reason") or "current_option_authority_unavailable")
+                return _empty_brief(
+                    symbol,
+                    lane,
+                    f"The current options answer is unavailable: {reason}.",
+                    mode=self.mode,
+                    authority=authority,
+                    readiness=readiness,
+                    analysis_run_id=str(latest["id"]),
+                    as_of=latest["finished_at"],
+                )
+            authority_decision_ids = [
+                str(row["authoritative_decision_id"])
+                for row in current_authority["rows"]
+                if row.get("authoritative_decision_id")
+            ]
             candidate = connection.execute(
                 f"""
                 SELECT decision.id::text AS decision_id, decision.reasons, decision.blockers,
@@ -165,13 +154,13 @@ class OptionsDecisionSystemRepository:
                 JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
                 LEFT JOIN app.thesis thesis ON thesis.id = option_decision.thesis_id
                 WHERE decision.run_id = %s AND option_decision.discovery_lane = %s
-                  AND {_CURRENT_EPISODE_AUTHORITY_FILTER}
+                  AND decision.id = ANY(%s::uuid[])
                 ORDER BY CASE option_decision.paper_state
                     WHEN 'PAPER_READY' THEN 1 WHEN 'WATCH' THEN 2 WHEN 'COLLECTING' THEN 3 ELSE 4 END,
                     option_decision.modeled_net_edge DESC NULLS LAST, decision.id
                 LIMIT 1
                 """,
-                [latest["id"], lane],
+                [latest["id"], lane, authority_decision_ids],
             ).fetchone()
             readiness = _readiness(connection, latest=dict(latest), symbol=symbol.upper())
         candidate_data = dict(candidate) if candidate else None
@@ -186,6 +175,7 @@ class OptionsDecisionSystemRepository:
             "as_of": latest["finished_at"], "state": state,
             "summary": dict(latest["summary"] or {}), "readiness": readiness,
             "strongest_candidate": candidate_payload,
+            "authority": authority,
             "paper_only": True,
             "decision_truth": build_decision_truth(
                 symbol=symbol,
@@ -219,12 +209,24 @@ class OptionsDecisionSystemRepository:
         latest_run_id: str | None = None
         as_of: Any = None
         capture_generation_id: int | None = None
+        authority: dict[str, Any] | None = None
         if scope != "history":
             latest = latest_run(self.runtime, symbol=symbol)
             if latest is None:
-                return {"items": [], "total": 0, "next_cursor": None, "as_of": None, "capture_generation_id": None,
-                        "model_revision": MODEL_REVISION, "scope": scope, "analysis_run_id": None,
-                        "rows": [], "count": 0, "offset": offset, "limit": limit}
+                return _empty_candidates(
+                    scope=scope,
+                    offset=offset,
+                    limit=limit,
+                    authority={
+                        "status": "unavailable",
+                        "reason": "no_current_option_evidence",
+                        "source_row_count": 0,
+                        "authoritative_row_count": 0,
+                        "valid_row_count": 0,
+                        "returned_row_count": 0,
+                        "duplicate_episode_count": 0,
+                    },
+                )
             latest_run_id = str(latest["id"])
             as_of = latest["finished_at"]
             capture_generation_id = (latest.get("summary") or {}).get("capture_generation_id")
@@ -243,7 +245,30 @@ class OptionsDecisionSystemRepository:
             filters.append("contract.expiration = %s")
             values.append(expiration)
         if scope != "history":
-            filters.append(_CURRENT_EPISODE_AUTHORITY_FILTER)
+            with self.runtime.read() as connection:
+                current_authority_result = current_option_publication_result(
+                    connection,
+                    scope="options-decision-system",
+                    model_name="options_decision_candidate",
+                )
+            authority = dict(current_authority_result["authority"])
+            if authority.get("status") != "available":
+                return _empty_candidates(
+                    scope=scope,
+                    offset=offset,
+                    limit=limit,
+                    as_of=as_of,
+                    capture_generation_id=capture_generation_id,
+                    analysis_run_id=latest_run_id,
+                    authority=authority,
+                )
+            authority_decision_ids = [
+                str(row["authoritative_decision_id"])
+                for row in current_authority_result["rows"]
+                if row.get("authoritative_decision_id")
+            ]
+            filters.append("decision.id = ANY(%s::uuid[])")
+            values.append(authority_decision_ids)
         where = " AND ".join(filters)
         with self.runtime.read() as connection:
             count = connection.execute(
@@ -287,7 +312,8 @@ class OptionsDecisionSystemRepository:
         return {"items": items, "total": int(count), "next_cursor": next_cursor, "as_of": as_of,
                 "capture_generation_id": capture_generation_id, "model_revision": MODEL_REVISION,
                 "scope": scope, "analysis_run_id": latest_run_id,
-                "rows": items, "count": int(count), "offset": offset, "limit": limit}
+                "rows": items, "count": int(count), "offset": offset, "limit": limit,
+                "authority": authority}
 
     def relative_values(
         self,
@@ -591,17 +617,55 @@ def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _empty_brief(symbol: str, lane: str, message: str, *, mode: str) -> dict[str, Any]:
-    return {"symbol": symbol.upper(), "lane": lane, "mode": mode, "analysis_run_id": None,
-            "as_of": None, "state": "COLLECTING", "summary": {"message": message},
-            "readiness": _empty_readiness(), "strongest_candidate": None, "paper_only": True,
-            "decision_truth": build_decision_truth(
-                symbol=symbol, lane=lane, as_of=None, candidate_state="COLLECTING",
-                route_verdict="NO_TRADE", readiness_state="incomplete",
-                execution_state="DISABLED" if mode == "disabled" else "PAPER_ONLY",
-                blockers=["no_current_option_evidence"], next_action=message,
-                route_version=OPTIONS_DECISION_ROUTE_VERSION,
-            )}
+def _empty_candidates(
+    *,
+    scope: str,
+    offset: int,
+    limit: int,
+    as_of: Any = None,
+    capture_generation_id: int | None = None,
+    analysis_run_id: str | None = None,
+    authority: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "items": [], "total": 0, "next_cursor": None, "as_of": as_of,
+        "capture_generation_id": capture_generation_id,
+        "model_revision": MODEL_REVISION, "scope": scope,
+        "analysis_run_id": analysis_run_id, "rows": [], "count": 0,
+        "offset": offset, "limit": limit, "authority": authority,
+    }
+
+
+def _empty_brief(
+    symbol: str,
+    lane: str,
+    message: str,
+    *,
+    mode: str,
+    authority: dict[str, Any] | None = None,
+    readiness: dict[str, Any] | None = None,
+    analysis_run_id: str | None = None,
+    as_of: Any = None,
+) -> dict[str, Any]:
+    blocker = str((authority or {}).get("reason") or "no_current_option_evidence")
+    payload: dict[str, Any] = {
+        "symbol": symbol.upper(), "lane": lane, "mode": mode,
+        "analysis_run_id": analysis_run_id, "as_of": as_of,
+        "state": "COLLECTING", "summary": {"message": message},
+        "readiness": readiness or _empty_readiness(),
+        "strongest_candidate": None, "paper_only": True,
+        "decision_truth": build_decision_truth(
+            symbol=symbol, lane=lane, as_of=as_of, candidate_state="COLLECTING",
+            route_verdict="NO_TRADE", readiness_state="incomplete",
+            execution_state="DISABLED" if mode == "disabled" else "PAPER_ONLY",
+            blockers=[blocker], next_action=message,
+            route_version=OPTIONS_DECISION_ROUTE_VERSION,
+        ),
+    }
+    if authority is not None:
+        payload["authority"] = authority
+        payload["summary"]["authority"] = authority
+    return payload
 
 
 def _readiness(connection: Any, *, latest: dict[str, Any], symbol: str) -> dict[str, Any]:

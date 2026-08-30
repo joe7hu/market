@@ -170,8 +170,12 @@ class DecisionInboxRepository:
                 LEFT JOIN active_episode_authority authority ON authority.id = item.id
                 WHERE (
                     item.status <> 'active'
-                    OR authority.id IS NULL
-                    OR authority.authority_count = 1
+                    OR item.payload->>'state_transition' IS NULL
+                    OR item.payload->>'state_transition' NOT IN (
+                        'newly_actionable', 'action_changed',
+                        'thesis_invalidated', 'decision_authority_degraded'
+                    )
+                    OR (authority.id IS NOT NULL AND authority.authority_count = 1)
                 )
                 {" AND " + " AND ".join(conditions) if conditions else ""}
                 ORDER BY item.created_at DESC, item.id DESC
@@ -179,10 +183,46 @@ class DecisionInboxRepository:
                 """,
                 [*params, bounded_limit + 1],
             ).fetchall()
+            authority_counts = connection.execute(
+                """
+                WITH canonical AS MATERIALIZED (
+                    SELECT NULLIF(BTRIM(item.payload->>'opportunity_episode_id'), '') AS episode_id
+                    FROM app.decision_inbox_item item
+                    WHERE item.status = 'active'
+                      AND item.payload->>'state_transition' IN (
+                          'newly_actionable', 'action_changed',
+                          'thesis_invalidated', 'decision_authority_degraded'
+                      )
+                ), duplicate_episodes AS (
+                    SELECT episode_id
+                    FROM canonical
+                    WHERE episode_id IS NOT NULL
+                    GROUP BY episode_id
+                    HAVING count(*) > 1
+                )
+                SELECT count(*) FILTER (WHERE episode_id IS NULL) AS missing_episode_count,
+                       (SELECT count(*) FROM duplicate_episodes) AS duplicate_episode_count
+                FROM canonical
+                """
+            ).fetchone()
         values = [_row_payload(row) for row in result]
         page = values[:bounded_limit]
         next_cursor = _encode_cursor(page[-1]) if len(values) > bounded_limit and page else None
-        return {"items": page, "count": len(page), "next_cursor": next_cursor}
+        missing_episode_count = int(authority_counts["missing_episode_count"] or 0)
+        duplicate_episode_count = int(authority_counts["duplicate_episode_count"] or 0)
+        authority = {
+            "status": "available" if not missing_episode_count and not duplicate_episode_count else "unavailable",
+            "reason": (
+                "canonical_transition_authority_missing_episode"
+                if missing_episode_count
+                else "canonical_transition_authority_duplicate_episode"
+                if duplicate_episode_count
+                else None
+            ),
+            "missing_episode_count": missing_episode_count,
+            "duplicate_episode_count": duplicate_episode_count,
+        }
+        return {"items": page, "count": len(page), "next_cursor": next_cursor, "authority": authority}
 
     def sync_current_decisions(
         self, rows: list[dict[str, Any]], *, now: datetime | None = None,
