@@ -314,6 +314,7 @@ def _input_lineage_identity(lineage: InputLineage) -> tuple[Any, ...]:
         lineage.source_version,
         _utc(lineage.available_at),
         lineage.revision,
+        _utc(lineage.cutoff) if lineage.cutoff is not None else None,
     )
 
 
@@ -632,6 +633,11 @@ def _v2_dimension_evidence_valid(
     ):
         return False
     cutoff = _utc(snapshot.input_cutoff)
+    if any(
+        item.cutoff is None or _utc(item.cutoff) != cutoff
+        for item in (*state.lineage, *coverage.input_lineage)
+    ):
+        return False
     state_sources = {item.source_id for item in state.lineage}
     coverage_sources = {item.source_id for item in coverage.input_lineage}
     return (

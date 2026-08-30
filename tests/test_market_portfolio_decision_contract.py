@@ -783,3 +783,49 @@ def test_v2_state_and_coverage_require_shared_approved_provenance(
 
     assert assessment.status == "blocking"
     assert assessment.blocking_dimensions == ("equity internals",)
+
+
+@pytest.mark.parametrize("side, lineage_cutoff", [
+    ("state", None),
+    ("state", AS_OF - timedelta(days=1)),
+    ("coverage", None),
+    ("coverage", AS_OF - timedelta(days=1)),
+])
+def test_v2_lineage_cutoff_must_match_snapshot_cutoff(side: str, lineage_cutoff: datetime | None) -> None:
+    seed = _decision().market_state_snapshot
+    assert seed is not None and seed.coverage_matrix is not None
+    source = "confirmed_daily_prices"
+    state_lineage = InputLineage(field="equity internals", source_id=source, source_version="v1", available_at=AS_OF, cutoff=AS_OF)
+    coverage_lineage = InputLineage(field="equity internals", source_id=source, source_version="v1", available_at=AS_OF, cutoff=AS_OF)
+    if side == "state":
+        state_lineage = state_lineage.model_copy(update={"cutoff": lineage_cutoff})
+    else:
+        coverage_lineage = coverage_lineage.model_copy(update={"cutoff": lineage_cutoff})
+    state_rows = {
+        horizon: tuple(
+            item.model_copy(update={
+                "evidence_status": "available", "availability_status": "available", "state": "constructive",
+                "uncertainty": "confirmed daily facts", "lineage": (state_lineage,), "selected_source": source,
+            }) if horizon == "1-5 trading days" and item.dimension == "equity internals" else item
+            for item in rows
+        )
+        for horizon, rows in seed.horizons.items()
+    }
+    coverage_rows = tuple(
+        item.model_copy(update={
+            "point_in_time_safe": True, "current_status": "available", "input_lineage": (coverage_lineage,),
+            "selected_source": source,
+        }) if item.horizon == "1-5 trading days" and item.dimension == "equity internals" else item
+        for item in seed.coverage_matrix.rows
+    )
+    snapshot = seed.model_copy(update={
+        "contract_version": "market-state-snapshot.v2", "horizons": state_rows,
+        "coverage_matrix": seed.coverage_matrix.model_copy(update={
+            "contract_version": "coverage-matrix.v2", "rows": coverage_rows,
+        }),
+    })
+
+    assessment = market_evidence_for_decision(snapshot, ExpressionKind.STOCK, "TACTICAL")
+
+    assert assessment.status == "blocking"
+    assert assessment.blocking_dimensions == ("equity internals",)
