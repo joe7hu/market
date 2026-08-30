@@ -120,9 +120,29 @@ export function TickerDecisionPanel({
       <TradePlanCard plan={tradePlan ?? decision.trade_plan ?? null} />
       {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
       <SelectedPortfolioImpact decision={decision} />
+      <TickerMarketEvidence snapshot={decision.market_state_snapshot} />
       {disagreement ? <DisagreementPanel learning={learning} /> : null}
       {learning ? <LearningLoopPanel learning={learning} /> : null}
     </>
+  );
+}
+
+function TickerMarketEvidence({ snapshot }: { snapshot?: TickerDecisionContract["market_state_snapshot"] }) {
+  const raw = snapshot as unknown as Record<string, unknown> | null | undefined;
+  const assessments = Array.isArray(raw?.decision_evidence) ? raw.decision_evidence : [];
+  const visible = assessments.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item))).slice(0, 8);
+  return (
+    <DataTableFrame title="Market evidence for this decision" action={<StatusBadge tone="muted">No global readiness</StatusBadge>}>
+      <div className="grid gap-2 p-4 text-xs sm:grid-cols-2">
+        {visible.length ? visible.map((item, index) => (
+          <div key={`${String(item.expression_kind)}:${String(item.horizon)}:${index}`} className="rounded border border-border/70 p-2">
+            <p className="font-semibold">{textValue(item.expression_kind as JsonValue)} · {textValue(item.horizon as JsonValue)}</p>
+            <p className="mt-1 text-muted-foreground">{textValue(item.status as JsonValue)} · required: {Array.isArray(item.required_dimensions) ? item.required_dimensions.join(", ") || "none" : "none"}</p>
+            {Array.isArray(item.blockers) && item.blockers.length ? <p className="mt-1 text-muted-foreground">Blocking: {item.blockers.join(", ")}</p> : null}
+          </div>
+        )) : <p className="text-muted-foreground">Decision-bound market evidence is unavailable.</p>}
+      </div>
+    </DataTableFrame>
   );
 }
 

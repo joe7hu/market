@@ -14,13 +14,16 @@ from investment_panel.analysis.trend_features import realized_volatility
 from investment_panel.core.decision import (
     CoverageMatrix,
     CoverageMatrixRow,
+    ExpressionKind,
     InputLineage,
     MARKET_DIMENSIONS,
     MARKET_HORIZONS,
+    MARKET_SOURCE_PRIORITY,
     MARKET_TZ,
     MarketDimensionState,
     MarketStateSnapshot,
     is_us_market_day,
+    market_evidence_for_decision,
 )
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars, completed_trading_dates
@@ -1624,7 +1627,10 @@ def _market_snapshot(
                     blockers=(blocker,),
                     data_requests=(request,),
                 ))
-        dimensions[horizon] = tuple(horizon_rows)
+        dimensions[horizon] = tuple(
+            row.model_copy(update=_market_dimension_v2_fields(row))
+            for row in horizon_rows
+        )
     measured_lineage = _lineage_union(
         tuple(evidence.get("lineage") or ())
         for evidence in (
@@ -1656,21 +1662,130 @@ def _market_snapshot(
         for horizon in MARKET_HORIZONS
         if horizon != "intraday"
     )
-    return MarketStateSnapshot(
+    snapshot = MarketStateSnapshot(
+        contract_version="market-state-snapshot.v2",
         snapshot_id=snapshot_id,
         as_of=reference,
         input_cutoff=reference,
         horizons=dimensions,
         coverage_matrix=CoverageMatrix(
+            contract_version="coverage-matrix.v2",
             matrix_id=f"coverage:{snapshot_id}",
             as_of=reference,
             input_cutoff=reference,
             rows=rows,
         ),
         input_lineage=measured_lineage,
-        availability="available" if all_daily_horizons_available else "unavailable",
+        availability="available" if all_daily_horizons_available else "partial",
+        availability_status="available" if all_daily_horizons_available else "missing",
         blockers=() if all_daily_horizons_available else ("market_horizon_coverage_unavailable",),
     )
+    return snapshot.model_copy(update={
+        "decision_evidence": tuple(
+            market_evidence_for_decision(snapshot, kind, horizon)
+            for kind in ExpressionKind
+            for horizon in ("TACTICAL", "FUNDAMENTAL")
+        ),
+        "regime_distributions": _regime_distributions(horizon_evidence, volatility_evidence),
+        "baseline_challenger": _baseline_challenger(horizon_evidence, volatility_evidence),
+        "source_priorities": {dimension: MARKET_SOURCE_PRIORITY.get(dimension, ()) for dimension in MARKET_DIMENSIONS},
+        "selected_sources": {
+            dimension: next(
+                (item.selected_source for rows_for_horizon in dimensions.values() for item in rows_for_horizon
+                 if item.dimension == dimension and item.lineage),
+                None,
+            )
+            for dimension in MARKET_DIMENSIONS
+        },
+    })
+
+
+def _market_dimension_v2_fields(row: MarketDimensionState) -> dict[str, Any]:
+    source_priority = MARKET_SOURCE_PRIORITY.get(row.dimension, ())
+    selected_source = row.lineage[0].source_id if row.lineage else None
+    sample_count = (
+        getattr(row, "available_member_count", None)
+        or getattr(row, "eligible_member_count", None)
+        or len(row.lineage)
+        or 0
+    )
+    distribution = {
+        "defensive": 1.0 if row.state == "defensive" else 0.0,
+        "mixed": 1.0 if row.state == "mixed" else 0.0,
+        "constructive": 1.0 if row.state == "constructive" else 0.0,
+    } if row.state in {"defensive", "mixed", "constructive"} else {}
+    return {
+        "source_priority": source_priority,
+        "selected_source": selected_source,
+        "regime_distribution": distribution,
+        "regime_probability_method": "threshold-posture-v1" if distribution else None,
+        "regime_model_version": "market-regime-v2" if distribution else None,
+        "regime_sample_count": sample_count,
+        "baseline_result": {
+            "method": "threshold-posture-v1", "version": "market-baseline-v1",
+            "status": "available" if row.evidence_status == "available" else "unavailable",
+            "sample_count": sample_count, "state": row.state,
+        },
+        "challenger_result": {
+            "method": "empirical-regime-shadow-v1", "version": "market-challenger-v1",
+            "status": "advisory" if row.evidence_status == "available" and sample_count >= 20 else "insufficient_history",
+            "advisory": True, "promotion_eligible": False,
+            "sample_count": sample_count, "distribution": distribution,
+        },
+    }
+
+
+def _regime_distributions(
+    horizon_evidence: dict[str, dict[str, Any]],
+    volatility_evidence: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for horizon in MARKET_HORIZONS:
+        score = _number(horizon_evidence.get(horizon, {}).get("risk_score"))
+        distribution: dict[str, float] = {}
+        if score is not None:
+            distribution = {
+                "defensive": max(0.0, (50.0 - score) / 50.0),
+                "mixed": max(0.0, 1.0 - abs(score - 50.0) / 50.0),
+                "constructive": max(0.0, (score - 50.0) / 50.0),
+            }
+            total = sum(distribution.values())
+            if total:
+                distribution = {key: value / total for key, value in distribution.items()}
+        sample_count = int(horizon_evidence.get(horizon, {}).get("available_member_count") or 0)
+        result[horizon] = {
+            "distribution": distribution,
+            "method": "threshold-posture-v1",
+            "version": "market-regime-v2",
+            "sample_count": sample_count,
+            "uncertainty": "historical empirical estimate; not a forward forecast" if distribution else "insufficient point-in-time evidence",
+            "baseline": "threshold-posture-v1",
+            "challenger": "empirical-regime-shadow-v1",
+            "challenger_advisory": True,
+            "challenger_available": bool(volatility_evidence.get(horizon, {}).get("available")) and sample_count >= 20,
+        }
+    return result
+
+
+def _baseline_challenger(
+    horizon_evidence: dict[str, dict[str, Any]],
+    volatility_evidence: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for horizon in MARKET_HORIZONS:
+        sample_count = int(horizon_evidence.get(horizon, {}).get("available_member_count") or 0)
+        result[horizon] = {
+            "baseline": {
+                "method": "threshold-posture-v1", "version": "market-baseline-v1",
+                "status": "available" if sample_count else "unavailable",
+            },
+            "challenger": {
+                "method": "empirical-regime-shadow-v1", "version": "market-challenger-v1",
+                "status": "advisory" if volatility_evidence.get(horizon, {}).get("available") and sample_count >= 20 else "insufficient_history",
+                "advisory": True, "promotion_eligible": False, "sample_count": sample_count,
+            },
+        }
+    return result
 
 
 def _coverage_row(
@@ -1770,6 +1885,8 @@ def _coverage_row(
         fallback_policy="unavailable",
         input_cutoff=cutoff,
         input_lineage=lineage,
+        source_priority=MARKET_SOURCE_PRIORITY.get(dimension, ()),
+        selected_source=lineage[0].source_id if lineage else None,
         blockers=blockers if not available else (),
         benchmark_key=selected_evidence.get("benchmark_key")
         if dimension in {"equity internals", "volatility", "corporate cycle", "crypto liquidity"} else None,

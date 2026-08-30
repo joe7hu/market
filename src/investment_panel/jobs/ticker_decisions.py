@@ -274,7 +274,7 @@ def _market_snapshot_for_decision(
         snapshot = MarketStateSnapshot.model_validate(rows[0])
     except (TypeError, ValueError):
         return None
-    if snapshot.contract_version != "market-state-snapshot.v1":
+    if snapshot.contract_version not in {"market-state-snapshot.v1", "market-state-snapshot.v2"}:
         return None
     if snapshot.publication_id not in {None, "", publication_id}:
         return None

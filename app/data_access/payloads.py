@@ -16,11 +16,14 @@ from app.data_access.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.core.config import AppConfig, OptionAgentConfig
 from investment_panel.core.decision import (
+    ExpressionKind,
+    MarketStateSnapshot,
     TradePlan,
     apply_opportunity_rank_safety,
     build_ticker_decision,
     evaluate_ticker_policy,
     opportunity_episode_from_legacy,
+    market_evidence_for_decision,
     ticker_decision_brief,
 )
 from investment_panel.database.ticker_decisions import select_current_outcome_attributions
@@ -568,16 +571,29 @@ def option_decision_adapter(
 def _portfolio_context_blockers(ticker_decision: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     snapshot = ticker_decision.get("market_state_snapshot")
-    if not isinstance(snapshot, dict):
-        blockers.append("market_state_missing")
-    else:
-        if snapshot.get("availability") != "available":
-            blockers.append("market_state_unavailable")
-        blockers.extend(str(item) for item in snapshot.get("blockers") or [])
-    if not ticker_decision.get("market_state_publication_id"):
-        blockers.append("market_state_publication_missing")
     selected = ticker_decision.get("selected_expression") or {}
-    selected_kind = selected.get("kind") if isinstance(selected, dict) else selected
+    selected_kind = str(selected.get("kind") or "CASH") if isinstance(selected, dict) else "CASH"
+    selected_horizon = str(selected.get("horizon") or "FUNDAMENTAL") if isinstance(selected, dict) else "FUNDAMENTAL"
+    if not isinstance(snapshot, dict):
+        if selected_kind != ExpressionKind.CASH.value:
+            blockers.append("market_state_missing")
+    else:
+        if selected_kind != ExpressionKind.CASH.value:
+            coverage = snapshot.get("coverage_matrix")
+            coverage = coverage if isinstance(coverage, dict) else {}
+            if snapshot.get("contract_version") == "market-state-snapshot.v1":
+                if snapshot.get("availability") != "available":
+                    blockers.append("market_state_unavailable")
+            elif coverage.get("contract_version") == "coverage-matrix.v2":
+                try:
+                    assessment = market_evidence_for_decision(
+                        MarketStateSnapshot.model_validate(snapshot), selected_kind, selected_horizon,
+                    )
+                    blockers.extend(assessment.blockers)
+                except (TypeError, ValueError):
+                    blockers.append("market_state_invalid")
+            if not ticker_decision.get("market_state_publication_id"):
+                blockers.append("market_state_publication_missing")
     impacts = ticker_decision.get("portfolio_impacts")
     impact = impacts.get(str(selected_kind)) if isinstance(impacts, dict) else None
     if not isinstance(impact, dict):

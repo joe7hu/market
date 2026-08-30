@@ -102,11 +102,9 @@ function MarketStateProjection({ snapshotRows, coverageRows }: { snapshotRows: R
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-sm font-semibold">Point-in-time market state</p>
-          <p className="text-xs text-muted-foreground">Four horizons · unavailable dimensions stay visible.</p>
+          <p className="text-xs text-muted-foreground">Four horizons · decision requirements and unavailable dimensions stay visible.</p>
         </div>
-        <StatusBadge tone={textField(snapshot, ["availability"]) === "available" ? "good" : "warn"}>
-          {textField(snapshot, ["availability"], "unavailable")}
-        </StatusBadge>
+        <StatusBadge tone="muted">Decision-bound evidence</StatusBadge>
       </div>
       {horizonEntries.length ? (
         <div className="grid gap-2 sm:grid-cols-2">
@@ -118,7 +116,10 @@ function MarketStateProjection({ snapshotRows, coverageRows }: { snapshotRows: R
                   const row = isRecord(item) ? item : {};
                   const state = typeof row.state === "string" ? row.state : "unavailable";
                   const status = typeof row.evidence_status === "string" ? row.evidence_status : "unavailable";
-                  return <p key={`${horizon}:${String(row.dimension ?? index)}`} className="text-[11px] text-muted-foreground"><span className="text-foreground">{String(row.dimension ?? "dimension")}</span>: {state} · {status}</p>;
+                  const source = typeof row.selected_source === "string" ? row.selected_source : "source unavailable";
+                  const priority = Array.isArray(row.source_priority) ? row.source_priority.slice(0, 2).join(" → ") : "";
+                  const distribution = isRecord(row.regime_distribution) ? Object.entries(row.regime_distribution).map(([key, value]) => `${key} ${String(value)}`).join(" · ") : "";
+                  return <p key={`${horizon}:${String(row.dimension ?? index)}`} className="text-[11px] text-muted-foreground"><span className="text-foreground">{String(row.dimension ?? "dimension")}</span>: {state} · {status} · {source}{priority ? ` · priority ${priority}` : ""}{distribution ? ` · ${distribution}` : ""}</p>;
                 })}
               </div>
             </div>
@@ -130,7 +131,7 @@ function MarketStateProjection({ snapshotRows, coverageRows }: { snapshotRows: R
         <div className="grid gap-1 sm:grid-cols-2">
           {coverageRows.map((row, index) => (
             <p key={`${textField(row, ["horizon"])}:${textField(row, ["dimension"])}:${index}`} className="text-[11px] text-muted-foreground">
-              <span className="text-foreground">{textField(row, ["horizon"])} / {textField(row, ["dimension"])}</span> · {textField(row, ["current_status"], "unavailable")}
+              <span className="text-foreground">{textField(row, ["horizon"])} / {textField(row, ["dimension"])}</span> · {textField(row, ["current_status"], "unavailable")} · {textField(row, ["selected_source"], "source unavailable")}
             </p>
           ))}
         </div>

@@ -1750,6 +1750,11 @@ export interface components {
             /** Asset Class */
             asset_class: string;
             /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /**
              * Current Status
              * @default unavailable
              */
@@ -1786,6 +1791,13 @@ export interface components {
             point_in_time_safe: boolean;
             /** Provider */
             provider?: string | null;
+            /** Selected Source */
+            selected_source?: string | null;
+            /**
+             * Source Priority
+             * @default []
+             */
+            source_priority: string[];
         } & {
             [key: string]: unknown;
         };
@@ -2522,11 +2534,19 @@ export interface components {
         MarketDimensionState: {
             /** @default missing */
             availability_status: components["schemas"]["AvailabilityStatus"];
+            /** Baseline Result */
+            baseline_result?: {
+                [key: string]: unknown;
+            };
             /**
              * Blockers
              * @default []
              */
             blockers: string[];
+            /** Challenger Result */
+            challenger_result?: {
+                [key: string]: unknown;
+            };
             /**
              * Change Drivers
              * @default []
@@ -2554,10 +2574,68 @@ export interface components {
             probability_model_version?: string | null;
             /** Quality */
             quality?: string | null;
+            /** Regime Distribution */
+            regime_distribution?: {
+                [key: string]: number;
+            };
+            /** Regime Model Version */
+            regime_model_version?: string | null;
+            /** Regime Probability Method */
+            regime_probability_method?: string | null;
+            /** Regime Sample Count */
+            regime_sample_count?: number | null;
+            /** Selected Source */
+            selected_source?: string | null;
+            /**
+             * Source Priority
+             * @default []
+             */
+            source_priority: string[];
             /** State */
             state?: string | null;
             /** Uncertainty */
             uncertainty?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * MarketEvidenceAssessment
+         * @description Decision-scoped market evidence; no global market-ready state.
+         */
+        MarketEvidenceAssessment: {
+            /**
+             * Advisory Dimensions
+             * @default []
+             */
+            advisory_dimensions: string[];
+            /**
+             * Available Dimensions
+             * @default []
+             */
+            available_dimensions: string[];
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /**
+             * Blocking Dimensions
+             * @default []
+             */
+            blocking_dimensions: string[];
+            expression_kind: components["schemas"]["ExpressionKind"];
+            /** Horizon */
+            horizon: string;
+            /**
+             * Required Dimensions
+             * @default []
+             */
+            required_dimensions: string[];
+            /**
+             * Status
+             * @default advisory
+             */
+            status: string;
         } & {
             [key: string]: unknown;
         };
@@ -2605,6 +2683,12 @@ export interface components {
             availability: string;
             /** @default missing */
             availability_status: components["schemas"]["AvailabilityStatus"];
+            /** Baseline Challenger */
+            baseline_challenger?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
             /**
              * Blockers
              * @default []
@@ -2616,6 +2700,11 @@ export interface components {
              */
             contract_version: string;
             coverage_matrix?: components["schemas"]["CoverageMatrix"] | null;
+            /**
+             * Decision Evidence
+             * @default []
+             */
+            decision_evidence: components["schemas"]["MarketEvidenceAssessment"][];
             /** Horizons */
             horizons?: {
                 [key: string]: components["schemas"]["MarketDimensionState"][];
@@ -2632,8 +2721,22 @@ export interface components {
             input_lineage: components["schemas"]["InputLineage"][];
             /** Publication Id */
             publication_id?: string | null;
+            /** Regime Distributions */
+            regime_distributions?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /** Selected Sources */
+            selected_sources?: {
+                [key: string]: string | null;
+            };
             /** Snapshot Id */
             snapshot_id: string;
+            /** Source Priorities */
+            source_priorities?: {
+                [key: string]: string[];
+            };
         } & {
             [key: string]: unknown;
         };

@@ -1218,6 +1218,14 @@
             "title": "Asset Class",
             "type": "string"
           },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
           "current_status": {
             "default": "unavailable",
             "title": "Current Status",
@@ -1305,6 +1313,25 @@
               }
             ],
             "title": "Provider"
+          },
+          "selected_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Source"
+          },
+          "source_priority": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Priority",
+            "type": "array"
           }
         },
         "required": [
@@ -3338,6 +3365,11 @@
             "$ref": "#/components/schemas/AvailabilityStatus",
             "default": "missing"
           },
+          "baseline_result": {
+            "additionalProperties": true,
+            "title": "Baseline Result",
+            "type": "object"
+          },
           "blockers": {
             "default": [],
             "items": {
@@ -3345,6 +3377,11 @@
             },
             "title": "Blockers",
             "type": "array"
+          },
+          "challenger_result": {
+            "additionalProperties": true,
+            "title": "Challenger Result",
+            "type": "object"
           },
           "change_drivers": {
             "default": [],
@@ -3423,6 +3460,66 @@
             ],
             "title": "Quality"
           },
+          "regime_distribution": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Regime Distribution",
+            "type": "object"
+          },
+          "regime_model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regime Model Version"
+          },
+          "regime_probability_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regime Probability Method"
+          },
+          "regime_sample_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regime Sample Count"
+          },
+          "selected_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Source"
+          },
+          "source_priority": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Priority",
+            "type": "array"
+          },
           "state": {
             "anyOf": [
               {
@@ -3451,6 +3548,71 @@
           "horizon"
         ],
         "title": "MarketDimensionState",
+        "type": "object"
+      },
+      "MarketEvidenceAssessment": {
+        "additionalProperties": true,
+        "description": "Decision-scoped market evidence; no global market-ready state.",
+        "properties": {
+          "advisory_dimensions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Advisory Dimensions",
+            "type": "array"
+          },
+          "available_dimensions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Available Dimensions",
+            "type": "array"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "blocking_dimensions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blocking Dimensions",
+            "type": "array"
+          },
+          "expression_kind": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "horizon": {
+            "minLength": 1,
+            "title": "Horizon",
+            "type": "string"
+          },
+          "required_dimensions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Dimensions",
+            "type": "array"
+          },
+          "status": {
+            "default": "advisory",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression_kind",
+          "horizon"
+        ],
+        "title": "MarketEvidenceAssessment",
         "type": "object"
       },
       "MarketRegime": {
@@ -3551,6 +3713,14 @@
             "$ref": "#/components/schemas/AvailabilityStatus",
             "default": "missing"
           },
+          "baseline_challenger": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Baseline Challenger",
+            "type": "object"
+          },
           "blockers": {
             "default": [],
             "items": {
@@ -3573,6 +3743,14 @@
                 "type": "null"
               }
             ]
+          },
+          "decision_evidence": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MarketEvidenceAssessment"
+            },
+            "title": "Decision Evidence",
+            "type": "array"
           },
           "horizons": {
             "additionalProperties": {
@@ -3608,10 +3786,42 @@
             ],
             "title": "Publication Id"
           },
+          "regime_distributions": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Regime Distributions",
+            "type": "object"
+          },
+          "selected_sources": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Selected Sources",
+            "type": "object"
+          },
           "snapshot_id": {
             "minLength": 1,
             "title": "Snapshot Id",
             "type": "string"
+          },
+          "source_priorities": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Source Priorities",
+            "type": "object"
           }
         },
         "required": [

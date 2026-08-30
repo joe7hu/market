@@ -27,6 +27,7 @@ from investment_panel.core.decision import (
     capital_action_from_resolution,
     evaluate_ticker_policy,
     outcome_attribution_stable_key,
+    market_evidence_for_decision,
     resolution_from_legacy,
     is_us_market_day,
     portfolio_impacts_from_persisted,
@@ -331,13 +332,19 @@ class TickerDecisionRepository:
             except (TypeError, ValueError, KeyError):
                 continue
             snapshot = decision.market_state_snapshot
+            selected = decision.selected_expression
+            assessment = (
+                market_evidence_for_decision(snapshot, selected.kind, selected.horizon)
+                if selected is not None and snapshot is not None
+                else None
+            )
             facts_available = bool(
                 decision.opportunity_episode
                 and decision.input_lineage
                 and snapshot is not None
-                and snapshot.availability_status is AvailabilityStatus.AVAILABLE
                 and decision.market_state_publication_id
                 and decision.market_state_publication_id == snapshot.publication_id
+                and (assessment is None or not assessment.blocking_dimensions)
             )
             decisions.append({
                 **decision.model_dump(mode="json"),
@@ -346,6 +353,7 @@ class TickerDecisionRepository:
                 "point_in_time_fact_blockers": (
                     []
                     if facts_available
+                    else list(assessment.blockers) if assessment is not None and assessment.blockers
                     else list(snapshot.blockers) if snapshot is not None and snapshot.blockers
                     else ["point_in_time_facts_unavailable"]
                 ),

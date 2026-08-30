@@ -338,6 +338,64 @@ MARKET_DIMENSIONS = (
     "microstructure",
 )
 
+MARKET_SOURCE_PRIORITY: dict[str, tuple[str, ...]] = {
+    "growth/inflation": ("fred", "bea", "bls"),
+    "monetary liquidity": ("fred", "treasury", "central-bank"),
+    "rates": ("treasury", "fred", "sec"),
+    "credit": ("fred", "ice-bofa", "sec"),
+    "dollar/commodities": ("fred", "cme", "eia"),
+    "breadth": ("confirmed_daily_prices",),
+    "revisions": ("sec_companyfacts", "yfinance"),
+    "equity internals": ("confirmed_daily_prices",),
+    "volatility": ("confirmed_daily_prices", "cboe"),
+    "positioning": ("sec", "short-interest"),
+    "corporate cycle": ("sec_companyfacts", "estimates"),
+    "crypto liquidity": ("daily-market-prices", "coingecko"),
+    "event risk": ("official-event-calendar",),
+    "microstructure": ("consolidated-quotes", "venue-depth"),
+}
+
+MARKET_HORIZON_FOR_DECISION = {
+    "TACTICAL": "1-5 trading days",
+    "FUNDAMENTAL": "3-12 months",
+}
+
+MARKET_REQUIRED_DIMENSIONS: dict[ExpressionKind, tuple[str, ...]] = {
+    ExpressionKind.CASH: (),
+    ExpressionKind.STOCK: ("equity internals",),
+    ExpressionKind.CALL: ("equity internals", "volatility"),
+    ExpressionKind.PUT: ("equity internals", "volatility"),
+    ExpressionKind.DEBIT_SPREAD: ("equity internals", "volatility"),
+    ExpressionKind.CASH_SECURED_PUT: ("equity internals", "volatility"),
+}
+
+MARKET_REQUIRED_DIMENSIONS_BY_HORIZON: dict[str, dict[ExpressionKind, tuple[str, ...]]] = {
+    "TACTICAL": MARKET_REQUIRED_DIMENSIONS,
+    "FUNDAMENTAL": {
+        kind: dimensions + (("corporate cycle",) if kind is not ExpressionKind.CASH else ())
+        for kind, dimensions in MARKET_REQUIRED_DIMENSIONS.items()
+    },
+}
+
+
+class MarketEvidenceAssessment(BaseModel):
+    """Decision-scoped market evidence; no global market-ready state."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    expression_kind: ExpressionKind
+    horizon: str = Field(min_length=1)
+    required_dimensions: tuple[str, ...] = ()
+    advisory_dimensions: tuple[str, ...] = ()
+    available_dimensions: tuple[str, ...] = ()
+    blocking_dimensions: tuple[str, ...] = ()
+    status: str = "advisory"
+    blockers: tuple[str, ...] = ()
+
+    @property
+    def is_blocking(self) -> bool:
+        return bool(self.blocking_dimensions)
+
 
 class MarketDimensionState(BaseModel):
     """One typed market dimension at one point-in-time horizon."""
@@ -357,6 +415,14 @@ class MarketDimensionState(BaseModel):
     probability: float | None = Field(default=None, ge=0, le=1)
     probability_method: str | None = None
     probability_model_version: str | None = None
+    source_priority: tuple[str, ...] = ()
+    selected_source: str | None = None
+    regime_distribution: dict[str, float] = Field(default_factory=dict)
+    regime_probability_method: str | None = None
+    regime_model_version: str | None = None
+    regime_sample_count: int | None = Field(default=None, ge=0)
+    baseline_result: dict[str, Any] = Field(default_factory=dict)
+    challenger_result: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -394,6 +460,9 @@ class CoverageMatrixRow(BaseModel):
     fallback_policy: str = "unavailable"
     input_cutoff: datetime | None = None
     input_lineage: tuple[InputLineage, ...] = ()
+    source_priority: tuple[str, ...] = ()
+    selected_source: str | None = None
+    blockers: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def enforce_lineage_cutoff(self) -> "CoverageMatrixRow":
@@ -443,6 +512,11 @@ class MarketStateSnapshot(BaseModel):
     availability: str = "unavailable"
     availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
+    decision_evidence: tuple[MarketEvidenceAssessment, ...] = ()
+    regime_distributions: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    baseline_challenger: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    source_priorities: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    selected_sources: dict[str, str | None] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -478,7 +552,7 @@ class MarketStateSnapshot(BaseModel):
             raise ValueError("market snapshot timestamps must be timezone-aware")
         if _utc(self.as_of) != _utc(self.input_cutoff):
             raise ValueError("market snapshot as_of and input_cutoff must match")
-        if self.availability == "available":
+        if self.contract_version == "market-state-snapshot.v1" and self.availability == "available":
             if set(self.horizons) != set(MARKET_HORIZONS):
                 raise ValueError("available market snapshots require all market horizons")
             if any(
@@ -505,6 +579,59 @@ class MarketStateSnapshot(BaseModel):
                 if row.input_cutoff is not None and _utc(row.input_cutoff) != cutoff:
                     raise ValueError("coverage row cutoff must match the market snapshot")
         return self
+
+
+def market_required_dimensions(
+    expression_kind: ExpressionKind | str,
+    horizon: Horizon | str | None = None,
+) -> tuple[str, ...]:
+    """Return the backend-owned required market dimensions for an expression."""
+
+    kind = ExpressionKind(expression_kind)
+    if horizon is None:
+        return MARKET_REQUIRED_DIMENSIONS[kind]
+    horizon_name = getattr(horizon, "value", str(horizon)).upper()
+    return MARKET_REQUIRED_DIMENSIONS_BY_HORIZON.get(horizon_name, MARKET_REQUIRED_DIMENSIONS)[kind]
+
+
+def market_evidence_for_decision(
+    snapshot: MarketStateSnapshot | None,
+    expression_kind: ExpressionKind | str,
+    horizon: Horizon | str,
+) -> MarketEvidenceAssessment:
+    """Project one expression+horizon assessment from the published snapshot."""
+
+    kind = ExpressionKind(expression_kind)
+    horizon_name = getattr(horizon, "value", str(horizon)).upper()
+    market_horizon = MARKET_HORIZON_FOR_DECISION.get(horizon_name, str(horizon).lower())
+    required = market_required_dimensions(kind, horizon_name)
+    advisory = tuple(dimension for dimension in MARKET_DIMENSIONS if dimension not in required)
+    rows = {
+        item.dimension: item
+        for item in (snapshot.horizons.get(market_horizon, ()) if snapshot is not None else ())
+    }
+    available = tuple(
+        dimension for dimension in MARKET_DIMENSIONS
+        if str(getattr(rows.get(dimension), "evidence_status", "")).lower() == "available"
+    )
+    blocking = tuple(dimension for dimension in required if dimension not in available)
+    blockers = tuple(f"market_required_dimension_unavailable:{dimension}" for dimension in blocking)
+    status = "not_applicable" if not required else "blocking" if blocking else (
+        "available" if all(dimension in available for dimension in MARKET_DIMENSIONS) else "advisory"
+    )
+    if snapshot is None and required:
+        blockers = tuple(f"market_required_dimension_unavailable:{dimension}" for dimension in required)
+        status = "blocking"
+    return MarketEvidenceAssessment(
+        expression_kind=kind,
+        horizon=market_horizon,
+        required_dimensions=required,
+        advisory_dimensions=advisory,
+        available_dimensions=available,
+        blocking_dimensions=blocking,
+        status=status,
+        blockers=blockers,
+    )
 
 
 class PortfolioImpact(BaseModel):
@@ -2745,6 +2872,7 @@ def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) ->
                 evidence_status="unavailable",
                 uncertainty="market publication not supplied to the composer",
                 blockers=("market_publication_required",),
+                source_priority=MARKET_SOURCE_PRIORITY.get(dimension, ()),
             )
             for dimension in MARKET_DIMENSIONS
         )
@@ -2760,11 +2888,14 @@ def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) ->
             decision_impact="context",
             fallback_policy="unavailable",
             input_cutoff=reference,
+            source_priority=MARKET_SOURCE_PRIORITY.get(dimension, ()),
+            blockers=("market_publication_required",),
         )
         for horizon in MARKET_HORIZONS
         for dimension in MARKET_DIMENSIONS
     )
-    return MarketStateSnapshot(
+    snapshot = MarketStateSnapshot(
+        contract_version="market-state-snapshot.v2",
         snapshot_id=snapshot_id,
         publication_id=f"local-publication:{snapshot_id}",
         as_of=reference,
@@ -2779,6 +2910,7 @@ def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) ->
         input_lineage=tuple(lineage),
         availability="available",
     )
+    return snapshot
 
 
 def _portfolio_book_blockers(replay: Mapping[str, Any], cutoff: datetime) -> list[str]:
@@ -3608,21 +3740,30 @@ def _context_blockers_for(
     expressions: Mapping[ExpressionKind, ExpressionDecision],
 ) -> list[str]:
     blockers: list[str] = []
+    selected = next((expression for expression in expressions.values() if expression.selected), None)
+    selected_kind = selected.kind if selected is not None else ExpressionKind.CASH
     if snapshot is None:
-        blockers.append("market_state_missing")
+        if selected_kind is not ExpressionKind.CASH:
+            blockers.append("market_state_missing")
     else:
-        if snapshot.availability != "available":
-            blockers.append("market_state_unavailable")
-        blockers.extend(snapshot.blockers)
-        if not snapshot.publication_id:
-            blockers.append("market_state_publication_missing")
+        if selected_kind is not ExpressionKind.CASH:
+            if snapshot.contract_version == "market-state-snapshot.v1" and snapshot.availability != "available":
+                blockers.append("market_state_unavailable")
+            if (
+                snapshot.contract_version != "market-state-snapshot.v1"
+                and snapshot.coverage_matrix is not None
+                and snapshot.coverage_matrix.contract_version == "coverage-matrix.v2"
+            ):
+                assessment = market_evidence_for_decision(snapshot, selected_kind, selected.horizon if selected else "FUNDAMENTAL")
+                blockers.extend(assessment.blockers)
+            if not snapshot.publication_id:
+                blockers.append("market_state_publication_missing")
     if policy is None:
         blockers.append("risk_policy_snapshot_missing")
     else:
         blockers.extend(policy.blockers)
-    selected = next((kind for kind, expression in expressions.items() if expression.selected), ExpressionKind.CASH)
-    expected = [selected]
-    if selected is not ExpressionKind.CASH:
+    expected = [selected_kind] if selected_kind is not ExpressionKind.CASH else []
+    if selected_kind is not ExpressionKind.CASH:
         expected.append(ExpressionKind.CASH)
     for kind in expected:
         impact = impacts.get(kind)
