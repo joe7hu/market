@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,13 +10,63 @@ import investment_panel.core.decision.ticker as ticker_module
 from app.data_access.payloads import option_decision_adapter
 from investment_panel.core.decision.ticker import (
     CapitalActionType,
+    ExpressionDecision,
     ExpressionKind,
+    Horizon,
+    Stance,
     build_ticker_decision,
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST
 from investment_panel.core.risk_policy import RiskPolicySnapshot, compile_risk_policy_snapshot
 import investment_panel.jobs.ticker_decisions as ticker_decision_job
 from investment_panel.jobs.ticker_decisions import portfolio_impacts
+
+
+def _expression_for_impact(kind: ExpressionKind, utility: float) -> ExpressionDecision:
+    return ExpressionDecision(
+        kind=kind,
+        ticker="ACME",
+        horizon=Horizon.TACTICAL,
+        thesis_revision="revision",
+        stance=Stance.BULLISH,
+        net_expected_value_per_loss_dollar=utility,
+        quantity=1,
+        status="eligible",
+        rationale="test expression",
+    )
+
+
+def test_post_impact_selector_uses_portfolio_cost_once() -> None:
+    expressions = {
+        ExpressionKind.STOCK: _expression_for_impact(ExpressionKind.STOCK, 0.8),
+        ExpressionKind.CALL: _expression_for_impact(ExpressionKind.CALL, 0.7),
+        ExpressionKind.CASH: _expression_for_impact(ExpressionKind.CASH, 0),
+    }
+    impacts = {
+        kind: ticker_module.PortfolioImpact.model_construct(
+            availability="available", availability_status=ticker_module.AvailabilityStatus.AVAILABLE,
+            blockers=(), expected_transaction_costs=cost,
+        )
+        for kind, cost in ((ExpressionKind.STOCK, 0.3), (ExpressionKind.CALL, 0.0))
+    }
+    tactical = SimpleNamespace()
+    fundamental = SimpleNamespace()
+    selected = ticker_module._post_impact_select(
+        expressions=expressions, impacts=impacts, action=CapitalActionType.BUY,
+        tactical=tactical, fundamental=fundamental,
+    )
+    assert selected.kind is ExpressionKind.CALL
+    assert expressions[ExpressionKind.CALL].selected
+    assert not expressions[ExpressionKind.STOCK].selected
+
+
+def test_crypto_impact_does_not_authorize_from_stock_evidence() -> None:
+    expression = _expression_for_impact(ExpressionKind.CRYPTO_SPOT, 0.5)
+    _, _, _, blockers = ticker_module._crypto_impact_values(
+        expression,
+        {"portfolio_value": 100_000, "stock_evidence": {"status": "available", "source": "stock"}},
+    )
+    assert "crypto_portfolio_evidence_missing" in blockers
 
 
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)

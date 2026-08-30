@@ -888,11 +888,19 @@ class PortfolioImpact(BaseModel):
                 or self.liquidity != {"status": "not_applicable"}
             ):
                 raise ValueError("CASH portfolio impact must be exact zero change")
-        elif self.expression_kind in {
-            ExpressionKind.STOCK,
-            ExpressionKind.CRYPTO_SPOT,
-            ExpressionKind.CRYPTO_PERPETUAL,
-        }:
+        elif self.expression_kind in {ExpressionKind.CRYPTO_SPOT, ExpressionKind.CRYPTO_PERPETUAL}:
+            evidence = self.portfolio_before.get("crypto_evidence")
+            if not isinstance(evidence, Mapping) or not self.portfolio_before.get("crypto_impact"):
+                raise ValueError("available crypto portfolio impacts require crypto evidence")
+            if str(_pick(evidence, "status", "availability") or "").lower() != "available":
+                raise ValueError("available crypto portfolio impacts require available crypto evidence")
+            if not _pick(evidence, "source_id", "source", "provider") or not _pick(evidence, "observed_at", "available_at", "quote_time"):
+                raise ValueError("available crypto portfolio impacts require source and observation evidence")
+            if self.expression_kind is ExpressionKind.CRYPTO_PERPETUAL and (
+                _number(evidence.get("bid")) is None or _number(evidence.get("ask")) is None
+            ):
+                raise ValueError("available crypto perpetual impacts require bid and ask evidence")
+        elif self.expression_kind is ExpressionKind.STOCK:
             required = (
                 self.position_weight_before,
                 self.position_weight_after,
@@ -978,7 +986,7 @@ def trade_expression_identity(value: Any) -> str:
 
     expression = trade_expression_from_legacy(value)
     encoded = json.dumps(
-        expression.model_dump(mode="json", exclude={"availability_status", "blockers"}),
+        expression.model_dump(mode="json", exclude={"availability_status", "blockers", "selected"}),
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -1856,6 +1864,7 @@ def build_opportunity_episode(
     catalyst_window: str | None = None,
     closed_reason: str | None = None,
     superseded_by: str | None = None,
+    prior_episode: OpportunityEpisode | Mapping[str, Any] | None = None,
 ) -> OpportunityEpisode:
     canonical_expressions = {
         ExpressionKind(kind): trade_expression_from_legacy(expression)
@@ -1870,8 +1879,13 @@ def build_opportunity_episode(
             if isinstance(selected_expression, Mapping)
             else ExpressionKind(selected_expression)
         )
-    canonical_thesis = thesis_identity or f"ticker:{ticker.strip().upper()}"
-    canonical_episode_id = episode_id or opportunity_episode_id(
+    prior = None
+    if prior_episode is not None:
+        prior = prior_episode if isinstance(prior_episode, OpportunityEpisode) else OpportunityEpisode.model_validate(prior_episode)
+        if prior.ticker != ticker.strip().upper():
+            raise ValueError("prior opportunity episode ticker must match")
+    canonical_thesis = thesis_identity or (prior.thesis_identity if prior else None) or f"ticker:{ticker.strip().upper()}"
+    canonical_episode_id = episode_id or (prior.episode_id if prior else None) or opportunity_episode_id(
         ticker, decision_revision, thesis_identity=canonical_thesis,
     )
     canonical_lineage = []
@@ -1895,18 +1909,18 @@ def build_opportunity_episode(
             canonical_expressions.get(selected_kind) if selected_kind is not None else None
         ),
         thesis_identity=canonical_thesis,
-        first_seen_at=first_seen_at or cutoff,
+        first_seen_at=first_seen_at or (prior.first_seen_at if prior else None) or cutoff,
         last_updated_at=last_updated_at or cutoff,
-        status=status,
-        horizon=horizon or (
+        status=status if status is not OpportunityEpisodeStatus.DISCOVERED or prior is None else prior.status,
+        horizon=horizon or (prior.horizon if prior else None) or (
             canonical_expressions.get(selected_kind).horizon
             if selected_kind is not None and canonical_expressions.get(selected_kind) is not None
             else None
         ),
-        catalyst_window=catalyst_window,
+        catalyst_window=catalyst_window if catalyst_window is not None else (prior.catalyst_window if prior else None),
         current_revision=decision_revision,
-        closed_reason=closed_reason,
-        superseded_by=superseded_by,
+        closed_reason=closed_reason if closed_reason is not None else (prior.closed_reason if prior else None),
+        superseded_by=superseded_by if superseded_by is not None else (prior.superseded_by if prior else None),
     )
 
 
@@ -2286,6 +2300,7 @@ class TickerDecision(BaseModel):
                 expressions=safe_expressions,
                 selected_expression=ExpressionKind.CASH,
                 episode_id=self.opportunity_episode_id,
+                prior_episode=self.opportunity_episode,
             )
             normalized = {
                 kind: impact.model_copy(update={
@@ -2548,6 +2563,7 @@ def apply_opportunity_rank_safety(
         expressions=expressions,
         selected_expression=ExpressionKind.CASH,
         episode_id=decision.opportunity_episode_id,
+        prior_episode=decision.opportunity_episode,
     )
     impacts = {
         kind: impact.model_copy(update={
@@ -3821,6 +3837,81 @@ def _stock_impact_values(
     return before, after, values, list(dict.fromkeys(blockers))
 
 
+def _crypto_impact_values(
+    expression: ExpressionDecision,
+    replay: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
+    """Build a crypto impact only from crypto-owned evidence.
+
+    Stock evidence is intentionally not consulted. A crypto position is
+    actionable only when the replay carries a bounded, executable crypto
+    evidence package with its own source and observation timestamp.
+    """
+    evidence = replay.get("crypto_evidence")
+    blockers: list[str] = []
+    if not isinstance(evidence, Mapping):
+        blockers.append("crypto_portfolio_evidence_missing")
+        evidence = {}
+    if str(_pick(evidence, "status", "availability") or "").lower() != "available":
+        blockers.append("crypto_portfolio_evidence_unavailable")
+    if not _pick(evidence, "source_id", "source", "provider"):
+        blockers.append("crypto_evidence_source_missing")
+    if not _pick(evidence, "observed_at", "available_at", "quote_time"):
+        blockers.append("crypto_evidence_observed_at_missing")
+    if _number(_pick(evidence, "price", "mark", "mid")) is None:
+        blockers.append("crypto_evidence_price_missing")
+    if expression.kind is ExpressionKind.CRYPTO_PERPETUAL and (
+        _number(evidence.get("bid")) is None or _number(evidence.get("ask")) is None
+    ):
+        blockers.append("crypto_perpetual_quote_missing")
+    nav = _number(replay.get("portfolio_value"), 0.0) or 0.0
+    quantity = expression.quantity or 0
+    price = _number(_pick(evidence, "price", "mark", "mid"), 0.0) or 0.0
+    added_value = price * quantity
+    positions = [item for item in replay.get("positions", ()) if isinstance(item, Mapping)]
+    owned = sum(
+        _number(item.get("market_value"), 0.0) or 0.0
+        for item in positions
+        if str(item.get("symbol") or "").upper() == expression.ticker.upper()
+    )
+    before_weight = owned / nav if nav > 0 else None
+    after_weight = (owned + added_value) / nav if nav > 0 else None
+    if nav <= 0:
+        blockers.append("crypto_portfolio_value_missing")
+    before = {
+        "ticker": expression.ticker,
+        "position_weight": before_weight,
+        "gross_exposure": before_weight,
+        "net_exposure": before_weight,
+        "crypto_evidence": dict(evidence),
+    }
+    after = {
+        **before,
+        "position_weight": after_weight,
+        "gross_exposure": after_weight,
+        "net_exposure": after_weight,
+    }
+    planned_loss = expression.planned_loss
+    values = {
+        "position_weight_before": before_weight,
+        "position_weight_after": after_weight,
+        "gross_exposure_before": before_weight,
+        "gross_exposure_after": after_weight,
+        "net_exposure_before": before_weight,
+        "net_exposure_after": after_weight,
+        "planned_loss": planned_loss,
+        "marginal_risk": planned_loss / nav if nav > 0 and planned_loss is not None else None,
+        "risk_budget_consumed": planned_loss / nav if nav > 0 and planned_loss is not None else None,
+        "expected_transaction_costs": _number(_pick(evidence, "expected_transaction_costs", "transaction_costs", "fees")),
+        "scenario_pnl": _pick(evidence, "scenario_pnl", "stress_scenarios"),
+        "liquidity": {"status": "available", "source": _pick(evidence, "source_id", "source", "provider")},
+        "factor_exposure": {"asset_class": "crypto"},
+        "greeks": None,
+        "crypto_impact": True,
+    }
+    return before, after, values, list(dict.fromkeys(blockers))
+
+
 def compose_portfolio_impact(
     *,
     episode: OpportunityEpisode,
@@ -3846,11 +3937,11 @@ def compose_portfolio_impact(
             "greeks": None,
             "liquidity": {"status": "not_applicable"},
         }
-    elif kind in {
-        ExpressionKind.STOCK,
-        ExpressionKind.CRYPTO_SPOT,
-        ExpressionKind.CRYPTO_PERPETUAL,
-    } and not blockers:
+    elif kind in {ExpressionKind.CRYPTO_SPOT, ExpressionKind.CRYPTO_PERPETUAL} and not blockers:
+        before, after, values, crypto_blockers = _crypto_impact_values(expression, before)
+        blockers.extend(crypto_blockers)
+        availability = "unavailable" if blockers else "available"
+    elif kind is ExpressionKind.STOCK and not blockers:
         before_book = dict(before)
         before_metrics, after_metrics, stock_values, stock_blockers = _stock_impact_values(expression, before)
         after = {**before, "ticker": expression.ticker, "stock_impact": after_metrics}
@@ -3987,6 +4078,7 @@ def build_ticker_decision(
     portfolio_impacts: Mapping[ExpressionKind | str, PortfolioImpact | Mapping[str, Any]] | None | object = _CONTEXT_UNSET,
     risk_policy_snapshot: RiskPolicySnapshot | Mapping[str, Any] | None | object = _CONTEXT_UNSET,
     portfolio_replay: Mapping[str, Any] | None = None,
+    prior_opportunity_episode: OpportunityEpisode | Mapping[str, Any] | None = None,
 ) -> TickerDecision:
     """Build one deterministic ticker decision from point-in-time rows."""
 
@@ -4277,6 +4369,7 @@ def build_ticker_decision(
         input_lineage=input_lineage,
         expressions=expressions,
         selected_expression=selected,
+        prior_episode=prior_opportunity_episode,
     )
     context_supplied = any(
         value is not _CONTEXT_UNSET
@@ -4336,6 +4429,24 @@ def build_ticker_decision(
             ExpressionKind(kind): value if isinstance(value, PortfolioImpact) else PortfolioImpact.model_validate(value)
             for kind, value in portfolio_impacts.items()
         }
+    selected = _post_impact_select(
+        expressions=expressions,
+        impacts=impacts,
+        action=capital.action,
+        tactical=tactical,
+        fundamental=fundamental,
+    )
+    episode = build_opportunity_episode(
+        ticker=symbol,
+        decision_revision=decision_revision,
+        policy_version=risk_policy.policy_version,
+        cutoff=reference,
+        input_lineage=input_lineage,
+        expressions=expressions,
+        selected_expression=selected,
+        episode_id=episode.episode_id,
+        prior_episode=episode,
+    )
     context_blockers = (
         _context_blockers_for(
             snapshot=snapshot,
@@ -4728,6 +4839,78 @@ def _best_expression(
         return lower, net, liquidity, fill, fit, slow_thesis_bonus
 
     return max(eligible, key=score).kind
+
+
+def _post_impact_select(
+    *,
+    expressions: dict[ExpressionKind, ExpressionDecision],
+    impacts: Mapping[ExpressionKind, PortfolioImpact],
+    action: CapitalActionType,
+    tactical: HorizonDecision,
+    fundamental: HorizonDecision,
+) -> ExpressionDecision:
+    """Select only after the canonical portfolio impacts are available.
+
+    Expression utility is already net of expression-level costs. Portfolio
+    impact costs are a separate, absolute evidence field and are subtracted
+    once here. Missing or blocked impact evidence cannot win over CASH.
+    """
+    candidates: list[tuple[float, ExpressionDecision]] = []
+    prior_selected = next(
+        (expression for expression in expressions.values() if expression.selected and expression.kind is not ExpressionKind.CASH),
+        None,
+    )
+    for expression in expressions.values():
+        if expression.kind is ExpressionKind.CASH or expression.status != "eligible":
+            continue
+        impact = impacts.get(expression.kind)
+        if impact is None or impact.availability != "available" or impact.blockers:
+            continue
+        utility = expression.net_expected_value_per_loss_dollar
+        if utility is None:
+            continue
+        # Expression utility is per loss dollar. Portfolio impact costs are
+        # normally absolute dollars, so normalize them to the same unit when
+        # the impact carries its planned-loss denominator. Test/advisory
+        # impacts without that denominator already provide a normalized value.
+        denominator = impact.planned_loss if impact.planned_loss and impact.planned_loss > 0 else 1.0
+        portfolio_cost = (impact.expected_transaction_costs or 0.0) / denominator
+        utility -= portfolio_cost
+        utility -= (impact.tail_risk_penalty or 0.0) / denominator
+        utility -= (impact.portfolio_overlap_penalty or 0.0) / denominator
+        candidates.append((utility, expression))
+    cash = expressions.get(ExpressionKind.CASH)
+    if cash is None:
+        template = next(iter(expressions.values()))
+        cash = _cash_expression(template.ticker, fundamental.expiry_date, template.thesis_revision)
+    selected = cash
+    if action is not CapitalActionType.AVOID:
+        if candidates:
+            best = max(candidates, key=lambda item: item[0])
+            if best[0] > 0:
+                selected = best[1]
+            elif prior_selected is not None and prior_selected.kind not in {
+                ExpressionKind.CRYPTO_SPOT,
+                ExpressionKind.CRYPTO_PERPETUAL,
+            } and prior_selected.net_expected_value_per_loss_dollar is None:
+                selected = prior_selected
+        elif prior_selected is not None and prior_selected.kind not in {
+            ExpressionKind.CRYPTO_SPOT,
+            ExpressionKind.CRYPTO_PERPETUAL,
+        }:
+            # Preserve a directional advisory expression when no impact can
+            # be evaluated. The subsequent context gate still blocks its
+            # resolution, and the policy validator can demote it to CASH.
+            selected = prior_selected
+    for expression in expressions.values():
+        expression.selected = expression.kind is selected.kind
+    for view in (tactical, fundamental):
+        view.selected_instrument = selected.kind
+        view.alternate_expression = next(
+            (expression.kind for expression in expressions.values() if expression.kind is not selected.kind and expression.status == "eligible"),
+            ExpressionKind.CASH,
+        )
+    return selected
 
 
 def _capital_action(

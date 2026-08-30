@@ -111,6 +111,34 @@ def test_episode_identity_is_durable_across_decision_revisions() -> None:
     assert episode.status is OpportunityEpisodeStatus.UNDERWRITING
 
 
+def test_episode_revision_handoff_preserves_lifecycle_state() -> None:
+    first = _episode(
+        thesis_identity="thesis:acme-growth",
+        first_seen_at=CUTOFF - timedelta(days=5),
+        last_updated_at=CUTOFF - timedelta(days=1),
+        status=OpportunityEpisodeStatus.SETUP,
+        current_revision="decision-1",
+        catalyst_window="earnings:2026-10-01",
+    )
+    revised = build_opportunity_episode(
+        ticker="ACME",
+        decision_revision="decision-2",
+        policy_version="policy-1",
+        cutoff=CUTOFF,
+        input_lineage=[_lineage(decision_revision="decision-2")],
+        expressions={ExpressionKind.STOCK: _expression(ExpressionKind.STOCK, selected=True)},
+        selected_expression=ExpressionKind.STOCK,
+        prior_episode=first,
+    )
+    assert revised.episode_id == first.episode_id
+    assert revised.thesis_identity == first.thesis_identity
+    assert revised.first_seen_at == first.first_seen_at
+    assert revised.status is first.status
+    assert revised.last_updated_at == CUTOFF
+    assert revised.current_revision == "decision-2"
+    assert revised.catalyst_window == first.catalyst_window
+
+
 def test_crypto_expressions_are_bounded_and_fail_closed_without_quotes() -> None:
     decision = build_ticker_decision(
         "BTC-USD",
