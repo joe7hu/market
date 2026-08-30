@@ -6,13 +6,17 @@ from investment_panel.core.decision.governance import (
     OUTCOME_ERROR_TYPES,
     TRACKED_METRICS,
     classify_outcome_error,
+    classify_outcome_evidence,
     promotion_readiness,
     transition_dedupe_key,
 )
 
 
-def _evaluation(stage: str) -> dict[str, object]:
+def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
     metrics = {name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1) for name in TRACKED_METRICS}
+    if aliases:
+        metrics["calibration_error"] = metrics.pop("calibration")
+        metrics["precision_at_5"] = metrics.pop("precision_at_top_k")
     return {
         "stage": stage,
         "verdict": "pass",
@@ -44,6 +48,19 @@ def test_phase7_malformed_or_legacy_claims_are_unavailable() -> None:
     assert "walk_forward_evidence_not_real" in result["blockers"]
 
 
+def test_phase7_metric_aliases_are_resolved_without_key_errors() -> None:
+    rows = [_evaluation(stage, aliases=True) for stage in ("walk_forward", "shadow", "execution_grade_paper")]
+    result = promotion_readiness(rows, now=datetime(2026, 8, 30, 13, tzinfo=UTC))
+    assert result["promotion_eligible"] is True
+    assert result["metrics"]["calibration"] == 0.1
+
+
+def test_phase7_transition_identity_cannot_collide_on_colons() -> None:
+    assert transition_dedupe_key("a:b", "c", "newly_actionable", "policy") != transition_dedupe_key(
+        "a", "b:c", "newly_actionable", "policy",
+    )
+
+
 def test_phase7_error_taxonomy_and_exact_notification_identity() -> None:
     assert set(OUTCOME_ERROR_TYPES) == {
         "forecast_error", "thesis_error", "regime_error", "timing_error",
@@ -51,6 +68,15 @@ def test_phase7_error_taxonomy_and_exact_notification_identity() -> None:
     }
     assert classify_outcome_error(expression_ok=False) == "expression_selection_error"
     assert classify_outcome_error() is None
+    assert classify_outcome_evidence({"evidence_state": "OBSERVED", "checks": {"thesis_ok": False}}) is None
+    assert classify_outcome_evidence({
+        "evidence_state": "OBSERVED",
+        "checks": {
+            "forecast_ok": True, "thesis_ok": False, "regime_ok": True,
+            "timing_ok": True, "expression_ok": True, "execution_ok": True,
+            "sizing_ok": True,
+        },
+    }) == "thesis_error"
     assert transition_dedupe_key("episode", "revision", "newly_actionable", "policy") == transition_dedupe_key(
         "episode", "revision", "newly_actionable", "policy",
     )

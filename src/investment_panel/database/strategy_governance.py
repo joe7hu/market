@@ -57,7 +57,8 @@ class StrategyGovernanceRepository:
             for proposal in proposals:
                 evaluations = connection.execute(
                     """
-                    SELECT evaluation_type, verdict, metrics
+                    SELECT evaluation_type, verdict, metrics, evidence,
+                           evaluated_at, available_at
                     FROM analysis.strategy_evaluation
                     WHERE strategy_revision_id = %s
                     ORDER BY evaluated_at DESC, id DESC
@@ -67,7 +68,7 @@ class StrategyGovernanceRepository:
                 latest: dict[str, Any] = {}
                 for row in evaluations:
                     latest.setdefault(str(row["evaluation_type"]), row)
-                if not _promotion_evidence_passes(latest):
+                if not _promotion_evidence_passes(list(latest.values())):
                     continue
                 result = dict(proposal["result"] or {})
                 changes = dict(result.get("proposed_parameter_changes") or {})
@@ -208,35 +209,5 @@ _AUTOMATIC_PARAMETER_ALLOWLIST = {
 }
 
 
-def _promotion_evidence_passes(evaluations: dict[str, Any]) -> bool:
-    requirements = {
-        "backtest": (100, 120),
-        "forward_shadow_test": (30, 30),
-        "canary": (20, 20),
-    }
-    for evaluation_type, (sample, span) in requirements.items():
-        row = evaluations.get(evaluation_type)
-        if row is None or str(row["verdict"]) != "pass":
-            return False
-        metrics = dict(row["metrics"] or {})
-        proposed = dict(metrics.get("proposed") or metrics)
-        baseline = dict(metrics.get("baseline") or {})
-        if int(proposed.get("sample_size") or 0) < sample:
-            return False
-        if int(metrics.get("observation_span_days") or 0) < span:
-            return False
-        if float(proposed.get("lower_95_expectancy") or 0) <= 0:
-            return False
-        baseline_expectancy = float(baseline.get("net_expectancy") or 0)
-        proposed_expectancy = float(proposed.get("net_expectancy") or 0)
-        if proposed_expectancy < baseline_expectancy * 1.10:
-            return False
-        if float(proposed.get("precision_at_5") or 0) < float(baseline.get("precision_at_5") or 0) - 0.02:
-            return False
-        if float(proposed.get("max_drawdown") or 0) < float(baseline.get("max_drawdown") or 0) * 1.10:
-            return False
-        if float(proposed.get("calibration_error") or 0) > float(baseline.get("calibration_error") or 0) + 0.02:
-            return False
-        if float(proposed.get("max_ticker_contribution") or 1) > 0.20:
-            return False
-    return True
+def _promotion_evidence_passes(evaluations: list[dict[str, Any]]) -> bool:
+    return promotion_readiness(evaluations)["promotion_eligible"]

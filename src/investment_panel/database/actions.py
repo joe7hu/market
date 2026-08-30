@@ -18,7 +18,7 @@ from investment_panel.database.strategy_parameters import (
     normalize_gates,
 )
 from investment_panel.core.option_trade_ticket import TICKET_VERSION, execution_policy
-from investment_panel.core.decision import is_market_open
+from investment_panel.core.decision import is_market_open, promotion_readiness
 from investment_panel.database.options_paper_ledger import (
     acquire_shared_sleeve_lock,
     active_paper_exposure,
@@ -616,20 +616,17 @@ class ActionRepository:
             if parent_id is None or statuses.get(parent_id) != "active":
                 raise ValueError("strategy candidate base is no longer active; reevaluation is required")
             evaluations = connection.execute(
-                "SELECT DISTINCT ON (evaluation_type) evaluation_type, verdict "
+                "SELECT DISTINCT ON (evaluation_type) evaluation_type AS stage, verdict, metrics, evidence, "
+                "evaluated_at, available_at "
                 "FROM analysis.strategy_evaluation WHERE strategy_revision_id = %s "
                 "ORDER BY evaluation_type, evaluated_at DESC, id DESC",
                 [candidate["id"]],
             ).fetchall()
-            passed = {
-                str(row["evaluation_type"]).lower()
-                for row in evaluations
-                if str(row["verdict"] or "").lower() in {"pass", "passed", "approved"}
-            }
-            if "backtest" not in passed:
-                raise ValueError("strategy proposal requires a persisted passing backtest")
-            if not passed.intersection({"forward_test", "forward_shadow_test"}):
-                raise ValueError("strategy proposal requires a persisted passing forward shadow test")
+            governance = promotion_readiness([dict(row) for row in evaluations])
+            if not governance["promotion_eligible"]:
+                raise ValueError(
+                    "strategy proposal requires walk-forward, shadow, and execution-grade paper evidence"
+                )
             active_ids = [
                 revision_id for revision_id, status in statuses.items()
                 if status == "active" and revision_id != candidate["id"]

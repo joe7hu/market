@@ -52,3 +52,52 @@ def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
         assert result["live_eligibility"] == "unavailable"
     finally:
         runtime.close()
+
+
+def test_legacy_backtest_forward_shadow_can_never_promote(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        key = f"phase7-legacy-{uuid4()}"
+        with runtime.transaction() as connection:
+            base_id = connection.execute(
+                """
+                INSERT INTO analysis.strategy_revision
+                    (strategy_key, revision, name, status, parameters, authority_group)
+                VALUES (%s, 1, %s, 'active', %s, %s) RETURNING id
+                """,
+                [key, key, Jsonb({}), key],
+            ).fetchone()["id"]
+            candidate_id = connection.execute(
+                """
+                INSERT INTO analysis.strategy_revision
+                    (strategy_key, revision, name, status, parameters, supersedes_id, authority_group)
+                VALUES (%s, 2, %s, 'candidate', %s, %s, %s) RETURNING id
+                """,
+                [f"{key}-candidate", key, Jsonb({}), base_id, key],
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO analysis.agent_task (task_kind, status, request, result, validation)
+                VALUES ('strategy_mutation_proposal', 'completed', %s, %s, %s)
+                """,
+                [
+                    Jsonb({"source": "legacy-test"}),
+                    Jsonb({"candidate_revision_id": candidate_id, "proposed_parameter_changes": {"max_spread_pct": 0.2}}),
+                    Jsonb({}),
+                ],
+            )
+            for stage in ("backtest", "forward_shadow_test", "canary"):
+                connection.execute(
+                    """
+                    INSERT INTO analysis.strategy_evaluation
+                        (strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics, evidence)
+                    VALUES (%s, %s, now(), 'pass', %s, %s)
+                    """,
+                    [candidate_id, stage, Jsonb({"sample_size": 100}), Jsonb({"source": "legacy", "sample_size": 100})],
+                )
+        assert StrategyGovernanceRepository(runtime).automatic_promote_eligible() == 0
+    finally:
+        runtime.close()

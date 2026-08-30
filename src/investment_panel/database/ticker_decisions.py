@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision import (
     AvailabilityStatus,
+    classify_outcome_evidence,
     ExpressionKind,
     Horizon,
     OUTCOME_ATTRIBUTION_CONTRACT_VERSION,
@@ -1729,7 +1730,14 @@ def _classify_mistake(
             "proposed_rule_change": "Retain avoidance only when the named bearish invalidation or catalyst risk remains active.",
         }
     if stance == "BULLISH" and stock_return < 0 or stance == "BEARISH" and stock_return > 0:
-        return "direction_error", {
+        return classify_outcome_evidence({
+            "evidence_state": "OBSERVED",
+            "checks": {
+                "forecast_ok": True, "thesis_ok": False, "regime_ok": True,
+                "timing_ok": True, "expression_ok": True, "execution_ok": True,
+                "sizing_ok": True,
+            },
+        }), {
             "belief": stance,
             "action": action,
             "observed_stock_return": stock_return,
@@ -1744,7 +1752,14 @@ def _classify_mistake(
             "proposed_rule_change": "Require a later executable option package before selecting an option expression.",
         }
     if selected_kind not in {"STOCK", "CASH"} and selected_return is not None and stock_return > selected_return + 0.05:
-        return "stock_versus_option_expression_error", {
+        return classify_outcome_evidence({
+            "evidence_state": "OBSERVED",
+            "checks": {
+                "forecast_ok": True, "thesis_ok": True, "regime_ok": True,
+                "timing_ok": True, "expression_ok": False, "execution_ok": True,
+                "sizing_ok": True,
+            },
+        }), {
             "belief": stance,
             "action": action,
             "selected_expression": selected_kind,

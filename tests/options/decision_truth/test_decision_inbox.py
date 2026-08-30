@@ -1043,7 +1043,7 @@ def test_current_portfolio_risk_notifies_once_and_tracks_recurrence(
         assert set(rows[1]["payload"]) == {
             "card_id", "risk_type", "severity", "title", "summary", "symbols",
             "impact", "next_action", "as_of", "available_at", "breach_sequence",
-            "state_transition", "detail_url",
+            "state_transition", "governance_transition", "detail_url",
         }
         assert rows[1]["payload"]["symbols"] == ["TSLA"]
         message = telegram_message(rows[1]["payload"])

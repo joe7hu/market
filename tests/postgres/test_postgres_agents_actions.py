@@ -20,6 +20,7 @@ from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
+from investment_panel.core.decision import TRACKED_METRICS
 from investment_panel.database.thesis_evidence import thesis_source_evidence
 from investment_panel.jobs.option_agent_workflow import compact_agent_batch
 from app.response_contracts import AgentOverviewResponse
@@ -93,9 +94,9 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
             ).fetchone()["id"]
             baseline = {"net_expectancy": .10, "precision_at_5": .50, "max_drawdown": -.20, "calibration_error": .10}
             for evaluation_type, sample, span in (
-                ("backtest", 100, 120),
-                ("forward_shadow_test", 30, 30),
-                ("canary", 20, 20),
+                ("walk_forward", 100, 120),
+                ("shadow", 30, 30),
+                ("execution_grade_paper", 20, 20),
             ):
                 proposed = {
                     "sample_size": sample,
@@ -106,11 +107,15 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                     "calibration_error": .10,
                     "max_ticker_contribution": .10,
                 }
+                phase7_metrics = {
+                    name: ({"risk_on": .5} if name == "regime_performance" else .1)
+                    for name in TRACKED_METRICS
+                }
                 connection.execute(
                     "INSERT INTO analysis.strategy_evaluation "
-                    "(strategy_revision_id, evaluation_type, evaluated_at, period_start, period_end, verdict, metrics) "
-                    "VALUES (%s, %s, now(), now() - make_interval(days => %s), now(), 'pass', %s)",
-                    [candidate_id, evaluation_type, span, Jsonb({"baseline": baseline, "proposed": proposed, "observation_span_days": span})],
+                    "(strategy_revision_id, evaluation_type, evaluated_at, period_start, period_end, verdict, metrics, evidence) "
+                    "VALUES (%s, %s, now(), now() - make_interval(days => %s), now(), 'pass', %s, %s)",
+                    [candidate_id, evaluation_type, span, Jsonb({"baseline": baseline, "proposed": proposed, "observation_span_days": span, **phase7_metrics}), Jsonb({"source": "test", "sample_size": sample})],
                 )
 
         governance = StrategyGovernanceRepository(runtime)
@@ -1484,12 +1489,16 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                 "'options-radar-core') RETURNING id",
                 [Jsonb({"max_spread_pct": 0.2}), base_id],
             ).fetchone()["id"]
-            for evaluation_type in ("backtest", "forward_shadow_test"):
+            metrics = {
+                name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1)
+                for name in TRACKED_METRICS
+            }
+            for evaluation_type in ("walk_forward", "shadow", "execution_grade_paper"):
                 connection.execute(
                     "INSERT INTO analysis.strategy_evaluation "
-                    "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics) "
-                    "VALUES (%s, %s, now(), 'pass', %s)",
-                    [candidate_id, evaluation_type, Jsonb({"sample_size": 100})],
+                    "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics, evidence) "
+                    "VALUES (%s, %s, now(), 'pass', %s, %s)",
+                    [candidate_id, evaluation_type, Jsonb(metrics), Jsonb({"sample_size": 30, "source": "realized_paper_outcomes"})],
                 )
             analysis_run_id = connection.execute(
                 "INSERT INTO analysis.run "

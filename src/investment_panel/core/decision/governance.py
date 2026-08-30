@@ -8,6 +8,7 @@ silently treated as a failed or successful observation.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 import math
 from typing import Any, Mapping
 
@@ -55,14 +56,6 @@ NOTIFIABLE_TRANSITIONS = (
     "exited",
     "blocking_data_degradation",
 )
-_STAGE_ALIASES = {
-    "forward_shadow_test": "shadow",
-    "canary": "execution_grade_paper",
-    "paper_advisory_promotion": "execution_grade_paper",
-    "out_of_sample": "walk_forward",
-}
-
-
 def promotion_readiness(
     evaluations: Mapping[str, Any] | list[Mapping[str, Any]],
     *,
@@ -104,7 +97,10 @@ def promotion_readiness(
             stages[stage] = stage_result
             continue
         missing = [name for name in TRACKED_METRICS if not _metric_present(metrics, name)]
-        malformed = [name for name in TRACKED_METRICS if _metric_present(metrics, name) and not _metric_valid(metrics[name])]
+        malformed = [
+            name for name in TRACKED_METRICS
+            if _metric_present(metrics, name) and not _metric_valid(_metric_value(metrics, name))
+        ]
         if missing:
             blockers.extend(f"{stage}_{name}_missing" for name in missing)
         if malformed:
@@ -122,7 +118,14 @@ def promotion_readiness(
         "live_eligibility": "unavailable",
         "live_blocker": "market_paper_only_policy",
         "stages": stages,
-        "metrics": {name: stages.get("execution_grade_paper", {}).get("metrics", {}).get(name) for name in TRACKED_METRICS},
+        "metrics": {
+            name: (
+                None
+                if (value := _metric_value(stages.get("execution_grade_paper", {}).get("metrics", {}), name)) is _MISSING
+                else value
+            )
+            for name in TRACKED_METRICS
+        },
         "blockers": list(dict.fromkeys(blockers)),
     }
 
@@ -150,6 +153,31 @@ def classify_outcome_error(
     return None
 
 
+def classify_outcome_evidence(evidence: Mapping[str, Any] | None) -> str | None:
+    """Classify a validated outcome only when every check is explicit.
+
+    Production callers pass observations from the canonical outcome seam.  A
+    missing check is advisory and therefore cannot manufacture a taxonomy
+    label.
+    """
+
+    if not isinstance(evidence, Mapping) or str(evidence.get("evidence_state") or "").upper() not in {
+        "OBSERVED", "REALIZED", "RESOLVED",
+    }:
+        return None
+    checks = evidence.get("checks")
+    if not isinstance(checks, Mapping):
+        return None
+    names = (
+        "forecast_ok", "thesis_ok", "regime_ok", "timing_ok",
+        "expression_ok", "execution_ok", "sizing_ok",
+    )
+    if any(name not in checks or not isinstance(checks[name], bool) for name in names):
+        return None
+    values = {name: checks[name] for name in names}
+    return classify_outcome_error(**values)
+
+
 def transition_dedupe_key(
     episode_id: str,
     decision_revision: str,
@@ -161,7 +189,9 @@ def transition_dedupe_key(
     values = (episode_id.strip(), decision_revision.strip(), transition, policy_version.strip())
     if not all(values):
         raise ValueError("governance notification identity is incomplete")
-    return "phase7:" + ":".join(values)
+    # JSON encodes tuple fields with length/quoting semantics, so delimiters
+    # inside an identity cannot collide with delimiters between identities.
+    return "phase7:" + json.dumps(values, ensure_ascii=False, separators=(",", ":"))
 
 
 def _evaluation_rows(value: Mapping[str, Any] | list[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -171,7 +201,6 @@ def _evaluation_rows(value: Mapping[str, Any] | list[Mapping[str, Any]]) -> dict
         if not isinstance(raw, Mapping):
             continue
         stage = str(raw.get("stage") or raw.get("evaluation_type") or key or "").strip().lower().replace("-", "_")
-        stage = _STAGE_ALIASES.get(stage, stage)
         if stage in PROMOTION_STAGES and stage not in result:
             result[stage] = dict(raw)
     return result
@@ -213,8 +242,15 @@ def _fresh(row: Mapping[str, Any], reference: datetime, max_age: timedelta) -> b
 
 
 def _metric_present(metrics: Mapping[str, Any], name: str) -> bool:
+    return _metric_value(metrics, name) is not _MISSING
+
+
+_MISSING = object()
+
+
+def _metric_value(metrics: Mapping[str, Any], name: str) -> Any:
     if name in metrics:
-        return True
+        return metrics[name]
     aliases = {
         "calibration": ("calibration_error", "calibration_metrics"),
         "precision_at_top_k": ("precision_at_5",),
@@ -226,7 +262,10 @@ def _metric_present(metrics: Mapping[str, Any], name: str) -> bool:
         "false_positives": ("false_positive_rate",),
         "missed_winners": ("missed_winner_rate",),
     }
-    return any(alias in metrics for alias in aliases.get(name, ()))
+    for alias in aliases.get(name, ()):
+        if alias in metrics:
+            return metrics[alias]
+    return _MISSING
 
 
 def _metric_valid(value: Any) -> bool:

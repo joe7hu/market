@@ -858,6 +858,16 @@ def ticker_learning_payload(
     governance_row = next(iter(tables.get("ticker_policy_learning") or []), {})
     governance_evaluations = governance_row.get("governance_evaluations", [])
     governance = promotion_readiness(governance_evaluations if isinstance(governance_evaluations, list) else [])
+    if governance_row.get("governance_authority") != "available":
+        governance = {
+            **governance,
+            "status": "unavailable",
+            "promotion_eligible": False,
+            "blockers": list(dict.fromkeys([
+                "strategy_authority_incoherent",
+                *governance.get("blockers", []),
+            ])),
+        }
     strategy_learning["governance"] = governance
     payload = {
         "independent_episode_count": len(episode_ids) or (1 if display_outcomes else 0),

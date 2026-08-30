@@ -26,7 +26,7 @@ import app.main as app_main
 from app.main import app
 from app.request_security import require_local_request
 from investment_panel.core.panel import PANEL_SCOPE_TABLES
-from investment_panel.core.decision import ticker_decision_brief
+from investment_panel.core.decision import TRACKED_METRICS, ticker_decision_brief
 from investment_panel.core.config import AppConfig
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
 from conftest import typed_config
@@ -1007,19 +1007,22 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
             "UPDATE analysis.agent_task SET result = %s WHERE id = %s",
             [Jsonb(ready_result), proposal["id"]],
         )
-        connection.execute(
-            """
-            INSERT INTO analysis.strategy_evaluation (
-                strategy_revision_id, evaluation_type, evaluated_at,
-                period_start, period_end, verdict, metrics, evidence
+        metrics = {
+            name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1)
+            for name in TRACKED_METRICS
+        }
+        for stage in ("walk_forward", "shadow", "execution_grade_paper"):
+            connection.execute(
+                """
+                INSERT INTO analysis.strategy_evaluation (
+                    strategy_revision_id, evaluation_type, evaluated_at,
+                    period_start, period_end, verdict, metrics, evidence
+                ) VALUES (%s, %s, clock_timestamp(), now() - interval '30 days',
+                          now(), 'pass', %s, %s)
+                """,
+                [ready_result["candidate_revision_id"], stage, Jsonb(metrics),
+                 Jsonb({"sample_size": 30, "source": "realized_paper_outcomes"})],
             )
-            SELECT strategy_revision_id, evaluation_type, clock_timestamp(),
-                   period_start, period_end, 'pass', metrics, evidence
-            FROM analysis.strategy_evaluation
-            WHERE strategy_revision_id = %s
-            """,
-            [ready_result["candidate_revision_id"]],
-        )
     promoted = client.post(
         f"/api/strategy-mutation-proposals/{proposal['id']}/promote",
         json={"approved_by": "joe"},
@@ -1080,12 +1083,17 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
             "'candidate', %s, %s, 'options-radar-core') RETURNING id",
             [Jsonb({}), base_id],
         ).fetchone()["id"]
-        for evaluation_type in ("backtest", "forward_shadow_test"):
+        metrics = {
+            name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1)
+            for name in TRACKED_METRICS
+        }
+        for evaluation_type in ("walk_forward", "shadow", "execution_grade_paper"):
             connection.execute(
                 "INSERT INTO analysis.strategy_evaluation "
-                "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics) "
-                "VALUES (%s, %s, now(), 'pass', %s)",
-                [candidate_id, evaluation_type, Jsonb({"sample_size": 100})],
+                "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics, evidence) "
+                "VALUES (%s, %s, now(), 'pass', %s, %s)",
+                [candidate_id, evaluation_type, Jsonb(metrics),
+                 Jsonb({"sample_size": 30, "source": "realized_paper_outcomes"})],
             )
 
     unapproved = client.post(

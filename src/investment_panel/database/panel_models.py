@@ -859,21 +859,32 @@ def load_postgres_tables(
                 canonical = AnalysisRepository(runtime).publication_rows(
                     "ticker-outcome-attribution", "outcome_attribution", include_lineage=True,
                 )
-                governance_rows = connection.execute(
-                    """
-                    SELECT evaluation_type AS stage, verdict, metrics, evidence,
-                           evaluated_at, available_at, period_start, period_end
-                    FROM analysis.strategy_evaluation evaluation
-                    JOIN analysis.strategy_revision strategy
-                      ON strategy.id = evaluation.strategy_revision_id
-                    WHERE strategy.status = 'active'
-                    ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
-                    """
+                active_strategies = connection.execute(
+                    "SELECT id FROM analysis.strategy_revision WHERE status = 'active' "
+                    "ORDER BY id"
                 ).fetchall()
+                governance_rows = []
+                governance_authority = "unavailable"
+                governance_strategy_id = None
+                if len(active_strategies) == 1:
+                    governance_strategy_id = int(active_strategies[0]["id"])
+                    governance_rows = connection.execute(
+                        """
+                        SELECT evaluation_type AS stage, verdict, metrics, evidence,
+                               evaluated_at, available_at, period_start, period_end
+                        FROM analysis.strategy_evaluation
+                        WHERE strategy_revision_id = %s
+                        ORDER BY evaluated_at DESC, id DESC
+                        """,
+                        [governance_strategy_id],
+                    ).fetchall()
+                    governance_authority = "available"
                 tables[name] = [{
                     "authority": "outcome-attribution.v1",
                     "episodes": canonical,
                     "governance_evaluations": [dict(row) for row in governance_rows],
+                    "governance_authority": governance_authority,
+                    "governance_strategy_revision_id": governance_strategy_id,
                 }]
                 continue
             if name == "superinvestor_portfolios":

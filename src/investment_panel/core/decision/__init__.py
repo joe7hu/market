@@ -164,6 +164,7 @@ from investment_panel.core.decision.governance import (
     PROMOTION_STAGES,
     TRACKED_METRICS,
     classify_outcome_error,
+    classify_outcome_evidence,
     promotion_readiness,
     transition_dedupe_key,
 )
@@ -210,6 +211,7 @@ __all__ = [
     "PROMOTION_STAGES",
     "TRACKED_METRICS",
     "classify_outcome_error",
+    "classify_outcome_evidence",
     "promotion_readiness",
     "transition_dedupe_key",
     "apply_blocking_penalties",

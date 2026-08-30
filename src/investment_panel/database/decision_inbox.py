@@ -57,14 +57,40 @@ class DecisionInboxRepository:
         adapter only maps Phase 7 names to its existing event vocabulary.
         """
 
-        key = transition_dedupe_key(episode_id, decision_revision, transition, policy_version)
+        with self.runtime.transaction() as connection:
+            return self._emit_governance_transition_in_transaction(
+                connection,
+                episode_id=episode_id,
+                decision_revision=decision_revision,
+                transition=transition,
+                policy_version=policy_version,
+                payload=payload,
+            )
+
+    def _emit_governance_transition_in_transaction(
+        self,
+        connection: Any,
+        *,
+        episode_id: str,
+        decision_revision: str,
+        transition: str,
+        policy_version: str,
+        payload: Mapping[str, Any] | None = None,
+        opportunity_id: str | None = None,
+        ticket_version: int | None = None,
+        paper_order_id: str | None = None,
+        dedupe_key: str | None = None,
+    ) -> dict[str, Any]:
+        key = dedupe_key or transition_dedupe_key(episode_id, decision_revision, transition, policy_version)
         body = {
             **dict(payload or {}),
-            "opportunity_episode_id": episode_id,
-            "decision_revision": decision_revision,
-            "policy_version": policy_version,
-            "state_transition": transition,
         }
+        # Existing payloads remain readable for older consumers.  The
+        # transition argument is the Phase 7 authority and controls dedupe;
+        # new callers without a legacy state field get the canonical name.
+        body["governance_transition"] = transition
+        if "state_transition" not in body:
+            body["state_transition"] = transition
         event_type = {
             "newly_actionable": "ready", "action_changed": "ready",
             "thesis_invalidated": "revoked", "blocking_data_degradation": "revoked",
@@ -72,13 +98,11 @@ class DecisionInboxRepository:
             "filled": "paper_filled", "exited": "paper_exited",
         }[transition]
         severity = "critical" if transition == "risk_limit_breached" else "warning" if event_type == "revoked" else "info"
-        return self.emit(
-            event_type=event_type,
-            payload=body,
-            lane="ticker",
-            severity=severity,
-            enqueue_telegram=True,
-            dedupe_key=key,
+        return self._emit_in_transaction(
+            connection, event_type=event_type, payload=body, lane="ticker",
+            severity=severity, enqueue_telegram=True, dedupe_key=key,
+            opportunity_id=opportunity_id, ticket_version=ticket_version,
+            paper_order_id=paper_order_id,
         )
 
     def emit(
@@ -318,17 +342,27 @@ class DecisionInboxRepository:
                 blocker=blocker,
                 next_action=next_action,
             )
-            dedupe_key = _canonical_dedupe_key(episode_id, revision, transition, policy_version)
             with self.runtime.transaction() as connection:
-                event = self._emit_in_transaction(
+                event = self._emit_governance_transition_in_transaction(
                     connection,
-                    event_type="ready" if transition in ACTIONABLE_TRANSITIONS else "revoked",
+                    episode_id=episode_id,
+                    decision_revision=revision,
+                    transition=(
+                        "blocking_data_degradation"
+                        if transition == "decision_authority_degraded"
+                        else transition
+                    ),
+                    policy_version=policy_version,
                     payload=payload,
-                    severity="info" if transition in ACTIONABLE_TRANSITIONS else "warning",
-                    dedupe_key=dedupe_key,
                 )
                 self._resolve_canonical_actionable_item(
-                    connection, episode_id, exclude_dedupe_key=dedupe_key,
+                    connection,
+                    episode_id,
+                    exclude_dedupe_key=transition_dedupe_key(
+                        episode_id, revision,
+                        "blocking_data_degradation" if transition == "decision_authority_degraded" else transition,
+                        policy_version,
+                    ),
                 )
             created[transition] += int(event["created"])
         return created
@@ -417,13 +451,14 @@ class DecisionInboxRepository:
                     continue
                 for event in _ticker_paper_events(order, activation_at, reference):
                     transition = str(event["state_transition"])
-                    emitted = self._emit_in_transaction(
+                    emitted = self._emit_governance_transition_in_transaction(
                         connection,
-                        event_type={"paper_staged": "ready", "paper_filled": "paper_filled", "paper_exited": "paper_exited"}[transition],
+                        episode_id=str(event["opportunity_episode_id"]),
+                        decision_revision=str(event["decision_revision"]),
+                    transition={"paper_staged": "staged", "paper_filled": "filled", "paper_exited": "exited"}[transition],
+                        policy_version=str(event["policy_version"]),
                         payload=event,
                         paper_order_id=paper_order_id,
-                        lane="ticker",
-                        severity="info",
                         dedupe_key=_ticker_paper_dedupe_key(
                             paper_order_id,
                             str(event["trade_plan_id"]),
@@ -519,12 +554,13 @@ class DecisionInboxRepository:
                     continue
                 sequence = highest_sequence.get(card_id, 0) + 1
                 payload = _portfolio_risk_payload(card, summary_times, sequence)
-                event = self._emit_in_transaction(
+                event = self._emit_governance_transition_in_transaction(
                     connection,
-                    event_type="portfolio_critical",
+                    episode_id=card_id,
+                    decision_revision=str(sequence),
+                    transition="risk_limit_breached",
+                    policy_version=str(card.get("policy_version") or "risk-policy.v1"),
                     payload=payload,
-                    severity="critical",
-                    dedupe_key=_portfolio_risk_dedupe_key(card_id, sequence),
                 )
                 breached += int(event["created"])
 
