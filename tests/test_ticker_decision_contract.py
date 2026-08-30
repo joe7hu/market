@@ -60,11 +60,35 @@ def test_post_impact_selector_uses_portfolio_cost_once() -> None:
     assert not expressions[ExpressionKind.STOCK].selected
 
 
+def test_post_impact_selector_includes_diversification_benefit() -> None:
+    expressions = {
+        ExpressionKind.STOCK: _expression_for_impact(ExpressionKind.STOCK, 0.8),
+        ExpressionKind.CALL: _expression_for_impact(ExpressionKind.CALL, 0.85),
+        ExpressionKind.CASH: _expression_for_impact(ExpressionKind.CASH, 0),
+    }
+    impacts = {
+        ExpressionKind.STOCK: ticker_module.PortfolioImpact.model_construct(
+            availability="available", availability_status=ticker_module.AvailabilityStatus.AVAILABLE,
+            blockers=(), expected_transaction_costs=0.0, diversification_benefit=0.2,
+        ),
+        ExpressionKind.CALL: ticker_module.PortfolioImpact.model_construct(
+            availability="available", availability_status=ticker_module.AvailabilityStatus.AVAILABLE,
+            blockers=(), expected_transaction_costs=0.0, diversification_benefit=0.0,
+        ),
+    }
+    selected = ticker_module._post_impact_select(
+        expressions=expressions, impacts=impacts, action=CapitalActionType.BUY,
+        tactical=SimpleNamespace(), fundamental=SimpleNamespace(),
+    )
+    assert selected.kind is ExpressionKind.STOCK
+
+
 def test_crypto_impact_does_not_authorize_from_stock_evidence() -> None:
     expression = _expression_for_impact(ExpressionKind.CRYPTO_SPOT, 0.5)
     _, _, _, blockers = ticker_module._crypto_impact_values(
         expression,
         {"portfolio_value": 100_000, "stock_evidence": {"status": "available", "source": "stock"}},
+        AS_OF,
     )
     assert "crypto_portfolio_evidence_missing" in blockers
 

@@ -106,9 +106,17 @@ def publish(
                 symbol, cutoff=reference, feature_version=FEATURE_VERSION,
             )
             tables["stock_alpha_features"] = [alpha_feature] if alpha_feature is not None else []
+            prior_decision = repository.latest(symbol)
+            prior_episode = prior_decision.opportunity_episode if prior_decision is not None else None
             # The benchmark is written before the read so its membership is
             # part of the same point-in-time input manifest as the decision.
-            seed = build_ticker_decision(symbol, tables, as_of=reference, portfolio_replay=replay)
+            seed = build_ticker_decision(
+                symbol,
+                tables,
+                as_of=reference,
+                portfolio_replay=replay,
+                prior_opportunity_episode=prior_episode,
+            )
             replay_for_decision = _replay_with_seed_stock_evidence(seed, replay)
             if market_state_publication_id is _MARKET_PUBLICATION_ID_UNSET:
                 market_publication = analysis_repository.publication_at_or_before(
@@ -140,6 +148,7 @@ def publish(
                 portfolio_impacts=impacts,
                 risk_policy_snapshot=seed.risk_policy_snapshot,
                 portfolio_replay=replay_for_decision,
+                prior_opportunity_episode=prior_episode,
             )
             records.append({"decision": decision, "tables": tables})
         except Exception as exc:  # one ticker cannot block the universe

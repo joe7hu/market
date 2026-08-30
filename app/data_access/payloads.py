@@ -171,10 +171,20 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
     }
     decision_brief = ticker_decision_brief(normalized_ticker, tables)
     dossier = build_ticker_dossier(normalized_ticker, tables, decision_brief)
+    prior_episode = None
+    prior_rows = tables.get("ticker_decisions", [])
+    if prior_rows:
+        try:
+            prior_episode = opportunity_episode_from_legacy(
+                max(prior_rows, key=lambda row: str(row.get("available_at") or row.get("as_of") or ""))
+            )
+        except (TypeError, ValueError, KeyError):
+            prior_episode = None
     ticker_decision = build_ticker_decision(
         normalized_ticker,
         tables,
         as_of=_ticker_as_of(panel_data, tables),
+        prior_opportunity_episode=prior_episode,
     )
     snapshot_row, signal_rows, rank_row, plan_row = _current_alpha_rows(
         tables, ticker_decision,

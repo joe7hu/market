@@ -3840,6 +3840,7 @@ def _stock_impact_values(
 def _crypto_impact_values(
     expression: ExpressionDecision,
     replay: Mapping[str, Any],
+    cutoff: datetime,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
     """Build a crypto impact only from crypto-owned evidence.
 
@@ -3856,14 +3857,30 @@ def _crypto_impact_values(
         blockers.append("crypto_portfolio_evidence_unavailable")
     if not _pick(evidence, "source_id", "source", "provider"):
         blockers.append("crypto_evidence_source_missing")
-    if not _pick(evidence, "observed_at", "available_at", "quote_time"):
+    observed_at = _parse_datetime(_pick(evidence, "observed_at", "available_at", "quote_time"))
+    if observed_at is None:
         blockers.append("crypto_evidence_observed_at_missing")
+    elif observed_at > _utc(cutoff):
+        blockers.append("crypto_evidence_future")
     if _number(_pick(evidence, "price", "mark", "mid")) is None:
         blockers.append("crypto_evidence_price_missing")
     if expression.kind is ExpressionKind.CRYPTO_PERPETUAL and (
         _number(evidence.get("bid")) is None or _number(evidence.get("ask")) is None
     ):
         blockers.append("crypto_perpetual_quote_missing")
+    if expression.quantity is None or expression.quantity <= 0:
+        blockers.append("crypto_planned_quantity_missing")
+    if expression.max_loss_per_unit is None or expression.max_loss_per_unit <= 0:
+        blockers.append("crypto_max_loss_missing")
+    if expression.planned_loss is None or expression.planned_loss <= 0:
+        blockers.append("crypto_planned_loss_missing")
+    risk_budget = evidence.get("risk_budget")
+    if not isinstance(risk_budget, Mapping):
+        risk_budget = evidence
+    available_budget = _number(_pick(risk_budget, "available", "available_budget", "risk_budget_available"))
+    consumed_budget = _number(_pick(risk_budget, "consumed", "consumed_budget", "risk_budget_consumed"))
+    if available_budget is None or consumed_budget is None or consumed_budget < expression.planned_loss:
+        blockers.append("crypto_risk_evidence_missing")
     nav = _number(replay.get("portfolio_value"), 0.0) or 0.0
     quantity = expression.quantity or 0
     price = _number(_pick(evidence, "price", "mark", "mid"), 0.0) or 0.0
@@ -3938,7 +3955,7 @@ def compose_portfolio_impact(
             "liquidity": {"status": "not_applicable"},
         }
     elif kind in {ExpressionKind.CRYPTO_SPOT, ExpressionKind.CRYPTO_PERPETUAL} and not blockers:
-        before, after, values, crypto_blockers = _crypto_impact_values(expression, before)
+        before, after, values, crypto_blockers = _crypto_impact_values(expression, before, episode.cutoff)
         blockers.extend(crypto_blockers)
         availability = "unavailable" if blockers else "available"
     elif kind is ExpressionKind.STOCK and not blockers:
@@ -4691,7 +4708,7 @@ def _build_expressions(
             max_loss_per_unit=max_loss,
             planned_loss=planned_loss,
             expected_transaction_costs=_number(_pick(row, "expected_transaction_costs", "transaction_costs", "estimated_fees") or _pick(details, "expected_transaction_costs", "transaction_costs", "estimated_fees")),
-            net_expected_value_per_loss_dollar=_number(_pick(row, "net_expected_value_per_loss_dollar", "ev_per_loss_dollar", "expected_value") or _pick(details, "net_expected_value_per_loss_dollar", "ev_per_loss_dollar")),
+            net_expected_value_per_loss_dollar=_normalised_net_utility(row, details),
             lower_confidence_expectancy=_number(_pick(row, "lower_confidence_expectancy", "lower_95_expected_value") or _pick(details, "lower_confidence_expectancy", "lower_95_expected_value")),
             liquidity_score=_bounded(_number(_pick(row, "liquidity_score", "liquidity")), 0, 1),
             spread_pct=_number(_pick(row, "spread_pct", "spread")),
@@ -4737,10 +4754,8 @@ def _build_expressions(
         if kind is ExpressionKind.CRYPTO_PERPETUAL:
             executable = executable and bid is not None and ask is not None and ask >= bid
         blockers = () if executable else ("crypto_evidence_unavailable",)
-        expected_value = _number(_pick(row, "net_utility", "net_expected_value_per_loss_dollar", "expected_value") or _pick(details, "net_utility", "expected_value"))
         costs = _number(_pick(row, "expected_transaction_costs", "transaction_costs", "fees") or _pick(details, "expected_transaction_costs", "transaction_costs", "fees"))
-        if expected_value is not None and costs is not None:
-            expected_value -= costs
+        expected_value = _normalised_net_utility(row, details)
         output[kind] = ExpressionDecision(
             kind=kind,
             ticker=symbol,
@@ -4878,6 +4893,7 @@ def _post_impact_select(
         utility -= portfolio_cost
         utility -= (impact.tail_risk_penalty or 0.0) / denominator
         utility -= (impact.portfolio_overlap_penalty or 0.0) / denominator
+        utility += (impact.diversification_benefit or 0.0) / denominator
         candidates.append((utility, expression))
     cash = expressions.get(ExpressionKind.CASH)
     if cash is None:
@@ -5817,6 +5833,22 @@ def _number(value: Any, default: float | None = None) -> float | None:
 
 def _bounded(value: float | None, low: float, high: float) -> float | None:
     return None if value is None else max(low, min(high, value))
+
+
+def _normalised_net_utility(row: Mapping[str, Any], details: Mapping[str, Any] | None = None) -> float | None:
+    """Return one utility convention: net per-loss-dollar, after costs once.
+
+    Explicit ``net_utility``/``net_expected_value_per_loss_dollar`` fields are
+    already costed and are never reduced again. Only gross ``expected_value``
+    is reduced by the declared expression transaction cost.
+    """
+    details = details if isinstance(details, Mapping) else {}
+    net = _number(_pick(row, "net_utility", "net_expected_value_per_loss_dollar", "ev_per_loss_dollar") or _pick(details, "net_utility", "net_expected_value_per_loss_dollar", "ev_per_loss_dollar"))
+    if net is not None:
+        return net
+    gross = _number(_pick(row, "gross_utility", "expected_value") or _pick(details, "gross_utility", "expected_value"))
+    costs = _number(_pick(row, "expected_transaction_costs", "transaction_costs", "fees") or _pick(details, "expected_transaction_costs", "transaction_costs", "fees"))
+    return gross - costs if gross is not None and costs is not None else gross
 
 
 def _pick(row: Mapping[str, Any], *keys: str) -> Any:
