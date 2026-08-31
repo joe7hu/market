@@ -1217,12 +1217,7 @@ def today_authority_pages(
                         'input_hash', positioned_actions.input_hash,
                         'capital_action', positioned_actions.capital_action,
                             'resolution', CASE
-                            WHEN positioned_actions.trade_plan_present
-                             AND positioned_actions.trade_plan_position
-                                 > {safe_plan_offset}
-                             AND positioned_actions.trade_plan_position
-                                 <= {safe_plan_end}
-                             AND octet_length(stored_decision.resolution::text)
+                            WHEN octet_length(stored_decision.resolution::text)
                                  <= 196608
                             THEN stored_decision.resolution END,
                         'policy_version', positioned_actions.policy_version,

@@ -318,6 +318,7 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
             "opportunity_rank": 100,
             "trade_plan": 100,
         }
+        assert sparse_panel.rows("ticker_decisions")[0]["resolution"] is not None
         assert sparse_snapshot["tables"]["ticker_decisions"]["rows"][0]["ticker"] == symbols[104]
         assert sparse_snapshot["tables"]["opportunity_rank"]["rows"][0]["ticker"] == "WRONG"
         assert sparse_snapshot["tables"]["trade_plan"]["rows"][0]["present"] == "malformed-outside-sample"

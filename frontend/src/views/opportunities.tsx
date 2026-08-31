@@ -63,7 +63,7 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
           <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void onRefresh(view === "screener")}><RefreshCw className={loading ? "animate-spin" : undefined} /> Refresh</Button>
         </div>
       </header>
-      <ScopeStatusNotice status={scopeStatus} onRetry={() => void onRefresh()} />
+      <ScopeStatusNotice status={scopeStatus} onRetry={() => void onRefresh(view === "screener")} />
       <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-2">
         <Input className="max-w-sm" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter episodes" aria-label="Filter opportunities" />
         <StatusBadge tone={rankedRows.length ? "info" : "warn"}>{rankedRows.length} episodes</StatusBadge>
