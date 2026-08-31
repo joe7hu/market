@@ -14,6 +14,16 @@ type OptionTicketDetailSheetProps = {
   onOpenTicker: OpenTicker;
 };
 
+export function OptionTicketLoadError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <section role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
+      <p className="font-medium">Ticket detail could not load.</p>
+      <p className="mt-1 text-muted-foreground">Check the decision link or retry.</p>
+      <Button type="button" size="sm" variant="outline" className="mt-3" onClick={onRetry}>Retry</Button>
+    </section>
+  );
+}
+
 /**
  * A decision-ID owner for immutable option detail.  It does not depend on the
  * ticker dossier, so a published signal never becomes a blank page when its
@@ -78,13 +88,7 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
 
         <div className="space-y-5 px-5 py-5">
           {loading ? <p className="text-sm text-muted-foreground">Loading ticket detail…</p> : null}
-          {error ? (
-            <section className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
-              <p className="font-medium">Ticket detail could not load.</p>
-              <p className="mt-1 break-words text-muted-foreground">GET /api/options/tickets/{decisionId}: {error}</p>
-              <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => setRetry((value) => value + 1)}>Retry</Button>
-            </section>
-          ) : null}
+          {error ? <OptionTicketLoadError onRetry={() => setRetry((value) => value + 1)} /> : null}
           {!loading && !error ? (
             <>
               <DetailSection title="Recorded ticket terms">

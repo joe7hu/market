@@ -30,6 +30,22 @@ type TodayPageProps = {
 type JsonObject = { [key: string]: JsonValue };
 type TodayAction = NonNullable<TodayResponse["actions"]>[number];
 
+export function actionQueueDisplay(items: TodayAction[]) {
+  const isUnrankedMissingPlan = (item: TodayAction) => (
+    item.source === "capital_action"
+    && item.lifecycle_state === "blocked"
+    && item.primary_blocker === "trade_plan_missing"
+    && item.trade_plan == null
+    && item.trade_rank == null
+    && item.research_rank == null
+    && !item.owned
+  );
+  return {
+    items: items.filter((item) => !isUnrankedMissingPlan(item)),
+    missingPlanCount: items.filter(isUnrankedMissingPlan).length,
+  };
+}
+
 export function tradePlanForAction(item: TodayAction) {
   return item.source === "capital_action" ? item.trade_plan ?? null : undefined;
 }
@@ -100,7 +116,7 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
 
 function CommandCenterPanels({ data, response, onOpenTicker }: { data: PanelData; response: TodayResponse | null; onOpenTicker: (symbol: string) => void }) {
   const capitalActions = (response?.book_actions ?? response?.actions ?? [])
-    .filter((item) => item.source === "capital_action" || item.source === "cash")
+    .filter((item) => (item.source === "capital_action" || item.source === "cash") && item.trade_rank != null)
     .slice(0, 3);
   const marketState = data.marketStateSnapshot?.rows?.[0];
   const risks = (data.portfolioRiskCards?.rows ?? []).slice(0, 3);
@@ -117,7 +133,8 @@ function CommandCenterPanels({ data, response, onOpenTicker }: { data: PanelData
 }
 
 function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { response: TodayResponse | null; loading: boolean; error: string | null; onRefresh: () => void; onOpenTicker: (symbol: string) => void }) {
-  const items = response?.actions ?? [];
+  const queue = actionQueueDisplay(response?.actions ?? []);
+  const items = queue.items;
   const unavailable = Boolean(response && !response.status.ready);
   const queueError = error ?? (unavailable ? response?.status.message ?? "Action Queue unavailable." : null);
   return (
@@ -127,11 +144,12 @@ function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { re
           <h2 id="action-queue-title" className="text-lg font-semibold">Action Queue</h2>
           <p className="text-xs text-muted-foreground">Current capital actions, Inbox transitions, portfolio risks, and decision-blocking research.</p>
         </div>
-        {response && !unavailable ? <StatusBadge tone="info">{response.count} current</StatusBadge> : null}
+        {response && !unavailable ? <StatusBadge tone="info">{items.length} shown{queue.missingPlanCount ? ` · ${queue.missingPlanCount} missing plans` : ""}</StatusBadge> : null}
       </div>
       {queueError ? <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900"><span>{error && response ? `Showing the last Action Queue. ${error}` : `Action Queue unavailable: ${queueError}`}</span><Button type="button" size="sm" variant="outline" onClick={onRefresh}>Retry</Button></div> : null}
       {loading && !response ? <p role="status" className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">Loading Action Queue…</p> : null}
-      {!loading && !queueError && !items.length ? <EmptyState title="Action Queue is clear" detail="No current actionable or transition items are available." /> : null}
+      {queue.missingPlanCount ? <p role="status" className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{queue.missingPlanCount} unranked ticker decisions remain CASH / NO TRADE because canonical trade plans are missing.</p> : null}
+      {!loading && !queueError && !items.length && !queue.missingPlanCount ? <EmptyState title="Action Queue is clear" detail="No current actionable or transition items are available." /> : null}
       {!unavailable && items.length ? (
         <div className="grid gap-3 lg:grid-cols-3" role="list">
           {items.map((item) => <ActionQueueCard key={item.projection_identity} item={item} onOpenTicker={onOpenTicker} />)}

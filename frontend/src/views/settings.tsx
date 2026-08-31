@@ -159,7 +159,7 @@ function ResearchSourcesCard({
         <div className="space-y-4 rounded-lg border border-border p-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-semibold">X / Social</span>
-            <Toggle checked={value.xEnabled} disabled={!loaded} onChange={(next) => onChange({ ...value, xEnabled: next })} />
+            <Toggle label="Enable X / Social" checked={value.xEnabled} disabled={!loaded} onChange={(next) => onChange({ ...value, xEnabled: next })} />
           </div>
           <Field label="X list ID" detail="Numeric ID of a curated X/Twitter list. Leave empty to use per-account fetch only.">
             <Input value={value.listId} onChange={(event) => onChange({ ...value, listId: event.target.value })} placeholder="e.g. 1734567890123456789" />
@@ -175,7 +175,7 @@ function ResearchSourcesCard({
         <div className="space-y-4 rounded-lg border border-border p-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-semibold">News</span>
-            <Toggle checked={value.newsEnabled} disabled={!loaded} onChange={(next) => onChange({ ...value, newsEnabled: next })} />
+            <Toggle label="Enable News" checked={value.newsEnabled} disabled={!loaded} onChange={(next) => onChange({ ...value, newsEnabled: next })} />
           </div>
           <Field label="Providers" detail="Comma-separated opencli news adapters.">
             <Input value={value.newsProviders} onChange={(event) => onChange({ ...value, newsProviders: event.target.value })} placeholder="bloomberg, reuters, google-news, hackernews" />
@@ -185,7 +185,7 @@ function ResearchSourcesCard({
         <div className="space-y-4 rounded-lg border border-border p-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-semibold">Blogs & Memos</span>
-            <Toggle checked={value.blogsEnabled} disabled={!loaded} onChange={(next) => onChange({ ...value, blogsEnabled: next })} />
+            <Toggle label="Enable Blogs & Memos" checked={value.blogsEnabled} disabled={!loaded} onChange={(next) => onChange({ ...value, blogsEnabled: next })} />
           </div>
           <Field label="Substack URLs" detail="Comma- or newline-separated Substack publication URLs.">
             <Input value={value.substackUrls} onChange={(event) => onChange({ ...value, substackUrls: event.target.value })} placeholder="https://www.example.substack.com" />
@@ -303,8 +303,8 @@ function RuntimePanel({ scheduler }: { scheduler: Record<string, unknown> }) {
   );
 }
 
-function Toggle({ checked, disabled, onChange }: { checked: boolean; disabled: boolean; onChange: (next: boolean) => void }) {
-  return <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} className="size-5 accent-primary" />;
+export function Toggle({ label, checked, disabled, onChange }: { label: string; checked: boolean; disabled: boolean; onChange: (next: boolean) => void }) {
+  return <input aria-label={label} type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} className="size-5 accent-primary" />;
 }
 
 function Field({ label, detail, children }: { label: string; detail: string; children: ReactNode }) {

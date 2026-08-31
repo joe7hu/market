@@ -164,16 +164,18 @@ export function ExecutionEvidencePanel({
   );
 }
 
-function TickerMarketEvidence({ decision }: { decision: TickerDecisionContract }) {
+export function TickerMarketEvidence({ decision }: { decision: TickerDecisionContract }) {
   const assessment = decision.market_evidence_assessment;
+  const requiredDimensions = assessment?.required_dimensions ?? [];
+  const blockers = assessment?.blockers ?? [];
   return (
     <DataTableFrame title="Market evidence for this decision" action={<StatusBadge tone="muted">No global readiness</StatusBadge>}>
       <div className="grid gap-2 p-4 text-xs sm:grid-cols-2">
         {assessment ? (
           <div className="rounded border border-border/70 p-2">
             <p className="font-semibold">{assessment.expression_kind} · {assessment.decision_horizon}</p>
-            <p className="mt-1 text-muted-foreground">{assessment.status} · required: {assessment.required_dimensions.join(", ") || "none"}</p>
-            {assessment.blockers.length ? <p className="mt-1 text-muted-foreground">Blocking: {assessment.blockers.join(", ")}</p> : null}
+            <p className="mt-1 text-muted-foreground">{assessment.status} · required: {requiredDimensions.join(", ") || "none"}</p>
+            {blockers.length ? <p className="mt-1 text-muted-foreground">Blocking: {blockers.join(", ")}</p> : null}
           </div>
         ) : <p className="text-muted-foreground">Decision-bound market evidence is unavailable.</p>}
       </div>
