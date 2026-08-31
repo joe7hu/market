@@ -132,8 +132,7 @@ def test_decision_funnel_uses_compact_current_rows(monkeypatch) -> None:
             "stock_portfolio_impact": {"availability_status": "available"},
             "resolution": {"eligibility": "BLOCKED", "action": "NO_TRADE", "blockers": []},
             "market_state_publication_id": None,
-            "has_opportunity_episode": True,
-            "has_input_lineage": True,
+            "has_valid_opportunity_lineage": True,
         }],
         raising=False,
     )
@@ -184,8 +183,7 @@ def test_decision_funnel_loads_each_exact_market_publication_once(monkeypatch) -
                 "stock_portfolio_impact": {"availability_status": "available"},
                 "resolution": {"eligibility": "BLOCKED", "action": "NO_TRADE"},
                 "market_state_publication_id": publication_id,
-                "has_opportunity_episode": True,
-                "has_input_lineage": True,
+                "has_valid_opportunity_lineage": True,
             }
             for ticker in ("AAA", "BBB")
         ],
@@ -220,3 +218,5 @@ def test_current_funnel_query_does_not_select_full_market_snapshot() -> None:
 
     assert rows == []
     assert "market_state_snapshot" not in captured["query"]
+    assert "decision.opportunity_episode," not in captured["query"]
+    assert "AS has_valid_opportunity_lineage" in captured["query"]

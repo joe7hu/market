@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+from psycopg.types.json import Jsonb
+
 from app.data_access.loaders import load_postgres_tables
 from investment_panel.core.decision import build_ticker_decision
 from investment_panel.database.runtime import DatabaseRuntime
@@ -142,5 +144,74 @@ def test_current_ticker_selector_rejects_duplicate_episode_across_timestamps(
         assert repository.latest("W1P6EPISODE") is None
         rows = load_postgres_tables(typed_config(migrated_postgres_dsn), ("ticker_decisions",))[0]["ticker_decisions"]
         assert rows == []
+    finally:
+        runtime.close()
+
+
+def test_compact_funnel_lineage_validation_fails_closed(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    as_of = datetime.now(UTC) - timedelta(minutes=2)
+    symbols = [
+        "FUNNELVALID",
+        "FUNNELEMPTY",
+        "FUNNELFUTURE",
+        "FUNNELCUTOFF",
+        "FUNNELDUP",
+        "FUNNELIDENTITY",
+        "FUNNELNAIVE",
+        "FUNNELNOSOURCE",
+        "FUNNELROWCUTOFF",
+    ]
+    _insert_instruments(runtime, symbols)
+    repository = TickerDecisionRepository(runtime)
+    try:
+        decisions = {symbol: _decision(symbol, as_of) for symbol in symbols}
+        for decision in decisions.values():
+            repository.publish(decision)
+
+        with runtime.transaction() as connection:
+            for symbol in symbols[1:]:
+                decision = decisions[symbol]
+                row = connection.execute(
+                    "SELECT opportunity_episode FROM analysis.ticker_decision "
+                    "WHERE decision_revision = %s",
+                    [decision.decision_revision],
+                ).fetchone()
+                episode = dict(row["opportunity_episode"])
+                lineage = [dict(item) for item in episode["input_lineage"]]
+                if symbol == "FUNNELEMPTY":
+                    lineage = [{}]
+                elif symbol == "FUNNELFUTURE":
+                    lineage[0]["available_at"] = (as_of + timedelta(seconds=1)).isoformat()
+                elif symbol == "FUNNELCUTOFF":
+                    lineage[0]["cutoff"] = (as_of - timedelta(seconds=1)).isoformat()
+                elif symbol == "FUNNELDUP":
+                    lineage.append(dict(lineage[0]))
+                elif symbol == "FUNNELIDENTITY":
+                    lineage[0]["opportunity_episode_id"] = "wrong-episode"
+                elif symbol == "FUNNELNAIVE":
+                    lineage[0]["available_at"] = as_of.replace(tzinfo=None).isoformat()
+                elif symbol == "FUNNELNOSOURCE":
+                    lineage[0].pop("source_id")
+                episode["input_lineage"] = lineage
+                connection.execute(
+                    "UPDATE analysis.ticker_decision SET opportunity_episode = %s "
+                    "WHERE decision_revision = %s",
+                    [Jsonb(episode), decision.decision_revision],
+                )
+                if symbol == "FUNNELROWCUTOFF":
+                    connection.execute(
+                        "UPDATE analysis.ticker_decision SET opportunity_cutoff = %s "
+                        "WHERE decision_revision = %s",
+                        [as_of - timedelta(seconds=1), decision.decision_revision],
+                    )
+
+        rows = repository._current_funnel_rows(reference=datetime.now(UTC) + timedelta(minutes=1))
+        validity = {row["ticker"]: row["has_valid_opportunity_lineage"] for row in rows}
+
+        assert validity == {symbol: symbol == "FUNNELVALID" for symbol in symbols}
     finally:
         runtime.close()

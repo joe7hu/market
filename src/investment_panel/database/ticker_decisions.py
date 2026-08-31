@@ -365,8 +365,7 @@ class TickerDecisionRepository:
             )
             cash_selected = selected_kind is ExpressionKind.CASH
             facts_available = bool(
-                row.get("has_opportunity_episode")
-                and row.get("has_input_lineage")
+                row.get("has_valid_opportunity_lineage")
                 and (
                     cash_selected
                     or (
@@ -380,7 +379,9 @@ class TickerDecisionRepository:
             )
             decisions.append({
                 "ticker": row.get("ticker"),
-                "opportunity_episode": {"present": True} if row.get("has_opportunity_episode") else None,
+                "opportunity_episode": (
+                    {"present": True} if row.get("has_valid_opportunity_lineage") else None
+                ),
                 "market_state_publication_id": market_publication_id,
                 "expressions": {"STOCK": dict(row.get("stock_expression") or {})},
                 "portfolio_impacts": {"STOCK": dict(row.get("stock_portfolio_impact") or {})},
@@ -434,11 +435,32 @@ class TickerDecisionRepository:
                       AND decision.published_at <= %s
                 )
                 SELECT candidate.ticker, decision.as_of, decision.published_at,
-                       decision.selected_expression,
-                       coalesce(decision.expressions->'STOCK', decision.expressions->'stock')
-                           AS stock_expression,
-                       coalesce(decision.portfolio_impacts->'STOCK', decision.portfolio_impacts->'stock')
-                           AS stock_portfolio_impact,
+                       CASE WHEN decision.selected_expression IS NULL THEN NULL
+                           ELSE jsonb_strip_nulls(jsonb_build_object(
+                               'kind', decision.selected_expression->'kind',
+                               'horizon', decision.selected_expression->'horizon'
+                           ))
+                       END AS selected_expression,
+                       jsonb_strip_nulls(jsonb_build_object(
+                           'availability_status', coalesce(
+                               decision.expressions->'STOCK',
+                               decision.expressions->'stock'
+                           )->'availability_status',
+                           'blockers', coalesce(
+                               decision.expressions->'STOCK',
+                               decision.expressions->'stock'
+                           )->'blockers'
+                       )) AS stock_expression,
+                       jsonb_strip_nulls(jsonb_build_object(
+                           'availability_status', coalesce(
+                               decision.portfolio_impacts->'STOCK',
+                               decision.portfolio_impacts->'stock'
+                           )->'availability_status',
+                           'blockers', coalesce(
+                               decision.portfolio_impacts->'STOCK',
+                               decision.portfolio_impacts->'stock'
+                           )->'blockers'
+                       )) AS stock_portfolio_impact,
                        jsonb_strip_nulls(jsonb_build_object(
                            'eligibility', decision.resolution->'eligibility',
                            'action', decision.resolution->'action',
@@ -446,15 +468,210 @@ class TickerDecisionRepository:
                        )) AS resolution,
                        decision.market_state_publication_id::text,
                        jsonb_typeof(decision.opportunity_episode) = 'object'
-                           AND decision.opportunity_episode <> '{}'::jsonb
-                           AS has_opportunity_episode,
-                       CASE
-                           WHEN jsonb_typeof(decision.opportunity_episode->'input_lineage') = 'array'
-                           THEN jsonb_array_length(decision.opportunity_episode->'input_lineage') > 0
-                           ELSE false
-                       END AS has_input_lineage
+                           AND jsonb_typeof(decision.opportunity_episode->'episode_id') = 'string'
+                           AND decision.opportunity_episode->>'episode_id'
+                               = decision.opportunity_episode_id
+                           AND jsonb_typeof(decision.opportunity_episode->'ticker') = 'string'
+                           AND UPPER(BTRIM(decision.opportunity_episode->>'ticker'))
+                               = candidate.ticker
+                           AND jsonb_typeof(decision.opportunity_episode->'decision_revision') = 'string'
+                           AND decision.opportunity_episode->>'decision_revision'
+                               = decision.decision_revision
+                           AND jsonb_typeof(decision.opportunity_episode->'policy_version') = 'string'
+                           AND length(decision.opportunity_episode->>'policy_version') > 0
+                           AND decision.opportunity_episode->>'policy_version'
+                               = decision.policy_version
+                           AND decision.opportunity_cutoff = decision.as_of
+                           AND episode_time.cutoff = decision.as_of
+                           AND lineage.input_count > 0
+                           AND lineage.values_valid
+                           AND lineage.identities_unique
+                           AS has_valid_opportunity_lineage
                 FROM candidate_keys candidate
                 JOIN analysis.ticker_decision decision ON decision.id = candidate.id
+                LEFT JOIN LATERAL (
+                    SELECT CASE
+                        WHEN jsonb_typeof(decision.opportunity_episode->'cutoff') = 'string'
+                         AND decision.opportunity_episode->>'cutoff'
+                             ~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                         AND pg_input_is_valid(
+                             decision.opportunity_episode->>'cutoff',
+                             'timestamp with time zone'
+                         )
+                        THEN (decision.opportunity_episode->>'cutoff')::timestamptz
+                    END AS cutoff
+                ) episode_time ON true
+                LEFT JOIN LATERAL (
+                    SELECT count(*) AS input_count,
+                           coalesce(bool_and(
+                               input.value_is_object IS TRUE
+                               AND input.field_is_valid IS TRUE
+                               AND input.source_id_is_valid IS TRUE
+                               AND input.source_version_is_valid IS TRUE
+                               AND input.string_identities_are_valid IS TRUE
+                               AND input.optional_timestamps_are_valid IS TRUE
+                               AND input.available_at IS NOT NULL
+                               AND input.available_at <= episode_time.cutoff
+                               AND (
+                                   input.opportunity_episode_id IS NULL
+                                   OR input.opportunity_episode_id = ''
+                                   OR input.opportunity_episode_id
+                                      = decision.opportunity_episode_id
+                               )
+                               AND (
+                                   input.decision_revision IS NULL
+                                   OR input.decision_revision = ''
+                                   OR input.decision_revision = decision.decision_revision
+                               )
+                               AND (
+                                   input.policy_version IS NULL
+                                   OR input.policy_version = ''
+                                   OR input.policy_version = decision.policy_version
+                               )
+                               AND (
+                                   input.cutoff IS NULL
+                                   OR input.cutoff = episode_time.cutoff
+                               )
+                           ), false) AS values_valid,
+                           count(*) = count(DISTINCT (
+                               input.field,
+                               input.source_id,
+                               input.source_version,
+                               input.available_at,
+                               input.revision,
+                               input.cutoff
+                           )) AS identities_unique
+                    FROM (
+                        SELECT value,
+                               jsonb_typeof(value) = 'object' AS value_is_object,
+                               jsonb_typeof(value->'field') = 'string'
+                                   AND length(value->>'field') > 0 AS field_is_valid,
+                               value->>'field' AS field,
+                               CASE WHEN value ? 'source_id'
+                                   THEN value->>'source_id'
+                                   ELSE value->>'source'
+                               END AS source_id,
+                               CASE WHEN value ? 'source_id'
+                                   THEN jsonb_typeof(value->'source_id') = 'string'
+                                        AND length(value->>'source_id') > 0
+                                   ELSE jsonb_typeof(value->'source') = 'string'
+                                        AND length(value->>'source') > 0
+                               END AS source_id_is_valid,
+                               CASE WHEN value ? 'source_version'
+                                   THEN value->>'source_version'
+                                   ELSE value->>'version'
+                               END AS source_version,
+                               CASE WHEN value ? 'source_version'
+                                   THEN value->'source_version' IS NULL
+                                        OR value->'source_version' = 'null'::jsonb
+                                        OR jsonb_typeof(value->'source_version') = 'string'
+                                   ELSE value->'version' IS NULL
+                                        OR value->'version' = 'null'::jsonb
+                                        OR jsonb_typeof(value->'version') = 'string'
+                               END AS source_version_is_valid,
+                               value->>'revision' AS revision,
+                               CASE WHEN value ? 'opportunity_episode_id'
+                                   THEN value->>'opportunity_episode_id'
+                                   ELSE value->>'episode_id'
+                               END AS opportunity_episode_id,
+                               value->>'decision_revision' AS decision_revision,
+                               value->>'policy_version' AS policy_version,
+                               (
+                                   (value->'revision' IS NULL
+                                    OR value->'revision' = 'null'::jsonb
+                                    OR jsonb_typeof(value->'revision') = 'string')
+                                   AND (
+                                       CASE WHEN value ? 'opportunity_episode_id'
+                                           THEN value->'opportunity_episode_id' IS NULL
+                                                OR value->'opportunity_episode_id' = 'null'::jsonb
+                                                OR jsonb_typeof(value->'opportunity_episode_id') = 'string'
+                                           ELSE value->'episode_id' IS NULL
+                                                OR value->'episode_id' = 'null'::jsonb
+                                                OR jsonb_typeof(value->'episode_id') = 'string'
+                                       END
+                                   )
+                                   AND (value->'decision_revision' IS NULL
+                                        OR value->'decision_revision' = 'null'::jsonb
+                                        OR jsonb_typeof(value->'decision_revision') = 'string')
+                                   AND (value->'policy_version' IS NULL
+                                        OR value->'policy_version' = 'null'::jsonb
+                                        OR jsonb_typeof(value->'policy_version') = 'string')
+                               ) AS string_identities_are_valid,
+                               parsed.available_at,
+                               parsed.cutoff,
+                               (
+                                   (value->'event_at' IS NULL
+                                    OR value->'event_at' = 'null'::jsonb
+                                    OR parsed.event_at IS NOT NULL)
+                                   AND (value->'published_at' IS NULL
+                                        OR value->'published_at' = 'null'::jsonb
+                                        OR parsed.published_at IS NOT NULL)
+                                   AND (value->'received_at' IS NULL
+                                        OR value->'received_at' = 'null'::jsonb
+                                        OR parsed.received_at IS NOT NULL)
+                                   AND (value->'cutoff' IS NULL
+                                        OR value->'cutoff' = 'null'::jsonb
+                                        OR parsed.cutoff IS NOT NULL)
+                               ) AS optional_timestamps_are_valid
+                        FROM jsonb_array_elements(
+                            CASE
+                                WHEN jsonb_typeof(
+                                    decision.opportunity_episode->'input_lineage'
+                                ) = 'array'
+                                THEN decision.opportunity_episode->'input_lineage'
+                                ELSE '[]'::jsonb
+                            END
+                        ) value
+                        LEFT JOIN LATERAL (
+                            SELECT
+                                CASE WHEN jsonb_typeof(value->'available_at') = 'string'
+                                       AND value->>'available_at'
+                                           ~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                                       AND pg_input_is_valid(
+                                           value->>'available_at',
+                                           'timestamp with time zone'
+                                       )
+                                    THEN (value->>'available_at')::timestamptz
+                                END AS available_at,
+                                CASE WHEN jsonb_typeof(value->'event_at') = 'string'
+                                       AND value->>'event_at'
+                                           ~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                                       AND pg_input_is_valid(
+                                           value->>'event_at',
+                                           'timestamp with time zone'
+                                       )
+                                    THEN (value->>'event_at')::timestamptz
+                                END AS event_at,
+                                CASE WHEN jsonb_typeof(value->'published_at') = 'string'
+                                       AND value->>'published_at'
+                                           ~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                                       AND pg_input_is_valid(
+                                           value->>'published_at',
+                                           'timestamp with time zone'
+                                       )
+                                    THEN (value->>'published_at')::timestamptz
+                                END AS published_at,
+                                CASE WHEN jsonb_typeof(value->'received_at') = 'string'
+                                       AND value->>'received_at'
+                                           ~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                                       AND pg_input_is_valid(
+                                           value->>'received_at',
+                                           'timestamp with time zone'
+                                       )
+                                    THEN (value->>'received_at')::timestamptz
+                                END AS received_at,
+                                CASE WHEN jsonb_typeof(value->'cutoff') = 'string'
+                                       AND value->>'cutoff'
+                                           ~ '(Z|[+-][0-9]{2}:[0-9]{2})$'
+                                       AND pg_input_is_valid(
+                                           value->>'cutoff',
+                                           'timestamp with time zone'
+                                       )
+                                    THEN (value->>'cutoff')::timestamptz
+                                END AS cutoff
+                        ) parsed ON true
+                    ) input
+                ) lineage ON true
                 WHERE candidate.current_row = 1
                   AND candidate.authority_count = 1
                   AND candidate.opportunity_authority_count = 1
