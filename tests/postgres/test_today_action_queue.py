@@ -175,6 +175,22 @@ def test_compact_funnel_episode_validation_fails_closed(
             repository.publish(decision)
 
         with runtime.transaction() as connection:
+            # Make the fixture a required Funnel candidate so the following
+            # mutations exercise episode validation instead of intentional
+            # blocked-row omission.
+            connection.execute(
+                """
+                UPDATE analysis.ticker_decision
+                SET expressions = jsonb_set(
+                        expressions, '{STOCK,availability_status}',
+                        to_jsonb('available'::text), true
+                    ),
+                    opportunity_episode = jsonb_set(
+                        opportunity_episode, '{expressions,STOCK,availability_status}',
+                        to_jsonb('available'::text), true
+                    )
+                """
+            )
             connection.execute(
                 "UPDATE analysis.ticker_decision "
                 "SET portfolio_impacts = jsonb_set("

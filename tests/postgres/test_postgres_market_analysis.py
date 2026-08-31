@@ -666,6 +666,7 @@ def test_market_coverage_uses_exact_history_per_horizon(migrated_postgres_dsn: s
                 "low": base + index,
                 "close": base + index,
                 "volume": 1,
+                "is_complete": True,
             }
             for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
             for index, trading_date in enumerate(reversed(dates))
@@ -766,6 +767,7 @@ def test_market_realized_volatility_uses_exact_extra_close_lineage_and_identity(
                 "low": base + index,
                 "close": base + index,
                 "volume": 1,
+                "is_complete": True,
             }
             for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
             for index, trading_date in enumerate(reversed(dates))
@@ -874,6 +876,7 @@ def test_market_realized_volatility_stays_unavailable_for_incomplete_member(
                 "low": base + index,
                 "close": base + index,
                 "volume": 1,
+                "is_complete": True,
             }
             for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
             for index, trading_date in enumerate(reversed(dates))
@@ -954,6 +957,7 @@ def test_market_realized_volatility_fails_closed_per_member_quality(
                     "low": base + index,
                     "close": base + index,
                     "volume": 1,
+                    "is_complete": True,
                 }
                 for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
                 if symbol in symbols
@@ -1083,6 +1087,7 @@ def test_market_realized_volatility_fails_closed_for_unusable_postgres_source(
                     "low": base + index,
                     "close": base + index,
                     "volume": 1,
+                    "is_complete": True,
                 }
                 for symbol, base in (("SPY", 500), ("QQQ", 450), ("NVDA", 400))
                 if symbol in symbols
