@@ -95,7 +95,7 @@ export function HealthRoute() {
     <WorkspacePage
       eyebrow="Control plane"
       title="System"
-      subtitle="Decision funnel, coverage, source and job health, broker status, model and policy versions, settings, and agent telemetry."
+      subtitle="Decision funnel, coverage, source and job health, broker status, settings, and provider activity."
       metrics={metrics}
       actions={
         <Button type="button" variant="outline" size="sm" onClick={() => void reload()} disabled={reloading}>
@@ -148,12 +148,11 @@ export function HealthRoute() {
 
 function SystemPosture({ data }: { data: ReturnType<typeof useMarketData>["data"] }) {
   const broker = data.brokerStatus?.rows?.[0];
-  const source = data.sourceHealth?.rows?.[0] ?? data.sourceFreshness?.rows?.[0];
-  const runs = data.providerRuns?.rows ?? data.sourceRuns?.rows ?? [];
-  return <section className="grid gap-4 xl:grid-cols-3" aria-label="System posture">
+  const runs = data.providerRuns;
+  const runRows = runs?.rows ?? [];
+  return <section className="grid gap-4 xl:grid-cols-2" aria-label="System posture">
     <div className="rounded-xl border border-border bg-card p-4"><h2 className="text-base font-semibold">Broker status</h2><p className="mt-2 text-sm">{displayField(broker, ["status", "health", "state"], "Unavailable")}</p><p className="mt-1 text-xs text-muted-foreground">{displayField(broker, ["as_of", "checked_at", "updated_at"], "No observation")}</p></div>
-    <div className="rounded-xl border border-border bg-card p-4"><h2 className="text-base font-semibold">Model and policy versions</h2><dl className="mt-2 space-y-2 text-sm"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">Model</dt><dd>{displayField(source, ["model_version", "model", "version"], "Unavailable")}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted-foreground">Policy</dt><dd>{displayField(source, ["policy_version", "risk_policy_version"], "Unavailable")}</dd></div></dl></div>
-    <div className="rounded-xl border border-border bg-card p-4"><h2 className="text-base font-semibold">Settings and agent telemetry</h2><p className="mt-2 text-sm">{runs.length.toLocaleString()} provider/job observations loaded.</p><p className="mt-1 text-xs text-muted-foreground">{displayField(runs[0], ["status", "run_status", "agent_status"], "Telemetry unavailable")}</p><Link className="mt-3 inline-block text-sm font-medium text-primary hover:underline" to="/settings">Open settings →</Link></div>
+    <div className="rounded-xl border border-border bg-card p-4"><h2 className="text-base font-semibold">Settings and provider activity</h2><p className="mt-2 text-sm">{(runs?.count ?? runRows.length).toLocaleString()} provider observations tracked.</p><p className="mt-1 text-xs text-muted-foreground">{displayField(runRows[0], ["status", "run_status"], "Provider activity unavailable")}</p><Link className="mt-3 inline-block text-sm font-medium text-primary hover:underline" to="/settings">Open settings →</Link></div>
   </section>;
 }
 

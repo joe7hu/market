@@ -18,7 +18,21 @@ from investment_panel.core.decision import TickerDecision
 router = APIRouter()
 
 
-@router.get("/api/tickers/{ticker}", response_model=TickerDetailResponse, response_model_exclude_unset=True)
+# The ticker page needs decision conclusions and compact authority identifiers,
+# not the immutable evidence bodies.  The complete validated artifact remains
+# available from ``/decision-snapshot`` for audit and paper-entry checks.
+_TICKER_DETAIL_EXCLUDE = {
+    "opportunity_episode": True,
+    "learning_history": True,
+}
+
+
+@router.get(
+    "/api/tickers/{ticker}",
+    response_model=TickerDetailResponse,
+    response_model_exclude=_TICKER_DETAIL_EXCLUDE,
+    response_model_exclude_unset=True,
+)
 def ticker_detail(
     ticker: str,
     config: AppConfig = Depends(dependencies.get_config),

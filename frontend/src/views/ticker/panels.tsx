@@ -29,7 +29,7 @@ import {
   targetRange,
 } from "./data";
 
-type TickerDecisionContract = components["schemas"]["TickerDecision"];
+type TickerDecisionContract = components["schemas"]["TickerDecisionDetailResponse"];
 type HorizonDecisionContract = components["schemas"]["HorizonDecision"];
 type DataRequestContract = components["schemas"]["DataRequest"];
 type InstrumentStateSnapshotContract = components["schemas"]["InstrumentStateSnapshot"];
@@ -120,7 +120,7 @@ export function TickerDecisionPanel({
         signals={alphaSignals ?? []}
         rank={opportunityRank}
       />
-      <TradePlanCard plan={tradePlan ?? decision.trade_plan ?? null} />
+      <TradePlanCard plan={tradePlan ?? null} />
       {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
       <SelectedPortfolioImpact decision={decision} />
       <TickerMarketEvidence decision={decision} />

@@ -12709,16 +12709,9 @@
         "title": "TickerBenchmarkResponse",
         "type": "object"
       },
-      "TickerDecision": {
+      "TickerDecisionDetailResponse": {
+        "description": "Decision conclusions used by the ticker page; audit bodies live on the snapshot route.",
         "properties": {
-          "alpha_signals": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Alpha Signals",
-            "type": "array"
-          },
           "as_of": {
             "format": "date-time",
             "title": "As Of",
@@ -12727,15 +12720,7 @@
           "capital_action": {
             "$ref": "#/components/schemas/CapitalAction"
           },
-          "data_requests": {
-            "items": {
-              "$ref": "#/components/schemas/DataRequest"
-            },
-            "title": "Data Requests",
-            "type": "array"
-          },
           "decision_contract_version": {
-            "default": "ticker-decision.v1",
             "title": "Decision Contract Version",
             "type": "string"
           },
@@ -12757,27 +12742,7 @@
             "$ref": "#/components/schemas/HorizonDecision"
           },
           "input_manifest": {
-            "$ref": "#/components/schemas/InputManifest"
-          },
-          "instrument_state_snapshot": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Instrument State Snapshot"
-          },
-          "learning_history": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Learning History",
-            "type": "array"
+            "$ref": "#/components/schemas/TickerInputManifestResponse"
           },
           "market_evidence_assessment": {
             "anyOf": [
@@ -12789,57 +12754,9 @@
               }
             ]
           },
-          "market_state_publication_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Market State Publication Id"
-          },
-          "market_state_snapshot": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MarketStateSnapshot"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "opportunity_episode": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/OpportunityEpisode"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "opportunity_rank": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Opportunity Rank"
-          },
-          "policy_version": {
-            "default": "risk-policy.v2:legacy",
-            "title": "Policy Version",
-            "type": "string"
-          },
           "portfolio_impacts": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/PortfolioImpact"
+              "$ref": "#/components/schemas/TickerPortfolioImpactSummaryResponse"
             },
             "propertyNames": {
               "$ref": "#/components/schemas/ExpressionKind"
@@ -12850,20 +12767,7 @@
           "resolution": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/DecisionResolutionV2"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "risk_policy": {
-            "$ref": "#/components/schemas/RiskPolicy"
-          },
-          "risk_policy_snapshot": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RiskPolicySnapshot"
+                "$ref": "#/components/schemas/TickerResolutionSummaryResponse"
               },
               {
                 "type": "null"
@@ -12886,30 +12790,19 @@
           "ticker": {
             "title": "Ticker",
             "type": "string"
-          },
-          "trade_plan": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradePlan"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
+          "decision_contract_version",
           "ticker",
           "as_of",
           "decision_revision",
           "tactical",
           "fundamental",
           "capital_action",
-          "risk_policy",
-          "expressions",
           "input_manifest"
         ],
-        "title": "TickerDecision",
+        "title": "TickerDecisionDetailResponse",
         "type": "object"
       },
       "TickerDecisionSnapshotResponse": {
@@ -13249,7 +13142,7 @@
             "type": "string"
           },
           "ticker_decision": {
-            "$ref": "#/components/schemas/TickerDecision"
+            "$ref": "#/components/schemas/TickerDecisionDetailResponse"
           },
           "trade_plan": {
             "anyOf": [
@@ -13271,6 +13164,24 @@
           "decision_revision"
         ],
         "title": "TickerDetailResponse",
+        "type": "object"
+      },
+      "TickerInputManifestResponse": {
+        "properties": {
+          "experiment_id": {
+            "title": "Experiment Id",
+            "type": "string"
+          },
+          "input_hash": {
+            "title": "Input Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "input_hash",
+          "experiment_id"
+        ],
+        "title": "TickerInputManifestResponse",
         "type": "object"
       },
       "TickerPaperEntryInput": {
@@ -13415,6 +13326,94 @@
           "decision_revision"
         ],
         "title": "TickerPaperEntryResponse",
+        "type": "object"
+      },
+      "TickerPortfolioImpactSummaryResponse": {
+        "properties": {
+          "availability": {
+            "title": "Availability",
+            "type": "string"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "expression_kind": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "marginal_risk": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marginal Risk"
+          },
+          "risk_budget_consumed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Budget Consumed"
+          }
+        },
+        "required": [
+          "expression_kind",
+          "availability"
+        ],
+        "title": "TickerPortfolioImpactSummaryResponse",
+        "type": "object"
+      },
+      "TickerResolutionSummaryResponse": {
+        "properties": {
+          "authorization_mode": {
+            "$ref": "#/components/schemas/AuthorizationMode"
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/ResolutionEligibility"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/ResolutionLifecycle"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
+          }
+        },
+        "required": [
+          "lifecycle",
+          "eligibility",
+          "authorization_mode",
+          "policy_version",
+          "next_action"
+        ],
+        "title": "TickerResolutionSummaryResponse",
         "type": "object"
       },
       "TodayCapitalAction": {

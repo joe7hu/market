@@ -18,6 +18,9 @@ RowsForTable = Callable[[str], list[dict[str, Any]]]
 
 
 SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
+    "health": {
+        "provider_runs": 1,
+    },
     "today": {
         # The Today route is a decision inbox, not a copy of the full Radar
         # publication.  Its primary screen can act on at most three current
@@ -29,6 +32,18 @@ SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
 }
 
 SCOPED_TABLE_COMPACT_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "health": {
+        "provider_runs": frozenset({"summary"}),
+        "option_recovery_health": frozenset({"agent_telemetry", "detector", "event_session_quality"}),
+    },
+    "portfolio": {
+        "ticker_decisions": frozenset({
+            "capital_action", "data_requests", "expressions", "fundamental",
+            "input_manifest", "learning_history", "market_state_snapshot",
+            "opportunity_episode", "opportunity_rank", "resolution", "risk_policy",
+            "risk_policy_snapshot", "tactical",
+        }),
+    },
     "today": {
         "ticker_decisions": frozenset({
             "data_requests", "expressions", "fundamental", "input_manifest",
@@ -338,6 +353,16 @@ def _compact_scoped_row(scope: str, table_name: str, row: dict[str, Any]) -> dic
         # This is an internal PIT selector field for ticker composition, not
         # part of the established portfolio summary response contract.
         row = {key: value for key, value in row.items() if key != "available_at"}
+    if scope == "portfolio" and table_name == "ticker_decisions":
+        selected = row.get("selected_expression")
+        selected_kind = selected.get("kind") if isinstance(selected, dict) else None
+        impacts = row.get("portfolio_impacts")
+        selected_impact = impacts.get(selected_kind) if isinstance(impacts, dict) and isinstance(selected_kind, str) else None
+        row = {
+            **row,
+            "selected_expression": {"kind": selected_kind} if isinstance(selected_kind, str) else {},
+            "portfolio_impacts": {selected_kind: selected_impact} if isinstance(selected_impact, dict) else {},
+        }
     excluded = SCOPED_TABLE_COMPACT_FIELDS.get(scope, {}).get(table_name)
     if not excluded:
         return row

@@ -29,13 +29,18 @@ from app.options_history_contracts import (
 )
 from investment_panel.core.decision import (
     AlphaSignal,
+    AuthorizationMode,
     CapitalAction,
     DataRequest,
     DecisionResolutionV2,
     ExpressionDecision,
     ExpressionKind,
+    HorizonDecision,
+    MarketEvidenceAssessment,
     OpportunityEpisode,
     OpportunityRank,
+    ResolutionEligibility,
+    ResolutionLifecycle,
     InstrumentStateSnapshot,
     OutcomeAttribution,
     TradePlan,
@@ -582,13 +587,53 @@ class StorageHealthResponse(FlexibleResponse):
     pass
 
 
+class TickerInputManifestResponse(BaseModel):
+    input_hash: str
+    experiment_id: str
+
+
+class TickerResolutionSummaryResponse(BaseModel):
+    lifecycle: ResolutionLifecycle
+    eligibility: ResolutionEligibility
+    authorization_mode: AuthorizationMode
+    policy_version: str
+    primary_blocker: str | None = None
+    next_action: str
+
+
+class TickerPortfolioImpactSummaryResponse(BaseModel):
+    expression_kind: ExpressionKind
+    availability: str
+    marginal_risk: float | None = None
+    risk_budget_consumed: float | None = None
+    blockers: tuple[str, ...] = ()
+
+
+class TickerDecisionDetailResponse(BaseModel):
+    """Decision conclusions used by the ticker page; audit bodies live on the snapshot route."""
+
+    decision_contract_version: str
+    ticker: str
+    as_of: datetime
+    decision_revision: str
+    tactical: HorizonDecision
+    fundamental: HorizonDecision
+    capital_action: CapitalAction
+    resolution: TickerResolutionSummaryResponse | None = None
+    expressions: dict[ExpressionKind, ExpressionDecision] = Field(default_factory=dict)
+    selected_expression: ExpressionDecision | None = None
+    input_manifest: TickerInputManifestResponse
+    market_evidence_assessment: MarketEvidenceAssessment | None = None
+    portfolio_impacts: dict[ExpressionKind, TickerPortfolioImpactSummaryResponse] = Field(default_factory=dict)
+
+
 class TickerDetailResponse(FlexibleResponse):
     symbol: str
     ticker: str
     status: ApiStatusResponse
     as_of: datetime | None = None
     dossier: Row = Field(default_factory=dict)
-    ticker_decision: TickerDecision
+    ticker_decision: TickerDecisionDetailResponse
     capital_action: CapitalAction
     resolution: DecisionResolutionV2 | None = None
     policy_version: str = "risk-policy.v2:legacy"

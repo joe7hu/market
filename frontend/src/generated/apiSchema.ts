@@ -5662,67 +5662,37 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** TickerDecision */
-        TickerDecision: {
-            /** Alpha Signals */
-            alpha_signals?: {
-                [key: string]: unknown;
-            }[];
+        /**
+         * TickerDecisionDetailResponse
+         * @description Decision conclusions used by the ticker page; audit bodies live on the snapshot route.
+         */
+        TickerDecisionDetailResponse: {
             /**
              * As Of
              * Format: date-time
              */
             as_of: string;
             capital_action: components["schemas"]["CapitalAction"];
-            /** Data Requests */
-            data_requests?: components["schemas"]["DataRequest"][];
-            /**
-             * Decision Contract Version
-             * @default ticker-decision.v1
-             */
+            /** Decision Contract Version */
             decision_contract_version: string;
             /** Decision Revision */
             decision_revision: string;
             /** Expressions */
-            expressions: {
+            expressions?: {
                 [key: string]: components["schemas"]["ExpressionDecision"];
             };
             fundamental: components["schemas"]["HorizonDecision"];
-            input_manifest: components["schemas"]["InputManifest"];
-            /** Instrument State Snapshot */
-            instrument_state_snapshot?: {
-                [key: string]: unknown;
-            } | null;
-            /** Learning History */
-            learning_history?: {
-                [key: string]: unknown;
-            }[];
+            input_manifest: components["schemas"]["TickerInputManifestResponse"];
             market_evidence_assessment?: components["schemas"]["MarketEvidenceAssessment"] | null;
-            /** Market State Publication Id */
-            market_state_publication_id?: string | null;
-            market_state_snapshot?: components["schemas"]["MarketStateSnapshot"] | null;
-            opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
-            /** Opportunity Rank */
-            opportunity_rank?: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * Policy Version
-             * @default risk-policy.v2:legacy
-             */
-            policy_version: string;
             /** Portfolio Impacts */
             portfolio_impacts?: {
-                [key: string]: components["schemas"]["PortfolioImpact"];
+                [key: string]: components["schemas"]["TickerPortfolioImpactSummaryResponse"];
             };
-            resolution?: components["schemas"]["DecisionResolutionV2"] | null;
-            risk_policy: components["schemas"]["RiskPolicy"];
-            risk_policy_snapshot?: components["schemas"]["RiskPolicySnapshot"] | null;
+            resolution?: components["schemas"]["TickerResolutionSummaryResponse"] | null;
             selected_expression?: components["schemas"]["ExpressionDecision"] | null;
             tactical: components["schemas"]["HorizonDecision"];
             /** Ticker */
             ticker: string;
-            trade_plan?: components["schemas"]["TradePlan"] | null;
         };
         /**
          * TickerDecisionSnapshotResponse
@@ -5837,10 +5807,17 @@ export interface components {
             symbol: string;
             /** Ticker */
             ticker: string;
-            ticker_decision: components["schemas"]["TickerDecision"];
+            ticker_decision: components["schemas"]["TickerDecisionDetailResponse"];
             trade_plan?: components["schemas"]["TradePlan"] | null;
         } & {
             [key: string]: unknown;
+        };
+        /** TickerInputManifestResponse */
+        TickerInputManifestResponse: {
+            /** Experiment Id */
+            experiment_id: string;
+            /** Input Hash */
+            input_hash: string;
         };
         /**
          * TickerPaperEntryInput
@@ -5895,6 +5872,33 @@ export interface components {
             ticker: string;
         } & {
             [key: string]: unknown;
+        };
+        /** TickerPortfolioImpactSummaryResponse */
+        TickerPortfolioImpactSummaryResponse: {
+            /** Availability */
+            availability: string;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            expression_kind: components["schemas"]["ExpressionKind"];
+            /** Marginal Risk */
+            marginal_risk?: number | null;
+            /** Risk Budget Consumed */
+            risk_budget_consumed?: number | null;
+        };
+        /** TickerResolutionSummaryResponse */
+        TickerResolutionSummaryResponse: {
+            authorization_mode: components["schemas"]["AuthorizationMode"];
+            eligibility: components["schemas"]["ResolutionEligibility"];
+            lifecycle: components["schemas"]["ResolutionLifecycle"];
+            /** Next Action */
+            next_action: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Primary Blocker */
+            primary_blocker?: string | null;
         };
         /** TodayCapitalAction */
         TodayCapitalAction: {

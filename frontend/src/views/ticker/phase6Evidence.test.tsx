@@ -29,7 +29,7 @@ describe("ExecutionEvidencePanel Phase 6 evidence", () => {
         expression_kind: "CALL",
         status: "advisory",
       },
-    } as unknown as components["schemas"]["TickerDecision"];
+    } as unknown as components["schemas"]["TickerDecisionDetailResponse"];
 
     const html = renderToStaticMarkup(<TickerMarketEvidence decision={decision} />);
 

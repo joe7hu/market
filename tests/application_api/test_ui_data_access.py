@@ -438,6 +438,43 @@ def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None
     assert panel.rows("ticker_decisions")[0]["portfolio_impacts"]["STOCK"] == impact
 
 
+def test_portfolio_snapshot_keeps_only_selected_impact_and_exact_count() -> None:
+    heavy = "x" * 10_000
+    selected_impact = {"impact_id": "impact-stock", "input_lineage": [heavy]}
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
+        tables={
+            "ticker_decisions": [
+                {
+                    "ticker": ticker,
+                    "status": "NO_TRADE",
+                    "selected_expression": {"kind": "STOCK", "raw": heavy},
+                    "portfolio_impacts": {
+                        "STOCK": selected_impact,
+                        "CASH": {"impact_id": "impact-cash", "input_lineage": [heavy]},
+                    },
+                    "input_manifest": {"raw": heavy},
+                    "opportunity_episode": {"raw": heavy},
+                }
+                for ticker in ("NVDA", "MSFT")
+            ],
+        },
+    )
+
+    table = payloads_owner.panel_snapshot_payload(panel_data, "portfolio")["tables"]["ticker_decisions"]
+
+    assert table["count"] == 2
+    assert table["rows"] == [
+        {
+            "ticker": ticker,
+            "status": "NO_TRADE",
+            "selected_expression": {"kind": "STOCK"},
+            "portfolio_impacts": {"STOCK": selected_impact},
+        }
+        for ticker in ("NVDA", "MSFT")
+    ]
+
+
 @pytest.mark.parametrize(
     ("scope", "expected_symbol"),
     [("watchlist-watched", "NVDA"), ("watchlist-unwatched", "AMD")],
@@ -563,19 +600,67 @@ def test_panel_contract_lists_scope_and_ticker_tables() -> None:
         "source_catalog",
         "source_freshness",
         "source_health",
-        "source_runs",
         "provider_runs",
         "broker_status",
-        "option_recovery_funnel",
-        "option_recovery_event",
-        "option_recovery_opportunity",
-        "option_recovery_family_performance",
-        "option_recovery_agent_provenance",
         "option_recovery_health",
     ]
     assert "universe_screen" in contract["watchlist_section_tables"]
     assert "decision_queue" in contract["ticker_tables"]
     assert "ticker_data_sources" not in contract["ticker_tables"]
+
+
+def test_health_scope_bounds_and_compacts_operational_rows(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(_config, table_names: tuple[str, ...], **kwargs):
+        calls.append({"table_names": table_names, **kwargs})
+        tables = {name: [] for name in table_names}
+        tables["source_catalog"] = [{"source_id": "one"}, {"source_id": "two"}]
+        tables["provider_runs"] = [
+            {"id": "run-1", "status": "succeeded", "summary": {"quote_diagnostics": "x" * 10_000}},
+            {"id": "run-2", "status": "failed", "summary": {"quote_diagnostics": "x" * 10_000}},
+        ]
+        tables["option_recovery_health"] = [{
+            "capture": {"covered_slots": 1},
+            "program": {"program_state": "collecting"},
+            "storage": {"events": 1},
+            "detector": {"raw": "x" * 10_000},
+            "event_session_quality": [{"raw": "x" * 10_000}],
+            "agent_telemetry": {"raw": "x" * 10_000},
+        }]
+        return tables, {
+            "database": "postgresql",
+            "available_model_count": len(table_names),
+            "unavailable_models": [],
+            "table_counts": {"provider_runs": 2},
+        }
+
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
+
+    panel = loaders_owner.load_panel_scope_data(typed_config("postgresql:///test"), "health")
+    payload = payloads_owner.panel_snapshot_payload(panel, "health")
+
+    assert calls == [{
+        "table_names": (
+            "source_catalog", "source_freshness", "source_health", "provider_runs",
+            "broker_status", "option_recovery_health",
+        ),
+        "query_row_limits": {"provider_runs": 1},
+    }]
+    assert payload["tables"]["source_catalog"]["rows"] == [{"source_id": "one"}, {"source_id": "two"}]
+    assert payload["tables"]["provider_runs"] == {
+        "rows": [{"id": "run-1", "status": "succeeded"}],
+        "count": 2,
+        "offset": 0,
+        "limit": 1,
+    }
+    assert payload["tables"]["option_recovery_health"]["rows"] == [{
+        "capture": {"covered_slots": 1},
+        "program": {"program_state": "collecting"},
+        "storage": {"events": 1},
+    }]
+    assert "source_runs" not in payload["tables"]
+    assert "option_recovery_event" not in payload["tables"]
 
 
 def test_options_radar_scope_compacts_heavy_learning_tables() -> None:

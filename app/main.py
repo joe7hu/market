@@ -17,6 +17,7 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from app import dependencies
 from app.routers import ALL_ROUTERS
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1_024)
 
     for router in ALL_ROUTERS:
         app.include_router(router, dependencies=[Depends(dependencies.get_authorized_request)])

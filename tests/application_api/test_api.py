@@ -644,7 +644,8 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
     _use_postgres_api(monkeypatch, "postgresql:///ticker-lineage-repair")
     monkeypatch.setattr(loaders_owner, "load_ticker_panel_data", lambda *_args: panel)
 
-    response = TestClient(app).get("/api/tickers/QQQ")
+    client = TestClient(app)
+    response = client.get("/api/tickers/QQQ")
 
     assert response.status_code == 200
     payload = response.json()
@@ -652,13 +653,29 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
     selected_kind = decision["selected_expression"]["kind"]
     selected_impact = decision["portfolio_impacts"][selected_kind]
     assert selected_impact["expression_kind"] == selected_kind
-    assert selected_impact["opportunity_episode_id"] == decision["opportunity_episode"]["episode_id"]
-    assert len(decision["opportunity_episode"]["input_lineage"]) == 5
-    assert decision["market_state_snapshot"]["coverage_matrix"]["rows"][0]["current_status"] == "unavailable"
+    assert "input_lineage" not in selected_impact
+    assert "inputs" not in decision["input_manifest"]
+    assert set(decision) == {
+        "as_of", "capital_action", "decision_contract_version", "decision_revision",
+        "expressions", "fundamental", "input_manifest", "market_evidence_assessment",
+        "portfolio_impacts", "resolution", "selected_expression", "tactical", "ticker",
+    }
+    assert "opportunity_episode" not in payload
+    assert payload["outcome_attributions"] == []
+    assert "learning_history" not in payload
     assert decision["resolution"]["eligibility"] == "BLOCKED"
     assert decision["selected_expression"]["kind"] == "CASH"
     assert decision["resolution"]["authorization_mode"] == "NONE"
     assert "PAPER_READY" not in repr(payload)
+
+    snapshot_response = client.get("/api/tickers/QQQ/decision-snapshot")
+
+    assert snapshot_response.status_code == 200
+    snapshot = snapshot_response.json()
+    snapshot_kind = snapshot["selected_expression"]["kind"]
+    assert len(snapshot["opportunity_episode"]["input_lineage"]) == 5
+    assert snapshot["portfolio_impacts"][snapshot_kind]["input_lineage"]
+    assert snapshot["market_state_snapshot"]["coverage_matrix"]["rows"][0]["current_status"] == "unavailable"
 
 
 def test_settings_snapshot_returns_no_panel_tables() -> None:
