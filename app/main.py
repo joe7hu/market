@@ -7,11 +7,13 @@ domain owners live in their owning modules.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -53,6 +55,24 @@ async def lifespan(_app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title=APP_TITLE, lifespan=lifespan)
+    documentation_paths = {
+        path
+        for path in (app.openapi_url, app.docs_url, app.swagger_ui_oauth2_redirect_url, app.redoc_url)
+        if path
+    }
+
+    @app.middleware("http")
+    async def authorize_documentation(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if request.scope["path"] in documentation_paths:
+            try:
+                dependencies.get_authorized_request(request)
+            except HTTPException as exc:
+                return await http_exception_handler(request, exc)
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

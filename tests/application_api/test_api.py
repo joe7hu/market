@@ -11,6 +11,7 @@ import pytest
 from psycopg.types.json import Jsonb
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
 
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.database.authority import close_cached_runtimes
@@ -1198,7 +1199,10 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
 
 def test_local_api_guard_allows_private_lan_clients() -> None:
     def request(host: str, headers: dict[str, str] | None = None) -> SimpleNamespace:
-        return SimpleNamespace(client=SimpleNamespace(host=host), headers=headers or {})
+        return SimpleNamespace(
+            client=SimpleNamespace(host=host),
+            headers=Headers({"host": "mini1.local", **(headers or {})}),
+        )
 
     require_local_request(request("100.120.95.8"))
     require_local_request(request("192.168.50.197"))
@@ -1218,12 +1222,88 @@ def test_local_api_guard_allows_private_lan_clients() -> None:
         require_local_request(request("127.0.0.1", {"x-forwarded-for": "192.168.50.42, 8.8.8.8"}))
     with pytest.raises(HTTPException):
         require_local_request(request("127.0.0.1", {"x-forwarded-for": "not-an-ip, 192.168.50.42"}))
+    with pytest.raises(HTTPException):
+        require_local_request(
+            SimpleNamespace(client=SimpleNamespace(host="192.168.50.42"), headers=Headers())
+        )
+
+
+@pytest.mark.parametrize(
+    "host_header",
+    [
+        "localhost:8000",
+        "192.168.50.197:8000",
+        "100.120.95.8:8000",
+        "[::1]:8000",
+        "mini1.local:8000",
+        "mini1.tail46d3fb.ts.net:8000",
+    ],
+)
+def test_api_allows_authorized_host_headers(host_header: str) -> None:
+    response = TestClient(app, client=("192.168.50.42", 50000)).get(
+        "/api/panel-contract",
+        headers={"host": host_header},
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/api/panel-contract", "/docs"])
+@pytest.mark.parametrize(
+    "host_header",
+    ["attacker.example", "8.8.8.8", "[::1", "mini1.local/path", "", ".tail46d3fb.ts.net"],
+)
+def test_api_rejects_unauthorized_or_malformed_host_headers(path: str, host_header: str) -> None:
+    response = TestClient(app, client=("192.168.50.42", 50000)).get(
+        path,
+        headers={"host": host_header},
+    )
+
+    assert response.status_code == 403
 
 
 def test_api_rejects_public_network_clients() -> None:
-    response = TestClient(app, client=("8.8.8.8", 50000)).get("/api/status")
+    direct_response = TestClient(app, client=("8.8.8.8", 50000)).get(
+        "/api/status", headers={"host": "mini1.local"}
+    )
+    proxied_response = TestClient(app, client=("127.0.0.1", 50000)).get(
+        "/api/status",
+        headers={"host": "mini1.local", "x-forwarded-for": "192.168.50.42, 8.8.8.8"},
+    )
 
-    assert response.status_code == 403
+    assert direct_response.status_code == 403
+    assert proxied_response.status_code == 403
+
+
+@pytest.mark.parametrize("path", ["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"])
+def test_api_documentation_rejects_public_network_clients(path: str) -> None:
+    direct_response = TestClient(app, client=("8.8.8.8", 50000)).get(
+        path, headers={"host": "mini1.local"}
+    )
+    proxied_response = TestClient(app, client=("127.0.0.1", 50000)).get(
+        path,
+        headers={"host": "mini1.local", "x-forwarded-for": "192.168.50.42, 8.8.8.8"},
+    )
+
+    assert direct_response.status_code == 403
+    assert proxied_response.status_code == 403
+
+
+@pytest.mark.parametrize("path", ["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"])
+def test_api_documentation_allows_private_network_clients(path: str) -> None:
+    direct_response = TestClient(app, client=("192.168.50.42", 50000)).get(
+        path, headers={"host": "192.168.50.197:8000"}
+    )
+    proxied_response = TestClient(app, client=("127.0.0.1", 50000)).get(
+        path,
+        headers={
+            "host": "mini1.tail46d3fb.ts.net:8000",
+            "x-forwarded-for": "8.8.8.8, 192.168.50.42",
+        },
+    )
+
+    assert direct_response.status_code == 200
+    assert proxied_response.status_code == 200
 
 
 def test_thesis_monitor_automation_accepts_symbol_scoped_background_run(monkeypatch: pytest.MonkeyPatch) -> None:
