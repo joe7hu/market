@@ -7,10 +7,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from investment_panel.core.agent_providers import provider_catalog, resolve_provider_selection, validate_registry_command
+from investment_panel.core.settings_validation import apply_agent_settings_update
 import yaml
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
 from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig, options_decision_system_config
-from investment_panel.database.configuration import DatabaseConfig, load_database_config, merge_persisted_setting_sections
+from investment_panel.database.configuration import DatabaseConfig, load_database_config, persisted_setting_sections
 def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 def resolve_path(value: str | Path, base: Path | None = None) -> Path:
@@ -262,7 +263,19 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     # environment or config.yaml. The repository handles an unavailable
     # database as a no-op so initial migration/config tooling remains usable.
     if database.url.startswith(("postgresql://", "postgresql+psycopg://")):
-        raw = merge_persisted_setting_sections(raw, database.url)
+        overrides = persisted_setting_sections(database.url)
+        persisted_agents = overrides.get("agents")
+        if persisted_agents is not None:
+            try:
+                overrides["agents"] = apply_agent_settings_update(
+                    raw.get("agents") if isinstance(raw.get("agents"), dict) else {},
+                    persisted_agents,
+                )
+            except ValueError:
+                # A legacy poisoned row must not prevent the settings endpoint
+                # from loading so the trusted user can replace that row.
+                overrides.pop("agents", None)
+        raw = _merge_setting_sections(raw, overrides)
     nas_raw = raw.get("nas", {})
     nas = NasConfig(
         source_root=resolve_path(nas_raw.get("source_root", "/Volumes/agent/data-sources"), base),
@@ -480,6 +493,19 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         report_dir=resolve_path(raw.get("report_dir", "data/reports"), base),
         packet_dir=resolve_path(raw.get("packet_dir", "data/packets"), base),
     )
+
+
+def _merge_setting_sections(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_setting_sections(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def public_config_payload(config: AppConfig) -> dict[str, Any]:

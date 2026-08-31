@@ -51,23 +51,20 @@ class SettingRepository:
             )
 
 
-def merge_persisted_setting_sections(raw: dict[str, Any], database_url: str) -> dict[str, Any]:
-    """Overlay DB settings while keeping initial migration config loadable."""
+def persisted_setting_sections(database_url: str) -> dict[str, Any]:
+    """Read DB setting overrides without making config loading depend on PostgreSQL."""
 
     try:
         from investment_panel.database.authority import runtime_for_url
 
-        sections = SettingRepository(runtime_for_url(database_url)).sections()
+        return SettingRepository(runtime_for_url(database_url)).sections()
     except Exception:
-        return raw
-    return _merge(raw, sections)
+        return {}
 
 
-def _merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge(dict(merged[key]), value)
-        else:
-            merged[key] = value
-    return merged
+__all__ = [
+    "DatabaseConfig",
+    "SettingRepository",
+    "load_database_config",
+    "persisted_setting_sections",
+]

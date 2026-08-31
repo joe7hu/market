@@ -11,8 +11,8 @@ from pathlib import Path
 import re
 from statistics import median
 from typing import Any
-import xml.etree.ElementTree as ET
 
+from defusedxml import ElementTree as ET
 import yaml
 
 from investment_panel.core.config import AppConfig, load_config, resolve_path

@@ -11,6 +11,10 @@ from app.data_access.coerce import jsonable
 from app.data_access.coerce import deep_merge as _deep_merge
 from app.data_access.payloads import runtime_metadata, status_payload
 from investment_panel.core.config import AppConfig, public_config_payload
+from investment_panel.core.settings_validation import (
+    apply_agent_settings_update,
+    apply_research_sources_update,
+)
 from investment_panel.database.authority import runtime_for_url
 from investment_panel.database.configuration import SettingRepository
 from investment_panel.database.ingestion import IngestionRepository
@@ -56,7 +60,12 @@ def _public_database_url(value: str) -> str:
 def persist_setting_section(config: AppConfig, section: str, update: dict[str, Any]) -> None:
     configured = public_config_payload(config).get(section)
     current = configured if isinstance(configured, dict) else {}
-    value = _deep_merge(dict(current), update)
+    if section == "agents":
+        value = apply_agent_settings_update(current, update)
+    elif section == "research_sources":
+        value = apply_research_sources_update(current, update)
+    else:
+        value = _deep_merge(dict(current), update)
     runtime = runtime_for_url(config.database.url)
     SettingRepository(runtime).set_section(section, value)
     if section == "research_sources":

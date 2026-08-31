@@ -11,11 +11,12 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 from urllib.parse import urlparse
-import xml.etree.ElementTree as ET
 
+from defusedxml import ElementTree as ET
 import httpx
 
 from investment_panel.core.config import AppConfig, load_config
+from investment_panel.core.settings_validation import validate_public_http_url
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
@@ -82,7 +83,7 @@ def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dic
             {
                 "source_id": _slug(f"blog_{_host(url)}"), "name": _host(url),
                 "kind": "blog", "capability": "substack", "key": url,
-                "fetch": lambda url=url: runner.read_json(["substack", "publication", url]),
+                "fetch": lambda url=url: _fetch_substack(runner, url),
             }
             for url in config.research_sources.blogs.substack_urls
         )
@@ -380,7 +381,13 @@ def _archive_payload(config: AppConfig, source_id: str, run_id: Any, payload: An
 
 
 def _fetch_rss(url: str) -> list[dict[str, Any]]:
-    response = httpx.get(url, timeout=25, headers={"User-Agent": "joehu-market-panel/0.1 contact:local"})
+    url = validate_public_http_url(url)
+    response = httpx.get(
+        url,
+        timeout=25,
+        follow_redirects=False,
+        headers={"User-Agent": "joehu-market-panel/0.1 contact:local"},
+    )
     response.raise_for_status()
     root = ET.fromstring(response.content)
     rows: list[dict[str, Any]] = []
@@ -401,6 +408,12 @@ def _fetch_rss(url: str) -> list[dict[str, Any]]:
             "published": _child(node, f"{ns}published") or _child(node, f"{ns}updated"),
         })
     return rows
+
+
+def _fetch_substack(runner: OpenCLIRunner, url: str) -> Any:
+    return runner.read_json(
+        ["substack", "publication", validate_public_http_url(url)]
+    )
 
 
 def _child(node: ET.Element, tag: str) -> str:
