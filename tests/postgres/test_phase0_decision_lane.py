@@ -401,7 +401,7 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         assert lane_action["trade_plan"]["trade_plan_id"] == decision.trade_plan.trade_plan_id
 
         funnel = TickerDecisionRepository(runtime).decision_funnel(
-            now=decision_cutoff, action_queue=action_queue["actions"],
+            now=datetime.now(UTC) + timedelta(seconds=1), action_queue=action_queue["actions"],
         )
         assert funnel["policy_version"] == decision.opportunity_rank["ranking_version"]
         assert lane_action["policy_version"] == decision.policy_version
@@ -478,6 +478,19 @@ def test_decision_funnel_compact_publication_read_keeps_legacy_fallback(
             rank_rows[0]["publication_id"],
             plan_rows[0]["publication_id"],
         } == {publication["id"]}
+
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.publication SET status = 'superseded' WHERE id = %s::uuid",
+                [publication["id"]],
+            )
+        historical_alpha, historical_rank, historical_plan = (
+            TickerDecisionRepository(runtime)._current_funnel_publication_rows(
+                reference=cutoff + timedelta(minutes=1),
+            )
+        )
+        assert [row["ticker"] for row in historical_alpha] == ["LEGACY"]
+        assert historical_rank[0]["publication_id"] == historical_plan[0]["publication_id"] == publication["id"]
     finally:
         runtime.close()
 

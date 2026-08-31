@@ -333,7 +333,12 @@ class TickerDecisionRepository:
 
         reference = _utc(now or datetime.now(UTC))
         analysis = AnalysisRepository(self.runtime)
-        alpha_rows, rank_rows, plan_rows = self._current_funnel_publication_rows(reference=reference)
+        try:
+            alpha_rows, rank_rows, plan_rows = self._current_funnel_publication_rows(reference=reference)
+        except TypeError as exc:
+            if "unexpected keyword argument 'reference'" not in str(exc):
+                raise
+            alpha_rows, rank_rows, plan_rows = self._current_funnel_publication_rows()
         supplied_action_queue = list(action_queue)
         derived_action_queue: list[dict[str, Any]] = []
         decisions: list[dict[str, Any]] = []
@@ -678,41 +683,66 @@ class TickerDecisionRepository:
             else:
                 rows = connection.execute(
                     """
-                    SELECT item.model_name,
-                           coalesce(item.payload->>'ticker', item.payload->>'symbol')
+                    WITH chosen_publication AS MATERIALIZED (
+                        SELECT publication.id, publication.bundle_id, publication.published_at
+                        FROM app.publication publication
+                        WHERE publication.scope = %s
+                          AND publication.status IN ('published', 'superseded')
+                          AND publication.published_at IS NOT NULL
+                          AND publication.published_at <= %s
+                        ORDER BY publication.published_at DESC, publication.created_at DESC,
+                                 publication.id DESC
+                        LIMIT 1
+                    ), source_rows AS MATERIALIZED (
+                        SELECT item.model_name, item.rank,
+                               chosen.id::text AS publication_id, chosen.published_at,
+                               payload.payload
+                        FROM chosen_publication chosen
+                        JOIN app.publication_bundle_item item
+                          ON item.bundle_id = chosen.bundle_id
+                        JOIN app.publication_payload payload
+                          ON payload.content_hash = item.content_hash
+                        WHERE chosen.bundle_id IS NOT NULL
+                          AND item.model_name = ANY(%s)
+                        UNION ALL
+                        SELECT item.model_name, item.rank,
+                               chosen.id::text AS publication_id, chosen.published_at,
+                               item.payload
+                        FROM chosen_publication chosen
+                        JOIN app.publication_item item
+                          ON item.publication_id = chosen.id
+                        WHERE chosen.bundle_id IS NULL
+                          AND item.model_name = ANY(%s)
+                    )
+                    SELECT source.model_name,
+                           coalesce(source.payload->>'ticker', source.payload->>'symbol')
                                AS ticker,
-                           item.payload->>'availability_status' AS availability_status,
-                           item.payload->'blockers' AS blockers,
-                           item.payload->'trade_rank' AS trade_rank,
-                           item.payload->>'primary_blocker'
+                           source.payload->>'availability_status' AS availability_status,
+                           source.payload->'blockers' AS blockers,
+                           source.payload->'trade_rank' AS trade_rank,
+                           source.payload->>'primary_blocker'
                                AS primary_blocker,
-                           item.payload->>'trade_rank_unavailable_reason'
+                           source.payload->>'trade_rank_unavailable_reason'
                                AS trade_rank_unavailable_reason,
-                           item.payload->>'eligibility' AS eligibility,
-                           item.payload->>'ranking_version' AS ranking_version,
-                           item.payload->>'decision_revision' AS decision_revision,
-                           item.payload->>'opportunity_episode_id' AS opportunity_episode_id,
-                           item.payload->>'policy_version' AS policy_version,
-                           item.payload->>'selected_expression_kind' AS selected_expression_kind,
-                           item.payload->>'selected_expression_identity' AS selected_expression_identity,
-                           item.payload->>'rank_id' AS rank_id,
-                           item.payload->>'portfolio_impact_id' AS portfolio_impact_id,
-                           item.payload->>'market_state_publication_id' AS market_state_publication_id,
-                           item.payload->'evaluated_universe_complete' AS evaluated_universe_complete,
-                           item.payload->>'trade_utility' AS trade_utility,
-                           item.payload->>'trade_plan_id' AS trade_plan_id,
-                           publication.id::text AS publication_id,
-                           publication.published_at
-                    FROM app.publication publication
-                    JOIN app.publication_item item
-                      ON item.publication_id = publication.id
-                    WHERE publication.scope = %s
-                      AND publication.status = 'published'
-                      AND item.model_name = ANY(%s)
-                      AND publication.published_at <= %s
-                    ORDER BY item.model_name, item.rank
+                           source.payload->>'eligibility' AS eligibility,
+                           source.payload->>'ranking_version' AS ranking_version,
+                           source.payload->>'decision_revision' AS decision_revision,
+                           source.payload->>'opportunity_episode_id' AS opportunity_episode_id,
+                           source.payload->>'policy_version' AS policy_version,
+                           source.payload->>'selected_expression_kind' AS selected_expression_kind,
+                           source.payload->>'selected_expression_identity' AS selected_expression_identity,
+                           source.payload->>'rank_id' AS rank_id,
+                           source.payload->>'portfolio_impact_id' AS portfolio_impact_id,
+                           source.payload->>'market_state_publication_id' AS market_state_publication_id,
+                           source.payload->'evaluated_universe_complete' AS evaluated_universe_complete,
+                           source.payload->>'trade_utility' AS trade_utility,
+                           source.payload->>'trade_plan_id' AS trade_plan_id,
+                           source.publication_id,
+                           source.published_at
+                    FROM source_rows source
+                    ORDER BY source.model_name, source.rank
                     """,
-                    [TICKER_RANKING_SCOPE, model_names, publication_cutoff],
+                    [TICKER_RANKING_SCOPE, publication_cutoff, model_names, model_names],
                 ).fetchall()
         grouped: dict[str, list[dict[str, Any]]] = {
             "alpha_signal": [],

@@ -527,7 +527,10 @@ def portfolio_intelligence_tables(
             tables["portfolio_performance"] = performance
         if "portfolio_transactions" in requested:
             tables["portfolio_transactions"] = portfolio_transaction_rows(
-                config, symbols=normalized_symbols, connection=connection,
+                config,
+                limit=(row_limits or {}).get("portfolio_transactions", 100),
+                symbols=normalized_symbols,
+                connection=connection,
             )
         if "correlation_edges" in requested:
             tables["correlation_edges"] = correlations
