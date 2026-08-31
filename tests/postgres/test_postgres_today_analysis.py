@@ -14,6 +14,23 @@ from investment_panel.database.portfolio_ledger import record_portfolio_transact
 from conftest import typed_config
 
 
+def _backdate_symbol_state(connection, symbol: str, available_at: datetime) -> None:
+    connection.execute(
+        "UPDATE catalog.instrument SET created_at = %s, updated_at = %s WHERE symbol = %s",
+        [available_at, available_at, symbol],
+    )
+    connection.execute(
+        "UPDATE app.thesis SET created_at = %s, updated_at = %s "
+        "WHERE instrument_id = (SELECT id FROM catalog.instrument WHERE symbol = %s)",
+        [available_at, available_at, symbol],
+    )
+    connection.execute(
+        "UPDATE app.portfolio_transaction SET created_at = %s "
+        "WHERE instrument_id = (SELECT id FROM catalog.instrument WHERE symbol = %s)",
+        [available_at, symbol],
+    )
+
+
 def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -66,7 +83,8 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
         }],
         )
         ingestion.finish_run(content_run, "succeeded", item_count=1, instrument_count=1)
-        analysis_run = AnalysisRepository(runtime).start_run(
+        analysis = AnalysisRepository(runtime)
+        analysis_run = analysis.start_run(
             "source-signals",
             input_cutoff=datetime(2026, 7, 11, 12, tzinfo=UTC),
             code_version="test",
@@ -78,6 +96,22 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
             "signal_type": "thesis", "sentiment": "bullish", "confidence": 0.8,
             "thesis": "Demand remains firm", "evidence_refs": "[]",
         }])
+        analysis.finish_run(analysis_run, "succeeded")
+        fixture_available_at = datetime(2026, 7, 11, 12, 40, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [fixture_available_at - timedelta(minutes=2), fixture_available_at, content_run],
+            )
+            connection.execute(
+                "UPDATE analysis.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [fixture_available_at - timedelta(minutes=1), fixture_available_at, analysis_run],
+            )
+            connection.execute(
+                "UPDATE ingest.source SET created_at = %s, updated_at = %s WHERE id = 'test-content'",
+                [fixture_available_at, fixture_available_at],
+            )
+            _backdate_symbol_state(connection, "NVDA", fixture_available_at)
         result = refresh_today_publication(runtime, now=datetime(2026, 7, 11, 13, tzinfo=UTC))
         assert result["daily_brief"] == 3
         assert result["source_changes"] == 1
@@ -109,6 +143,7 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
                 "UPDATE ingest.run SET finished_at = %s WHERE id = %s",
                 [datetime(2026, 7, 11, 14, tzinfo=UTC), correction_run],
             )
+            _backdate_symbol_state(connection, "NVDA", fixture_available_at)
         refresh_today_publication(runtime, now=datetime(2026, 7, 11, 13, tzinfo=UTC))
         replayed = AnalysisRepository(runtime).publication_rows("today", "daily_brief")
         replayed_pulse = next(row for row in replayed if row["category"] == "portfolio_pulse")
@@ -120,6 +155,163 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
                 "SELECT validation FROM app.publication WHERE id = %s", [result["publication_id"]]
             ).fetchone()["validation"]
         assert validation["raw_and_analysis_separated"] is True
+    finally:
+        runtime.close()
+
+
+def test_today_replays_only_portfolio_transactions_available_at_cutoff(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    config = typed_config(migrated_postgres_dsn)
+    as_of = datetime(2026, 8, 3, 13, tzinfo=UTC)
+    try:
+        record_portfolio_transaction(
+            config,
+            {
+                "symbol": "NVDA", "transaction_type": "opening_balance", "quantity": 2, "price": 100,
+                "executed_at": as_of - timedelta(days=2), "idempotency_key": "today-pit-opening",
+            },
+        )
+        record_portfolio_transaction(
+            config,
+            {
+                "symbol": "NVDA", "transaction_type": "buy", "quantity": 5, "price": 110,
+                "executed_at": as_of + timedelta(hours=1), "idempotency_key": "today-pit-future-buy",
+            },
+        )
+        with runtime.transaction() as connection:
+            _backdate_symbol_state(connection, "NVDA", as_of - timedelta(days=3))
+            connection.execute(
+                "UPDATE app.portfolio_transaction SET created_at = %s WHERE idempotency_key = %s",
+                [as_of + timedelta(hours=1), "today-pit-future-buy"],
+            )
+
+        refresh_today_publication(runtime, now=as_of)
+        pulse = next(
+            row for row in AnalysisRepository(runtime).publication_rows("today", "daily_brief")
+            if row.get("category") == "portfolio_pulse"
+        )
+        assert pulse["quantity"] == 2
+        assert pulse["average_cost"] == 100
+    finally:
+        runtime.close()
+
+
+def test_today_omits_thesis_created_or_revised_after_cutoff(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    as_of = datetime(2026, 8, 3, 13, tzinfo=UTC)
+    try:
+        record_portfolio_transaction(
+            typed_config(migrated_postgres_dsn),
+            {
+                "symbol": "NVDA", "transaction_type": "opening_balance", "quantity": 1, "price": 100,
+                "executed_at": as_of - timedelta(days=2), "idempotency_key": "today-pit-thesis",
+            },
+        )
+        with runtime.transaction() as connection:
+            _backdate_symbol_state(connection, "NVDA", as_of - timedelta(days=3))
+            connection.execute(
+                "UPDATE app.thesis SET created_at = %s, updated_at = %s",
+                [as_of + timedelta(minutes=1), as_of + timedelta(minutes=1)],
+            )
+        assert refresh_today_publication(runtime, now=as_of)["thesis_reviews"] == 0
+
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.thesis SET created_at = %s, updated_at = %s",
+                [as_of - timedelta(days=2), as_of - timedelta(days=1)],
+            )
+        assert refresh_today_publication(runtime, now=as_of)["thesis_reviews"] == 1
+
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.thesis SET thesis = thesis || '{\"core_thesis\": \"late revision\"}'::jsonb, "
+                "updated_at = %s",
+                [as_of + timedelta(minutes=1)],
+            )
+        assert refresh_today_publication(runtime, now=as_of)["thesis_reviews"] == 0
+    finally:
+        runtime.close()
+
+
+def test_today_replays_versioned_and_manual_catalysts_at_cutoff(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    as_of = datetime(2026, 8, 3, 13, tzinfo=UTC)
+    starts_at = as_of + timedelta(days=3)
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source(
+            "pit-events", name="PIT events", family="events", kind="calendar",
+            operational_state="active", health_owner="test", freshness_seconds=3600,
+        )
+        facts = SourceFactRepository(runtime)
+        first_run = ingestion.start_run("pit-events", "events")
+        facts.store_market_events(first_run, "pit-events", [{
+            "source_key": "nvda-earnings", "event_key": "NVDA:earnings:2026-Q3",
+            "symbol": "NVDA", "event_scope": "company", "event_kind": "earnings",
+            "starts_at": starts_at, "title": "Original earnings time",
+            "expected_impact": "high",
+        }])
+        ingestion.finish_run(first_run, "succeeded", item_count=1, instrument_count=1)
+
+        second_run = ingestion.start_run("pit-events", "events")
+        facts.store_market_events(second_run, "pit-events", [{
+            "source_key": "nvda-earnings", "event_key": "NVDA:earnings:2026-Q3",
+            "symbol": "NVDA", "event_scope": "company", "event_kind": "earnings",
+            "starts_at": starts_at, "title": "Revised earnings time",
+            "expected_impact": "high",
+        }])
+        ingestion.finish_run(second_run, "succeeded", item_count=1, instrument_count=1)
+
+        with runtime.transaction() as connection:
+            _backdate_symbol_state(connection, "NVDA", as_of - timedelta(days=2))
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [as_of - timedelta(hours=3), as_of - timedelta(hours=2), first_run],
+            )
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [as_of + timedelta(hours=1), as_of + timedelta(hours=2), second_run],
+            )
+            connection.execute(
+                "UPDATE raw.market_event_version SET available_at = %s WHERE ingest_run_id = %s",
+                [as_of - timedelta(hours=2), first_run],
+            )
+            connection.execute(
+                "UPDATE raw.market_event_version SET available_at = %s WHERE ingest_run_id = %s",
+                [as_of + timedelta(hours=2), second_run],
+            )
+            connection.execute(
+                "UPDATE app.catalyst SET created_at = %s, superseded_at = %s WHERE version = 1",
+                [as_of - timedelta(hours=3), as_of + timedelta(hours=1)],
+            )
+            connection.execute(
+                "UPDATE app.catalyst SET created_at = %s WHERE version = 2",
+                [as_of + timedelta(hours=1)],
+            )
+            instrument_id = connection.execute(
+                "SELECT id FROM catalog.instrument WHERE symbol = 'NVDA'"
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT INTO app.catalyst "
+                "(instrument_id, starts_at, title, expected_impact, created_at) "
+                "VALUES (%s, %s, 'Manual catalyst', 'medium', %s)",
+                [instrument_id, starts_at + timedelta(days=1), as_of - timedelta(hours=1)],
+            )
+
+        result = refresh_today_publication(runtime, now=as_of)
+        catalyst_rows = [
+            row for row in AnalysisRepository(runtime).publication_rows("today", "daily_brief")
+            if row.get("category") == "catalysts"
+        ]
+        assert result["catalysts"] == 2
+        assert {row["headline"] for row in catalyst_rows} == {
+            "Original earnings time", "Manual catalyst",
+        }
     finally:
         runtime.close()
 
@@ -168,7 +360,7 @@ def test_preopen_agent_invocation_is_metered_and_reused_for_same_day(
         }
 
     monkeypatch.setattr(codex_preopen_brief, "generate", fake_generate)
-    as_of = datetime(2026, 8, 3, 12, tzinfo=UTC)
+    as_of = datetime.now(UTC) + timedelta(minutes=5)
     try:
         first = refresh_today_publication(runtime, now=as_of, use_agent_narrative=True)
         second = refresh_today_publication(runtime, now=as_of, use_agent_narrative=True)
@@ -182,6 +374,44 @@ def test_preopen_agent_invocation_is_metered_and_reused_for_same_day(
         assert calls == 1
         assert len(runs) == 1
         assert (runs[0]["status"], runs[0]["input_tokens"], runs[0]["output_tokens"]) == ("succeeded", 123, 45)
+    finally:
+        runtime.close()
+
+
+def test_preopen_narrative_does_not_reuse_future_same_day_publication(
+    migrated_postgres_dsn: str, monkeypatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    calls = 0
+
+    def fake_generate(_context, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "headline": "Cutoff-safe pre-open",
+            "macro_regime": "neutral",
+            "narrative": "Use evidence available at the cutoff.",
+            "opening_scenario": "balanced",
+            "qqq_path": "deterministic",
+            "risks": [], "watch_items": [], "evidence_refs": [],
+        }
+
+    monkeypatch.setattr(codex_preopen_brief, "generate", fake_generate)
+    tomorrow = datetime.now(UTC) + timedelta(days=1)
+    cutoff = tomorrow.replace(hour=15, minute=0, second=0, microsecond=0)
+    future_publication = cutoff + timedelta(hours=1)
+    try:
+        first = refresh_today_publication(runtime, now=future_publication, use_agent_narrative=True)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.publication SET published_at = %s WHERE id = %s",
+                [future_publication, first["publication_id"]],
+            )
+
+        second = refresh_today_publication(runtime, now=cutoff, use_agent_narrative=True)
+        assert second["preopen_narrative"] == "agent_generated"
+        assert calls == 2
     finally:
         runtime.close()
 
@@ -226,6 +456,7 @@ def test_today_uses_available_same_day_daily_close_before_synthetic_session_mark
                 "UPDATE ingest.run SET finished_at = %s WHERE id = %s",
                 [as_of - timedelta(minutes=29), run_id],
             )
+            _backdate_symbol_state(connection, "7203.T", as_of - timedelta(hours=1))
 
         refresh_today_publication(runtime, now=as_of)
         brief = AnalysisRepository(runtime).publication_rows("today", "daily_brief")
@@ -252,7 +483,15 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
         ingestion = IngestionRepository(runtime)
         facts = SourceFactRepository(runtime)
 
-        def add_source(source_id: str, count: int, observed_at: datetime) -> None:
+        def add_source(
+            source_id: str,
+            count: int,
+            observed_at: datetime,
+            *,
+            signal_available_at: datetime | None = None,
+            ingest_finished_at: datetime | None = None,
+            analysis_finished_at: datetime | None = None,
+        ) -> None:
             ingestion.register_source(
                 source_id, name=source_id.title(), family="news", kind="article",
                 origin="test", operational_state="active", health_owner="test", freshness_seconds=3600,
@@ -289,13 +528,44 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
                     "confidence": 0.8,
                     "thesis": f"NVDA evidence from {source_id}",
                     "evidence_refs": "[]",
+                    "available_at": signal_available_at or observed_at - timedelta(minutes=index),
                 }
                 for index in range(count)
             ])
+            AnalysisRepository(runtime).finish_run(analysis_run, "succeeded")
+            ingest_finished = ingest_finished_at or as_of - timedelta(minutes=20)
+            analysis_finished = analysis_finished_at or as_of - timedelta(minutes=10)
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                    [ingest_finished - timedelta(minutes=1), ingest_finished, run_id],
+                )
+                connection.execute(
+                    "UPDATE analysis.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                    [analysis_finished - timedelta(minutes=1), analysis_finished, analysis_run],
+                )
+                connection.execute(
+                    "UPDATE ingest.source SET created_at = %s, updated_at = %s WHERE id = %s",
+                    [as_of - timedelta(days=1), as_of - timedelta(days=1), source_id],
+                )
 
         add_source("crowded", 20, as_of - timedelta(hours=1))
         add_source("second", 1, as_of - timedelta(hours=2))
         add_source("future", 20, as_of + timedelta(days=30))
+        add_source(
+            "late-ingest", 1, as_of - timedelta(hours=3),
+            ingest_finished_at=as_of + timedelta(minutes=1),
+        )
+        add_source(
+            "late-analysis", 1, as_of - timedelta(hours=4),
+            analysis_finished_at=as_of + timedelta(minutes=1),
+        )
+        add_source(
+            "late-signal", 1, as_of - timedelta(hours=5),
+            signal_available_at=as_of + timedelta(minutes=1),
+        )
+        with runtime.transaction() as connection:
+            _backdate_symbol_state(connection, "NVDA", as_of - timedelta(days=1))
 
         result = refresh_today_publication(runtime, now=as_of)
         source_rows = [

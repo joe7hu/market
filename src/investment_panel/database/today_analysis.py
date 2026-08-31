@@ -11,6 +11,7 @@ from investment_panel.core.decision import MARKET_TZ
 from investment_panel.database.analysis import AnalysisRepository, current_option_publication_rows
 from investment_panel.database.agent_telemetry import AgentTelemetryRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
+from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.preopen_context import compact_preopen_context
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.analysis.preopen_forecast import backtest_qqq_preopen_model, evaluate_qqq_forecast, qqq_preopen_forecast
@@ -26,32 +27,22 @@ def refresh_today_publication(
         raise ValueError("today publication timestamp must be timezone-aware")
     brief_date = as_of.astimezone(MARKET_TZ).date()
     with runtime.read() as connection:
-        holdings = [
-            dict(row)
+        replay = replay_portfolio_at(None, as_of, connection=connection)
+        replayed_positions = [dict(row) for row in replay.get("positions") or []]
+        valid_instrument_ids = {
+            int(row["id"])
             for row in connection.execute(
-                """
-                WITH positions AS MATERIALIZED (
-                    SELECT instrument.id AS instrument_id, instrument.symbol,
-                           position.quantity, position.average_cost, position.notes
-                    FROM app.portfolio_position position
-                    JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
-                ), current_prices AS MATERIALIZED (
-                    SELECT *
-                    FROM raw.current_price_at(
-                        %s,
-                        ARRAY(SELECT instrument_id FROM positions)::bigint[]
-                    )
-                )
-                SELECT position.instrument_id, position.symbol, position.quantity,
-                       position.average_cost, position.notes, quote.price,
-                       quote.observed_at AS quote_observed_at
-                FROM positions position
-                LEFT JOIN current_prices quote ON quote.instrument_id = position.instrument_id
-                ORDER BY position.symbol
-                """,
-                [as_of],
+                "SELECT id FROM catalog.instrument "
+                "WHERE id = ANY(%s::bigint[]) AND created_at <= %s AND updated_at <= %s",
+                [[row["instrument_id"] for row in replayed_positions], as_of, as_of],
             ).fetchall()
+        }
+        holdings = [
+            {**row, "average_cost": row.get("avg_cost")}
+            for row in replayed_positions
+            if int(row["instrument_id"]) in valid_instrument_ids
         ]
+        held_instrument_ids = [int(row["instrument_id"]) for row in holdings]
         reviews = [
             dict(row)
             for row in connection.execute(
@@ -63,6 +54,10 @@ def refresh_today_publication(
                 FROM app.thesis thesis
                 JOIN catalog.instrument instrument ON instrument.id = thesis.instrument_id
                 WHERE thesis.status = 'current'
+                  AND instrument.created_at <= %s
+                  AND instrument.updated_at <= %s
+                  AND thesis.created_at <= %s
+                  AND thesis.updated_at <= %s
                   AND (
                     coalesce(thesis.thesis->>'core_thesis', '') = ''
                     OR thesis.thesis->>'last_reviewed' IS NULL
@@ -70,7 +65,7 @@ def refresh_today_publication(
                   )
                 ORDER BY thesis.thesis->>'last_reviewed' NULLS FIRST, instrument.symbol
                 """,
-                [as_of],
+                [as_of, as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         catalysts = [
@@ -82,11 +77,45 @@ def refresh_today_publication(
                        catalyst.expected_impact, catalyst.notes
                 FROM app.catalyst catalyst
                 LEFT JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
-                WHERE catalyst.status = 'current'
+                LEFT JOIN LATERAL (
+                    SELECT event_version.available_at, event_version.source_id,
+                           event_version.title, event_version.starts_at
+                    FROM raw.market_event_version event_version
+                    JOIN ingest.run event_run ON event_run.id = event_version.ingest_run_id
+                    WHERE event_version.market_event_id = catalyst.market_event_id
+                      AND (catalyst.source_id IS NULL OR event_version.source_id = catalyst.source_id)
+                      AND event_version.available_at <= %s
+                      AND event_version.starts_at >= %s
+                      AND event_run.status IN ('succeeded', 'partial')
+                      AND event_run.finished_at IS NOT NULL
+                      AND event_run.finished_at <= %s
+                    ORDER BY event_version.available_at DESC, event_version.source_id,
+                             event_version.id DESC
+                    LIMIT 1
+                ) event_lineage ON catalyst.market_event_id IS NOT NULL
+                WHERE catalyst.created_at <= %s
+                  AND (catalyst.superseded_at IS NULL OR catalyst.superseded_at > %s)
                   AND catalyst.starts_at >= %s AND catalyst.starts_at < %s + interval '14 days'
-                ORDER BY catalyst.starts_at LIMIT 20
+                  AND (
+                    catalyst.market_event_id IS NULL
+                    OR (
+                      event_lineage.available_at IS NOT NULL
+                      AND catalyst.title = event_lineage.title
+                      AND catalyst.starts_at = event_lineage.starts_at
+                    )
+                  )
+                  AND (
+                    catalyst.instrument_id IS NULL
+                    OR (
+                      instrument.created_at <= %s
+                      AND instrument.updated_at <= %s
+                    )
+                  )
+                ORDER BY catalyst.starts_at, event_lineage.available_at DESC,
+                         event_lineage.source_id, catalyst.version, catalyst.id
+                LIMIT 20
                 """,
-                [as_of, as_of],
+                [as_of, as_of, as_of, as_of, as_of, as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         option_rows = [
@@ -110,7 +139,9 @@ def refresh_today_publication(
         )
         option_rows = option_rows[:10]
         qqq_instrument = connection.execute(
-            "SELECT id FROM catalog.instrument WHERE symbol = 'QQQ'"
+            "SELECT id FROM catalog.instrument WHERE symbol = 'QQQ' "
+            "AND created_at <= %s AND updated_at <= %s",
+            [as_of, as_of],
         ).fetchone()
         qqq_history = []
         if qqq_instrument is not None:
@@ -127,14 +158,22 @@ def refresh_today_publication(
             SELECT quote.price, quote.observed_at, source.kind AS source_kind
             FROM raw.current_price_at(
                 %s,
-                ARRAY(SELECT instrument.id FROM catalog.instrument instrument WHERE instrument.symbol = 'QQQ')::bigint[]
+                ARRAY(
+                    SELECT instrument.id FROM catalog.instrument instrument
+                    WHERE instrument.symbol = 'QQQ'
+                      AND instrument.created_at <= %s
+                      AND instrument.updated_at <= %s
+                )::bigint[]
             ) quote
             JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
             JOIN ingest.source source ON source.id = quote.source_id
-            WHERE instrument.symbol = 'QQQ' AND quote.trading_date = %s
+            WHERE instrument.symbol = 'QQQ'
+              AND instrument.created_at <= %s
+              AND instrument.updated_at <= %s
+              AND quote.trading_date = %s
             LIMIT 1
             """,
-            [as_of, brief_date],
+            [as_of, as_of, as_of, as_of, as_of, brief_date],
         ).fetchone()
         prior_preopen_row = connection.execute(
             """
@@ -142,11 +181,13 @@ def refresh_today_publication(
             FROM app.publication publication
             JOIN app.publication_content_item item ON item.publication_id = publication.id
             WHERE publication.scope = 'today' AND publication.status = 'published'
+              AND publication.published_at IS NOT NULL
+              AND publication.published_at <= %s
               AND item.model_name = 'preopen_daily_brief'
               AND item.payload->>'brief_date' = %s
             ORDER BY publication.published_at DESC NULLS LAST LIMIT 1
             """,
-            [brief_date.isoformat()],
+            [as_of, brief_date.isoformat()],
         ).fetchone()
         source_changes = [
             dict(row)
@@ -164,21 +205,37 @@ def refresh_today_publication(
                                         signal.confidence DESC NULLS LAST, signal.id DESC
                            ) AS source_rank
                     FROM analysis.source_signal signal
+                    JOIN analysis.run signal_run ON signal_run.id = signal.run_id
                     JOIN raw.content_item item ON item.id = signal.content_item_id
+                    JOIN ingest.run content_run ON content_run.id = item.ingest_run_id
                     JOIN catalog.instrument instrument ON instrument.id = signal.instrument_id
                     JOIN ingest.source source ON source.id = item.source_id
                     WHERE source.enabled
                       AND source.operational_state = 'active'
+                      AND source.created_at <= %s
+                      AND source.updated_at <= %s
+                      AND instrument.created_at <= %s
+                      AND instrument.updated_at <= %s
+                      AND signal.available_at IS NOT NULL
+                      AND signal.available_at <= %s
                       AND signal.observed_at <= %s
+                      AND (signal.event_at IS NULL OR signal.event_at <= %s)
+                      AND (signal.published_at IS NULL OR signal.published_at <= %s)
+                      AND signal_run.status IN ('succeeded', 'partial')
+                      AND signal_run.finished_at IS NOT NULL
+                      AND signal_run.finished_at <= %s
+                      AND content_run.status IN ('succeeded', 'partial')
+                      AND content_run.finished_at IS NOT NULL
+                      AND content_run.finished_at <= %s
                       AND item.observed_at <= %s
                       AND COALESCE(item.published_at, item.observed_at) <= %s
                       AND (
-                          EXISTS (
-                              SELECT 1 FROM app.portfolio_position position
-                              WHERE position.instrument_id = instrument.id
-                          ) OR EXISTS (
+                          instrument.id = ANY(%s::bigint[])
+                          OR EXISTS (
                               SELECT 1 FROM app.watchlist_item watchlist
                               WHERE watchlist.instrument_id = instrument.id
+                                AND watchlist.created_at <= %s
+                                AND watchlist.updated_at <= %s
                                 AND watchlist.watch_state <> 'excluded'
                           )
                       )
@@ -191,7 +248,10 @@ def refresh_today_publication(
                 ORDER BY observed_at DESC, confidence DESC NULLS LAST
                 LIMIT 12
                 """,
-                [as_of, as_of, as_of],
+                [
+                    as_of, as_of, as_of, as_of, as_of, as_of, as_of, as_of,
+                    as_of, as_of, as_of, as_of, held_instrument_ids, as_of, as_of,
+                ],
             ).fetchall()
         ]
 
