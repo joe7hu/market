@@ -3,9 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 
 import type { TodayResponse } from "@/api/panel";
+import { emptyPanelData } from "@/apiPanelData";
 import type { components } from "@/generated/apiSchema";
+import { buildModel } from "@/model";
 import { PortfolioImpactCard, TradePlanCard } from "./TradePlanCard";
-import { ActionQueueCard, tradePlanForAction } from "./today";
+import { ActionQueueCard, TodayPage, tradePlanForAction } from "./today";
 
 type TradePlan = components["schemas"]["TradePlan"];
 
@@ -127,6 +129,60 @@ describe("Today Action Queue", () => {
     expect(markup).toContain("Action:");
     expect(markup).toContain("Stored rationale.");
     expect(markup).not.toContain("Canonical trade plan");
+  });
+
+  it("keeps three ranked actions plus CASH and rejects unranked capital actions", () => {
+    const base = response.actions![0];
+    const data = emptyPanelData();
+    const ranked = Array.from({ length: 4 }, (_, index) => ({
+      ...base,
+      projection_identity: `capital:ranked:${index + 1}`,
+      source: "capital_action",
+      ticker: `RANKED${index + 1}`,
+      title: `Ranked capital action ${index + 1}`,
+      trade_rank: index + 1,
+    }));
+    const markup = renderToStaticMarkup(createElement(TodayPage, {
+      data,
+      model: buildModel(data),
+      lastRefresh: null,
+      actionQueue: {
+        ...response,
+        actions: [],
+        book_actions: [...ranked, {
+          ...base,
+          projection_identity: "capital:unranked",
+          source: "capital_action",
+          ticker: "UNRANKED",
+          title: "Unranked capital action must stay hidden",
+          trade_rank: null,
+        }, {
+          ...base,
+          projection_identity: "capital:book:CASH",
+          source: "cash",
+          ticker: null,
+          title: "Cash",
+          action: "CASH",
+          lifecycle_state: "current",
+          next_action: "Hold cash until a ranked opportunity appears.",
+          primary_blocker: null,
+          trade_rank: null,
+        }],
+      },
+      actionQueueLoading: false,
+      actionQueueError: null,
+      loading: false,
+      onRefresh: () => undefined,
+      onOpenTicker: () => undefined,
+    }));
+
+    expect(markup).toContain(">RANKED1<");
+    expect(markup).toContain(">RANKED2<");
+    expect(markup).toContain(">RANKED3<");
+    expect(markup).not.toContain(">RANKED4<");
+    expect(markup).toContain("Hold cash until a ranked opportunity appears.");
+    expect(markup).not.toContain(">UNRANKED<");
+    expect(markup).not.toContain("Unranked capital action must stay hidden");
   });
 
   it("keeps numeric terms at stored precision", () => {

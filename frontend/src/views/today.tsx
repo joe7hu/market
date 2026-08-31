@@ -99,9 +99,12 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
 }
 
 function CommandCenterPanels({ data, response, onOpenTicker }: { data: PanelData; response: TodayResponse | null; onOpenTicker: (symbol: string) => void }) {
-  const capitalActions = (response?.book_actions ?? response?.actions ?? [])
-    .filter((item) => (item.source === "capital_action" || item.source === "cash") && item.trade_rank != null)
-    .slice(0, 3);
+  const bookActions = response?.book_actions ?? response?.actions ?? [];
+  const cashAction = bookActions.find((item) => item.source === "cash");
+  const capitalActions = [
+    ...bookActions.filter((item) => item.source === "capital_action" && item.trade_rank != null).slice(0, 3),
+    ...(cashAction ? [cashAction] : []),
+  ];
   const marketState = data.marketStateSnapshot?.rows?.[0];
   const risks = (data.portfolioRiskCards?.rows ?? []).slice(0, 3);
   const sourceRows = [...(data.sourceFreshness?.rows ?? []), ...(data.sourceHealth?.rows ?? [])];
