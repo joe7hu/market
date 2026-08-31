@@ -7,7 +7,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from investment_panel.core.agent_providers import provider_catalog, resolve_provider_selection, validate_registry_command
-from investment_panel.core.settings_validation import apply_agent_settings_update
+from investment_panel.core.settings_validation import (
+    apply_agent_settings_update,
+    apply_research_sources_update,
+)
 import yaml
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
 from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig, options_decision_system_config
@@ -271,10 +274,22 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                     raw.get("agents") if isinstance(raw.get("agents"), dict) else {},
                     persisted_agents,
                 )
-            except ValueError:
+            except (TypeError, ValueError):
                 # A legacy poisoned row must not prevent the settings endpoint
                 # from loading so the trusted user can replace that row.
                 overrides.pop("agents", None)
+        persisted_research_sources = overrides.get("research_sources")
+        if persisted_research_sources is not None:
+            try:
+                overrides["research_sources"] = apply_research_sources_update(
+                    raw.get("research_sources")
+                    if isinstance(raw.get("research_sources"), dict)
+                    else {},
+                    persisted_research_sources,
+                    resolve_urls=False,
+                )
+            except (TypeError, ValueError):
+                overrides.pop("research_sources", None)
         raw = _merge_setting_sections(raw, overrides)
     nas_raw = raw.get("nas", {})
     nas = NasConfig(
@@ -381,9 +396,17 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         ),
     )
     research_sources_raw = raw.get("research_sources", {})
+    if not isinstance(research_sources_raw, dict):
+        research_sources_raw = {}
     research_x_raw = research_sources_raw.get("x", {})
     research_news_raw = research_sources_raw.get("news", {})
     research_blogs_raw = research_sources_raw.get("blogs", {})
+    if not isinstance(research_x_raw, dict):
+        research_x_raw = {}
+    if not isinstance(research_news_raw, dict):
+        research_news_raw = {}
+    if not isinstance(research_blogs_raw, dict):
+        research_blogs_raw = {}
     research_sources = ResearchSourcesConfig(
         x=ResearchXConfig(
             enabled=bool(research_x_raw.get("enabled", True)),

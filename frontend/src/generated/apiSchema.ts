@@ -4771,32 +4771,8 @@ export interface components {
              * @default 0
              */
             count: number;
-            latest_status?: components["schemas"]["RefreshLatestStatusResponse"] | null;
             /** Rows */
             rows?: components["schemas"]["RefreshJobResponse"][];
-        };
-        /** RefreshLatestStatusResponse */
-        RefreshLatestStatusResponse: {
-            /** Data Finished At */
-            data_finished_at?: string | null;
-            /** Data Ok */
-            data_ok?: boolean | null;
-            /** Failed Step */
-            failed_step?: string | null;
-            /** Finished At */
-            finished_at?: string | null;
-            /** Host */
-            host?: string | null;
-            /** Job */
-            job?: string | null;
-            /** Ok */
-            ok?: boolean | null;
-            /** Started At */
-            started_at?: string | null;
-            /** Status */
-            status?: string | null;
-        } & {
-            [key: string]: unknown;
         };
         /** RelativeValuePage */
         RelativeValuePage: {
@@ -7466,6 +7442,7 @@ export interface operations {
                 scope?: string;
                 offset?: number;
                 limit?: number | null;
+                include_screener?: boolean;
             };
             header?: never;
             path?: never;

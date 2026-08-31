@@ -478,9 +478,9 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     def fake_authority(_config, **limits):
         authority_calls.append(limits)
         return (
-            list(tables["ticker_decisions"]),
-            list(tables["opportunity_rank"]),
-            list(tables["trade_plan"]),
+            list(tables["ticker_decisions"][:3]),
+            list(tables["opportunity_rank"][:3]),
+            list(tables["trade_plan"][:3]),
             {"ticker_decisions": 5, "opportunity_rank": 5, "trade_plan": 5},
             7,
         )
@@ -505,7 +505,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
         "decision_offset": 0,
         "rank_offset": 0,
         "plan_offset": 0,
-        "decision_limit": 100,
+        "decision_limit": 3,
         "rank_limit": 3,
         "plan_limit": 3,
     }]
@@ -532,7 +532,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert all("missing_plan_count" not in row for row in panel.rows("ticker_decisions"))
     assert queue["actions"] == []
     assert queue["missing_plan_count"] == 7
-    assert [row["ticker"] for row in queue["book_actions"][:-1]] == [f"T{index}" for index in range(5)]
+    assert [row["ticker"] for row in queue["book_actions"][:-1]] == [f"T{index}" for index in range(3)]
     assert all(
         row["trade_rank_unavailable_reason"] != "opportunity_rank_missing"
         for row in queue["book_actions"][:-1]
@@ -540,6 +540,39 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert snapshot["tables"]["ticker_decisions"]["count"] == 5
     assert len(snapshot["tables"]["ticker_decisions"]["rows"]) == 3
     assert snapshot["tables"]["portfolio"]["rows"] == [{"symbol": "HELD"}]
+
+
+def test_today_hides_non_owned_decisions_without_sampled_rank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.data_access.types import DataStatus, PanelData
+    from app.routers import panel as panel_router
+
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={
+            "ticker_decisions": [{
+                "symbol": "UNRANKED",
+                "ticker_decision_id": "decision:unranked",
+                "decision_revision": "ticker-decision.v1:unranked",
+                "capital_action": {"action": "BUY", "owned": False},
+                "as_of": AS_OF.isoformat(),
+            }],
+            "opportunity_rank": [],
+            "trade_plan": [],
+        },
+    )
+    monkeypatch.setattr(panel_router.panel_owner, "context", lambda **_kwargs: (None, panel))
+
+    result = panel_router.today(
+        config=object(),
+        option_actions=SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+
+    assert result["actions"] == []
+    assert result["count"] == 0
+    assert result["book_actions"][0]["ticker"] == "UNRANKED"
+    assert result["book_actions"][0]["action"] == "NO_TRADE"
 
 
 def test_today_plan_validation_count_failure_is_fail_closed(

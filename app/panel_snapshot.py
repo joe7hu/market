@@ -26,6 +26,7 @@ class _ContextFlight:
     def __init__(self) -> None:
         self.event = Event()
         self.error: BaseException | None = None
+        self.invalidated = False
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
@@ -34,7 +35,6 @@ SOURCE_FRESHNESS_DEFAULT_LIMIT = 100
 _CONTEXT_CACHE: dict[str, Any] = {"entries": {}}
 _CONTEXT_LOCK = RLock()
 _CONTEXT_INFLIGHT: dict[tuple[str, str], _ContextFlight] = {}
-_HOUSEKEEPING_REFRESH_STEPS = frozenset({"retention_prune", "database_snapshot"})
 
 
 def panel_snapshot_contract_revision() -> str:
@@ -80,24 +80,36 @@ def context(
             if flight is None:
                 flight = _ContextFlight()
                 _CONTEXT_INFLIGHT[flight_key] = flight
-                break
-        flight.event.wait()
-        if flight.error is not None:
-            raise flight.error
+                is_loader = True
+            else:
+                is_loader = False
+        if not is_loader:
+            flight.event.wait()
+            if flight.error is not None:
+                raise flight.error
+            continue
 
-    try:
-        value = (config, active_loader(config))
-    except BaseException as exc:
+        try:
+            value = (config, active_loader(config))
+        except BaseException as exc:
+            with _CONTEXT_LOCK:
+                invalidated = flight.invalidated
+                if _CONTEXT_INFLIGHT.get(flight_key) is flight:
+                    _CONTEXT_INFLIGHT.pop(flight_key, None)
+                if not invalidated:
+                    flight.error = exc
+                flight.event.set()
+            if invalidated:
+                continue
+            raise
+
+        loaded_at = time.monotonic()
         with _CONTEXT_LOCK:
-            if _CONTEXT_INFLIGHT.get(flight_key) is flight:
-                _CONTEXT_INFLIGHT.pop(flight_key, None)
-            flight.error = exc
-            flight.event.set()
-        raise
-
-    loaded_at = time.monotonic()
-    with _CONTEXT_LOCK:
-        if _CONTEXT_INFLIGHT.get(flight_key) is flight:
+            if flight.invalidated:
+                if _CONTEXT_INFLIGHT.get(flight_key) is flight:
+                    _CONTEXT_INFLIGHT.pop(flight_key, None)
+                flight.event.set()
+                continue
             entries = _CONTEXT_CACHE.setdefault("entries", {})
             _prune_context_entries(entries, loaded_at)
             entries.pop(cache_key, None)
@@ -108,8 +120,8 @@ def context(
             }
             _prune_context_entries(entries, loaded_at)
             _CONTEXT_INFLIGHT.pop(flight_key, None)
-        flight.event.set()
-        return value
+            flight.event.set()
+            return value
 
 
 def _prune_context_entries(entries: dict[str, Any], now: float) -> None:
@@ -191,31 +203,8 @@ def invalidate_context_cache() -> None:
         flights = tuple(_CONTEXT_INFLIGHT.values())
         _CONTEXT_INFLIGHT.clear()
         for flight in flights:
+            flight.invalidated = True
             flight.event.set()
-
-
-def full_market_refresh_status(config: AppConfig) -> dict[str, Any] | None:
-    status_dir = config.nas.status_dir
-    status_path = status_dir / "mini-market-full-refresh.json"
-    if not status_path.exists():
-        return None
-    try:
-        payload = json.loads(status_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    return with_data_freshness(payload)
-
-
-def with_data_freshness(payload: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, dict) or payload.get("dataOk") is not None:
-        return payload
-    steps = payload.get("steps")
-    if not isinstance(steps, list) or not steps:
-        return payload
-    data_ok = all(step.get("ok") for step in steps if isinstance(step, dict) and step.get("name") not in _HOUSEKEEPING_REFRESH_STEPS)
-    payload["dataOk"] = data_ok
-    payload["dataFinishedAt"] = payload.get("finishedAt") if data_ok else None
-    return payload
 
 
 __all__ = [
@@ -225,10 +214,8 @@ __all__ = [
     "SOURCE_FRESHNESS_DEFAULT_LIMIT",
     "capped_table_payload",
     "context",
-    "full_market_refresh_status",
     "invalidate_context_cache",
     "panel_snapshot_contract_revision",
     "scope_snapshot_payload",
     "table_payload_for",
-    "with_data_freshness",
 ]

@@ -136,7 +136,7 @@ def today(
         and not isinstance(exact_missing_plan_count, bool)
         and exact_missing_plan_count >= 0
     ) else sampled_missing_plan_count
-    visible_capital_actions = [row for row in capital_actions if not _is_unranked_missing_plan_action(row)]
+    visible_capital_actions = [row for row in capital_actions if not _is_unranked_today_action(row)]
     queue_items = _bounded_today_queue(
         visible_capital_actions,
         decision_inbox_queue(_read_inbox(option_actions)),
@@ -399,9 +399,14 @@ def _bounded_today_queue(
 
 def _is_unranked_missing_plan_action(row: dict[str, Any]) -> bool:
     return (
-        row.get("source") == "capital_action"
-        and row.get("lifecycle_state") == "blocked"
+        _is_unranked_today_action(row)
         and row.get("primary_blocker") == "trade_plan_missing"
+    )
+
+
+def _is_unranked_today_action(row: dict[str, Any]) -> bool:
+    return (
+        row.get("source") == "capital_action"
         and row.get("trade_plan") is None
         and row.get("trade_rank") is None
         and row.get("research_rank") is None
@@ -514,6 +519,7 @@ def panel_snapshot(
     scope: str = "dashboard",
     offset: int = Query(0, ge=0, le=10_000),
     limit: int | None = Query(None, ge=1, le=500),
+    include_screener: bool = False,
     config: AppConfig = Depends(dependencies.get_config),
 ) -> dict[str, Any]:
     try:
@@ -521,7 +527,7 @@ def panel_snapshot(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if scope == "market":
-        panel_data = loaders.load_market_panel_data(config)
+        panel_data = loaders.load_market_panel_data(config, offset=offset, limit=limit)
         return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     if scope == "dashboard":
         _, panel_data = panel_owner.context(config_loader=lambda: config)
@@ -547,7 +553,7 @@ def panel_snapshot(
     cache_key = (
         "scope:today"
         if scope == "today" and offset == 0 and limit is None
-        else f"scope:{scope}:{offset}:{limit}"
+        else f"scope:{scope}:{offset}:{limit}:{include_screener}"
     )
     config, panel_data = panel_owner.context(
         cache_key=cache_key,
@@ -556,6 +562,7 @@ def panel_snapshot(
             scope,
             offset=offset,
             limit=limit,
+            include_screener=include_screener,
         ),
         config_loader=lambda: config,
     )

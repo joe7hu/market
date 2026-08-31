@@ -128,7 +128,7 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY instrument.symbol, observation.observed_at DESC, ingest_run.finished_at DESC
     """,
     "liquidity": """
-        SELECT instrument.symbol,
+        SELECT symbol,
                max(quote.observed_at) AS as_of,
                max(ingest_run.finished_at) AS available_at,
                avg((quote.ask - quote.bid) / NULLIF(quote.mid, 0)) AS average_option_spread_pct,
@@ -936,14 +936,245 @@ def today_authority_pages(
                    ) OVER (
                        ORDER BY {TODAY_ACTION_ORDER_SQL}
                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                   ) AS trade_plan_position,
-                   count(*) OVER () AS ticker_decision_count,
+                   ) AS trade_plan_position
+            FROM current_authority
+        ), authority_validated AS (
+            SELECT positioned_actions.*,
+                   CASE WHEN COALESCE(
+                              positioned_actions.capital_action->>'owned',
+                              'false'
+                          ) <> 'true'
+                          AND jsonb_typeof(
+                              positioned_actions.opportunity_rank
+                          ) = 'object'
+                          AND (
+                              positioned_actions.trade_plan_present
+                              OR positioned_actions.opportunity_rank
+                                  ->>'research_rank' IS NOT NULL
+                          )
+                    THEN jsonb_build_object(
+                        'ticker',
+                            positioned_actions.opportunity_rank->'ticker',
+                        'symbol',
+                            positioned_actions.opportunity_rank->'symbol',
+                        'decision_revision',
+                            positioned_actions.opportunity_rank
+                                ->'decision_revision',
+                        'opportunity_episode_id',
+                            positioned_actions.opportunity_rank
+                                ->'opportunity_episode_id',
+                        'ranking_publication_id',
+                            positioned_actions.opportunity_rank
+                                ->'ranking_publication_id',
+                        'publication_id',
+                            positioned_actions.opportunity_rank
+                                ->'publication_id',
+                        'rank_id',
+                            positioned_actions.opportunity_rank->'rank_id',
+                        'selected_expression_identity',
+                            positioned_actions.opportunity_rank
+                                ->'selected_expression_identity',
+                        'portfolio_impact_id',
+                            positioned_actions.opportunity_rank
+                                ->'portfolio_impact_id',
+                        'market_state_publication_id',
+                            positioned_actions.opportunity_rank
+                                ->'market_state_publication_id'
+                    ) END AS validation_rank,
+                   CASE WHEN COALESCE(
+                              positioned_actions.capital_action->>'owned',
+                              'false'
+                          ) <> 'true'
+                          AND jsonb_typeof(
+                              positioned_actions.opportunity_rank
+                          ) = 'object'
+                          AND positioned_actions.opportunity_rank
+                              ->>'research_rank' IS NULL
+                          AND positioned_actions.trade_plan_present
+                    THEN COALESCE(
+                        validation_payload.trade_plan->>'contract_version'
+                            = 'trade-plan.v1'
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan->>'trade_plan_id'
+                        ), '') IS NOT NULL
+                        AND validation_payload.trade_plan->>'trade_plan_id'
+                            = stored_decision.resolution->>'trade_plan_id'
+                        AND UPPER(BTRIM(
+                            validation_payload.trade_plan->>'ticker'
+                        )) = positioned_actions.ticker
+                        AND validation_payload.trade_plan->>'decision_revision'
+                            = positioned_actions.decision_revision
+                        AND validation_payload.trade_plan
+                            ->>'opportunity_episode_id'
+                            = positioned_actions.opportunity_episode_id
+                        AND validation_payload.trade_plan->>'policy_version'
+                            = positioned_actions.policy_version
+                        AND validation_payload.trade_plan->'cutoff'
+                            = stored_decision.opportunity_episode->'cutoff'
+                        AND jsonb_typeof(
+                            validation_payload.trade_plan->'input_lineage'
+                        ) = 'array'
+                        AND jsonb_array_length(
+                            validation_payload.trade_plan->'input_lineage'
+                        ) > 0
+                        AND validation_payload.trade_plan->'input_lineage'
+                            = stored_decision.opportunity_episode->'input_lineage'
+                        AND jsonb_typeof(
+                            validation_payload.trade_plan->'selected_expression'
+                        ) = 'object'
+                        AND validation_payload.trade_plan->'selected_expression'
+                            = stored_decision.selected_expression
+                        AND validation_payload.trade_plan
+                            ->>'selected_expression_kind'
+                            = validation_payload.trade_plan
+                                ->'selected_expression'->>'kind'
+                        AND UPPER(BTRIM(
+                            validation_payload.trade_plan
+                                ->'selected_expression'->>'ticker'
+                        )) = positioned_actions.ticker
+                        AND validation_payload.trade_plan->>'publication_id'
+                            = COALESCE(
+                                NULLIF(BTRIM(
+                                    positioned_actions.opportunity_rank
+                                        ->>'ranking_publication_id'
+                                ), ''),
+                                NULLIF(BTRIM(
+                                    positioned_actions.opportunity_rank
+                                        ->>'publication_id'
+                                ), '')
+                            )
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan->>'rank_id'
+                        ), '') = NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank->>'rank_id'
+                        ), '')
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'selected_expression_identity'
+                        ), '') = NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'selected_expression_identity'
+                        ), '')
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'portfolio_impact_id'
+                        ), '') IS NOT DISTINCT FROM NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'portfolio_impact_id'
+                        ), '')
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'market_state_publication_id'
+                        ), '') IS NOT DISTINCT FROM NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'market_state_publication_id'
+                        ), '')
+                        AND (
+                            (
+                                validation_payload.trade_plan->>'eligibility'
+                                    = 'BLOCKED'
+                                AND validation_payload.trade_plan
+                                    ->>'selected_expression_kind' = 'CASH'
+                                AND validation_payload.trade_plan->>'action'
+                                    = 'NO_TRADE'
+                                AND validation_payload.trade_plan
+                                    ->>'authorization_mode' = 'NONE'
+                                AND NULLIF(BTRIM(
+                                    validation_payload.trade_plan
+                                        ->>'primary_blocker'
+                                ), '') IS NOT NULL
+                                AND jsonb_typeof(
+                                    validation_payload.trade_plan->'blockers'
+                                ) = 'array'
+                                AND validation_payload.trade_plan->'blockers'
+                                    ? (validation_payload.trade_plan
+                                        ->>'primary_blocker')
+                            )
+                            OR (
+                                validation_payload.trade_plan->>'eligibility'
+                                    = 'ACTIONABLE'
+                                AND validation_payload.trade_plan
+                                    ->>'selected_expression_kind' <> 'CASH'
+                                AND validation_payload.trade_plan->>'action'
+                                    NOT IN ('NO_TRADE', 'AVOID')
+                                AND validation_payload.trade_plan
+                                    ->>'authorization_mode'
+                                    IN ('ADVISORY', 'PAPER')
+                            )
+                        ),
+                        false
+                    )
+               END AS validation_plan_valid,
+               COALESCE(
+                   positioned_actions.capital_action->>'owned', 'false'
+               ) <> 'true'
+                   AND jsonb_typeof(positioned_actions.opportunity_rank)
+                       IS DISTINCT FROM 'object'
+                   AND positioned_actions.trade_plan_present
+                   AS invalid_without_rank,
+               COALESCE(
+                   positioned_actions.capital_action->>'owned', 'false'
+               ) <> 'true'
+                   AND jsonb_typeof(positioned_actions.opportunity_rank) = 'object'
+                   AND positioned_actions.opportunity_rank
+                       ->>'research_rank' IS NOT NULL
+                   AS raw_research_rank_present,
+               COALESCE(
+                   positioned_actions.capital_action->>'owned', 'false'
+               ) <> 'true'
+                   AND (
+                       positioned_actions.trade_plan_present
+                       OR (
+                           jsonb_typeof(
+                               positioned_actions.opportunity_rank
+                           ) = 'object'
+                           AND positioned_actions.opportunity_rank
+                               ->>'research_rank' IS NOT NULL
+                       )
+                   ) AS needs_missing_plan_validation
+            FROM positioned_actions
+            LEFT JOIN analysis.ticker_decision stored_decision
+              ON stored_decision.id = positioned_actions.decision_id
+            CROSS JOIN LATERAL (
+                SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan
+            ) validation_payload
+        ), authority_rows AS (
+            SELECT authority_validated.*,
+                   CASE WHEN validation_rank IS NULL THEN false
+                        ELSE COALESCE(
+                            UPPER(COALESCE(
+                                NULLIF(validation_rank->>'ticker', ''),
+                                NULLIF(validation_rank->>'symbol', ''),
+                                ''
+                            )) = ticker
+                            AND COALESCE(
+                                validation_rank->>'decision_revision', ''
+                            ) = decision_revision
+                            AND COALESCE(
+                                validation_rank->>'opportunity_episode_id', ''
+                            ) = opportunity_episode_id
+                            AND (
+                                NULLIF(BTRIM(
+                                    validation_rank->>'ranking_publication_id'
+                                ), '') IS NULL
+                                OR NULLIF(BTRIM(
+                                    validation_rank->>'publication_id'
+                                ), '') IS NULL
+                                OR validation_rank->>'ranking_publication_id'
+                                    = validation_rank->>'publication_id'
+                            ),
+                            false
+                        )
+                   END AS validation_rank_valid
+            FROM authority_validated
+        ), authority_totals AS (
+            SELECT count(*) AS ticker_decision_count,
                    count(*) FILTER (
                        WHERE jsonb_typeof(opportunity_rank) = 'object'
-                   ) OVER () AS opportunity_rank_count,
+                   ) AS opportunity_rank_count,
                    count(*) FILTER (
                        WHERE trade_plan_present
-                   ) OVER () AS trade_plan_count,
+                   ) AS trade_plan_count,
                    count(*) FILTER (
                        WHERE NOT trade_plan_present
                          AND (
@@ -952,14 +1183,25 @@ def today_authority_pages(
                              OR opportunity_rank->>'research_rank' IS NULL
                          )
                          AND COALESCE(capital_action->>'owned', 'false') <> 'true'
-                   ) OVER () AS missing_plan_count
-            FROM current_authority
+                   ) AS missing_plan_count,
+                   count(*) FILTER (
+                       WHERE needs_missing_plan_validation
+                         AND (
+                             NOT validation_rank_valid
+                             OR (
+                                 NOT raw_research_rank_present
+                                 AND validation_plan_valid IS NOT TRUE
+                             )
+                         )
+                   ) AS missing_plan_correction_count
+            FROM authority_rows
         )
         SELECT positioned_actions.decision_position,
-               positioned_actions.ticker_decision_count,
-               positioned_actions.opportunity_rank_count,
-               positioned_actions.trade_plan_count,
-               positioned_actions.missing_plan_count,
+               authority_totals.ticker_decision_count,
+               authority_totals.opportunity_rank_count,
+               authority_totals.trade_plan_count,
+               authority_totals.missing_plan_count,
+               authority_totals.missing_plan_correction_count,
                CASE WHEN positioned_actions.decision_position
                               > {safe_decision_offset}
                           AND positioned_actions.decision_position
@@ -974,10 +1216,12 @@ def today_authority_pages(
                         'available_at', positioned_actions.available_at,
                         'input_hash', positioned_actions.input_hash,
                         'capital_action', positioned_actions.capital_action,
-                        'resolution', CASE
+                            'resolution', CASE
                             WHEN positioned_actions.trade_plan_present
                              AND positioned_actions.trade_plan_position
-                                 <= {safe_plan_limit}
+                                 > {safe_plan_offset}
+                             AND positioned_actions.trade_plan_position
+                                 <= {safe_plan_end}
                              AND octet_length(stored_decision.resolution::text)
                                  <= 196608
                             THEN stored_decision.resolution END,
@@ -1198,8 +1442,21 @@ def today_authority_pages(
                                ->>'research_rank' IS NOT NULL
                        )
                    ) AS needs_missing_plan_validation
-        FROM positioned_actions
-        JOIN analysis.ticker_decision stored_decision
+        FROM authority_totals
+        LEFT JOIN authority_rows AS positioned_actions
+          ON (
+              positioned_actions.decision_position > {safe_decision_offset}
+              AND positioned_actions.decision_position <= {safe_decision_end}
+             )
+          OR (
+              positioned_actions.opportunity_rank_position > {safe_rank_offset}
+              AND positioned_actions.opportunity_rank_position <= {safe_rank_end}
+             )
+          OR (
+              positioned_actions.trade_plan_position > {safe_plan_offset}
+              AND positioned_actions.trade_plan_position <= {safe_plan_end}
+             )
+        LEFT JOIN analysis.ticker_decision stored_decision
           ON stored_decision.id = positioned_actions.decision_id
         CROSS JOIN LATERAL (
             SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan
@@ -1274,6 +1531,7 @@ def load_postgres_tables(
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
     published_counts: dict[str, int] = {}
+    intelligence_counts: dict[str, int] = {}
     tables = (
         _published_tables(
             runtime,
@@ -1307,6 +1565,10 @@ def load_postgres_tables(
             intelligence_options["models"] = requested_intelligence
         if "include_performance" in intelligence_signature:
             intelligence_options["include_performance"] = portfolio_summary_include_performance
+        if "row_limits" in intelligence_signature:
+            intelligence_options["row_limits"] = query_row_limits
+        if "total_counts" in intelligence_signature:
+            intelligence_options["total_counts"] = intelligence_counts
         live_tables = portfolio_intelligence_tables(config, **intelligence_options)
         for name in requested_intelligence:
             tables[name] = live_tables.get(name, [])
@@ -1397,11 +1659,17 @@ def load_postgres_tables(
                         query_cache_counts[cache_key] = len(rows)
                         query_cache[cache_key] = rows[:limit] if limit else rows
                     elif policy.custom_loader == "current_quotes":
-                        query_cache[cache_key] = current_quote_rows(
+                        rows = current_quote_rows(
                             connection,
                             symbols=query_symbol_filter if symbol_scoped else None,
-                            limit=limit,
+                            # A symbol-scoped quote read is bounded by the
+                            # requested instruments. Count it before the
+                            # defensive row limit so pagination stays exact.
+                            limit=None if symbol_scoped else limit,
                         )
+                        if symbol_scoped:
+                            query_cache_counts[cache_key] = len(rows)
+                        query_cache[cache_key] = rows[:limit] if limit else rows
                     elif policy.custom_loader == "technicals":
                         rows = technical_rows(
                             connection,
@@ -1409,6 +1677,12 @@ def load_postgres_tables(
                         )
                         query_cache_counts[cache_key] = len(rows)
                         query_cache[cache_key] = rows[:limit] if limit else rows
+                    elif policy.custom_loader == "universe_screen":
+                        rows = _universe_screen_rows(connection, limit=limit)
+                        query_cache_counts[cache_key] = int(
+                            rows[0].get("__panel_total_count") or 0
+                        ) if rows else 0
+                        query_cache[cache_key] = rows
                     elif policy.custom_loader == "liquidity":
                         query_cache[cache_key] = _liquidity_rows(
                             connection,
@@ -1473,6 +1747,7 @@ def load_postgres_tables(
     unavailable = sorted(name for name in requested if name not in supported)
     table_counts = {name: len(rows) for name, rows in tables.items()}
     table_counts.update(published_counts)
+    table_counts.update(intelligence_counts)
     table_counts.update(query_counts)
     for name, rows in tables.items():
         for row in rows:
@@ -1502,6 +1777,19 @@ def _normalized_symbols(symbols: set[str] | None) -> list[str] | None:
     return sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
 
 
+def _universe_screen_rows(
+    connection: Any,
+    *,
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    candidate_limit = 2_147_483_647 if limit is None else max(1, min(int(limit), 10_500))
+    query = SOURCE_UNIVERSE_QUERIES["universe_screen"].replace(
+        "__CANDIDATE_LIMIT__", str(candidate_limit), 1,
+    )
+    result = connection.execute(query)
+    return [dict(row) for row in result.fetchall()]
+
+
 def _liquidity_rows(
     connection: Any,
     *,
@@ -1511,35 +1799,83 @@ def _liquidity_rows(
     normalized = _normalized_symbols(symbols)
     if normalized == []:
         return []
-    filter_sql = "WHERE instrument.symbol = ANY(%s)" if normalized is not None else ""
+    symbol_scope_cte = (
+        "requested_symbols AS (SELECT unnest(%s::text[]) AS symbol),"
+        if normalized is not None
+        else ""
+    )
+    history_filter_sql = (
+        "AND snapshot.history_symbol IN (SELECT symbol FROM requested_symbols)"
+        if normalized is not None
+        else ""
+    )
+    instrument_filter_sql = (
+        "AND instrument.symbol IN (SELECT symbol FROM requested_symbols)"
+        if normalized is not None
+        else ""
+    )
     params: list[Any] = [normalized] if normalized is not None else []
     query = f"""
-        WITH latest AS (
-            SELECT instrument.id AS instrument_id, max(snapshot.observed_at) AS observed_at
-            FROM raw.option_quote quote
-            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+        WITH {symbol_scope_cte}
+        latest_history_snapshots AS MATERIALIZED (
+            SELECT DISTINCT ON (snapshot.history_symbol)
+                   snapshot.id, snapshot.history_symbol, snapshot.ingest_run_id,
+                   snapshot.slot_at, snapshot.observed_at
+            FROM raw.option_snapshot snapshot
+            WHERE snapshot.history_symbol <> ''
+              AND snapshot.collection_profile IN ('history_full', 'event_strip')
+              AND snapshot.capture_state = 'complete'
+              {history_filter_sql}
+            ORDER BY snapshot.history_symbol, snapshot.slot_at DESC NULLS LAST,
+                     snapshot.observed_at DESC, snapshot.id DESC
+        ), latest_radar_snapshot AS MATERIALIZED (
+            SELECT snapshot.id, NULL::text AS history_symbol,
+                   snapshot.ingest_run_id, snapshot.slot_at, snapshot.observed_at
+            FROM raw.option_snapshot snapshot
+            WHERE snapshot.collection_profile = 'radar'
+              AND snapshot.capture_state = 'complete'
+            ORDER BY snapshot.observed_at DESC, snapshot.id DESC
+            LIMIT 1
+        ), latest_snapshots AS MATERIALIZED (
+            SELECT id, history_symbol, ingest_run_id, slot_at, observed_at
+            FROM latest_history_snapshots
+            UNION ALL
+            SELECT id, history_symbol, ingest_run_id, slot_at, observed_at
+            FROM latest_radar_snapshot
+        ), ranked_quotes AS MATERIALIZED (
+            SELECT instrument.id AS instrument_id, instrument.symbol,
+                   quote.observed_at AS as_of,
+                   ingest_run.finished_at AS available_at,
+                   (quote.ask - quote.bid) / NULLIF(quote.mid, 0)
+                       AS spread_pct,
+                   COALESCE(quote.open_interest, 0) AS open_interest,
+                   COALESCE(quote.volume, 0) AS option_volume,
+                   DENSE_RANK() OVER (
+                       PARTITION BY instrument.id
+                       ORDER BY COALESCE(snapshot.slot_at, snapshot.observed_at)
+                                    DESC NULLS LAST,
+                                snapshot.observed_at DESC, snapshot.id DESC
+                   ) AS snapshot_rank
+            FROM latest_snapshots snapshot
+            JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
+              AND ingest_run.finished_at IS NOT NULL
+            JOIN raw.option_quote quote ON quote.snapshot_id = snapshot.id
             JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-            {filter_sql}
-            GROUP BY instrument.id
+            JOIN catalog.instrument instrument
+              ON instrument.id = contract.underlying_instrument_id
+            {instrument_filter_sql}
         )
-        SELECT instrument.symbol,
-               max(quote.observed_at) AS as_of,
-               max(ingest_run.finished_at) AS available_at,
-               avg((quote.ask - quote.bid) / NULLIF(quote.mid, 0)) AS average_option_spread_pct,
-               sum(COALESCE(quote.open_interest, 0)) AS total_open_interest,
-               sum(COALESCE(quote.volume, 0)) AS total_option_volume,
+        SELECT symbol,
+               max(as_of) AS as_of,
+               max(available_at) AS available_at,
+               avg(spread_pct) AS average_option_spread_pct,
+               sum(open_interest) AS total_open_interest,
+               sum(option_volume) AS total_option_volume,
                count(*) AS contracts
-        FROM raw.option_quote quote
-        JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
-        JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
-          AND ingest_run.finished_at IS NOT NULL
-        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-        JOIN latest ON latest.instrument_id = instrument.id
-                    AND latest.observed_at = snapshot.observed_at
-        GROUP BY instrument.symbol
-        ORDER BY instrument.symbol
+        FROM ranked_quotes
+        WHERE snapshot_rank = 1
+        GROUP BY symbol
+        ORDER BY symbol
     """
     if limit:
         query += " LIMIT %s"
@@ -1559,7 +1895,25 @@ def _options_payoff_scenario_rows(
         return []
     filter_sql = "WHERE instrument.symbol = ANY(%s)" if normalized is not None else ""
     params: list[Any] = [normalized] if normalized is not None else []
+    candidate_limit_sql = "LIMIT 200" if limit else ""
     query = f"""
+        WITH candidate_instruments AS MATERIALIZED (
+            SELECT instrument.id, instrument.symbol
+            FROM catalog.instrument instrument
+            {filter_sql}
+        ), candidate_decisions AS MATERIALIZED (
+            SELECT decision.id, decision.run_id, decision.as_of,
+                   decision.rank, decision.instrument_id
+            FROM candidate_instruments instrument
+            JOIN analysis.decision decision ON decision.instrument_id = instrument.id
+            WHERE EXISTS (
+                SELECT 1
+                FROM analysis.option_decision option_decision
+                WHERE option_decision.decision_id = decision.id
+            )
+            ORDER BY decision.as_of DESC, decision.rank, decision.id DESC
+            {candidate_limit_sql}
+        )
         SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
                contract.id::text AS contract_id, contract.expiration, contract.strike, contract.option_type,
                option_quote.bid, option_quote.ask, option_quote.bid_size, option_quote.ask_size,
@@ -1573,17 +1927,24 @@ def _options_payoff_scenario_rows(
                feature.required_10x_price, feature.required_move_pct,
                COALESCE(option_quote.available_at, decision.as_of) AS available_at,
                option_quote.id::text AS source_version, option_quote.id::text AS revision
-        FROM analysis.option_decision option_decision
-        JOIN analysis.decision decision ON decision.id = option_decision.decision_id
-        JOIN analysis.option_feature feature
-          ON feature.run_id = decision.run_id AND feature.contract_id = option_decision.contract_id
+        FROM candidate_decisions decision
+        JOIN candidate_instruments instrument ON instrument.id = decision.instrument_id
+        JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+        JOIN LATERAL (
+            SELECT feature.required_2x_price, feature.required_5x_price,
+                   feature.required_10x_price, feature.required_move_pct
+            FROM analysis.option_feature feature
+            WHERE feature.run_id = decision.run_id
+              AND feature.snapshot_id = option_decision.snapshot_id
+              AND feature.contract_id = option_decision.contract_id
+            ORDER BY feature.id DESC
+            LIMIT 1
+        ) feature ON true
         JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
         JOIN raw.option_quote option_quote
           ON option_quote.snapshot_id = option_decision.snapshot_id
          AND option_quote.contract_id = option_decision.contract_id
          AND option_quote.observed_at = option_decision.quote_observed_at
-        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-        {filter_sql}
         ORDER BY decision.as_of DESC, decision.rank
     """
     if limit:

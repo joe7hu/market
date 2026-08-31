@@ -51,7 +51,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
         events.append(("today", now))
         return {"status": "ok"}
 
-    def publish_market(_runtime, *, now=None, configured_watchlist=None):
+    def publish_market(_runtime, *, now=None, configured_watchlist=None, **_kwargs):
         assert configured_watchlist == config.watchlist
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
@@ -174,7 +174,7 @@ def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkey
         lambda _path: {"status": "ok"},
     )
 
-    def publish_market(_runtime, *, now=None, configured_watchlist=None):
+    def publish_market(_runtime, *, now=None, configured_watchlist=None, **_kwargs):
         assert configured_watchlist == config.watchlist
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
@@ -224,7 +224,7 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
         lambda _path, **_kwargs: {"status": "skipped"},
     )
 
-    def publish_market(_runtime, *, now=None, configured_watchlist=None):
+    def publish_market(_runtime, *, now=None, configured_watchlist=None, **_kwargs):
         assert configured_watchlist == config.watchlist
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}

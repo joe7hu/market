@@ -10249,16 +10249,6 @@
             "title": "Count",
             "type": "integer"
           },
-          "latest_status": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RefreshLatestStatusResponse"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "rows": {
             "items": {
               "$ref": "#/components/schemas/RefreshJobResponse"
@@ -10268,115 +10258,6 @@
           }
         },
         "title": "RefreshJobsResponse",
-        "type": "object"
-      },
-      "RefreshLatestStatusResponse": {
-        "additionalProperties": true,
-        "properties": {
-          "data_finished_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Data Finished At"
-          },
-          "data_ok": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Data Ok"
-          },
-          "failed_step": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failed Step"
-          },
-          "finished_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Finished At"
-          },
-          "host": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Host"
-          },
-          "job": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Job"
-          },
-          "ok": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ok"
-          },
-          "started_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Started At"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Status"
-          }
-        },
-        "title": "RefreshLatestStatusResponse",
         "type": "object"
       },
       "RelativeValuePage": {
@@ -16627,6 +16508,16 @@
                 }
               ],
               "title": "Limit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_screener",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Screener",
+              "type": "boolean"
             }
           }
         ],

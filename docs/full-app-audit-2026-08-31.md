@@ -10,10 +10,10 @@ The audit covered security boundaries, point-in-time data authority, decision co
 
 - Contained SPA fallback paths so encoded traversal cannot expose project files.
 - Applied the LAN and Tailscale request guard to every API route, including docs.
-- Rejected untrusted Host values and public forwarded-client addresses without trusting spoofable forwarding headers.
+- Rejected untrusted Host values and authorized the originating forwarded client only when every proxy hop stays inside the allowed LAN, link-local, or Tailscale boundary.
 - Validated content-source URLs, resolved and pinned public addresses, and revalidated every redirect to stop SSRF, DNS rebinding, and redirect escape.
 - Replaced unsafe XML parsing with hardened parsing.
-- Rejected malformed persisted settings and made credential-file replacement atomic.
+- Rejected malformed persisted settings, made credential-file replacement atomic, and rejected symlink-backed credential paths without changing their targets.
 - Updated vulnerable Python and frontend dependencies.
 - Added locked npm and Python advisory workflows plus native Dependabot coverage for both ecosystems.
 
@@ -35,7 +35,8 @@ The audit covered security boundaries, point-in-time data authority, decision co
 - Bounded the panel context cache and added single-flight loading with invalidation-safe wake-up behavior.
 - Replaced the wide Today sort with a narrow authority query and primary-key hydration. PostgreSQL execution fell from repeated external sorts with about 200 MB of spill to about 1.24 seconds with no temporary blocks.
 - Replaced unbounded Today backlog hydration with a compact PostgreSQL authority and paper-safety result. Only the three bounded action plans receive full Pydantic validation and full JSON hydration.
-- Reduced Portfolio from 17.9 MB to 1.28 MB while keeping every current held-ticker decision and its selected impact.
+- Moved Today pagination into the authority query. An empty page at offset 10,000 fell from 5.94 seconds to 1.42 seconds cold and 0.02 seconds cached while preserving exact counts and offsets.
+- Reduced Portfolio from 17.9 MB to 76.6 KB while keeping every current held-ticker decision and its selected impact.
 - Reduced Health from 1.75 MB to 215 KB while keeping exact provider counts and rendered recovery health.
 - Reduced QQQ detail from 5.05 MB to 38 KB with an explicit compact contract. The 4.84 MB immutable audit artifact remains available at `/api/tickers/QQQ/decision-snapshot`.
 - Added native gzip; the 215 KB Health payload transfers in about 21 KB.
@@ -59,12 +60,31 @@ The audit covered security boundaries, point-in-time data authority, decision co
 
 ## Verification
 
-- Fast gate: `make check` passed with 26 architecture guards, 72 frontend tests, Ruff, generated contracts, and TypeScript.
+- Fast gate: `make check` passed with 26 architecture guards, 73 frontend tests, Ruff, generated contracts, and TypeScript.
 - Focused integrated backend gate: 148 tests passed.
-- Full backend coverage gate: 1,214 tests passed at 81.22% against the 80% minimum.
+- Full backend coverage gate: 1,215 tests passed at 81.23% against the 80% minimum.
 - Production build: 2,628 modules built. The existing large ECharts/vendor chunk warnings remain non-failing; ECharts is already route-lazy and no duplicate chart bundle was found.
 - Security: npm found 0 vulnerabilities; pip-audit found no known vulnerability in 72 locked packages; Bandit found no high-severity issue; `uv pip check` found 66 compatible packages.
 - Live QA evidence is in `.gstack/qa-reports/qa-report-2026-08-31-full-app-audit.md`.
+
+### Recovery verification
+
+- The isolated PostgreSQL runtime returned HTTP 200 for all eight cold and
+  concurrent core probes. The slowest cold request was Decision Funnel at
+  2.262 seconds; the slowest concurrent request was 2.939 seconds.
+- Current response sizes were 90.7 KB for `/api/today`, 123.6 KB for the Today
+  panel, 76.6 KB for Portfolio, 215.0 KB for Health, 2.8 KB for current
+  Opportunities, 83.3 KB for the selected screener, 5.3 KB for Decision Funnel,
+  and 46.9 KB for QQQ.
+- The symbol-scoped technical and portfolio bar reads now filter raw facts
+  before the confirmed-bar joins. This removed the confirmed-view full-history
+  sort and its temporary-file spill.
+- `EXPLAIN (ANALYZE, BUFFERS)` for the repaired screener, liquidity, payoff,
+  technical, portfolio-bar, Today-authority, and Decision Funnel reads completed
+  under the three-second statement limit with zero temporary blocks. The full
+  explain record is in `docs/recovery-query-explain-2026-08-31.md`.
+- Desktop and 375x812 mobile route sweeps rendered all requested routes without
+  blank pages, console errors, or horizontal overflow.
 
 ## Final operational gate
 

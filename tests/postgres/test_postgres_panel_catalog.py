@@ -21,6 +21,7 @@ from investment_panel.database.panel_models import (
     load_postgres_tables,
     today_authority_pages,
 )
+import investment_panel.database.panel_models as panel_models
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 
@@ -31,6 +32,67 @@ def test_panel_query_catalog_owns_alias_and_symbol_scope_policy() -> None:
     assert QUERY_POLICIES["research_packets"].exclude_future_rows is True
     assert QUERY_POLICIES["catalysts"].allow_symbol_less is True
     assert QUERY_POLICIES["options_ticker_signals"].custom_loader == "options_ticker_signals"
+
+
+def test_screener_is_candidate_bounded_and_compact(migrated_postgres_dsn: str) -> None:
+    tables, metadata = load_postgres_tables(
+        typed_config(migrated_postgres_dsn),
+        ("screener",),
+        query_row_limits={"screener": 5},
+    )
+
+    assert len(tables["screener"]) <= 5
+    assert metadata["table_counts"]["screener"] >= len(tables["screener"])
+    assert all("__panel_total_count" not in row for row in tables["screener"])
+
+
+def test_screener_keeps_the_api_maximum_page_window() -> None:
+    captured: list[str] = []
+
+    class Result:
+        @staticmethod
+        def fetchall() -> list[dict[str, object]]:
+            return []
+
+    class Connection:
+        def execute(self, query: str) -> Result:
+            captured.append(query)
+            return Result()
+
+    panel_models._universe_screen_rows(Connection(), limit=10_500)
+
+    assert len(captured) == 1
+    assert "candidate_rank <= 10500" in captured[0]
+    assert "candidate_rank <= 500" not in captured[0]
+
+
+def test_ticker_option_queries_keep_symbol_filter_before_dense_joins() -> None:
+    captured: list[tuple[str, object]] = []
+
+    class Result:
+        @staticmethod
+        def fetchall() -> list[dict[str, object]]:
+            return []
+
+    class Connection:
+        def execute(self, query: str, parameters: object = None) -> Result:
+            captured.append((query, parameters))
+            return Result()
+
+    connection = Connection()
+    assert panel_models._liquidity_rows(connection, symbols={"QQQ"}, limit=24) == []
+    assert panel_models._options_payoff_scenario_rows(connection, symbols={"QQQ"}, limit=24) == []
+
+    liquidity_query, liquidity_parameters = captured[0]
+    payoff_query, payoff_parameters = captured[1]
+    assert "snapshot.history_symbol IN (SELECT symbol FROM requested_symbols)" in liquidity_query
+    assert "latest_snapshots AS MATERIALIZED" in liquidity_query
+    assert liquidity_parameters == [["QQQ"], 24]
+    assert "candidate_instruments AS MATERIALIZED" in payoff_query
+    assert "WHERE instrument.symbol = ANY(%s)" in payoff_query
+    assert payoff_query.index("candidate_instruments AS MATERIALIZED") < payoff_query.index("JOIN analysis.option_decision")
+    assert payoff_query.index("WHERE EXISTS (") < payoff_query.index("LIMIT 200")
+    assert payoff_parameters == [["QQQ"], 24]
 
 
 def test_every_query_alias_resolves_to_owned_policy() -> None:
@@ -218,7 +280,8 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
         panel = load_panel_scope_data(config, "today")
         snapshot = panel_snapshot_payload(panel, "today")
 
-        assert len(panel.rows("ticker_decisions")) == 100
+        assert len(panel.rows("ticker_decisions")) == 3
+        assert panel.metadata["today_action_input_count"] == 3
         assert {
             name: panel.metadata["table_counts"][name]
             for name in ("ticker_decisions", "opportunity_rank", "trade_plan")
@@ -260,6 +323,15 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
         assert sparse_snapshot["tables"]["trade_plan"]["rows"][0]["present"] == "malformed-outside-sample"
         assert {
             name: sparse_snapshot["tables"][name]["count"]
+            for name in ("ticker_decisions", "opportunity_rank", "trade_plan")
+        } == {"ticker_decisions": 105, "opportunity_rank": 101, "trade_plan": 102}
+
+        empty_page = load_panel_scope_data(config, "today", offset=10_000, limit=1)
+        empty_snapshot = panel_snapshot_payload(empty_page, "today", offset=10_000, limit=1)
+
+        assert all(not empty_page.rows(name) for name in ("ticker_decisions", "opportunity_rank", "trade_plan"))
+        assert {
+            name: empty_snapshot["tables"][name]["count"]
             for name in ("ticker_decisions", "opportunity_rank", "trade_plan")
         } == {"ticker_decisions": 105, "opportunity_rank": 101, "trade_plan": 102}
     finally:

@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from app import dependencies
 from app.main import app
-from app.routers import system as system_router
 from investment_panel.core.decision import trade_expression_identity
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import API_PROFILE
@@ -166,16 +165,11 @@ def test_decision_funnel_rejects_noncanonical_facts_and_does_not_alias_trade_pla
 def test_decision_funnel_api_returns_the_repository_contract(monkeypatch) -> None:
     expected = decision_funnel_payload([], [], [], [], now=NOW)
     monkeypatch.setattr(TickerDecisionRepository, "decision_funnel", lambda self, **_kwargs: expected)
-    monkeypatch.setattr(system_router, "today_action_queue", lambda *_args: {"actions": []})
     app.dependency_overrides[dependencies.get_runtime] = lambda: object()
-    app.dependency_overrides[dependencies.get_config] = lambda: object()
-    app.dependency_overrides[dependencies.get_options_actions] = lambda: object()
     try:
         response = TestClient(app).get("/api/decision-funnel")
     finally:
         app.dependency_overrides.pop(dependencies.get_runtime, None)
-        app.dependency_overrides.pop(dependencies.get_config, None)
-        app.dependency_overrides.pop(dependencies.get_options_actions, None)
 
     assert response.status_code == 200
     assert response.json()["policy_version"] == expected["policy_version"]
@@ -323,6 +317,23 @@ def test_decision_funnel_requires_exact_nonempty_impact_lineage(monkeypatch) -> 
     }
 
 
+def test_decision_funnel_compact_lineage_validation_fails_closed(monkeypatch) -> None:
+    repository = TickerDecisionRepository(object())
+    monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
+    row = _valid_compact_row()
+    row["impact_lineage_match"] = True
+    row["opportunity_episode"]["input_lineage"].append(
+        dict(row["opportunity_episode"]["input_lineage"][0])
+    )
+    monkeypatch.setattr(repository, "_current_funnel_rows", lambda **_kwargs: [row])
+
+    payload = repository.decision_funnel(now=NOW)
+
+    facts = next(stage for stage in payload["stages"] if stage["stage"] == "point_in_time_facts")
+    assert facts["count"] == 0
+    assert facts["top_blockers"][0]["reason"] == "ticker_decision_contract_invalid"
+
+
 def test_decision_funnel_loads_each_exact_market_publication_once(monkeypatch) -> None:
     repository = TickerDecisionRepository(object())
     monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
@@ -408,6 +419,10 @@ def test_current_funnel_publication_query_projects_only_required_fields() -> Non
 
     class Result:
         @staticmethod
+        def fetchone() -> dict[str, bool]:
+            return {"exists": True}
+
+        @staticmethod
         def fetchall() -> list[dict[str, object]]:
             base = {
                 "availability_status": "available",
@@ -450,10 +465,11 @@ def test_current_funnel_publication_query_projects_only_required_fields() -> Non
     )
 
     assert captured["profile"] is API_PROFILE
-    assert len(captured["queries"]) == 1
-    assert "payload.payload->>'availability_status'" in str(captured["queries"][0])
-    assert "jsonb_to_record" not in str(captured["queries"][0])
-    assert "UNION" not in str(captured["queries"][0])
+    assert len(captured["queries"]) == 2
+    assert "SELECT EXISTS" in str(captured["queries"][0])
+    assert "payload.payload->>'availability_status'" in str(captured["queries"][1])
+    assert "jsonb_to_record" not in str(captured["queries"][1])
+    assert "UNION" not in str(captured["queries"][1])
     assert alpha_rows[0]["ticker"] == rank_rows[0]["ticker"] == plan_rows[0]["ticker"] == "AAA"
     assert rank_rows[0]["trade_rank"] == 1
     assert plan_rows[0]["eligibility"] == "ACTIONABLE"

@@ -57,7 +57,6 @@ export function useRefreshJobs() {
 
   return {
     allowlist: payload?.allowlist ?? [],
-    latestStatus: payload?.latest_status ?? null,
     rows: jobRows,
     jobStates,
     pendingJobs,

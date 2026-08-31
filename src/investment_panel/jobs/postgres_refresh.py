@@ -31,6 +31,7 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
         runtime,
         now=cutoff,
         configured_watchlist=config.watchlist,
+        configured_watchlist_as_of=cutoff,
     )
     decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
@@ -116,6 +117,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         runtime,
         now=cutoff,
         configured_watchlist=config.watchlist,
+        configured_watchlist_as_of=cutoff,
     )
     decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
@@ -189,10 +191,12 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
 
     def publish_market() -> dict[str, Any]:
         nonlocal market_state_publication_id, market_state_visible_at
+        cutoff = bounded_cutoff()
         result = refresh_market_publication(
             runtime_for_config(config),
-            now=bounded_cutoff(),
+            now=cutoff,
             configured_watchlist=config.watchlist,
+            configured_watchlist_as_of=cutoff,
         )
         market_state_publication_id = _market_state_publication_id(result)
         market_state_visible_at = _market_publication_cutoff(result, fallback=bounded_cutoff())

@@ -69,7 +69,7 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
             <p className="text-xs text-muted-foreground">Stored before/after impact for each current selected expression.</p>
           </div>
           <div className="grid gap-3 xl:grid-cols-2">
-            {viewModel.proposedImpacts.map((impact) => <PortfolioImpactCard key={impact.impact_id} impact={impact} />)}
+            {viewModel.proposedImpacts.map((impact) => <PortfolioImpactCard key={impact.ticker} impact={impact} />)}
           </div>
         </section>
       ) : null}

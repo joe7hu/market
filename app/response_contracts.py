@@ -191,23 +191,10 @@ class RefreshJobResponse(FlexibleResponse):
     summary: Any = None
 
 
-class RefreshLatestStatusResponse(FlexibleResponse):
-    ok: bool | None = None
-    status: str | None = None
-    data_ok: bool | None = None
-    data_finished_at: datetime | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    failed_step: str | None = None
-    job: str | None = None
-    host: str | None = None
-
-
 class RefreshJobsResponse(BaseModel):
     rows: list[RefreshJobResponse] = Field(default_factory=list)
     count: int = 0
     allowlist: list[str] = Field(default_factory=list)
-    latest_status: RefreshLatestStatusResponse | None = None
 
 
 class PortfolioTransactionPreviewResponse(FlexibleResponse):

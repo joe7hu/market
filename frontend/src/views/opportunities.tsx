@@ -30,11 +30,12 @@ export function dedupeOpportunityEpisodes(input: RowRecord[]): RowRecord[] {
   });
 }
 
-export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, onRefresh }: { data: PanelData; loading: boolean; scopeStatus?: ScopeSnapshotStatus; onOpenTicker: OpenTicker; onRefresh: () => Promise<void> }) {
+export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, onLoadScreener, onRefresh }: { data: PanelData; loading: boolean; scopeStatus?: ScopeSnapshotStatus; onOpenTicker: OpenTicker; onLoadScreener: () => Promise<void>; onRefresh: (includeScreener?: boolean) => Promise<void> }) {
   const [view, setView] = useState<SavedView>(() => readSavedView());
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<RowRecord | null>(null);
   const rankedRows = useMemo(() => dedupeOpportunityEpisodes(rows(data.opportunitiesRanked)), [data.opportunitiesRanked]);
+  const screenerLength = rows(data.screener).length;
   const visibleRows = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle ? rankedRows.filter((row) => JSON.stringify(row).toLowerCase().includes(needle)) : rankedRows;
@@ -43,6 +44,10 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
   useEffect(() => {
     window.localStorage.setItem(OPPORTUNITIES_SAVED_VIEW_KEY, view);
   }, [view]);
+
+  useEffect(() => {
+    if (view === "screener" && screenerLength === 0) void onLoadScreener();
+  }, [onLoadScreener, screenerLength, view]);
 
   return (
     <section>
@@ -55,7 +60,7 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant={view === "episodes" ? "default" : "outline"} size="sm" onClick={() => setView("episodes")}>Episodes</Button>
           <Button type="button" variant={view === "screener" ? "default" : "outline"} size="sm" onClick={() => setView("screener")}><SlidersHorizontal /> Dense screener</Button>
-          <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void onRefresh()}><RefreshCw className={loading ? "animate-spin" : undefined} /> Refresh</Button>
+          <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void onRefresh(view === "screener")}><RefreshCw className={loading ? "animate-spin" : undefined} /> Refresh</Button>
         </div>
       </header>
       <ScopeStatusNotice status={scopeStatus} onRetry={() => void onRefresh()} />

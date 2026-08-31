@@ -15,22 +15,10 @@ export type RefreshJob = ApiSchema["RefreshJobResponse"] & {
   finished_at?: string | null;
   error?: string | null;
 };
-export type RefreshLatestStatus = {
-  ok?: boolean;
-  status?: string;
-  dataOk?: boolean;
-  dataFinishedAt?: string | null;
-  startedAt?: string;
-  finishedAt?: string;
-  failedStep?: string | null;
-  job?: string;
-  host?: string;
-};
 export type RefreshJobsPayload = {
   rows: RefreshJob[];
   count: number;
   allowlist: string[];
-  latest_status: RefreshLatestStatus | null;
 };
 export type SourceCatalogPayload = ApiSchema["SourceCatalogResponse"];
 export type TodayResponse = ApiSchema["TodayResponse"];
@@ -73,6 +61,7 @@ export type PanelScopeOptions = {
   limit?: number;
   append?: boolean;
   force?: boolean;
+  includeScreener?: boolean;
 };
 export type AgentSettingsInput = ApiSchema["AgentSettingsInput"];
 export type ResearchSourcesInput = ApiSchema["ResearchSourcesInput"];
@@ -99,6 +88,7 @@ export async function loadPanelScope(
   const params = new URLSearchParams({ scope });
   if (options.offset !== undefined) params.set("offset", String(options.offset));
   if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.includeScreener) params.set("include_screener", "true");
   const snapshot = await getJson<ApiSchema["PanelSnapshotResponse"]>(`/api/panel-snapshot?${params.toString()}`);
   const data = mergeSnapshot(existing ?? emptyPanelData(), {
     scope: snapshot.scope,
@@ -185,29 +175,9 @@ function normalizeRefreshJob(payload: ApiSchema["RefreshJobResponse"]): RefreshJ
 }
 
 function normalizeRefreshJobs(payload: ApiSchema["RefreshJobsResponse"]): RefreshJobsPayload {
-  const rawStatus = payload.latest_status as (ApiSchema["RefreshLatestStatusResponse"] & Record<string, unknown>) | null | undefined;
   return {
     rows: (payload.rows ?? []).map(normalizeRefreshJob),
     count: payload.count,
     allowlist: payload.allowlist ?? [],
-    latest_status: rawStatus ? {
-      ok: rawStatus.ok ?? booleanValue(rawStatus.ok),
-      status: rawStatus.status ?? stringValue(rawStatus.status),
-      dataOk: booleanValue(rawStatus.data_ok ?? rawStatus.dataOk),
-      dataFinishedAt: stringValue(rawStatus.data_finished_at ?? rawStatus.dataFinishedAt) || null,
-      startedAt: stringValue(rawStatus.started_at ?? rawStatus.startedAt) || undefined,
-      finishedAt: stringValue(rawStatus.finished_at ?? rawStatus.finishedAt) || undefined,
-      failedStep: stringValue(rawStatus.failed_step ?? rawStatus.failedStep) || null,
-      job: stringValue(rawStatus.job) || undefined,
-      host: stringValue(rawStatus.host) || undefined,
-    } : null,
   };
-}
-
-function booleanValue(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }

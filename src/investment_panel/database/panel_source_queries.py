@@ -114,19 +114,96 @@ SOURCE_UNIVERSE_QUERIES = {
         ORDER BY universe_rank
     """,
     "universe_screen": SOURCE_UNIVERSE_CTES + """
-        SELECT instrument.symbol, instrument.name, instrument.asset_class, instrument.category,
+        , candidate_instruments AS MATERIALIZED (
+            SELECT instrument.id, instrument.symbol, instrument.name,
+                   instrument.asset_class, instrument.category,
+                   watchlist.watch_state,
+                   watchlist.instrument_id AS watchlist_instrument_id,
+                   position.instrument_id AS position_instrument_id,
+                   COALESCE(evidence.source_counts, '{}'::jsonb) AS source_counts,
+                   COALESCE(evidence.source_names, ARRAY[]::text[]) AS source_names,
+                   COALESCE(evidence.source_count, 0) AS source_count,
+                   COALESCE(evidence.source_item_count, 0) AS source_item_count,
+                   evidence.latest_source_timestamp
+            FROM canonical_instruments instrument
+            LEFT JOIN app.watchlist_item watchlist ON watchlist.instrument_id = instrument.id
+            LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
+            LEFT JOIN source_evidence evidence ON evidence.symbol = instrument.symbol
+            WHERE (watchlist.instrument_id IS NOT NULL OR position.instrument_id IS NOT NULL
+                   OR evidence.symbol IS NOT NULL)
+              AND (position.instrument_id IS NOT NULL OR watchlist.watch_state IS DISTINCT FROM 'excluded')
+        ), ranked_candidates AS MATERIALIZED (
+            SELECT candidate.*,
+                   count(*) OVER () AS __panel_total_count,
+                   row_number() OVER (
+                       ORDER BY (candidate.position_instrument_id IS NOT NULL) DESC,
+                                (candidate.watchlist_instrument_id IS NOT NULL) DESC,
+                                candidate.source_count DESC,
+                                candidate.source_item_count DESC,
+                                candidate.latest_source_timestamp DESC NULLS LAST,
+                                candidate.symbol
+                   ) AS candidate_rank
+            FROM candidate_instruments candidate
+        ), bounded_candidates AS MATERIALIZED (
+            SELECT *
+            FROM ranked_candidates
+            WHERE candidate_rank <= __CANDIDATE_LIMIT__
+        ), option_summary AS (
+            SELECT candidate.id AS instrument_id, count(decision.id)::int AS actionable_count
+            FROM bounded_candidates candidate
+            LEFT JOIN LATERAL (
+                SELECT decision.id
+                FROM analysis.decision decision
+                WHERE decision.instrument_id = candidate.id
+                  AND decision.kind = 'option'
+                  AND decision.state <> 'REJECT'
+                OFFSET 0
+            ) decision ON true
+            GROUP BY candidate.id
+        ), latest_market AS (
+            SELECT candidate.id AS instrument_id, observation.values
+            FROM bounded_candidates candidate
+            JOIN LATERAL (
+                SELECT observation.values
+                FROM raw.fundamental_observation observation
+                WHERE observation.instrument_id = candidate.id
+                  AND observation.metric_set = 'market_metrics'
+                ORDER BY observation.observed_at DESC, observation.id DESC
+                LIMIT 1
+            ) observation ON true
+        ), latest_sec AS (
+            SELECT candidate.id AS instrument_id, observation.values
+            FROM bounded_candidates candidate
+            JOIN LATERAL (
+                SELECT observation.values
+                FROM raw.fundamental_observation observation
+                WHERE observation.instrument_id = candidate.id
+                  AND observation.metric_set = 'sec_fundamentals'
+                ORDER BY observation.observed_at DESC, observation.id DESC
+                LIMIT 1
+            ) observation ON true
+        ), latest_quotes AS (
+            SELECT candidate.id AS instrument_id, quote.price, quote.observed_at
+            FROM bounded_candidates candidate
+            JOIN LATERAL (
+                SELECT quote.price, quote.observed_at
+                FROM raw.quote quote
+                WHERE quote.instrument_id = candidate.id
+                ORDER BY quote.observed_at DESC, quote.id DESC
+                LIMIT 1
+            ) quote ON true
+        )
+        SELECT candidate.symbol, candidate.name, candidate.asset_class, candidate.category,
                quote.price, quote.observed_at,
-               CASE WHEN position.instrument_id IS NOT NULL THEN 'owned'
-                    WHEN watchlist.watch_state IS NOT NULL THEN watchlist.watch_state
+               CASE WHEN candidate.position_instrument_id IS NOT NULL THEN 'owned'
+                    WHEN candidate.watch_state IS NOT NULL THEN candidate.watch_state
                     ELSE 'candidate' END AS watch_state,
-               CASE WHEN position.instrument_id IS NOT NULL THEN 'owned'
-                    WHEN watchlist.watch_state IS NOT NULL THEN 'watchlist'
+               CASE WHEN candidate.position_instrument_id IS NOT NULL THEN 'owned'
+                    WHEN candidate.watchlist_instrument_id IS NOT NULL THEN 'watchlist'
                     ELSE 'source_evidence' END AS universe_source,
-               COALESCE(evidence.source_counts, '{}'::jsonb) AS source_counts,
-               COALESCE(evidence.source_names, ARRAY[]::text[]) AS source_names,
-               COALESCE(evidence.source_count, 0) AS source_count,
-               COALESCE(evidence.source_item_count, 0) AS source_item_count,
-               evidence.latest_source_timestamp,
+               candidate.source_counts, candidate.source_names,
+               candidate.source_count, candidate.source_item_count,
+               candidate.latest_source_timestamp,
                COALESCE(option_summary.actionable_count, 0) AS option_opportunities,
                (market.values->>'market_cap')::double precision AS market_cap,
                (market.values->>'price_to_sales')::double precision AS ps_ratio,
@@ -156,37 +233,14 @@ SOURCE_UNIVERSE_QUERIES = {
                              / (market.values->>'total_revenue')::double precision END,
                    (sec.values->>'fcf_margin')::double precision
                ) AS fcf_margin,
-               (market.values->>'return_on_invested_capital')::double precision * 100 AS roic
-        FROM canonical_instruments instrument
-        LEFT JOIN app.watchlist_item watchlist ON watchlist.instrument_id = instrument.id
-        LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
-        LEFT JOIN source_evidence evidence ON evidence.symbol = instrument.symbol
-        LEFT JOIN LATERAL (
-            SELECT price, observed_at FROM raw.quote
-            WHERE instrument_id = instrument.id ORDER BY observed_at DESC LIMIT 1
-        ) quote ON true
-        LEFT JOIN LATERAL (
-            SELECT count(*) AS actionable_count FROM analysis.decision
-            WHERE instrument_id = instrument.id AND kind = 'option' AND state <> 'REJECT'
-        ) option_summary ON true
-        LEFT JOIN LATERAL (
-            SELECT values FROM raw.fundamental_observation
-            WHERE instrument_id = instrument.id AND metric_set = 'market_metrics'
-            ORDER BY observed_at DESC LIMIT 1
-        ) market ON true
-        LEFT JOIN LATERAL (
-            SELECT values FROM raw.fundamental_observation
-            WHERE instrument_id = instrument.id AND metric_set = 'sec_fundamentals'
-            ORDER BY observed_at DESC LIMIT 1
-        ) sec ON true
-        WHERE (watchlist.instrument_id IS NOT NULL OR position.instrument_id IS NOT NULL
-               OR evidence.symbol IS NOT NULL)
-          AND (position.instrument_id IS NOT NULL OR watchlist.watch_state IS DISTINCT FROM 'excluded')
-        ORDER BY (position.instrument_id IS NOT NULL) DESC,
-                 (watchlist.watch_state IS NOT NULL) DESC,
-                 COALESCE(evidence.source_count, 0) DESC,
-                 COALESCE(evidence.source_item_count, 0) DESC,
-                 evidence.latest_source_timestamp DESC NULLS LAST, instrument.symbol
+               (market.values->>'return_on_invested_capital')::double precision * 100 AS roic,
+               candidate.__panel_total_count
+        FROM bounded_candidates candidate
+        LEFT JOIN latest_quotes quote ON quote.instrument_id = candidate.id
+        LEFT JOIN option_summary ON option_summary.instrument_id = candidate.id
+        LEFT JOIN latest_market market ON market.instrument_id = candidate.id
+        LEFT JOIN latest_sec sec ON sec.instrument_id = candidate.id
+        ORDER BY candidate.candidate_rank
     """,
 }
 

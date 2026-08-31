@@ -129,6 +129,7 @@ def _load_today_authority(
     counts = {"ticker_decisions": 0, "opportunity_rank": 0, "trade_plan": 0}
     base_missing_plan_count = 0
     correction_count = 0
+    has_exact_correction_count = False
     for page in today_authority_pages(
         config,
         decision_offset=decision_offset,
@@ -145,6 +146,14 @@ def _load_today_authority(
                 "trade_plan": int(row.get("trade_plan_count") or 0),
             }
             base_missing_plan_count = int(row.get("missing_plan_count") or 0)
+            candidate_correction_count = row.get("missing_plan_correction_count")
+            if (
+                isinstance(candidate_correction_count, int)
+                and not isinstance(candidate_correction_count, bool)
+                and candidate_correction_count >= 0
+            ):
+                correction_count = candidate_correction_count
+                has_exact_correction_count = True
             decision = row.get("ticker_decision")
             if isinstance(decision, dict):
                 decisions.append(dict(decision))
@@ -158,7 +167,7 @@ def _load_today_authority(
             plan_page = row.get("trade_plan_page")
             if isinstance(plan_page, dict):
                 plans.append(dict(plan_page))
-            if row.get("needs_missing_plan_validation") is not True:
+            if has_exact_correction_count or row.get("needs_missing_plan_validation") is not True:
                 continue
             if row.get("invalid_without_rank") is True:
                 correction_count += 1
@@ -311,20 +320,32 @@ def load_panel_scope_data(
     *,
     offset: int = 0,
     limit: int | None = None,
+    include_screener: bool = False,
 ) -> PanelData:
     active_config = config if config is not None else load_config()
     if scope == "portfolio":
-        return load_portfolio_scope_data(active_config)
+        return load_portfolio_scope_data(active_config, offset=offset, limit=limit)
     if scope == "opportunities":
-        return load_opportunities_scope_data(active_config)
+        return load_opportunities_scope_data(
+            active_config,
+            offset=offset,
+            limit=limit,
+            include_screener=include_screener,
+        )
     requested = tuple(tables_for_scope(scope))
     page_offset = max(0, int(offset or 0))
     requested_limit = max(1, int(limit)) if limit is not None else None
-    query_row_limits = {
-        table: page_offset + min(configured_limit, requested_limit or configured_limit)
-        for table, configured_limit in SCOPED_TABLE_ROW_LIMITS.get(scope, {}).items()
-        if table in requested
-    }
+    if scope == "market":
+        # Market scope is publication-backed. Fetch one bounded page window so
+        # the response layer does not materialize every historical chart row.
+        market_limit = requested_limit or 120
+        query_row_limits = {table: page_offset + market_limit for table in requested}
+    else:
+        query_row_limits = {
+            table: page_offset + min(configured_limit, requested_limit or configured_limit)
+            for table, configured_limit in SCOPED_TABLE_ROW_LIMITS.get(scope, {}).items()
+            if table in requested
+        }
     if scope == "today":
         authority_names = {"ticker_decisions", "opportunity_rank", "trade_plan"}
         loaded = load_panel_data(
@@ -345,11 +366,7 @@ def load_panel_scope_data(
             requested_limit or SCOPED_TABLE_ROW_LIMITS[scope]["trade_plan"],
         )
         authority_offset = page_offset if page_offset else 0
-        decision_page_limit = (
-            max(100, decision_limit)
-            if page_offset == 0 and limit is None
-            else decision_limit
-        )
+        decision_page_limit = decision_limit
         if loaded.status.ready:
             try:
                 decisions, ranks, plans, exact_authority_counts, exact_missing_plan_count = _load_today_authority(
@@ -411,18 +428,36 @@ def load_panel_scope_data(
     return load_panel_data(active_config, table_names=requested, query_row_limits=query_row_limits or None)
 
 
-def load_opportunities_scope_data(config: AppConfig | None = None) -> PanelData:
-    """Load the opportunity queue and its secondary screener without the dashboard bundle."""
+def load_opportunities_scope_data(
+    config: AppConfig | None = None,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+    include_screener: bool = False,
+) -> PanelData:
+    """Load current opportunity episodes; fetch the dense screener on demand."""
 
     active_config = config if config is not None else load_config()
+    page_offset = max(0, int(offset or 0))
+    page_limit = min(120, max(1, int(limit))) if limit is not None else 120
+    table_names = ("opportunities_ranked", "screener") if include_screener else ("opportunities_ranked",)
+    query_limit = page_offset + page_limit
     return load_panel_data(
         active_config,
-        table_names=("opportunities_ranked", "screener"),
-        query_row_limits={"screener": 120},
+        table_names=table_names,
+        query_row_limits={
+            "opportunities_ranked": query_limit,
+            **({"screener": query_limit} if include_screener else {}),
+        },
     )
 
 
-def load_portfolio_scope_data(config: AppConfig | None = None) -> PanelData:
+def load_portfolio_scope_data(
+    config: AppConfig | None = None,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> PanelData:
     """Load portfolio detail only for currently held instruments.
 
     The generic ``quotes`` model has an intentionally broad no-filter mode.
@@ -441,11 +476,23 @@ def load_portfolio_scope_data(config: AppConfig | None = None) -> PanelData:
         if str(row.get("symbol") or row.get("ticker") or "").strip()
     }
     detail_names = tuple(name for name in tables_for_scope("portfolio") if name != "portfolio")
+    page_offset = max(0, int(offset or 0))
+    page_limit = max(1, int(limit)) if limit is not None else 80
+    page_symbols = {
+        str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+        for row in seed.rows("portfolio")[page_offset : page_offset + page_limit]
+        if str(row.get("symbol") or row.get("ticker") or "").strip()
+    }
+    # Detail rows are already scoped to the visible holdings. Do not add the
+    # page offset to their SQL limit: the payload builder applies the
+    # requested offset to the seed positions, not to these pre-scoped rows.
+    query_row_limits = {name: page_limit for name in detail_names}
+    query_row_limits["quotes"] = max(24, len(page_symbols) * 2)
     detail = load_panel_data(
         active_config,
         table_names=detail_names,
-        query_symbol_filter=symbols,
-        query_row_limits={"quotes": max(24, len(symbols) * 2)},
+        query_symbol_filter=page_symbols,
+        query_row_limits=query_row_limits,
     )
     ready = seed.status.ready and detail.status.ready
     return PanelData(
@@ -455,7 +502,13 @@ def load_portfolio_scope_data(config: AppConfig | None = None) -> PanelData:
             detail.status.source,
         ),
         tables={**seed.tables, **detail.tables},
-        metadata={**seed.metadata, **detail.metadata, "portfolio_symbol_count": len(symbols), "portfolio_bounded": True},
+        metadata={
+            **seed.metadata,
+            **detail.metadata,
+            "portfolio_symbol_count": len(symbols),
+            "portfolio_bounded": True,
+            "table_offsets": {name: page_offset for name in detail_names},
+        },
     )
 
 
@@ -491,6 +544,9 @@ def load_watchlist_scope_data(
         query_symbol_filter=symbols,
         query_row_limits={name: max(80, len(symbols) * 8) for name in detail_names},
     )
+    # Keep the full seed universe: the payload builder applies pagination to
+    # that table, while these detail rows are already symbol-scoped and must
+    # not receive the page offset a second time.
     # ``screener`` is an alias for the already-loaded universe screen; reusing
     # it prevents a second whole-universe CTE for the same request.
     tables = {**seed.tables, **detail.tables, "screener": seed.rows("universe_screen")}
@@ -548,13 +604,13 @@ def load_ticker_panel_data(config: AppConfig | None, ticker: str) -> PanelData:
         query_row_limits={name: 24 for name in core_tables},
     )
     optional_failures: dict[str, str] = {}
+    optional = load_panel_data(
+        active_config,
+        table_names=_TICKER_OPTIONAL_DEEP_TABLES,
+        query_symbol_filter={normalized},
+        query_row_limits={name: 24 for name in _TICKER_OPTIONAL_DEEP_TABLES},
+    )
     for table_name in _TICKER_OPTIONAL_DEEP_TABLES:
-        optional = load_panel_data(
-            active_config,
-            table_names=(table_name,),
-            query_symbol_filter={normalized},
-            query_row_limits={table_name: 24},
-        )
         panel.tables[table_name] = optional.tables.get(table_name, [])
         if not optional.status.ready:
             optional_failures[table_name] = optional.status.message
@@ -595,8 +651,13 @@ def panel_contract_payload() -> dict[str, Any]:
     return contract_panel_payload()
 
 
-def load_market_panel_data(config: AppConfig | None = None) -> PanelData:
-    return load_panel_scope_data(config, "market")
+def load_market_panel_data(
+    config: AppConfig | None = None,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> PanelData:
+    return load_panel_scope_data(config, "market", offset=offset, limit=limit)
 
 
 def _all_contract_tables() -> tuple[str, ...]:

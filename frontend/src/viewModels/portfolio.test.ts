@@ -58,8 +58,8 @@ describe("portfolio view model", () => {
     expect(buildPortfolioViewModel(data, model).summary.totalPnlPct).toBeNull();
   });
 
-  it("keeps the exact held-ticker impact for the selected expression kind", () => {
-    const selectedImpact = { impact_id: "impact-stock", scenario_pnl: { market_down_20: -1200 } };
+  it("keeps a compact held-ticker impact for the selected expression kind", () => {
+    const selectedImpact = { impact_id: "impact-stock", expression_kind: "STOCK", availability: "unavailable", marginal_risk: 0.2, blockers: ["stale_quote"], scenario_pnl: { market_down_20: -1200 } };
     const otherImpact = { impact_id: "impact-cash", scenario_pnl: { market_down_20: 0 } };
     const data = {
       tickerDecisions: { count: 1, rows: [{
@@ -72,7 +72,8 @@ describe("portfolio view model", () => {
     const impacts = buildPortfolioViewModel(data, model).proposedImpacts;
 
     expect(impacts).toHaveLength(1);
-    expect(impacts[0]).toBe(selectedImpact);
+    expect(impacts[0]).toMatchObject({ ticker: "NVDA", expression_kind: "STOCK", availability: "unavailable", marginal_risk: 0.2, blockers: ["stale_quote"] });
+    expect(impacts[0]).not.toHaveProperty("scenario_pnl");
     expect(impacts[0]).not.toBe(otherImpact);
   });
 });

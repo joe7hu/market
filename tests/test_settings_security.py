@@ -51,6 +51,74 @@ def test_load_config_ignores_legacy_poisoned_agent_override(
     assert config.agents.option_agent.timeout_seconds == 60
 
 
+def test_load_config_ignores_legacy_poisoned_research_sources_override(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "research_sources:\n  blogs:\n    enabled: true\n    rss_urls: []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        config_owner,
+        "persisted_setting_sections",
+        lambda _database_url: {
+            "research_sources": {"blogs": {"rss_urls": 5}}
+        },
+    )
+
+    config = config_owner.load_config(config_path)
+
+    assert config.research_sources.blogs.enabled is True
+    assert config.research_sources.blogs.rss_urls == []
+
+
+def test_load_config_ignores_scalar_persisted_research_subsection(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "research_sources:\n  blogs:\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        config_owner,
+        "persisted_setting_sections",
+        lambda _database_url: {"research_sources": {"blogs": 5}},
+    )
+
+    config = config_owner.load_config(config_path)
+
+    assert config.research_sources.blogs.enabled is True
+
+
+def test_load_config_does_not_resolve_persisted_research_urls(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("research_sources: {}\n", encoding="utf-8")
+    url = "https://feed.example.test/rss"
+    monkeypatch.setattr(
+        config_owner,
+        "persisted_setting_sections",
+        lambda _database_url: {
+            "research_sources": {"blogs": {"rss_urls": [url]}}
+        },
+    )
+
+    def unexpected_resolution(*_args, **_kwargs):
+        raise AssertionError("config load must not resolve persisted URLs")
+
+    monkeypatch.setattr(settings_validation.socket, "getaddrinfo", unexpected_resolution)
+
+    config = config_owner.load_config(config_path)
+
+    assert config.research_sources.blogs.rss_urls == [url]
+
+
 def test_agent_setting_update_rejects_config_poison_before_persistence() -> None:
     config = typed_config()
 
@@ -100,6 +168,12 @@ def test_agent_setting_update_preserves_non_editable_fields() -> None:
 def test_research_setting_update_rejects_private_and_dns_resolved_hosts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    with pytest.raises(ValueError, match="port is invalid"):
+        apply_research_sources_update(
+            {},
+            {"blogs": {"rss_urls": ["https://feed.example.test:0/rss"]}},
+        )
+
     with pytest.raises(ValueError, match="private or non-routable"):
         apply_research_sources_update(
             {},

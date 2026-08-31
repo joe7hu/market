@@ -1,5 +1,7 @@
 /** The only browser-to-API transport seam. Domain modules own request paths. */
 
+const inFlightGets = new Map<string, Promise<unknown>>();
+
 async function parseJson<T>(response: Response, path: string): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
@@ -21,13 +23,24 @@ async function parseJson<T>(response: Response, path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function requestGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${path}${path.includes("?") ? "&" : "?"}_=${Date.now()}`, {
     cache: "no-store",
     signal,
     headers: { Accept: "application/json" },
   });
   return parseJson<T>(response, path);
+}
+
+export function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  if (signal) return requestGet<T>(path, signal);
+  const existing = inFlightGets.get(path);
+  if (existing) return existing as Promise<T>;
+  const request = requestGet<T>(path).finally(() => {
+    if (inFlightGets.get(path) === request) inFlightGets.delete(path);
+  });
+  inFlightGets.set(path, request);
+  return request;
 }
 
 export async function sendJson<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<T> {

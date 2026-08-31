@@ -93,7 +93,13 @@ def refresh_today_publication(
                     LIMIT 1
                 ) event_lineage ON catalyst.market_event_id IS NOT NULL
                 WHERE catalyst.created_at <= %s
-                  AND (catalyst.superseded_at IS NULL OR catalyst.superseded_at > %s)
+                  AND (
+                    catalyst.status = 'current'
+                    OR (
+                      catalyst.status = 'superseded'
+                      AND catalyst.superseded_at > %s
+                    )
+                  )
                   AND catalyst.starts_at >= %s AND catalyst.starts_at < %s + interval '14 days'
                   AND (
                     catalyst.market_event_id IS NULL

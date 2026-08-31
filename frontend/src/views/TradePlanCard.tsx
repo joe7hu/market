@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 type TradePlan = components["schemas"]["TradePlan"];
 type PortfolioImpact = components["schemas"]["PortfolioImpact"];
+type PortfolioImpactSummary = components["schemas"]["TickerPortfolioImpactSummaryResponse"] & { ticker?: string };
 type PriceRange = components["schemas"]["PriceRange"];
 type Invalidation = components["schemas"]["Invalidation"];
 type TradePlanLeg = NonNullable<TradePlan["selected_expression"]["legs"]>[number];
@@ -20,17 +21,31 @@ export function TradePlanCard({ plan }: { plan?: TradePlan | null }) {
   );
 }
 
-export function PortfolioImpactCard({ impact }: { impact: PortfolioImpact }) {
+export function PortfolioImpactCard({ impact }: { impact: PortfolioImpact | PortfolioImpactSummary }) {
+  const fullImpact = "impact_id" in impact;
   return (
     <DataTableFrame
-      title={`${impact.ticker} proposed impact`}
-      action={<StatusBadge tone={impact.availability_status === "available" ? "good" : "warn"}>{displayText(impact.availability)}</StatusBadge>}
+      title={`${impact.ticker ?? "Selected"} proposed impact`}
+      action={<StatusBadge tone={(fullImpact ? impact.availability_status : impact.availability) === "available" ? "good" : "warn"}>{displayText(impact.availability)}</StatusBadge>}
     >
       <div className="min-w-0 p-4 text-sm">
-        <PortfolioImpactDetails impact={impact} />
+        {fullImpact ? <PortfolioImpactDetails impact={impact} /> : <PortfolioImpactSummaryDetails impact={impact} />}
       </div>
     </DataTableFrame>
   );
+}
+
+function PortfolioImpactSummaryDetails({ impact }: { impact: PortfolioImpactSummary }) {
+  return <section className="space-y-4">
+    <h3 className="text-sm font-semibold">Selected portfolio impact</h3>
+    <ImpactSection title="Risk and availability">
+      <Field label="Expression" value={displayText(impact.expression_kind)} />
+      <Field label="Availability" value={displayText(impact.availability)} />
+      <Field label="Risk budget consumed" value={numberValue(impact.risk_budget_consumed)} />
+      <Field label="Marginal risk" value={numberValue(impact.marginal_risk)} />
+      <Field label="Blockers" value={listValue(impact.blockers)} />
+    </ImpactSection>
+  </section>;
 }
 
 function ActionablePlan({ plan }: { plan: TradePlan }) {

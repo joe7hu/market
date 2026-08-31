@@ -370,6 +370,14 @@ def _compact_scoped_row(scope: str, table_name: str, row: dict[str, Any]) -> dic
         selected_kind = selected.get("kind") if isinstance(selected, dict) else None
         impacts = row.get("portfolio_impacts")
         selected_impact = impacts.get(selected_kind) if isinstance(impacts, dict) and isinstance(selected_kind, str) else None
+        if isinstance(selected_impact, dict):
+            selected_impact = {
+                "expression_kind": selected_impact.get("expression_kind") or selected_kind,
+                "availability": selected_impact.get("availability") or "unavailable",
+                "marginal_risk": selected_impact.get("marginal_risk"),
+                "risk_budget_consumed": selected_impact.get("risk_budget_consumed"),
+                "blockers": [str(item) for item in selected_impact.get("blockers") or []],
+            }
         row = {
             **row,
             "selected_expression": {"kind": selected_kind} if isinstance(selected_kind, str) else {},

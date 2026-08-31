@@ -275,7 +275,7 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
         )
 
     monkeypatch.setattr(loaders_owner, "load_panel_scope_data", panel_scope)
-    monkeypatch.setattr(loaders_owner, "load_market_panel_data", lambda config: panel_scope(config, "market"))
+    monkeypatch.setattr(loaders_owner, "load_market_panel_data", lambda config, **_kwargs: panel_scope(config, "market"))
     client = TestClient(app)
     try:
         paths = [
@@ -562,7 +562,7 @@ def test_market_snapshot_only_returns_market_tables(monkeypatch) -> None:
     monkeypatch.setattr(
         loaders_owner,
         "load_market_panel_data",
-        lambda _config: PanelData(
+        lambda _config, **_kwargs: PanelData(
             status=DataStatus(True, "test", "postgresql"),
             tables={name: [] for name in PANEL_SCOPE_TABLES["market"]},
         ),
@@ -1048,7 +1048,7 @@ def test_context_cache_invalidation_rejects_stale_inflight_value() -> None:
         database_url_loader=lambda _config: "postgresql:///single-flight-invalidation",
     )
     assert fresh_result is fresh
-    assert old_results == [old]
+    assert old_results == [fresh]
     assert cached_result is fresh
 
 
@@ -1127,6 +1127,7 @@ def test_refresh_jobs_exposes_options_radar_job(migrated_postgres_dsn: str, monk
 
     assert response.status_code == 200
     assert "refresh_options_radar" in response.json()["allowlist"]
+    assert "latest_status" not in response.json()
 
 
 def test_api_startup_does_not_fail_recent_job_owned_by_another_process(
@@ -1453,7 +1454,9 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
     assert dict(strategy) == {"strategy_key": payload["strategy_version"], "status": "active"}
 
 
-def test_local_api_guard_allows_private_lan_clients() -> None:
+def test_local_api_guard_allows_private_lan_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MARKET_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128")
+
     def request(host: str, headers: dict[str, str] | None = None) -> SimpleNamespace:
         return SimpleNamespace(
             client=SimpleNamespace(host=host),
@@ -1528,7 +1531,8 @@ def test_api_rejects_unauthorized_or_malformed_host_headers(path: str, host_head
     assert response.status_code == 403
 
 
-def test_api_rejects_public_network_clients() -> None:
+def test_api_rejects_public_network_clients(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MARKET_TRUSTED_PROXY_CIDRS", raising=False)
     direct_response = TestClient(app, client=("8.8.8.8", 50000)).get(
         "/api/status",
         headers={"host": "mini1.local", "x-forwarded-for": "192.168.50.42"},
@@ -1540,6 +1544,11 @@ def test_api_rejects_public_network_clients() -> None:
 
     assert direct_response.status_code == 403
     assert proxied_response.status_code == 403
+    private_forwarded_response = TestClient(app, client=("127.0.0.1", 50000)).get(
+        "/api/status",
+        headers={"host": "mini1.local", "x-forwarded-for": "192.168.50.42"},
+    )
+    assert private_forwarded_response.status_code == 403
 
 
 @pytest.mark.parametrize("path", ["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"])
@@ -1557,7 +1566,10 @@ def test_api_documentation_rejects_public_network_clients(path: str) -> None:
 
 
 @pytest.mark.parametrize("path", ["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"])
-def test_api_documentation_allows_private_network_clients(path: str) -> None:
+def test_api_documentation_allows_private_network_clients(
+    path: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MARKET_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128")
     direct_response = TestClient(app, client=("192.168.50.42", 50000)).get(
         path, headers={"host": "192.168.50.197:8000"}
     )

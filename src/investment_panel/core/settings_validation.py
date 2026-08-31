@@ -49,6 +49,8 @@ def apply_agent_settings_update(
 def apply_research_sources_update(
     current: dict[str, Any] | None,
     update: dict[str, Any],
+    *,
+    resolve_urls: bool = True,
 ) -> dict[str, Any]:
     """Return one validated research-sources section."""
 
@@ -58,7 +60,9 @@ def apply_research_sources_update(
     sanitizers = {
         "x": _sanitize_research_x,
         "news": _sanitize_research_news,
-        "blogs": _sanitize_research_blogs,
+        "blogs": lambda value: _sanitize_research_blogs(
+            value, resolve_urls=resolve_urls
+        ),
     }
     for name, sanitizer in sanitizers.items():
         if name not in update:
@@ -96,6 +100,8 @@ def resolve_public_http_url(value: Any) -> ResolvedPublicHttpUrl:
         port = parsed.port
     except ValueError as exc:
         raise ValueError("source URL is invalid") from exc
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("source URL port is invalid")
     if parsed.scheme.lower() not in {"http", "https"}:
         raise ValueError("source URL must use http or https")
     if not parsed.hostname:
@@ -304,24 +310,32 @@ def _sanitize_research_news(value: Any) -> dict[str, Any]:
     return clean
 
 
-def _sanitize_research_blogs(value: Any) -> dict[str, Any]:
+def _sanitize_research_blogs(
+    value: Any,
+    *,
+    resolve_urls: bool = True,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("blogs settings must be an object")
     clean: dict[str, Any] = {}
     if "enabled" in value:
         clean["enabled"] = bool(value["enabled"])
     if "substack_urls" in value:
-        clean["substack_urls"] = [
-            validate_public_http_url(url)
-            for url in _clean_str_list(
-                value["substack_urls"], "substack_urls", max_items=50
-            )
-        ]
+        urls = _clean_str_list(
+            value["substack_urls"], "substack_urls", max_items=50
+        )
+        clean["substack_urls"] = (
+            [validate_public_http_url(url) for url in urls]
+            if resolve_urls
+            else urls
+        )
     if "rss_urls" in value:
-        clean["rss_urls"] = [
-            validate_public_http_url(url)
-            for url in _clean_str_list(value["rss_urls"], "rss_urls", max_items=50)
-        ]
+        urls = _clean_str_list(value["rss_urls"], "rss_urls", max_items=50)
+        clean["rss_urls"] = (
+            [validate_public_http_url(url) for url in urls]
+            if resolve_urls
+            else urls
+        )
     return clean
 
 

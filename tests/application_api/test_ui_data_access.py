@@ -29,6 +29,33 @@ def test_unavailable_postgresql_returns_explicit_status() -> None:
     assert panel_data.rows("candidates") == []
 
 
+def test_opportunities_loads_dense_screener_only_when_requested(monkeypatch) -> None:
+    calls: list[tuple[tuple[str, ...], object]] = []
+
+    def fake_load_panel_data(_config, *, table_names, query_row_limits=None, **_kwargs):
+        calls.append((tuple(table_names), query_row_limits))
+        return PanelData(status=DataStatus(True, "ok", "test"), tables={})
+
+    monkeypatch.setattr(loaders_owner, "load_panel_data", fake_load_panel_data)
+    config = typed_config("postgresql:///opportunities-lazy")
+
+    loaders_owner.load_opportunities_scope_data(config)
+    loaders_owner.load_opportunities_scope_data(config, include_screener=True)
+    loaders_owner.load_opportunities_scope_data(
+        config, offset=5, limit=7, include_screener=True,
+    )
+
+    assert calls == [
+        (("opportunities_ranked",), {"opportunities_ranked": 120}),
+        (("opportunities_ranked", "screener"), {
+            "opportunities_ranked": 120, "screener": 120,
+        }),
+        (("opportunities_ranked", "screener"), {
+            "opportunities_ranked": 12, "screener": 12,
+        }),
+    ]
+
+
 def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_dsn: str) -> None:
     panel_data = loaders_owner.load_table_panel_data(
         typed_config(migrated_postgres_dsn), "technicals"
@@ -43,11 +70,10 @@ def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_d
 def test_ticker_optional_slow_reads_do_not_hide_ready_core(monkeypatch) -> None:
     def fake_load_panel_data(_config, *, table_names, **_kwargs):
         names = tuple(table_names)
-        if names in {("liquidity",), ("options_payoff_scenarios",)}:
-            table = names[0]
+        if names == ("liquidity", "options_payoff_scenarios"):
             return PanelData(
-                status=DataStatus(False, f"{table}: statement timeout", "postgresql-error"),
-                tables={table: []},
+                status=DataStatus(False, "optional ticker reads: statement timeout", "postgresql-error"),
+                tables={name: [] for name in names},
                 metadata={"database": "postgresql", "available_model_count": 0, "unavailable_models": []},
             )
         return PanelData(
@@ -433,14 +459,85 @@ def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None
     assert calls[0]["table_names"] == ("portfolio",)
     assert "portfolio" not in calls[1]["table_names"]
     assert calls[1]["query_symbol_filter"] == {"TSLA", "MSFT"}
-    assert calls[1]["query_row_limits"] == {"quotes": 24}
+    assert calls[1]["query_row_limits"]["ticker_decisions"] == 80
+    assert calls[1]["query_row_limits"]["quotes"] == 24
     assert "ticker_decisions" in calls[1]["table_names"]
     assert panel.rows("ticker_decisions")[0]["portfolio_impacts"]["STOCK"] == impact
 
+    loaders_owner.load_panel_scope_data(
+        typed_config("postgresql:///test"), "portfolio", offset=5, limit=7,
+    )
+    assert calls[3]["query_symbol_filter"] == set()
+    assert calls[3]["query_row_limits"]["ticker_decisions"] == 7
+    assert calls[3]["query_row_limits"]["quotes"] == 24
 
-def test_portfolio_snapshot_keeps_only_selected_impact_and_exact_count() -> None:
+
+def test_portfolio_scope_pages_detail_rows_once(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...], **kwargs):
+        calls.append({"table_names": table_names, **kwargs})
+        if table_names == ("portfolio",):
+            return {
+                "portfolio": [{"symbol": "AAA"}, {"symbol": "BBB"}, {"symbol": "CCC"}],
+            }, {"database": "postgresql", "available_model_count": 1, "unavailable_models": []}
+        tables = {name: [] for name in table_names}
+        tables["ticker_decisions"] = [{"ticker": "BBB"}]
+        return tables, {
+            "database": "postgresql",
+            "available_model_count": len(table_names),
+            "unavailable_models": [],
+            "table_counts": {"ticker_decisions": 1},
+        }
+
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
+
+    panel = loaders_owner.load_panel_scope_data(
+        typed_config("postgresql:///test"), "portfolio", offset=1, limit=1,
+    )
+    payload = payloads_owner.panel_snapshot_payload(panel, "portfolio", offset=1, limit=1)
+
+    assert calls[1]["query_symbol_filter"] == {"BBB"}
+    assert calls[1]["query_row_limits"]["ticker_decisions"] == 1
+    assert payload["tables"]["portfolio"]["rows"] == [{"symbol": "BBB"}]
+    assert payload["tables"]["ticker_decisions"]["rows"] == [{
+        "ticker": "BBB",
+        "selected_expression": {},
+        "portfolio_impacts": {},
+    }]
+    assert payload["tables"]["ticker_decisions"]["offset"] == 1
+
+
+def test_market_scope_pushes_page_window_into_publication_reads(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_load(_config, *, table_names, query_row_limits=None, **_kwargs):
+        calls.append({"table_names": table_names, "query_row_limits": query_row_limits})
+        return PanelData(
+            status=DataStatus(True, "loaded", "test"),
+            tables={name: [] for name in table_names},
+            metadata={"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []},
+        )
+
+    monkeypatch.setattr(loaders_owner, "load_panel_data", fake_load)
+
+    panel = loaders_owner.load_panel_scope_data(
+        typed_config("postgresql:///test"), "market", offset=2, limit=5,
+    )
+
+    assert panel.status.ready is True
+    assert calls[0]["query_row_limits"] == {
+        name: 7 for name in tables_for_scope("market")
+    }
+
+
+def test_portfolio_snapshot_keeps_only_selected_impact_summary_and_exact_count() -> None:
     heavy = "x" * 10_000
-    selected_impact = {"impact_id": "impact-stock", "input_lineage": [heavy]}
+    selected_impact = {
+        "impact_id": "impact-stock", "input_lineage": [heavy],
+        "expression_kind": "STOCK", "availability": "unavailable",
+        "marginal_risk": 0.2, "risk_budget_consumed": 0.1, "blockers": ["stale_quote"],
+    }
     panel_data = PanelData(
         status=DataStatus(True, "ok", "test"),
         tables={
@@ -469,7 +566,15 @@ def test_portfolio_snapshot_keeps_only_selected_impact_and_exact_count() -> None
             "ticker": ticker,
             "status": "NO_TRADE",
             "selected_expression": {"kind": "STOCK"},
-            "portfolio_impacts": {"STOCK": selected_impact},
+            "portfolio_impacts": {
+                "STOCK": {
+                    "expression_kind": "STOCK",
+                    "availability": "unavailable",
+                    "marginal_risk": 0.2,
+                    "risk_budget_consumed": 0.1,
+                    "blockers": ["stale_quote"],
+                },
+            },
         }
         for ticker in ("NVDA", "MSFT")
     ]
@@ -779,6 +884,43 @@ def test_watchlist_unwatched_scope_pages_rows_and_keeps_total_count() -> None:
     assert page["tables"]["watchlist_unwatched"]["limit"] == 1
     assert page["tables"]["watchlist_unwatched"]["rows"] == [{"symbol": "MSFT", "watch_state": "candidate"}]
     assert page["tables"]["watchlist_unwatched_quotes"]["rows"] == [{"symbol": "MSFT", "price": 100}]
+
+
+def test_watchlist_loader_page_keeps_symbol_details_after_payload_pagination(monkeypatch) -> None:
+    seed = PanelData(
+        status=DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [
+                {"symbol": "AMD", "watch_state": "candidate"},
+                {"symbol": "MSFT", "watch_state": "candidate"},
+                {"symbol": "TSLA", "watch_state": "candidate"},
+            ],
+            "manual_watchlist": [],
+            "portfolio": [],
+        },
+    )
+    detail = PanelData(
+        status=DataStatus(True, "ok", "test"),
+        tables={name: [{"symbol": "MSFT", "value": name}] for name in (
+            "quotes", "fundamentals", "technicals", "valuations", "decision_queue",
+            "research_packets", "ticker_memos", "thesis_monitor", "options_ticker_signals",
+            "ticker_decisions",
+        )},
+    )
+
+    def fake_load_panel_data(_config, *, table_names, **_kwargs):
+        return seed if tuple(table_names) == ("universe_screen", "manual_watchlist", "portfolio") else detail
+
+    monkeypatch.setattr(loaders_owner, "load_panel_data", fake_load_panel_data)
+
+    loaded = loaders_owner.load_watchlist_scope_data(
+        typed_config("postgresql:///watchlist-page"), "watchlist-unwatched", offset=1, limit=1,
+    )
+    page = payloads_owner.panel_snapshot_payload(loaded, "watchlist-unwatched", offset=1, limit=1)
+
+    assert page["tables"]["watchlist_unwatched"]["rows"] == [{"symbol": "MSFT", "watch_state": "candidate"}]
+    assert page["tables"]["watchlist_unwatched_quotes"]["rows"] == [{"symbol": "MSFT", "value": "quotes"}]
+    assert page["tables"]["watchlist_unwatched_ticker_decisions"]["rows"] == [{"symbol": "MSFT", "value": "ticker_decisions"}]
 
 
 def test_watchlist_watched_scope_includes_unwatched_count_without_rows() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from ipaddress import ip_address, ip_network
 from urllib.parse import urlsplit
 
@@ -11,6 +12,7 @@ from fastapi import HTTPException, Request
 TAILSCALE_CGNAT = ip_network("100.64.0.0/10")
 TAILSCALE_HOST_SUFFIX = ".tail46d3fb.ts.net"
 ALLOWED_HOSTNAMES = {"localhost", "mini1.local"}
+TRUSTED_PROXY_CIDRS_ENV = "MARKET_TRUSTED_PROXY_CIDRS"
 
 
 def _normalized_ip(value: str):
@@ -24,6 +26,24 @@ def _allowed_address(address) -> bool:
         or address.is_private
         or address.is_link_local
         or (address.version == 4 and address in TAILSCALE_CGNAT)
+    )
+
+
+def _trusted_proxy_peer(address) -> bool:
+    raw = os.environ.get(TRUSTED_PROXY_CIDRS_ENV, "")
+    if not raw.strip():
+        return False
+    try:
+        networks = [
+            ip_network(value.strip(), strict=False)
+            for value in raw.split(",")
+            if value.strip()
+        ]
+    except ValueError:
+        return False
+    return any(
+        network.version == address.version and address in network
+        for network in networks
     )
 
 
@@ -91,6 +111,11 @@ def require_local_request(request: Request) -> None:
     if address.is_loopback:
         forwarded = str(request.headers.get("x-forwarded-for") or "")
         if forwarded:
+            if not _trusted_proxy_peer(address):
+                raise HTTPException(
+                    status_code=403,
+                    detail="API access is available only from the local network.",
+                )
             try:
                 chain = [_normalized_ip(item.strip()) for item in forwarded.split(",")]
             except ValueError as exc:
@@ -105,4 +130,4 @@ def require_local_request(request: Request) -> None:
         raise HTTPException(status_code=403, detail="API access is available only from the local network.")
 
 
-__all__ = ["TAILSCALE_CGNAT", "require_local_request"]
+__all__ = ["TAILSCALE_CGNAT", "TRUSTED_PROXY_CIDRS_ENV", "require_local_request"]

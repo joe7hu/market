@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from itertools import combinations
 from math import isfinite, sqrt
 from statistics import fmean
-from typing import Any
+from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from investment_panel.core.config import AppConfig
@@ -138,22 +138,15 @@ def portfolio_performance_rows(
         if not transactions:
             return []
         instrument_ids = sorted({int(row["instrument_id"]) for row in transactions if row.get("instrument_id") is not None})
-        bars = [dict(row) for row in connection.execute(
-            """
-            SELECT DISTINCT ON (bar.instrument_id, bar.trading_date)
-                   bar.instrument_id, instrument.symbol, bar.trading_date, bar.close,
-                   ((bar.trading_date::timestamp + time '16:00')
-                       AT TIME ZONE 'America/New_York') AS observed_at
-            FROM raw.confirmed_price_bar bar
-            JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
-            WHERE bar.interval = '1d' AND bar.instrument_id = ANY(%s)
-              AND bar.trading_date <= (now() AT TIME ZONE instrument.market_timezone)::date
-              AND (bar.observed_at AT TIME ZONE 'UTC')::date = bar.trading_date
-              AND bar.available_at <= now()
-            ORDER BY bar.instrument_id, bar.trading_date, bar.observed_at DESC, bar.available_at DESC
-            """,
-            [instrument_ids],
-        ).fetchall()] if instrument_ids else []
+        benchmark_id_row = connection.execute(
+            "SELECT id FROM catalog.instrument WHERE symbol = 'SPY'"
+        ).fetchone()
+        benchmark_id = int(benchmark_id_row["id"]) if benchmark_id_row else None
+        all_instrument_ids = sorted(set(instrument_ids) | ({benchmark_id} if benchmark_id is not None else set()))
+        all_bars = _confirmed_daily_price_bars(
+            connection, all_instrument_ids, require_observed_date=True,
+        )
+        bars = [row for row in all_bars if int(row["instrument_id"]) in set(instrument_ids)]
         current_quotes = [dict(row) for row in connection.execute(
             """
             SELECT DISTINCT ON (quote.instrument_id)
@@ -182,18 +175,7 @@ def portfolio_performance_rows(
             """,
             [instrument_ids],
         ).fetchall()] if instrument_ids else []
-        benchmark = [dict(row) for row in connection.execute(
-            """
-            SELECT DISTINCT ON (bar.trading_date) bar.trading_date, bar.close
-            FROM raw.confirmed_price_bar bar
-            JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
-            WHERE bar.interval = '1d' AND instrument.symbol = 'SPY'
-              AND bar.trading_date <= (now() AT TIME ZONE instrument.market_timezone)::date
-              AND (bar.observed_at AT TIME ZONE 'UTC')::date = bar.trading_date
-              AND bar.available_at <= now()
-            ORDER BY bar.trading_date, bar.observed_at DESC, bar.available_at DESC
-            """
-        ).fetchall()]
+        benchmark = [row for row in all_bars if benchmark_id is not None and int(row["instrument_id"]) == benchmark_id]
     return _performance_rows(transactions, [*bars, *current_quotes], benchmark)
 
 
@@ -210,19 +192,12 @@ def portfolio_correlation_rows(
     weights = {str(row["symbol"]): float(row.get("portfolio_weight") or 0) for row in positions}
     runtime = runtime_for_config(config) if connection is None else None
     with (runtime.read() if runtime is not None else nullcontext(connection)) as connection:
-        bars = [dict(row) for row in connection.execute(
-            """
-            SELECT DISTINCT ON (instrument.symbol, bar.trading_date)
-                   instrument.symbol, bar.trading_date, bar.close
-            FROM raw.confirmed_price_bar bar
-            JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
-            WHERE bar.interval = '1d' AND instrument.symbol = ANY(%s)
-              AND bar.trading_date <= (now() AT TIME ZONE instrument.market_timezone)::date
-              AND bar.available_at <= now()
-            ORDER BY instrument.symbol, bar.trading_date, bar.observed_at DESC, bar.available_at DESC
-            """,
-            [symbols],
-        ).fetchall()]
+        instrument_rows = connection.execute(
+            "SELECT id FROM catalog.instrument WHERE symbol = ANY(%s)", [symbols]
+        ).fetchall()
+        bars = _confirmed_daily_price_bars(
+            connection, [int(row["id"]) for row in instrument_rows],
+        )
         split_rows = [dict(row) for row in connection.execute(
             """
             SELECT instrument.symbol,
@@ -285,6 +260,77 @@ def portfolio_correlation_rows(
         ),
         reverse=True,
     )
+
+
+def _confirmed_daily_price_bars(
+    connection: Any,
+    instrument_ids: Iterable[int],
+    *,
+    require_observed_date: bool = False,
+) -> list[dict[str, Any]]:
+    """Read confirmed daily bars after restricting the raw facts to instruments."""
+
+    identifiers = sorted({int(identifier) for identifier in instrument_ids})
+    if not identifiers:
+        return []
+    observed_date_filter = (
+        "AND (confirmed.observed_at AT TIME ZONE 'UTC')::date = confirmed.trading_date"
+        if require_observed_date
+        else ""
+    )
+    rows = connection.execute(
+        f"""
+        WITH requested_instruments AS MATERIALIZED (
+            SELECT id, symbol, market_timezone
+            FROM catalog.instrument
+            WHERE id = ANY(%s)
+        ), facts AS MATERIALIZED (
+            SELECT fact.id, fact.instrument_id, fact.source_id, fact.interval,
+                   fact.trading_date, fact.observed_at, fact.close, fact.available_at
+            FROM raw.price_bar fact
+            JOIN requested_instruments requested ON requested.id = fact.instrument_id
+            WHERE fact.interval = '1d'
+            UNION ALL
+            SELECT fact.id, fact.instrument_id, fact.source_id, fact.interval,
+                   fact.trading_date, fact.observed_at, fact.close, fact.available_at
+            FROM raw.price_bar_history fact
+            JOIN requested_instruments requested ON requested.id = fact.instrument_id
+            WHERE fact.interval = '1d'
+        ), confirmed AS MATERIALIZED (
+            SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.observed_at)
+                   fact.*
+            FROM facts fact
+            JOIN LATERAL (
+                SELECT availability.ingest_run_id
+                FROM raw.price_bar_fact_availability availability
+                WHERE availability.fact_id = fact.id
+                  AND availability.fact_available_at = fact.available_at
+                LIMIT 1
+            ) availability ON true
+            JOIN ingest.run price_run
+              ON price_run.id = availability.ingest_run_id
+             AND price_run.status IN ('succeeded', 'partial')
+             AND price_run.finished_at IS NOT NULL
+            ORDER BY fact.instrument_id, fact.source_id, fact.interval,
+                     fact.observed_at, fact.available_at DESC
+        )
+        SELECT DISTINCT ON (confirmed.instrument_id, confirmed.trading_date)
+               confirmed.instrument_id, requested.symbol, confirmed.trading_date,
+               confirmed.close,
+               ((confirmed.trading_date::timestamp + time '16:00')
+                   AT TIME ZONE 'America/New_York') AS observed_at
+        FROM confirmed
+        JOIN requested_instruments requested ON requested.id = confirmed.instrument_id
+        WHERE confirmed.trading_date <=
+                  (now() AT TIME ZONE requested.market_timezone)::date
+          {observed_date_filter}
+          AND confirmed.available_at <= now()
+        ORDER BY confirmed.instrument_id, confirmed.trading_date,
+                 confirmed.observed_at DESC, confirmed.available_at DESC
+        """,
+        [identifiers],
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def portfolio_exposure_rows(
@@ -424,7 +470,12 @@ def portfolio_review_action_rows(
 
 
 def portfolio_intelligence_tables(
-    config: AppConfig, *, models: set[str] | None = None, include_performance: bool = True
+    config: AppConfig,
+    *,
+    models: set[str] | None = None,
+    include_performance: bool = True,
+    row_limits: Mapping[str, int] | None = None,
+    total_counts: dict[str, int] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Build only the portfolio read models requested by the caller.
 
@@ -468,6 +519,11 @@ def portfolio_intelligence_tables(
             tables["portfolio_risk_cards"] = risks
         if "review_actions" in requested:
             tables["review_actions"] = portfolio_review_action_rows(config, risk_rows=risks)
+    for name, rows in tuple(tables.items()):
+        if total_counts is not None:
+            total_counts[name] = len(rows)
+        if row_limits is not None and name in row_limits and row_limits[name] > 0:
+            tables[name] = rows[: int(row_limits[name])]
     return tables
 
 

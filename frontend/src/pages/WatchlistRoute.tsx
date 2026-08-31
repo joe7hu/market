@@ -38,11 +38,6 @@ export function WatchlistRoute() {
       setRefreshFinishedAt(latestFinishedAt);
     }
     if (!targetJob) return;
-    if (!targetJobId && latestStatusIsNewerThanJob(payload, targetJob)) {
-      setRefreshStatus("idle");
-      setRefreshError(null);
-      return;
-    }
     if (targetJob.status === "running") {
       setRefreshStatus("running");
       return;
@@ -144,23 +139,6 @@ export function latestWatchlistRefreshFinishedAt(jobs: RefreshJob[]): Date | nul
     .map((job) => parseDate(job.finished_at))
     .filter((finishedAt): finishedAt is Date => finishedAt !== null);
   return timestamps.reduce<Date | null>((latest, finishedAt) => !latest || finishedAt > latest ? finishedAt : latest, null);
-}
-
-// Data freshness ignores the housekeeping tail (snapshot/prune): a snapshot
-// failure still leaves the panel's data refreshed. Prefer the backend's dataOk
-// flag and fall back to the overall outcome for older status payloads.
-function statusDataIsFresh(status: NonNullable<RefreshJobsPayload["latest_status"]>): boolean {
-  if (typeof status.dataOk === "boolean") return status.dataOk;
-  return status.ok !== false && status.status !== "failed";
-}
-
-function latestStatusIsNewerThanJob(payload: RefreshJobsPayload, job: RefreshJob): boolean {
-  const status = payload.latest_status;
-  if (!status || !statusDataIsFresh(status)) return false;
-  const statusFinishedAt = parseDate(status.dataFinishedAt ?? status.finishedAt);
-  if (!statusFinishedAt) return false;
-  const jobTime = parseDate(job.finished_at) ?? parseDate(job.started_at);
-  return Boolean(jobTime && statusFinishedAt.getTime() > jobTime.getTime());
 }
 
 function refreshFailureMessage(job: RefreshJob): string | null {

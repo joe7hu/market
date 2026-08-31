@@ -40,6 +40,7 @@ def build_query_policies(queries: Mapping[str, str]) -> dict[str, QueryPolicy]:
                 "options_ticker_signals" if name == "options_ticker_signals"
                 else "current_quotes" if name == "quotes"
                 else "technicals" if name == "technicals"
+                else "universe_screen" if name == "universe_screen"
                 else "liquidity" if name == "liquidity"
                 else "options_payoff_scenarios" if name == "options_payoff_scenarios"
                 else "options_expiries" if name == "options_expiries"

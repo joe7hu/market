@@ -5,7 +5,9 @@ import { rows } from "@/utils";
 import { numberField, textField } from "@/views/rowFormat";
 
 export type PerformanceRange = "1D" | "1W" | "1M" | "YTD" | "1Y" | "ALL";
-type PortfolioImpact = components["schemas"]["PortfolioImpact"];
+type PortfolioImpact = components["schemas"]["TickerPortfolioImpactSummaryResponse"];
+
+type ProposedPortfolioImpact = PortfolioImpact & { ticker: string };
 
 export type PortfolioSummary = {
   portfolioValue: number;
@@ -44,7 +46,7 @@ export type PortfolioViewModel = {
   riskRows: RowRecord[];
   reviewRows: RowRecord[];
   exposureClusterRows: RowRecord[];
-  proposedImpacts: PortfolioImpact[];
+  proposedImpacts: ProposedPortfolioImpact[];
   topHolding: AppModel["holdings"][number] | undefined;
 };
 
@@ -88,7 +90,7 @@ export function buildPortfolioViewModel(data: PanelData, model: AppModel, correl
     exposureClusterRows: rows(data.exposureClusters),
     proposedImpacts: model.holdings.flatMap((holding) => {
       const impact = selectedPortfolioImpact(decisions.get(holding.ticker.toUpperCase()));
-      return impact ? [impact] : [];
+      return impact ? [{ ticker: holding.ticker, ...impact }] : [];
     }),
     topHolding: model.holdings.slice().sort((a, b) => b.weight - a.weight)[0],
   };
@@ -99,7 +101,14 @@ function selectedPortfolioImpact(decision: RowRecord | undefined): PortfolioImpa
   const impacts = decision?.portfolio_impacts;
   if (!isRecord(selected) || !isRecord(impacts) || typeof selected.kind !== "string") return undefined;
   const impact = impacts[selected.kind];
-  return isRecord(impact) ? impact as unknown as PortfolioImpact : undefined;
+  if (!isRecord(impact)) return undefined;
+  return {
+    expression_kind: String(impact.expression_kind || selected.kind) as PortfolioImpact["expression_kind"],
+    availability: typeof impact.availability === "string" ? impact.availability : "unavailable",
+    marginal_risk: typeof impact.marginal_risk === "number" ? impact.marginal_risk : null,
+    risk_budget_consumed: typeof impact.risk_budget_consumed === "number" ? impact.risk_budget_consumed : null,
+    blockers: Array.isArray(impact.blockers) ? impact.blockers.map(String) : [],
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

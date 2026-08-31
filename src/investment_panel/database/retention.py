@@ -21,6 +21,7 @@ OPTION_PARTITION_RE = re.compile(r"^option_quote_(\d{4})(\d{2})(\d{2})?$")
 ROLLING_PUBLICATION_SCOPES = ("today", "options-radar", "options-decision-system")
 MARKET_PUBLICATION_SUPERSEDED_LIMIT = 48
 ROLLING_PUBLICATION_TRADING_DAYS = 30
+ORPHAN_PAYLOAD_CLEANUP_MAX_HASHES = 10_000
 
 
 class RetentionRepository:
@@ -405,9 +406,16 @@ def _publication_candidates(
         )
         SELECT id
         FROM ranked
-        WHERE (scope = 'market' AND superseded_rank > %s)
-           OR (scope = ANY(%s) AND generation_at < %s)
-           OR (scope <> ALL(%s) AND generation_at < %s)
+        WHERE (
+               (scope = 'market' AND superseded_rank > %s)
+            OR (scope = ANY(%s) AND generation_at < %s)
+            OR (scope <> ALL(%s) AND generation_at < %s)
+        )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM analysis.ticker_decision decision
+              WHERE decision.market_state_publication_id = ranked.id
+          )
         ORDER BY generation_at, id
         {suffix}
         """,
@@ -426,6 +434,17 @@ def _delete_publications_and_orphaned_content(connection: Any, candidates: list[
     bundle_ids = sorted({row["bundle_id"] for row in deleted if row["bundle_id"] is not None})
     if not bundle_ids:
         return {}
+    content_hashes = [
+        row["content_hash"]
+        for row in connection.execute(
+            """
+            SELECT content_hash
+            FROM app.publication_bundle_item
+            WHERE bundle_id = ANY(%s)
+            """,
+            [bundle_ids],
+        ).fetchall()
+    ]
     bundles = connection.execute(
         """
         DELETE FROM app.publication_bundle bundle
@@ -436,13 +455,24 @@ def _delete_publications_and_orphaned_content(connection: Any, candidates: list[
     ).rowcount
     if not bundles:
         return {}
+    if not content_hashes:
+        return {"publication_bundles": bundles}
+    if len(content_hashes) > ORPHAN_PAYLOAD_CLEANUP_MAX_HASHES:
+        # ponytail: defer large orphan scans to the verified storage process;
+        # add a content-hash index before raising this bounded ceiling.
+        return {
+            "publication_bundles": bundles,
+            "publication_payload_cleanup_skipped": len(content_hashes),
+        }
     payloads = connection.execute(
         """
         DELETE FROM app.publication_payload payload
-        WHERE NOT EXISTS (
+        WHERE payload.content_hash = ANY(%s)
+          AND NOT EXISTS (
             SELECT 1 FROM app.publication_bundle_item item WHERE item.content_hash = payload.content_hash
         )
-        """
+        """,
+        [content_hashes],
     ).rowcount
     result: dict[str, int] = {"publication_bundles": bundles}
     if payloads:

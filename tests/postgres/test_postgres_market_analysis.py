@@ -208,7 +208,18 @@ def test_market_publication_uses_the_exact_refreshed_equity_benchmark(
         assert price_state.missing_member_count == 1
         assert corporate_state.eligible_member_count == 1
 
-        refresh_market_publication(runtime, now=datetime.now(UTC))
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app.watchlist_item (instrument_id, watch_state) "
+                "SELECT id, 'excluded' FROM catalog.instrument WHERE symbol = 'OUT-SCOPE' "
+                "ON CONFLICT (instrument_id) DO UPDATE SET watch_state = EXCLUDED.watch_state, "
+                "updated_at = EXCLUDED.updated_at"
+            )
+        refresh_market_publication(
+            runtime,
+            now=datetime.now(UTC),
+            configured_watchlist=[{"symbol": "OUT-SCOPE"}],
+        )
         unscoped = MarketStateSnapshot.model_validate(
             AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
         )
@@ -2029,7 +2040,7 @@ def test_historical_market_publication_omits_future_catalog_and_membership_rows(
             if item.dimension == "corporate cycle"
         )
         assert tuple(state.eligible_members) == (
-            "PITCONFIG", "PITNOISY", "PITPOS", "PITWATCH",
+            "PITNOISY", "PITPOS", "PITWATCH",
         )
     finally:
         runtime.close()

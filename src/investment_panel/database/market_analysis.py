@@ -74,11 +74,19 @@ def refresh_market_publication(
     now: datetime | None = None,
     benchmark_symbols: list[str] | tuple[str, ...] | None = None,
     configured_watchlist: list[dict[str, Any]] | None = None,
+    configured_watchlist_as_of: datetime | None = None,
 ) -> dict[str, Any]:
     as_of = now or datetime.now(UTC)
     if as_of.tzinfo is None:
         raise ValueError("market publication timestamp must be timezone-aware")
     as_of = as_of.astimezone(UTC)
+    configured_at = _as_utc(configured_watchlist_as_of)
+    if configured_watchlist_as_of is not None and configured_at is None:
+        raise ValueError("configured watchlist timestamp must be timezone-aware")
+    if configured_at is not None and configured_at > as_of:
+        raise ValueError("configured watchlist timestamp is after market cutoff")
+    if configured_at is None and now is None:
+        configured_at = as_of
     # Instrument and source updated_at values are maintenance timestamps touched by
     # idempotent registration. Membership timestamps are semantic and safe to gate.
     with runtime.read() as connection:
@@ -101,13 +109,20 @@ def refresh_market_publication(
                              AND watchlist.created_at <= %s
                              AND watchlist.updated_at <= %s
                              AND watchlist.watch_state <> 'excluded'
-                       ) AS persisted_watchlist_member
+                       ) AS persisted_watchlist_member,
+                       EXISTS (
+                           SELECT 1 FROM app.watchlist_item watchlist
+                           WHERE watchlist.instrument_id = instrument.id
+                             AND watchlist.created_at <= %s
+                             AND watchlist.updated_at <= %s
+                             AND watchlist.watch_state = 'excluded'
+                       ) AS persisted_watchlist_excluded
                 FROM catalog.instrument instrument
                 WHERE instrument.created_at <= %s
                   AND (instrument.delisted_at IS NULL OR instrument.delisted_at > %s)
                 ORDER BY symbol
                 """,
-                [as_of, as_of, as_of, as_of],
+                [as_of, as_of, as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         explicit_benchmark = (
@@ -116,7 +131,11 @@ def refresh_market_publication(
             else None
         )
         configured_benchmark = (
-            _configured_benchmark_symbols(configured_watchlist)
+            _configured_benchmark_symbols(
+                configured_watchlist,
+                as_of=as_of,
+                configured_at=configured_at,
+            )
             if explicit_benchmark is None
             else set()
         )
@@ -127,8 +146,13 @@ def refresh_market_publication(
                 if explicit_benchmark is not None
                 else (
                     int(row["id"]) in owned_instrument_ids
-                    or bool(row.get("persisted_watchlist_member"))
-                    or symbol in configured_benchmark
+                    or (
+                        not bool(row.get("persisted_watchlist_excluded"))
+                        and (
+                            bool(row.get("persisted_watchlist_member"))
+                            or symbol in configured_benchmark
+                        )
+                    )
                 )
             )
         bars_by_id = confirmed_daily_bars(
@@ -270,15 +294,47 @@ def refresh_market_publication(
     }
 
 
-def _configured_benchmark_symbols(configured_watchlist: list[dict[str, Any]] | None) -> set[str]:
+def _configured_benchmark_symbols(
+    configured_watchlist: list[dict[str, Any]] | None,
+    *,
+    as_of: datetime,
+    configured_at: datetime | None,
+) -> set[str]:
     output: set[str] = set()
     for item in configured_watchlist or ():
         if str(item.get("watch_state") or "").strip().lower() == "excluded":
+            continue
+        created_at = _configured_membership_time(item, "created_at")
+        updated_at = _configured_membership_time(item, "updated_at")
+        if (
+            ("created_at" in item and created_at is None)
+            or ("updated_at" in item and updated_at is None)
+            or (created_at is not None and created_at > as_of)
+            or (updated_at is not None and updated_at > as_of)
+            or (
+                configured_at is None
+                and created_at is None
+                and updated_at is None
+            )
+        ):
             continue
         symbol = str(item.get("symbol") or "").strip().upper()
         if symbol:
             output.add(symbol)
     return output
+
+
+def _configured_membership_time(item: dict[str, Any], key: str) -> datetime | None:
+    value = item.get(key)
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _as_utc(parsed)
 
 
 def _asset_row(rows: list[dict[str, Any]]) -> dict[str, Any]:

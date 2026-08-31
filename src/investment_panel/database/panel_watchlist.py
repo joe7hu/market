@@ -103,8 +103,45 @@ def technical_rows(connection: Any, *, symbols: set[str] | None = None) -> list[
         result = connection.execute(TECHNICALS_QUERY)
     else:
         query = TECHNICALS_QUERY.replace(
-            "WHERE bar.interval = '1d' AND bar.close > 0",
-            "WHERE bar.interval = '1d' AND bar.close > 0 AND instrument.symbol = ANY(%s)",
+            "WITH daily AS (",
+            """WITH candidate_instruments AS MATERIALIZED (
+                SELECT id, symbol FROM catalog.instrument WHERE symbol = ANY(%s)
+            ), facts AS MATERIALIZED (
+                SELECT fact.id, fact.instrument_id, fact.source_id, fact.interval,
+                       fact.trading_date, fact.observed_at, fact.available_at,
+                       fact.high, fact.low, fact.close, fact.volume
+                FROM raw.price_bar fact
+                JOIN candidate_instruments candidate ON candidate.id = fact.instrument_id
+                WHERE fact.interval = '1d'
+                UNION ALL
+                SELECT fact.id, fact.instrument_id, fact.source_id, fact.interval,
+                       fact.trading_date, fact.observed_at, fact.available_at,
+                       fact.high, fact.low, fact.close, fact.volume
+                FROM raw.price_bar_history fact
+                JOIN candidate_instruments candidate ON candidate.id = fact.instrument_id
+                WHERE fact.interval = '1d'
+            ), confirmed_price_bars AS MATERIALIZED (
+                SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.observed_at)
+                       fact.*
+                FROM facts fact
+                JOIN LATERAL (
+                    SELECT availability.ingest_run_id
+                    FROM raw.price_bar_fact_availability availability
+                    WHERE availability.fact_id = fact.id
+                      AND availability.fact_available_at = fact.available_at
+                    LIMIT 1
+                ) availability ON true
+                JOIN ingest.run price_run
+                  ON price_run.id = availability.ingest_run_id
+                 AND price_run.status IN ('succeeded', 'partial')
+                 AND price_run.finished_at IS NOT NULL
+                ORDER BY fact.instrument_id, fact.source_id, fact.interval,
+                         fact.observed_at, fact.available_at DESC
+            ), daily AS (""",
+            1,
+        ).replace(
+            "FROM raw.confirmed_price_bar bar",
+            "FROM confirmed_price_bars bar",
             1,
         )
         result = connection.execute(query, [normalized])

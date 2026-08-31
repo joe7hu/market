@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any, Iterable, Mapping
 from uuid import UUID
 
@@ -418,10 +419,35 @@ class TickerDecisionRepository:
                     compact_contract_valid = False
                     decision_selected_kind = None
                     decision_selected_horizon = None
-            try:
-                opportunity_episode = OpportunityEpisode.model_validate(
-                    row.get("opportunity_episode")
+            raw_episode = row.get("opportunity_episode")
+            episode_for_validation = raw_episode
+            if row.get("impact_lineage_match") is not None:
+                episode_cutoff = _parse_datetime(row.get("as_of"))
+                lineage = raw_episode.get("input_lineage") if isinstance(raw_episode, Mapping) else None
+                lineage_valid = bool(
+                    episode_cutoff is not None
+                    and isinstance(raw_episode, Mapping)
+                    and _funnel_lineage_is_valid(
+                        lineage,
+                        episode_id=str(row.get("opportunity_episode_id") or ""),
+                        decision_revision=str(row.get("decision_revision") or ""),
+                        policy_version=str(row.get("policy_version") or ""),
+                        cutoff=episode_cutoff,
+                    )
                 )
+                if lineage_valid:
+                    # The SQL identity check covers the complete lineage. Keep
+                    # one item for the domain model's remaining episode checks.
+                    episode_for_validation = {
+                        **raw_episode,
+                        "input_lineage": [lineage[0]],
+                    }
+                else:
+                    episode_for_validation = None
+            try:
+                if episode_for_validation is None:
+                    raise ValueError("opportunity episode lineage is invalid")
+                opportunity_episode = OpportunityEpisode.model_validate(episode_for_validation)
                 episode_selected_kind = (
                     opportunity_episode.selected_expression.kind
                     if opportunity_episode.selected_expression is not None
@@ -458,8 +484,14 @@ class TickerDecisionRepository:
                 opportunity_episode is None
                 or not opportunity_episode.input_lineage
                 or stock_impact is None
-                or tuple(stock_impact.input_lineage)
-                != tuple(opportunity_episode.input_lineage)
+                or (
+                    row.get("impact_lineage_match") is not True
+                    and (
+                        row.get("impact_lineage_match") is not None
+                        or tuple(stock_impact.input_lineage)
+                        != tuple(opportunity_episode.input_lineage)
+                    )
+                )
             ):
                 compact_contract_valid = False
                 stock_impact = None
@@ -564,73 +596,75 @@ class TickerDecisionRepository:
 
         model_names = ["alpha_signal", "opportunity_rank", "trade_plan"]
         with self.runtime.snapshot(API_PROFILE) as connection:
-            rows = connection.execute(
+            has_projection = connection.execute(
                 """
-                SELECT item.model_name,
-                       coalesce(payload.payload->>'ticker', payload.payload->>'symbol')
-                           AS ticker,
-                       payload.payload->>'availability_status' AS availability_status,
-                       payload.payload->'blockers' AS blockers,
-                       payload.payload->'trade_rank' AS trade_rank,
-                       payload.payload->>'primary_blocker' AS primary_blocker,
-                       payload.payload->>'trade_rank_unavailable_reason'
-                           AS trade_rank_unavailable_reason,
-                       payload.payload->>'eligibility' AS eligibility,
-                       payload.payload->>'ranking_version' AS ranking_version,
-                       publication.id::text AS publication_id,
-                       publication.published_at
-                FROM app.current_publication_item item
-                JOIN app.publication_payload payload
-                  ON payload.content_hash = item.content_hash
-                JOIN app.publication publication
-                  ON publication.id = item.publication_id
-                WHERE item.scope = %s
-                  AND item.model_name = ANY(%s)
-                  AND publication.status = 'published'
-                ORDER BY item.model_name, item.rank
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM app.current_publication_item item
+                    JOIN app.publication publication
+                      ON publication.id = item.publication_id
+                    WHERE item.scope = %s
+                      AND item.model_name = ANY(%s)
+                      AND publication.status = 'published'
+                ) AS exists
                 """,
                 [TICKER_RANKING_SCOPE, model_names],
-            ).fetchall()
-            if not rows:
-                has_projection = connection.execute(
+            ).fetchone()["exists"]
+            if has_projection:
+                rows = connection.execute(
                     """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM app.current_publication_item item
-                        JOIN app.publication publication
-                          ON publication.id = item.publication_id
-                        WHERE item.scope = %s
-                          AND publication.status = 'published'
-                    ) AS exists
+                    SELECT item.model_name,
+                           coalesce(payload.payload->>'ticker', payload.payload->>'symbol')
+                               AS ticker,
+                           payload.payload->>'availability_status' AS availability_status,
+                           payload.payload->'blockers' AS blockers,
+                           payload.payload->'trade_rank' AS trade_rank,
+                           payload.payload->>'primary_blocker' AS primary_blocker,
+                           payload.payload->>'trade_rank_unavailable_reason'
+                               AS trade_rank_unavailable_reason,
+                           payload.payload->>'eligibility' AS eligibility,
+                           payload.payload->>'ranking_version' AS ranking_version,
+                           publication.id::text AS publication_id,
+                           publication.published_at
+                    FROM app.current_publication_item item
+                    JOIN app.publication_payload payload
+                      ON payload.content_hash = item.content_hash
+                    JOIN app.publication publication
+                      ON publication.id = item.publication_id
+                    WHERE item.scope = %s
+                      AND item.model_name = ANY(%s)
+                      AND publication.status = 'published'
+                    ORDER BY item.model_name, item.rank
                     """,
-                    [TICKER_RANKING_SCOPE],
-                ).fetchone()["exists"]
-                if not has_projection:
-                    rows = connection.execute(
-                        """
-                        SELECT item.model_name,
-                               coalesce(item.payload->>'ticker', item.payload->>'symbol')
-                                   AS ticker,
-                               item.payload->>'availability_status' AS availability_status,
-                               item.payload->'blockers' AS blockers,
-                               item.payload->'trade_rank' AS trade_rank,
-                               item.payload->>'primary_blocker' AS primary_blocker,
-                               item.payload->>'trade_rank_unavailable_reason'
-                                   AS trade_rank_unavailable_reason,
-                               item.payload->>'eligibility' AS eligibility,
-                               item.payload->>'ranking_version' AS ranking_version,
-                               publication.id::text AS publication_id,
-                               publication.published_at
-                        FROM app.publication publication
-                        JOIN app.publication_item item
-                          ON item.publication_id = publication.id
-                        WHERE publication.scope = %s
-                          AND publication.status = 'published'
-                          AND item.model_name = ANY(%s)
-                        ORDER BY item.model_name, item.rank
-                        """,
-                        [TICKER_RANKING_SCOPE, model_names],
-                    ).fetchall()
+                    [TICKER_RANKING_SCOPE, model_names],
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT item.model_name,
+                           coalesce(item.payload->>'ticker', item.payload->>'symbol')
+                               AS ticker,
+                           item.payload->>'availability_status' AS availability_status,
+                           item.payload->'blockers' AS blockers,
+                           item.payload->'trade_rank' AS trade_rank,
+                           item.payload->>'primary_blocker'
+                               AS primary_blocker,
+                           item.payload->>'trade_rank_unavailable_reason'
+                               AS trade_rank_unavailable_reason,
+                           item.payload->>'eligibility' AS eligibility,
+                           item.payload->>'ranking_version' AS ranking_version,
+                           publication.id::text AS publication_id,
+                           publication.published_at
+                    FROM app.publication publication
+                    JOIN app.publication_item item
+                      ON item.publication_id = publication.id
+                    WHERE publication.scope = %s
+                      AND publication.status = 'published'
+                      AND item.model_name = ANY(%s)
+                    ORDER BY item.model_name, item.rank
+                    """,
+                    [TICKER_RANKING_SCOPE, model_names],
+                ).fetchall()
         grouped: dict[str, list[dict[str, Any]]] = {
             "alpha_signal": [],
             "opportunity_rank": [],
@@ -716,20 +750,114 @@ class TickerDecisionRepository:
                        END AS selected_expression,
                        coalesce(decision.expressions->'STOCK', decision.expressions->'stock')
                            AS stock_expression,
-                       coalesce(decision.portfolio_impacts->'STOCK', decision.portfolio_impacts->'stock')
-                           AS stock_portfolio_impact,
-                       decision.resolution,
+                       CASE
+                           WHEN lower(coalesce(
+                               impact.stock_impact->>'availability',
+                               impact.stock_impact->>'availability_status',
+                               ''
+                           )) = 'available'
+                           THEN CASE WHEN octet_length(impact.stock_impact::text) <= 262144
+                                THEN jsonb_set(
+                                    impact.stock_impact,
+                                    '{input_lineage}', '[]'::jsonb, false
+                                )
+                           END
+                           WHEN octet_length(coalesce(
+                               impact.stock_impact->'blockers', '[]'::jsonb
+                           )::text) <= 8192
+                           THEN jsonb_build_object(
+                               'contract_version', impact.stock_impact->'contract_version',
+                               'impact_id', impact.stock_impact->'impact_id',
+                               'ticker', impact.stock_impact->'ticker',
+                               'symbol', impact.stock_impact->'symbol',
+                               'instrument_symbol', impact.stock_impact->'instrument_symbol',
+                               'opportunity_episode_id', impact.stock_impact->'opportunity_episode_id',
+                               'expression_kind', impact.stock_impact->'expression_kind',
+                               'expression', impact.stock_impact->'expression',
+                               'expression_identity', impact.stock_impact->'expression_identity',
+                               'decision_revision', impact.stock_impact->'decision_revision',
+                               'risk_policy_version', impact.stock_impact->'risk_policy_version',
+                               'policy_version', impact.stock_impact->'policy_version',
+                               'market_snapshot_id', impact.stock_impact->'market_snapshot_id',
+                               'snapshot_id', impact.stock_impact->'snapshot_id',
+                               'market_state_publication_id', impact.stock_impact->'market_state_publication_id',
+                               'cutoff', impact.stock_impact->'cutoff',
+                               'availability', impact.stock_impact->'availability',
+                               'availability_status', impact.stock_impact->'availability_status',
+                               'blockers', coalesce(impact.stock_impact->'blockers', '[]'::jsonb)
+                           )
+                       END AS stock_portfolio_impact,
+                       CASE WHEN decision.opportunity_episode->'input_lineage'
+                                  = coalesce(
+                                      decision.portfolio_impacts->'STOCK',
+                                      decision.portfolio_impacts->'stock'
+                                  )->'input_lineage'
+                            THEN true ELSE false
+                       END AS impact_lineage_match,
+                       CASE WHEN octet_length(decision.resolution::text) <= 196608
+                            THEN jsonb_build_object(
+                                'contract_version', decision.resolution->'contract_version',
+                                'lifecycle', decision.resolution->'lifecycle',
+                                'eligibility', decision.resolution->'eligibility',
+                                'status', decision.resolution->'status',
+                                'authorization_mode', decision.resolution->'authorization_mode',
+                                'authorization', decision.resolution->'authorization',
+                                'data_quality', decision.resolution->'data_quality',
+                                'data_quality_status', decision.resolution->'data_quality_status',
+                                'action', decision.resolution->'action',
+                                'trade_plan_id', decision.resolution->'trade_plan_id',
+                                'primary_blocker', decision.resolution->'primary_blocker',
+                                'blockers', CASE WHEN octet_length(coalesce(
+                                    decision.resolution->'blockers', '[]'::jsonb
+                                )::text) <= 8192
+                                    THEN coalesce(decision.resolution->'blockers', '[]'::jsonb)
+                                    ELSE '["decision_resolution_invalid"]'::jsonb
+                                END,
+                                'next_action', decision.resolution->'next_action',
+                                'entry', CASE WHEN lower(coalesce(
+                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
+                                )) = 'actionable' THEN decision.resolution->'entry' END,
+                                'size', CASE WHEN lower(coalesce(
+                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
+                                )) = 'actionable' THEN decision.resolution->'size' END,
+                                'invalidation', CASE WHEN lower(coalesce(
+                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
+                                )) = 'actionable' THEN decision.resolution->'invalidation' END,
+                                'exit', CASE WHEN lower(coalesce(
+                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
+                                )) = 'actionable' THEN decision.resolution->'exit' END,
+                                'ttl', CASE WHEN lower(coalesce(
+                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
+                                )) = 'actionable' THEN decision.resolution->'ttl' END,
+                                'portfolio_context', CASE WHEN lower(coalesce(
+                                    decision.resolution->>'eligibility', decision.resolution->>'status', ''
+                                )) = 'actionable' THEN decision.resolution->'portfolio_context' END,
+                                'policy_version', decision.resolution->'policy_version',
+                                'policy_revision', decision.resolution->'policy_revision',
+                                'decision_revision', decision.resolution->'decision_revision',
+                                'revision', decision.resolution->'revision',
+                                'ticker', decision.resolution->'ticker'
+                            )
+                       END AS resolution,
                        decision.market_state_publication_id::text
                 FROM candidate_keys candidate
                 JOIN analysis.ticker_decision decision ON decision.id = candidate.id
+                CROSS JOIN LATERAL (
+                    SELECT coalesce(
+                        decision.portfolio_impacts->'STOCK',
+                        decision.portfolio_impacts->'stock'
+                    ) AS stock_impact
+                ) impact
                 WHERE candidate.current_row = 1
                   AND candidate.authority_count = 1
                   AND candidate.opportunity_authority_count = 1
-                ORDER BY candidate.ticker
                 """,
                 [reference, reference],
             ).fetchall()
-        return [dict(row) for row in rows]
+        return sorted(
+            (dict(row) for row in rows),
+            key=lambda row: str(row.get("ticker") or ""),
+        )
 
     def refresh_outcomes(
         self,
@@ -2432,6 +2560,88 @@ def _parse_datetime(value: Any) -> datetime | None:
         return _utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except (TypeError, ValueError):
         return None
+
+
+def _funnel_lineage_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, (datetime, str)):
+        return _cached_funnel_lineage_timestamp(value)
+    return _parse_funnel_lineage_timestamp(value)
+
+
+@lru_cache(maxsize=4096)
+def _cached_funnel_lineage_timestamp(value: datetime | str) -> datetime | None:
+    return _parse_funnel_lineage_timestamp(value)
+
+
+def _parse_funnel_lineage_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _utc(value) if value.tzinfo is not None else None
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return _utc(parsed) if parsed.tzinfo is not None else None
+
+
+def _funnel_lineage_is_valid(
+    value: Any,
+    *,
+    episode_id: str,
+    decision_revision: str,
+    policy_version: str,
+    cutoff: datetime,
+) -> bool:
+    if not isinstance(value, (list, tuple)) or not value:
+        return False
+    identities: set[tuple[Any, ...]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        field = item.get("field")
+        source_id = item.get("source_id", item.get("source"))
+        source_version = item.get("source_version", item.get("version"))
+        if not isinstance(field, str) or not field:
+            return False
+        if not isinstance(source_id, str) or not source_id:
+            return False
+        if source_version is not None and not isinstance(source_version, str):
+            return False
+        for name in ("revision", "opportunity_episode_id", "decision_revision", "policy_version"):
+            if item.get(name) is not None and not isinstance(item[name], str):
+                return False
+        timestamps: dict[str, datetime | None] = {}
+        for name in ("event_at", "published_at", "available_at", "received_at", "cutoff"):
+            if name in item and item[name] is not None:
+                timestamp = _funnel_lineage_timestamp(item[name])
+                if timestamp is None:
+                    return False
+                timestamps[name] = timestamp
+        available_at = timestamps.get("available_at")
+        if available_at is None or available_at > cutoff:
+            return False
+        if item.get("opportunity_episode_id", item.get("episode_id")) not in (None, episode_id):
+            return False
+        if item.get("decision_revision") not in (None, decision_revision):
+            return False
+        if item.get("policy_version") not in (None, policy_version):
+            return False
+        lineage_cutoff = timestamps.get("cutoff")
+        if item.get("cutoff") is not None and lineage_cutoff != cutoff:
+            return False
+        identity = (
+            field,
+            source_id,
+            source_version,
+            available_at,
+            item.get("revision"),
+            lineage_cutoff,
+        )
+        if identity in identities:
+            return False
+        identities.add(identity)
+    return True
 
 
 def _utc(value: datetime) -> datetime:
