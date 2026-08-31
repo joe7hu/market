@@ -1193,13 +1193,19 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
     assert dict(strategy) == {"strategy_key": payload["strategy_version"], "status": "active"}
 
 
-def test_local_write_guard_allows_private_lan_clients() -> None:
+def test_local_api_guard_allows_private_lan_clients() -> None:
     require_local_request(SimpleNamespace(client=SimpleNamespace(host="100.120.95.8")))
     require_local_request(SimpleNamespace(client=SimpleNamespace(host="192.168.50.197")))
     require_local_request(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")))
 
     with pytest.raises(HTTPException):
         require_local_request(SimpleNamespace(client=SimpleNamespace(host="8.8.8.8")))
+
+
+def test_api_rejects_public_network_clients() -> None:
+    response = TestClient(app, client=("8.8.8.8", 50000)).get("/api/status")
+
+    assert response.status_code == 403
 
 
 def test_thesis_monitor_automation_accepts_symbol_scoped_background_run(monkeypatch: pytest.MonkeyPatch) -> None:

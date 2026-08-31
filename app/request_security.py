@@ -1,4 +1,4 @@
-"""Request boundary for local and private-network mutations."""
+"""Request boundary for the local and private-network API."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ TAILSCALE_CGNAT = ip_network("100.64.0.0/10")
 
 
 def require_local_request(request: Request) -> None:
-    """Allow writes only from loopback, private LAN, link-local, or Tailscale."""
+    """Allow API access only from loopback, private LAN, link-local, or Tailscale."""
 
     host = request.client.host if request.client else ""
     if host in {"localhost", "testclient"}:

@@ -41,7 +41,7 @@ def get_runtime(config: AppConfig = Depends(get_config)):
 
 
 def get_authorized_request(request: Request) -> Request:
-    """Authorize a local write request through FastAPI dependency injection."""
+    """Authorize a local API request through FastAPI dependency injection."""
 
     require_local_request(request)
     return request

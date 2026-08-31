@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -62,7 +62,7 @@ def create_app() -> FastAPI:
     )
 
     for router in ALL_ROUTERS:
-        app.include_router(router)
+        app.include_router(router, dependencies=[Depends(dependencies.get_authorized_request)])
 
     _mount_frontend(app)
     return app
