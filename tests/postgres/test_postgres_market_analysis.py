@@ -97,6 +97,14 @@ def _assert_crypto_unavailable(
             assert coverage.model_dump(mode="json")[count_key] == count
 
 
+def _backdate_source(connection, source_id: str, cutoff: datetime) -> None:
+    visible_at = cutoff - timedelta(days=1)
+    connection.execute(
+        "UPDATE ingest.source SET created_at = %s WHERE id = %s",
+        [visible_at, source_id],
+    )
+
+
 def test_market_publication_builds_visible_models_from_normalized_quotes(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -198,6 +206,17 @@ def test_market_publication_uses_the_exact_refreshed_equity_benchmark(
         assert price_state.eligible_member_count == 1
         assert price_state.missing_member_count == 1
         assert corporate_state.eligible_member_count == 1
+
+        refresh_market_publication(runtime, now=datetime.now(UTC))
+        unscoped = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        unscoped_corporate = next(
+            row for row in unscoped.horizons["3-12 months"]
+            if row.dimension == "corporate cycle"
+        )
+        assert unscoped_corporate.eligible_member_count == 0
+        assert unscoped_corporate.eligible_members == []
     finally:
         runtime.close()
 
@@ -648,7 +667,9 @@ def test_market_coverage_uses_exact_history_per_horizon(migrated_postgres_dsn: s
         ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=3)
         cutoff = datetime.now(UTC)
 
-        result = refresh_market_publication(runtime, now=cutoff)
+        result = refresh_market_publication(
+            runtime, now=cutoff, benchmark_symbols=["SPY", "QQQ", "NVDA"]
+        )
         assert result["available_coverage_rows"] == 5
         repository = AnalysisRepository(runtime)
         consumed = repository.publication_by_id("market", result["publication_id"])
@@ -743,7 +764,9 @@ def test_market_realized_volatility_uses_exact_extra_close_lineage_and_identity(
         )
         ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=3)
 
-        result = refresh_market_publication(runtime, now=cutoff)
+        result = refresh_market_publication(
+            runtime, now=cutoff, benchmark_symbols=["SPY", "QQQ", "NVDA"]
+        )
         repository = AnalysisRepository(runtime)
         snapshot = MarketStateSnapshot.model_validate(
             repository.publication_rows("market", "market_state_snapshot")[0]
@@ -808,7 +831,9 @@ def test_market_realized_volatility_uses_exact_extra_close_lineage_and_identity(
                 "UPDATE raw.price_bar SET close = close + 1 WHERE trading_date = %s",
                 [dates[-1]],
             )
-        changed_result = refresh_market_publication(runtime, now=cutoff)
+        changed_result = refresh_market_publication(
+            runtime, now=cutoff, benchmark_symbols=["SPY", "QQQ", "NVDA"]
+        )
         assert changed_result["snapshot_id"] != result["snapshot_id"]
         changed_snapshot = AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
         assert changed_snapshot["snapshot_id"] == changed_result["snapshot_id"]
@@ -852,7 +877,9 @@ def test_market_realized_volatility_stays_unavailable_for_incomplete_member(
                 [dates[0], source_id],
             )
 
-        refresh_market_publication(runtime, now=cutoff)
+        refresh_market_publication(
+            runtime, now=cutoff, benchmark_symbols=["SPY", "QQQ", "NVDA"]
+        )
         snapshot = MarketStateSnapshot.model_validate(
             AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
         )
@@ -979,7 +1006,9 @@ def test_market_realized_volatility_fails_closed_per_member_quality(
                 return duplicated
 
             monkeypatch.setattr(market_analysis, "confirmed_daily_bars", confirmed_daily_bars_with_duplicate)
-        refresh_market_publication(runtime, now=cutoff)
+        refresh_market_publication(
+            runtime, now=cutoff, benchmark_symbols=["SPY", "QQQ", "NVDA"]
+        )
         snapshot = MarketStateSnapshot.model_validate(
             AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
         )
@@ -1060,7 +1089,9 @@ def test_market_realized_volatility_fails_closed_for_unusable_postgres_source(
         if source_state == "disabled":
             ingestion.set_source_enabled(bad_source, False)
 
-        refresh_market_publication(runtime, now=cutoff)
+        refresh_market_publication(
+            runtime, now=cutoff, benchmark_symbols=["SPY", "QQQ", "NVDA"]
+        )
         snapshot = MarketStateSnapshot.model_validate(
             AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
         )
@@ -1170,6 +1201,7 @@ def test_market_event_risk_uses_latest_cutoff_visible_versions(migrated_postgres
                 "UPDATE raw.market_event_version SET available_at = %s WHERE ingest_run_id = %s",
                 [cutoff - timedelta(hours=2), unfinished_run],
             )
+            _backdate_source(connection, source_id, cutoff)
 
         result = refresh_market_publication(runtime, now=cutoff)
         repository = AnalysisRepository(runtime)
@@ -1567,6 +1599,29 @@ def _complete_corporate_rows() -> list[dict[str, object]]:
     ]
 
 
+def _backdate_corporate_authority(connection, cutoff: datetime) -> None:
+    visible_at = cutoff - timedelta(days=1)
+    connection.execute(
+        "UPDATE catalog.instrument SET created_at = %s "
+        "WHERE symbol = ANY(%s)",
+        [visible_at, ["ACME", "BETA", "NVDA", "QQQ", "SPY"]],
+    )
+    connection.execute(
+        """
+        INSERT INTO app.watchlist_item
+            (instrument_id, watch_state, created_at, updated_at)
+        SELECT id, 'watched', %s, %s
+        FROM catalog.instrument
+        WHERE symbol = ANY(%s)
+        ON CONFLICT (instrument_id) DO UPDATE
+        SET watch_state = 'watched', created_at = EXCLUDED.created_at,
+            updated_at = EXCLUDED.updated_at
+        """,
+        [visible_at, visible_at, ["ACME", "BETA", "NVDA", "QQQ", "SPY"]],
+    )
+    _backdate_source(connection, "sec_companyfacts", cutoff)
+
+
 def test_market_corporate_cycle_uses_cutoff_visible_annual_sec_facts(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -1589,6 +1644,7 @@ def test_market_corporate_cycle_uses_cutoff_visible_annual_sec_facts(
                 "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
                 [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), run_id],
             )
+            _backdate_corporate_authority(connection, cutoff)
         first = refresh_market_publication(runtime, now=cutoff)
         repository = AnalysisRepository(runtime)
         snapshot = MarketStateSnapshot.model_validate(
@@ -1634,6 +1690,7 @@ def test_market_corporate_cycle_uses_cutoff_visible_annual_sec_facts(
                 "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
                 [cutoff - timedelta(minutes=20), cutoff - timedelta(minutes=20), amendment_run],
             )
+            _backdate_corporate_authority(connection, cutoff)
         before_amendment = refresh_market_publication(runtime, now=cutoff)
         assert before_amendment["snapshot_id"] == first["snapshot_id"]
 
@@ -1649,6 +1706,23 @@ def test_market_corporate_cycle_uses_cutoff_visible_annual_sec_facts(
         assert after_amendment["snapshot_id"] != first["snapshot_id"]
         assert changed_corporate.model_dump(mode="json")["median_revenue_growth"] == pytest.approx(0.15)
         assert any("ACME-2025-A" == item.accession_number for item in changed_corporate.lineage)
+
+        source_cutoff = datetime(2026, 8, 28, 17, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.source SET created_at = %s WHERE id = 'sec_companyfacts'",
+                [source_cutoff + timedelta(minutes=1)],
+            )
+        refresh_market_publication(runtime, now=source_cutoff)
+        future_source = MarketStateSnapshot.model_validate(
+            repository.publication_rows("market", "market_state_snapshot")[0]
+        )
+        future_corporate = next(
+            item for item in future_source.horizons["3-12 months"]
+            if item.dimension == "corporate cycle"
+        )
+        assert future_corporate.evidence_status == "unavailable"
+        assert future_corporate.blockers == ("corporate_cycle_source_missing",)
     finally:
         runtime.close()
 
@@ -1678,6 +1752,7 @@ def test_market_corporate_cycle_rejects_stale_facts_after_fresh_incomplete_run(
                 "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
                 [cutoff - timedelta(days=2), cutoff - timedelta(days=2), old_run],
             )
+            _backdate_corporate_authority(connection, cutoff)
         fresh_incomplete_run = ingestion.start_run("sec_companyfacts", "company_financials")
         ingestion.finish_run(fresh_incomplete_run, "succeeded")
         with runtime.transaction() as connection:
@@ -1739,6 +1814,7 @@ def test_market_corporate_cycle_rejects_invalid_annual_evidence(
                 "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
                 [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), run_id],
             )
+            _backdate_corporate_authority(connection, cutoff)
 
         refresh_market_publication(runtime, now=cutoff)
         snapshot = MarketStateSnapshot.model_validate(
@@ -1786,6 +1862,7 @@ def test_market_corporate_cycle_snapshot_id_tracks_selected_metric_values(
                 "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
                 [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), run_id],
             )
+            _backdate_corporate_authority(connection, cutoff)
         repository = AnalysisRepository(runtime)
         first = refresh_market_publication(runtime, now=cutoff)
         with runtime.transaction() as connection:
@@ -1838,6 +1915,7 @@ def test_market_corporate_cycle_rejects_malformed_metric_tag_metadata(
                 "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
                 [cutoff - timedelta(minutes=30), cutoff - timedelta(minutes=30), run_id],
             )
+            _backdate_corporate_authority(connection, cutoff)
 
         refresh_market_publication(runtime, now=cutoff)
         snapshot = MarketStateSnapshot.model_validate(
@@ -1856,40 +1934,68 @@ def test_market_corporate_cycle_rejects_malformed_metric_tag_metadata(
         runtime.close()
 
 
-def test_market_corporate_cycle_unavailable_identity_tracks_benchmark_membership(
+def test_historical_market_publication_omits_future_catalog_and_membership_rows(
     migrated_postgres_dsn: str,
 ) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
+        symbols = (
+            "PITPOS", "PITWATCH", "PITFUTI", "PITNOISY", "PITFUTP", "PITFUTW", "PITREVW",
+        )
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        before = cutoff - timedelta(days=1)
+        after = cutoff + timedelta(days=1)
         with runtime.transaction() as connection:
             connection.execute(
                 """
-                INSERT INTO catalog.instrument (symbol, name, asset_class)
-                VALUES ('ACME', 'ACME', 'equity'), ('BETA', 'BETA', 'equity'),
-                       ('NVDA', 'NVIDIA', 'equity'), ('QQQ', 'QQQ', 'equity')
-                ON CONFLICT (symbol) DO UPDATE SET asset_class = 'equity', delisted_at = NULL
-                """
+                INSERT INTO catalog.instrument
+                    (symbol, name, asset_class, created_at, updated_at)
+                SELECT symbol, symbol, 'equity',
+                       CASE WHEN symbol = 'PITFUTI' THEN %s ELSE %s END,
+                       CASE WHEN symbol IN ('PITFUTI', 'PITNOISY') THEN %s ELSE %s END
+                FROM unnest(%s::text[]) AS symbol
+                """,
+                [after, before, after, before, list(symbols)],
             )
-        first = refresh_market_publication(runtime, now=datetime(2026, 8, 28, 15, tzinfo=UTC))
-        repository = AnalysisRepository(runtime)
-        first_snapshot = MarketStateSnapshot.model_validate(
-            repository.publication_rows("market", "market_state_snapshot")[0]
-        )
-        first_state = next(item for item in first_snapshot.horizons["3-12 months"] if item.dimension == "corporate cycle")
-        assert first_state.evidence_status == "unavailable"
-        first_members = tuple(first_state.eligible_members)
+            ids = {
+                row["symbol"]: row["id"]
+                for row in connection.execute(
+                    "SELECT id, symbol FROM catalog.instrument WHERE symbol = ANY(%s)",
+                    [list(symbols)],
+                ).fetchall()
+            }
+            connection.execute(
+                "INSERT INTO app.portfolio_position (instrument_id, quantity, updated_at) VALUES "
+                "(%s, 1, %s), (%s, 1, %s), (%s, 1, %s), (%s, 1, %s)",
+                [
+                    ids["PITPOS"], before,
+                    ids["PITFUTI"], before,
+                    ids["PITNOISY"], before,
+                    ids["PITFUTP"], after,
+                ],
+            )
+            connection.execute(
+                "INSERT INTO app.watchlist_item "
+                "(instrument_id, watch_state, created_at, updated_at) VALUES "
+                "(%s, 'watched', %s, %s), (%s, 'watched', %s, %s), "
+                "(%s, 'watched', %s, %s)",
+                [
+                    ids["PITWATCH"], before, before,
+                    ids["PITFUTW"], after, after,
+                    ids["PITREVW"], before, after,
+                ],
+            )
 
-        with runtime.transaction() as connection:
-            connection.execute("UPDATE catalog.instrument SET symbol = 'ALFA' WHERE symbol = 'ACME'")
-        second = refresh_market_publication(runtime, now=datetime(2026, 8, 28, 15, tzinfo=UTC))
-        second_snapshot = MarketStateSnapshot.model_validate(
+        refresh_market_publication(runtime, now=cutoff)
+        repository = AnalysisRepository(runtime)
+        snapshot = MarketStateSnapshot.model_validate(
             repository.publication_rows("market", "market_state_snapshot")[0]
         )
-        second_state = next(item for item in second_snapshot.horizons["3-12 months"] if item.dimension == "corporate cycle")
-        assert second_state.evidence_status == "unavailable"
-        assert len(first_members) == len(second_state.eligible_members)
-        assert tuple(second_state.eligible_members) != first_members
-        assert second["snapshot_id"] != first["snapshot_id"]
+        state = next(
+            item for item in snapshot.horizons["3-12 months"]
+            if item.dimension == "corporate cycle"
+        )
+        assert tuple(state.eligible_members) == ("PITNOISY", "PITPOS", "PITWATCH")
     finally:
         runtime.close()

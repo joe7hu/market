@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from investment_panel.core.decision import MarketStateSnapshot
+from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.market_analysis import refresh_market_publication
+from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs import (
     postgres_refresh,
     snapshot_database,
@@ -23,7 +27,14 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     market_publication = {"status": "ok", "publication_id": "market-publication-full-test"}
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
-    monkeypatch.setattr(update_market_data, "run", lambda _path, publish=False: {"status": "ok"})
+    monkeypatch.setattr(
+        update_market_data,
+        "run",
+        lambda _path, publish=False: {
+            "status": "ok",
+            "benchmark_symbols": ["CONFIG-ONLY"],
+        },
+    )
     monkeypatch.setattr(update_arco_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_content_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_market_events, "run", lambda _path: {"status": "ok"})
@@ -41,7 +52,8 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
         events.append(("today", now))
         return {"status": "ok"}
 
-    def publish_market(_runtime, *, now=None):
+    def publish_market(_runtime, *, now=None, benchmark_symbols=None):
+        assert benchmark_symbols == ["CONFIG-ONLY"]
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
@@ -73,6 +85,68 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     publication_cutoffs = [cutoff for name, cutoff in events if name in {"market", "ticker", "today"}]
     assert publication_cutoffs[0] < publication_cutoffs[1]
     assert publication_cutoffs[1] is publication_cutoffs[2]
+
+
+def test_config_only_watchlist_is_the_exact_postgres_market_benchmark(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    import pandas as pd
+
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={
+            "data_sources": {"yfinance": {"enabled": False}},
+            "watchlist": [{"symbol": "CONFIG-ONLY", "asset_class": "equity"}],
+        },
+    )
+    monkeypatch.setattr(
+        update_market_data,
+        "fetch_prices",
+        lambda *_args: pd.DataFrame(
+            [{
+                "symbol": "CONFIG-ONLY", "date": "2026-08-28", "open": 10,
+                "high": 12, "low": 10, "close": 12, "volume": 120, "source": "test",
+            }]
+        ),
+    )
+
+    result = update_market_data.run_for_config(config, publish=False)
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+                "VALUES ('CATALOG-ONLY', 'Catalog only', 'equity')"
+            )
+            assert connection.execute(
+                "SELECT count(*) AS count FROM app.watchlist_item"
+            ).fetchone()["count"] == 0
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        with runtime.read() as connection:
+            assert connection.execute(
+                "SELECT count(*) AS count FROM catalog.instrument "
+                "WHERE symbol = 'CONFIG-ONLY' AND created_at <= %s",
+                [cutoff],
+            ).fetchone()["count"] == 1
+        refresh_market_publication(
+            runtime,
+            now=cutoff,
+            benchmark_symbols=result["benchmark_symbols"],
+        )
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+    finally:
+        runtime.close()
+
+    state = next(
+        row for row in snapshot.horizons["3-12 months"]
+        if row.dimension == "corporate cycle"
+    )
+    assert result["benchmark_symbols"] == ["CONFIG-ONLY"]
+    assert state.eligible_members == ["CONFIG-ONLY"]
 
 
 def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkeypatch) -> None:

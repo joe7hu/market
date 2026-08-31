@@ -77,6 +77,8 @@ def refresh_market_publication(
     if as_of.tzinfo is None:
         raise ValueError("market publication timestamp must be timezone-aware")
     as_of = as_of.astimezone(UTC)
+    # Instrument and source updated_at values are maintenance timestamps touched by
+    # idempotent registration. Membership timestamps are semantic and safe to gate.
     with runtime.read() as connection:
         instrument_rows = [
             dict(row)
@@ -86,16 +88,20 @@ def refresh_market_publication(
                        EXISTS (
                            SELECT 1 FROM app.portfolio_position position
                            WHERE position.instrument_id = instrument.id
+                             AND position.updated_at <= %s
                        ) OR EXISTS (
                            SELECT 1 FROM app.watchlist_item watchlist
                            WHERE watchlist.instrument_id = instrument.id
+                             AND watchlist.created_at <= %s
+                             AND watchlist.updated_at <= %s
                              AND watchlist.watch_state <> 'excluded'
                        ) AS persisted_market_member
                 FROM catalog.instrument instrument
-                WHERE instrument.delisted_at IS NULL OR instrument.delisted_at > %s
+                WHERE instrument.created_at <= %s
+                  AND (instrument.delisted_at IS NULL OR instrument.delisted_at > %s)
                 ORDER BY symbol
                 """,
-                [as_of],
+                [as_of, as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         explicit_benchmark = (
@@ -103,16 +109,11 @@ def refresh_market_publication(
             if benchmark_symbols is not None
             else None
         )
-        has_persisted_benchmark = any(
-            row.get("persisted_market_member")
-            and str(row.get("asset_class") or "").lower() in {"equity", "etf"}
-            for row in instrument_rows
-        )
         for row in instrument_rows:
             row["market_benchmark_member"] = (
                 str(row.get("symbol") or "").upper() in explicit_benchmark
                 if explicit_benchmark is not None
-                else bool(row.get("persisted_market_member")) if has_persisted_benchmark else True
+                else bool(row.get("persisted_market_member"))
             )
         bars_by_id = confirmed_daily_bars(
             connection,
@@ -152,17 +153,19 @@ def refresh_market_publication(
                   ON source.id = observation.source_id
                  AND source.enabled
                  AND source.operational_state = 'active'
+                 AND source.created_at <= %s
                 LEFT JOIN ingest.payload payload ON payload.id = observation.payload_id
                 WHERE (observation.metric_set = 'market_valuation'
                    OR observation.metric_set LIKE 'market_valuation:%%')
                   AND observation.observed_at <= %s
                   AND (observation.filed_at IS NULL OR observation.filed_at <= %s)
+                  AND instrument.created_at <= %s
                   AND ingest_run.status IN ('succeeded', 'partial')
                   AND ingest_run.finished_at IS NOT NULL
                   AND ingest_run.finished_at <= %s
                 ORDER BY observation.metric_set, observation.observed_at DESC
                 """,
-                [as_of, as_of, as_of],
+                [as_of, as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         event_risk_evidence = _event_risk_evidence(connection, as_of)
@@ -641,8 +644,9 @@ def _crypto_volume_evidence(
         SELECT enabled, operational_state, health_owner, freshness_seconds
         FROM ingest.source
         WHERE id = %s
+          AND created_at <= %s
         """,
-        [_CRYPTO_SOURCE_ID],
+        [_CRYPTO_SOURCE_ID, cutoff],
     ).fetchone()
     source_blocker: str | None = None
     source_count_key = "invalid_member_count"
@@ -998,8 +1002,9 @@ def _corporate_cycle_evidence(
         SELECT enabled, operational_state, freshness_seconds
         FROM ingest.source
         WHERE id = %s
+          AND created_at <= %s
         """,
-        [_CORPORATE_SOURCE_ID],
+        [_CORPORATE_SOURCE_ID, cutoff],
     ).fetchone()
     if source is None:
         base["blockers"] = ["corporate_cycle_source_missing"]
@@ -1048,7 +1053,9 @@ def _corporate_cycle_evidence(
                    run.id::text AS ingest_run_id, run.finished_at AS available_at
             FROM raw.fundamental_observation observation
             JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
-            JOIN ingest.source source ON source.id = observation.source_id
+            JOIN ingest.source source
+              ON source.id = observation.source_id
+             AND source.created_at <= %s
             JOIN ingest.run run ON run.id = observation.ingest_run_id
             WHERE observation.instrument_id = ANY(%s)
               AND observation.source_id = %s
@@ -1063,8 +1070,8 @@ def _corporate_cycle_evidence(
             ORDER BY observation.instrument_id, observation.period_end DESC,
                      observation.filed_at DESC, observation.observed_at DESC, observation.id DESC
             """,
-            [[int(row["id"]) for row in benchmark], _CORPORATE_SOURCE_ID, _CORPORATE_METRIC_SET,
-             cutoff, cutoff, cutoff],
+            [cutoff, [int(row["id"]) for row in benchmark], _CORPORATE_SOURCE_ID,
+             _CORPORATE_METRIC_SET, cutoff, cutoff, cutoff],
         ).fetchall()
     ]
     by_member: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -1322,7 +1329,9 @@ def _event_risk_evidence(connection: Any, cutoff: datetime) -> dict[str, dict[st
                        source.freshness_seconds
                 FROM raw.market_event_version version
                 JOIN ingest.run ingestion ON ingestion.id = version.ingest_run_id
-                JOIN ingest.source source ON source.id = version.source_id
+                JOIN ingest.source source
+                  ON source.id = version.source_id
+                 AND source.created_at <= %s
                 WHERE version.source_id = 'official-event-calendar'
                   AND version.available_at <= %s
                   AND ingestion.status IN ('succeeded', 'partial')
@@ -1343,7 +1352,7 @@ def _event_risk_evidence(connection: Any, cutoff: datetime) -> dict[str, dict[st
               AND ingest_finished_at >= %s - make_interval(secs => freshness_seconds)
             ORDER BY starts_at, event_kind, title, market_event_id, market_event_version_id
             """,
-            [cutoff, cutoff, cutoff, cutoff],
+            [cutoff, cutoff, cutoff, cutoff, cutoff],
         ).fetchall()
     ]
     result = {

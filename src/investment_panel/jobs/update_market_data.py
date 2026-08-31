@@ -123,6 +123,7 @@ def run_for_config(
         "database": "postgresql",
         "run_id": str(run_id),
         "symbols": len(universe_rows),
+        "benchmark_symbols": [row["symbol"] for row in universe_rows],
         "price_rows": stored,
         "price_errors": errors,
         "market_metric_rows": market_metrics_stored,

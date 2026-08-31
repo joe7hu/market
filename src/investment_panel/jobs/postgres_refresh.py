@@ -165,6 +165,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
 
     config = load_config(config_path)
     publication_cutoff: datetime | None = None
+    benchmark_symbols: list[str] | None = None
     market_state_publication_id: str | None = None
     market_state_visible_at: datetime | None = None
 
@@ -177,15 +178,25 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
     def publish_market() -> dict[str, Any]:
         nonlocal market_state_publication_id, market_state_visible_at
         result = refresh_market_publication(
-            runtime_for_config(config), now=bounded_cutoff()
+            runtime_for_config(config),
+            now=bounded_cutoff(),
+            benchmark_symbols=benchmark_symbols,
         )
         market_state_publication_id = _market_state_publication_id(result)
         market_state_visible_at = _market_publication_cutoff(result, fallback=bounded_cutoff())
         return result
 
+    def refresh_market_data() -> dict[str, Any]:
+        nonlocal benchmark_symbols
+        result = update_market_data.run(config_path, publish=False)
+        refreshed = result.get("benchmark_symbols")
+        if isinstance(refreshed, list):
+            benchmark_symbols = [str(symbol) for symbol in refreshed]
+        return result
+
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
         ("arco_sources", False, lambda: update_arco_sources.run(config_path)),
-        ("market_data", False, lambda: update_market_data.run(config_path, publish=False)),
+        ("market_data", False, refresh_market_data),
         ("content_sources", False, lambda: update_content_sources.run(config_path)),
         ("market_events", False, lambda: update_market_events.run(config_path)),
         ("disclosures", False, lambda: update_disclosure_sources.run(config_path)),
