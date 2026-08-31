@@ -148,7 +148,7 @@ def test_current_ticker_selector_rejects_duplicate_episode_across_timestamps(
         runtime.close()
 
 
-def test_compact_funnel_lineage_validation_fails_closed(
+def test_compact_funnel_episode_validation_fails_closed(
     migrated_postgres_dsn: str,
 ) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
@@ -164,6 +164,8 @@ def test_compact_funnel_lineage_validation_fails_closed(
         "FUNNELNAIVE",
         "FUNNELNOSOURCE",
         "FUNNELROWCUTOFF",
+        "FUNNELOVERSIZE",
+        "FSELTERMS",
     ]
     _insert_instruments(runtime, symbols)
     repository = TickerDecisionRepository(runtime)
@@ -173,6 +175,11 @@ def test_compact_funnel_lineage_validation_fails_closed(
             repository.publish(decision)
 
         with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE analysis.ticker_decision "
+                "SET portfolio_impacts = jsonb_set("
+                "portfolio_impacts, '{STOCK,market_state_publication_id}', 'null'::jsonb)"
+            )
             for symbol in symbols[1:]:
                 decision = decisions[symbol]
                 row = connection.execute(
@@ -197,11 +204,21 @@ def test_compact_funnel_lineage_validation_fails_closed(
                 elif symbol == "FUNNELNOSOURCE":
                     lineage[0].pop("source_id")
                 episode["input_lineage"] = lineage
+                if symbol == "FUNNELOVERSIZE":
+                    episode["oversize_padding"] = "x" * 262_145
                 connection.execute(
                     "UPDATE analysis.ticker_decision SET opportunity_episode = %s "
                     "WHERE decision_revision = %s",
                     [Jsonb(episode), decision.decision_revision],
                 )
+                if symbol == "FSELTERMS":
+                    connection.execute(
+                        "UPDATE analysis.ticker_decision "
+                        "SET selected_expression = jsonb_set("
+                        "selected_expression, '{rationale}', to_jsonb(%s::text)) "
+                        "WHERE decision_revision = %s",
+                        ["Corrupt selected economic terms.", decision.decision_revision],
+                    )
                 if symbol == "FUNNELROWCUTOFF":
                     connection.execute(
                         "UPDATE analysis.ticker_decision SET opportunity_cutoff = %s "
@@ -209,9 +226,33 @@ def test_compact_funnel_lineage_validation_fails_closed(
                         [as_of - timedelta(seconds=1), decision.decision_revision],
                     )
 
-        rows = repository._current_funnel_rows(reference=datetime.now(UTC) + timedelta(minutes=1))
-        validity = {row["ticker"]: row["has_valid_opportunity_lineage"] for row in rows}
+        reference = datetime.now(UTC) + timedelta(minutes=1)
+        rows = repository._current_funnel_rows(reference=reference)
+        assert {row["ticker"] for row in rows} == set(symbols)
+        assert all("has_valid_opportunity_lineage" not in row for row in rows)
+        rows_by_ticker = {row["ticker"]: row for row in rows}
+        valid_row = rows_by_ticker["FUNNELVALID"]
+        assert valid_row["opportunity_episode"] is not None
+        assert valid_row["opportunity_cutoff_match"] is True
+        assert valid_row["opportunity_expressions_match"] is True
+        assert valid_row["opportunity_selected_expression_match"] is True
+        assert rows_by_ticker["FUNNELROWCUTOFF"]["opportunity_cutoff_match"] is False
+        assert rows_by_ticker["FUNNELOVERSIZE"]["opportunity_episode"] is None
+        assert (
+            rows_by_ticker["FSELTERMS"]["opportunity_selected_expression_match"]
+            is False
+        )
 
-        assert validity == {symbol: symbol == "FUNNELVALID" for symbol in symbols}
+        funnel = repository.decision_funnel(now=reference)
+        facts = next(
+            stage for stage in funnel["stages"]
+            if stage["stage"] == "point_in_time_facts"
+        )
+        assert facts["count"] == 1
+        assert facts["top_blockers"][0] == {
+            "reason": "ticker_decision_contract_invalid",
+            "count": len(symbols) - 1,
+            "affected_symbols": sorted(symbols[1:]),
+        }
     finally:
         runtime.close()

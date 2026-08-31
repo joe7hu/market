@@ -656,6 +656,24 @@ def test_exact_market_publication_history_remains_valid_after_supersession(
         selected_publication = {"id": first_id}
         decision_repository = TickerDecisionRepository(runtime)
         expression = _expression(ExpressionKind.STOCK, decision_cutoff, selected=True)
+        episode = build_opportunity_episode(
+            ticker="LANE",
+            decision_revision="decision:market-history",
+            policy_version="risk-policy.v2:test",
+            cutoff=decision_cutoff,
+            input_lineage=[InputLineage(
+                field="price",
+                source_id="phase0-market-history",
+                available_at=decision_cutoff,
+                opportunity_episode_id="episode:market-history",
+                decision_revision="decision:market-history",
+                policy_version="risk-policy.v2:test",
+                cutoff=decision_cutoff,
+            )],
+            expressions={ExpressionKind.STOCK: expression},
+            selected_expression=ExpressionKind.STOCK,
+            episode_id="episode:market-history",
+        )
         impact = PortfolioImpact(
             impact_id="impact:market-history", ticker="LANE",
             opportunity_episode_id="episode:market-history",
@@ -687,12 +705,15 @@ def test_exact_market_publication_history_remains_valid_after_supersession(
                 "decision_revision": "decision:market-history",
                 "policy_version": "risk-policy.v2:test",
                 "opportunity_episode_id": "episode:market-history",
-                "selected_expression": {"kind": "STOCK", "horizon": "FUNDAMENTAL"},
+                "opportunity_episode": episode.model_dump(mode="json"),
+                "opportunity_cutoff_match": True,
+                "opportunity_expressions_match": True,
+                "opportunity_selected_expression_match": True,
+                "selected_expression": {"kind": "STOCK", "horizon": "TACTICAL"},
                 "stock_expression": expression.model_dump(mode="json"),
                 "stock_portfolio_impact": impact_row,
                 "resolution": resolution.model_dump(mode="json"),
                 "market_state_publication_id": selected_publication["id"],
-                "has_valid_opportunity_lineage": True,
             }]
 
         monkeypatch.setattr(

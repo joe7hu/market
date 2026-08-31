@@ -27,11 +27,39 @@ def _valid_compact_row(ticker: str = "AAA") -> dict[str, Any]:
         "status": "eligible", "availability_status": "available", "blockers": [],
         "selected": False, "rationale": "Validated compact fixture.",
     }
+    decision_revision = f"decision:{ticker.lower()}"
+    policy_version = "risk-policy.v2:test"
+    opportunity_episode_id = f"episode:{ticker.lower()}"
     return {
         "ticker": ticker, "as_of": NOW, "published_at": NOW,
-        "decision_revision": f"decision:{ticker.lower()}",
-        "policy_version": "risk-policy.v2:test",
-        "opportunity_episode_id": f"episode:{ticker.lower()}",
+        "decision_revision": decision_revision,
+        "policy_version": policy_version,
+        "opportunity_episode_id": opportunity_episode_id,
+        "opportunity_episode": {
+            "episode_id": opportunity_episode_id,
+            "ticker": ticker,
+            "decision_revision": decision_revision,
+            "policy_version": policy_version,
+            "cutoff": NOW,
+            "input_lineage": [{
+                "field": "price", "source_id": "compact-fixture",
+                "source_version": "v1", "available_at": NOW,
+                "opportunity_episode_id": opportunity_episode_id,
+                "decision_revision": decision_revision,
+                "policy_version": policy_version, "cutoff": NOW,
+            }],
+            "expressions": {"STOCK": dict(expression)},
+            "selected_expression": None,
+            "thesis_identity": f"ticker:{ticker}",
+            "first_seen_at": NOW,
+            "last_updated_at": NOW,
+            "status": "DISCOVERED",
+            "horizon": "FUNDAMENTAL",
+            "current_revision": decision_revision,
+        },
+        "opportunity_cutoff_match": True,
+        "opportunity_expressions_match": True,
+        "opportunity_selected_expression_match": True,
         "selected_expression": None,
         "stock_expression": expression,
         "stock_portfolio_impact": {
@@ -54,7 +82,6 @@ def _valid_compact_row(ticker: str = "AAA") -> dict[str, Any]:
             "policy_version": "risk-policy.v2:test", "ticker": ticker,
         },
         "market_state_publication_id": None,
-        "has_valid_opportunity_lineage": True,
     }
 
 
@@ -201,6 +228,46 @@ def test_decision_funnel_fails_closed_for_malformed_compact_artifacts(monkeypatc
     assert any(item["reason"] == "decision_resolution_invalid" for item in resolution["top_blockers"])
 
 
+def test_decision_funnel_fails_closed_for_corrupt_opportunity_episodes(monkeypatch) -> None:
+    repository = TickerDecisionRepository(object())
+    monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
+    rows = [
+        _valid_compact_row(ticker)
+        for ticker in (
+            "VALID", "NOEXP", "SELECTED", "HORIZON", "SELECTEDTERMS",
+            "LIFECYCLE", "DRIFT",
+        )
+    ]
+    rows[1]["opportunity_episode"].pop("expressions")
+    rows[2]["selected_expression"] = {"kind": "STOCK", "horizon": "FUNDAMENTAL"}
+    for index in (3, 4):
+        episode_expression = rows[index]["opportunity_episode"]["expressions"]["STOCK"]
+        episode_expression["selected"] = True
+        rows[index]["stock_expression"]["selected"] = True
+        rows[index]["opportunity_episode"]["selected_expression"] = dict(episode_expression)
+        rows[index]["selected_expression"] = {"kind": "STOCK", "horizon": "FUNDAMENTAL"}
+    rows[3]["selected_expression"]["horizon"] = "TACTICAL"
+    rows[4]["opportunity_selected_expression_match"] = False
+    rows[5]["opportunity_episode"].update({"status": "CLOSED", "closed_reason": None})
+    rows[6]["opportunity_episode"]["expressions"]["STOCK"]["rationale"] = (
+        "Corrupt expression drift."
+    )
+    rows[6]["opportunity_expressions_match"] = False
+    monkeypatch.setattr(repository, "_current_funnel_rows", lambda **_kwargs: rows)
+
+    payload = repository.decision_funnel(now=NOW)
+
+    facts = next(stage for stage in payload["stages"] if stage["stage"] == "point_in_time_facts")
+    assert facts["count"] == 1
+    assert facts["top_blockers"][0] == {
+        "reason": "ticker_decision_contract_invalid",
+        "count": 6,
+        "affected_symbols": [
+            "DRIFT", "HORIZON", "LIFECYCLE", "NOEXP", "SELECTED", "SELECTEDTERMS",
+        ],
+    }
+
+
 def test_decision_funnel_loads_each_exact_market_publication_once(monkeypatch) -> None:
     repository = TickerDecisionRepository(object())
     monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
@@ -271,5 +338,11 @@ def test_current_funnel_query_does_not_select_full_market_snapshot() -> None:
 
     assert rows == []
     assert "market_state_snapshot" not in captured["query"]
-    assert "decision.opportunity_episode," not in captured["query"]
-    assert "AS has_valid_opportunity_lineage" in captured["query"]
+    assert "THEN decision.opportunity_episode END AS opportunity_episode" in captured["query"]
+    assert "AS opportunity_cutoff_match" in captured["query"]
+    assert "AS opportunity_expressions_match" in captured["query"]
+    assert "AS opportunity_selected_expression_match" in captured["query"]
+    assert "octet_length(decision.opportunity_episode::text) <= 262144" in captured["query"]
+    assert "decision.expressions," not in captured["query"]
+    assert "AS has_valid_opportunity_lineage" not in captured["query"]
+    assert "jsonb_array_elements" not in captured["query"]
