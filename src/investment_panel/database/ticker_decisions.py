@@ -895,7 +895,13 @@ class TickerDecisionRepository:
                            THEN CASE WHEN octet_length(impact.stock_impact::text) <= 262144
                                 THEN jsonb_set(
                                     impact.stock_impact,
-                                    '{input_lineage}', '[]'::jsonb, false
+                                    '{input_lineage}',
+                                    CASE WHEN episode_lineage.valid
+                                              AND episode_lineage.within_limit
+                                         THEN decision.opportunity_episode->'input_lineage'
+                                         ELSE '[]'::jsonb
+                                    END,
+                                    false
                                 )
                            END
                            WHEN octet_length(coalesce(
