@@ -4256,11 +4256,15 @@ def compose_portfolio_impact(
             "liquidity": {"status": "not_applicable"},
         }
     elif kind in {ExpressionKind.CRYPTO_SPOT, ExpressionKind.CRYPTO_PERPETUAL} and not blockers:
+        book = dict(before)
         before, after, values, crypto_blockers = _crypto_impact_values(expression, before, episode.cutoff)
+        before, after = {**book, **before}, {**book, **after}
         blockers.extend(crypto_blockers)
         availability = "unavailable" if blockers else "available"
     elif kind in {ExpressionKind.CALL, ExpressionKind.PUT, ExpressionKind.DEBIT_SPREAD, ExpressionKind.CASH_SECURED_PUT} and not blockers:
+        book = dict(before)
         before, after, values, option_blockers = _option_impact_values(expression, before)
+        before, after = {**book, **before}, {**book, **after}
         blockers.extend(option_blockers)
         availability = "unavailable" if blockers else "available"
     elif kind is ExpressionKind.STOCK and not blockers:

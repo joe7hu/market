@@ -24,7 +24,7 @@ from investment_panel.database.ticker_decisions import (
     paper_execution_for_plan,
 )
 from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
-from investment_panel.jobs.ticker_decisions import portfolio_impacts
+from investment_panel.jobs.ticker_decisions import portfolio_impacts, replay_with_seed_stock_evidence
 from conftest import typed_config
 
 
@@ -103,6 +103,12 @@ def _actionable_tables(
             "lower_confidence_expectancy": option_lower_expectancy,
             "net_expected_value_per_loss_dollar": option_lower_expectancy,
             "liquidity_score": 0.9, "fill_probability": 0.9, "expiration": "2026-10-16",
+            "delta": 0.5, "gamma": 0.01, "vega": 0.1, "theta": -0.02,
+            "skew": 0.05, "term_structure": {"slope": 0.01},
+            "event_gap_scenarios": {"down": -100.0},
+            "assignment": {"policy": "exercise"}, "collateral": {"required": 220.0},
+            "slippage": 0.05, "days_to_exit": 30, "capacity": 10,
+            "multi_leg_liquidity": {"status": "available", "score": 0.9},
             "legs": legs, "available_at": available_at,
         }],
         "fundamentals": [{"symbol": symbol, "source": "sec_companyfacts", "available_at": available_at}],
@@ -114,6 +120,58 @@ def _actionable_tables(
     }
 
 
+def _execution_replay(as_of: datetime) -> dict[str, object]:
+    available_at = as_of - timedelta(minutes=5)
+    risk_budget = {"available": 10_000.0, "consumed": 0.0}
+    return {
+        "cutoff": as_of,
+        "positions": [{
+            "instrument_id": 1,
+            "symbol": "QQQ",
+            "sector": "Technology",
+            "quantity": 1.0,
+            "avg_cost": 450.0,
+            "price": 450.0,
+            "market_value": 450.0,
+            "source_id": "ticker-paper-fixture",
+            "currency": "USD",
+            "source_kind": "daily_bars",
+            "trading_date": as_of.date().isoformat(),
+            "observed_at": available_at,
+            "available_at": available_at,
+            "valuation_status": "market_quotes",
+        }],
+        "portfolio_value": 100_000.0,
+        "transaction_count": 0,
+        "eligible_position_count": 1,
+        "valued_position_count": 1,
+        "missing_valuation_count": 0,
+        "valuation_complete": True,
+        "lineage": [],
+        "book_identity": "portfolio-book:ticker-paper-fixture",
+        "risk_budget": risk_budget,
+        "stock_evidence": {
+            "sector": "Technology",
+            "beta": 1.1,
+            "avg_dollar_volume": 1_000_000.0,
+            "correlation_cluster_delta": 0.01,
+            "adv_participation_limit": 0.10,
+            "stress_scenarios": {
+                "SPY": {"pnl_by_shock": {"-5": -500.0, "-10": -1_000.0}, "shock_pct": [-5.0, -10.0]},
+                "QQQ": {"pnl_by_shock": {"-5": -450.0, "-10": -900.0}, "shock_pct": [-5.0, -10.0]},
+                "sector": {"pnl": -800.0, "shock_pct": -10.0},
+                "symbol": {"pnl_by_shock": {"-20": -1_200.0, "-30": -1_800.0}, "shock_pct": [-20.0, -30.0]},
+                "earnings-gap": {"pnl": -1_500.0, "largest_holding": "QQQ", "earnings_gap": True},
+                "liquidity": {"pnl": -500.0, "spread_multiplier": 2.0, "slippage_multiplier": 2.0, "adv_haircut_pct": 50.0},
+            },
+            "risk_budget": risk_budget,
+            "cash_comparator": {"status": "available", "expected_return": 0.0},
+            "top_alternative": "QQQ",
+            "funding_source_or_position_to_trim": "cash",
+        },
+    }
+
+
 def _publish_context(
     runtime: DatabaseRuntime,
     config,
@@ -121,7 +179,16 @@ def _publish_context(
     tables: dict[str, list[dict[str, object]]],
     as_of: datetime,
 ):
-    seed = build_ticker_decision(symbol, tables, as_of=as_of)
+    replay = _execution_replay(as_of)
+    seed = build_ticker_decision(symbol, tables, as_of=as_of, portfolio_replay=replay)
+    assert seed.selected_expression is not None
+    planned_loss = float(seed.selected_expression.planned_loss or 0.0)
+    replay["risk_budget"]["consumed"] = planned_loss
+    seed = build_ticker_decision(symbol, tables, as_of=as_of, portfolio_replay=replay)
+    assert seed.selected_expression is not None
+    impact = seed.portfolio_impacts[seed.selected_expression.kind]
+    assert impact.availability == "available", impact.blockers
+    assert impact.portfolio_before["book_identity"] == impact.portfolio_after["book_identity"] == replay["book_identity"]
     lineage = InputLineage(
         field="market_test", source_id="market-test", source_version="1",
         event_at=as_of - timedelta(minutes=5), available_at=as_of - timedelta(minutes=5), cutoff=as_of,
@@ -151,7 +218,7 @@ def _publish_context(
             [as_of, publication_id],
         )
     snapshot = snapshot.model_copy(update={"publication_id": str(publication_id)})
-    replay = replay_portfolio_at(config, as_of)
+    replay = replay_with_seed_stock_evidence(seed, replay)
     impacts = portfolio_impacts(seed, snapshot, str(publication_id), replay)
     decision = build_ticker_decision(
         symbol, tables, as_of=as_of, market_state_snapshot=snapshot,
@@ -172,8 +239,26 @@ def _publish_context(
         "forecast_value": 0.1,
         "cohort_id": "test-cohort",
         "calibration_state": "calibrated_exact_cohort",
+        "availability_status": "available",
+        "strategy_key": "ticker-paper-test",
+        "strategy_revision_id": 1,
+        "model_artifact_id": "ticker-paper-artifact",
+        "strategy_evaluation_id": "ticker-paper-evaluation",
+        "artifact_published_at": as_of - timedelta(minutes=1),
+        "evaluation_evaluated_at": as_of - timedelta(minutes=1),
+        "evaluation_available_at": as_of - timedelta(minutes=1),
         "model_version": "test-model",
+        "feature_version": "ticker-paper-features",
         "evaluation_stage": "out_of_sample",
+        "oos_period_start": as_of - timedelta(days=30),
+        "oos_period_end": as_of - timedelta(days=1),
+        "cohort_path": ["cohort:test"],
+        "effective_sample_size": 40,
+        "calibration_metrics": {"brier_score": 0.2},
+        "research_score": 0.5,
+        "cost_model_version": "ticker-paper-costs",
+        "promotion_stage": "paper",
+        "lower_confidence_net_utility_after_costs": 0.02,
         "as_of": as_of,
         "input_cutoff": as_of,
         "input_lineage": decision.input_lineage,
@@ -402,7 +487,9 @@ def test_outcome_attribution_publication_is_full_and_replayable(
             "selected_expression_identity",
         ):
             assert all(row[field] == getattr(plan, field) for row in preserved)
+        for field in ("trade_plan_id", "decision_revision", "selected_expression_identity"):
             assert getattr(revised.trade_plan, field) != getattr(plan, field)
+        assert revised.trade_plan.opportunity_episode_id == plan.opportunity_episode_id
         assert all(row["trade_plan_publication_id"] == plan.publication_id for row in preserved)
         learning = repository.learning_surface(symbol)
         assert learning["outcome_attributions"] == []
@@ -570,14 +657,7 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migr
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         assert decision.trade_plan is not None
-        if decision.trade_plan.eligibility == "BLOCKED":
-            with pytest.raises(ValueError, match="blocked"):
-                repository.stage(
-                    ticker="ACME", decision=decision,
-                    expression_kind=decision.trade_plan.selected_expression_kind.value,
-                    idempotency_key="acme-entry-1", trade_plan_id=decision.trade_plan.trade_plan_id,
-                )
-            return
+        assert decision.trade_plan.eligibility == "ACTIONABLE", decision.trade_plan.blockers
         result = repository.stage(
             ticker="ACME",
             decision=decision,
@@ -677,14 +757,7 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         assert decision.trade_plan is not None
-        if decision.trade_plan.eligibility == "BLOCKED":
-            with pytest.raises(ValueError, match="blocked"):
-                repository.stage(
-                    ticker="LIFE", decision=decision,
-                    expression_kind=decision.trade_plan.selected_expression_kind.value,
-                    idempotency_key="life-entry-1", trade_plan_id=decision.trade_plan.trade_plan_id,
-                )
-            return
+        assert decision.trade_plan.eligibility == "ACTIONABLE", decision.trade_plan.blockers
         staged = repository.stage(
             ticker="LIFE", decision=decision,
             expression_kind=decision.trade_plan.selected_expression_kind.value,
@@ -847,14 +920,7 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         assert decision.trade_plan is not None
-        if decision.trade_plan.eligibility == "BLOCKED":
-            with pytest.raises(ValueError, match="blocked"):
-                repository.stage(
-                    ticker="SPRD", decision=decision,
-                    expression_kind=decision.trade_plan.selected_expression_kind.value,
-                    idempotency_key="sprd-spread-1", trade_plan_id=decision.trade_plan.trade_plan_id,
-                )
-            return
+        assert decision.trade_plan.eligibility == "ACTIONABLE", decision.trade_plan.blockers
         staged = repository.stage(
             ticker="SPRD", decision=decision,
             expression_kind=decision.trade_plan.selected_expression_kind.value,

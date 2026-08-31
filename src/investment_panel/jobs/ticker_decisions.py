@@ -117,7 +117,7 @@ def publish(
                 portfolio_replay=replay,
                 prior_opportunity_episode=prior_episode,
             )
-            replay_for_decision = _replay_with_seed_stock_evidence(seed, replay)
+            replay_for_decision = replay_with_seed_stock_evidence(seed, replay)
             if market_state_publication_id is _MARKET_PUBLICATION_ID_UNSET:
                 market_publication = analysis_repository.publication_at_or_before(
                     "market", cutoff=reference
@@ -618,7 +618,7 @@ def _finite_number(value: Any) -> float | None:
     return number if number == number and abs(number) != float("inf") else None
 
 
-def _replay_with_seed_stock_evidence(seed: Any, replay: dict[str, Any]) -> dict[str, Any]:
+def replay_with_seed_stock_evidence(seed: Any, replay: dict[str, Any]) -> dict[str, Any]:
     """Reuse the cutoff-bounded evidence copy created by the seed decision."""
 
     impact = seed.portfolio_impacts.get(ExpressionKind.STOCK)

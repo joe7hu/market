@@ -1061,7 +1061,7 @@ def test_publisher_reuses_seed_cutoff_stock_evidence_on_bound_rebuild() -> None:
     seed_evidence = seed.portfolio_impacts[ExpressionKind.STOCK].portfolio_before["stock_evidence"]
     assert seed_evidence["sector"] == "Technology"
 
-    replay_for_publication = ticker_decision_job._replay_with_seed_stock_evidence(seed, replay)
+    replay_for_publication = ticker_decision_job.replay_with_seed_stock_evidence(seed, replay)
     assert "stock_impact" not in replay_for_publication
     impacts = portfolio_impacts(
         seed,
