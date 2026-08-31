@@ -73,6 +73,7 @@ def refresh_market_publication(
     *,
     now: datetime | None = None,
     benchmark_symbols: list[str] | tuple[str, ...] | None = None,
+    configured_watchlist: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     as_of = now or datetime.now(UTC)
     if as_of.tzinfo is None:
@@ -114,13 +115,20 @@ def refresh_market_publication(
             if benchmark_symbols is not None
             else None
         )
+        configured_benchmark = (
+            _configured_benchmark_symbols(configured_watchlist)
+            if explicit_benchmark is None
+            else set()
+        )
         for row in instrument_rows:
+            symbol = str(row.get("symbol") or "").upper()
             row["market_benchmark_member"] = (
-                str(row.get("symbol") or "").upper() in explicit_benchmark
+                symbol in explicit_benchmark
                 if explicit_benchmark is not None
                 else (
                     int(row["id"]) in owned_instrument_ids
                     or bool(row.get("persisted_watchlist_member"))
+                    or symbol in configured_benchmark
                 )
             )
         bars_by_id = confirmed_daily_bars(
@@ -260,6 +268,17 @@ def refresh_market_publication(
         "available_coverage_rows": sum(1 for row in coverage_rows if row.get("current_status") == "available"),
         "unavailable_coverage_rows": sum(1 for row in coverage_rows if row.get("current_status") != "available"),
     }
+
+
+def _configured_benchmark_symbols(configured_watchlist: list[dict[str, Any]] | None) -> set[str]:
+    output: set[str] = set()
+    for item in configured_watchlist or ():
+        if str(item.get("watch_state") or "").strip().lower() == "excluded":
+            continue
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if symbol:
+            output.add(symbol)
+    return output
 
 
 def _asset_row(rows: list[dict[str, Any]]) -> dict[str, Any]:

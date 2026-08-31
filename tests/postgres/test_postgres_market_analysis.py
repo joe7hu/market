@@ -188,6 +188,7 @@ def test_market_publication_uses_the_exact_refreshed_equity_benchmark(
             runtime,
             now=datetime.now(UTC),
             benchmark_symbols=["IN-SCOPE"],
+            configured_watchlist=[{"symbol": "OUT-SCOPE"}],
         )
 
         snapshot = MarketStateSnapshot.model_validate(
@@ -1942,7 +1943,7 @@ def test_historical_market_publication_omits_future_catalog_and_membership_rows(
     try:
         symbols = (
             "PITPOS", "PITWATCH", "PITFUTI", "PITNOISY", "PITFUTP", "PITPROJ", "PITCLOSED",
-            "PITFUTW", "PITREVW",
+            "PITFUTW", "PITREVW", "PITCONFIG", "PITCATALOG",
         )
         cutoff = datetime.now(UTC) + timedelta(minutes=1)
         before = cutoff - timedelta(days=1)
@@ -2011,7 +2012,14 @@ def test_historical_market_publication_omits_future_catalog_and_membership_rows(
                 ],
             )
 
-        refresh_market_publication(runtime, now=cutoff)
+        refresh_market_publication(
+            runtime,
+            now=cutoff,
+            configured_watchlist=[
+                {"symbol": " pitconfig "},
+                {"symbol": "PITCATALOG", "watch_state": "excluded"},
+            ],
+        )
         repository = AnalysisRepository(runtime)
         snapshot = MarketStateSnapshot.model_validate(
             repository.publication_rows("market", "market_state_snapshot")[0]
@@ -2020,6 +2028,8 @@ def test_historical_market_publication_omits_future_catalog_and_membership_rows(
             item for item in snapshot.horizons["3-12 months"]
             if item.dimension == "corporate cycle"
         )
-        assert tuple(state.eligible_members) == ("PITNOISY", "PITPOS", "PITWATCH")
+        assert tuple(state.eligible_members) == (
+            "PITCONFIG", "PITNOISY", "PITPOS", "PITWATCH",
+        )
     finally:
         runtime.close()

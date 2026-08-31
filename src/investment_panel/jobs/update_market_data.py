@@ -110,7 +110,7 @@ def run_for_config(
     market = (
         refresh_market_publication(
             runtime,
-            benchmark_symbols=[row["symbol"] for row in universe_rows],
+            configured_watchlist=config.watchlist,
         )
         if publish and not requested
         else {
@@ -204,10 +204,6 @@ def _universe(runtime: Any, configured: list[dict[str, Any]]) -> list[dict[str, 
         if symbol and symbol not in output and str(item.get("watch_state") or "") != "excluded":
             output[symbol] = {"symbol": symbol, "asset_class": str(item.get("asset_class") or "equity")}
     return list(output.values())
-
-
-def market_benchmark_symbols(runtime: Any, configured: list[dict[str, Any]]) -> list[str]:
-    return [row["symbol"] for row in _universe(runtime, configured)]
 
 
 def main() -> None:
