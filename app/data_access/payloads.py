@@ -140,13 +140,20 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
 
 
 def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
-    return core_panel_snapshot_payload(
+    payload = core_panel_snapshot_payload(
         scope=scope,
         status=status_payload(panel_data),
         rows_for_table=panel_data.rows,
         offset=offset,
         limit=limit,
     )
+    table_counts = panel_data.metadata.get("table_counts")
+    if isinstance(table_counts, dict):
+        for name, table in payload["tables"].items():
+            total = table_counts.get(name)
+            if isinstance(total, int) and not isinstance(total, bool) and total >= len(panel_data.rows(name)):
+                table["count"] = total
+    return payload
 
 
 def watchlist_section_payload(panel_data: PanelData, scope: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:

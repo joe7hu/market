@@ -25,18 +25,6 @@ SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
         "ticker_decisions": 3,
         "opportunity_rank": 3,
         "trade_plan": 3,
-        "option_radar_opportunity": 3,
-        "event_decision_packets": 50,
-        "decision_truth": 100,
-        "event_scout_events": 100,
-    },
-    "options-radar": {
-        "missed_winner_event": 80,
-        "strategy_backtest_result": 100,
-        "strategy_forward_test_result": 100,
-        "event_decision_packets": 50,
-        "decision_truth": 100,
-        "event_scout_events": 100,
     },
 }
 
@@ -50,11 +38,6 @@ SCOPED_TABLE_COMPACT_FIELDS: dict[str, dict[str, frozenset[str]]] = {
         }),
         "opportunity_rank": frozenset({"eligible_universe", "input_lineage", "utility"}),
         "trade_plan": frozenset({"input_lineage", "portfolio_impact", "selected_expression"}),
-    },
-    "options-radar": {
-        "missed_winner_event": frozenset({"raw"}),
-        "strategy_backtest_result": frozenset({"metrics", "raw"}),
-        "strategy_forward_test_result": frozenset({"metrics"}),
     },
 }
 
@@ -340,7 +323,7 @@ def _scoped_table_payload(
     start = max(0, int(offset or 0))
     scoped_rows = rows[start : start + limit] if limit is not None else rows[start:]
     compacted = [_compact_scoped_row(scope, table_name, row) for row in scoped_rows]
-    payload: dict[str, Any] = {"rows": compacted, "count": total_count}
+    payload: dict[str, Any] = {"rows": compacted, "count": total_count, "offset": start}
     if limit is not None:
         payload["limit"] = limit
     return payload
@@ -359,10 +342,6 @@ def _compact_scoped_row(scope: str, table_name: str, row: dict[str, Any]) -> dic
     if not excluded:
         return row
     compacted = {key: value for key, value in row.items() if key not in excluded}
-    if table_name == "strategy_forward_test_result":
-        raw = row.get("raw")
-        if isinstance(raw, dict) and "min_forward_test_days" in raw:
-            compacted["raw"] = {"min_forward_test_days": raw["min_forward_test_days"]}
     return compacted
 
 

@@ -758,14 +758,17 @@ def test_panel_publications_keep_unlimited_models_when_one_model_is_limited(anal
         },
     )
 
+    total_counts: dict[str, int] = {}
     tables = published_tables(
         runtime,
         ("limited_model", "unlimited_model"),
         row_limits={"limited_model": 1},
+        total_counts=total_counts,
     )
 
     assert [row["value"] for row in tables["limited_model"]] == [1]
     assert [row["value"] for row in tables["unlimited_model"]] == [1, 2]
+    assert total_counts == {"limited_model": 2, "unlimited_model": 2}
 
 
 def test_concurrent_same_input_publish_reuses_one_generation(analysis_context, postgres_dsn: str) -> None:

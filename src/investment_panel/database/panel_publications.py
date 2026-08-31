@@ -12,6 +12,7 @@ def published_tables(
     requested: tuple[str, ...],
     *,
     row_limits: Mapping[str, int] | None = None,
+    total_counts: dict[str, int] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Read the current item for each requested model with its publication lineage."""
 
@@ -68,11 +69,12 @@ def published_tables(
             query += """
                 , ranked_rows AS (
                     SELECT published_rows.*,
-                           row_number() OVER (PARTITION BY model_name ORDER BY rank) AS row_number
+                           row_number() OVER (PARTITION BY model_name ORDER BY rank) AS row_number,
+                           count(*) OVER (PARTITION BY model_name) AS total_count
                     FROM published_rows
                 )
                 SELECT ranked_rows.model_name, ranked_rows.payload, ranked_rows.publication_id,
-                       ranked_rows.published_at, ranked_rows.rank
+                       ranked_rows.published_at, ranked_rows.rank, ranked_rows.total_count
                 FROM ranked_rows
                 LEFT JOIN unnest(%s::text[], %s::integer[]) AS requested_limit(model_name, row_limit)
                   ON requested_limit.model_name = ranked_rows.model_name
@@ -95,6 +97,8 @@ def published_tables(
         )
     output: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
+        if total_counts is not None and "total_count" in row:
+            total_counts[str(row["model_name"])] = int(row["total_count"])
         payload = dict(row["payload"] or {})
         if str(row["model_name"]) in {"trade_plan", "outcome_attribution"} or "publication_id" not in payload:
             payload["publication_id"] = str(row["publication_id"])

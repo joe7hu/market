@@ -877,8 +877,14 @@ def load_postgres_tables(
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
+    published_counts: dict[str, int] = {}
     tables = (
-        _published_tables(runtime, requested, row_limits=query_row_limits)
+        _published_tables(
+            runtime,
+            requested,
+            row_limits=query_row_limits,
+            total_counts=published_counts,
+        )
         if query_row_limits
         else _published_tables(runtime, requested)
     )
@@ -908,6 +914,7 @@ def load_postgres_tables(
         live_tables = portfolio_intelligence_tables(config, **intelligence_options)
         for name in requested_intelligence:
             tables[name] = live_tables.get(name, [])
+            published_counts.pop(name, None)
     if "manual_watchlist" in requested:
         tables["manual_watchlist"] = watchlist_rows(config)
     if "theses" in requested:
@@ -934,6 +941,8 @@ def load_postgres_tables(
     for name in AGENT_MODELS.intersection(requested):
         tables[name] = AgentRepository(runtime).rows(name)
     query_cache: dict[tuple[str, int | None, bool], list[dict[str, Any]]] = {}
+    query_cache_counts: dict[tuple[str, int | None, bool], int] = {}
+    query_counts: dict[str, int] = {}
     with runtime.read(runtime_profile) as connection:
         for name in requested:
             if name in tables:
@@ -989,6 +998,7 @@ def load_postgres_tables(
                 if cache_key not in query_cache:
                     if policy.custom_loader == "options_ticker_signals":
                         rows = options_ticker_signal_rows(connection, symbols=query_symbol_filter if symbol_scoped else None)
+                        query_cache_counts[cache_key] = len(rows)
                         query_cache[cache_key] = rows[:limit] if limit else rows
                     elif policy.custom_loader == "current_quotes":
                         query_cache[cache_key] = current_quote_rows(
@@ -1001,6 +1011,7 @@ def load_postgres_tables(
                             connection,
                             symbols=query_symbol_filter if symbol_scoped else None,
                         )
+                        query_cache_counts[cache_key] = len(rows)
                         query_cache[cache_key] = rows[:limit] if limit else rows
                     elif policy.custom_loader == "liquidity":
                         query_cache[cache_key] = _liquidity_rows(
@@ -1022,7 +1033,12 @@ def load_postgres_tables(
                         )
                     else:
                         selected_query = RESEARCH_PACKETS_BASE_QUERY if symbol_scoped and (alias or name) == "research_packets" else policy.query
-                        bounded_query = f"SELECT * FROM ({selected_query}) AS daily_research_rows"
+                        selected_columns = (
+                            "daily_research_rows.*, count(*) OVER () AS __panel_total_count"
+                            if limit
+                            else "daily_research_rows.*"
+                        )
+                        bounded_query = f"SELECT {selected_columns} FROM ({selected_query}) AS daily_research_rows"
                         parameters: list[Any] = []
                         conditions: list[str] = []
                         if policy.exclude_future_rows and (alias or name) in {"catalysts", "earnings"}:
@@ -1044,6 +1060,8 @@ def load_postgres_tables(
                         result = connection.execute(bounded_query, parameters) if parameters else connection.execute(bounded_query)
                         query_cache[cache_key] = [dict(row) for row in result.fetchall()]
                 tables[name] = query_cache[cache_key]
+                if cache_key in query_cache_counts:
+                    query_counts[name] = query_cache_counts[cache_key]
             elif alias in PUBLICATION_MODELS:
                 tables[name] = AnalysisRepository(runtime).publication_rows(
                     "today", alias, include_lineage=True,
@@ -1057,6 +1075,18 @@ def load_postgres_tables(
         | set(MODEL_ALIASES)
     )
     unavailable = sorted(name for name in requested if name not in supported)
+    table_counts = {name: len(rows) for name, rows in tables.items()}
+    table_counts.update(published_counts)
+    table_counts.update(query_counts)
+    for name, rows in tables.items():
+        for row in rows:
+            total_count = row.get("__panel_total_count")
+            if isinstance(total_count, int) and not isinstance(total_count, bool):
+                table_counts[name] = total_count
+                break
+    for rows in tables.values():
+        for row in rows:
+            row.pop("__panel_total_count", None)
     metadata = {
         "database": "postgresql",
         "schema_revision": HEAD_REVISION,
@@ -1065,6 +1095,7 @@ def load_postgres_tables(
         "unavailable_models": unavailable,
         "retired_models": [],
         "available_model_count": len(requested) - len(unavailable),
+        "table_counts": table_counts,
     }
     return tables, metadata
 

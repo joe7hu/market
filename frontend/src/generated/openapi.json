@@ -16606,6 +16606,8 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
               "title": "Offset",
               "type": "integer"
             }
@@ -16617,6 +16619,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 500,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {

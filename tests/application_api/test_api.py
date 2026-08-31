@@ -239,7 +239,7 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
     upgrade_database(postgres_dsn)
     _use_postgres_api(monkeypatch, postgres_dsn)
 
-    def panel_scope(_config: AppConfig | None, scope: str) -> PanelData:
+    def panel_scope(_config: AppConfig | None, scope: str, **_kwargs: object) -> PanelData:
         return PanelData(
             status=DataStatus(True, "test", "postgresql"),
             tables={name: [] for name in PANEL_SCOPE_TABLES[scope]},
@@ -649,7 +649,7 @@ def test_options_radar_snapshot_returns_radar_tables(monkeypatch) -> None:
     monkeypatch.setattr(
         loaders_owner,
         "load_panel_scope_data",
-        lambda _config, scope: PanelData(
+        lambda _config, scope, **_kwargs: PanelData(
             status=DataStatus(True, "test", "postgresql"),
             tables={name: [] for name in PANEL_SCOPE_TABLES[scope]},
         ),
@@ -661,6 +661,50 @@ def test_options_radar_snapshot_returns_radar_tables(monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert set(payload["tables"]) == set(PANEL_SCOPE_TABLES["options-radar"])
+
+
+def test_research_snapshot_pages_past_query_cap_with_true_count(monkeypatch) -> None:
+    panel_owner.invalidate_context_cache()
+    all_rows = [{"decision_id": f"decision-{index}"} for index in range(101)]
+    query_limits: list[int] = []
+
+    def fake_load_panel_data(_config: AppConfig, table_names: tuple[str, ...], **options: object) -> PanelData:
+        limits = options.get("query_row_limits")
+        if limits is None:
+            return PanelData(
+                status=DataStatus(True, "loaded research seed", "postgresql"),
+                tables={name: [] for name in table_names},
+            )
+        assert isinstance(limits, dict)
+        row_limit = limits["decision_queue"]
+        assert isinstance(row_limit, int)
+        query_limits.append(row_limit)
+        tables = {name: [] for name in table_names}
+        tables["decision_queue"] = all_rows[:row_limit]
+        return PanelData(
+            status=DataStatus(True, "loaded research", "postgresql"),
+            tables=tables,
+            metadata={"table_counts": {"decision_queue": len(all_rows)}},
+        )
+
+    monkeypatch.setattr(loaders_owner, "load_panel_data", fake_load_panel_data)
+    client = TestClient(app)
+
+    first = client.get("/api/panel-snapshot?scope=research")
+    second = client.get("/api/panel-snapshot?scope=research&offset=100")
+    negative_offset = client.get("/api/panel-snapshot?scope=research&offset=-1")
+    oversized_limit = client.get("/api/panel-snapshot?scope=research&limit=501")
+
+    assert first.status_code == second.status_code == 200
+    assert len(first.json()["tables"]["decision_queue"]["rows"]) == 100
+    second_table = second.json()["tables"]["decision_queue"]
+    assert second_table == {
+        "rows": [{"decision_id": "decision-100"}],
+        "count": 101,
+        "offset": 100,
+    }
+    assert query_limits == [100, 200]
+    assert negative_offset.status_code == oversized_limit.status_code == 422
 
 
 def test_options_radar_snapshot_does_not_cache_reads_or_fallback(tmp_path, monkeypatch) -> None:
@@ -677,7 +721,7 @@ def test_options_radar_snapshot_does_not_cache_reads_or_fallback(tmp_path, monke
 
     monkeypatch.setattr(Path, "write_text", record_cache_write)
 
-    def fake_scope_loader(_config: dict[str, object], scope: str) -> PanelData:
+    def fake_scope_loader(_config: dict[str, object], scope: str, **_kwargs: object) -> PanelData:
         nonlocal calls
         calls += 1
         assert scope == "options-radar"
@@ -712,7 +756,9 @@ def test_watchlist_snapshot_returns_503_when_postgresql_unavailable(tmp_path, mo
     monkeypatch.setattr(
         loaders_owner,
         "load_panel_scope_data",
-        lambda _config, _scope: PanelData(status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}),
+        lambda _config, _scope, **_kwargs: PanelData(
+            status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}
+        ),
     )
 
     response = TestClient(app).get("/api/panel-snapshot?scope=watchlist")
@@ -728,7 +774,7 @@ def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailab
     monkeypatch.setattr(
         loaders_owner,
         "load_panel_scope_data",
-        lambda _config, _scope: PanelData(
+        lambda _config, _scope, **_kwargs: PanelData(
             status=DataStatus(True, "PostgreSQL loaded; no current candidates", "postgresql"),
             tables={"option_strategy_versions": [{"strategy_version": "active-v1"}]},
         ),

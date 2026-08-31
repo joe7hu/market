@@ -164,13 +164,16 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
                     ],
                 )
 
-        rows = load_postgres_tables(
+        tables, metadata = load_postgres_tables(
             typed_config(migrated_postgres_dsn),
             ("today_ticker_actions",),
             query_row_limits={"today_ticker_actions": 100},
-        )[0]["today_ticker_actions"]
+        )
+        rows = tables["today_ticker_actions"]
 
         assert len(rows) == 100
+        assert metadata["table_counts"]["today_ticker_actions"] == 102
+        assert all("__panel_total_count" not in row for row in rows)
         assert {row["missing_plan_count"] for row in rows} == {2}
         assert all(row["opportunity_rank"]["research_rank"] is not None for row in rows)
     finally:

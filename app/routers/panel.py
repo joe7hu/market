@@ -7,7 +7,7 @@ from math import isfinite
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import panel_snapshot as panel_owner
 from app import dependencies
@@ -579,8 +579,8 @@ def panel_contract() -> dict[str, Any]:
 @router.get("/api/panel-snapshot", response_model=PanelSnapshotResponse, response_model_exclude_unset=True)
 def panel_snapshot(
     scope: str = "dashboard",
-    offset: int = 0,
-    limit: int | None = None,
+    offset: int = Query(0, ge=0, le=10_000),
+    limit: int | None = Query(None, ge=1, le=500),
     config: AppConfig = Depends(dependencies.get_config),
 ) -> dict[str, Any]:
     try:
@@ -602,14 +602,23 @@ def panel_snapshot(
         return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     if scope == "research":
         config, panel_data = panel_owner.context(
-            cache_key="scope:research",
-            loader=loaders.load_daily_research_panel_data,
+            cache_key=f"scope:research:{offset}:{limit}",
+            loader=lambda active_config: loaders.load_daily_research_panel_data(
+                active_config,
+                offset=offset,
+                limit=limit,
+            ),
             config_loader=lambda: config,
         )
         return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     config, panel_data = panel_owner.context(
-        cache_key=f"scope:{scope}",
-        loader=lambda active_config: loaders.load_panel_scope_data(active_config, scope),
+        cache_key=f"scope:{scope}:{offset}:{limit}",
+        loader=lambda active_config: loaders.load_panel_scope_data(
+            active_config,
+            scope,
+            offset=offset,
+            limit=limit,
+        ),
         config_loader=lambda: config,
     )
     return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)

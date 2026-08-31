@@ -82,7 +82,12 @@ def load_panel_data(
     )
 
 
-def load_daily_research_panel_data(config: AppConfig | None = None) -> PanelData:
+def load_daily_research_panel_data(
+    config: AppConfig | None = None,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> PanelData:
     """Load the prompt seed first, then SQL-bound symbol detail for that universe."""
 
     from investment_panel.core.daily_research_prompt_fields import (
@@ -109,6 +114,12 @@ def load_daily_research_panel_data(config: AppConfig | None = None) -> PanelData
             if symbol:
                 symbols.add(symbol)
     symbols.update(DAILY_RESEARCH_MACRO_SYMBOLS)
+    page_offset = max(0, int(offset or 0))
+    requested_limit = max(1, int(limit)) if limit is not None else None
+    query_row_limits = {
+        name: page_offset + min(row_limit, requested_limit or row_limit)
+        for name, row_limit in DAILY_RESEARCH_QUERY_LIMITS.items()
+    }
     remaining = tuple(
         name
         for name in DAILY_RESEARCH_TABLES
@@ -117,7 +128,7 @@ def load_daily_research_panel_data(config: AppConfig | None = None) -> PanelData
     detail = load_panel_data(
         active_config,
         table_names=remaining,
-        query_row_limits=DAILY_RESEARCH_QUERY_LIMITS,
+        query_row_limits=query_row_limits,
         query_symbol_filter=symbols,
         portfolio_summary_include_performance=False,
         thesis_monitor_include_current_prices=False,
@@ -146,20 +157,40 @@ def load_daily_research_panel_data(config: AppConfig | None = None) -> PanelData
     )
 
 
-def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
+def load_panel_scope_data(
+    config: AppConfig | None,
+    scope: str,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> PanelData:
     active_config = config if config is not None else load_config()
     if scope == "portfolio":
         return load_portfolio_scope_data(active_config)
     if scope == "opportunities":
         return load_opportunities_scope_data(active_config)
     requested = tuple(tables_for_scope(scope))
+    page_offset = max(0, int(offset or 0))
+    requested_limit = max(1, int(limit)) if limit is not None else None
+    query_row_limits = {
+        table: page_offset + min(configured_limit, requested_limit or configured_limit)
+        for table, configured_limit in SCOPED_TABLE_ROW_LIMITS.get(scope, {}).items()
+        if table in requested
+    }
     if scope == "today":
         compact_name = "today_ticker_actions"
         authority_names = {"ticker_decisions", "opportunity_rank", "trade_plan"}
+        authority_limit = min(
+            SCOPED_TABLE_ROW_LIMITS[scope]["ticker_decisions"],
+            requested_limit or SCOPED_TABLE_ROW_LIMITS[scope]["ticker_decisions"],
+        )
         loaded = load_panel_data(
             active_config,
             table_names=tuple(name for name in requested if name not in authority_names) + (compact_name,),
-            query_row_limits={compact_name: 100},
+            query_row_limits={
+                **{name: row_limit for name, row_limit in query_row_limits.items() if name not in authority_names},
+                compact_name: max(100, page_offset + authority_limit),
+            },
         )
         action_rows = loaded.rows(compact_name)
         exact_missing_plan_count: int | None = 0 if not action_rows and loaded.status.ready else None
@@ -196,7 +227,16 @@ def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
             "opportunity_rank": ranks,
             "trade_plan": plans,
         })
-        metadata = {**loaded.metadata, "table_count": len(requested), "today_action_input_count": len(decisions)}
+        table_counts = dict(loaded.metadata.get("table_counts") or {})
+        action_count = table_counts.get(compact_name)
+        if isinstance(action_count, int) and not isinstance(action_count, bool):
+            table_counts["ticker_decisions"] = action_count
+        metadata = {
+            **loaded.metadata,
+            "table_count": len(requested),
+            "table_counts": table_counts,
+            "today_action_input_count": len(decisions),
+        }
         if exact_missing_plan_count is not None:
             metadata["today_missing_plan_count"] = exact_missing_plan_count
         return PanelData(
@@ -204,11 +244,6 @@ def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
             tables=tables,
             metadata=metadata,
         )
-    query_row_limits = {
-        table: limit
-        for table, limit in SCOPED_TABLE_ROW_LIMITS.get(scope, {}).items()
-        if table in requested
-    }
     return load_panel_data(active_config, table_names=requested, query_row_limits=query_row_limits or None)
 
 
