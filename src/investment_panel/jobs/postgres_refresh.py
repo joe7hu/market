@@ -11,7 +11,13 @@ from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.today_analysis import refresh_today_publication
 from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.database.outcomes import OutcomeRepository
-from investment_panel.jobs import refresh_options_radar, run_option_agents, run_thesis_monitor, ticker_decisions
+from investment_panel.jobs import (
+    refresh_options_radar,
+    run_option_agents,
+    run_thesis_monitor,
+    ticker_decisions,
+    update_market_data,
+)
 
 
 def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
@@ -21,7 +27,11 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
     runtime = runtime_for_config(config)
     cutoff = datetime.now(UTC)
     options = refresh_options_radar.run_deterministic_only(config_path)
-    market = refresh_market_publication(runtime, now=cutoff)
+    market = refresh_market_publication(
+        runtime,
+        now=cutoff,
+        benchmark_symbols=update_market_data.market_benchmark_symbols(runtime, config.watchlist),
+    )
     decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
         config_path,
@@ -102,7 +112,11 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     thesis_monitor = run_thesis_monitor.run(config_path, trigger="preopen")
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
     cutoff = reference.astimezone(UTC)
-    market = refresh_market_publication(runtime, now=cutoff)
+    market = refresh_market_publication(
+        runtime,
+        now=cutoff,
+        benchmark_symbols=update_market_data.market_benchmark_symbols(runtime, config.watchlist),
+    )
     decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
         config_path,
@@ -158,7 +172,6 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         update_content_sources,
         update_disclosure_sources,
         update_ibkr_options,
-        update_market_data,
         update_market_events,
         update_robinhood_options,
     )
@@ -177,10 +190,16 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
 
     def publish_market() -> dict[str, Any]:
         nonlocal market_state_publication_id, market_state_visible_at
+        runtime = runtime_for_config(config)
+        active_benchmark_symbols = (
+            benchmark_symbols
+            if benchmark_symbols is not None
+            else update_market_data.market_benchmark_symbols(runtime, config.watchlist)
+        )
         result = refresh_market_publication(
-            runtime_for_config(config),
+            runtime,
             now=bounded_cutoff(),
-            benchmark_symbols=benchmark_symbols,
+            benchmark_symbols=active_benchmark_symbols,
         )
         market_state_publication_id = _market_state_publication_id(result)
         market_state_visible_at = _market_publication_cutoff(result, fallback=bounded_cutoff())

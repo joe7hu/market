@@ -206,6 +206,10 @@ def _universe(runtime: Any, configured: list[dict[str, Any]]) -> list[dict[str, 
     return list(output.values())
 
 
+def market_benchmark_symbols(runtime: Any, configured: list[dict[str, Any]]) -> list[str]:
+    return [row["symbol"] for row in _universe(runtime, configured)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")

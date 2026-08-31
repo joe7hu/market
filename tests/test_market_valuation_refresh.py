@@ -85,7 +85,7 @@ def test_mungermode_publication_failure_does_not_hide_source_success(
     monkeypatch.setattr(
         update_market_valuations,
         "refresh_market_publication",
-        lambda _runtime: (_ for _ in ()).throw(RuntimeError("publication unavailable")),
+        lambda _runtime, **_kwargs: (_ for _ in ()).throw(RuntimeError("publication unavailable")),
     )
 
     result = update_market_valuations.run("config.yaml")

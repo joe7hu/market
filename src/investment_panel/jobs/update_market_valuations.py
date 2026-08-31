@@ -12,6 +12,7 @@ from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.market_analysis import refresh_market_publication
+from investment_panel.jobs.update_market_data import market_benchmark_symbols
 
 
 MUNGER_MARKET_METRICS_URL = "https://mungermode.com/api/v1/market/metrics"
@@ -72,7 +73,10 @@ def run(config_path: str | None = None, *, url: str = MUNGER_MARKET_METRICS_URL)
             "error": f"{type(exc).__name__}: {exc}",
         }
     try:
-        publication = refresh_market_publication(runtime)
+        publication = refresh_market_publication(
+            runtime,
+            benchmark_symbols=market_benchmark_symbols(runtime, config.watchlist),
+        )
     except Exception as exc:
         return {
             "status": "partial",

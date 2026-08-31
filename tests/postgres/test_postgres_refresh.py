@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 
 from investment_panel.core.decision import MarketStateSnapshot
 from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs import (
     postgres_refresh,
@@ -87,7 +86,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     assert publication_cutoffs[1] is publication_cutoffs[2]
 
 
-def test_config_only_watchlist_is_the_exact_postgres_market_benchmark(
+def test_routine_publication_uses_config_only_exact_market_benchmark(
     migrated_postgres_dsn: str,
     monkeypatch,
 ) -> None:
@@ -123,18 +122,30 @@ def test_config_only_watchlist_is_the_exact_postgres_market_benchmark(
             assert connection.execute(
                 "SELECT count(*) AS count FROM app.watchlist_item"
             ).fetchone()["count"] == 0
-        cutoff = datetime.now(UTC) + timedelta(minutes=1)
-        with runtime.read() as connection:
-            assert connection.execute(
-                "SELECT count(*) AS count FROM catalog.instrument "
-                "WHERE symbol = 'CONFIG-ONLY' AND created_at <= %s",
-                [cutoff],
-            ).fetchone()["count"] == 1
-        refresh_market_publication(
-            runtime,
-            now=cutoff,
-            benchmark_symbols=result["benchmark_symbols"],
+        monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
+        monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: runtime)
+        monkeypatch.setattr(
+            postgres_refresh.refresh_options_radar,
+            "run_deterministic_only",
+            lambda _path: {"status": "ok"},
         )
+        monkeypatch.setattr(
+            postgres_refresh.ticker_decisions,
+            "publish",
+            lambda *_args, **_kwargs: {"status": "ok"},
+        )
+        monkeypatch.setattr(
+            postgres_refresh,
+            "refresh_today_publication",
+            lambda *_args, **_kwargs: {"status": "ok"},
+        )
+        monkeypatch.setattr(
+            postgres_refresh.OutcomeRepository,
+            "refresh",
+            lambda _self, **_kwargs: {"status": "ok"},
+        )
+
+        publication = postgres_refresh.publish_decisions("config.yaml")
         snapshot = MarketStateSnapshot.model_validate(
             AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
         )
@@ -145,6 +156,7 @@ def test_config_only_watchlist_is_the_exact_postgres_market_benchmark(
         row for row in snapshot.horizons["3-12 months"]
         if row.dimension == "corporate cycle"
     )
+    assert publication["status"] == "ok"
     assert result["benchmark_symbols"] == ["CONFIG-ONLY"]
     assert state.eligible_members == ["CONFIG-ONLY"]
 
@@ -157,12 +169,18 @@ def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkey
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
     monkeypatch.setattr(
+        update_market_data,
+        "market_benchmark_symbols",
+        lambda _runtime, _configured: ["CONFIG-ONLY"],
+    )
+    monkeypatch.setattr(
         postgres_refresh.refresh_options_radar,
         "run_deterministic_only",
         lambda _path: {"status": "ok"},
     )
 
-    def publish_market(_runtime, *, now=None):
+    def publish_market(_runtime, *, now=None, benchmark_symbols=None):
+        assert benchmark_symbols == ["CONFIG-ONLY"]
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
@@ -198,6 +216,11 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
     market_publication = {"status": "ok", "publication_id": "market-publication-premarket-test"}
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(
+        update_market_data,
+        "market_benchmark_symbols",
+        lambda _runtime, _configured: ["CONFIG-ONLY"],
+    )
     monkeypatch.setattr(postgres_refresh.refresh_options_radar, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(
         postgres_refresh.refresh_options_radar,
@@ -211,7 +234,8 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
         lambda _path, **_kwargs: {"status": "skipped"},
     )
 
-    def publish_market(_runtime, *, now=None):
+    def publish_market(_runtime, *, now=None, benchmark_symbols=None):
+        assert benchmark_symbols == ["CONFIG-ONLY"]
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
