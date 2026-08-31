@@ -19,9 +19,16 @@ def require_local_request(request: Request) -> None:
     try:
         address = ip_address(host)
     except ValueError as exc:
-        raise HTTPException(status_code=403, detail="Write actions are available only from the local network.") from exc
+        raise HTTPException(status_code=403, detail="API access is available only from the local network.") from exc
+    if address.is_loopback:
+        forwarded = str(request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+        if forwarded:
+            try:
+                address = ip_address(forwarded)
+            except ValueError as exc:
+                raise HTTPException(status_code=403, detail="API access is available only from the local network.") from exc
     if not (address.is_loopback or address.is_private or address.is_link_local or address in TAILSCALE_CGNAT):
-        raise HTTPException(status_code=403, detail="Write actions are available only from the local network.")
+        raise HTTPException(status_code=403, detail="API access is available only from the local network.")
 
 
 __all__ = ["TAILSCALE_CGNAT", "require_local_request"]

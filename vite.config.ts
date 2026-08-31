@@ -19,8 +19,8 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
-          if (id.includes("echarts-gl")) return "echarts-gl";
-          if (id.includes("echarts")) return "echarts-core";
+          if (id.includes("echarts-gl") || id.includes("claygl")) return "echarts-gl";
+          if (id.includes("echarts") || id.includes("zrender")) return "echarts-core";
           if (id.includes("@tanstack")) return "tanstack";
           if (id.includes("lucide-react")) return "icons";
           return "vendor";
@@ -34,6 +34,7 @@ export default defineConfig({
       "/api": {
         target: apiProxyTarget,
         changeOrigin: true,
+        xfwd: true,
       },
     },
   },

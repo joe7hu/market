@@ -1194,12 +1194,18 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
 
 
 def test_local_api_guard_allows_private_lan_clients() -> None:
-    require_local_request(SimpleNamespace(client=SimpleNamespace(host="100.120.95.8")))
-    require_local_request(SimpleNamespace(client=SimpleNamespace(host="192.168.50.197")))
-    require_local_request(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")))
+    def request(host: str, headers: dict[str, str] | None = None) -> SimpleNamespace:
+        return SimpleNamespace(client=SimpleNamespace(host=host), headers=headers or {})
+
+    require_local_request(request("100.120.95.8"))
+    require_local_request(request("192.168.50.197"))
+    require_local_request(request("127.0.0.1"))
+    require_local_request(request("127.0.0.1", {"x-forwarded-for": "192.168.50.42"}))
 
     with pytest.raises(HTTPException):
-        require_local_request(SimpleNamespace(client=SimpleNamespace(host="8.8.8.8")))
+        require_local_request(request("8.8.8.8"))
+    with pytest.raises(HTTPException):
+        require_local_request(request("127.0.0.1", {"x-forwarded-for": "8.8.8.8"}))
 
 
 def test_api_rejects_public_network_clients() -> None:
