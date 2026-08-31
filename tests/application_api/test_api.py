@@ -130,6 +130,34 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     assert payload["book_actions"][0]["resolution"]["action"] == "NO_TRADE"
 
 
+def test_default_today_snapshot_reuses_today_context_cache_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "today-shared-cache.json")
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_options_actions,
+        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+    loads = 0
+    panel = PanelData(status=DataStatus(True, "loaded", "test"), tables={})
+
+    def load_today(_config: AppConfig, _scope: str, **_kwargs: Any) -> PanelData:
+        nonlocal loads
+        loads += 1
+        return panel
+
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", load_today)
+    client = TestClient(app)
+
+    today_response = client.get("/api/today")
+    snapshot_response = client.get("/api/panel-snapshot?scope=today")
+
+    assert today_response.status_code == 200
+    assert snapshot_response.status_code == 200
+    assert loads == 1
+
+
 def test_today_aggregates_missing_plan_backlog_before_queue_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -828,10 +856,183 @@ def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -
     cached_thread.start()
     assert cached_returned.wait(timeout=0.5)
 
+    fast_returned = threading.Event()
+
+    def read_uncached_fast_context() -> None:
+        try:
+            panel_owner.context(
+                cache_key="fast",
+                loader=lambda _config: PanelData(status=DataStatus(True, "fast", "test"), tables={}),
+            )
+            fast_returned.set()
+        except BaseException as exc:  # pragma: no cover - threaded assertion capture
+            errors.append(exc)
+
+    fast_thread = threading.Thread(target=read_uncached_fast_context)
+    fast_thread.start()
+    assert fast_returned.wait(timeout=0.5)
+
     release_slow.set()
     slow_thread.join(timeout=1)
     cached_thread.join(timeout=1)
+    fast_thread.join(timeout=1)
     assert not errors
+
+
+def test_context_cache_coalesces_concurrent_same_key_loads() -> None:
+    panel_owner.invalidate_context_cache()
+    config = typed_config("postgresql:///single-flight")
+    shared = PanelData(status=DataStatus(True, "shared", "test"), tables={})
+    loader_started = threading.Event()
+    release_loader = threading.Event()
+    second_started = threading.Event()
+    results: list[PanelData] = []
+    errors: list[BaseException] = []
+    loads = 0
+
+    def loader(_config: AppConfig) -> PanelData:
+        nonlocal loads
+        loads += 1
+        loader_started.set()
+        release_loader.wait(timeout=5)
+        return shared
+
+    def read_context(started: threading.Event | None = None) -> None:
+        try:
+            if started is not None:
+                started.set()
+            _, panel_data = panel_owner.context(
+                cache_key="same",
+                loader=loader,
+                config_loader=lambda: config,
+                database_url_loader=lambda _config: "postgresql:///single-flight",
+            )
+            results.append(panel_data)
+        except BaseException as exc:  # pragma: no cover - threaded assertion capture
+            errors.append(exc)
+
+    leader = threading.Thread(target=read_context)
+    leader.start()
+    assert loader_started.wait(timeout=1)
+    waiter = threading.Thread(target=read_context, args=(second_started,))
+    waiter.start()
+    assert second_started.wait(timeout=1)
+    waiter.join(timeout=0.05)
+    assert waiter.is_alive()
+
+    release_loader.set()
+    leader.join(timeout=1)
+    waiter.join(timeout=1)
+
+    assert errors == []
+    assert loads == 1
+    assert results == [shared, shared]
+    assert panel_owner._CONTEXT_INFLIGHT == {}
+
+
+def test_context_cache_loader_error_wakes_waiter_and_does_not_poison_cache() -> None:
+    panel_owner.invalidate_context_cache()
+    config = typed_config("postgresql:///single-flight-error")
+    loader_started = threading.Event()
+    release_loader = threading.Event()
+    second_started = threading.Event()
+    errors: list[BaseException] = []
+    loads = 0
+
+    def failing_loader(_config: AppConfig) -> PanelData:
+        nonlocal loads
+        loads += 1
+        loader_started.set()
+        release_loader.wait(timeout=5)
+        raise RuntimeError("shared load failed")
+
+    def read_context(started: threading.Event | None = None) -> None:
+        try:
+            if started is not None:
+                started.set()
+            panel_owner.context(
+                cache_key="error",
+                loader=failing_loader,
+                config_loader=lambda: config,
+                database_url_loader=lambda _config: "postgresql:///single-flight-error",
+            )
+        except BaseException as exc:  # pragma: no cover - threaded assertion capture
+            errors.append(exc)
+
+    leader = threading.Thread(target=read_context)
+    leader.start()
+    assert loader_started.wait(timeout=1)
+    waiter = threading.Thread(target=read_context, args=(second_started,))
+    waiter.start()
+    assert second_started.wait(timeout=1)
+    waiter.join(timeout=0.05)
+    assert waiter.is_alive()
+
+    release_loader.set()
+    leader.join(timeout=1)
+    waiter.join(timeout=1)
+
+    assert loads == 1
+    assert [str(error) for error in errors] == ["shared load failed", "shared load failed"]
+    assert "error" not in panel_owner._CONTEXT_CACHE["entries"]
+    assert panel_owner._CONTEXT_INFLIGHT == {}
+
+    recovered = PanelData(status=DataStatus(True, "recovered", "test"), tables={})
+    _, panel_data = panel_owner.context(
+        cache_key="error",
+        loader=lambda _config: recovered,
+        config_loader=lambda: config,
+        database_url_loader=lambda _config: "postgresql:///single-flight-error",
+    )
+    assert panel_data is recovered
+
+
+def test_context_cache_invalidation_rejects_stale_inflight_value() -> None:
+    panel_owner.invalidate_context_cache()
+    config = typed_config("postgresql:///single-flight-invalidation")
+    old = PanelData(status=DataStatus(True, "old", "test"), tables={})
+    fresh = PanelData(status=DataStatus(True, "fresh", "test"), tables={})
+    old_started = threading.Event()
+    release_old = threading.Event()
+    old_results: list[PanelData] = []
+
+    def load_old(_config: AppConfig) -> PanelData:
+        old_started.set()
+        release_old.wait(timeout=1)
+        return old
+
+    def read_old() -> None:
+        _, panel_data = panel_owner.context(
+            cache_key="invalidate",
+            loader=load_old,
+            config_loader=lambda: config,
+            database_url_loader=lambda _config: "postgresql:///single-flight-invalidation",
+        )
+        old_results.append(panel_data)
+
+    old_thread = threading.Thread(target=read_old)
+    old_thread.start()
+    assert old_started.wait(timeout=1)
+
+    panel_owner.invalidate_context_cache()
+    _, fresh_result = panel_owner.context(
+        cache_key="invalidate",
+        loader=lambda _config: fresh,
+        config_loader=lambda: config,
+        database_url_loader=lambda _config: "postgresql:///single-flight-invalidation",
+    )
+    release_old.set()
+    old_thread.join(timeout=1)
+
+    _, cached_result = panel_owner.context(
+        cache_key="invalidate",
+        loader=lambda _config: pytest.fail("stale flight replaced the fresh cache entry"),
+        config_loader=lambda: config,
+        database_url_loader=lambda _config: "postgresql:///single-flight-invalidation",
+    )
+    assert fresh_result is fresh
+    assert old_results == [old]
+    assert cached_result is fresh
 
 
 def test_context_cache_evicts_expired_entries_and_bounds_cardinality(monkeypatch) -> None:

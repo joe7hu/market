@@ -9,7 +9,7 @@ from __future__ import annotations
 import inspect
 import json
 from hashlib import sha256
-from threading import RLock
+from threading import Event, RLock
 import time
 from typing import Any, Callable
 
@@ -22,11 +22,18 @@ from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT
 from investment_panel.database.authority import database_url
 
 
+class _ContextFlight:
+    def __init__(self) -> None:
+        self.event = Event()
+        self.error: BaseException | None = None
+
+
 CONTEXT_CACHE_TTL_SECONDS = 3.0
 CONTEXT_CACHE_MAX_ENTRIES = 32
 SOURCE_FRESHNESS_DEFAULT_LIMIT = 100
 _CONTEXT_CACHE: dict[str, Any] = {"entries": {}}
 _CONTEXT_LOCK = RLock()
+_CONTEXT_INFLIGHT: dict[tuple[str, str], _ContextFlight] = {}
 _HOUSEKEEPING_REFRESH_STEPS = frozenset({"retention_prune", "database_snapshot"})
 
 
@@ -59,28 +66,49 @@ def context(
     active_panel_loader = panel_loader or loaders_owner.load_panel_data
     config = active_config_loader()
     config_key = active_database_url_loader(config)
-    now = time.monotonic()
-    with _CONTEXT_LOCK:
-        entries = _CONTEXT_CACHE.setdefault("entries", {})
-        _prune_context_entries(entries, now)
-        cached = entries.get(cache_key)
-        if cached is not None and cached.get("config_key") == config_key and now < float(cached.get("expires_at") or 0):
-            return cached["value"]
-
     active_loader = loader or (lambda active_config: _load_panel_data_without_repairs(active_config, panel_loader=active_panel_loader))
-    value = (config, active_loader(config))
+    flight_key = (cache_key, config_key)
+    while True:
+        now = time.monotonic()
+        with _CONTEXT_LOCK:
+            entries = _CONTEXT_CACHE.setdefault("entries", {})
+            _prune_context_entries(entries, now)
+            cached = entries.get(cache_key)
+            if cached is not None and cached.get("config_key") == config_key and now < float(cached.get("expires_at") or 0):
+                return cached["value"]
+            flight = _CONTEXT_INFLIGHT.get(flight_key)
+            if flight is None:
+                flight = _ContextFlight()
+                _CONTEXT_INFLIGHT[flight_key] = flight
+                break
+        flight.event.wait()
+        if flight.error is not None:
+            raise flight.error
+
+    try:
+        value = (config, active_loader(config))
+    except BaseException as exc:
+        with _CONTEXT_LOCK:
+            if _CONTEXT_INFLIGHT.get(flight_key) is flight:
+                _CONTEXT_INFLIGHT.pop(flight_key, None)
+            flight.error = exc
+            flight.event.set()
+        raise
 
     loaded_at = time.monotonic()
     with _CONTEXT_LOCK:
-        entries = _CONTEXT_CACHE.setdefault("entries", {})
-        _prune_context_entries(entries, loaded_at)
-        entries.pop(cache_key, None)
-        entries[cache_key] = {
-            "value": value,
-            "config_key": config_key,
-            "expires_at": loaded_at + CONTEXT_CACHE_TTL_SECONDS,
-        }
-        _prune_context_entries(entries, loaded_at)
+        if _CONTEXT_INFLIGHT.get(flight_key) is flight:
+            entries = _CONTEXT_CACHE.setdefault("entries", {})
+            _prune_context_entries(entries, loaded_at)
+            entries.pop(cache_key, None)
+            entries[cache_key] = {
+                "value": value,
+                "config_key": config_key,
+                "expires_at": loaded_at + CONTEXT_CACHE_TTL_SECONDS,
+            }
+            _prune_context_entries(entries, loaded_at)
+            _CONTEXT_INFLIGHT.pop(flight_key, None)
+        flight.event.set()
         return value
 
 
@@ -160,6 +188,10 @@ def capped_table_payload(
 def invalidate_context_cache() -> None:
     with _CONTEXT_LOCK:
         _CONTEXT_CACHE["entries"] = {}
+        flights = tuple(_CONTEXT_INFLIGHT.values())
+        _CONTEXT_INFLIGHT.clear()
+        for flight in flights:
+            flight.event.set()
 
 
 def full_market_refresh_status(config: AppConfig) -> dict[str, Any] | None:

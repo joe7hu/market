@@ -544,8 +544,13 @@ def panel_snapshot(
             config_loader=lambda: config,
         )
         return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+    cache_key = (
+        "scope:today"
+        if scope == "today" and offset == 0 and limit is None
+        else f"scope:{scope}:{offset}:{limit}"
+    )
     config, panel_data = panel_owner.context(
-        cache_key=f"scope:{scope}:{offset}:{limit}",
+        cache_key=cache_key,
         loader=lambda active_config: loaders.load_panel_scope_data(
             active_config,
             scope,
