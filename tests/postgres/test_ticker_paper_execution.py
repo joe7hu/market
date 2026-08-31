@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision import (
