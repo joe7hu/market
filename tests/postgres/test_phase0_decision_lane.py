@@ -425,7 +425,7 @@ def test_decision_funnel_compact_publication_read_keeps_legacy_fallback(
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
-        cutoff = datetime.now(UTC)
+        cutoff = datetime.now(UTC) - timedelta(seconds=1)
         analysis = AnalysisRepository(runtime)
         run_id = analysis.start_run(
             "legacy-funnel", input_cutoff=cutoff, code_version="test",
@@ -441,8 +441,8 @@ def test_decision_funnel_compact_publication_read_keeps_legacy_fallback(
                     'ticker-opportunity-ranking', %s, 'published', %s
                 ) RETURNING id::text
                 """,
-                [run_id, cutoff],
-            ).fetchone()
+                    [run_id, cutoff + timedelta(microseconds=1)],
+                ).fetchone()
             for model_name, payload in (
                 ("alpha_signal", {
                     "ticker": "LEGACY", "availability_status": "available", "blockers": [],

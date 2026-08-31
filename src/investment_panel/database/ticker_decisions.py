@@ -694,6 +694,7 @@ class TickerDecisionRepository:
                           AND publication.published_at IS NOT NULL
                           AND publication.published_at <= %s
                           AND run.input_cutoff <= %s
+                          AND publication.published_at > run.input_cutoff
                         ORDER BY run.input_cutoff DESC, publication.published_at DESC,
                                  publication.created_at DESC, publication.id DESC
                         LIMIT 1
