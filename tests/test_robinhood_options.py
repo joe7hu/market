@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
+from investment_panel.core.robinhood_options import auth as robinhood_auth
 from investment_panel.core.robinhood_options import (
     RobinhoodMcpClient,
     authorization_server_metadata,
@@ -366,6 +368,37 @@ def test_load_robinhood_access_token_from_cache(tmp_path: Path, monkeypatch) -> 
     token = load_robinhood_access_token(_ProviderConfig(token_path=str(token_path)))
 
     assert token == "cached-token"
+
+
+def test_robinhood_token_write_atomically_replaces_private_json(tmp_path: Path) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text('{"access_token": "old"}', encoding="utf-8")
+    old_inode = token_path.stat().st_ino
+
+    robinhood_auth._write_token_payload(token_path, {"access_token": "new"})
+
+    assert token_path.stat().st_ino != old_inode
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    assert token_path.read_text(encoding="utf-8") == '{\n  "access_token": "new"\n}'
+
+
+def test_robinhood_token_write_preserves_existing_json_when_replace_fails(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    token_path = tmp_path / "token.json"
+    original = b'{"access_token": "old"}'
+    token_path.write_bytes(original)
+
+    def fail_replace(_source: Path, _destination: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(robinhood_auth.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        robinhood_auth._write_token_payload(token_path, {"access_token": "new"})
+
+    assert token_path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [token_path]
 
 
 def test_load_robinhood_access_token_from_codex_credentials(tmp_path: Path, monkeypatch) -> None:

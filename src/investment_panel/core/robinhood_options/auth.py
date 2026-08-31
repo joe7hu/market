@@ -10,12 +10,14 @@ so the OAuth dance can change without touching chain collection.
 from __future__ import annotations
 
 import base64
+from contextlib import suppress
 import hashlib
 import json
 import os
 import secrets
 import shutil
 import subprocess
+import tempfile
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -329,11 +331,7 @@ def _write_codex_mcp_credential(config: RobinhoodConfig, refreshed: dict[str, An
         if expires_at is not None:
             updated["expires_at"] = int(expires_at * 1000)
         credentials[key] = updated
-        path.write_text(json.dumps(credentials, indent=2), encoding="utf-8")
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
+        _write_json_atomically(path, credentials)
         return
 
 
@@ -451,13 +449,27 @@ def _codex_credentials_path(config: RobinhoodConfig) -> Path:
     return Path(os.path.expandvars(str(getattr(config, "codex_credentials_path", "~/.codex/.credentials.json")))).expanduser()
 
 
+def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
+    temp = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False,
+    )
+    temp_path = Path(temp.name)
+    try:
+        with temp:
+            os.fchmod(temp.fileno(), 0o600)
+            temp.write(json.dumps(payload, indent=2))
+            temp.flush()
+            os.fsync(temp.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        with suppress(OSError):
+            temp_path.unlink()
+        raise
+
+
 def _write_token_payload(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    _write_json_atomically(path, payload)
 
 
 def _float_value(value: Any) -> float | None:
