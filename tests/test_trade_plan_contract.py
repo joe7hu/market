@@ -23,7 +23,7 @@ from investment_panel.jobs.ticker_decisions import portfolio_impacts
 AS_OF = datetime(2026, 8, 22, 14, tzinfo=UTC)
 
 
-def _complete_replay() -> dict[str, object]:
+def _complete_replay(symbol: str = "ACME") -> dict[str, object]:
     return {
         "cutoff": AS_OF,
         "positions": [],
@@ -34,7 +34,7 @@ def _complete_replay() -> dict[str, object]:
         "missing_valuation_count": 0,
         "valuation_complete": True,
         "lineage": [],
-        "book_identity": "portfolio-book:acme",
+        "book_identity": f"portfolio-book:{symbol.lower()}",
     }
 
 
@@ -61,28 +61,29 @@ def _tables(symbol: str = "ACME") -> dict[str, list[dict[str, object]]]:
     }
 
 
-def _decision() -> tuple[object, object, object]:
-    seed = build_ticker_decision("ACME", _tables(), as_of=AS_OF)
+def _decision(symbol: str = "ACME") -> tuple[object, object, object]:
+    identity = symbol.lower()
+    seed = build_ticker_decision(symbol, _tables(symbol), as_of=AS_OF)
     snapshot = seed.market_state_snapshot.model_copy(update={
-        "snapshot_id": "market:snapshot:acme",
-        "publication_id": "market:publication:acme",
+        "snapshot_id": f"market:snapshot:{identity}",
+        "publication_id": f"market:publication:{identity}",
         "availability": "available",
         "blockers": (),
     })
-    replay = _complete_replay()
-    impacts = portfolio_impacts(seed, snapshot, "market:publication:acme", replay)
+    replay = _complete_replay(symbol)
+    impacts = portfolio_impacts(seed, snapshot, snapshot.publication_id, replay)
     decision = build_ticker_decision(
-        "ACME", _tables(), as_of=AS_OF, market_state_snapshot=snapshot,
+        symbol, _tables(symbol), as_of=AS_OF, market_state_snapshot=snapshot,
         portfolio_impacts=impacts, risk_policy_snapshot=seed.risk_policy_snapshot,
         portfolio_replay=replay,
     )
     selected = decision.selected_expression
     assert selected is not None
     impact = decision.portfolio_impacts[selected.kind]
-    signal = {"signal_id": "alpha:acme"}
+    signal = {"signal_id": f"alpha:{identity}"}
     rank = {
-        "rank_id": "rank:acme",
-        "ticker": "ACME",
+        "rank_id": f"rank:{identity}",
+        "ticker": symbol,
         "opportunity_episode_id": decision.opportunity_episode_id,
         "decision_revision": decision.decision_revision,
         "policy_version": decision.policy_version,
@@ -100,8 +101,8 @@ def _decision() -> tuple[object, object, object]:
     return decision, rank, signal
 
 
-def _actionable_plan():
-    decision, rank, signal = _decision()
+def _actionable_plan(symbol: str = "ACME"):
+    decision, rank, signal = _decision(symbol)
     selected = decision.selected_expression
     assert selected is not None
     impact = decision.portfolio_impacts[selected.kind]
@@ -411,3 +412,85 @@ def test_today_api_projects_the_bound_plan_terms(monkeypatch: pytest.MonkeyPatch
     assert action["action"] == "NO_TRADE"
     assert action["selected_expression"] == "CASH"
     assert action["trade_plan"] is None
+
+
+def test_today_queue_input_bound_is_independent_from_snapshot_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.data_access import loaders as loaders_owner, payloads as payloads_owner
+    from app.routers import panel as panel_router
+    from investment_panel.database.panel_models import QUERY_POLICIES
+
+    tables: dict[str, list[dict[str, object]]] = {
+        "ticker_decisions": [],
+        "opportunity_rank": [],
+        "trade_plan": [],
+        "portfolio": [{"symbol": "HELD"}],
+    }
+    for index in range(5):
+        symbol = f"T{index}"
+        decision, rank, _, plan, _ = _actionable_plan(symbol)
+        bundle_id = f"bundle:{symbol.lower()}"
+        plan = plan.model_copy(update={"publication_id": bundle_id})
+        decision = bind_trade_plan(decision, plan)
+        rank_payload = {**rank, "ranking_publication_id": bundle_id}
+        plan_payload = plan.model_dump(mode="json")
+        tables["ticker_decisions"].append({
+            "ticker": decision.ticker,
+            "ticker_decision_id": f"decision:{symbol.lower()}",
+            "decision_revision": decision.decision_revision,
+            "opportunity_episode_id": decision.opportunity_episode_id,
+            "policy_version": decision.policy_version,
+            "as_of": decision.as_of.isoformat(),
+            "selected_expression": decision.selected_expression.model_dump(mode="json"),
+            "resolution": decision.resolution.model_dump(mode="json"),
+            "capital_action": decision.capital_action.model_dump(mode="json"),
+            "opportunity_rank": rank_payload,
+            "trade_plan": plan_payload,
+        })
+        tables["opportunity_rank"].append(rank_payload)
+        tables["trade_plan"].append(plan_payload)
+
+    calls: list[dict[str, int]] = []
+
+    def fake_load(_config, table_names, **options):
+        limits = dict(options.get("query_row_limits") or {})
+        calls.append(limits)
+        loaded = {
+            name: list(tables.get("ticker_decisions" if name == "today_ticker_actions" else name, []))[: limits.get(name)]
+            if limits.get(name) is not None
+            else list(tables.get("ticker_decisions" if name == "today_ticker_actions" else name, []))
+            for name in table_names
+        }
+        return loaded, {
+            "database": "postgresql",
+            "available_model_count": len(table_names),
+            "unavailable_models": [],
+        }
+
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_load)
+    panel = loaders_owner.load_panel_scope_data(object(), "today")
+    panel.tables["opportunity_rank"].reverse()
+    panel.tables["trade_plan"].reverse()
+    monkeypatch.setattr(panel_router.panel_owner, "context", lambda **_kwargs: (None, panel))
+
+    queue = panel_router.today(
+        config=object(),
+        option_actions=SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+    snapshot = payloads_owner.panel_snapshot_payload(panel, "today")
+
+    query = QUERY_POLICIES["today_ticker_actions"].query
+    assert calls == [{"today_ticker_actions": 100}]
+    assert "decision.market_state_snapshot" not in query
+    assert "decision.portfolio_impacts" not in query
+    assert "decision.tactical" not in query
+    assert "decision.fundamental" not in query
+    assert "octet_length((decision.input_manifest->'trade_plan')::text) <= 327680" in query
+    assert "pg_input_is_valid(opportunity_rank->>'trade_rank', 'integer')" in query
+    assert all("input_manifest" not in row for row in panel.rows("ticker_decisions"))
+    assert [row["ticker"] for row in queue["actions"]] == [f"T{index}" for index in range(5)]
+    assert all(row["trade_rank_unavailable_reason"] != "opportunity_rank_missing" for row in queue["actions"])
+    assert snapshot["tables"]["ticker_decisions"]["count"] == 5
+    assert len(snapshot["tables"]["ticker_decisions"]["rows"]) == 3
+    assert snapshot["tables"]["portfolio"]["rows"] == [{"symbol": "HELD"}]

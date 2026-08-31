@@ -303,6 +303,77 @@ DIRECT_QUERIES: dict[str, str] = {
           AND opportunity_authority_count = 1
         ORDER BY as_of DESC, published_at DESC, created_at DESC, ticker_decision_id DESC
     """,
+    "today_ticker_actions": """
+        WITH current_candidates AS (
+            SELECT decision.id::text AS ticker_decision_id,
+                   instrument.symbol AS ticker, instrument.symbol,
+                   decision.decision_revision, decision.as_of,
+                   decision.published_at, decision.published_at AS available_at,
+                   decision.input_hash,
+                   CASE WHEN octet_length(decision.capital_action::text) <= 4096
+                        THEN decision.capital_action END AS capital_action,
+                   CASE WHEN octet_length(decision.resolution::text) <= 196608
+                        THEN decision.resolution END AS resolution,
+                   decision.policy_version, decision.opportunity_episode_id,
+                   CASE WHEN octet_length(decision.selected_expression::text) <= 8192
+                        THEN decision.selected_expression END AS selected_expression,
+                   CASE WHEN octet_length((decision.input_manifest->'opportunity_rank')::text) <= 196608
+                        THEN decision.input_manifest->'opportunity_rank' END AS opportunity_rank,
+                   CASE WHEN octet_length((decision.input_manifest->'trade_plan')::text) <= 327680
+                        THEN decision.input_manifest->'trade_plan' END AS trade_plan,
+                   decision.created_at,
+                   count(*) OVER (
+                       PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
+                   ) AS authority_count,
+                   count(*) OVER (
+                       PARTITION BY decision.opportunity_episode_id
+                   ) AS opportunity_authority_count,
+                   row_number() OVER (
+                       PARTITION BY decision.instrument_id
+                       ORDER BY decision.as_of DESC, decision.published_at DESC,
+                                decision.created_at DESC, decision.id DESC
+                   ) AS current_row
+            FROM analysis.ticker_decision decision
+            JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+            WHERE decision.status = 'published'
+              AND decision.contract_version = 'ticker-decision.v1'
+              AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
+              AND decision.as_of <= now()
+              AND decision.published_at IS NOT NULL
+              AND decision.published_at <= now()
+              AND jsonb_typeof(decision.capital_action) = 'object'
+              AND jsonb_typeof(decision.input_manifest) = 'object'
+        )
+        SELECT ticker_decision_id, ticker, symbol, decision_revision, as_of,
+               published_at, available_at, input_hash, capital_action, resolution,
+               policy_version, opportunity_episode_id, selected_expression,
+               opportunity_rank, trade_plan
+        FROM current_candidates
+        WHERE current_row = 1
+          AND authority_count = 1
+          AND opportunity_authority_count = 1
+        ORDER BY
+          CASE
+            WHEN opportunity_rank->>'trade_rank' ~ '^[1-9][0-9]*$'
+             AND length(opportunity_rank->>'trade_rank') <= 9
+             AND pg_input_is_valid(opportunity_rank->>'trade_rank', 'integer')
+            THEN (opportunity_rank->>'trade_rank')::integer
+          END ASC NULLS LAST,
+          CASE
+            WHEN opportunity_rank->>'research_rank' ~ '^[1-9][0-9]*$'
+             AND length(opportunity_rank->>'research_rank') <= 9
+             AND pg_input_is_valid(opportunity_rank->>'research_rank', 'integer')
+            THEN (opportunity_rank->>'research_rank')::integer
+          END ASC NULLS LAST,
+          ticker,
+          as_of DESC,
+          published_at DESC,
+          created_at DESC,
+          ticker_decision_id DESC
+    """,
     "ticker_outcomes": """
         SELECT outcome.ticker_decision_id::text, instrument.symbol AS ticker,
                instrument.symbol,

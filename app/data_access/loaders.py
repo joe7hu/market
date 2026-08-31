@@ -8,7 +8,11 @@ from typing import Any, Iterable
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.panel import tables_for_scope
 from app.data_access.types import DataStatus, PanelData
-from investment_panel.core.panel import SCOPED_TABLE_ROW_LIMITS, TICKER_INITIAL_TABLES, panel_contract_payload as contract_panel_payload
+from investment_panel.core.panel import (
+    SCOPED_TABLE_ROW_LIMITS,
+    TICKER_INITIAL_TABLES,
+    panel_contract_payload as contract_panel_payload,
+)
 from investment_panel.database.panel_models import load_postgres_tables
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
@@ -149,6 +153,44 @@ def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
     if scope == "opportunities":
         return load_opportunities_scope_data(active_config)
     requested = tuple(tables_for_scope(scope))
+    if scope == "today":
+        compact_name = "today_ticker_actions"
+        authority_names = {"ticker_decisions", "opportunity_rank", "trade_plan"}
+        loaded = load_panel_data(
+            active_config,
+            table_names=tuple(name for name in requested if name not in authority_names) + (compact_name,),
+            query_row_limits={compact_name: 100},
+        )
+        decisions: list[dict[str, Any]] = []
+        ranks: list[dict[str, Any]] = []
+        plans: list[dict[str, Any]] = []
+        for raw in loaded.rows(compact_name):
+            decision = dict(raw)
+            rank = decision.get("opportunity_rank")
+            if isinstance(rank, dict):
+                rank = dict(rank)
+                ranking_publication_id = str(rank.get("ranking_publication_id") or "")
+                if ranking_publication_id and not rank.get("publication_id"):
+                    rank["publication_id"] = ranking_publication_id
+                decision["opportunity_rank"] = rank
+                ranks.append(rank)
+            plan = decision.get("trade_plan")
+            if isinstance(plan, dict):
+                plan = dict(plan)
+                decision["trade_plan"] = plan
+                plans.append(plan)
+            decisions.append(decision)
+        tables = {name: loaded.rows(name) for name in requested}
+        tables.update({
+            "ticker_decisions": decisions,
+            "opportunity_rank": ranks,
+            "trade_plan": plans,
+        })
+        return PanelData(
+            status=loaded.status,
+            tables=tables,
+            metadata={**loaded.metadata, "table_count": len(requested), "today_action_input_count": len(decisions)},
+        )
     query_row_limits = {
         table: limit
         for table, limit in SCOPED_TABLE_ROW_LIMITS.get(scope, {}).items()

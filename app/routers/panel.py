@@ -427,13 +427,29 @@ def _is_true(value: Any) -> bool:
 def _rank_for_row(row: dict[str, Any], ranks: list[dict[str, Any]], symbol: str) -> dict[str, Any] | None:
     revision = str(row.get("decision_revision") or "")
     episode_id = str(row.get("opportunity_episode_id") or "")
+    embedded = row.get("opportunity_rank")
+    candidates = (
+        [embedded]
+        if isinstance(embedded, dict)
+        else [] if "opportunity_rank" in row
+        else ranks
+    )
     matches = [
-        rank for rank in ranks
+        rank for rank in candidates
         if str(rank.get("ticker") or rank.get("symbol") or "").upper() == symbol
         and str(rank.get("decision_revision") or "") == revision
         and str(rank.get("opportunity_episode_id") or "") == episode_id
     ]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) != 1:
+        return None
+    rank = dict(matches[0])
+    ranking_publication_id = str(rank.get("ranking_publication_id") or "")
+    publication_id = str(rank.get("publication_id") or "")
+    if ranking_publication_id and publication_id and ranking_publication_id != publication_id:
+        return None
+    if ranking_publication_id:
+        rank["publication_id"] = ranking_publication_id
+    return rank
 
 
 def _plan_for_row(
@@ -441,8 +457,15 @@ def _plan_for_row(
 ) -> TradePlan | None:
     revision = str(row.get("decision_revision") or "")
     episode_id = str(row.get("opportunity_episode_id") or "")
+    embedded = row.get("trade_plan")
+    candidates = (
+        [embedded]
+        if isinstance(embedded, dict)
+        else [] if "trade_plan" in row
+        else plans
+    )
     matches = [
-        plan for plan in plans
+        plan for plan in candidates
         if str(plan.get("ticker") or plan.get("symbol") or "").upper() == symbol
         and str(plan.get("decision_revision") or "") == revision
         and str(plan.get("opportunity_episode_id") or "") == episode_id

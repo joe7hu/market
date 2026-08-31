@@ -45,8 +45,8 @@ SCOPED_TABLE_COMPACT_FIELDS: dict[str, dict[str, frozenset[str]]] = {
         "ticker_decisions": frozenset({
             "data_requests", "expressions", "fundamental", "input_manifest",
             "learning_history", "market_state_snapshot", "opportunity_episode",
-            "portfolio_impacts", "resolution", "risk_policy", "risk_policy_snapshot",
-            "tactical",
+            "opportunity_rank", "portfolio_impacts", "resolution", "risk_policy",
+            "risk_policy_snapshot", "tactical", "trade_plan",
         }),
         "opportunity_rank": frozenset({"eligible_universe", "input_lineage", "utility"}),
         "trade_plan": frozenset({"input_lineage", "portfolio_impact", "selected_expression"}),

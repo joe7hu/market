@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
 from conftest import typed_config
+from investment_panel.core.decision import build_ticker_decision
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.panel_models import MODEL_ALIASES, QUERY_POLICIES, load_postgres_tables
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.ticker_decisions import TickerDecisionRepository
 
 
 def test_panel_query_catalog_owns_alias_and_symbol_scope_policy() -> None:
@@ -26,6 +29,60 @@ def test_every_query_alias_resolves_to_owned_policy() -> None:
     }
     missing = sorted(target for target in query_aliases.values() if target not in QUERY_POLICIES)
     assert missing == []
+
+
+def test_today_action_query_bounds_payloads_and_handles_poisoned_rank(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    symbol = f"TQ{uuid4().hex[:8].upper()}"
+    as_of = datetime.now(UTC) - timedelta(minutes=1)
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity')",
+                [symbol, symbol],
+            )
+        decision = build_ticker_decision(
+            symbol,
+            {"decision_queue": [{
+                "symbol": symbol,
+                "stance": "NEUTRAL",
+                "available_at": (as_of - timedelta(minutes=1)).isoformat(),
+            }]},
+            as_of=as_of,
+        )
+        published = TickerDecisionRepository(runtime).publish(decision)
+        with runtime.transaction() as connection:
+            manifest = dict(connection.execute(
+                "SELECT input_manifest FROM analysis.ticker_decision WHERE id = %s::uuid",
+                [published["ticker_decision_id"]],
+            ).fetchone()["input_manifest"])
+            manifest.update({
+                "opportunity_rank": {"ticker": symbol, "trade_rank": "9" * 10_000},
+                "trade_plan": {"padding": "x" * 400_000},
+            })
+            connection.execute(
+                "UPDATE analysis.ticker_decision SET input_manifest = %s WHERE id = %s::uuid",
+                [Jsonb(manifest), published["ticker_decision_id"]],
+            )
+
+        rows = load_postgres_tables(
+            typed_config(migrated_postgres_dsn),
+            ("today_ticker_actions",),
+            query_row_limits={"today_ticker_actions": 100},
+        )[0]["today_ticker_actions"]
+
+        row = next(item for item in rows if item["ticker"] == symbol)
+        assert row["opportunity_rank"]["trade_rank"] == "9" * 10_000
+        assert row["trade_plan"] is None
+        assert not {
+            "input_manifest", "market_state_snapshot", "portfolio_impacts",
+            "tactical", "fundamental", "expressions",
+        }.intersection(row)
+    finally:
+        runtime.close()
 
 
 def test_ticker_governance_projection_binds_one_options_radar_revision(
