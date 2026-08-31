@@ -29,7 +29,6 @@ from app.request_security import require_local_request
 from investment_panel.core.panel import PANEL_SCOPE_TABLES
 from investment_panel.core.decision import TRACKED_METRICS, ticker_decision_brief
 from investment_panel.core.config import AppConfig
-from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
 from conftest import typed_config
 
 
@@ -440,98 +439,6 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
     rss = next(row for row in sources if row["value"] == "https://example.com/feed")
     assert rss["kind"] == "rss"
     assert rss["latest_status"] == "failed"
-
-
-def test_update_agent_settings_config_rewrites_only_agents_block(tmp_path) -> None:
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        """
-database:
-  url: postgresql:///test
-
-agents:
-  option_agent:
-    enabled: true
-    command: market-run-option-agent
-    timeout_seconds: 180
-    thesis_limit: 8
-    postmortem_limit: 4
-    provider: codex
-
-disclosures:
-  public_disclosure_csvs: []
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    update_agent_settings_config(
-        config_path,
-        {
-            "option_agent": {
-                "enabled": False,
-                "command": "market-run-option-agent",
-                "timeout_seconds": 90,
-                "thesis_limit": 3,
-                "postmortem_limit": 0,
-                "provider": "codex",
-            },
-        },
-    )
-
-    text = config_path.read_text(encoding="utf-8")
-    assert "url: postgresql:///test" in text
-    assert "command: market-run-option-agent" in text
-    assert "thesis_limit: 3" in text
-    assert "postmortem_limit: 0" in text
-    assert "disclosures:" in text
-
-
-def test_update_research_sources_config_rewrites_only_research_block(tmp_path) -> None:
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        """
-database:
-  url: postgresql:///test
-
-research_sources:
-  x:
-    enabled: true
-    list_id: ""
-    priority_handles: [balajis]
-    limit: 30
-
-disclosures:
-  public_disclosure_csvs: []
-""".lstrip(),
-        encoding="utf-8",
-    )
-
-    update_research_sources_config(
-        config_path,
-        {
-            "x": {"enabled": True, "list_id": "1734567890", "priority_handles": "@balajis, karpathy, karpathy", "limit": 40},
-            "news": {"enabled": False, "providers": ["bloomberg", "reuters"]},
-            "blogs": {"enabled": True, "substack_urls": ["https://example.substack.com"], "rss_urls": ["https://example.com/feed"]},
-        },
-    )
-
-    text = config_path.read_text(encoding="utf-8")
-    assert "url: postgresql:///test" in text
-    assert "list_id: '1734567890'" in text or "list_id: \"1734567890\"" in text or "list_id: 1734567890" in text
-    # @ stripped, de-duped
-    assert "balajis" in text and "karpathy" in text
-    assert text.count("karpathy") == 1
-    assert "limit: 40" in text
-    assert "https://example.substack.com" in text
-    assert "https://example.com/feed" in text
-    assert "disclosures:" in text
-
-
-def test_update_research_sources_config_rejects_bad_values(tmp_path) -> None:
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text("research_sources:\n  x:\n    enabled: true\n", encoding="utf-8")
-    with pytest.raises(ValueError):
-        update_research_sources_config(config_path, {"x": {"limit": 9999}})
 
 
 def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatch) -> None:

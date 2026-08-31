@@ -15,8 +15,8 @@ from app.actions.theses import ThesisActions
 from app.actions.tickers import TickerActions
 from app import job_control
 from app.request_security import require_local_request
-from investment_panel.core.config import AppConfig, load_config, public_config_payload as _public_config_payload
-from investment_panel.database.authority import database_url, runtime_for_config
+from investment_panel.core.config import AppConfig, load_config
+from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.sources import SourceRepository
 from investment_panel.database.storage_archive import StorageArchiveService
 from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
@@ -26,12 +26,6 @@ def get_config() -> AppConfig:
     """Load the typed application configuration once for a request/workflow."""
 
     return load_config()
-
-
-def public_config(path: str | Path | None = None) -> dict[str, Any]:
-    """Return the redacted public settings shape at the HTTP boundary."""
-
-    return _public_config_payload(load_config(path))
 
 
 def get_runtime(config: AppConfig = Depends(get_config)):
@@ -99,15 +93,8 @@ def get_thesis_actions(config: AppConfig = Depends(get_config)) -> ThesisActions
     return ThesisActions(config)
 
 
-def public_config_payload(config: AppConfig) -> dict[str, Any]:
-    """Convert typed configuration to a redacted public payload boundary."""
-
-    return _public_config_payload(config)
-
-
 __all__ = [
     "AppConfig",
-    "database_url",
     "get_config",
     "get_runtime",
     "get_authorized_request",
@@ -120,7 +107,5 @@ __all__ = [
     "get_superinvestor_query",
     "get_thesis_actions",
     "load_config",
-    "public_config",
-    "public_config_payload",
     "runtime_for_config",
 ]

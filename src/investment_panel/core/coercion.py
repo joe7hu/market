@@ -1,15 +1,6 @@
-"""Canonical low-level scalar / JSON / temporal / string-list coercion primitives.
+"""Low-level scalar, JSON, temporal, and string-list coercion helpers.
 
-A leaf domain-helper module (depends on nothing else in the package) that holds
-the generic coercion primitives previously reimplemented under different names in
-each package's ``coerce.py``. Package ``coerce`` modules now import from here and
-re-export under their historical local names so call sites and the public import
-contract are unchanged ("move, don't rewrite").
-
-Subtly different historical variants are kept as *distinct* functions rather than
-merged, because callers depend on the observable differences (NaN handling,
-``$``/``%`` stripping, returning ``0.0`` vs ``None``, dict vs dict-or-list JSON
-shapes, naive vs UTC-aware datetimes, etc.).
+This leaf module depends only on Python's standard library.
 """
 
 from __future__ import annotations
@@ -57,25 +48,6 @@ def parse_json_dict(value: Any) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {}
 
 
-def parse_json_dict_copy(value: Any) -> dict[str, Any]:
-    """Parse JSON expecting a dict, returning a *copy*.
-
-    A dict input is shallow-copied; strings are coerced via ``json.loads`` after
-    ``str()``. Non-dict results and failures become ``{}``. Differs from
-    :func:`parse_json_dict` by copying and by stringifying the input first.
-    """
-
-    if isinstance(value, dict):
-        return dict(value)
-    if not value:
-        return {}
-    try:
-        decoded = json.loads(str(value))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-    return dict(decoded) if isinstance(decoded, dict) else {}
-
-
 def parse_json_list(value: Any) -> list[dict[str, Any]]:
     """Parse JSON expecting a list of dicts; non-dict items are dropped."""
 
@@ -109,17 +81,8 @@ def decode_json_value(value: Any) -> Any:
 # --------------------------------------------------------------------------- #
 
 
-def to_float_or_none(value: Any) -> float | None:
-    """``float(value)`` or ``None`` for ``None``/unparseable input."""
-
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
 def to_finite_float(value: Any) -> float | None:
-    """Like :func:`to_float_or_none` but rejects NaN/inf (returns ``None``)."""
+    """Parse a finite float; return ``None`` for NaN, infinity, or bad input."""
 
     try:
         number = float(value) if value is not None else None
@@ -128,17 +91,6 @@ def to_finite_float(value: Any) -> float | None:
     if number is None or not math.isfinite(number):
         return None
     return number
-
-
-def float_from_comma(value: Any) -> float | None:
-    """Float coercion that strips commas; ``None``/``""`` become ``None``."""
-
-    if value in (None, ""):
-        return None
-    try:
-        return float(str(value).replace(",", ""))
-    except ValueError:
-        return None
 
 
 def number_from_any(value: Any) -> float:
@@ -188,20 +140,6 @@ def share(values: list[bool]) -> float:
     return sum(1 for value in values if value) / len(values) if values else 0.0
 
 
-def format_metric(value: float | None, unit: str) -> str:
-    """Render a metric for display: ``None`` -> ``"n/a"``; units ``$``/``%``/``x``."""
-
-    if value is None:
-        return "n/a"
-    if unit == "$":
-        return f"${value / 1_000_000:.1f}M" if abs(value) >= 1_000_000 else f"${value:,.0f}"
-    if unit == "%":
-        return f"{value:+.1f}%"
-    if unit == "x":
-        return f"{value:.1f}x"
-    return f"{value:.1f}"
-
-
 def to_int_or_none(value: Any) -> int | None:
     """``int(value)`` or ``None`` for ``None``/unparseable input."""
 
@@ -236,25 +174,6 @@ def parse_dt_utc(value: Any) -> datetime | None:
     return parsed.astimezone(UTC) if parsed.tzinfo else parsed.astimezone(UTC)
 
 
-def parse_naive_datetime(value: Any) -> datetime | None:
-    """Parse to a *naive* ``datetime`` (tzinfo stripped); empty becomes ``None``.
-
-    Raises ``ValueError`` on a malformed non-empty string (callers handle it).
-    """
-
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time())
-    text = str(value or "")
-    if not text:
-        return None
-    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    if parsed.tzinfo is not None:
-        parsed = parsed.replace(tzinfo=None)
-    return parsed
-
-
 def parse_date(value: Any) -> date | None:
     """Parse to a ``date``; empty becomes ``None``.
 
@@ -271,68 +190,12 @@ def parse_date(value: Any) -> date | None:
     return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
 
 
-def parse_date_lenient(value: Any) -> date | None:
-    """Parse to a ``date``, falling back to the first 10 chars; never raises."""
-
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-    except ValueError:
-        try:
-            return date.fromisoformat(text[:10])
-        except ValueError:
-            return None
-
-
-def iso_string(value: Any) -> str:
-    """ISO-format a ``datetime``/``date``; anything else is ``str()``-ed."""
-
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    return str(value)
-
-
 def iso_or_none(value: Any) -> str | None:
     """ISO-format a temporal value or pass through as string; ``None`` stays ``None``."""
 
     if value is None:
         return None
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
-
-
-def iso_or_none_strict(value: Any) -> str | None:
-    """Like :func:`iso_or_none` but ``None``/``""`` both become ``None``.
-
-    Only ``datetime``/``date`` are ISO-formatted; other values are ``str()``-ed.
-    """
-
-    if value in (None, ""):
-        return None
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    return str(value)
-
-
-def iso_date_string(value: Any) -> str | None:
-    """Coerce to an ISO date string; unparseable text is returned unchanged."""
-
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
-    except ValueError:
-        return text
 
 
 # --------------------------------------------------------------------------- #
@@ -368,19 +231,6 @@ def string_list(value: Any) -> list[str]:
             if item.strip()
         ]
     return [str(value).strip()] if str(value).strip() else []
-
-
-def unique_strings(values: list[str]) -> list[str]:
-    """De-duplicate a list of strings, preserving order and dropping falsy items."""
-
-    output: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        output.append(value)
-    return output
 
 
 # --------------------------------------------------------------------------- #
