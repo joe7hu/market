@@ -834,6 +834,44 @@ def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -
     assert not errors
 
 
+def test_context_cache_evicts_expired_entries_and_bounds_cardinality(monkeypatch) -> None:
+    panel_owner.invalidate_context_cache()
+    clock = [0.0]
+    loads = 0
+    config = typed_config("postgresql:///cache-bound")
+
+    def load(_config: AppConfig) -> PanelData:
+        nonlocal loads
+        loads += 1
+        return PanelData(status=DataStatus(True, f"load-{loads}", "test"), tables={})
+
+    def cached(key: str) -> None:
+        panel_owner.context(
+            cache_key=key,
+            loader=load,
+            config_loader=lambda: config,
+            database_url_loader=lambda _config: "postgresql:///cache-bound",
+        )
+
+    monkeypatch.setattr(panel_owner.time, "monotonic", lambda: clock[0])
+    cached("ttl")
+    clock[0] = panel_owner.CONTEXT_CACHE_TTL_SECONDS - 0.01
+    cached("ttl")
+    assert loads == 1
+
+    clock[0] = panel_owner.CONTEXT_CACHE_TTL_SECONDS
+    cached("new")
+    assert "ttl" not in panel_owner._CONTEXT_CACHE["entries"]
+
+    for index in range(panel_owner.CONTEXT_CACHE_MAX_ENTRIES + 5):
+        cached(f"page:{index}")
+
+    entries = panel_owner._CONTEXT_CACHE["entries"]
+    assert len(entries) == panel_owner.CONTEXT_CACHE_MAX_ENTRIES
+    assert "page:0" not in entries
+    assert f"page:{panel_owner.CONTEXT_CACHE_MAX_ENTRIES + 4}" in entries
+
+
 def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(
     migrated_postgres_dsn: str, monkeypatch
 ) -> None:

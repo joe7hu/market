@@ -23,8 +23,9 @@ from investment_panel.database.authority import database_url
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
+CONTEXT_CACHE_MAX_ENTRIES = 32
 SOURCE_FRESHNESS_DEFAULT_LIMIT = 100
-_CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key": None, "value": None}
+_CONTEXT_CACHE: dict[str, Any] = {"entries": {}}
 _CONTEXT_LOCK = RLock()
 _HOUSEKEEPING_REFRESH_STEPS = frozenset({"retention_prune", "database_snapshot"})
 
@@ -61,6 +62,7 @@ def context(
     now = time.monotonic()
     with _CONTEXT_LOCK:
         entries = _CONTEXT_CACHE.setdefault("entries", {})
+        _prune_context_entries(entries, now)
         cached = entries.get(cache_key)
         if cached is not None and cached.get("config_key") == config_key and now < float(cached.get("expires_at") or 0):
             return cached["value"]
@@ -68,12 +70,26 @@ def context(
     active_loader = loader or (lambda active_config: _load_panel_data_without_repairs(active_config, panel_loader=active_panel_loader))
     value = (config, active_loader(config))
 
+    loaded_at = time.monotonic()
     with _CONTEXT_LOCK:
         entries = _CONTEXT_CACHE.setdefault("entries", {})
-        entries[cache_key] = {"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS}
-        if cache_key == "full":
-            _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
+        _prune_context_entries(entries, loaded_at)
+        entries.pop(cache_key, None)
+        entries[cache_key] = {
+            "value": value,
+            "config_key": config_key,
+            "expires_at": loaded_at + CONTEXT_CACHE_TTL_SECONDS,
+        }
+        _prune_context_entries(entries, loaded_at)
         return value
+
+
+def _prune_context_entries(entries: dict[str, Any], now: float) -> None:
+    for key, cached in list(entries.items()):
+        if now >= float(cached.get("expires_at") or 0):
+            entries.pop(key, None)
+    while len(entries) > CONTEXT_CACHE_MAX_ENTRIES:
+        entries.pop(next(iter(entries)))
 
 
 def _load_panel_data_without_repairs(active_config: AppConfig, *, panel_loader: Callable[..., Any]) -> Any:
@@ -142,7 +158,8 @@ def capped_table_payload(
 
 
 def invalidate_context_cache() -> None:
-    _CONTEXT_CACHE.update({"entries": {}, "expires_at": 0.0, "config_key": None, "value": None})
+    with _CONTEXT_LOCK:
+        _CONTEXT_CACHE["entries"] = {}
 
 
 def full_market_refresh_status(config: AppConfig) -> dict[str, Any] | None:
@@ -171,6 +188,7 @@ def with_data_freshness(payload: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "CONTEXT_CACHE_TTL_SECONDS",
+    "CONTEXT_CACHE_MAX_ENTRIES",
     "PANEL_SNAPSHOT_CONTRACT_REVISION",
     "SOURCE_FRESHNESS_DEFAULT_LIMIT",
     "capped_table_payload",
