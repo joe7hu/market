@@ -82,10 +82,10 @@ def require_local_request(request: Request) -> None:
 
     _require_allowed_host(request)
     host = request.client.host if request.client else ""
-    if host in {"localhost", "testclient"}:
+    if host == "testclient":
         return
     try:
-        address = _normalized_ip(host)
+        address = _normalized_ip("127.0.0.1" if host == "localhost" else host)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="API access is available only from the local network.") from exc
     if address.is_loopback:
@@ -95,7 +95,12 @@ def require_local_request(request: Request) -> None:
                 chain = [_normalized_ip(item.strip()) for item in forwarded.split(",")]
             except ValueError as exc:
                 raise HTTPException(status_code=403, detail="API access is available only from the local network.") from exc
-            address = chain[-1]
+            if any(not _allowed_address(item) for item in chain):
+                raise HTTPException(
+                    status_code=403,
+                    detail="API access is available only from the local network.",
+                )
+            address = chain[0]
     if not _allowed_address(address):
         raise HTTPException(status_code=403, detail="API access is available only from the local network.")
 

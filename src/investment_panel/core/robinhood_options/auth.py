@@ -450,6 +450,8 @@ def _codex_credentials_path(config: RobinhoodConfig) -> Path:
 
 
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to replace credential symlink: {path}")
     temp = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False,
     )

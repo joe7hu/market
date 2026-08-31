@@ -1464,9 +1464,13 @@ def test_local_api_guard_allows_private_lan_clients() -> None:
     require_local_request(request("192.168.50.197"))
     require_local_request(request("127.0.0.1"))
     require_local_request(request("127.0.0.1", {"x-forwarded-for": "192.168.50.42"}))
-    require_local_request(request("127.0.0.1", {"x-forwarded-for": "8.8.8.8, 192.168.50.42"}))
+    require_local_request(
+        request("127.0.0.1", {"x-forwarded-for": "100.120.95.8, 192.168.50.42"})
+    )
     require_local_request(request("::ffff:100.120.95.8"))
-    require_local_request(request("::1", {"x-forwarded-for": "8.8.8.8, ::ffff:100.120.95.8"}))
+    require_local_request(
+        request("::1", {"x-forwarded-for": "::ffff:100.120.95.8, 192.168.50.42"})
+    )
 
     with pytest.raises(HTTPException):
         require_local_request(request("8.8.8.8"))
@@ -1475,7 +1479,13 @@ def test_local_api_guard_allows_private_lan_clients() -> None:
     with pytest.raises(HTTPException):
         require_local_request(request("127.0.0.1", {"x-forwarded-for": "8.8.8.8"}))
     with pytest.raises(HTTPException):
+        require_local_request(request("localhost", {"x-forwarded-for": "8.8.8.8"}))
+    with pytest.raises(HTTPException):
         require_local_request(request("127.0.0.1", {"x-forwarded-for": "192.168.50.42, 8.8.8.8"}))
+    with pytest.raises(HTTPException):
+        require_local_request(
+            request("127.0.0.1", {"x-forwarded-for": "8.8.8.8, 192.168.50.42"})
+        )
     with pytest.raises(HTTPException):
         require_local_request(request("127.0.0.1", {"x-forwarded-for": "not-an-ip, 192.168.50.42"}))
     with pytest.raises(HTTPException):
@@ -1520,11 +1530,12 @@ def test_api_rejects_unauthorized_or_malformed_host_headers(path: str, host_head
 
 def test_api_rejects_public_network_clients() -> None:
     direct_response = TestClient(app, client=("8.8.8.8", 50000)).get(
-        "/api/status", headers={"host": "mini1.local"}
+        "/api/status",
+        headers={"host": "mini1.local", "x-forwarded-for": "192.168.50.42"},
     )
     proxied_response = TestClient(app, client=("127.0.0.1", 50000)).get(
         "/api/status",
-        headers={"host": "mini1.local", "x-forwarded-for": "192.168.50.42, 8.8.8.8"},
+        headers={"host": "mini1.local", "x-forwarded-for": "8.8.8.8, 192.168.50.42"},
     )
 
     assert direct_response.status_code == 403
@@ -1554,7 +1565,7 @@ def test_api_documentation_allows_private_network_clients(path: str) -> None:
         path,
         headers={
             "host": "mini1.tail46d3fb.ts.net:8000",
-            "x-forwarded-for": "8.8.8.8, 192.168.50.42",
+            "x-forwarded-for": "100.120.95.8, 192.168.50.42",
         },
     )
 

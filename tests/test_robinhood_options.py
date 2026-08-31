@@ -401,6 +401,19 @@ def test_robinhood_token_write_preserves_existing_json_when_replace_fails(
     assert list(tmp_path.iterdir()) == [token_path]
 
 
+def test_robinhood_token_write_rejects_symlink_without_changing_target(tmp_path: Path) -> None:
+    target_path = tmp_path / "target.json"
+    target_path.write_text('{"access_token": "old"}', encoding="utf-8")
+    token_path = tmp_path / "token.json"
+    token_path.symlink_to(target_path)
+
+    with pytest.raises(RuntimeError, match="Refusing to replace credential symlink"):
+        robinhood_auth._write_token_payload(token_path, {"access_token": "new"})
+
+    assert token_path.is_symlink()
+    assert target_path.read_text(encoding="utf-8") == '{"access_token": "old"}'
+
+
 def test_load_robinhood_access_token_from_codex_credentials(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
     token_path = tmp_path / "missing-market-token.json"
