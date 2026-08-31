@@ -7,7 +7,7 @@ from math import isfinite
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app import panel_snapshot as panel_owner
 from app import dependencies
@@ -15,6 +15,7 @@ from app.actions.options import OptionsActions
 from app.data_access import loaders, payloads
 from app.response_contracts import PanelContractResponse, PanelSnapshotResponse, StatusResponse, TodayResponse
 from investment_panel.core.config import AppConfig
+from investment_panel.core.panel import tables_for_scope
 from investment_panel.core.decision import (
     build_decision_resolution,
     capital_action_from_resolution,
@@ -538,6 +539,10 @@ def panel_snapshot(
     limit: int | None = None,
     config: AppConfig = Depends(dependencies.get_config),
 ) -> dict[str, Any]:
+    try:
+        tables_for_scope(scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if scope == "market":
         panel_data = loaders.load_market_panel_data(config)
         return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)

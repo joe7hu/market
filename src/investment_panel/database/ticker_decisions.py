@@ -24,12 +24,14 @@ from investment_panel.core.decision import (
     TickerDecision,
     TradePlan,
     InputLineage,
+    MarketStateSnapshot,
     bind_trade_plan,
     capital_action_from_resolution,
     evaluate_ticker_policy,
     outcome_attribution_stable_key,
     resolution_from_legacy,
     is_us_market_day,
+    market_evidence_for_decision,
     portfolio_impacts_from_persisted,
     trade_plan_from_persisted,
     valid_outcome_error_type,
@@ -327,31 +329,62 @@ class TickerDecisionRepository:
         rank_rows = analysis.publication_rows(TICKER_RANKING_SCOPE, "opportunity_rank", include_lineage=True)
         plan_rows = analysis.publication_rows(TICKER_RANKING_SCOPE, "trade_plan", include_lineage=True)
         decisions: list[dict[str, Any]] = []
-        for row in self._current_decision_rows(reference=reference):
+        market_publications: dict[str, dict[str, Any] | None] = {}
+        for row in self._current_funnel_rows(reference=reference):
+            selected = row.get("selected_expression")
+            selected_mapping = selected if isinstance(selected, Mapping) else None
+            selected_kind: ExpressionKind | None
+            if selected is None:
+                selected_kind = ExpressionKind.CASH
+            else:
+                try:
+                    selected_kind = ExpressionKind(str(selected_mapping.get("kind"))) if selected_mapping else None
+                except ValueError:
+                    selected_kind = None
             try:
-                decision = _decision_from_row(row)
-            except (TypeError, ValueError, KeyError):
-                continue
-            snapshot = decision.market_state_snapshot
-            selected = decision.selected_expression
-            assessment = decision.market_evidence_assessment
-            cash_selected = selected is None or selected.kind is ExpressionKind.CASH
+                selected_horizon = Horizon(str(selected_mapping.get("horizon"))) if selected_mapping else Horizon.FUNDAMENTAL
+            except ValueError:
+                selected_horizon = None
+            market_publication_id = str(row.get("market_state_publication_id") or "") or None
+            decision_cutoff = _parse_datetime(row.get("as_of"))
+            snapshot = None
+            if market_publication_id and decision_cutoff is not None:
+                if market_publication_id not in market_publications:
+                    market_publications[market_publication_id] = analysis.publication_by_id(
+                        "market", market_publication_id,
+                    )
+                snapshot = _market_snapshot_from_exact_publication(
+                    market_publications[market_publication_id],
+                    publication_id=market_publication_id,
+                    decision_cutoff=decision_cutoff,
+                )
+            assessment = (
+                market_evidence_for_decision(snapshot, selected_kind, selected_horizon)
+                if selected_kind is not None and selected_horizon is not None
+                else None
+            )
+            cash_selected = selected_kind is ExpressionKind.CASH
             facts_available = bool(
-                decision.opportunity_episode
-                and decision.input_lineage
+                row.get("has_opportunity_episode")
+                and row.get("has_input_lineage")
                 and (
                     cash_selected
                     or (
                         snapshot is not None
-                        and decision.market_state_publication_id
-                        and decision.market_state_publication_id == snapshot.publication_id
+                        and market_publication_id
+                        and market_publication_id == snapshot.publication_id
                         and assessment is not None
                         and not assessment.blocking_dimensions
                     )
                 )
             )
             decisions.append({
-                **decision.model_dump(mode="json"),
+                "ticker": row.get("ticker"),
+                "opportunity_episode": {"present": True} if row.get("has_opportunity_episode") else None,
+                "market_state_publication_id": market_publication_id,
+                "expressions": {"STOCK": dict(row.get("stock_expression") or {})},
+                "portfolio_impacts": {"STOCK": dict(row.get("stock_portfolio_impact") or {})},
+                "resolution": dict(row.get("resolution") or {}),
                 "published_at": row["published_at"],
                 "point_in_time_facts_available": facts_available,
                 "point_in_time_fact_blockers": (
@@ -366,6 +399,70 @@ class TickerDecisionRepository:
             decisions, alpha_rows, rank_rows, plan_rows,
             action_queue_rows=list(action_queue), now=reference,
         )
+
+    def _current_funnel_rows(self, *, reference: datetime) -> list[dict[str, Any]]:
+        """Read only the compact current fields used by the decision funnel."""
+
+        with self.runtime.read() as connection:
+            rows = connection.execute(
+                """
+                WITH candidate_keys AS (
+                    SELECT decision.id, instrument.symbol AS ticker,
+                           decision.instrument_id, decision.as_of,
+                           decision.published_at, decision.created_at,
+                           count(*) OVER (
+                               PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
+                           ) AS authority_count,
+                           count(*) OVER (
+                               PARTITION BY decision.opportunity_episode_id
+                           ) AS opportunity_authority_count,
+                           row_number() OVER (
+                               PARTITION BY decision.instrument_id
+                               ORDER BY decision.as_of DESC, decision.published_at DESC,
+                                        decision.created_at DESC, decision.id DESC
+                           ) AS current_row
+                    FROM analysis.ticker_decision decision
+                    JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                    WHERE decision.status = 'published'
+                      AND decision.contract_version = 'ticker-decision.v1'
+                      AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
+                      AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
+                      AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+                      AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
+                      AND decision.as_of <= %s
+                      AND decision.published_at IS NOT NULL
+                      AND decision.published_at <= %s
+                )
+                SELECT candidate.ticker, decision.as_of, decision.published_at,
+                       decision.selected_expression,
+                       coalesce(decision.expressions->'STOCK', decision.expressions->'stock')
+                           AS stock_expression,
+                       coalesce(decision.portfolio_impacts->'STOCK', decision.portfolio_impacts->'stock')
+                           AS stock_portfolio_impact,
+                       jsonb_strip_nulls(jsonb_build_object(
+                           'eligibility', decision.resolution->'eligibility',
+                           'action', decision.resolution->'action',
+                           'blockers', decision.resolution->'blockers'
+                       )) AS resolution,
+                       decision.market_state_publication_id::text,
+                       jsonb_typeof(decision.opportunity_episode) = 'object'
+                           AND decision.opportunity_episode <> '{}'::jsonb
+                           AS has_opportunity_episode,
+                       CASE
+                           WHEN jsonb_typeof(decision.opportunity_episode->'input_lineage') = 'array'
+                           THEN jsonb_array_length(decision.opportunity_episode->'input_lineage') > 0
+                           ELSE false
+                       END AS has_input_lineage
+                FROM candidate_keys candidate
+                JOIN analysis.ticker_decision decision ON decision.id = candidate.id
+                WHERE candidate.current_row = 1
+                  AND candidate.authority_count = 1
+                  AND candidate.opportunity_authority_count = 1
+                ORDER BY candidate.ticker
+                """,
+                [reference, reference],
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def refresh_outcomes(
         self,
@@ -1993,6 +2090,70 @@ def decision_funnel_payload(
         "actionable": stages[-1]["count"] if stages else 0,
         "stages": stages,
     }
+
+
+def _market_snapshot_from_exact_publication(
+    publication: Mapping[str, Any] | None,
+    *,
+    publication_id: str,
+    decision_cutoff: datetime,
+) -> MarketStateSnapshot | None:
+    """Validate one exact MarketState publication for a decision cutoff."""
+
+    if (
+        publication is None
+        or str(publication.get("publication_id") or "") != publication_id
+        or publication.get("publication_scope") != "market"
+        or publication.get("publication_status") != "published"
+    ):
+        return None
+    input_cutoff = _parse_datetime(publication.get("input_cutoff"))
+    published_at = _parse_datetime(publication.get("published_at"))
+    reference = _utc(decision_cutoff)
+    if (
+        input_cutoff is None
+        or published_at is None
+        or published_at <= input_cutoff
+        or input_cutoff > reference
+        or published_at > reference
+    ):
+        return None
+    models = publication.get("models")
+    rows = models.get("market_state_snapshot") if isinstance(models, Mapping) else None
+    if not isinstance(rows, (list, tuple)) or len(rows) != 1:
+        return None
+    try:
+        snapshot = MarketStateSnapshot.model_validate(rows[0])
+    except (TypeError, ValueError):
+        return None
+    if (
+        snapshot.publication_id not in {None, "", publication_id}
+        or _utc(snapshot.input_cutoff) != input_cutoff
+        or _utc(snapshot.as_of) != input_cutoff
+    ):
+        return None
+    raw_source_lineage = publication.get("source_lineage") or ()
+    if not isinstance(raw_source_lineage, (list, tuple)):
+        return None
+    try:
+        source_lineage = tuple(InputLineage.model_validate(item) for item in raw_source_lineage)
+    except (TypeError, ValueError):
+        return None
+    lineages = list(snapshot.input_lineage)
+    for dimensions in snapshot.horizons.values():
+        for dimension in dimensions:
+            lineages.extend(dimension.lineage)
+    if snapshot.coverage_matrix is not None:
+        for row in snapshot.coverage_matrix.rows:
+            lineages.extend(row.input_lineage)
+    for lineage in (*source_lineage, *lineages):
+        if (
+            _parse_datetime(lineage.available_at) is None
+            or _parse_datetime(lineage.available_at) > input_cutoff
+            or _parse_datetime(lineage.cutoff) != input_cutoff
+        ):
+            return None
+    return snapshot.model_copy(update={"publication_id": publication_id})
 
 
 def _parse_datetime(value: Any) -> datetime | None:

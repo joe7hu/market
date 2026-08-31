@@ -22,9 +22,9 @@ SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
         # The Today route is a decision inbox, not a copy of the full Radar
         # publication.  Its primary screen can act on at most three current
         # opportunities; complete immutable tickets remain available by ID.
-        "ticker_decisions": 100,
-        "opportunity_rank": 100,
-        "trade_plan": 100,
+        "ticker_decisions": 3,
+        "opportunity_rank": 3,
+        "trade_plan": 3,
         "option_radar_opportunity": 3,
         "event_decision_packets": 50,
         "decision_truth": 100,
@@ -41,6 +41,16 @@ SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
 }
 
 SCOPED_TABLE_COMPACT_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "today": {
+        "ticker_decisions": frozenset({
+            "data_requests", "expressions", "fundamental", "input_manifest",
+            "learning_history", "market_state_snapshot", "opportunity_episode",
+            "portfolio_impacts", "resolution", "risk_policy", "risk_policy_snapshot",
+            "tactical",
+        }),
+        "opportunity_rank": frozenset({"eligible_universe", "input_lineage", "utility"}),
+        "trade_plan": frozenset({"input_lineage", "portfolio_impact", "selected_expression"}),
+    },
     "options-radar": {
         "missed_winner_event": frozenset({"raw"}),
         "strategy_backtest_result": frozenset({"metrics", "raw"}),
@@ -193,7 +203,12 @@ def panel_snapshot_payload(
         "scope": scope,
         "status": status,
         "dashboard": dashboard_payload(status, rows_for_table) if scope == "dashboard" else None,
-        "tables": {name: _scoped_table_payload(scope, name, rows_for_table(name)) for name in selected},
+        "tables": {
+            name: _scoped_table_payload(
+                scope, name, rows_for_table(name), offset=offset, requested_limit=limit,
+            )
+            for name in selected
+        },
     }
 
 
@@ -304,12 +319,26 @@ def watchlist_universe_rows(rows_for_table: RowsForTable) -> list[dict[str, Any]
     return rows
 
 
-def _scoped_table_payload(scope: str, table_name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _scoped_table_payload(
+    scope: str,
+    table_name: str,
+    rows: list[dict[str, Any]],
+    *,
+    offset: int = 0,
+    requested_limit: int | None = None,
+) -> dict[str, Any]:
     """Return rows sized for a page scope while preserving the full read-model count."""
 
     total_count = len(rows)
-    limit = SCOPED_TABLE_ROW_LIMITS.get(scope, {}).get(table_name)
-    scoped_rows = rows[:limit] if limit is not None else rows
+    configured_limit = SCOPED_TABLE_ROW_LIMITS.get(scope, {}).get(table_name)
+    requested = max(1, int(requested_limit)) if requested_limit is not None else None
+    limit = (
+        min(configured_limit, requested)
+        if configured_limit is not None and requested is not None
+        else configured_limit if configured_limit is not None else requested
+    )
+    start = max(0, int(offset or 0))
+    scoped_rows = rows[start : start + limit] if limit is not None else rows[start:]
     compacted = [_compact_scoped_row(scope, table_name, row) for row in scoped_rows]
     payload: dict[str, Any] = {"rows": compacted, "count": total_count}
     if limit is not None:

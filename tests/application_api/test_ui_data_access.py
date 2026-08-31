@@ -2,7 +2,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
+from app.routers import panel as panel_router
 from app.data_access import loaders as loaders_owner
 from app.data_access import mutations as mutations_owner
 from app.data_access import payloads as payloads_owner
@@ -13,7 +15,7 @@ from investment_panel.database.portfolio_ledger import record_portfolio_transact
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
 from investment_panel.database.user_state import portfolio_rows, watchlist_rows
-from investment_panel.core.panel import panel_contract_payload
+from investment_panel.core.panel import panel_contract_payload, tables_for_scope
 from investment_panel.core.config import load_config
 from conftest import typed_config
 
@@ -304,6 +306,50 @@ def test_today_scope_contains_only_canonical_ticker_actions_and_ownership() -> N
     ]
     assert tables["ticker_decisions"]["count"] == 1
     assert tables["portfolio"]["count"] == 1
+
+
+def test_today_scope_pages_and_compacts_large_decision_evidence() -> None:
+    heavy = "x" * 10_000
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
+        tables={
+            "ticker_decisions": [
+                {
+                    "ticker": f"T{index}",
+                    "capital_action": {"action": "HOLD"},
+                    "input_manifest": {"raw": heavy},
+                    "portfolio_impacts": {"raw": heavy},
+                    "resolution": {"raw": heavy},
+                    "opportunity_episode": {"raw": heavy},
+                }
+                for index in range(5)
+            ],
+            "opportunity_rank": [
+                {"ticker": f"T{index}", "trade_rank": index, "input_lineage": [heavy], "eligible_universe": {"raw": heavy}}
+                for index in range(5)
+            ],
+            "trade_plan": [
+                {"ticker": f"T{index}", "action": "NO_TRADE", "input_lineage": [heavy], "portfolio_impact": {"raw": heavy}}
+                for index in range(5)
+            ],
+        },
+    )
+
+    tables = payloads_owner.panel_snapshot_payload(panel_data, "today", offset=1, limit=1)["tables"]
+
+    assert tables["ticker_decisions"]["rows"] == [{"ticker": "T1", "capital_action": {"action": "HOLD"}}]
+    assert tables["opportunity_rank"]["rows"] == [{"ticker": "T1", "trade_rank": 1}]
+    assert tables["trade_plan"]["rows"] == [{"ticker": "T1", "action": "NO_TRADE"}]
+    assert all(table["limit"] == 1 for table in tables.values())
+
+
+def test_unknown_panel_scope_is_rejected_before_loading_dashboard() -> None:
+    with pytest.raises(ValueError, match="unknown panel scope"):
+        tables_for_scope("definitely-invalid")
+
+    with pytest.raises(HTTPException) as exc_info:
+        panel_router.panel_snapshot(scope="definitely-invalid", config=typed_config())
+    assert exc_info.value.status_code == 422
 
 
 def test_scope_loader_materializes_only_requested_tables(migrated_postgres_dsn: str) -> None:

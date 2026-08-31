@@ -738,6 +738,36 @@ def test_panel_publications_choose_latest_compact_scope_for_a_shared_model(analy
     assert [row["headline"] for row in tables["shared_model"]] == ["second"]
 
 
+def test_panel_publications_keep_unlimited_models_when_one_model_is_limited(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    repository: AnalysisRepository = analysis_context["analysis"]
+    run_id = _start_run(repository, "mixed-panel-limits")
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(
+        run_id,
+        "today",
+        {
+            "limited_model": [
+                {"stable_key": "limited-1", "value": 1},
+                {"stable_key": "limited-2", "value": 2},
+            ],
+            "unlimited_model": [
+                {"stable_key": "unlimited-1", "value": 1},
+                {"stable_key": "unlimited-2", "value": 2},
+            ],
+        },
+    )
+
+    tables = published_tables(
+        runtime,
+        ("limited_model", "unlimited_model"),
+        row_limits={"limited_model": 1},
+    )
+
+    assert [row["value"] for row in tables["limited_model"]] == [1]
+    assert [row["value"] for row in tables["unlimited_model"]] == [1, 2]
+
+
 def test_concurrent_same_input_publish_reuses_one_generation(analysis_context, postgres_dsn: str) -> None:
     repository: AnalysisRepository = analysis_context["analysis"]
     runs = [_start_run(repository, "same-input") for _ in range(2)]

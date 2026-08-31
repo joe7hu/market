@@ -59,8 +59,12 @@ def published_tables(
             )
         """
         params: list[Any] = [list(requested), list(requested)]
-        limited = [(name, max(1, int(limit))) for name, limit in (row_limits or {}).items() if name in requested and limit > 0]
-        if limited:
+        limits_by_model = {
+            name: max(1, int(limit))
+            for name, limit in (row_limits or {}).items()
+            if name in requested and limit > 0
+        }
+        if limits_by_model:
             query += """
                 , ranked_rows AS (
                     SELECT published_rows.*,
@@ -70,12 +74,13 @@ def published_tables(
                 SELECT ranked_rows.model_name, ranked_rows.payload, ranked_rows.publication_id,
                        ranked_rows.published_at, ranked_rows.rank
                 FROM ranked_rows
-                JOIN unnest(%s::text[], %s::integer[]) AS requested_limit(model_name, row_limit)
+                LEFT JOIN unnest(%s::text[], %s::integer[]) AS requested_limit(model_name, row_limit)
                   ON requested_limit.model_name = ranked_rows.model_name
-                WHERE ranked_rows.row_number <= requested_limit.row_limit
+                WHERE requested_limit.row_limit IS NULL
+                   OR ranked_rows.row_number <= requested_limit.row_limit
                 ORDER BY ranked_rows.model_name, ranked_rows.rank
             """
-            params.extend(([name for name, _ in limited], [limit for _, limit in limited]))
+            params.extend((list(requested), [limits_by_model.get(name) for name in requested]))
         else:
             query += " SELECT model_name, payload, publication_id, published_at, rank FROM published_rows ORDER BY model_name, rank"
         rows = connection.execute(query, params).fetchall()

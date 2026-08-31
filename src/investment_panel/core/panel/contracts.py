@@ -414,7 +414,10 @@ WATCHLIST_SECTION_OUTPUT_TABLES = (
 def tables_for_scope(scope: str) -> tuple[str, ...]:
     if scope in {"watchlist-watched", "watchlist-unwatched"}:
         return WATCHLIST_SECTION_TABLES
-    return PANEL_SCOPE_TABLES.get(scope, PANEL_SCOPE_TABLES["dashboard"])
+    try:
+        return PANEL_SCOPE_TABLES[scope]
+    except KeyError as exc:
+        raise ValueError(f"unknown panel scope: {scope}") from exc
 
 
 def panel_snapshot_table_names() -> frozenset[str]:

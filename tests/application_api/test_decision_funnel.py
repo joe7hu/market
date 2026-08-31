@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 from app import dependencies
 from app.main import app
 from app.routers import system as system_router
+from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ticker_decisions import (
     TickerDecisionRepository,
     decision_funnel_payload,
@@ -108,3 +110,113 @@ def test_decision_funnel_api_returns_the_repository_contract(monkeypatch) -> Non
     assert response.status_code == 200
     assert response.json()["policy_version"] == expected["policy_version"]
     assert response.json()["stages"] == expected["stages"]
+
+
+def test_decision_funnel_uses_compact_current_rows(monkeypatch) -> None:
+    repository = TickerDecisionRepository(object())
+    monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
+
+    def broad_read_must_not_run(**_kwargs):
+        raise AssertionError("decision funnel must not hydrate full ticker decisions")
+
+    monkeypatch.setattr(repository, "_current_decision_rows", broad_read_must_not_run)
+    monkeypatch.setattr(
+        repository,
+        "_current_funnel_rows",
+        lambda **_kwargs: [{
+            "ticker": "AAA",
+            "as_of": NOW,
+            "published_at": NOW,
+            "selected_expression": None,
+            "stock_expression": {"availability_status": "available"},
+            "stock_portfolio_impact": {"availability_status": "available"},
+            "resolution": {"eligibility": "BLOCKED", "action": "NO_TRADE", "blockers": []},
+            "market_state_publication_id": None,
+            "has_opportunity_episode": True,
+            "has_input_lineage": True,
+        }],
+        raising=False,
+    )
+
+    payload = repository.decision_funnel(now=NOW)
+
+    assert payload["total"] == 1
+    facts = next(stage for stage in payload["stages"] if stage["stage"] == "point_in_time_facts")
+    assert facts["count"] == 1
+
+
+def test_decision_funnel_loads_each_exact_market_publication_once(monkeypatch) -> None:
+    repository = TickerDecisionRepository(object())
+    monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
+    publication_id = "market-publication:shared"
+    market_cutoff = datetime(2026, 8, 29, 13, 58, tzinfo=UTC)
+    publication = {
+        "publication_id": publication_id,
+        "publication_scope": "market",
+        "publication_status": "published",
+        "input_cutoff": market_cutoff,
+        "published_at": datetime(2026, 8, 29, 13, 59, tzinfo=UTC),
+        "source_lineage": [],
+        "models": {"market_state_snapshot": [{
+            "snapshot_id": "market-state:shared",
+            "publication_id": publication_id,
+            "as_of": market_cutoff,
+            "input_cutoff": market_cutoff,
+        }]},
+    }
+    loads: list[tuple[str, str]] = []
+
+    def publication_by_id(_self, scope: str, exact_id: str):
+        loads.append((scope, exact_id))
+        return publication
+
+    monkeypatch.setattr(AnalysisRepository, "publication_by_id", publication_by_id)
+    monkeypatch.setattr(
+        repository,
+        "_current_funnel_rows",
+        lambda **_kwargs: [
+            {
+                "ticker": ticker,
+                "as_of": NOW,
+                "published_at": NOW,
+                "selected_expression": {"kind": "STOCK", "horizon": "FUNDAMENTAL"},
+                "stock_expression": {"availability_status": "available"},
+                "stock_portfolio_impact": {"availability_status": "available"},
+                "resolution": {"eligibility": "BLOCKED", "action": "NO_TRADE"},
+                "market_state_publication_id": publication_id,
+                "has_opportunity_episode": True,
+                "has_input_lineage": True,
+            }
+            for ticker in ("AAA", "BBB")
+        ],
+    )
+
+    payload = repository.decision_funnel(now=NOW)
+
+    assert payload["total"] == 2
+    assert loads == [("market", publication_id)]
+
+
+def test_current_funnel_query_does_not_select_full_market_snapshot() -> None:
+    captured: dict[str, str] = {}
+
+    class Result:
+        @staticmethod
+        def fetchall() -> list[dict[str, object]]:
+            return []
+
+    class Connection:
+        @staticmethod
+        def execute(query: str, _parameters: list[datetime]) -> Result:
+            captured["query"] = query
+            return Result()
+
+    class Runtime:
+        @contextmanager
+        def read(self):
+            yield Connection()
+
+    rows = TickerDecisionRepository(Runtime())._current_funnel_rows(reference=NOW)
+
+    assert rows == []
+    assert "market_state_snapshot" not in captured["query"]
