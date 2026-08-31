@@ -54,4 +54,6 @@ jobs:
         run: make build
 
       - name: Run full tests
-        run: uv run pytest tests -q --run-slow
+        run: >-
+          uv run pytest tests -q --run-slow
+          --cov=src/investment_panel/database --cov=app --cov-fail-under=80
