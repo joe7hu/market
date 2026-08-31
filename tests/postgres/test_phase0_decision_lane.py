@@ -405,12 +405,79 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         )
         assert funnel["policy_version"] == decision.opportunity_rank["ranking_version"]
         assert lane_action["policy_version"] == decision.policy_version
+        assert all(
+            next(stage for stage in funnel["stages"] if stage["stage"] == name)["count"] == 1
+            for name in ("qualified_stock_alpha", "trade_rank", "trade_plan")
+        )
         assert next(stage for stage in funnel["stages"] if stage["stage"] == "action_queue")["count"] == 1
 
         current_funnel = TickerDecisionRepository(runtime).decision_funnel(now=datetime.now(UTC))
         assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "stock_expression")["count"] == 1
         assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "portfolio_impact")["count"] == 1
         assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "decision_resolution")["count"] == 1
+    finally:
+        runtime.close()
+
+
+def test_decision_funnel_compact_publication_read_keeps_legacy_fallback(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC)
+        analysis = AnalysisRepository(runtime)
+        run_id = analysis.start_run(
+            "legacy-funnel", input_cutoff=cutoff, code_version="test",
+            inputs={"fixture": "legacy-funnel"},
+        )
+        analysis.finish_run(run_id, "succeeded")
+        with runtime.transaction() as connection:
+            publication = connection.execute(
+                """
+                INSERT INTO app.publication (
+                    scope, analysis_run_id, status, published_at
+                ) VALUES (
+                    'ticker-opportunity-ranking', %s, 'published', %s
+                ) RETURNING id::text
+                """,
+                [run_id, cutoff],
+            ).fetchone()
+            for model_name, payload in (
+                ("alpha_signal", {
+                    "ticker": "LEGACY", "availability_status": "available", "blockers": [],
+                }),
+                ("opportunity_rank", {
+                    "ticker": "LEGACY", "availability_status": "available", "blockers": [],
+                    "trade_rank": 1, "ranking_version": "ranking:legacy",
+                }),
+                ("trade_plan", {
+                    "ticker": "LEGACY", "availability_status": "available", "blockers": [],
+                    "eligibility": "ACTIONABLE",
+                }),
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO app.publication_item (
+                        publication_id, model_name, stable_key, rank, payload
+                    ) VALUES (%s::uuid, %s, 'LEGACY', 1, %s)
+                    """,
+                    [publication["id"], model_name, Jsonb(payload)],
+                )
+
+        alpha_rows, rank_rows, plan_rows = (
+            TickerDecisionRepository(runtime)._current_funnel_publication_rows()
+        )
+
+        assert [row["ticker"] for row in alpha_rows] == ["LEGACY"]
+        assert rank_rows[0]["trade_rank"] == 1
+        assert rank_rows[0]["ranking_version"] == "ranking:legacy"
+        assert plan_rows[0]["eligibility"] == "ACTIONABLE"
+        assert {
+            alpha_rows[0]["publication_id"],
+            rank_rows[0]["publication_id"],
+            plan_rows[0]["publication_id"],
+        } == {publication["id"]}
     finally:
         runtime.close()
 

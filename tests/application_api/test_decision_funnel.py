@@ -11,6 +11,7 @@ from app.main import app
 from app.routers import system as system_router
 from investment_panel.core.decision import trade_expression_identity
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.runtime import API_PROFILE
 from investment_panel.database.ticker_decisions import (
     TickerDecisionRepository,
     decision_funnel_payload,
@@ -30,6 +31,13 @@ def _valid_compact_row(ticker: str = "AAA") -> dict[str, Any]:
     decision_revision = f"decision:{ticker.lower()}"
     policy_version = "risk-policy.v2:test"
     opportunity_episode_id = f"episode:{ticker.lower()}"
+    input_lineage = [{
+        "field": "price", "source_id": "compact-fixture",
+        "source_version": "v1", "available_at": NOW,
+        "opportunity_episode_id": opportunity_episode_id,
+        "decision_revision": decision_revision,
+        "policy_version": policy_version, "cutoff": NOW,
+    }]
     return {
         "ticker": ticker, "as_of": NOW, "published_at": NOW,
         "decision_revision": decision_revision,
@@ -41,13 +49,7 @@ def _valid_compact_row(ticker: str = "AAA") -> dict[str, Any]:
             "decision_revision": decision_revision,
             "policy_version": policy_version,
             "cutoff": NOW,
-            "input_lineage": [{
-                "field": "price", "source_id": "compact-fixture",
-                "source_version": "v1", "available_at": NOW,
-                "opportunity_episode_id": opportunity_episode_id,
-                "decision_revision": decision_revision,
-                "policy_version": policy_version, "cutoff": NOW,
-            }],
+            "input_lineage": [dict(input_lineage[0])],
             "expressions": {"STOCK": dict(expression)},
             "selected_expression": None,
             "thesis_identity": f"ticker:{ticker}",
@@ -70,6 +72,7 @@ def _valid_compact_row(ticker: str = "AAA") -> dict[str, Any]:
             "risk_policy_version": "risk-policy.v2:test",
             "market_snapshot_id": f"market:{ticker.lower()}",
             "market_state_publication_id": None, "cutoff": NOW,
+            "input_lineage": [dict(input_lineage[0])],
             "availability": "unavailable", "availability_status": "missing",
             "blockers": ["portfolio_context_missing"],
         },
@@ -181,7 +184,26 @@ def test_decision_funnel_api_returns_the_repository_contract(monkeypatch) -> Non
 
 def test_decision_funnel_uses_compact_current_rows(monkeypatch) -> None:
     repository = TickerDecisionRepository(object())
-    monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
+
+    def full_publication_rows_must_not_run(*_args, **_kwargs):
+        raise AssertionError("decision funnel must not hydrate full publication rows")
+
+    monkeypatch.setattr(AnalysisRepository, "publication_rows", full_publication_rows_must_not_run)
+    monkeypatch.setattr(
+        repository,
+        "_current_funnel_publication_rows",
+        lambda: (
+            [{"ticker": "AAA", "availability_status": "available"}],
+            [{
+                "ticker": "AAA", "availability_status": "available",
+                "trade_rank": 1, "ranking_version": "ranking:test",
+            }],
+            [{
+                "ticker": "AAA", "availability_status": "available",
+                "eligibility": "ACTIONABLE",
+            }],
+        ),
+    )
 
     def broad_read_must_not_run(**_kwargs):
         raise AssertionError("decision funnel must not hydrate full ticker decisions")
@@ -201,11 +223,16 @@ def test_decision_funnel_uses_compact_current_rows(monkeypatch) -> None:
     expression = next(stage for stage in payload["stages"] if stage["stage"] == "stock_expression")
     assert facts["count"] == 1
     assert expression["count"] == 1
+    assert payload["policy_version"] == "ranking:test"
+    assert all(
+        next(stage for stage in payload["stages"] if stage["stage"] == name)["count"] == 1
+        for name in ("qualified_stock_alpha", "trade_rank", "trade_plan")
+    )
 
 
 def test_decision_funnel_fails_closed_for_malformed_compact_artifacts(monkeypatch) -> None:
     repository = TickerDecisionRepository(object())
-    monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
     rows = [_valid_compact_row(ticker) for ticker in ("EXPR", "IMPACT", "RESOLUTION")]
     rows[0]["stock_expression"] = {"availability_status": "available"}
     rows[1]["stock_portfolio_impact"] = {"availability_status": "available"}
@@ -230,7 +257,7 @@ def test_decision_funnel_fails_closed_for_malformed_compact_artifacts(monkeypatc
 
 def test_decision_funnel_fails_closed_for_corrupt_opportunity_episodes(monkeypatch) -> None:
     repository = TickerDecisionRepository(object())
-    monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
     rows = [
         _valid_compact_row(ticker)
         for ticker in (
@@ -268,9 +295,37 @@ def test_decision_funnel_fails_closed_for_corrupt_opportunity_episodes(monkeypat
     }
 
 
+def test_decision_funnel_requires_exact_nonempty_impact_lineage(monkeypatch) -> None:
+    repository = TickerDecisionRepository(object())
+    monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
+    rows = [_valid_compact_row(ticker) for ticker in ("EMPTY", "MISSING", "DRIFT")]
+    rows[0]["opportunity_episode"]["input_lineage"] = []
+    rows[0]["stock_portfolio_impact"]["input_lineage"] = []
+    rows[1]["stock_portfolio_impact"]["input_lineage"] = []
+    rows[2]["stock_portfolio_impact"]["input_lineage"][0]["source_id"] = "wrong-source"
+    monkeypatch.setattr(repository, "_current_funnel_rows", lambda **_kwargs: rows)
+
+    payload = repository.decision_funnel(now=NOW)
+
+    facts = next(stage for stage in payload["stages"] if stage["stage"] == "point_in_time_facts")
+    impact = next(stage for stage in payload["stages"] if stage["stage"] == "portfolio_impact")
+    assert facts["count"] == 0
+    assert facts["top_blockers"][0] == {
+        "reason": "ticker_decision_contract_invalid",
+        "count": 3,
+        "affected_symbols": ["DRIFT", "EMPTY", "MISSING"],
+    }
+    assert impact["count"] == 0
+    assert impact["top_blockers"][0] == {
+        "reason": "stock_portfolio_impact_invalid",
+        "count": 3,
+        "affected_symbols": ["DRIFT", "EMPTY", "MISSING"],
+    }
+
+
 def test_decision_funnel_loads_each_exact_market_publication_once(monkeypatch) -> None:
     repository = TickerDecisionRepository(object())
-    monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
     publication_id = "market-publication:shared"
     market_cutoff = datetime(2026, 8, 29, 13, 58, tzinfo=UTC)
     publication = {
@@ -346,3 +401,63 @@ def test_current_funnel_query_does_not_select_full_market_snapshot() -> None:
     assert "decision.expressions," not in captured["query"]
     assert "AS has_valid_opportunity_lineage" not in captured["query"]
     assert "jsonb_array_elements" not in captured["query"]
+
+
+def test_current_funnel_publication_query_projects_only_required_fields() -> None:
+    captured: dict[str, object] = {}
+
+    class Result:
+        @staticmethod
+        def fetchall() -> list[dict[str, object]]:
+            base = {
+                "availability_status": "available",
+                "blockers": [],
+                "trade_rank": None,
+                "primary_blocker": None,
+                "trade_rank_unavailable_reason": None,
+                "eligibility": None,
+                "ranking_version": None,
+                "publication_id": "publication:compact",
+                "published_at": NOW,
+            }
+            return [
+                {**base, "model_name": "alpha_signal", "ticker": "AAA"},
+                {
+                    **base, "model_name": "opportunity_rank", "ticker": "AAA",
+                    "trade_rank": 1, "ranking_version": "ranking:test",
+                },
+                {
+                    **base, "model_name": "trade_plan", "ticker": "AAA",
+                    "eligibility": "ACTIONABLE",
+                },
+            ]
+
+    class Connection:
+        @staticmethod
+        def execute(query: str, parameters: list[object]) -> Result:
+            captured.setdefault("queries", []).append(query)
+            captured.setdefault("parameters", []).append(parameters)
+            return Result()
+
+    class Runtime:
+        @contextmanager
+        def snapshot(self, profile):
+            captured["profile"] = profile
+            yield Connection()
+
+    alpha_rows, rank_rows, plan_rows = (
+        TickerDecisionRepository(Runtime())._current_funnel_publication_rows()
+    )
+
+    assert captured["profile"] is API_PROFILE
+    assert len(captured["queries"]) == 1
+    assert "payload.payload->>'availability_status'" in str(captured["queries"][0])
+    assert "jsonb_to_record" not in str(captured["queries"][0])
+    assert "UNION" not in str(captured["queries"][0])
+    assert alpha_rows[0]["ticker"] == rank_rows[0]["ticker"] == plan_rows[0]["ticker"] == "AAA"
+    assert rank_rows[0]["trade_rank"] == 1
+    assert plan_rows[0]["eligibility"] == "ACTIONABLE"
+    assert set(plan_rows[0]) == {
+        "ticker", "availability_status", "blockers", "eligibility",
+        "publication_id", "publication_published_at",
+    }

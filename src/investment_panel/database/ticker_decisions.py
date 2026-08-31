@@ -45,7 +45,7 @@ from investment_panel.core.decision import (
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.options_paper_quotes import is_credit_structure, package_price
 from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.runtime import API_PROFILE, DatabaseRuntime, JOB_PROFILE
 
 
 HORIZON_SESSIONS = {
@@ -331,9 +331,7 @@ class TickerDecisionRepository:
 
         reference = _utc(now or datetime.now(UTC))
         analysis = AnalysisRepository(self.runtime)
-        alpha_rows = analysis.publication_rows(TICKER_RANKING_SCOPE, "alpha_signal", include_lineage=True)
-        rank_rows = analysis.publication_rows(TICKER_RANKING_SCOPE, "opportunity_rank", include_lineage=True)
-        plan_rows = analysis.publication_rows(TICKER_RANKING_SCOPE, "trade_plan", include_lineage=True)
+        alpha_rows, rank_rows, plan_rows = self._current_funnel_publication_rows()
         decisions: list[dict[str, Any]] = []
         market_publications: dict[str, dict[str, Any] | None] = {}
         for row in self._current_funnel_rows(reference=reference):
@@ -456,6 +454,19 @@ class TickerDecisionRepository:
             except (KeyError, TypeError, ValueError):
                 compact_contract_valid = False
                 opportunity_episode = None
+            if (
+                opportunity_episode is None
+                or not opportunity_episode.input_lineage
+                or stock_impact is None
+                or tuple(stock_impact.input_lineage)
+                != tuple(opportunity_episode.input_lineage)
+            ):
+                compact_contract_valid = False
+                stock_impact = None
+                stock_impact_projection = {
+                    "availability_status": AvailabilityStatus.ERROR.value,
+                    "blockers": ["stock_portfolio_impact_invalid"],
+                }
             if opportunity_episode is not None:
                 selected_expression = opportunity_episode.selected_expression
                 selected_kind = (
@@ -544,6 +555,110 @@ class TickerDecisionRepository:
         return decision_funnel_payload(
             decisions, alpha_rows, rank_rows, plan_rows,
             action_queue_rows=list(action_queue), now=reference,
+        )
+
+    def _current_funnel_publication_rows(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Read only current ranking-publication fields used by the funnel."""
+
+        model_names = ["alpha_signal", "opportunity_rank", "trade_plan"]
+        with self.runtime.snapshot(API_PROFILE) as connection:
+            rows = connection.execute(
+                """
+                SELECT item.model_name,
+                       coalesce(payload.payload->>'ticker', payload.payload->>'symbol')
+                           AS ticker,
+                       payload.payload->>'availability_status' AS availability_status,
+                       payload.payload->'blockers' AS blockers,
+                       payload.payload->'trade_rank' AS trade_rank,
+                       payload.payload->>'primary_blocker' AS primary_blocker,
+                       payload.payload->>'trade_rank_unavailable_reason'
+                           AS trade_rank_unavailable_reason,
+                       payload.payload->>'eligibility' AS eligibility,
+                       payload.payload->>'ranking_version' AS ranking_version,
+                       publication.id::text AS publication_id,
+                       publication.published_at
+                FROM app.current_publication_item item
+                JOIN app.publication_payload payload
+                  ON payload.content_hash = item.content_hash
+                JOIN app.publication publication
+                  ON publication.id = item.publication_id
+                WHERE item.scope = %s
+                  AND item.model_name = ANY(%s)
+                  AND publication.status = 'published'
+                ORDER BY item.model_name, item.rank
+                """,
+                [TICKER_RANKING_SCOPE, model_names],
+            ).fetchall()
+            if not rows:
+                has_projection = connection.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM app.current_publication_item item
+                        JOIN app.publication publication
+                          ON publication.id = item.publication_id
+                        WHERE item.scope = %s
+                          AND publication.status = 'published'
+                    ) AS exists
+                    """,
+                    [TICKER_RANKING_SCOPE],
+                ).fetchone()["exists"]
+                if not has_projection:
+                    rows = connection.execute(
+                        """
+                        SELECT item.model_name,
+                               coalesce(item.payload->>'ticker', item.payload->>'symbol')
+                                   AS ticker,
+                               item.payload->>'availability_status' AS availability_status,
+                               item.payload->'blockers' AS blockers,
+                               item.payload->'trade_rank' AS trade_rank,
+                               item.payload->>'primary_blocker' AS primary_blocker,
+                               item.payload->>'trade_rank_unavailable_reason'
+                                   AS trade_rank_unavailable_reason,
+                               item.payload->>'eligibility' AS eligibility,
+                               item.payload->>'ranking_version' AS ranking_version,
+                               publication.id::text AS publication_id,
+                               publication.published_at
+                        FROM app.publication publication
+                        JOIN app.publication_item item
+                          ON item.publication_id = publication.id
+                        WHERE publication.scope = %s
+                          AND publication.status = 'published'
+                          AND item.model_name = ANY(%s)
+                        ORDER BY item.model_name, item.rank
+                        """,
+                        [TICKER_RANKING_SCOPE, model_names],
+                    ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {
+            "alpha_signal": [],
+            "opportunity_rank": [],
+            "trade_plan": [],
+        }
+        for row in rows:
+            projected = {
+                key: row[key]
+                for key in (
+                    "ticker",
+                    "availability_status",
+                    "blockers",
+                    "trade_rank",
+                    "primary_blocker",
+                    "trade_rank_unavailable_reason",
+                    "eligibility",
+                    "ranking_version",
+                    "publication_id",
+                )
+                if row[key] is not None
+            }
+            if row["published_at"] is not None:
+                projected["publication_published_at"] = row["published_at"].isoformat()
+            grouped[str(row["model_name"])].append(projected)
+        return (
+            grouped["alpha_signal"],
+            grouped["opportunity_rank"],
+            grouped["trade_plan"],
         )
 
     def _current_funnel_rows(self, *, reference: datetime) -> list[dict[str, Any]]:
