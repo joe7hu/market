@@ -25,6 +25,7 @@ from app import job_control
 from app import dependencies
 import app.panel_snapshot as panel_owner
 import app.main as app_main
+import app.routers.system as system_owner
 from app.main import app
 from app.request_security import require_local_request
 from investment_panel.core.panel import PANEL_SCOPE_TABLES
@@ -531,6 +532,8 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
         captured["payload"] = payload
 
     monkeypatch.setattr(settings_owner, "persist_setting_section", fake_update)
+    fresh_config = typed_config(raw={"agents": {"option_agent": {"enabled": True}}})
+    monkeypatch.setattr(system_owner, "load_config", lambda: fresh_config)
     monkeypatch.setattr(
         loaders_owner,
         "load_panel_data",
@@ -542,7 +545,7 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
         "/api/settings/agents",
         json={
             "option_agent": {
-                "enabled": False,
+                "enabled": True,
                 "command": "market-run-option-agent",
                 "timeout_seconds": 90,
                 "thesis_limit": 3,
@@ -553,8 +556,9 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
 
     assert response.status_code == 200
     assert captured["section"] == "agents"
-    assert captured["payload"]["option_agent"]["enabled"] is False
+    assert captured["payload"]["option_agent"]["enabled"] is True
     assert response.json()["status"]["ready"] is True
+    assert response.json()["config"]["agents"]["option_agent"]["enabled"] is True
 
 
 def test_market_snapshot_only_returns_market_tables(monkeypatch) -> None:

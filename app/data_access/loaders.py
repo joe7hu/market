@@ -26,6 +26,12 @@ from investment_panel.database.ticker_decisions import TickerDecisionRepository
 # joins. Keep their timeout or partial state local to the optional panel rather
 # than aborting the complete ticker response and its decision evidence.
 _TICKER_OPTIONAL_DEEP_TABLES = ("liquidity", "options_payoff_scenarios")
+_TODAY_SECONDARY_QUERY_LIMITS = {
+    "preopen_daily_brief": 1,
+    "daily_brief": 12,
+    "portfolio_risk_cards": 8,
+    "feed_signals": 12,
+}
 
 
 def load_decision_funnel(
@@ -348,10 +354,15 @@ def load_panel_scope_data(
         }
     if scope == "today":
         authority_names = {"ticker_decisions", "opportunity_rank", "trade_plan"}
+        secondary_query_row_limits = {
+            name: row_limit
+            for name, row_limit in _TODAY_SECONDARY_QUERY_LIMITS.items()
+            if name in requested
+        }
         loaded = load_panel_data(
             active_config,
             table_names=tuple(name for name in requested if name not in authority_names),
-            query_row_limits={name: row_limit for name, row_limit in query_row_limits.items() if name not in authority_names},
+            query_row_limits=secondary_query_row_limits or None,
         )
         decision_limit = min(
             SCOPED_TABLE_ROW_LIMITS[scope]["ticker_decisions"],

@@ -771,6 +771,35 @@ def test_panel_publications_keep_unlimited_models_when_one_model_is_limited(anal
     assert total_counts == {"limited_model": 2, "unlimited_model": 2}
 
 
+def test_panel_publications_filter_symbol_scoped_rows_and_counts(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    repository: AnalysisRepository = analysis_context["analysis"]
+    run_id = _start_run(repository, "symbol-scoped-panel")
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(
+        run_id,
+        "portfolio",
+        {
+            "ticker_decisions": [
+                {"stable_key": "aaa", "ticker": "AAA", "action": "HOLD"},
+                {"stable_key": "bbb", "ticker": "BBB", "action": "BUY"},
+            ],
+        },
+    )
+
+    total_counts: dict[str, int] = {}
+    tables = published_tables(
+        runtime,
+        ("ticker_decisions",),
+        row_limits={"ticker_decisions": 1},
+        total_counts=total_counts,
+        symbols={"AAA"},
+    )
+
+    assert [row["ticker"] for row in tables["ticker_decisions"]] == ["AAA"]
+    assert total_counts == {"ticker_decisions": 1}
+
+
 def test_concurrent_same_input_publish_reuses_one_generation(analysis_context, postgres_dsn: str) -> None:
     repository: AnalysisRepository = analysis_context["analysis"]
     runs = [_start_run(repository, "same-input") for _ in range(2)]

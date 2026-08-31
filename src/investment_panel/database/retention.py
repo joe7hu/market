@@ -21,7 +21,7 @@ OPTION_PARTITION_RE = re.compile(r"^option_quote_(\d{4})(\d{2})(\d{2})?$")
 ROLLING_PUBLICATION_SCOPES = ("today", "options-radar", "options-decision-system")
 MARKET_PUBLICATION_SUPERSEDED_LIMIT = 48
 ROLLING_PUBLICATION_TRADING_DAYS = 30
-ORPHAN_PAYLOAD_CLEANUP_MAX_HASHES = 10_000
+PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE = 10_000
 
 
 class RetentionRepository:
@@ -71,6 +71,9 @@ class RetentionRepository:
             if dry_run:
                 counts["publication_dry_run"] = len(publication_candidates)
                 return counts
+            orphan_payloads = _delete_orphaned_payload_batch(connection)
+            if orphan_payloads:
+                counts["publication_payloads"] = counts.get("publication_payloads", 0) + orphan_payloads
             protection = connection.execute(
                 """
                 SELECT
@@ -311,6 +314,10 @@ class RetentionRepository:
                 compact_counts = _delete_publications_and_orphaned_content(connection, candidates)
             else:
                 compact_counts = {}
+            if not dry_run:
+                orphan_payloads = _delete_orphaned_payload_batch(connection)
+                if orphan_payloads:
+                    compact_counts["publication_payloads"] = compact_counts.get("publication_payloads", 0) + orphan_payloads
         result = {"publications": count, **compact_counts}
         if dry_run:
             result["publication_dry_run"] = count
@@ -453,31 +460,58 @@ def _delete_publications_and_orphaned_content(connection: Any, candidates: list[
         """,
         [bundle_ids],
     ).rowcount
-    if not bundles:
-        return {}
-    if not content_hashes:
-        return {"publication_bundles": bundles}
-    if len(content_hashes) > ORPHAN_PAYLOAD_CLEANUP_MAX_HASHES:
-        # ponytail: defer large orphan scans to the verified storage process;
-        # add a content-hash index before raising this bounded ceiling.
-        return {
-            "publication_bundles": bundles,
-            "publication_payload_cleanup_skipped": len(content_hashes),
-        }
-    payloads = connection.execute(
-        """
-        DELETE FROM app.publication_payload payload
-        WHERE payload.content_hash = ANY(%s)
-          AND NOT EXISTS (
-            SELECT 1 FROM app.publication_bundle_item item WHERE item.content_hash = payload.content_hash
-        )
-        """,
-        [content_hashes],
-    ).rowcount
-    result: dict[str, int] = {"publication_bundles": bundles}
+    result: dict[str, int] = {"publication_bundles": bundles} if bundles else {}
+    payloads = _delete_payload_hashes(connection, content_hashes)
     if payloads:
         result["publication_payloads"] = payloads
     return result
+
+
+def _delete_payload_hashes(connection: Any, content_hashes: list[Any]) -> int:
+    deleted = 0
+    for start in range(0, len(content_hashes), PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE):
+        batch = content_hashes[start : start + PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE]
+        deleted += int(connection.execute(
+            """
+            DELETE FROM app.publication_payload payload
+            WHERE payload.content_hash = ANY(%s)
+              AND NOT EXISTS (
+                SELECT 1 FROM app.publication_bundle_item item
+                WHERE item.content_hash = payload.content_hash
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM app.current_publication_item item
+                WHERE item.content_hash = payload.content_hash
+              )
+            """,
+            [batch],
+        ).rowcount)
+    return deleted
+
+
+def _delete_orphaned_payload_batch(connection: Any) -> int:
+    """Delete one ordered orphan batch so repeated retention calls make progress."""
+
+    rows = connection.execute(
+        """
+        SELECT payload.content_hash
+        FROM app.publication_payload payload
+        WHERE NOT EXISTS (
+            SELECT 1 FROM app.publication_bundle_item item
+            WHERE item.content_hash = payload.content_hash
+        )
+          AND NOT EXISTS (
+            SELECT 1 FROM app.current_publication_item item
+            WHERE item.content_hash = payload.content_hash
+        )
+        ORDER BY payload.content_hash
+        LIMIT %s
+        """,
+        [PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE],
+    ).fetchall()
+    if not rows:
+        return 0
+    return _delete_payload_hashes(connection, [row["content_hash"] for row in rows])
 
 
 def _prune_failed_confirmation_staging(connection: Any, before: datetime) -> int:

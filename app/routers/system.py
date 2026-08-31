@@ -11,7 +11,7 @@ from app import dependencies
 from app.contracts import AgentSettingsInput, ResearchSourcesInput
 from app.data_access import loaders, settings as settings_owner
 from app.response_contracts import DecisionFunnelResponse, RefreshJobResponse, RefreshJobsResponse, SettingsResponse
-from investment_panel.core.config import AppConfig
+from investment_panel.core.config import AppConfig, load_config
 
 router = APIRouter()
 
@@ -66,7 +66,7 @@ def launch_refresh_job_background(
 
 @router.get("/api/settings", response_model=SettingsResponse, response_model_exclude_unset=True)
 def settings(config: AppConfig = Depends(dependencies.get_config)) -> dict[str, Any]:
-    config, panel_data = _settings_context(config)
+    config, panel_data = _settings_context(config, reload_config=True)
     return settings_owner.settings_payload(config, panel_data)
 
 
@@ -81,7 +81,7 @@ def update_agent_settings(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     panel_snapshot.invalidate_context_cache()
-    config, panel_data = _settings_context(config)
+    config, panel_data = _settings_context(config, reload_config=True)
     return settings_owner.settings_payload(config, panel_data)
 
 
@@ -96,11 +96,11 @@ def update_research_sources(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     panel_snapshot.invalidate_context_cache()
-    config, panel_data = _settings_context(config)
+    config, panel_data = _settings_context(config, reload_config=True)
     return settings_owner.settings_payload(config, panel_data)
 
 
-def _settings_context(config: AppConfig) -> tuple[AppConfig, Any]:
+def _settings_context(config: AppConfig, *, reload_config: bool = False) -> tuple[AppConfig, Any]:
     """Load only source-run rows required by Settings."""
 
     return panel_snapshot.context(
@@ -110,7 +110,7 @@ def _settings_context(config: AppConfig) -> tuple[AppConfig, Any]:
             table_names=("source_runs",),
             query_row_limits={"source_runs": 200},
         ),
-        config_loader=lambda: config,
+        config_loader=load_config if reload_config else lambda: config,
     )
 
 

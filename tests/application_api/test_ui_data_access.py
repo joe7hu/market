@@ -387,6 +387,35 @@ def test_scope_loader_materializes_only_requested_tables(migrated_postgres_dsn: 
     assert panel_data.rows("source_freshness") == []
 
 
+def test_today_scope_bounds_secondary_publication_reads(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_load(_config, *, table_names, query_row_limits=None, **_kwargs):
+        calls.append({"table_names": table_names, "query_row_limits": query_row_limits})
+        return PanelData(
+            status=DataStatus(True, "loaded", "test"),
+            tables={name: [] for name in table_names},
+            metadata={"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []},
+        )
+
+    monkeypatch.setattr(loaders_owner, "load_panel_data", fake_load)
+    monkeypatch.setattr(
+        loaders_owner,
+        "_load_today_authority",
+        lambda *_args, **_kwargs: ([], [], [], {"ticker_decisions": 0, "opportunity_rank": 0, "trade_plan": 0}, 0),
+    )
+
+    panel = loaders_owner.load_panel_scope_data(typed_config("postgresql:///test"), "today")
+
+    assert panel.status.ready is True
+    assert calls[0]["query_row_limits"] == {
+        "preopen_daily_brief": 1,
+        "daily_brief": 12,
+        "portfolio_risk_cards": 8,
+        "feed_signals": 12,
+    }
+
+
 def test_source_table_loader_uses_requested_postgresql_model(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 

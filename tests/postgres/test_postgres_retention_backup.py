@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 
 import psycopg
+import pytest
+from psycopg.types.json import Jsonb
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.backup import credential_safe_connection, create_verified_backup
@@ -15,6 +17,7 @@ from investment_panel.database.jobs import JobRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.runtime import DatabaseRuntime
+import investment_panel.database.retention as retention_module
 
 
 def _insert_publication(
@@ -241,6 +244,58 @@ def test_publication_retention_reclaims_orphaned_compact_content(postgres_dsn: s
 
     assert result == {"publications": 1, "publication_bundles": 1, "publication_payloads": 1}
     assert remaining == {"bundles": 1, "payloads": 1, "publications": 1}
+
+
+def test_publication_retention_reclaims_large_and_preexisting_orphan_batches(
+    postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    reference = datetime(2026, 8, 12, 16, tzinfo=UTC)
+    analysis = AnalysisRepository(runtime)
+    monkeypatch.setattr(retention_module, "PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE", 2)
+    try:
+        run_id = analysis.start_run(
+            "large-compact-publication", input_cutoff=reference - timedelta(days=100),
+            code_version="large", inputs={"generation": "large"},
+        )
+        analysis.finish_run(run_id, "succeeded")
+        publication_id = analysis.publish(
+            run_id,
+            "research",
+            {"brief": [{"stable_key": f"brief-{index}", "headline": str(index)} for index in range(3)]},
+        )
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.publication SET status = 'superseded', created_at = %s, published_at = %s WHERE id = %s",
+                [reference - timedelta(days=100), reference - timedelta(days=100), publication_id],
+            )
+            connection.execute(
+                "INSERT INTO app.publication_payload (content_hash, payload) VALUES (%s, %s)",
+                ["f" * 64, Jsonb({"orphan": "existing"})],
+            )
+
+        result = RetentionRepository(runtime).prune_publications(now=reference, batch_size=1)
+        with runtime.transaction() as connection:
+            for index in range(3):
+                connection.execute(
+                    "INSERT INTO app.publication_payload (content_hash, payload) VALUES (%s, %s)",
+                    [f"{index + 1:064x}", Jsonb({"orphan": index})],
+                )
+        sweep_one = RetentionRepository(runtime).prune_publications(now=reference, batch_size=1)
+        sweep_two = RetentionRepository(runtime).prune_publications(now=reference, batch_size=1)
+        with runtime.read() as connection:
+            payload_count = connection.execute("SELECT count(*) AS count FROM app.publication_payload").fetchone()["count"]
+    finally:
+        runtime.close()
+
+    assert result["publications"] == 1
+    assert result["publication_payloads"] == 4
+    assert sweep_one == {"publications": 0, "publication_payloads": 2}
+    assert sweep_two == {"publications": 0, "publication_payloads": 1}
+    assert payload_count == 0
 
 
 def test_backup_is_custom_format_sha_verified_and_contains_all_schemas(

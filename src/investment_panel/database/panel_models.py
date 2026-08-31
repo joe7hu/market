@@ -1527,16 +1527,12 @@ def load_postgres_tables(
     runtime = runtime_for_config(config)
     published_counts: dict[str, int] = {}
     intelligence_counts: dict[str, int] = {}
-    tables = (
-        _published_tables(
-            runtime,
-            requested,
-            row_limits=query_row_limits,
-            total_counts=published_counts,
-        )
-        if query_row_limits
-        else _published_tables(runtime, requested)
-    )
+    publication_options: dict[str, Any] = {}
+    if query_row_limits:
+        publication_options.update(row_limits=query_row_limits, total_counts=published_counts)
+    if query_symbol_filter is not None:
+        publication_options["symbols"] = query_symbol_filter
+    tables = _published_tables(runtime, requested, **publication_options)
     if {"option_radar_opportunity", "option_radar_summary"}.intersection(tables):
         from investment_panel.database.option_ticket_read import reconcile_loaded_radar_tables
 

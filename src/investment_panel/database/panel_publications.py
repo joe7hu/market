@@ -13,6 +13,7 @@ def published_tables(
     *,
     row_limits: Mapping[str, int] | None = None,
     total_counts: dict[str, int] | None = None,
+    symbols: set[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Read the current item for each requested model with its publication lineage."""
 
@@ -60,18 +61,36 @@ def published_tables(
             )
         """
         params: list[Any] = [list(requested), list(requested)]
+        source_filter = ""
+        source_table = "published_rows"
+        if symbols is not None:
+            source_filter = """
+                , filtered_rows AS (
+                    SELECT *
+                    FROM published_rows
+                    WHERE UPPER(COALESCE(
+                        payload->>'ticker',
+                        payload->>'symbol',
+                        payload->>'underlying',
+                        payload->'ticker_decision'->>'ticker'
+                    )) = ANY(%s)
+                )
+            """
+            source_table = "filtered_rows"
+            params.append(sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}))
+        query += source_filter
         limits_by_model = {
             name: max(1, int(limit))
             for name, limit in (row_limits or {}).items()
             if name in requested and limit > 0
         }
         if limits_by_model:
-            query += """
+            query += f"""
                 , ranked_rows AS (
-                    SELECT published_rows.*,
+                    SELECT {source_table}.*,
                            row_number() OVER (PARTITION BY model_name ORDER BY rank) AS row_number,
                            count(*) OVER (PARTITION BY model_name) AS total_count
-                    FROM published_rows
+                    FROM {source_table}
                 )
                 SELECT ranked_rows.model_name, ranked_rows.payload, ranked_rows.publication_id,
                        ranked_rows.published_at, ranked_rows.rank, ranked_rows.total_count
@@ -84,7 +103,7 @@ def published_tables(
             """
             params.extend((list(requested), [limits_by_model.get(name) for name in requested]))
         else:
-            query += " SELECT model_name, payload, publication_id, published_at, rank FROM published_rows ORDER BY model_name, rank"
+            query += f" SELECT model_name, payload, publication_id, published_at, rank FROM {source_table} ORDER BY model_name, rank"
         rows = connection.execute(query, params).fetchall()
         option_rows = (
             current_option_publication_rows(
