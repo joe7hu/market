@@ -459,7 +459,10 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
         limits = dict(options.get("query_row_limits") or {})
         calls.append(limits)
         loaded = {
-            name: list(tables.get("ticker_decisions" if name == "today_ticker_actions" else name, []))[: limits.get(name)]
+            name: [
+                {**row, "missing_plan_count": 7} if name == "today_ticker_actions" else row
+                for row in list(tables.get("ticker_decisions" if name == "today_ticker_actions" else name, []))[: limits.get(name)]
+            ]
             if limits.get(name) is not None
             else list(tables.get("ticker_decisions" if name == "today_ticker_actions" else name, []))
             for name in table_names
@@ -490,9 +493,11 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert "decision.fundamental" not in query
     assert "octet_length((decision.input_manifest->'trade_plan')::text) <= 327680" in query
     assert "pg_input_is_valid(opportunity_rank->>'trade_rank', 'integer')" in query
+    assert panel.metadata["today_missing_plan_count"] == 7
     assert all("input_manifest" not in row for row in panel.rows("ticker_decisions"))
+    assert all("missing_plan_count" not in row for row in panel.rows("ticker_decisions"))
     assert queue["actions"] == []
-    assert queue["missing_plan_count"] == 5
+    assert queue["missing_plan_count"] == 7
     assert [row["ticker"] for row in queue["book_actions"][:-1]] == [f"T{index}" for index in range(5)]
     assert all(
         row["trade_rank_unavailable_reason"] != "opportunity_rank_missing"

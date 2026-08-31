@@ -161,11 +161,21 @@ def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
             table_names=tuple(name for name in requested if name not in authority_names) + (compact_name,),
             query_row_limits={compact_name: 100},
         )
+        action_rows = loaded.rows(compact_name)
+        exact_missing_plan_count: int | None = 0 if not action_rows and loaded.status.ready else None
         decisions: list[dict[str, Any]] = []
         ranks: list[dict[str, Any]] = []
         plans: list[dict[str, Any]] = []
-        for raw in loaded.rows(compact_name):
+        for raw in action_rows:
             decision = dict(raw)
+            count = decision.pop("missing_plan_count", None)
+            if (
+                exact_missing_plan_count is None
+                and isinstance(count, int)
+                and not isinstance(count, bool)
+                and count >= 0
+            ):
+                exact_missing_plan_count = count
             rank = decision.get("opportunity_rank")
             if isinstance(rank, dict):
                 rank = dict(rank)
@@ -186,10 +196,13 @@ def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
             "opportunity_rank": ranks,
             "trade_plan": plans,
         })
+        metadata = {**loaded.metadata, "table_count": len(requested), "today_action_input_count": len(decisions)}
+        if exact_missing_plan_count is not None:
+            metadata["today_missing_plan_count"] = exact_missing_plan_count
         return PanelData(
             status=loaded.status,
             tables=tables,
-            metadata={**loaded.metadata, "table_count": len(requested), "today_action_input_count": len(decisions)},
+            metadata=metadata,
         )
     query_row_limits = {
         table: limit

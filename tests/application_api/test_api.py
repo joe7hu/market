@@ -161,6 +161,7 @@ def test_today_aggregates_missing_plan_backlog_before_queue_limit(
                 for index in range(100)
             ],
         },
+        metadata={"today_missing_plan_count": 107},
     )
     monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
 
@@ -168,7 +169,7 @@ def test_today_aggregates_missing_plan_backlog_before_queue_limit(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["missing_plan_count"] == 100
+    assert payload["missing_plan_count"] == 107
     assert payload["count"] == 10
     assert [item["projection_identity"] for item in payload["actions"]] == [
         f"inbox:decision-inbox:inbox-{index}" for index in range(10)

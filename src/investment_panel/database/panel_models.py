@@ -346,15 +346,27 @@ DIRECT_QUERIES: dict[str, str] = {
               AND decision.published_at <= now()
               AND jsonb_typeof(decision.capital_action) = 'object'
               AND jsonb_typeof(decision.input_manifest) = 'object'
+        ),
+        current_authority AS (
+            SELECT *
+            FROM current_candidates
+            WHERE current_row = 1
+              AND authority_count = 1
+              AND opportunity_authority_count = 1
         )
         SELECT ticker_decision_id, ticker, symbol, decision_revision, as_of,
                published_at, available_at, input_hash, capital_action, resolution,
                policy_version, opportunity_episode_id, selected_expression,
-               opportunity_rank, trade_plan
-        FROM current_candidates
-        WHERE current_row = 1
-          AND authority_count = 1
-          AND opportunity_authority_count = 1
+               opportunity_rank, trade_plan,
+               count(*) FILTER (
+                   WHERE jsonb_typeof(trade_plan) IS DISTINCT FROM 'object'
+                     AND (
+                         jsonb_typeof(opportunity_rank) IS DISTINCT FROM 'object'
+                         OR opportunity_rank->>'research_rank' IS NULL
+                     )
+                     AND COALESCE(capital_action->>'owned', 'false') <> 'true'
+               ) OVER () AS missing_plan_count
+        FROM current_authority
         ORDER BY
           CASE
             WHEN opportunity_rank->>'trade_rank' ~ '^[1-9][0-9]*$'

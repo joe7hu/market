@@ -85,6 +85,98 @@ def test_today_action_query_bounds_payloads_and_handles_poisoned_rank(
         runtime.close()
 
 
+def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    prefix = f"TB{uuid4().hex[:5].upper()}"
+    symbols = [f"{prefix}{index:03d}" for index in range(102)]
+    as_of = datetime.now(UTC) - timedelta(minutes=1)
+    try:
+        instrument_ids: list[int] = []
+        with runtime.transaction() as connection:
+            for symbol in symbols:
+                instrument_ids.append(connection.execute(
+                    "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+                    "VALUES (%s, %s, 'equity') RETURNING id",
+                    [symbol, symbol],
+                ).fetchone()["id"])
+
+        template = build_ticker_decision(
+            symbols[0],
+            {"decision_queue": [{
+                "symbol": symbols[0],
+                "stance": "NEUTRAL",
+                "available_at": (as_of - timedelta(minutes=1)).isoformat(),
+            }]},
+            as_of=as_of,
+        )
+        published = TickerDecisionRepository(runtime).publish(template)
+        with runtime.transaction() as connection:
+            template_row = connection.execute(
+                "SELECT input_manifest FROM analysis.ticker_decision WHERE id = %s::uuid",
+                [published["ticker_decision_id"]],
+            ).fetchone()
+            for index, instrument_id in enumerate(instrument_ids):
+                manifest = dict(template_row["input_manifest"])
+                if index < 100:
+                    manifest.update({
+                        "opportunity_rank": {"trade_rank": index + 1, "research_rank": index + 1},
+                        "trade_plan": {"present": True},
+                    })
+                else:
+                    manifest.pop("opportunity_rank", None)
+                    manifest.pop("trade_plan", None)
+                if index == 0:
+                    connection.execute(
+                        "UPDATE analysis.ticker_decision SET input_manifest = %s WHERE id = %s::uuid",
+                        [Jsonb(manifest), published["ticker_decision_id"]],
+                    )
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO analysis.ticker_decision (
+                        instrument_id, decision_revision, contract_version, as_of,
+                        published_at, input_hash, code_version, experiment_id,
+                        tactical, fundamental, capital_action, resolution, policy_version,
+                        opportunity_episode_id, opportunity_cutoff, opportunity_episode,
+                        risk_policy, expressions, selected_expression, data_requests,
+                        learning_history, input_manifest, market_state_publication_id,
+                        market_state_snapshot, portfolio_impacts, risk_policy_snapshot, status
+                    )
+                    SELECT %s, decision_revision || %s, contract_version, as_of,
+                           published_at, input_hash, code_version, experiment_id,
+                           tactical, fundamental, capital_action, resolution, policy_version,
+                           opportunity_episode_id || %s, opportunity_cutoff, opportunity_episode,
+                           risk_policy, expressions, selected_expression, data_requests,
+                           learning_history, %s, market_state_publication_id,
+                           market_state_snapshot, portfolio_impacts, risk_policy_snapshot, status
+                    FROM analysis.ticker_decision
+                    WHERE id = %s::uuid
+                    """,
+                    [
+                        instrument_id,
+                        f":{index}",
+                        f":{index}",
+                        Jsonb(manifest),
+                        published["ticker_decision_id"],
+                    ],
+                )
+
+        rows = load_postgres_tables(
+            typed_config(migrated_postgres_dsn),
+            ("today_ticker_actions",),
+            query_row_limits={"today_ticker_actions": 100},
+        )[0]["today_ticker_actions"]
+
+        assert len(rows) == 100
+        assert {row["missing_plan_count"] for row in rows} == {2}
+        assert all(row["opportunity_rank"]["research_rank"] is not None for row in rows)
+    finally:
+        runtime.close()
+
+
 def test_ticker_governance_projection_binds_one_options_radar_revision(
     migrated_postgres_dsn: str,
 ) -> None:

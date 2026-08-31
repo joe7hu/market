@@ -130,7 +130,13 @@ def today(
         int(row.get("research_rank") or 0) if row.get("research_rank") is not None else 0,
         str(row.get("ticker")),
     ))
-    missing_plan_count = sum(_is_unranked_missing_plan_action(row) for row in capital_actions)
+    sampled_missing_plan_count = sum(_is_unranked_missing_plan_action(row) for row in capital_actions)
+    exact_missing_plan_count = panel_data.metadata.get("today_missing_plan_count")
+    missing_plan_count = max(sampled_missing_plan_count, exact_missing_plan_count) if (
+        isinstance(exact_missing_plan_count, int)
+        and not isinstance(exact_missing_plan_count, bool)
+        and exact_missing_plan_count >= 0
+    ) else sampled_missing_plan_count
     visible_capital_actions = [row for row in capital_actions if not _is_unranked_missing_plan_action(row)]
     queue_items = _bounded_today_queue(
         visible_capital_actions,
