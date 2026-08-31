@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from investment_panel.core.config import AppConfig, load_config
+from investment_panel.core.decision import TradePlan
 from investment_panel.core.panel import tables_for_scope
 from app.data_access.types import DataStatus, PanelData
 from investment_panel.core.panel import (
@@ -13,7 +14,10 @@ from investment_panel.core.panel import (
     TICKER_INITIAL_TABLES,
     panel_contract_payload as contract_panel_payload,
 )
-from investment_panel.database.panel_models import load_postgres_tables
+from investment_panel.database.panel_models import (
+    load_postgres_tables,
+    today_missing_plan_candidate_pages,
+)
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 
@@ -30,6 +34,94 @@ def load_decision_funnel(
     """Load the backend-owned decision-lane diagnostic."""
 
     return TickerDecisionRepository(runtime).decision_funnel(action_queue=action_queue)
+
+
+def today_rank_for_row(
+    row: dict[str, Any], ranks: list[dict[str, Any]], symbol: str,
+) -> dict[str, Any] | None:
+    revision = str(row.get("decision_revision") or "")
+    episode_id = str(row.get("opportunity_episode_id") or "")
+    embedded = row.get("opportunity_rank")
+    candidates = (
+        [embedded]
+        if isinstance(embedded, dict)
+        else [] if "opportunity_rank" in row
+        else ranks
+    )
+    matches = [
+        rank for rank in candidates
+        if str(rank.get("ticker") or rank.get("symbol") or "").upper() == symbol
+        and str(rank.get("decision_revision") or "") == revision
+        and str(rank.get("opportunity_episode_id") or "") == episode_id
+    ]
+    if len(matches) != 1:
+        return None
+    rank = dict(matches[0])
+    ranking_publication_id = str(rank.get("ranking_publication_id") or "")
+    publication_id = str(rank.get("publication_id") or "")
+    if ranking_publication_id and publication_id and ranking_publication_id != publication_id:
+        return None
+    if ranking_publication_id:
+        rank["publication_id"] = ranking_publication_id
+    return rank
+
+
+def today_plan_for_row(
+    row: dict[str, Any],
+    plans: list[dict[str, Any]],
+    rank: dict[str, Any] | None,
+    symbol: str,
+) -> TradePlan | None:
+    revision = str(row.get("decision_revision") or "")
+    episode_id = str(row.get("opportunity_episode_id") or "")
+    embedded = row.get("trade_plan")
+    candidates = (
+        [embedded]
+        if isinstance(embedded, dict)
+        else [] if "trade_plan" in row
+        else plans
+    )
+    matches = [
+        plan for plan in candidates
+        if str(plan.get("ticker") or plan.get("symbol") or "").upper() == symbol
+        and str(plan.get("decision_revision") or "") == revision
+        and str(plan.get("opportunity_episode_id") or "") == episode_id
+        and rank is not None
+        and bool(rank.get("publication_id"))
+        and plan.get("publication_id") == rank.get("publication_id")
+    ]
+    if len(matches) != 1:
+        return None
+    try:
+        plan = TradePlan.model_validate(matches[0])
+        if plan.rank_id != str(rank.get("rank_id") or ""):
+            return None
+        if plan.selected_expression_identity != str(rank.get("selected_expression_identity") or ""):
+            return None
+        if plan.portfolio_impact_id != str(rank.get("portfolio_impact_id") or ""):
+            return None
+        if plan.market_state_publication_id != str(rank.get("market_state_publication_id") or ""):
+            return None
+        return plan
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _today_missing_plan_correction_count(config: AppConfig) -> int:
+    invalid_plan_count = 0
+    for page in today_missing_plan_candidate_pages(config):
+        for row in page:
+            if row.get("invalid_without_rank") is True:
+                invalid_plan_count += 1
+                continue
+            symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+            rank = today_rank_for_row(row, [], symbol)
+            if row.get("raw_research_rank_present") is True:
+                invalid_plan_count += rank is None
+                continue
+            plan = today_plan_for_row(row, [], rank, symbol)
+            invalid_plan_count += plan is None
+    return invalid_plan_count
 
 
 def load_panel_data(
@@ -239,6 +331,31 @@ def load_panel_scope_data(
                 decision["trade_plan"] = plan
                 plans.append(plan)
             decisions.append(decision)
+        if loaded.status.ready and action_rows:
+            if exact_missing_plan_count is None:
+                count_error: Exception | None = RuntimeError("Today missing-plan count is unavailable")
+            else:
+                try:
+                    exact_missing_plan_count += _today_missing_plan_correction_count(active_config)
+                except Exception as exc:
+                    count_error = exc
+                else:
+                    count_error = None
+            if count_error is not None:
+                return PanelData(
+                    status=DataStatus(
+                        False,
+                        f"PostgreSQL Today plan validation unavailable: {count_error}",
+                        "postgresql-error",
+                    ),
+                    tables={name: [] for name in requested},
+                    metadata={
+                        "database": "postgresql",
+                        "error": str(count_error),
+                        "table_count": len(requested),
+                        "table_counts": {name: 0 for name in requested},
+                    },
+                )
         tables = {name: loaded.rows(name) for name in requested}
         tables.update({
             "ticker_decisions": decisions,

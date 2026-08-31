@@ -21,7 +21,6 @@ from investment_panel.core.decision import (
     capital_action_from_resolution,
     resolution_from_legacy,
     trade_expression_identity,
-    TradePlan,
 )
 
 router = APIRouter()
@@ -48,8 +47,8 @@ def today(
     # summary route depend on deep evidence and option-surface queries.
     for row in panel_data.rows("ticker_decisions"):
         symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
-        rank = _rank_for_row(row, rank_rows, symbol)
-        plan = _plan_for_row(row, plan_rows, rank, symbol)
+        rank = loaders.today_rank_for_row(row, rank_rows, symbol)
+        plan = loaders.today_plan_for_row(row, plan_rows, rank, symbol)
         rank_ready, rank_reason = _rank_ready(row, rank)
         if plan is not None and (plan.eligibility == "BLOCKED" or rank_ready):
             try:
@@ -443,72 +442,6 @@ def _is_true(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return _queue_text(value).lower() in {"1", "true", "yes", "y"}
-
-
-def _rank_for_row(row: dict[str, Any], ranks: list[dict[str, Any]], symbol: str) -> dict[str, Any] | None:
-    revision = str(row.get("decision_revision") or "")
-    episode_id = str(row.get("opportunity_episode_id") or "")
-    embedded = row.get("opportunity_rank")
-    candidates = (
-        [embedded]
-        if isinstance(embedded, dict)
-        else [] if "opportunity_rank" in row
-        else ranks
-    )
-    matches = [
-        rank for rank in candidates
-        if str(rank.get("ticker") or rank.get("symbol") or "").upper() == symbol
-        and str(rank.get("decision_revision") or "") == revision
-        and str(rank.get("opportunity_episode_id") or "") == episode_id
-    ]
-    if len(matches) != 1:
-        return None
-    rank = dict(matches[0])
-    ranking_publication_id = str(rank.get("ranking_publication_id") or "")
-    publication_id = str(rank.get("publication_id") or "")
-    if ranking_publication_id and publication_id and ranking_publication_id != publication_id:
-        return None
-    if ranking_publication_id:
-        rank["publication_id"] = ranking_publication_id
-    return rank
-
-
-def _plan_for_row(
-    row: dict[str, Any], plans: list[dict[str, Any]], rank: dict[str, Any] | None, symbol: str,
-) -> TradePlan | None:
-    revision = str(row.get("decision_revision") or "")
-    episode_id = str(row.get("opportunity_episode_id") or "")
-    embedded = row.get("trade_plan")
-    candidates = (
-        [embedded]
-        if isinstance(embedded, dict)
-        else [] if "trade_plan" in row
-        else plans
-    )
-    matches = [
-        plan for plan in candidates
-        if str(plan.get("ticker") or plan.get("symbol") or "").upper() == symbol
-        and str(plan.get("decision_revision") or "") == revision
-        and str(plan.get("opportunity_episode_id") or "") == episode_id
-        and rank is not None
-        and bool(rank.get("publication_id"))
-        and plan.get("publication_id") == rank.get("publication_id")
-    ]
-    if len(matches) != 1:
-        return None
-    try:
-        plan = TradePlan.model_validate(matches[0])
-        if plan.rank_id != str(rank.get("rank_id") or ""):
-            return None
-        if plan.selected_expression_identity != str(rank.get("selected_expression_identity") or ""):
-            return None
-        if plan.portfolio_impact_id != str(rank.get("portfolio_impact_id") or ""):
-            return None
-        if plan.market_state_publication_id != str(rank.get("market_state_publication_id") or ""):
-            return None
-        return plan
-    except (TypeError, ValueError, KeyError):
-        return None
 
 
 def _rank_reason(rank: dict[str, Any] | None) -> str:

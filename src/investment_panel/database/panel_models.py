@@ -25,7 +25,7 @@ from investment_panel.database.current_quotes import current_quote_rows
 from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
 from investment_panel.database.runtime import API_PROFILE, RuntimeProfile
 
-__all__ = ["load_postgres_tables"]
+__all__ = ["load_postgres_tables", "today_missing_plan_candidate_pages"]
 RECOVERY_MODELS = frozenset({
     "option_recovery_funnel", "option_recovery_event", "option_recovery_opportunity",
     "option_recovery_family_performance", "option_recovery_agent_provenance", "option_recovery_health",
@@ -822,6 +822,56 @@ DIRECT_QUERIES: dict[str, str] = {
 
 
 DIRECT_QUERIES.update({**SOURCE_QUERIES, **EVENT_DIRECT_QUERIES})
+
+
+def today_missing_plan_candidate_pages(
+    config: AppConfig,
+    *,
+    batch_size: int = 25,
+) -> Iterable[list[dict[str, Any]]]:
+    """Stream only object-plan rows that can change the missing-plan count."""
+
+    safe_batch_size = max(1, min(int(batch_size), 100))
+    query = f"""
+        SELECT ticker_decision_id, ticker, decision_revision,
+               opportunity_episode_id,
+               CASE WHEN jsonb_typeof(opportunity_rank) = 'object'
+                    THEN jsonb_build_object(
+                        'ticker', opportunity_rank->'ticker',
+                        'symbol', opportunity_rank->'symbol',
+                        'decision_revision', opportunity_rank->'decision_revision',
+                        'opportunity_episode_id', opportunity_rank->'opportunity_episode_id',
+                        'ranking_publication_id', opportunity_rank->'ranking_publication_id',
+                        'publication_id', opportunity_rank->'publication_id',
+                        'rank_id', opportunity_rank->'rank_id',
+                        'selected_expression_identity', opportunity_rank->'selected_expression_identity',
+                        'portfolio_impact_id', opportunity_rank->'portfolio_impact_id',
+                        'market_state_publication_id', opportunity_rank->'market_state_publication_id'
+                    ) END AS opportunity_rank,
+               CASE WHEN jsonb_typeof(opportunity_rank) = 'object'
+                          AND opportunity_rank->>'research_rank' IS NULL
+                    THEN trade_plan END AS trade_plan,
+               jsonb_typeof(opportunity_rank) IS DISTINCT FROM 'object'
+                   AS invalid_without_rank,
+               opportunity_rank->>'research_rank' IS NOT NULL
+                   AS raw_research_rank_present
+        FROM ({DIRECT_QUERIES["today_ticker_actions"]}) AS current_today_actions
+        WHERE (
+              jsonb_typeof(trade_plan) = 'object'
+              OR (
+                  jsonb_typeof(opportunity_rank) = 'object'
+                  AND opportunity_rank->>'research_rank' IS NOT NULL
+              )
+          )
+          AND COALESCE(capital_action->>'owned', 'false') <> 'true'
+        ORDER BY ticker_decision_id
+    """
+    runtime = runtime_for_config(config)
+    with runtime.snapshot(API_PROFILE) as connection:
+        with connection.cursor(name="today_missing_plan_validity") as cursor:
+            cursor.execute(query)
+            while rows := cursor.fetchmany(safe_batch_size):
+                yield [dict(row) for row in rows]
 
 
 MODEL_ALIASES = {

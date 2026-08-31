@@ -474,6 +474,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
         }
 
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_load)
+    monkeypatch.setattr(loaders_owner, "_today_missing_plan_correction_count", lambda _config: 0)
     panel = loaders_owner.load_panel_scope_data(object(), "today")
     panel.tables["opportunity_rank"].reverse()
     panel.tables["trade_plan"].reverse()
@@ -506,3 +507,51 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert snapshot["tables"]["ticker_decisions"]["count"] == 5
     assert len(snapshot["tables"]["ticker_decisions"]["rows"]) == 3
     assert snapshot["tables"]["portfolio"]["rows"] == [{"symbol": "HELD"}]
+
+
+def test_today_plan_validation_count_failure_is_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.data_access import loaders as loaders_owner
+    from app.routers import panel as panel_router
+
+    def fake_load(_config, table_names, **_options):
+        return {
+            name: [{
+                "ticker": "FAIL",
+                "ticker_decision_id": "decision:fail",
+                "decision_revision": "revision:fail",
+                "opportunity_episode_id": "episode:fail",
+                "capital_action": {"owned": False},
+                "opportunity_rank": None,
+                "trade_plan": {"present": True},
+                "missing_plan_count": 0,
+            }] if name == "today_ticker_actions" else []
+            for name in table_names
+        }, {
+            "database": "postgresql",
+            "available_model_count": len(table_names),
+            "unavailable_models": [],
+        }
+
+    def fail_count(_config):
+        raise RuntimeError("statement timeout")
+
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_load)
+    monkeypatch.setattr(loaders_owner, "_today_missing_plan_correction_count", fail_count)
+
+    panel = loaders_owner.load_panel_scope_data(object(), "today")
+    monkeypatch.setattr(panel_router.panel_owner, "context", lambda **_kwargs: (None, panel))
+    response = panel_router.today(
+        config=object(),
+        option_actions=SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+
+    assert panel.status.ready is False
+    assert panel.status.source == "postgresql-error"
+    assert "Today plan validation unavailable" in panel.status.message
+    assert all(panel.rows(name) == [] for name in panel.tables)
+    assert set(panel.metadata["table_counts"].values()) == {0}
+    assert response["status"]["ready"] is False
+    assert response["actions"] == []
+    assert [row["action"] for row in response["book_actions"]] == ["CASH"]

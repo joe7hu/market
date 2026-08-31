@@ -93,7 +93,7 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     prefix = f"TB{uuid4().hex[:5].upper()}"
-    symbols = [f"{prefix}{index:03d}" for index in range(104)]
+    symbols = [f"{prefix}{index:03d}" for index in range(105)]
     as_of = datetime.now(UTC) - timedelta(minutes=1)
     try:
         instrument_ids: list[int] = []
@@ -122,14 +122,36 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
             ).fetchone()
             for index, instrument_id in enumerate(instrument_ids):
                 manifest = dict(template_row["input_manifest"])
-                if index < 102:
+                if index < 100:
+                    revision = template.decision_revision if index == 0 else f"{template.decision_revision}:{index}"
+                    episode_id = (
+                        template.opportunity_episode_id
+                        if index == 0
+                        else f"{template.opportunity_episode_id}:{index}"
+                    )
                     manifest.update({
-                        "opportunity_rank": {"trade_rank": index + 1, "research_rank": index + 1},
+                        "opportunity_rank": {
+                            "ticker": symbols[index],
+                            "decision_revision": revision,
+                            "opportunity_episode_id": episode_id,
+                            "trade_rank": index + 1,
+                            "research_rank": index + 1,
+                        },
                         "trade_plan": {"present": True},
                     })
                 else:
                     manifest.pop("opportunity_rank", None)
                     manifest.pop("trade_plan", None)
+                    if 102 <= index < 104:
+                        manifest["trade_plan"] = {"present": "malformed-outside-sample"}
+                    elif index == 104:
+                        manifest["opportunity_rank"] = {
+                            "ticker": "WRONG",
+                            "decision_revision": f"{template.decision_revision}:{index}",
+                            "opportunity_episode_id": f"{template.opportunity_episode_id}:{index}",
+                            "trade_rank": index + 1,
+                            "research_rank": index + 1,
+                        }
                 if index == 0:
                     connection.execute(
                         "UPDATE analysis.ticker_decision SET input_manifest = %s WHERE id = %s::uuid",
@@ -175,12 +197,13 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
         rows = tables["today_ticker_actions"]
 
         assert len(rows) == 100
-        assert metadata["table_counts"]["today_ticker_actions"] == 104
+        assert metadata["table_counts"]["today_ticker_actions"] == 105
         assert all("__panel_total_count" not in row for row in rows)
         assert {row["missing_plan_count"] for row in rows} == {2}
-        assert {row["opportunity_rank_count"] for row in rows} == {102}
+        assert {row["opportunity_rank_count"] for row in rows} == {101}
         assert {row["trade_plan_count"] for row in rows} == {102}
         assert all(row["opportunity_rank"]["research_rank"] is not None for row in rows)
+        assert all(row["trade_plan"].get("present") is True for row in rows)
 
         panel = load_panel_scope_data(config, "today")
         snapshot = panel_snapshot_payload(panel, "today")
@@ -190,17 +213,18 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
             name: panel.metadata["table_counts"][name]
             for name in ("ticker_decisions", "opportunity_rank", "trade_plan")
         } == {
-            "ticker_decisions": 104,
-            "opportunity_rank": 102,
+            "ticker_decisions": 105,
+            "opportunity_rank": 101,
             "trade_plan": 102,
         }
         for table_name, total in (
-            ("ticker_decisions", 104),
-            ("opportunity_rank", 102),
+            ("ticker_decisions", 105),
+            ("opportunity_rank", 101),
             ("trade_plan", 102),
         ):
             assert snapshot["tables"][table_name]["count"] == total
             assert len(snapshot["tables"][table_name]["rows"]) == 3
+        assert panel.metadata["today_missing_plan_count"] == 5
         assert all(
             "opportunity_rank_count" not in row and "trade_plan_count" not in row
             for row in panel.rows("ticker_decisions")
