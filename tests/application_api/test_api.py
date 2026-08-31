@@ -1108,11 +1108,20 @@ def test_local_api_guard_allows_private_lan_clients() -> None:
     require_local_request(request("192.168.50.197"))
     require_local_request(request("127.0.0.1"))
     require_local_request(request("127.0.0.1", {"x-forwarded-for": "192.168.50.42"}))
+    require_local_request(request("127.0.0.1", {"x-forwarded-for": "8.8.8.8, 192.168.50.42"}))
+    require_local_request(request("::ffff:100.120.95.8"))
+    require_local_request(request("::1", {"x-forwarded-for": "8.8.8.8, ::ffff:100.120.95.8"}))
 
     with pytest.raises(HTTPException):
         require_local_request(request("8.8.8.8"))
     with pytest.raises(HTTPException):
+        require_local_request(request("2001:4860:4860::8888"))
+    with pytest.raises(HTTPException):
         require_local_request(request("127.0.0.1", {"x-forwarded-for": "8.8.8.8"}))
+    with pytest.raises(HTTPException):
+        require_local_request(request("127.0.0.1", {"x-forwarded-for": "192.168.50.42, 8.8.8.8"}))
+    with pytest.raises(HTTPException):
+        require_local_request(request("127.0.0.1", {"x-forwarded-for": "not-an-ip, 192.168.50.42"}))
 
 
 def test_api_rejects_public_network_clients() -> None:
