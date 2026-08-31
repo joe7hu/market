@@ -431,6 +431,10 @@ class TickerDecisionRepository:
                     decision_selected_kind = None
                     decision_selected_horizon = None
             raw_episode = row.get("opportunity_episode")
+            episode_intentionally_omitted = (
+                row.get("funnel_candidate_required") is False
+                and raw_episode is None
+            )
             episode_for_validation = raw_episode
             if row.get("impact_lineage_match") is not None:
                 episode_cutoff = _parse_datetime(row.get("as_of"))
@@ -448,63 +452,66 @@ class TickerDecisionRepository:
                     )
                 )
                 if lineage_valid:
-                    # The SQL identity check covers the complete lineage. Keep
-                    # one item for the domain model's remaining episode checks.
-                    episode_for_validation = {
-                        **raw_episode,
-                        "input_lineage": [lineage[0]],
-                    }
+                    episode_for_validation = raw_episode
                 else:
                     episode_for_validation = None
             try:
-                if episode_for_validation is None:
+                if episode_intentionally_omitted:
+                    opportunity_episode = None
+                elif episode_for_validation is None:
                     raise ValueError("opportunity episode lineage is invalid")
-                opportunity_episode = OpportunityEpisode.model_validate(episode_for_validation)
-                episode_selected_kind = (
-                    opportunity_episode.selected_expression.kind
-                    if opportunity_episode.selected_expression is not None
-                    else None
-                )
-                episode_selected_horizon = (
-                    opportunity_episode.selected_expression.horizon
-                    if opportunity_episode.selected_expression is not None
-                    else None
-                )
-                if (
-                    opportunity_episode.episode_id != row.get("opportunity_episode_id")
-                    or opportunity_episode.ticker.strip().upper() != ticker
-                    or opportunity_episode.decision_revision != row.get("decision_revision")
-                    or opportunity_episode.policy_version != row.get("policy_version")
-                    or _utc(opportunity_episode.cutoff) != _utc(row["as_of"])
-                    or row.get("opportunity_cutoff_match") is not True
-                    or row.get("opportunity_expressions_match") is not True
-                    or row.get("opportunity_selected_expression_match") is not True
-                    or stock_expression is None
-                    or opportunity_episode.expressions.get(ExpressionKind.STOCK)
-                    != stock_expression
-                    or episode_selected_kind is not decision_selected_kind
-                    or (
-                        episode_selected_kind is not None
-                        and episode_selected_horizon is not decision_selected_horizon
+                else:
+                    opportunity_episode = OpportunityEpisode.model_validate(episode_for_validation)
+                    episode_selected_kind = (
+                        opportunity_episode.selected_expression.kind
+                        if opportunity_episode.selected_expression is not None
+                        else None
                     )
-                ):
-                    raise ValueError("opportunity episode does not match its ticker decision")
+                    episode_selected_horizon = (
+                        opportunity_episode.selected_expression.horizon
+                        if opportunity_episode.selected_expression is not None
+                        else None
+                    )
+                    if (
+                        opportunity_episode.episode_id != row.get("opportunity_episode_id")
+                        or opportunity_episode.ticker.strip().upper() != ticker
+                        or opportunity_episode.decision_revision != row.get("decision_revision")
+                        or opportunity_episode.policy_version != row.get("policy_version")
+                        or _utc(opportunity_episode.cutoff) != _utc(row["as_of"])
+                        or row.get("opportunity_cutoff_match") is not True
+                        or row.get("opportunity_expressions_match") is not True
+                        or row.get("opportunity_selected_expression_match") is not True
+                        or stock_expression is None
+                        or opportunity_episode.expressions.get(ExpressionKind.STOCK)
+                        != stock_expression
+                        or episode_selected_kind is not decision_selected_kind
+                        or (
+                            episode_selected_kind is not None
+                            and episode_selected_horizon is not decision_selected_horizon
+                        )
+                    ):
+                        raise ValueError("opportunity episode does not match its ticker decision")
             except (KeyError, TypeError, ValueError):
                 compact_contract_valid = False
                 opportunity_episode = None
-            if (
-                opportunity_episode is None
-                or not opportunity_episode.input_lineage
-                or stock_impact is None
+            episode_authority_valid = opportunity_episode is not None or episode_intentionally_omitted
+            impact_lineage_valid = (
+                episode_intentionally_omitted
                 or (
-                    row.get("impact_lineage_match") is not True
+                    opportunity_episode is not None
+                    and bool(opportunity_episode.input_lineage)
                     and (
-                        row.get("impact_lineage_match") is not None
-                        or tuple(stock_impact.input_lineage)
-                        != tuple(opportunity_episode.input_lineage)
+                        row.get("impact_lineage_match") is True
+                        or (
+                            row.get("impact_lineage_match") is None
+                            and stock_impact is not None
+                            and tuple(stock_impact.input_lineage)
+                            == tuple(opportunity_episode.input_lineage)
+                        )
                     )
                 )
-            ):
+            )
+            if not episode_authority_valid or stock_impact is None or not impact_lineage_valid:
                 compact_contract_valid = False
                 stock_impact = None
                 stock_impact_projection = {
@@ -563,7 +570,7 @@ class TickerDecisionRepository:
             cash_selected = selected_kind is ExpressionKind.CASH
             facts_available = bool(
                 compact_contract_valid
-                and opportunity_episode is not None
+                and episode_authority_valid
                 and (
                     cash_selected
                     or (
@@ -838,6 +845,7 @@ class TickerDecisionRepository:
                 SELECT candidate.ticker, decision.as_of, decision.published_at,
                        decision.decision_revision, decision.policy_version,
                        decision.opportunity_episode_id,
+                       funnel_candidate.required AS funnel_candidate_required,
                        CASE WHEN funnel_candidate.required
                                       AND episode_lineage.valid
                                       AND episode_lineage.within_limit
@@ -856,19 +864,20 @@ class TickerDecisionRepository:
                        CASE WHEN funnel_candidate.required
                             THEN episode_lineage.valid
                        END AS opportunity_lineage_valid,
-                       decision.opportunity_cutoff = decision.as_of
-                           AS opportunity_cutoff_match,
+                       CASE WHEN funnel_candidate.required
+                            THEN decision.opportunity_cutoff = decision.as_of
+                       END AS opportunity_cutoff_match,
                        CASE WHEN funnel_candidate.required
                                   AND episode_lineage.valid
                                   AND episode_lineage.within_limit
                             THEN decision.opportunity_episode->'expressions' = decision.expressions
-                            ELSE false END AS opportunity_expressions_match,
+                       END AS opportunity_expressions_match,
                        CASE WHEN funnel_candidate.required
                                   AND episode_lineage.valid
                                   AND episode_lineage.within_limit
                             THEN decision.opportunity_episode->'selected_expression'
                                  IS NOT DISTINCT FROM decision.selected_expression
-                            ELSE false END AS opportunity_selected_expression_match,
+                       END AS opportunity_selected_expression_match,
                        CASE WHEN decision.selected_expression IS NULL THEN NULL
                            ELSE jsonb_strip_nulls(jsonb_build_object(
                                'kind', decision.selected_expression->'kind',
@@ -920,7 +929,8 @@ class TickerDecisionRepository:
                                       decision.portfolio_impacts->'STOCK',
                                       decision.portfolio_impacts->'stock'
                                   )->'input_lineage'
-                            THEN true ELSE false
+                            THEN true
+                            WHEN funnel_candidate.required THEN false
                        END AS impact_lineage_match,
                        CASE WHEN octet_length(decision.resolution::text) <= 196608
                             THEN jsonb_build_object(

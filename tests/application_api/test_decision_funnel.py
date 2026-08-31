@@ -354,6 +354,25 @@ def test_decision_funnel_compact_lineage_validation_fails_closed(monkeypatch) ->
     assert facts["top_blockers"][0]["reason"] == "ticker_decision_contract_invalid"
 
 
+def test_decision_funnel_keeps_intentionally_compact_cash_rows_valid(monkeypatch) -> None:
+    repository = TickerDecisionRepository(object())
+    monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
+    row = _valid_compact_row()
+    row.pop("opportunity_episode")
+    row["funnel_candidate_required"] = False
+    row["impact_lineage_match"] = None
+    row["opportunity_lineage_valid"] = None
+    row["opportunity_cutoff_match"] = None
+    row["opportunity_expressions_match"] = None
+    row["opportunity_selected_expression_match"] = None
+    monkeypatch.setattr(repository, "_current_funnel_rows", lambda **_kwargs: [row])
+
+    payload = repository.decision_funnel(now=NOW)
+
+    facts = next(stage for stage in payload["stages"] if stage["stage"] == "point_in_time_facts")
+    assert facts["count"] == 1
+
+
 def test_decision_funnel_loads_each_exact_market_publication_once(monkeypatch) -> None:
     repository = TickerDecisionRepository(object())
     monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
