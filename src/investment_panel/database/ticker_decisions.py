@@ -632,13 +632,17 @@ class TickerDecisionRepository:
                     FROM app.current_publication_item item
                     JOIN app.publication publication
                       ON publication.id = item.publication_id
+                    JOIN analysis.run run
+                      ON run.id = publication.analysis_run_id
                     WHERE item.scope = %s
                       AND item.model_name = ANY(%s)
                       AND publication.status = 'published'
                       AND publication.published_at <= %s
+                      AND run.input_cutoff <= %s
+                      AND publication.published_at > run.input_cutoff
                 ) AS exists
                 """,
-                [TICKER_RANKING_SCOPE, model_names, publication_cutoff],
+                [TICKER_RANKING_SCOPE, model_names, publication_cutoff, publication_cutoff],
             ).fetchone()["exists"]
             if has_projection:
                 rows = connection.execute(
@@ -672,13 +676,17 @@ class TickerDecisionRepository:
                       ON payload.content_hash = item.content_hash
                     JOIN app.publication publication
                       ON publication.id = item.publication_id
+                    JOIN analysis.run run
+                      ON run.id = publication.analysis_run_id
                     WHERE item.scope = %s
                       AND item.model_name = ANY(%s)
                       AND publication.status = 'published'
                       AND publication.published_at <= %s
+                      AND run.input_cutoff <= %s
+                      AND publication.published_at > run.input_cutoff
                     ORDER BY item.model_name, item.rank
                     """,
-                    [TICKER_RANKING_SCOPE, model_names, publication_cutoff],
+                    [TICKER_RANKING_SCOPE, model_names, publication_cutoff, publication_cutoff],
                 ).fetchall()
             else:
                 rows = connection.execute(
