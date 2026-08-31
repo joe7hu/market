@@ -625,6 +625,66 @@ def test_publication_visibility_identity_freshness_and_lineage(migrated_postgres
         runtime.close()
 
 
+def test_exact_market_publication_history_remains_valid_after_supersession(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        market_cutoff = datetime.now(UTC) - timedelta(minutes=5)
+        first_id, first = _publish_market(runtime, market_cutoff)
+        decision_cutoff = _timestamp(first["published_at"])
+        second_id, _ = _publish_market(runtime, market_cutoff + timedelta(minutes=1))
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.publication SET published_at = %s WHERE id = %s::uuid",
+                [decision_cutoff + timedelta(seconds=1), second_id],
+            )
+        repository = AnalysisRepository(runtime)
+        first = repository.publication_by_id("market", first_id)
+        second = repository.publication_by_id("market", second_id)
+        assert first is not None and first["publication_status"] == "superseded"
+        assert second is not None and second["publication_status"] == "published"
+
+        monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
+        selected_publication = {"id": first_id}
+        decision_repository = TickerDecisionRepository(runtime)
+        monkeypatch.setattr(
+            decision_repository,
+            "_current_funnel_rows",
+            lambda **_kwargs: [{
+                "ticker": "LANE",
+                "as_of": decision_cutoff,
+                "published_at": decision_cutoff,
+                "selected_expression": {"kind": "STOCK", "horizon": "FUNDAMENTAL"},
+                "stock_expression": {"availability_status": "available"},
+                "stock_portfolio_impact": {"availability_status": "available"},
+                "resolution": {"eligibility": "ACTIONABLE", "action": "BUY"},
+                "market_state_publication_id": selected_publication["id"],
+                "has_valid_opportunity_lineage": True,
+            }],
+        )
+
+        funnel = decision_repository.decision_funnel(now=decision_cutoff)
+        facts = next(stage for stage in funnel["stages"] if stage["stage"] == "point_in_time_facts")
+        assert facts["count"] == 1
+
+        selected_publication["id"] = second_id
+        funnel = decision_repository.decision_funnel(now=decision_cutoff)
+        facts = next(stage for stage in funnel["stages"] if stage["stage"] == "point_in_time_facts")
+        assert facts["count"] == 0
+
+        selected_publication["id"] = first_id
+        mismatched = {**first, "publication_id": second_id}
+        monkeypatch.setattr(AnalysisRepository, "publication_by_id", lambda *_args: mismatched)
+        funnel = decision_repository.decision_funnel(now=decision_cutoff)
+        facts = next(stage for stage in funnel["stages"] if stage["stage"] == "point_in_time_facts")
+        assert facts["count"] == 0
+    finally:
+        runtime.close()
+
+
 def test_actionable_plan_has_all_executable_fields() -> None:
     cutoff = datetime(2026, 8, 29, 14, tzinfo=UTC)
     lineage = InputLineage(field="price", source_id="phase0", available_at=cutoff, cutoff=cutoff)

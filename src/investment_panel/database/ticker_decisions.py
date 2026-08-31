@@ -2321,7 +2321,7 @@ def _market_snapshot_from_exact_publication(
         publication is None
         or str(publication.get("publication_id") or "") != publication_id
         or publication.get("publication_scope") != "market"
-        or publication.get("publication_status") != "published"
+        or publication.get("publication_status") not in {"published", "superseded"}
     ):
         return None
     input_cutoff = _parse_datetime(publication.get("input_cutoff"))

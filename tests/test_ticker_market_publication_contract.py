@@ -44,11 +44,24 @@ def test_market_snapshot_accepts_actual_visibility_after_fact_cutoff() -> None:
     assert snapshot.publication_id == "market-publication:test"
 
 
+def test_market_snapshot_accepts_superseded_published_history() -> None:
+    publication = _publication()
+    publication["publication_status"] = "superseded"
+
+    snapshot = ticker_decisions._market_snapshot_for_decision(
+        publication, CUTOFF + timedelta(seconds=2),
+    )
+
+    assert snapshot is not None
+    assert snapshot.publication_id == "market-publication:test"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (
         ("publication_scope", "ticker"),
-        ("publication_status", "superseded"),
+        ("publication_status", "building"),
+        ("publication_status", "failed"),
         ("input_cutoff", (CUTOFF - timedelta(days=2)).isoformat()),
         ("published_at", CUTOFF.isoformat()),
         ("published_at", None),

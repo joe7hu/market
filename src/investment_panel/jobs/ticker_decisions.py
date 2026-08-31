@@ -260,7 +260,7 @@ def _market_snapshot_for_decision(
         return None
     if str(publication.get("publication_scope") or "") != "market":
         return None
-    if str(publication.get("publication_status") or "") != "published":
+    if str(publication.get("publication_status") or "") not in {"published", "superseded"}:
         return None
     publication_cutoff = _timestamp(publication.get("input_cutoff"))
     publication_published_at = _timestamp(publication.get("published_at"))
