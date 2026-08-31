@@ -152,7 +152,7 @@ def test_rss_fetch_revalidates_legacy_private_url(
         called = True
         raise AssertionError("private URL reached the HTTP client")
 
-    monkeypatch.setattr(update_content_sources.httpx, "get", unexpected_get)
+    monkeypatch.setattr(update_content_sources.httpx.Client, "send", unexpected_get)
 
     with pytest.raises(ValueError, match="private or non-routable"):
         update_content_sources._fetch_rss("http://127.0.0.1:5432/private")
@@ -160,20 +160,8 @@ def test_rss_fetch_revalidates_legacy_private_url(
 
 
 def test_substack_fetch_revalidates_legacy_private_url() -> None:
-    class Runner:
-        called = False
-
-        def read_json(self, _command):
-            self.called = True
-            raise AssertionError("private URL reached OpenCLI")
-
-    runner = Runner()
     with pytest.raises(ValueError, match="private or non-routable"):
-        update_content_sources._fetch_substack(
-            runner,
-            "http://127.0.0.1:5432/private",
-        )
-    assert runner.called is False
+        update_content_sources._fetch_substack("http://127.0.0.1:5432/private")
 
 
 def test_external_entities_are_rejected_by_content_parsers(
@@ -184,6 +172,7 @@ def test_external_entities_are_rejected_by_content_parsers(
 
     class Response:
         content = payload
+        is_redirect = False
 
         @staticmethod
         def raise_for_status() -> None:
@@ -191,19 +180,98 @@ def test_external_entities_are_rejected_by_content_parsers(
 
     monkeypatch.setattr(
         update_content_sources,
-        "validate_public_http_url",
-        lambda url: url,
+        "resolve_public_http_url",
+        lambda url: settings_validation.ResolvedPublicHttpUrl(
+            url=url,
+            hostname="feed.example.test",
+            authority="feed.example.test",
+            address="93.184.216.34",
+        ),
     )
     request_options = {}
 
-    def get_response(*_args, **kwargs):
+    def get_response(_client, _request, **kwargs):
         request_options.update(kwargs)
         return Response()
 
-    monkeypatch.setattr(update_content_sources.httpx, "get", get_response)
+    monkeypatch.setattr(update_content_sources.httpx.Client, "send", get_response)
 
     with pytest.raises(EntitiesForbidden):
         update_content_sources._fetch_rss("https://feed.example.test/rss")
     assert request_options["follow_redirects"] is False
     with pytest.raises(EntitiesForbidden):
         update_disclosure_sources._parse_information_table(payload)
+
+
+def test_rss_fetch_pins_validated_address_and_original_tls_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolutions = 0
+
+    def resolve(*_args, **_kwargs):
+        nonlocal resolutions
+        resolutions += 1
+        address = "93.184.216.34" if resolutions == 1 else "10.0.0.8"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 443))]
+
+    def send(_client, request, **kwargs):
+        assert str(request.url) == "https://93.184.216.34/rss"
+        assert request.headers["Host"] == "feed.example.test"
+        assert request.extensions["sni_hostname"] == "feed.example.test"
+        assert kwargs["follow_redirects"] is False
+        return update_content_sources.httpx.Response(
+            200,
+            request=request,
+            content=b"<rss><channel><item><title>Safe</title></item></channel></rss>",
+        )
+
+    monkeypatch.setattr(settings_validation.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(update_content_sources.httpx.Client, "send", send)
+
+    assert update_content_sources._fetch_rss("https://feed.example.test/rss")[0]["title"] == "Safe"
+    assert resolutions == 1
+
+
+def test_rss_fetch_rejects_private_redirect_before_second_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sends = 0
+
+    monkeypatch.setattr(
+        settings_validation.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
+
+    def send(_client, request, **_kwargs):
+        nonlocal sends
+        sends += 1
+        return update_content_sources.httpx.Response(
+            302,
+            request=request,
+            headers={"Location": "http://127.0.0.1/private"},
+        )
+
+    monkeypatch.setattr(update_content_sources.httpx.Client, "send", send)
+
+    with pytest.raises(ValueError, match="private or non-routable"):
+        update_content_sources._fetch_rss("https://feed.example.test/rss")
+    assert sends == 1
+
+
+def test_substack_uses_the_pinned_rss_fetch_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested: list[str] = []
+    monkeypatch.setattr(
+        update_content_sources,
+        "_fetch_rss",
+        lambda url: requested.append(url) or [{"title": "Safe"}],
+    )
+
+    assert update_content_sources._fetch_substack("https://notes.example.test") == [
+        {"title": "Safe"}
+    ]
+    assert requested == ["https://notes.example.test/feed"]

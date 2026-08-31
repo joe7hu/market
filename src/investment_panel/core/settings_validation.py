@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from ipaddress import ip_address
 import re
 import socket
@@ -71,6 +72,22 @@ def apply_research_sources_update(
 def validate_public_http_url(value: Any) -> str:
     """Return a public HTTP(S) URL or reject an SSRF-capable destination."""
 
+    return resolve_public_http_url(value).url
+
+
+@dataclass(frozen=True)
+class ResolvedPublicHttpUrl:
+    """One public URL and the address checked for its next connection."""
+
+    url: str
+    hostname: str
+    authority: str
+    address: str
+
+
+def resolve_public_http_url(value: Any) -> ResolvedPublicHttpUrl:
+    """Resolve one public HTTP(S) URL for an address-pinned request."""
+
     url = str(value or "").strip()
     if not url or any(ord(char) < 32 for char in url):
         raise ValueError("source URL is empty or contains control characters")
@@ -86,27 +103,40 @@ def validate_public_http_url(value: Any) -> str:
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("source URL must not include credentials")
 
-    host = parsed.hostname.rstrip(".").lower()
+    try:
+        host = parsed.hostname.rstrip(".").encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValueError("source URL host is invalid") from exc
     if host == "localhost" or host.endswith(".localhost") or "%" in host:
         raise ValueError("source URL must use a public host")
-    _validate_public_host(host, port or (443 if parsed.scheme.lower() == "https" else 80))
-    return url
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    resolved_port = port or default_port
+    address = _public_addresses(host, resolved_port)[0]
+    header_host = f"[{host}]" if ":" in host else host
+    authority = header_host if resolved_port == default_port else f"{header_host}:{resolved_port}"
+    return ResolvedPublicHttpUrl(
+        url=url,
+        hostname=host,
+        authority=authority,
+        address=address,
+    )
 
 
-def _validate_public_host(host: str, port: int) -> None:
+def _public_addresses(host: str, port: int) -> list[str]:
     try:
-        addresses = {ip_address(host)}
+        addresses = [ip_address(host)]
     except ValueError:
         try:
             resolved = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         except OSError as exc:
             raise ValueError("source URL host could not be resolved") from exc
-        addresses = {
+        addresses = list(dict.fromkeys(
             ip_address(str(sockaddr[0]).split("%", 1)[0])
             for _family, _type, _proto, _canonname, sockaddr in resolved
-        }
+        ))
     if not addresses or any(not address.is_global for address in addresses):
         raise ValueError("source URL must not resolve to a private or non-routable address")
+    return [address.compressed for address in addresses]
 
 
 def _sanitize_option_agent_settings(
@@ -354,5 +384,6 @@ def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
 __all__ = [
     "apply_agent_settings_update",
     "apply_research_sources_update",
+    "resolve_public_http_url",
     "validate_public_http_url",
 ]

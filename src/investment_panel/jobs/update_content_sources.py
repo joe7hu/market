@@ -10,13 +10,13 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Iterable
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from defusedxml import ElementTree as ET
 import httpx
 
 from investment_panel.core.config import AppConfig, load_config
-from investment_panel.core.settings_validation import validate_public_http_url
+from investment_panel.core.settings_validation import resolve_public_http_url
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
@@ -83,7 +83,7 @@ def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dic
             {
                 "source_id": _slug(f"blog_{_host(url)}"), "name": _host(url),
                 "kind": "blog", "capability": "substack", "key": url,
-                "fetch": lambda url=url: _fetch_substack(runner, url),
+                "fetch": lambda url=url: _fetch_substack(url),
             }
             for url in config.research_sources.blogs.substack_urls
         )
@@ -381,13 +381,23 @@ def _archive_payload(config: AppConfig, source_id: str, run_id: Any, payload: An
 
 
 def _fetch_rss(url: str) -> list[dict[str, Any]]:
-    url = validate_public_http_url(url)
-    response = httpx.get(
-        url,
-        timeout=25,
-        follow_redirects=False,
-        headers={"User-Agent": "joehu-market-panel/0.1 contact:local"},
-    )
+    target = resolve_public_http_url(url)
+    with httpx.Client(timeout=25, trust_env=False) as client:
+        request = client.build_request(
+            "GET",
+            httpx.URL(target.url).copy_with(host=target.address),
+            headers={
+                "Host": target.authority,
+                "User-Agent": "joehu-market-panel/0.1 contact:local",
+            },
+            extensions={"sni_hostname": target.hostname},
+        )
+        response = client.send(request, follow_redirects=False)
+    if response.is_redirect:
+        location = response.headers.get("Location")
+        if location:
+            resolve_public_http_url(urljoin(target.url, location))
+        raise ValueError("source URL redirects are not allowed")
     response.raise_for_status()
     root = ET.fromstring(response.content)
     rows: list[dict[str, Any]] = []
@@ -410,10 +420,8 @@ def _fetch_rss(url: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _fetch_substack(runner: OpenCLIRunner, url: str) -> Any:
-    return runner.read_json(
-        ["substack", "publication", validate_public_http_url(url)]
-    )
+def _fetch_substack(url: str) -> Any:
+    return _fetch_rss(urljoin(url, "/feed"))
 
 
 def _child(node: ET.Element, tag: str) -> str:
