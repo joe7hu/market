@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import socket
 
 from defusedxml.common import EntitiesForbidden
@@ -275,3 +276,18 @@ def test_substack_uses_the_pinned_rss_fetch_path(
         {"title": "Safe"}
     ]
     assert requested == ["https://notes.example.test/feed"]
+
+
+def test_rss_pubdate_preserves_source_time_and_malformed_values_fail_closed() -> None:
+    row = update_content_sources._content_row(
+        "blog_notes",
+        "blog",
+        {"title": "Source item", "published": "Tue, 26 Aug 2025 15:01:30 GMT"},
+        set(),
+    )
+
+    assert row is not None
+    assert row["published_at"] == datetime(2025, 8, 26, 15, 1, 30, tzinfo=UTC)
+    assert row["observed_at"].tzinfo is UTC
+    assert update_content_sources._timestamp("2025-08-26T11:01:30-04:00") == row["published_at"]
+    assert update_content_sources._timestamp("not a valid feed timestamp") is None

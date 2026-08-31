@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 import gzip
 import hashlib
 import json
@@ -435,10 +436,16 @@ def _timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         parsed = value
     else:
+        text = str(value).strip()
         try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
-            return None
+            try:
+                parsed = parsedate_to_datetime(text)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not isinstance(parsed, datetime):
+                return None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
