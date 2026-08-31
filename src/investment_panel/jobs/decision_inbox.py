@@ -79,7 +79,8 @@ def _fixed_owner_sender() -> Callable[[str], None]:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urlopen(request, timeout=10) as response:  # nosec B310 - local relay is validated above
+            # The fixed-owner relay host and scheme are restricted above.
+            with urlopen(request, timeout=10) as response:  # nosec B310
                 if not 200 <= response.status < 300:
                     raise RuntimeError(f"shared GBrain owner relay returned {response.status}")
 
