@@ -5,6 +5,7 @@ import json
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.database.preopen_context import compact_preopen_context
@@ -181,18 +182,36 @@ def test_today_replays_only_portfolio_transactions_available_at_cutoff(
                 "executed_at": as_of + timedelta(hours=1), "idempotency_key": "today-pit-future-buy",
             },
         )
+        record_portfolio_transaction(
+            config,
+            {
+                "symbol": "FUTR", "transaction_type": "opening_balance", "quantity": 1, "price": 50,
+                "executed_at": as_of - timedelta(days=1), "idempotency_key": "today-pit-future-instrument",
+            },
+        )
         with runtime.transaction() as connection:
             _backdate_symbol_state(connection, "NVDA", as_of - timedelta(days=3))
             connection.execute(
                 "UPDATE app.portfolio_transaction SET created_at = %s WHERE idempotency_key = %s",
                 [as_of + timedelta(hours=1), "today-pit-future-buy"],
             )
+            connection.execute(
+                "UPDATE app.portfolio_transaction SET created_at = %s WHERE idempotency_key = %s",
+                [as_of - timedelta(days=1), "today-pit-future-instrument"],
+            )
+            connection.execute(
+                "UPDATE catalog.instrument SET created_at = %s, updated_at = %s WHERE symbol = 'FUTR'",
+                [as_of + timedelta(minutes=1), as_of + timedelta(minutes=1)],
+            )
+            reconcile_instrument(connection, "NVDA", name="NVDA", category="watchlist")
 
         refresh_today_publication(runtime, now=as_of)
-        pulse = next(
+        pulses = [
             row for row in AnalysisRepository(runtime).publication_rows("today", "daily_brief")
             if row.get("category") == "portfolio_pulse"
-        )
+        ]
+        assert {row["symbol"] for row in pulses} == {"NVDA"}
+        pulse = pulses[0]
         assert pulse["quantity"] == 2
         assert pulse["average_cost"] == 100
     finally:
@@ -412,6 +431,15 @@ def test_preopen_narrative_does_not_reuse_future_same_day_publication(
         second = refresh_today_publication(runtime, now=cutoff, use_agent_narrative=True)
         assert second["preopen_narrative"] == "agent_generated"
         assert calls == 2
+
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.publication SET published_at = %s WHERE id = %s",
+                [cutoff - timedelta(minutes=1), first["publication_id"]],
+            )
+        third = refresh_today_publication(runtime, now=cutoff, use_agent_narrative=True)
+        assert third["preopen_narrative"] == "agent_generated"
+        assert calls == 3
     finally:
         runtime.close()
 
@@ -491,6 +519,7 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
             signal_available_at: datetime | None = None,
             ingest_finished_at: datetime | None = None,
             analysis_finished_at: datetime | None = None,
+            analysis_input_cutoff: datetime | None = None,
         ) -> None:
             ingestion.register_source(
                 source_id, name=source_id.title(), family="news", kind="article",
@@ -512,7 +541,7 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
             ingestion.finish_run(run_id, "succeeded", item_count=count, instrument_count=1)
             analysis_run = AnalysisRepository(runtime).start_run(
                 "source-signals",
-                input_cutoff=observed_at,
+                input_cutoff=analysis_input_cutoff or observed_at,
                 code_version="test",
                 inputs={"source": source_id},
             )
@@ -563,6 +592,10 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
         add_source(
             "late-signal", 1, as_of - timedelta(hours=5),
             signal_available_at=as_of + timedelta(minutes=1),
+        )
+        add_source(
+            "future-input", 1, as_of - timedelta(hours=6),
+            analysis_input_cutoff=as_of + timedelta(minutes=1),
         )
         with runtime.transaction() as connection:
             _backdate_symbol_state(connection, "NVDA", as_of - timedelta(days=1))

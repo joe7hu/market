@@ -33,8 +33,8 @@ def refresh_today_publication(
             int(row["id"])
             for row in connection.execute(
                 "SELECT id FROM catalog.instrument "
-                "WHERE id = ANY(%s::bigint[]) AND created_at <= %s AND updated_at <= %s",
-                [[row["instrument_id"] for row in replayed_positions], as_of, as_of],
+                "WHERE id = ANY(%s::bigint[]) AND created_at <= %s",
+                [[row["instrument_id"] for row in replayed_positions], as_of],
             ).fetchall()
         }
         holdings = [
@@ -55,7 +55,6 @@ def refresh_today_publication(
                 JOIN catalog.instrument instrument ON instrument.id = thesis.instrument_id
                 WHERE thesis.status = 'current'
                   AND instrument.created_at <= %s
-                  AND instrument.updated_at <= %s
                   AND thesis.created_at <= %s
                   AND thesis.updated_at <= %s
                   AND (
@@ -65,7 +64,7 @@ def refresh_today_publication(
                   )
                 ORDER BY thesis.thesis->>'last_reviewed' NULLS FIRST, instrument.symbol
                 """,
-                [as_of, as_of, as_of, as_of, as_of],
+                [as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         catalysts = [
@@ -106,16 +105,13 @@ def refresh_today_publication(
                   )
                   AND (
                     catalyst.instrument_id IS NULL
-                    OR (
-                      instrument.created_at <= %s
-                      AND instrument.updated_at <= %s
-                    )
+                    OR instrument.created_at <= %s
                   )
                 ORDER BY catalyst.starts_at, event_lineage.available_at DESC,
                          event_lineage.source_id, catalyst.version, catalyst.id
                 LIMIT 20
                 """,
-                [as_of, as_of, as_of, as_of, as_of, as_of, as_of, as_of, as_of],
+                [as_of, as_of, as_of, as_of, as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         option_rows = [
@@ -140,8 +136,8 @@ def refresh_today_publication(
         option_rows = option_rows[:10]
         qqq_instrument = connection.execute(
             "SELECT id FROM catalog.instrument WHERE symbol = 'QQQ' "
-            "AND created_at <= %s AND updated_at <= %s",
-            [as_of, as_of],
+            "AND created_at <= %s",
+            [as_of],
         ).fetchone()
         qqq_history = []
         if qqq_instrument is not None:
@@ -162,32 +158,32 @@ def refresh_today_publication(
                     SELECT instrument.id FROM catalog.instrument instrument
                     WHERE instrument.symbol = 'QQQ'
                       AND instrument.created_at <= %s
-                      AND instrument.updated_at <= %s
                 )::bigint[]
             ) quote
             JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
             JOIN ingest.source source ON source.id = quote.source_id
             WHERE instrument.symbol = 'QQQ'
               AND instrument.created_at <= %s
-              AND instrument.updated_at <= %s
               AND quote.trading_date = %s
             LIMIT 1
             """,
-            [as_of, as_of, as_of, as_of, as_of, brief_date],
+            [as_of, as_of, as_of, brief_date],
         ).fetchone()
         prior_preopen_row = connection.execute(
             """
             SELECT item.payload
             FROM app.publication publication
+            JOIN analysis.run publication_run ON publication_run.id = publication.analysis_run_id
             JOIN app.publication_content_item item ON item.publication_id = publication.id
             WHERE publication.scope = 'today' AND publication.status = 'published'
               AND publication.published_at IS NOT NULL
               AND publication.published_at <= %s
+              AND publication_run.input_cutoff <= %s
               AND item.model_name = 'preopen_daily_brief'
               AND item.payload->>'brief_date' = %s
             ORDER BY publication.published_at DESC NULLS LAST LIMIT 1
             """,
-            [as_of, brief_date.isoformat()],
+            [as_of, as_of, brief_date.isoformat()],
         ).fetchone()
         source_changes = [
             dict(row)
@@ -213,15 +209,14 @@ def refresh_today_publication(
                     WHERE source.enabled
                       AND source.operational_state = 'active'
                       AND source.created_at <= %s
-                      AND source.updated_at <= %s
                       AND instrument.created_at <= %s
-                      AND instrument.updated_at <= %s
                       AND signal.available_at IS NOT NULL
                       AND signal.available_at <= %s
                       AND signal.observed_at <= %s
                       AND (signal.event_at IS NULL OR signal.event_at <= %s)
                       AND (signal.published_at IS NULL OR signal.published_at <= %s)
                       AND signal_run.status IN ('succeeded', 'partial')
+                      AND signal_run.input_cutoff <= %s
                       AND signal_run.finished_at IS NOT NULL
                       AND signal_run.finished_at <= %s
                       AND content_run.status IN ('succeeded', 'partial')
@@ -250,7 +245,7 @@ def refresh_today_publication(
                 """,
                 [
                     as_of, as_of, as_of, as_of, as_of, as_of, as_of, as_of,
-                    as_of, as_of, as_of, as_of, held_instrument_ids, as_of, as_of,
+                    as_of, as_of, as_of, held_instrument_ids, as_of, as_of,
                 ],
             ).fetchall()
         ]
