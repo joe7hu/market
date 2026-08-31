@@ -488,7 +488,7 @@ def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None
     assert calls[0]["table_names"] == ("portfolio",)
     assert "portfolio" not in calls[1]["table_names"]
     assert calls[1]["query_symbol_filter"] == {"TSLA", "MSFT"}
-    assert calls[1]["query_row_limits"]["ticker_decisions"] == 80
+    assert calls[1]["query_row_limits"]["ticker_decisions"] == 2
     assert calls[1]["query_row_limits"]["quotes"] == 24
     assert "ticker_decisions" in calls[1]["table_names"]
     assert panel.rows("ticker_decisions")[0]["portfolio_impacts"]["STOCK"] == impact
@@ -535,6 +535,30 @@ def test_portfolio_scope_pages_detail_rows_once(monkeypatch) -> None:
         "portfolio_impacts": {},
     }]
     assert payload["tables"]["ticker_decisions"]["offset"] == 1
+
+
+def test_portfolio_scope_loads_all_unpaged_detail_rows(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    symbols = [f"HOLDING{index:03d}" for index in range(81)]
+
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...], **kwargs):
+        calls.append({"table_names": table_names, **kwargs})
+        if table_names == ("portfolio",):
+            return {"portfolio": [{"symbol": symbol} for symbol in symbols]}, {
+                "database": "postgresql", "available_model_count": 1, "unavailable_models": [],
+            }
+        return {name: [] for name in table_names}, {
+            "database": "postgresql", "available_model_count": len(table_names), "unavailable_models": [],
+        }
+
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
+
+    panel = loaders_owner.load_panel_scope_data(typed_config("postgresql:///test"), "portfolio")
+
+    assert panel.metadata["portfolio_symbol_count"] == len(symbols)
+    assert calls[1]["query_symbol_filter"] == set(symbols)
+    assert calls[1]["query_row_limits"]["ticker_decisions"] == len(symbols)
+    assert calls[1]["query_row_limits"]["quotes"] == len(symbols) * 2
 
 
 def test_market_scope_pushes_page_window_into_publication_reads(monkeypatch) -> None:

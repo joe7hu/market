@@ -154,7 +154,7 @@ def _sanitize_option_agent_settings(
         raise ValueError("agent settings must be an object")
     clean: dict[str, Any] = {}
     if "enabled" in value:
-        clean["enabled"] = bool(value["enabled"])
+        clean["enabled"] = _strict_bool(value["enabled"], "enabled")
     if "timeout_seconds" in value:
         clean["timeout_seconds"] = _bounded_int(
             value["timeout_seconds"], "timeout_seconds", minimum=10, maximum=900
@@ -207,7 +207,9 @@ def _sanitize_option_agent_settings(
             "decision",
         }
         clean["context_sources"] = {
-            key: bool(item) for key, item in sources.items() if key in allowed
+            key: _strict_bool(item, f"context_sources.{key}")
+            for key, item in sources.items()
+            if key in allowed
         }
     return clean
 
@@ -221,7 +223,7 @@ def _sanitize_thesis_monitor_settings(
         raise ValueError("thesis_monitor settings must be an object")
     clean: dict[str, Any] = {}
     if "enabled" in value:
-        clean["enabled"] = bool(value["enabled"])
+        clean["enabled"] = _strict_bool(value["enabled"], "enabled")
     current = current or {}
     provider = str(value.get("provider", current.get("provider", "codex"))).strip().lower()
     model = _clean_token(value.get("model", current.get("model", "")), "model", maximum=80)
@@ -253,9 +255,13 @@ def _sanitize_thesis_monitor_settings(
             maximum=12,
         )
     if "preopen_enabled" in value:
-        clean["preopen_enabled"] = bool(value["preopen_enabled"])
+        clean["preopen_enabled"] = _strict_bool(
+            value["preopen_enabled"], "preopen_enabled"
+        )
     if "material_event_enabled" in value:
-        clean["material_event_enabled"] = bool(value["material_event_enabled"])
+        clean["material_event_enabled"] = _strict_bool(
+            value["material_event_enabled"], "material_event_enabled"
+        )
     if "debounce_minutes" in value:
         clean["debounce_minutes"] = _bounded_int(
             value["debounce_minutes"], "debounce_minutes", minimum=1, maximum=240
@@ -276,7 +282,7 @@ def _sanitize_research_x(value: Any) -> dict[str, Any]:
         raise ValueError("x settings must be an object")
     clean: dict[str, Any] = {}
     if "enabled" in value:
-        clean["enabled"] = bool(value["enabled"])
+        clean["enabled"] = _strict_bool(value["enabled"], "enabled")
     if "list_id" in value:
         clean["list_id"] = _clean_token(value["list_id"], "list_id", maximum=64)
     if "priority_handles" in value:
@@ -300,7 +306,7 @@ def _sanitize_research_news(value: Any) -> dict[str, Any]:
         raise ValueError("news settings must be an object")
     clean: dict[str, Any] = {}
     if "enabled" in value:
-        clean["enabled"] = bool(value["enabled"])
+        clean["enabled"] = _strict_bool(value["enabled"], "enabled")
     if "providers" in value:
         clean["providers"] = _clean_str_list(
             value["providers"], "providers", max_items=20
@@ -319,7 +325,7 @@ def _sanitize_research_blogs(
         raise ValueError("blogs settings must be an object")
     clean: dict[str, Any] = {}
     if "enabled" in value:
-        clean["enabled"] = bool(value["enabled"])
+        clean["enabled"] = _strict_bool(value["enabled"], "enabled")
     if "substack_urls" in value:
         urls = _clean_str_list(
             value["substack_urls"], "substack_urls", max_items=50
@@ -393,6 +399,18 @@ def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
     if parsed < minimum or parsed > maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return parsed
+
+
+def _strict_bool(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    raise ValueError(f"{name} must be a boolean")
 
 
 __all__ = [

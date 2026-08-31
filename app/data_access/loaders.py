@@ -488,7 +488,11 @@ def load_portfolio_scope_data(
     }
     detail_names = tuple(name for name in tables_for_scope("portfolio") if name != "portfolio")
     page_offset = max(0, int(offset or 0))
-    page_limit = max(1, int(limit)) if limit is not None else 80
+    page_limit = (
+        max(1, int(limit))
+        if limit is not None
+        else max(1, len(seed.rows("portfolio")))
+    )
     page_symbols = {
         str(row.get("symbol") or row.get("ticker") or "").strip().upper()
         for row in seed.rows("portfolio")[page_offset : page_offset + page_limit]

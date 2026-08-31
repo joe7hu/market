@@ -165,6 +165,27 @@ def test_agent_setting_update_preserves_non_editable_fields() -> None:
     assert result["pricing"] == current["pricing"]
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(True, True), ("true", True), ("1", True), (False, False), ("false", False), ("0", False)],
+)
+def test_settings_boolean_values_are_parsed_strictly(value: object, expected: bool) -> None:
+    agents = apply_agent_settings_update(
+        {}, {"option_agent": {"enabled": value, "context_sources": {"news": value}}}
+    )
+    sources = apply_research_sources_update({}, {"news": {"enabled": value}})
+
+    assert agents["option_agent"]["enabled"] is expected
+    assert agents["option_agent"]["context_sources"]["news"] is expected
+    assert sources["news"]["enabled"] is expected
+
+
+@pytest.mark.parametrize("value", ["disabled", 0, 1, None, []])
+def test_settings_boolean_values_reject_ambiguous_types(value: object) -> None:
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        apply_agent_settings_update({}, {"option_agent": {"enabled": value}})
+
+
 def test_research_setting_update_rejects_private_and_dns_resolved_hosts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
