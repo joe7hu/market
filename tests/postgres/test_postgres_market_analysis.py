@@ -1941,7 +1941,8 @@ def test_historical_market_publication_omits_future_catalog_and_membership_rows(
     runtime.open()
     try:
         symbols = (
-            "PITPOS", "PITWATCH", "PITFUTI", "PITNOISY", "PITFUTP", "PITFUTW", "PITREVW",
+            "PITPOS", "PITWATCH", "PITFUTI", "PITNOISY", "PITFUTP", "PITPROJ", "PITCLOSED",
+            "PITFUTW", "PITREVW",
         )
         cutoff = datetime.now(UTC) + timedelta(minutes=1)
         before = cutoff - timedelta(days=1)
@@ -1966,13 +1967,36 @@ def test_historical_market_publication_omits_future_catalog_and_membership_rows(
                 ).fetchall()
             }
             connection.execute(
-                "INSERT INTO app.portfolio_position (instrument_id, quantity, updated_at) VALUES "
-                "(%s, 1, %s), (%s, 1, %s), (%s, 1, %s), (%s, 1, %s)",
+                """
+                INSERT INTO app.portfolio_transaction
+                    (instrument_id, transaction_type, quantity, price, amount,
+                     executed_at, created_at, idempotency_key)
+                VALUES
+                    (%s, 'opening_balance', 1, 10, 10, %s, %s, 'market-pit-position'),
+                    (%s, 'buy', 1, 11, 11, %s, %s, 'market-pit-later-buy'),
+                    (%s, 'opening_balance', 1, 10, 10, %s, %s, 'market-pit-noisy'),
+                    (%s, 'opening_balance', 1, 10, 10, %s, %s, 'market-pit-future'),
+                    (%s, 'opening_balance', 1, 10, 10, %s, %s, 'market-pit-closed-open'),
+                    (%s, 'sell', 1, 10, 10, %s, %s, 'market-pit-closed-sell')
+                """,
                 [
-                    ids["PITPOS"], before,
-                    ids["PITFUTI"], before,
-                    ids["PITNOISY"], before,
+                    ids["PITPOS"], before, before,
+                    ids["PITPOS"], after, after,
+                    ids["PITNOISY"], before, before,
+                    ids["PITFUTP"], after, after,
+                    ids["PITCLOSED"], before - timedelta(hours=1), before - timedelta(hours=1),
+                    ids["PITCLOSED"], before, before,
+                ],
+            )
+            connection.execute(
+                """
+                INSERT INTO app.portfolio_position (instrument_id, quantity, updated_at)
+                VALUES (%s, 2, %s), (%s, 1, %s), (%s, 1, %s)
+                """,
+                [
+                    ids["PITPOS"], after,
                     ids["PITFUTP"], after,
+                    ids["PITPROJ"], before,
                 ],
             )
             connection.execute(

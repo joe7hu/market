@@ -28,6 +28,7 @@ from investment_panel.core.decision import (
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars, completed_trading_dates
 from investment_panel.database.fundamental_history import hydrate_history
+from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -80,28 +81,32 @@ def refresh_market_publication(
     # Instrument and source updated_at values are maintenance timestamps touched by
     # idempotent registration. Membership timestamps are semantic and safe to gate.
     with runtime.read() as connection:
+        owned_instrument_ids = (
+            {
+                int(row["instrument_id"])
+                for row in replay_portfolio_at(None, as_of, connection=connection)["positions"]
+            }
+            if benchmark_symbols is None
+            else set()
+        )
         instrument_rows = [
             dict(row)
             for row in connection.execute(
                 """
                 SELECT instrument.id, instrument.symbol, instrument.name, instrument.asset_class,
                        EXISTS (
-                           SELECT 1 FROM app.portfolio_position position
-                           WHERE position.instrument_id = instrument.id
-                             AND position.updated_at <= %s
-                       ) OR EXISTS (
                            SELECT 1 FROM app.watchlist_item watchlist
                            WHERE watchlist.instrument_id = instrument.id
                              AND watchlist.created_at <= %s
                              AND watchlist.updated_at <= %s
                              AND watchlist.watch_state <> 'excluded'
-                       ) AS persisted_market_member
+                       ) AS persisted_watchlist_member
                 FROM catalog.instrument instrument
                 WHERE instrument.created_at <= %s
                   AND (instrument.delisted_at IS NULL OR instrument.delisted_at > %s)
                 ORDER BY symbol
                 """,
-                [as_of, as_of, as_of, as_of, as_of],
+                [as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         explicit_benchmark = (
@@ -113,7 +118,10 @@ def refresh_market_publication(
             row["market_benchmark_member"] = (
                 str(row.get("symbol") or "").upper() in explicit_benchmark
                 if explicit_benchmark is not None
-                else bool(row.get("persisted_market_member"))
+                else (
+                    int(row["id"]) in owned_instrument_ids
+                    or bool(row.get("persisted_watchlist_member"))
+                )
             )
         bars_by_id = confirmed_daily_bars(
             connection,
