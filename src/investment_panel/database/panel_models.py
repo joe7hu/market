@@ -25,7 +25,7 @@ from investment_panel.database.current_quotes import current_quote_rows
 from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
 from investment_panel.database.runtime import API_PROFILE, RuntimeProfile
 
-__all__ = ["load_postgres_tables", "today_missing_plan_candidate_pages"]
+__all__ = ["load_postgres_tables", "today_authority_pages"]
 RECOVERY_MODELS = frozenset({
     "option_recovery_funnel", "option_recovery_event", "option_recovery_opportunity",
     "option_recovery_family_performance", "option_recovery_agent_provenance", "option_recovery_health",
@@ -49,6 +49,25 @@ RESEARCH_PACKETS_BASE_QUERY = """
 # Keep the seam stable for test callers while implementation ownership stays in
 # the focused publication module.
 _published_tables = published_tables
+
+TODAY_ACTION_ORDER_SQL = """
+    CASE
+      WHEN opportunity_rank->>'trade_rank' ~ '^[1-9][0-9]*$'
+       AND length(opportunity_rank->>'trade_rank') <= 9
+       AND pg_input_is_valid(opportunity_rank->>'trade_rank', 'integer')
+      THEN (opportunity_rank->>'trade_rank')::integer
+    END ASC NULLS LAST,
+    CASE
+      WHEN opportunity_rank->>'research_rank' ~ '^[1-9][0-9]*$'
+       AND length(opportunity_rank->>'research_rank') <= 9
+       AND pg_input_is_valid(opportunity_rank->>'research_rank', 'integer')
+      THEN (opportunity_rank->>'research_rank')::integer
+    END ASC NULLS LAST,
+    ticker,
+    as_of DESC,
+    published_at DESC,
+    ticker_decision_id DESC
+"""
 
 
 DIRECT_QUERIES: dict[str, str] = {
@@ -303,7 +322,7 @@ DIRECT_QUERIES: dict[str, str] = {
           AND opportunity_authority_count = 1
         ORDER BY as_of DESC, published_at DESC, created_at DESC, ticker_decision_id DESC
     """,
-    "today_ticker_actions": """
+    "today_ticker_actions": f"""
         WITH current_candidates AS (
             SELECT decision.id::text AS ticker_decision_id,
                    instrument.symbol AS ticker, instrument.symbol,
@@ -373,24 +392,7 @@ DIRECT_QUERIES: dict[str, str] = {
                      AND COALESCE(capital_action->>'owned', 'false') <> 'true'
                ) OVER () AS missing_plan_count
         FROM current_authority
-        ORDER BY
-          CASE
-            WHEN opportunity_rank->>'trade_rank' ~ '^[1-9][0-9]*$'
-             AND length(opportunity_rank->>'trade_rank') <= 9
-             AND pg_input_is_valid(opportunity_rank->>'trade_rank', 'integer')
-            THEN (opportunity_rank->>'trade_rank')::integer
-          END ASC NULLS LAST,
-          CASE
-            WHEN opportunity_rank->>'research_rank' ~ '^[1-9][0-9]*$'
-             AND length(opportunity_rank->>'research_rank') <= 9
-             AND pg_input_is_valid(opportunity_rank->>'research_rank', 'integer')
-            THEN (opportunity_rank->>'research_rank')::integer
-          END ASC NULLS LAST,
-          ticker,
-          as_of DESC,
-          published_at DESC,
-          created_at DESC,
-          ticker_decision_id DESC
+        ORDER BY {TODAY_ACTION_ORDER_SQL}
     """,
     "ticker_outcomes": """
         SELECT outcome.ticker_decision_id::text, instrument.symbol AS ticker,
@@ -824,18 +826,73 @@ DIRECT_QUERIES: dict[str, str] = {
 DIRECT_QUERIES.update({**SOURCE_QUERIES, **EVENT_DIRECT_QUERIES})
 
 
-def today_missing_plan_candidate_pages(
+def today_authority_pages(
     config: AppConfig,
     *,
+    decision_prefix_limit: int = 100,
+    rank_prefix_limit: int = 3,
+    plan_prefix_limit: int = 3,
     batch_size: int = 25,
 ) -> Iterable[list[dict[str, Any]]]:
-    """Stream only object-plan rows that can change the missing-plan count."""
+    """Stream bounded Today pages, counts, and validation from one snapshot."""
 
+    safe_decision_limit = max(100, min(int(decision_prefix_limit), 10_003))
+    safe_rank_limit = max(1, min(int(rank_prefix_limit), 10_003))
+    safe_plan_limit = max(1, min(int(plan_prefix_limit), 10_003))
     safe_batch_size = max(1, min(int(batch_size), 100))
     query = f"""
-        SELECT ticker_decision_id, ticker, decision_revision,
-               opportunity_episode_id,
+        WITH positioned_actions AS (
+            SELECT current_today_actions.*,
+                   row_number() OVER (
+                       ORDER BY {TODAY_ACTION_ORDER_SQL}
+                   ) AS decision_position,
+                   count(*) FILTER (
+                       WHERE jsonb_typeof(opportunity_rank) = 'object'
+                   ) OVER (
+                       ORDER BY {TODAY_ACTION_ORDER_SQL}
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                   ) AS opportunity_rank_position,
+                   count(*) FILTER (
+                       WHERE jsonb_typeof(trade_plan) = 'object'
+                   ) OVER (
+                       ORDER BY {TODAY_ACTION_ORDER_SQL}
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                   ) AS trade_plan_position,
+                   count(*) OVER () AS ticker_decision_count
+            FROM ({DIRECT_QUERIES["today_ticker_actions"]}) AS current_today_actions
+        )
+        SELECT decision_position, ticker_decision_count,
+               opportunity_rank_count, trade_plan_count, missing_plan_count,
+               CASE WHEN decision_position <= {safe_decision_limit}
+                    THEN CASE WHEN decision_position <= 100
+                         THEN to_jsonb(positioned_actions)
+                         ELSE to_jsonb(positioned_actions) - ARRAY[
+                             'data_requests', 'expressions', 'fundamental', 'input_manifest',
+                             'learning_history', 'market_state_snapshot', 'opportunity_episode',
+                             'opportunity_rank', 'portfolio_impacts', 'resolution', 'risk_policy',
+                             'risk_policy_snapshot', 'tactical', 'trade_plan'
+                         ] END - ARRAY[
+                             'decision_position', 'opportunity_rank_position',
+                             'trade_plan_position', 'ticker_decision_count',
+                             'opportunity_rank_count', 'trade_plan_count', 'missing_plan_count'
+                         ] END AS ticker_decision,
                CASE WHEN jsonb_typeof(opportunity_rank) = 'object'
+                          AND opportunity_rank_position <= {safe_rank_limit}
+                    THEN opportunity_rank - ARRAY[
+                        'eligible_universe', 'input_lineage', 'utility'
+                    ] END AS opportunity_rank_page,
+               CASE WHEN jsonb_typeof(trade_plan) = 'object'
+                          AND trade_plan_position <= {safe_plan_limit}
+                    THEN trade_plan - ARRAY[
+                        'input_lineage', 'portfolio_impact', 'selected_expression'
+                    ] END AS trade_plan_page,
+               ticker, decision_revision, opportunity_episode_id,
+               CASE WHEN COALESCE(capital_action->>'owned', 'false') <> 'true'
+                          AND jsonb_typeof(opportunity_rank) = 'object'
+                          AND (
+                              jsonb_typeof(trade_plan) = 'object'
+                              OR opportunity_rank->>'research_rank' IS NOT NULL
+                          )
                     THEN jsonb_build_object(
                         'ticker', opportunity_rank->'ticker',
                         'symbol', opportunity_rank->'symbol',
@@ -847,28 +904,34 @@ def today_missing_plan_candidate_pages(
                         'selected_expression_identity', opportunity_rank->'selected_expression_identity',
                         'portfolio_impact_id', opportunity_rank->'portfolio_impact_id',
                         'market_state_publication_id', opportunity_rank->'market_state_publication_id'
-                    ) END AS opportunity_rank,
-               CASE WHEN jsonb_typeof(opportunity_rank) = 'object'
+                    ) END AS validation_rank,
+               CASE WHEN COALESCE(capital_action->>'owned', 'false') <> 'true'
+                          AND jsonb_typeof(opportunity_rank) = 'object'
                           AND opportunity_rank->>'research_rank' IS NULL
-                    THEN trade_plan END AS trade_plan,
-               jsonb_typeof(opportunity_rank) IS DISTINCT FROM 'object'
+                          AND jsonb_typeof(trade_plan) = 'object'
+                    THEN trade_plan END AS validation_plan,
+               COALESCE(capital_action->>'owned', 'false') <> 'true'
+                   AND jsonb_typeof(opportunity_rank) IS DISTINCT FROM 'object'
+                   AND jsonb_typeof(trade_plan) = 'object'
                    AS invalid_without_rank,
-               opportunity_rank->>'research_rank' IS NOT NULL
-                   AS raw_research_rank_present
-        FROM ({DIRECT_QUERIES["today_ticker_actions"]}) AS current_today_actions
-        WHERE (
-              jsonb_typeof(trade_plan) = 'object'
-              OR (
-                  jsonb_typeof(opportunity_rank) = 'object'
-                  AND opportunity_rank->>'research_rank' IS NOT NULL
-              )
-          )
-          AND COALESCE(capital_action->>'owned', 'false') <> 'true'
-        ORDER BY ticker_decision_id
+               COALESCE(capital_action->>'owned', 'false') <> 'true'
+                   AND jsonb_typeof(opportunity_rank) = 'object'
+                   AND opportunity_rank->>'research_rank' IS NOT NULL
+                   AS raw_research_rank_present,
+               COALESCE(capital_action->>'owned', 'false') <> 'true'
+                   AND (
+                       jsonb_typeof(trade_plan) = 'object'
+                       OR (
+                           jsonb_typeof(opportunity_rank) = 'object'
+                           AND opportunity_rank->>'research_rank' IS NOT NULL
+                       )
+                   ) AS needs_missing_plan_validation
+        FROM positioned_actions
+        ORDER BY decision_position
     """
     runtime = runtime_for_config(config)
     with runtime.snapshot(API_PROFILE) as connection:
-        with connection.cursor(name="today_missing_plan_validity") as cursor:
+        with connection.cursor(name="today_authority") as cursor:
             cursor.execute(query)
             while rows := cursor.fetchmany(safe_batch_size):
                 yield [dict(row) for row in rows]

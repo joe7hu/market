@@ -10,7 +10,12 @@ from app.data_access.payloads import panel_snapshot_payload
 from conftest import typed_config
 from investment_panel.core.decision import build_ticker_decision
 from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.panel_models import MODEL_ALIASES, QUERY_POLICIES, load_postgres_tables
+from investment_panel.database.panel_models import (
+    MODEL_ALIASES,
+    QUERY_POLICIES,
+    load_postgres_tables,
+    today_authority_pages,
+)
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 
@@ -229,6 +234,82 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
             "opportunity_rank_count" not in row and "trade_plan_count" not in row
             for row in panel.rows("ticker_decisions")
         )
+
+        sparse_panel = load_panel_scope_data(config, "today", offset=100, limit=1)
+        sparse_snapshot = panel_snapshot_payload(sparse_panel, "today", offset=100, limit=1)
+
+        assert len(sparse_panel.rows("ticker_decisions")) == 101
+        assert len(sparse_panel.rows("opportunity_rank")) == 101
+        assert len(sparse_panel.rows("trade_plan")) == 101
+        assert sparse_snapshot["tables"]["ticker_decisions"]["rows"][0]["ticker"] == symbols[104]
+        assert sparse_snapshot["tables"]["opportunity_rank"]["rows"][0]["ticker"] == "WRONG"
+        assert sparse_snapshot["tables"]["trade_plan"]["rows"][0]["present"] == "malformed-outside-sample"
+        assert {
+            name: sparse_snapshot["tables"][name]["count"]
+            for name in ("ticker_decisions", "opportunity_rank", "trade_plan")
+        } == {"ticker_decisions": 105, "opportunity_rank": 101, "trade_plan": 102}
+    finally:
+        runtime.close()
+
+
+def test_today_authority_cursor_keeps_base_and_correction_in_one_snapshot(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    prefix = f"TS{uuid4().hex[:7].upper()}"
+    as_of = datetime.now(UTC) - timedelta(minutes=1)
+    try:
+        published_ids: list[str] = []
+        for suffix in ("A", "B"):
+            symbol = f"{prefix}{suffix}"
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity')",
+                    [symbol, symbol],
+                )
+            decision = build_ticker_decision(
+                symbol,
+                {"decision_queue": [{
+                    "symbol": symbol,
+                    "stance": "NEUTRAL",
+                    "available_at": (as_of - timedelta(minutes=1)).isoformat(),
+                }]},
+                as_of=as_of,
+            )
+            published_ids.append(TickerDecisionRepository(runtime).publish(decision)["ticker_decision_id"])
+        with runtime.transaction() as connection:
+            manifest = dict(connection.execute(
+                "SELECT input_manifest FROM analysis.ticker_decision WHERE id = %s::uuid",
+                [published_ids[1]],
+            ).fetchone()["input_manifest"])
+            manifest["trade_plan"] = {"present": "before-cursor-mutation"}
+            connection.execute(
+                "UPDATE analysis.ticker_decision SET input_manifest = %s WHERE id = %s::uuid",
+                [Jsonb(manifest), published_ids[1]],
+            )
+
+        pages = today_authority_pages(
+            typed_config(migrated_postgres_dsn),
+            decision_prefix_limit=100,
+            rank_prefix_limit=3,
+            plan_prefix_limit=3,
+            batch_size=1,
+        )
+        first_page = next(pages)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE analysis.ticker_decision "
+                "SET input_manifest = input_manifest - 'trade_plan' WHERE id = %s::uuid",
+                [published_ids[1]],
+            )
+        rows = [*first_page, *(row for page in pages for row in page)]
+
+        assert {row["missing_plan_count"] for row in rows} == {1}
+        mutated_row = next(row for row in rows if row["ticker"] == f"{prefix}B")
+        assert mutated_row["invalid_without_rank"] is True
+        assert mutated_row["trade_plan_page"]["present"] == "before-cursor-mutation"
+        assert rows[0]["missing_plan_count"] + sum(row["invalid_without_rank"] for row in rows) == 2
     finally:
         runtime.close()
 

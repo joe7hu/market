@@ -454,6 +454,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
         tables["trade_plan"].append(plan_payload)
 
     calls: list[dict[str, int]] = []
+    authority_calls: list[dict[str, int]] = []
 
     def fake_load(_config, table_names, **options):
         limits = dict(options.get("query_row_limits") or {})
@@ -473,8 +474,18 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
             "unavailable_models": [],
         }
 
+    def fake_authority(_config, **limits):
+        authority_calls.append(limits)
+        return (
+            list(tables["ticker_decisions"]),
+            list(tables["opportunity_rank"]),
+            list(tables["trade_plan"]),
+            {"ticker_decisions": 5, "opportunity_rank": 5, "trade_plan": 5},
+            7,
+        )
+
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_load)
-    monkeypatch.setattr(loaders_owner, "_today_missing_plan_correction_count", lambda _config: 0)
+    monkeypatch.setattr(loaders_owner, "_load_today_authority", fake_authority)
     panel = loaders_owner.load_panel_scope_data(object(), "today")
     panel.tables["opportunity_rank"].reverse()
     panel.tables["trade_plan"].reverse()
@@ -487,7 +498,12 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     snapshot = payloads_owner.panel_snapshot_payload(panel, "today")
 
     query = QUERY_POLICIES["today_ticker_actions"].query
-    assert calls == [{"today_ticker_actions": 100}]
+    assert calls == [{}]
+    assert authority_calls == [{
+        "decision_prefix_limit": 100,
+        "rank_prefix_limit": 3,
+        "plan_prefix_limit": 3,
+    }]
     assert "decision.market_state_snapshot" not in query
     assert "decision.portfolio_impacts" not in query
     assert "decision.tactical" not in query
@@ -534,11 +550,11 @@ def test_today_plan_validation_count_failure_is_fail_closed(
             "unavailable_models": [],
         }
 
-    def fail_count(_config):
+    def fail_authority(_config, **_limits):
         raise RuntimeError("statement timeout")
 
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_load)
-    monkeypatch.setattr(loaders_owner, "_today_missing_plan_correction_count", fail_count)
+    monkeypatch.setattr(loaders_owner, "_load_today_authority", fail_authority)
 
     panel = loaders_owner.load_panel_scope_data(object(), "today")
     monkeypatch.setattr(panel_router.panel_owner, "context", lambda **_kwargs: (None, panel))
@@ -549,7 +565,7 @@ def test_today_plan_validation_count_failure_is_fail_closed(
 
     assert panel.status.ready is False
     assert panel.status.source == "postgresql-error"
-    assert "Today plan validation unavailable" in panel.status.message
+    assert "Today authority unavailable" in panel.status.message
     assert all(panel.rows(name) == [] for name in panel.tables)
     assert set(panel.metadata["table_counts"].values()) == {0}
     assert response["status"]["ready"] is False

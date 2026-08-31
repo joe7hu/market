@@ -16,7 +16,7 @@ from investment_panel.core.panel import (
 )
 from investment_panel.database.panel_models import (
     load_postgres_tables,
-    today_missing_plan_candidate_pages,
+    today_authority_pages,
 )
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
@@ -107,21 +107,71 @@ def today_plan_for_row(
         return None
 
 
-def _today_missing_plan_correction_count(config: AppConfig) -> int:
-    invalid_plan_count = 0
-    for page in today_missing_plan_candidate_pages(config):
+def _load_today_authority(
+    config: AppConfig,
+    *,
+    decision_prefix_limit: int,
+    rank_prefix_limit: int,
+    plan_prefix_limit: int,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, int],
+    int,
+]:
+    decisions: list[dict[str, Any]] = []
+    ranks: list[dict[str, Any]] = []
+    plans: list[dict[str, Any]] = []
+    counts = {"ticker_decisions": 0, "opportunity_rank": 0, "trade_plan": 0}
+    base_missing_plan_count = 0
+    correction_count = 0
+    for page in today_authority_pages(
+        config,
+        decision_prefix_limit=decision_prefix_limit,
+        rank_prefix_limit=rank_prefix_limit,
+        plan_prefix_limit=plan_prefix_limit,
+    ):
         for row in page:
+            counts = {
+                "ticker_decisions": int(row.get("ticker_decision_count") or 0),
+                "opportunity_rank": int(row.get("opportunity_rank_count") or 0),
+                "trade_plan": int(row.get("trade_plan_count") or 0),
+            }
+            base_missing_plan_count = int(row.get("missing_plan_count") or 0)
+            decision = row.get("ticker_decision")
+            if isinstance(decision, dict):
+                decisions.append(dict(decision))
+            rank_page = row.get("opportunity_rank_page")
+            if isinstance(rank_page, dict):
+                rank = dict(rank_page)
+                ranking_publication_id = str(rank.get("ranking_publication_id") or "")
+                if ranking_publication_id and not rank.get("publication_id"):
+                    rank["publication_id"] = ranking_publication_id
+                ranks.append(rank)
+            plan_page = row.get("trade_plan_page")
+            if isinstance(plan_page, dict):
+                plans.append(dict(plan_page))
+            if row.get("needs_missing_plan_validation") is not True:
+                continue
             if row.get("invalid_without_rank") is True:
-                invalid_plan_count += 1
+                correction_count += 1
                 continue
             symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
-            rank = today_rank_for_row(row, [], symbol)
+            validation_row = {
+                "ticker": row.get("ticker"),
+                "decision_revision": row.get("decision_revision"),
+                "opportunity_episode_id": row.get("opportunity_episode_id"),
+                "opportunity_rank": row.get("validation_rank"),
+                "trade_plan": row.get("validation_plan"),
+            }
+            rank = today_rank_for_row(validation_row, [], symbol)
             if row.get("raw_research_rank_present") is True:
-                invalid_plan_count += rank is None
+                correction_count += rank is None
                 continue
-            plan = today_plan_for_row(row, [], rank, symbol)
-            invalid_plan_count += plan is None
-    return invalid_plan_count
+            plan = today_plan_for_row(validation_row, [], rank, symbol)
+            correction_count += plan is None
+    return decisions, ranks, plans, counts, base_missing_plan_count + correction_count
 
 
 def load_panel_data(
@@ -270,92 +320,55 @@ def load_panel_scope_data(
         if table in requested
     }
     if scope == "today":
-        compact_name = "today_ticker_actions"
         authority_names = {"ticker_decisions", "opportunity_rank", "trade_plan"}
-        authority_limit = min(
+        loaded = load_panel_data(
+            active_config,
+            table_names=tuple(name for name in requested if name not in authority_names),
+            query_row_limits={name: row_limit for name, row_limit in query_row_limits.items() if name not in authority_names},
+        )
+        decision_limit = min(
             SCOPED_TABLE_ROW_LIMITS[scope]["ticker_decisions"],
             requested_limit or SCOPED_TABLE_ROW_LIMITS[scope]["ticker_decisions"],
         )
-        loaded = load_panel_data(
-            active_config,
-            table_names=tuple(name for name in requested if name not in authority_names) + (compact_name,),
-            query_row_limits={
-                **{name: row_limit for name, row_limit in query_row_limits.items() if name not in authority_names},
-                compact_name: max(100, page_offset + authority_limit),
-            },
+        rank_limit = min(
+            SCOPED_TABLE_ROW_LIMITS[scope]["opportunity_rank"],
+            requested_limit or SCOPED_TABLE_ROW_LIMITS[scope]["opportunity_rank"],
         )
-        action_rows = loaded.rows(compact_name)
-        exact_missing_plan_count: int | None = 0 if not action_rows and loaded.status.ready else None
-        exact_authority_counts: dict[str, int] = (
-            {"opportunity_rank": 0, "trade_plan": 0}
-            if not action_rows and loaded.status.ready
-            else {}
+        plan_limit = min(
+            SCOPED_TABLE_ROW_LIMITS[scope]["trade_plan"],
+            requested_limit or SCOPED_TABLE_ROW_LIMITS[scope]["trade_plan"],
         )
-        authority_count_fields = {
-            "opportunity_rank": "opportunity_rank_count",
-            "trade_plan": "trade_plan_count",
-        }
-        decisions: list[dict[str, Any]] = []
-        ranks: list[dict[str, Any]] = []
-        plans: list[dict[str, Any]] = []
-        for raw in action_rows:
-            decision = dict(raw)
-            count = decision.pop("missing_plan_count", None)
-            if (
-                exact_missing_plan_count is None
-                and isinstance(count, int)
-                and not isinstance(count, bool)
-                and count >= 0
-            ):
-                exact_missing_plan_count = count
-            for table_name, field_name in authority_count_fields.items():
-                authority_count = decision.pop(field_name, None)
-                if (
-                    table_name not in exact_authority_counts
-                    and isinstance(authority_count, int)
-                    and not isinstance(authority_count, bool)
-                    and authority_count >= 0
-                ):
-                    exact_authority_counts[table_name] = authority_count
-            rank = decision.get("opportunity_rank")
-            if isinstance(rank, dict):
-                rank = dict(rank)
-                ranking_publication_id = str(rank.get("ranking_publication_id") or "")
-                if ranking_publication_id and not rank.get("publication_id"):
-                    rank["publication_id"] = ranking_publication_id
-                decision["opportunity_rank"] = rank
-                ranks.append(rank)
-            plan = decision.get("trade_plan")
-            if isinstance(plan, dict):
-                plan = dict(plan)
-                decision["trade_plan"] = plan
-                plans.append(plan)
-            decisions.append(decision)
-        if loaded.status.ready and action_rows:
-            if exact_missing_plan_count is None:
-                count_error: Exception | None = RuntimeError("Today missing-plan count is unavailable")
-            else:
-                try:
-                    exact_missing_plan_count += _today_missing_plan_correction_count(active_config)
-                except Exception as exc:
-                    count_error = exc
-                else:
-                    count_error = None
-            if count_error is not None:
+        if loaded.status.ready:
+            try:
+                decisions, ranks, plans, exact_authority_counts, exact_missing_plan_count = _load_today_authority(
+                    active_config,
+                    decision_prefix_limit=max(100, page_offset + decision_limit),
+                    rank_prefix_limit=page_offset + rank_limit,
+                    plan_prefix_limit=page_offset + plan_limit,
+                )
+            except Exception as exc:
                 return PanelData(
                     status=DataStatus(
                         False,
-                        f"PostgreSQL Today plan validation unavailable: {count_error}",
+                        f"PostgreSQL Today authority unavailable: {exc}",
                         "postgresql-error",
                     ),
                     tables={name: [] for name in requested},
                     metadata={
                         "database": "postgresql",
-                        "error": str(count_error),
+                        "error": str(exc),
                         "table_count": len(requested),
                         "table_counts": {name: 0 for name in requested},
                     },
                 )
+        else:
+            decisions, ranks, plans = [], [], []
+            exact_authority_counts = {
+                "ticker_decisions": 0,
+                "opportunity_rank": 0,
+                "trade_plan": 0,
+            }
+            exact_missing_plan_count = 0
         tables = {name: loaded.rows(name) for name in requested}
         tables.update({
             "ticker_decisions": decisions,
@@ -363,9 +376,6 @@ def load_panel_scope_data(
             "trade_plan": plans,
         })
         table_counts = dict(loaded.metadata.get("table_counts") or {})
-        action_count = table_counts.get(compact_name)
-        if isinstance(action_count, int) and not isinstance(action_count, bool):
-            table_counts["ticker_decisions"] = action_count
         table_counts.update(exact_authority_counts)
         metadata = {
             **loaded.metadata,
@@ -373,8 +383,7 @@ def load_panel_scope_data(
             "table_counts": table_counts,
             "today_action_input_count": len(decisions),
         }
-        if exact_missing_plan_count is not None:
-            metadata["today_missing_plan_count"] = exact_missing_plan_count
+        metadata["today_missing_plan_count"] = exact_missing_plan_count
         return PanelData(
             status=loaded.status,
             tables=tables,
