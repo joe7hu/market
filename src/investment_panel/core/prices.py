@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import pandas as pd
@@ -92,21 +93,38 @@ def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
         raise ValueError(f"No Yahoo chart result for {symbol}")
     timestamps = result.get("timestamp") or []
     quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+    metadata = result.get("meta") or {}
+    try:
+        market_timezone = ZoneInfo(str(metadata.get("exchangeTimezoneName") or "UTC"))
+    except ZoneInfoNotFoundError:
+        market_timezone = ZoneInfo("UTC")
+    requested_at = datetime.fromtimestamp(end, UTC)
+    market_date = requested_at.astimezone(market_timezone).date()
+    regular_session_end = (
+        ((metadata.get("currentTradingPeriod") or {}).get("regular") or {}).get("end")
+    )
     rows = []
     for index, ts in enumerate(timestamps):
         close = value_at(quote.get("close"), index)
         if close is None:
             continue
+        trading_date = datetime.fromtimestamp(ts, UTC).astimezone(market_timezone).date()
+        is_complete = trading_date < market_date or (
+            trading_date == market_date
+            and regular_session_end is not None
+            and end >= int(regular_session_end)
+        )
         rows.append(
             {
                 "symbol": symbol,
-                "date": pd.to_datetime(ts, unit="s").date(),
+                "date": trading_date,
                 "open": value_at(quote.get("open"), index) or close,
                 "high": value_at(quote.get("high"), index) or close,
                 "low": value_at(quote.get("low"), index) or close,
                 "close": close,
                 "volume": value_at(quote.get("volume"), index) or 0.0,
                 "source": f"yahoo-chart:{provider_symbol}" if provider_symbol != symbol else "yahoo-chart",
+                "is_complete": is_complete,
             }
         )
     if not rows:
@@ -157,6 +175,7 @@ def fetch_coingecko_ohlc(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
                 "close": float(close),
                 "volume": float(volumes.get(day, 0.0)),
                 "source": "coingecko-market-chart",
+                "is_complete": day < datetime.now(UTC).date(),
             }
         )
         previous = close

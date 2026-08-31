@@ -164,6 +164,44 @@ def test_market_publication_builds_visible_models_from_normalized_quotes(migrate
         runtime.close()
 
 
+def test_market_publication_uses_the_exact_refreshed_equity_benchmark(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES "
+                "('IN-SCOPE', 'In scope', 'equity'), ('OUT-SCOPE', 'Out of scope', 'equity')"
+            )
+
+        refresh_market_publication(
+            runtime,
+            now=datetime.now(UTC),
+            benchmark_symbols=["IN-SCOPE"],
+        )
+
+        snapshot = MarketStateSnapshot.model_validate(
+            AnalysisRepository(runtime).publication_rows("market", "market_state_snapshot")[0]
+        )
+        price_state = next(
+            row
+            for row in snapshot.coverage_matrix.rows
+            if row.horizon == "1-5 trading days" and row.dimension == "equity internals"
+        )
+        corporate_state = next(
+            row
+            for row in snapshot.coverage_matrix.rows
+            if row.horizon == "3-12 months" and row.dimension == "corporate cycle"
+        )
+        assert price_state.eligible_member_count == 1
+        assert price_state.missing_member_count == 1
+        assert corporate_state.eligible_member_count == 1
+    finally:
+        runtime.close()
+
+
 def test_market_crypto_volume_uses_fixed_utc_windows_and_lineage(
     migrated_postgres_dsn: str,
 ) -> None:

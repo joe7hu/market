@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from investment_panel.core import prices
 
 
@@ -53,3 +55,44 @@ def test_yahoo_alias_fetch_keeps_market_symbol(monkeypatch) -> None:
     assert requested_urls == ["https://query1.finance.yahoo.com/v8/finance/chart/XYZ"]
     assert frame["symbol"].unique().tolist() == ["SQ"]
     assert frame["source"].unique().tolist() == ["yahoo-chart:XYZ"]
+
+
+def test_yahoo_current_daily_row_is_marked_provisional_until_session_close(monkeypatch) -> None:
+    now = int(datetime.now(UTC).timestamp())
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "chart": {"result": [{
+                    "meta": {
+                        "exchangeTimezoneName": "America/New_York",
+                        "currentTradingPeriod": {"regular": {"end": now + 3_600}},
+                    },
+                    "timestamp": [now],
+                    "indicators": {"quote": [{
+                        "open": [10], "high": [12], "low": [9], "close": [11], "volume": [100],
+                    }]},
+                }]},
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def get(self, *_args, **_kwargs) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(prices.httpx, "Client", FakeClient)
+
+    frame = prices.fetch_yahoo_chart("QQQ", lookback_days=1)
+
+    assert not bool(frame.iloc[0]["is_complete"])

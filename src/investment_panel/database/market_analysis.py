@@ -67,7 +67,12 @@ _UNSUPPORTED_DIMENSIONS = {
 }
 
 
-def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None = None) -> dict[str, Any]:
+def refresh_market_publication(
+    runtime: DatabaseRuntime,
+    *,
+    now: datetime | None = None,
+    benchmark_symbols: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     as_of = now or datetime.now(UTC)
     if as_of.tzinfo is None:
         raise ValueError("market publication timestamp must be timezone-aware")
@@ -77,14 +82,38 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             dict(row)
             for row in connection.execute(
                 """
-                SELECT id, symbol, name, asset_class
-                FROM catalog.instrument
-                WHERE delisted_at IS NULL OR delisted_at > %s
+                SELECT instrument.id, instrument.symbol, instrument.name, instrument.asset_class,
+                       EXISTS (
+                           SELECT 1 FROM app.portfolio_position position
+                           WHERE position.instrument_id = instrument.id
+                       ) OR EXISTS (
+                           SELECT 1 FROM app.watchlist_item watchlist
+                           WHERE watchlist.instrument_id = instrument.id
+                             AND watchlist.watch_state <> 'excluded'
+                       ) AS persisted_market_member
+                FROM catalog.instrument instrument
+                WHERE instrument.delisted_at IS NULL OR instrument.delisted_at > %s
                 ORDER BY symbol
                 """,
                 [as_of],
             ).fetchall()
         ]
+        explicit_benchmark = (
+            {str(symbol).strip().upper() for symbol in benchmark_symbols if str(symbol).strip()}
+            if benchmark_symbols is not None
+            else None
+        )
+        has_persisted_benchmark = any(
+            row.get("persisted_market_member")
+            and str(row.get("asset_class") or "").lower() in {"equity", "etf"}
+            for row in instrument_rows
+        )
+        for row in instrument_rows:
+            row["market_benchmark_member"] = (
+                str(row.get("symbol") or "").upper() in explicit_benchmark
+                if explicit_benchmark is not None
+                else bool(row.get("persisted_market_member")) if has_persisted_benchmark else True
+            )
         bars_by_id = confirmed_daily_bars(
             connection,
             [int(row["id"]) for row in instrument_rows],
@@ -205,9 +234,13 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             "snapshot_id": snapshot.snapshot_id,
         },
     )
+    publication = analysis.publication_by_id("market", publication_id)
+    if publication is None or publication.get("published_at") is None:
+        raise RuntimeError("published MarketState is not visible in PostgreSQL")
     return {
         "status": "ok",
         "publication_id": str(publication_id),
+        "published_at": publication["published_at"],
         "assets": len(assets),
         "drivers": len(drivers),
         "valuation_series": len(references),
@@ -356,7 +389,11 @@ def _horizon_evidence(
     cutoff: datetime,
 ) -> dict[str, dict[str, Any]]:
     benchmark = sorted(
-        (row for row in instrument_rows if str(row.get("asset_class") or "").lower() in {"equity", "etf"}),
+        (
+            row for row in instrument_rows
+            if row.get("market_benchmark_member")
+            and str(row.get("asset_class") or "").lower() in {"equity", "etf"}
+        ),
         key=lambda row: str(row.get("symbol") or ""),
     )
     result: dict[str, dict[str, Any]] = {}
@@ -454,7 +491,11 @@ def _volatility_evidence(
     cutoff: datetime,
 ) -> dict[str, dict[str, Any]]:
     benchmark = sorted(
-        (row for row in instrument_rows if str(row.get("asset_class") or "").lower() in {"equity", "etf"}),
+        (
+            row for row in instrument_rows
+            if row.get("market_benchmark_member")
+            and str(row.get("asset_class") or "").lower() in {"equity", "etf"}
+        ),
         key=lambda row: str(row.get("symbol") or ""),
     )
     result: dict[str, dict[str, Any]] = {}
@@ -922,7 +963,11 @@ def _corporate_cycle_evidence(
     cutoff: datetime,
 ) -> dict[str, Any]:
     benchmark = sorted(
-        (row for row in instrument_rows if str(row.get("asset_class") or "").lower() == "equity"),
+        (
+            row for row in instrument_rows
+            if row.get("market_benchmark_member")
+            and str(row.get("asset_class") or "").lower() == "equity"
+        ),
         key=lambda row: str(row.get("symbol") or ""),
     )
     base = {

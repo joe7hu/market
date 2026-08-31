@@ -22,13 +22,14 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
     cutoff = datetime.now(UTC)
     options = refresh_options_radar.run_deterministic_only(config_path)
     market = refresh_market_publication(runtime, now=cutoff)
+    decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
         config_path,
-        as_of=cutoff,
+        as_of=decision_cutoff,
         market_state_publication_id=_market_state_publication_id(market),
     )
     outcomes = _refresh_option_outcomes(runtime, config)
-    today = refresh_today_publication(runtime, now=cutoff)
+    today = refresh_today_publication(runtime, now=decision_cutoff)
     status = "ok" if all(
         str(row.get("status")) == "ok"
         for row in (tickers, today, market)
@@ -102,14 +103,15 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
     cutoff = reference.astimezone(UTC)
     market = refresh_market_publication(runtime, now=cutoff)
+    decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
         config_path,
-        as_of=cutoff,
+        as_of=decision_cutoff,
         market_state_publication_id=_market_state_publication_id(market),
     )
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(
-        runtime, now=cutoff, use_agent_narrative=True,
+        runtime, now=decision_cutoff, use_agent_narrative=True,
         agent_model=config.agents.thesis_monitor.model,
         reasoning_effort=config.agents.thesis_monitor.reasoning_effort,
     )
@@ -164,6 +166,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
     config = load_config(config_path)
     publication_cutoff: datetime | None = None
     market_state_publication_id: str | None = None
+    market_state_visible_at: datetime | None = None
 
     def bounded_cutoff() -> datetime:
         nonlocal publication_cutoff
@@ -172,11 +175,12 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         return publication_cutoff
 
     def publish_market() -> dict[str, Any]:
-        nonlocal market_state_publication_id
+        nonlocal market_state_publication_id, market_state_visible_at
         result = refresh_market_publication(
             runtime_for_config(config), now=bounded_cutoff()
         )
         market_state_publication_id = _market_state_publication_id(result)
+        market_state_visible_at = _market_publication_cutoff(result, fallback=bounded_cutoff())
         return result
 
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
@@ -192,7 +196,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("market_publication", True, publish_market),
         ("ticker_decisions", True, lambda: ticker_decisions.publish(
             config_path,
-            as_of=bounded_cutoff(),
+            as_of=market_state_visible_at or bounded_cutoff(),
             market_state_publication_id=market_state_publication_id,
         )),
         (
@@ -203,7 +207,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("option_agents", True, lambda: run_option_agents.run(config_path)),
         ("thesis_monitor", False, lambda: run_thesis_monitor.run(config_path, trigger="preopen")),
         ("today_publication", True, lambda: refresh_today_publication(
-            runtime_for_config(config), now=bounded_cutoff()
+            runtime_for_config(config), now=market_state_visible_at or bounded_cutoff()
         )),
         ("retention", True, lambda: RetentionRepository(runtime_for_config(config)).prune()),
         ("database_snapshot", False, lambda: snapshot_database.run(config_path)),
@@ -251,6 +255,19 @@ def _market_state_publication_id(result: dict[str, Any]) -> str | None:
     if str(result.get("status") or "").lower() != "ok":
         return None
     return str(result.get("publication_id") or "") or None
+
+
+def _market_publication_cutoff(result: dict[str, Any], *, fallback: datetime) -> datetime:
+    """Use the first cutoff at which the exact Market publication is visible."""
+
+    value = result.get("published_at")
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not isinstance(value, datetime):
+        return max(fallback, datetime.now(UTC))
+    if value.tzinfo is None:
+        raise ValueError("market publication timestamp must be timezone-aware")
+    return max(fallback, value.astimezone(UTC))
 
 
 def main_publish() -> None:

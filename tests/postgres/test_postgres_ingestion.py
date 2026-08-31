@@ -260,17 +260,19 @@ def test_fundamental_observations_keep_quarter_and_year_to_date_rows(
     ]
 
 
-def test_current_provider_bar_preserves_effective_time_and_rejects_future_date(
+def test_current_provider_bar_requires_completion_and_rejects_future_date(
     repository: IngestionRepository,
 ) -> None:
     repository.register_source("current-prices", name="Current", family="market_data", kind="daily_bars")
     before = datetime.now(UTC)
     tokyo_date = before.astimezone(ZoneInfo("Asia/Tokyo")).date()
+    completed_date = tokyo_date - timedelta(days=1)
     run_id = repository.start_run("current-prices", "price_bars")
     stored = repository.store_price_bars(
         run_id,
         "current-prices",
         [
+            {"symbol": "7203.T", "date": completed_date.isoformat(), "close": 2990},
             {"symbol": "7203.T", "date": tokyo_date.isoformat(), "close": 3000},
             {"symbol": "QQQ", "date": (before.date() + timedelta(days=1)).isoformat(), "close": 9999},
         ],
@@ -280,9 +282,9 @@ def test_current_provider_bar_preserves_effective_time_and_rejects_future_date(
         quote = connection.execute("SELECT observed_at, price FROM raw.quote").fetchone()
         bar = connection.execute("SELECT observed_at, close FROM raw.price_bar").fetchone()
     assert stored == 1
-    assert quote["price"] == 3000
-    assert bar["close"] == 3000
-    expected_effective_at = datetime.combine(tokyo_date, datetime.min.time(), tzinfo=UTC).replace(hour=20)
+    assert quote["price"] == 2990
+    assert bar["close"] == 2990
+    expected_effective_at = datetime.combine(completed_date, datetime.min.time(), tzinfo=UTC).replace(hour=20)
     assert quote["observed_at"] == expected_effective_at
     assert bar["observed_at"] == expected_effective_at
 

@@ -51,7 +51,10 @@ def store_price_bars(
                 category="market_data",
             )
         for source, symbol, trading_date, close in prepared:
-            if trading_date > current_market_date(symbol, stored_at):
+            market_date = current_market_date(symbol, stored_at)
+            if trading_date > market_date:
+                continue
+            if trading_date == market_date and source.get("is_complete") is not True:
                 continue
             observed_at = datetime.combine(trading_date, time(20), tzinfo=UTC)
             open_price = number(source.get("open"))

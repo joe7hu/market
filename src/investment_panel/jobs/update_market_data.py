@@ -107,7 +107,14 @@ def run_for_config(
                 "market_metric_failures": len(metric_errors),
             },
         )
-    market = refresh_market_publication(runtime) if publish else {"status": "deferred"}
+    market = (
+        refresh_market_publication(
+            runtime,
+            benchmark_symbols=[row["symbol"] for row in universe_rows],
+        )
+        if publish
+        else {"status": "deferred"}
+    )
     return {
         "status": "partial" if errors or metric_errors else "ok",
         "database": "postgresql",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from investment_panel.jobs import (
     postgres_refresh,
@@ -43,7 +43,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
 
     def publish_market(_runtime, *, now=None):
         events.append(("market", now))
-        return market_publication
+        return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
     monkeypatch.setattr(postgres_refresh.ticker_decisions, "publish", publish_tickers)
     monkeypatch.setattr(postgres_refresh.run_option_agents, "run", lambda _path: {"status": "skipped"})
@@ -71,10 +71,11 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     names = [name for name, _ in events]
     assert names.index("market") < names.index("ticker") < names.index("today")
     publication_cutoffs = [cutoff for name, cutoff in events if name in {"market", "ticker", "today"}]
-    assert publication_cutoffs[0] is publication_cutoffs[1] is publication_cutoffs[2]
+    assert publication_cutoffs[0] < publication_cutoffs[1]
+    assert publication_cutoffs[1] is publication_cutoffs[2]
 
 
-def test_publish_decisions_consumes_same_cutoff_market_publication(monkeypatch) -> None:
+def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkeypatch) -> None:
     config = typed_config()
     events: list[tuple[str, object]] = []
     market_publication = {"status": "ok", "publication_id": "market-publication-test"}
@@ -89,7 +90,7 @@ def test_publish_decisions_consumes_same_cutoff_market_publication(monkeypatch) 
 
     def publish_market(_runtime, *, now=None):
         events.append(("market", now))
-        return market_publication
+        return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
     def publish_tickers(_path, *, as_of=None, market_state_publication_id=None):
         assert market_state_publication_id == market_publication["publication_id"]
@@ -113,7 +114,8 @@ def test_publish_decisions_consumes_same_cutoff_market_publication(monkeypatch) 
 
     assert result["status"] == "ok"
     assert [name for name, _ in events] == ["market", "ticker", "today"]
-    assert events[0][1] is events[1][1] is events[2][1]
+    assert events[0][1] < events[1][1]
+    assert events[1][1] is events[2][1]
 
 
 def test_premarket_threads_market_publication_id_after_market_publication(monkeypatch) -> None:
@@ -137,7 +139,7 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
 
     def publish_market(_runtime, *, now=None):
         events.append(("market", now))
-        return market_publication
+        return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
     def publish_tickers(_path, *, as_of=None, market_state_publication_id=None):
         assert market_state_publication_id == market_publication["publication_id"]
@@ -164,7 +166,8 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
 
     assert result["status"] == "ok"
     assert [name for name, _ in events] == ["market", "ticker", "today"]
-    assert events[0][1] is events[1][1] is events[2][1]
+    assert events[0][1] < events[1][1]
+    assert events[1][1] is events[2][1]
 
 
 def test_scheduled_preopen_skips_outside_window_and_publishes_inside(
