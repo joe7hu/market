@@ -8,7 +8,12 @@ from psycopg.types.json import Jsonb
 from app.data_access.loaders import load_panel_scope_data
 from app.data_access.payloads import panel_snapshot_payload
 from conftest import typed_config
-from investment_panel.core.decision import build_ticker_decision
+from investment_panel.core.decision import (
+    bind_trade_plan,
+    build_ticker_decision,
+    build_trade_plan,
+    trade_expression_identity,
+)
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.panel_models import (
     MODEL_ALIASES,
@@ -252,6 +257,101 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
             name: sparse_snapshot["tables"][name]["count"]
             for name in ("ticker_decisions", "opportunity_rank", "trade_plan")
         } == {"ticker_decisions": 105, "opportunity_rank": 101, "trade_plan": 102}
+    finally:
+        runtime.close()
+
+
+def test_today_authority_validates_plan_authority_without_returning_full_plan(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    symbol = f"TV{uuid4().hex[:8].upper()}"
+    as_of = datetime.now(UTC) - timedelta(minutes=1)
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+                "VALUES (%s, %s, 'equity')",
+                [symbol, symbol],
+            )
+        decision = build_ticker_decision(
+            symbol,
+            {"decision_queue": [{
+                "symbol": symbol,
+                "stance": "NEUTRAL",
+                "available_at": (as_of - timedelta(minutes=1)).isoformat(),
+            }]},
+            as_of=as_of,
+        )
+        selected = decision.selected_expression
+        assert selected is not None
+        bundle_id = str(uuid4())
+        impact = decision.portfolio_impacts.get(selected.kind)
+        rank = {
+            "rank_id": f"rank:{symbol.lower()}",
+            "ticker": symbol,
+            "decision_revision": decision.decision_revision,
+            "opportunity_episode_id": decision.opportunity_episode_id,
+            "policy_version": decision.policy_version,
+            "selected_expression_kind": selected.kind.value,
+            "selected_expression_identity": trade_expression_identity(selected),
+            "portfolio_impact_id": impact.impact_id if impact is not None else None,
+            "market_state_publication_id": decision.market_state_publication_id,
+            "ranking_publication_id": bundle_id,
+            "research_rank": None,
+        }
+        plan = build_trade_plan(
+            decision=decision,
+            rank=rank,
+            publication_id=bundle_id,
+        )
+        bound = bind_trade_plan(decision, plan).model_copy(
+            update={"opportunity_rank": rank},
+        )
+        published = TickerDecisionRepository(runtime).publish(bound)
+
+        def authority_row() -> dict[str, object]:
+            return next(
+                row
+                for page in today_authority_pages(
+                    typed_config(migrated_postgres_dsn),
+                    decision_prefix_limit=100,
+                    rank_prefix_limit=1,
+                    plan_prefix_limit=1,
+                )
+                for row in page
+                if row["ticker"] == symbol
+            )
+
+        row = authority_row()
+        assert row["validation_plan_valid"] is True
+        assert "validation_plan" not in row
+        valid_missing_count = load_panel_scope_data(
+            typed_config(migrated_postgres_dsn), "today",
+        ).metadata["today_missing_plan_count"]
+
+        with runtime.transaction() as connection:
+            manifest = dict(connection.execute(
+                "SELECT input_manifest FROM analysis.ticker_decision "
+                "WHERE id = %s::uuid",
+                [published["ticker_decision_id"]],
+            ).fetchone()["input_manifest"])
+            manifest["trade_plan"] = {
+                **manifest["trade_plan"],
+                "decision_revision": "revision:poisoned",
+            }
+            connection.execute(
+                "UPDATE analysis.ticker_decision SET input_manifest = %s "
+                "WHERE id = %s::uuid",
+                [Jsonb(manifest), published["ticker_decision_id"]],
+            )
+
+        assert authority_row()["validation_plan_valid"] is False
+        invalid_missing_count = load_panel_scope_data(
+            typed_config(migrated_postgres_dsn), "today",
+        ).metadata["today_missing_plan_count"]
+        assert invalid_missing_count == valid_missing_count + 1
     finally:
         runtime.close()
 

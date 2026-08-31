@@ -163,14 +163,14 @@ def _load_today_authority(
                 "decision_revision": row.get("decision_revision"),
                 "opportunity_episode_id": row.get("opportunity_episode_id"),
                 "opportunity_rank": row.get("validation_rank"),
-                "trade_plan": row.get("validation_plan"),
             }
             rank = today_rank_for_row(validation_row, [], symbol)
             if row.get("raw_research_rank_present") is True:
                 correction_count += rank is None
                 continue
-            plan = today_plan_for_row(validation_row, [], rank, symbol)
-            correction_count += plan is None
+            correction_count += (
+                rank is None or row.get("validation_plan_valid") is not True
+            )
     return decisions, ranks, plans, counts, base_missing_plan_count + correction_count
 
 

@@ -519,7 +519,11 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert "'trade_plan', trade_plan" not in authority_source
     assert "AS trade_plan_present" in authority_source
     assert "JOIN analysis.ticker_decision stored_decision" in authority_source
-    assert "THEN stored_decision.input_manifest->'trade_plan'" in authority_source
+    assert authority_source.count(
+        "THEN stored_decision.input_manifest->'trade_plan'"
+    ) == 1
+    assert "END AS validation_plan," not in authority_source
+    assert "END AS validation_plan_valid" in authority_source
     assert panel.metadata["today_missing_plan_count"] == 7
     assert all("input_manifest" not in row for row in panel.rows("ticker_decisions"))
     assert all("missing_plan_count" not in row for row in panel.rows("ticker_decisions"))

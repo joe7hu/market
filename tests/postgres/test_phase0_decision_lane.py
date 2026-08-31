@@ -751,6 +751,7 @@ def test_exact_market_publication_history_remains_valid_after_supersession(
             market_snapshot_id="phase0-market-state:v1",
             market_state_publication_id=first_id,
             cutoff=decision_cutoff,
+            input_lineage=episode.input_lineage,
             availability="unavailable",
             blockers=("portfolio_context_missing",),
         )

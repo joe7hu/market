@@ -1035,8 +1035,120 @@ def today_authority_pages(
                           AND positioned_actions.opportunity_rank
                               ->>'research_rank' IS NULL
                           AND positioned_actions.trade_plan_present
-                    THEN stored_decision.input_manifest->'trade_plan'
-               END AS validation_plan,
+                    THEN COALESCE(
+                        validation_payload.trade_plan->>'contract_version'
+                            = 'trade-plan.v1'
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan->>'trade_plan_id'
+                        ), '') IS NOT NULL
+                        AND validation_payload.trade_plan->>'trade_plan_id'
+                            = stored_decision.resolution->>'trade_plan_id'
+                        AND UPPER(BTRIM(
+                            validation_payload.trade_plan->>'ticker'
+                        )) = positioned_actions.ticker
+                        AND validation_payload.trade_plan->>'decision_revision'
+                            = positioned_actions.decision_revision
+                        AND validation_payload.trade_plan
+                            ->>'opportunity_episode_id'
+                            = positioned_actions.opportunity_episode_id
+                        AND validation_payload.trade_plan->>'policy_version'
+                            = positioned_actions.policy_version
+                        AND validation_payload.trade_plan->'cutoff'
+                            = stored_decision.opportunity_episode->'cutoff'
+                        AND jsonb_typeof(
+                            validation_payload.trade_plan->'input_lineage'
+                        ) = 'array'
+                        AND jsonb_array_length(
+                            validation_payload.trade_plan->'input_lineage'
+                        ) > 0
+                        AND validation_payload.trade_plan->'input_lineage'
+                            = stored_decision.opportunity_episode->'input_lineage'
+                        AND jsonb_typeof(
+                            validation_payload.trade_plan->'selected_expression'
+                        ) = 'object'
+                        AND validation_payload.trade_plan->'selected_expression'
+                            = stored_decision.selected_expression
+                        AND validation_payload.trade_plan
+                            ->>'selected_expression_kind'
+                            = validation_payload.trade_plan
+                                ->'selected_expression'->>'kind'
+                        AND UPPER(BTRIM(
+                            validation_payload.trade_plan
+                                ->'selected_expression'->>'ticker'
+                        )) = positioned_actions.ticker
+                        AND validation_payload.trade_plan->>'publication_id'
+                            = COALESCE(
+                                NULLIF(BTRIM(
+                                    positioned_actions.opportunity_rank
+                                        ->>'ranking_publication_id'
+                                ), ''),
+                                NULLIF(BTRIM(
+                                    positioned_actions.opportunity_rank
+                                        ->>'publication_id'
+                                ), '')
+                            )
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan->>'rank_id'
+                        ), '') = NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank->>'rank_id'
+                        ), '')
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'selected_expression_identity'
+                        ), '') = NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'selected_expression_identity'
+                        ), '')
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'portfolio_impact_id'
+                        ), '') IS NOT DISTINCT FROM NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'portfolio_impact_id'
+                        ), '')
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'market_state_publication_id'
+                        ), '') IS NOT DISTINCT FROM NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'market_state_publication_id'
+                        ), '')
+                        AND (
+                            (
+                                validation_payload.trade_plan->>'eligibility'
+                                    = 'BLOCKED'
+                                AND validation_payload.trade_plan
+                                    ->>'selected_expression_kind' = 'CASH'
+                                AND validation_payload.trade_plan->>'action'
+                                    = 'NO_TRADE'
+                                AND validation_payload.trade_plan
+                                    ->>'authorization_mode' = 'NONE'
+                                AND NULLIF(BTRIM(
+                                    validation_payload.trade_plan
+                                        ->>'primary_blocker'
+                                ), '') IS NOT NULL
+                                AND jsonb_typeof(
+                                    validation_payload.trade_plan->'blockers'
+                                ) = 'array'
+                                AND validation_payload.trade_plan->'blockers'
+                                    ? (validation_payload.trade_plan
+                                        ->>'primary_blocker')
+                            )
+                            OR (
+                                validation_payload.trade_plan->>'eligibility'
+                                    = 'ACTIONABLE'
+                                AND validation_payload.trade_plan
+                                    ->>'selected_expression_kind' <> 'CASH'
+                                AND validation_payload.trade_plan->>'action'
+                                    NOT IN ('NO_TRADE', 'AVOID')
+                                AND validation_payload.trade_plan
+                                    ->>'authorization_mode'
+                                    IN ('ADVISORY', 'PAPER')
+                            )
+                        ),
+                        false
+                    )
+               END AS validation_plan_valid,
                COALESCE(
                    positioned_actions.capital_action->>'owned', 'false'
                ) <> 'true'
@@ -1067,6 +1179,9 @@ def today_authority_pages(
         FROM positioned_actions
         JOIN analysis.ticker_decision stored_decision
           ON stored_decision.id = positioned_actions.decision_id
+        CROSS JOIN LATERAL (
+            SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan
+        ) validation_payload
         ORDER BY positioned_actions.decision_position
     """
     runtime = runtime_for_config(config)
