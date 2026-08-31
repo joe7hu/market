@@ -112,8 +112,11 @@ def run_for_config(
             runtime,
             benchmark_symbols=[row["symbol"] for row in universe_rows],
         )
-        if publish
-        else {"status": "deferred"}
+        if publish and not requested
+        else {
+            "status": "deferred",
+            **({"reason": "scoped_refresh"} if requested else {}),
+        }
     )
     return {
         "status": "partial" if errors or metric_errors else "ok",

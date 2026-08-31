@@ -1080,6 +1080,43 @@ def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
     assert "provider failed" in result["error"]
 
 
+def test_scoped_market_data_job_does_not_publish_global_market_state(
+    monkeypatch, migrated_postgres_dsn: str
+) -> None:
+    import pandas as pd
+    from investment_panel.jobs import update_market_data
+
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={
+            "market_data": {"mode": "online"},
+            "data_sources": {"yfinance": {"enabled": False}},
+            "watchlist": [{"symbol": "XYZ", "asset_class": "equity"}],
+        },
+    )
+    monkeypatch.setattr(
+        update_market_data,
+        "fetch_prices",
+        lambda *_args: pd.DataFrame(
+            [{
+                "symbol": "XYZ", "date": "2026-01-02", "open": 10, "high": 12,
+                "low": 10, "close": 12, "volume": 120, "source": "test",
+            }]
+        ),
+    )
+    monkeypatch.setattr(
+        update_market_data,
+        "refresh_market_publication",
+        lambda *_args, **_kwargs: pytest.fail("scoped refresh published global MarketState"),
+    )
+
+    result = update_market_data.run_for_config(config, symbols=["xyz"])
+
+    assert result["status"] == "ok"
+    assert result["symbols"] == 1
+    assert result["market_publication"] == {"status": "deferred", "reason": "scoped_refresh"}
+
+
 def test_save_watchlist_symbol_rejects_malformed_ticker(migrated_postgres_dsn: str) -> None:
     config = typed_config(migrated_postgres_dsn)
 
