@@ -140,12 +140,14 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
 
 
 def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
+    table_offsets = panel_data.metadata.get("table_offsets")
     payload = core_panel_snapshot_payload(
         scope=scope,
         status=status_payload(panel_data),
         rows_for_table=panel_data.rows,
         offset=offset,
         limit=limit,
+        row_offsets=table_offsets if isinstance(table_offsets, dict) else None,
     )
     table_counts = panel_data.metadata.get("table_counts")
     if isinstance(table_counts, dict):

@@ -502,9 +502,12 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     authority_source = inspect.getsource(today_authority_pages)
     assert calls == [{}]
     assert authority_calls == [{
-        "decision_prefix_limit": 100,
-        "rank_prefix_limit": 3,
-        "plan_prefix_limit": 3,
+        "decision_offset": 0,
+        "rank_offset": 0,
+        "plan_offset": 0,
+        "decision_limit": 100,
+        "rank_limit": 3,
+        "plan_limit": 3,
     }]
     assert "decision.market_state_snapshot" not in query
     assert "decision.portfolio_impacts" not in query

@@ -110,9 +110,12 @@ def today_plan_for_row(
 def _load_today_authority(
     config: AppConfig,
     *,
-    decision_prefix_limit: int,
-    rank_prefix_limit: int,
-    plan_prefix_limit: int,
+    decision_offset: int = 0,
+    rank_offset: int = 0,
+    plan_offset: int = 0,
+    decision_limit: int,
+    rank_limit: int,
+    plan_limit: int,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -128,9 +131,12 @@ def _load_today_authority(
     correction_count = 0
     for page in today_authority_pages(
         config,
-        decision_prefix_limit=decision_prefix_limit,
-        rank_prefix_limit=rank_prefix_limit,
-        plan_prefix_limit=plan_prefix_limit,
+        decision_offset=decision_offset,
+        rank_offset=rank_offset,
+        plan_offset=plan_offset,
+        decision_limit=decision_limit,
+        rank_limit=rank_limit,
+        plan_limit=plan_limit,
     ):
         for row in page:
             counts = {
@@ -338,13 +344,22 @@ def load_panel_scope_data(
             SCOPED_TABLE_ROW_LIMITS[scope]["trade_plan"],
             requested_limit or SCOPED_TABLE_ROW_LIMITS[scope]["trade_plan"],
         )
+        authority_offset = page_offset if page_offset else 0
+        decision_page_limit = (
+            max(100, decision_limit)
+            if page_offset == 0 and limit is None
+            else decision_limit
+        )
         if loaded.status.ready:
             try:
                 decisions, ranks, plans, exact_authority_counts, exact_missing_plan_count = _load_today_authority(
                     active_config,
-                    decision_prefix_limit=max(100, page_offset + decision_limit),
-                    rank_prefix_limit=page_offset + rank_limit,
-                    plan_prefix_limit=page_offset + plan_limit,
+                    decision_offset=authority_offset,
+                    rank_offset=authority_offset,
+                    plan_offset=authority_offset,
+                    decision_limit=decision_page_limit,
+                    rank_limit=rank_limit,
+                    plan_limit=plan_limit,
                 )
             except Exception as exc:
                 return PanelData(
@@ -383,6 +398,10 @@ def load_panel_scope_data(
             "table_counts": table_counts,
             "today_action_input_count": len(decisions),
         }
+        if authority_offset:
+            metadata["table_offsets"] = {
+                name: authority_offset for name in authority_names
+            }
         metadata["today_missing_plan_count"] = exact_missing_plan_count
         return PanelData(
             status=loaded.status,

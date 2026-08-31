@@ -829,16 +829,31 @@ DIRECT_QUERIES.update({**SOURCE_QUERIES, **EVENT_DIRECT_QUERIES})
 def today_authority_pages(
     config: AppConfig,
     *,
-    decision_prefix_limit: int = 100,
-    rank_prefix_limit: int = 3,
-    plan_prefix_limit: int = 3,
+    decision_offset: int = 0,
+    rank_offset: int = 0,
+    plan_offset: int = 0,
+    decision_limit: int = 100,
+    rank_limit: int = 3,
+    plan_limit: int = 3,
     batch_size: int = 25,
 ) -> Iterable[list[dict[str, Any]]]:
     """Stream bounded Today pages, counts, and validation from one snapshot."""
 
-    safe_decision_limit = max(100, min(int(decision_prefix_limit), 10_003))
-    safe_rank_limit = max(1, min(int(rank_prefix_limit), 10_003))
-    safe_plan_limit = max(1, min(int(plan_prefix_limit), 10_003))
+    safe_decision_offset = max(0, min(int(decision_offset), 10_000))
+    safe_rank_offset = max(0, min(int(rank_offset), 10_000))
+    safe_plan_offset = max(0, min(int(plan_offset), 10_000))
+    safe_decision_limit = max(
+        1, min(int(decision_limit), 10_003 - safe_decision_offset),
+    )
+    safe_rank_limit = max(
+        1, min(int(rank_limit), 10_003 - safe_rank_offset),
+    )
+    safe_plan_limit = max(
+        1, min(int(plan_limit), 10_003 - safe_plan_offset),
+    )
+    safe_decision_end = safe_decision_offset + safe_decision_limit
+    safe_rank_end = safe_rank_offset + safe_rank_limit
+    safe_plan_end = safe_plan_offset + safe_plan_limit
     safe_batch_size = max(1, min(int(batch_size), 100))
     query = f"""
         WITH current_candidates AS (
@@ -945,7 +960,10 @@ def today_authority_pages(
                positioned_actions.opportunity_rank_count,
                positioned_actions.trade_plan_count,
                positioned_actions.missing_plan_count,
-               CASE WHEN positioned_actions.decision_position <= {safe_decision_limit}
+               CASE WHEN positioned_actions.decision_position
+                              > {safe_decision_offset}
+                          AND positioned_actions.decision_position
+                              <= {safe_decision_end}
                     THEN jsonb_strip_nulls(jsonb_build_object(
                         'ticker_decision_id', positioned_actions.ticker_decision_id,
                         'ticker', positioned_actions.ticker,
@@ -973,12 +991,16 @@ def today_authority_pages(
                             positioned_actions.opportunity_rank
                          ) = 'object'
                           AND positioned_actions.opportunity_rank_position
-                              <= {safe_rank_limit}
+                              > {safe_rank_offset}
+                          AND positioned_actions.opportunity_rank_position
+                              <= {safe_rank_end}
                     THEN positioned_actions.opportunity_rank
                END AS opportunity_rank_page,
                CASE WHEN positioned_actions.trade_plan_present
                           AND positioned_actions.trade_plan_position
-                              <= {safe_plan_limit}
+                              > {safe_plan_offset}
+                          AND positioned_actions.trade_plan_position
+                              <= {safe_plan_end}
                     THEN stored_decision.input_manifest->'trade_plan'
                END AS trade_plan_page,
                positioned_actions.ticker,

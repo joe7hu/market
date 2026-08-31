@@ -8,7 +8,7 @@ counts, dashboard slices, and watched/unwatched section derivation.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from investment_panel.core.panel.contracts import tables_for_scope
 from investment_panel.core.panel.coerce import symbols_from_value as _symbols_from_value
@@ -190,6 +190,7 @@ def panel_snapshot_payload(
     rows_for_table: RowsForTable,
     offset: int = 0,
     limit: int | None = None,
+    row_offsets: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Build a scope payload using the canonical panel contract."""
 
@@ -203,7 +204,12 @@ def panel_snapshot_payload(
         "dashboard": dashboard_payload(status, rows_for_table) if scope == "dashboard" else None,
         "tables": {
             name: _scoped_table_payload(
-                scope, name, rows_for_table(name), offset=offset, requested_limit=limit,
+                scope,
+                name,
+                rows_for_table(name),
+                offset=offset,
+                requested_limit=limit,
+                row_offset=(row_offsets or {}).get(name, 0),
             )
             for name in selected
         },
@@ -324,6 +330,7 @@ def _scoped_table_payload(
     *,
     offset: int = 0,
     requested_limit: int | None = None,
+    row_offset: int = 0,
 ) -> dict[str, Any]:
     """Return rows sized for a page scope while preserving the full read-model count."""
 
@@ -336,7 +343,12 @@ def _scoped_table_payload(
         else configured_limit if configured_limit is not None else requested
     )
     start = max(0, int(offset or 0))
-    scoped_rows = rows[start : start + limit] if limit is not None else rows[start:]
+    local_start = max(0, start - max(0, int(row_offset or 0)))
+    scoped_rows = (
+        rows[local_start : local_start + limit]
+        if limit is not None
+        else rows[local_start:]
+    )
     compacted = [_compact_scoped_row(scope, table_name, row) for row in scoped_rows]
     payload: dict[str, Any] = {"rows": compacted, "count": total_count, "offset": start}
     if limit is not None:

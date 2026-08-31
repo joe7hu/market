@@ -247,9 +247,14 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
         sparse_panel = load_panel_scope_data(config, "today", offset=100, limit=1)
         sparse_snapshot = panel_snapshot_payload(sparse_panel, "today", offset=100, limit=1)
 
-        assert len(sparse_panel.rows("ticker_decisions")) == 101
-        assert len(sparse_panel.rows("opportunity_rank")) == 101
-        assert len(sparse_panel.rows("trade_plan")) == 101
+        assert len(sparse_panel.rows("ticker_decisions")) == 1
+        assert len(sparse_panel.rows("opportunity_rank")) == 1
+        assert len(sparse_panel.rows("trade_plan")) == 1
+        assert sparse_panel.metadata["table_offsets"] == {
+            "ticker_decisions": 100,
+            "opportunity_rank": 100,
+            "trade_plan": 100,
+        }
         assert sparse_snapshot["tables"]["ticker_decisions"]["rows"][0]["ticker"] == symbols[104]
         assert sparse_snapshot["tables"]["opportunity_rank"]["rows"][0]["ticker"] == "WRONG"
         assert sparse_snapshot["tables"]["trade_plan"]["rows"][0]["present"] == "malformed-outside-sample"
@@ -316,9 +321,9 @@ def test_today_authority_validates_plan_authority_without_returning_full_plan(
                 row
                 for page in today_authority_pages(
                     typed_config(migrated_postgres_dsn),
-                    decision_prefix_limit=100,
-                    rank_prefix_limit=1,
-                    plan_prefix_limit=1,
+                    decision_limit=100,
+                    rank_limit=1,
+                    plan_limit=1,
                 )
                 for row in page
                 if row["ticker"] == symbol
@@ -395,9 +400,9 @@ def test_today_authority_cursor_keeps_base_and_correction_in_one_snapshot(
 
         pages = today_authority_pages(
             typed_config(migrated_postgres_dsn),
-            decision_prefix_limit=100,
-            rank_prefix_limit=3,
-            plan_prefix_limit=3,
+            decision_limit=100,
+            rank_limit=3,
+            plan_limit=3,
             batch_size=1,
         )
         first_page = next(pages)
