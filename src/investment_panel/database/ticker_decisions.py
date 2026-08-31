@@ -438,6 +438,7 @@ class TickerDecisionRepository:
                 lineage_valid = bool(
                     episode_cutoff is not None
                     and isinstance(raw_episode, Mapping)
+                    and row.get("opportunity_lineage_valid") is not False
                     and _funnel_lineage_is_valid(
                         lineage,
                         episode_id=str(row.get("opportunity_episode_id") or ""),
@@ -837,14 +838,34 @@ class TickerDecisionRepository:
                 SELECT candidate.ticker, decision.as_of, decision.published_at,
                        decision.decision_revision, decision.policy_version,
                        decision.opportunity_episode_id,
-                       CASE WHEN octet_length(decision.opportunity_episode::text) <= 262144
-                            THEN decision.opportunity_episode END AS opportunity_episode,
+                       CASE WHEN funnel_candidate.required
+                                      AND episode_lineage.valid
+                                      AND episode_lineage.within_limit
+                            THEN jsonb_build_object(
+                                'contract_version', decision.opportunity_episode->'contract_version',
+                                'episode_id', decision.opportunity_episode->'episode_id',
+                                'ticker', decision.opportunity_episode->'ticker',
+                                'decision_revision', decision.opportunity_episode->'decision_revision',
+                                'policy_version', decision.opportunity_episode->'policy_version',
+                                'cutoff', decision.opportunity_episode->'cutoff',
+                                'input_lineage', decision.opportunity_episode->'input_lineage',
+                                'expressions', decision.opportunity_episode->'expressions',
+                                'selected_expression', decision.opportunity_episode->'selected_expression'
+                            )
+                       END AS opportunity_episode,
+                       CASE WHEN funnel_candidate.required
+                            THEN episode_lineage.valid
+                       END AS opportunity_lineage_valid,
                        decision.opportunity_cutoff = decision.as_of
                            AS opportunity_cutoff_match,
-                       CASE WHEN octet_length(decision.opportunity_episode::text) <= 262144
+                       CASE WHEN funnel_candidate.required
+                                  AND episode_lineage.valid
+                                  AND episode_lineage.within_limit
                             THEN decision.opportunity_episode->'expressions' = decision.expressions
                             ELSE false END AS opportunity_expressions_match,
-                       CASE WHEN octet_length(decision.opportunity_episode::text) <= 262144
+                       CASE WHEN funnel_candidate.required
+                                  AND episode_lineage.valid
+                                  AND episode_lineage.within_limit
                             THEN decision.opportunity_episode->'selected_expression'
                                  IS NOT DISTINCT FROM decision.selected_expression
                             ELSE false END AS opportunity_selected_expression_match,
@@ -893,7 +914,8 @@ class TickerDecisionRepository:
                                'blockers', coalesce(impact.stock_impact->'blockers', '[]'::jsonb)
                            )
                        END AS stock_portfolio_impact,
-                       CASE WHEN decision.opportunity_episode->'input_lineage'
+                       CASE WHEN funnel_candidate.required
+                                  AND decision.opportunity_episode->'input_lineage'
                                   = coalesce(
                                       decision.portfolio_impacts->'STOCK',
                                       decision.portfolio_impacts->'stock'
@@ -954,6 +976,41 @@ class TickerDecisionRepository:
                         decision.portfolio_impacts->'stock'
                     ) AS stock_impact
                 ) impact
+                CROSS JOIN LATERAL (
+                    SELECT (
+                        lower(coalesce(
+                            coalesce(
+                                decision.expressions->'STOCK',
+                                decision.expressions->'stock'
+                            )->>'availability',
+                            coalesce(
+                                decision.expressions->'STOCK',
+                                decision.expressions->'stock'
+                            )->>'availability_status',
+                            ''
+                        )) = 'available'
+                        OR lower(coalesce(
+                            impact.stock_impact->>'availability',
+                            impact.stock_impact->>'availability_status',
+                            ''
+                        )) = 'available'
+                        OR lower(coalesce(decision.selected_expression->>'kind', '')) NOT IN ('', 'cash')
+                        OR lower(coalesce(
+                            decision.resolution->>'eligibility',
+                            decision.resolution->>'status',
+                            ''
+                        )) <> 'blocked'
+                    ) AS required
+                ) funnel_candidate
+                LEFT JOIN LATERAL (
+                    SELECT CASE
+                        WHEN jsonb_typeof(decision.opportunity_episode->'input_lineage') = 'array'
+                        THEN jsonb_array_length(decision.opportunity_episode->'input_lineage') > 0
+                             AND jsonb_typeof(decision.opportunity_episode->'input_lineage'->0) = 'object'
+                        ELSE false
+                    END AS valid,
+                    octet_length(decision.opportunity_episode::text) <= 262144 AS within_limit
+                ) episode_lineage ON funnel_candidate.required
                 WHERE candidate.current_row = 1
                   AND candidate.authority_count = 1
                   AND candidate.opportunity_authority_count = 1

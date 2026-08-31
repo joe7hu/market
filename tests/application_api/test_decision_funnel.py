@@ -424,7 +424,9 @@ def test_current_funnel_query_does_not_select_full_market_snapshot() -> None:
 
     assert rows == []
     assert "market_state_snapshot" not in captured["query"]
-    assert "THEN decision.opportunity_episode END AS opportunity_episode" in captured["query"]
+    assert "jsonb_build_object(" in captured["query"]
+    assert "opportunity_lineage_valid" in captured["query"]
+    assert "'input_lineage', decision.opportunity_episode->'input_lineage'" in captured["query"]
     assert "AS opportunity_cutoff_match" in captured["query"]
     assert "AS opportunity_expressions_match" in captured["query"]
     assert "AS opportunity_selected_expression_match" in captured["query"]

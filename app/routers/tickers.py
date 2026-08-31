@@ -24,6 +24,7 @@ router = APIRouter()
 _TICKER_DETAIL_EXCLUDE = {
     "opportunity_episode": True,
     "learning_history": True,
+    "instrument_state_snapshot": True,
 }
 
 

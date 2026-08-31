@@ -667,6 +667,7 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
     assert "opportunity_episode" not in payload
     assert payload["outcome_attributions"] == []
     assert "learning_history" not in payload
+    assert "instrument_state_snapshot" not in payload
     assert decision["resolution"]["eligibility"] == "BLOCKED"
     assert decision["selected_expression"]["kind"] == "CASH"
     assert decision["resolution"]["authorization_mode"] == "NONE"
