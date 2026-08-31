@@ -841,8 +841,72 @@ def today_authority_pages(
     safe_plan_limit = max(1, min(int(plan_prefix_limit), 10_003))
     safe_batch_size = max(1, min(int(batch_size), 100))
     query = f"""
-        WITH positioned_actions AS (
-            SELECT current_today_actions.*,
+        WITH current_candidates AS (
+            SELECT decision.id AS decision_id,
+                   decision.id::text AS ticker_decision_id,
+                   instrument.symbol AS ticker, instrument.symbol,
+                   decision.decision_revision, decision.as_of,
+                   decision.published_at,
+                   decision.published_at AS available_at,
+                   decision.input_hash,
+                   CASE WHEN octet_length(decision.capital_action::text) <= 4096
+                        THEN decision.capital_action END AS capital_action,
+                   decision.policy_version, decision.opportunity_episode_id,
+                   CASE WHEN octet_length(decision.selected_expression::text) <= 8192
+                        THEN decision.selected_expression END AS selected_expression,
+                   CASE
+                       WHEN jsonb_typeof(
+                                decision.input_manifest->'opportunity_rank'
+                            ) = 'object'
+                        AND octet_length((
+                                decision.input_manifest->'opportunity_rank'
+                            )::text) <= 196608
+                       THEN (decision.input_manifest->'opportunity_rank') - ARRAY[
+                           'eligible_universe', 'input_lineage', 'utility'
+                       ]
+                   END AS opportunity_rank,
+                   COALESCE(
+                       jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
+                       AND octet_length((
+                           decision.input_manifest->'trade_plan'
+                       )::text) <= 327680,
+                       false
+                   ) AS trade_plan_present,
+                   decision.created_at,
+                   count(*) OVER (
+                       PARTITION BY decision.instrument_id, decision.as_of,
+                                    decision.published_at
+                   ) AS authority_count,
+                   count(*) OVER (
+                       PARTITION BY decision.opportunity_episode_id
+                   ) AS opportunity_authority_count,
+                   row_number() OVER (
+                       PARTITION BY decision.instrument_id
+                       ORDER BY decision.as_of DESC, decision.published_at DESC,
+                                decision.created_at DESC, decision.id DESC
+                   ) AS current_row
+            FROM analysis.ticker_decision decision
+            JOIN catalog.instrument instrument
+              ON instrument.id = decision.instrument_id
+            WHERE decision.status = 'published'
+              AND decision.contract_version = 'ticker-decision.v1'
+              AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.experiment_id), '') IS NOT NULL
+              AND NULLIF(BTRIM(decision.opportunity_episode_id), '') IS NOT NULL
+              AND decision.as_of <= now()
+              AND decision.published_at IS NOT NULL
+              AND decision.published_at <= now()
+              AND jsonb_typeof(decision.capital_action) = 'object'
+              AND jsonb_typeof(decision.input_manifest) = 'object'
+        ), current_authority AS (
+            SELECT *
+            FROM current_candidates
+            WHERE current_row = 1
+              AND authority_count = 1
+              AND opportunity_authority_count = 1
+        ), positioned_actions AS (
+            SELECT current_authority.*,
                    row_number() OVER (
                        ORDER BY {TODAY_ACTION_ORDER_SQL}
                    ) AS decision_position,
@@ -853,81 +917,157 @@ def today_authority_pages(
                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                    ) AS opportunity_rank_position,
                    count(*) FILTER (
-                       WHERE jsonb_typeof(trade_plan) = 'object'
+                       WHERE trade_plan_present
                    ) OVER (
                        ORDER BY {TODAY_ACTION_ORDER_SQL}
                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
                    ) AS trade_plan_position,
-                   count(*) OVER () AS ticker_decision_count
-            FROM ({DIRECT_QUERIES["today_ticker_actions"]}) AS current_today_actions
+                   count(*) OVER () AS ticker_decision_count,
+                   count(*) FILTER (
+                       WHERE jsonb_typeof(opportunity_rank) = 'object'
+                   ) OVER () AS opportunity_rank_count,
+                   count(*) FILTER (
+                       WHERE trade_plan_present
+                   ) OVER () AS trade_plan_count,
+                   count(*) FILTER (
+                       WHERE NOT trade_plan_present
+                         AND (
+                             jsonb_typeof(opportunity_rank)
+                                 IS DISTINCT FROM 'object'
+                             OR opportunity_rank->>'research_rank' IS NULL
+                         )
+                         AND COALESCE(capital_action->>'owned', 'false') <> 'true'
+                   ) OVER () AS missing_plan_count
+            FROM current_authority
         )
-        SELECT decision_position, ticker_decision_count,
-               opportunity_rank_count, trade_plan_count, missing_plan_count,
-               CASE WHEN decision_position <= {safe_decision_limit}
-                    THEN CASE WHEN decision_position <= 100
-                         THEN to_jsonb(positioned_actions)
-                         ELSE to_jsonb(positioned_actions) - ARRAY[
-                             'data_requests', 'expressions', 'fundamental', 'input_manifest',
-                             'learning_history', 'market_state_snapshot', 'opportunity_episode',
-                             'opportunity_rank', 'portfolio_impacts', 'resolution', 'risk_policy',
-                             'risk_policy_snapshot', 'tactical', 'trade_plan'
-                         ] END - ARRAY[
-                             'decision_position', 'opportunity_rank_position',
-                             'trade_plan_position', 'ticker_decision_count',
-                             'opportunity_rank_count', 'trade_plan_count', 'missing_plan_count'
-                         ] END AS ticker_decision,
-               CASE WHEN jsonb_typeof(opportunity_rank) = 'object'
-                          AND opportunity_rank_position <= {safe_rank_limit}
-                    THEN opportunity_rank - ARRAY[
-                        'eligible_universe', 'input_lineage', 'utility'
-                    ] END AS opportunity_rank_page,
-               CASE WHEN jsonb_typeof(trade_plan) = 'object'
-                          AND trade_plan_position <= {safe_plan_limit}
-                    THEN trade_plan - ARRAY[
-                        'input_lineage', 'portfolio_impact', 'selected_expression'
-                    ] END AS trade_plan_page,
-               ticker, decision_revision, opportunity_episode_id,
-               CASE WHEN COALESCE(capital_action->>'owned', 'false') <> 'true'
-                          AND jsonb_typeof(opportunity_rank) = 'object'
+        SELECT positioned_actions.decision_position,
+               positioned_actions.ticker_decision_count,
+               positioned_actions.opportunity_rank_count,
+               positioned_actions.trade_plan_count,
+               positioned_actions.missing_plan_count,
+               CASE WHEN positioned_actions.decision_position <= {safe_decision_limit}
+                    THEN jsonb_strip_nulls(jsonb_build_object(
+                        'ticker_decision_id', positioned_actions.ticker_decision_id,
+                        'ticker', positioned_actions.ticker,
+                        'symbol', positioned_actions.symbol,
+                        'decision_revision', positioned_actions.decision_revision,
+                        'as_of', positioned_actions.as_of,
+                        'published_at', positioned_actions.published_at,
+                        'available_at', positioned_actions.available_at,
+                        'input_hash', positioned_actions.input_hash,
+                        'capital_action', positioned_actions.capital_action,
+                        'resolution', CASE
+                            WHEN positioned_actions.trade_plan_present
+                             AND positioned_actions.trade_plan_position
+                                 <= {safe_plan_limit}
+                             AND octet_length(stored_decision.resolution::text)
+                                 <= 196608
+                            THEN stored_decision.resolution END,
+                        'policy_version', positioned_actions.policy_version,
+                        'opportunity_episode_id',
+                            positioned_actions.opportunity_episode_id,
+                        'selected_expression',
+                            positioned_actions.selected_expression
+                    )) END AS ticker_decision,
+               CASE WHEN jsonb_typeof(
+                            positioned_actions.opportunity_rank
+                         ) = 'object'
+                          AND positioned_actions.opportunity_rank_position
+                              <= {safe_rank_limit}
+                    THEN positioned_actions.opportunity_rank
+               END AS opportunity_rank_page,
+               CASE WHEN positioned_actions.trade_plan_present
+                          AND positioned_actions.trade_plan_position
+                              <= {safe_plan_limit}
+                    THEN stored_decision.input_manifest->'trade_plan'
+               END AS trade_plan_page,
+               positioned_actions.ticker,
+               positioned_actions.decision_revision,
+               positioned_actions.opportunity_episode_id,
+               CASE WHEN COALESCE(
+                              positioned_actions.capital_action->>'owned',
+                              'false'
+                          ) <> 'true'
+                          AND jsonb_typeof(
+                              positioned_actions.opportunity_rank
+                          ) = 'object'
                           AND (
-                              jsonb_typeof(trade_plan) = 'object'
-                              OR opportunity_rank->>'research_rank' IS NOT NULL
+                              positioned_actions.trade_plan_present
+                              OR positioned_actions.opportunity_rank
+                                  ->>'research_rank' IS NOT NULL
                           )
                     THEN jsonb_build_object(
-                        'ticker', opportunity_rank->'ticker',
-                        'symbol', opportunity_rank->'symbol',
-                        'decision_revision', opportunity_rank->'decision_revision',
-                        'opportunity_episode_id', opportunity_rank->'opportunity_episode_id',
-                        'ranking_publication_id', opportunity_rank->'ranking_publication_id',
-                        'publication_id', opportunity_rank->'publication_id',
-                        'rank_id', opportunity_rank->'rank_id',
-                        'selected_expression_identity', opportunity_rank->'selected_expression_identity',
-                        'portfolio_impact_id', opportunity_rank->'portfolio_impact_id',
-                        'market_state_publication_id', opportunity_rank->'market_state_publication_id'
+                        'ticker',
+                            positioned_actions.opportunity_rank->'ticker',
+                        'symbol',
+                            positioned_actions.opportunity_rank->'symbol',
+                        'decision_revision',
+                            positioned_actions.opportunity_rank
+                                ->'decision_revision',
+                        'opportunity_episode_id',
+                            positioned_actions.opportunity_rank
+                                ->'opportunity_episode_id',
+                        'ranking_publication_id',
+                            positioned_actions.opportunity_rank
+                                ->'ranking_publication_id',
+                        'publication_id',
+                            positioned_actions.opportunity_rank
+                                ->'publication_id',
+                        'rank_id',
+                            positioned_actions.opportunity_rank->'rank_id',
+                        'selected_expression_identity',
+                            positioned_actions.opportunity_rank
+                                ->'selected_expression_identity',
+                        'portfolio_impact_id',
+                            positioned_actions.opportunity_rank
+                                ->'portfolio_impact_id',
+                        'market_state_publication_id',
+                            positioned_actions.opportunity_rank
+                                ->'market_state_publication_id'
                     ) END AS validation_rank,
-               CASE WHEN COALESCE(capital_action->>'owned', 'false') <> 'true'
-                          AND jsonb_typeof(opportunity_rank) = 'object'
-                          AND opportunity_rank->>'research_rank' IS NULL
-                          AND jsonb_typeof(trade_plan) = 'object'
-                    THEN trade_plan END AS validation_plan,
-               COALESCE(capital_action->>'owned', 'false') <> 'true'
-                   AND jsonb_typeof(opportunity_rank) IS DISTINCT FROM 'object'
-                   AND jsonb_typeof(trade_plan) = 'object'
+               CASE WHEN COALESCE(
+                              positioned_actions.capital_action->>'owned',
+                              'false'
+                          ) <> 'true'
+                          AND jsonb_typeof(
+                              positioned_actions.opportunity_rank
+                          ) = 'object'
+                          AND positioned_actions.opportunity_rank
+                              ->>'research_rank' IS NULL
+                          AND positioned_actions.trade_plan_present
+                    THEN stored_decision.input_manifest->'trade_plan'
+               END AS validation_plan,
+               COALESCE(
+                   positioned_actions.capital_action->>'owned', 'false'
+               ) <> 'true'
+                   AND jsonb_typeof(positioned_actions.opportunity_rank)
+                       IS DISTINCT FROM 'object'
+                   AND positioned_actions.trade_plan_present
                    AS invalid_without_rank,
-               COALESCE(capital_action->>'owned', 'false') <> 'true'
-                   AND jsonb_typeof(opportunity_rank) = 'object'
-                   AND opportunity_rank->>'research_rank' IS NOT NULL
+               COALESCE(
+                   positioned_actions.capital_action->>'owned', 'false'
+               ) <> 'true'
+                   AND jsonb_typeof(positioned_actions.opportunity_rank) = 'object'
+                   AND positioned_actions.opportunity_rank
+                       ->>'research_rank' IS NOT NULL
                    AS raw_research_rank_present,
-               COALESCE(capital_action->>'owned', 'false') <> 'true'
+               COALESCE(
+                   positioned_actions.capital_action->>'owned', 'false'
+               ) <> 'true'
                    AND (
-                       jsonb_typeof(trade_plan) = 'object'
+                       positioned_actions.trade_plan_present
                        OR (
-                           jsonb_typeof(opportunity_rank) = 'object'
-                           AND opportunity_rank->>'research_rank' IS NOT NULL
+                           jsonb_typeof(
+                               positioned_actions.opportunity_rank
+                           ) = 'object'
+                           AND positioned_actions.opportunity_rank
+                               ->>'research_rank' IS NOT NULL
                        )
                    ) AS needs_missing_plan_validation
         FROM positioned_actions
-        ORDER BY decision_position
+        JOIN analysis.ticker_decision stored_decision
+          ON stored_decision.id = positioned_actions.decision_id
+        ORDER BY positioned_actions.decision_position
     """
     runtime = runtime_for_config(config)
     with runtime.snapshot(API_PROFILE) as connection:

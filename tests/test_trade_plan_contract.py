@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -421,7 +422,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
 ) -> None:
     from app.data_access import loaders as loaders_owner, payloads as payloads_owner
     from app.routers import panel as panel_router
-    from investment_panel.database.panel_models import QUERY_POLICIES
+    from investment_panel.database.panel_models import QUERY_POLICIES, today_authority_pages
 
     tables: dict[str, list[dict[str, object]]] = {
         "ticker_decisions": [],
@@ -498,6 +499,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     snapshot = payloads_owner.panel_snapshot_payload(panel, "today")
 
     query = QUERY_POLICIES["today_ticker_actions"].query
+    authority_source = inspect.getsource(today_authority_pages)
     assert calls == [{}]
     assert authority_calls == [{
         "decision_prefix_limit": 100,
@@ -510,6 +512,14 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert "decision.fundamental" not in query
     assert "octet_length((decision.input_manifest->'trade_plan')::text) <= 327680" in query
     assert "pg_input_is_valid(opportunity_rank->>'trade_rank', 'integer')" in query
+    assert "to_jsonb(positioned_actions)" not in authority_source
+    assert "SELECT current_today_actions.*" not in authority_source
+    assert 'DIRECT_QUERIES["today_ticker_actions"]' not in authority_source
+    assert "'opportunity_rank', opportunity_rank" not in authority_source
+    assert "'trade_plan', trade_plan" not in authority_source
+    assert "AS trade_plan_present" in authority_source
+    assert "JOIN analysis.ticker_decision stored_decision" in authority_source
+    assert "THEN stored_decision.input_manifest->'trade_plan'" in authority_source
     assert panel.metadata["today_missing_plan_count"] == 7
     assert all("input_manifest" not in row for row in panel.rows("ticker_decisions"))
     assert all("missing_plan_count" not in row for row in panel.rows("ticker_decisions"))

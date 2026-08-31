@@ -234,6 +234,10 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
             "opportunity_rank_count" not in row and "trade_plan_count" not in row
             for row in panel.rows("ticker_decisions")
         )
+        assert all(
+            "opportunity_rank" not in row and "trade_plan" not in row
+            for row in panel.rows("ticker_decisions")
+        )
 
         sparse_panel = load_panel_scope_data(config, "today", offset=100, limit=1)
         sparse_snapshot = panel_snapshot_payload(sparse_panel, "today", offset=100, limit=1)
