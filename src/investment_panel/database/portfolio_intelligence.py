@@ -133,7 +133,7 @@ def portfolio_performance_rows(
                   WHERE reversal.reverses_transaction_id = transaction.id
               )
             ORDER BY transaction.executed_at, transaction.created_at
-            """
+            """,
         ).fetchall()]
         if not transactions:
             return []
@@ -476,6 +476,7 @@ def portfolio_intelligence_tables(
     include_performance: bool = True,
     row_limits: Mapping[str, int] | None = None,
     total_counts: dict[str, int] | None = None,
+    symbols: set[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Build only the portfolio read models requested by the caller.
 
@@ -497,9 +498,24 @@ def portfolio_intelligence_tables(
         )
         needs_correlations = "correlation_edges" in requested
         needs_summary = bool(requested & {"portfolio_summary", "portfolio_risk_cards", "review_actions"})
-        positions = portfolio_rows(config, connection=connection) if needs_positions else []
-        performance = portfolio_performance_rows(config, connection=connection) if needs_performance else []
-        summary = portfolio_summary(config, positions=positions, performance=performance, connection=connection) if needs_summary else {}
+        normalized_symbols = (
+            {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
+            if symbols is not None else None
+        )
+        all_positions = portfolio_rows(config, connection=connection) if needs_positions else []
+        positions = [
+            row for row in all_positions
+            if normalized_symbols is None or str(row.get("symbol") or "").upper() in normalized_symbols
+        ]
+        performance = portfolio_performance_rows(
+            config, connection=connection,
+        ) if needs_performance else []
+        summary = portfolio_summary(
+            config,
+            positions=all_positions if normalized_symbols is not None else positions,
+            performance=performance,
+            connection=connection,
+        ) if needs_summary else {}
         correlations = portfolio_correlation_rows(config, positions=positions, connection=connection) if needs_correlations else []
         risks = portfolio_risk_rows(config, positions=positions, summary=summary, correlations=correlations, performance=performance) if requested & {"portfolio_risk_cards", "review_actions"} else []
         tables: dict[str, list[dict[str, Any]]] = {}
@@ -510,7 +526,9 @@ def portfolio_intelligence_tables(
         if "portfolio_performance" in requested:
             tables["portfolio_performance"] = performance
         if "portfolio_transactions" in requested:
-            tables["portfolio_transactions"] = portfolio_transaction_rows(config, connection=connection)
+            tables["portfolio_transactions"] = portfolio_transaction_rows(
+                config, symbols=normalized_symbols, connection=connection,
+            )
         if "correlation_edges" in requested:
             tables["correlation_edges"] = correlations
         if "exposure_clusters" in requested:

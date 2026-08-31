@@ -1560,6 +1560,8 @@ def load_postgres_tables(
             intelligence_options["row_limits"] = query_row_limits
         if "total_counts" in intelligence_signature:
             intelligence_options["total_counts"] = intelligence_counts
+        if "symbols" in intelligence_signature:
+            intelligence_options["symbols"] = query_symbol_filter
         live_tables = portfolio_intelligence_tables(config, **intelligence_options)
         for name in requested_intelligence:
             tables[name] = live_tables.get(name, [])

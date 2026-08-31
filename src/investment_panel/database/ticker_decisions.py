@@ -333,7 +333,7 @@ class TickerDecisionRepository:
 
         reference = _utc(now or datetime.now(UTC))
         analysis = AnalysisRepository(self.runtime)
-        alpha_rows, rank_rows, plan_rows = self._current_funnel_publication_rows()
+        alpha_rows, rank_rows, plan_rows = self._current_funnel_publication_rows(reference=reference)
         supplied_action_queue = list(action_queue)
         derived_action_queue: list[dict[str, Any]] = []
         decisions: list[dict[str, Any]] = []
@@ -612,10 +612,13 @@ class TickerDecisionRepository:
 
     def _current_funnel_publication_rows(
         self,
+        *,
+        reference: datetime | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         """Read only current ranking-publication fields used by the funnel."""
 
         model_names = ["alpha_signal", "opportunity_rank", "trade_plan"]
+        publication_cutoff = _utc(reference or datetime.now(UTC))
         with self.runtime.snapshot(API_PROFILE) as connection:
             has_projection = connection.execute(
                 """
@@ -627,9 +630,10 @@ class TickerDecisionRepository:
                     WHERE item.scope = %s
                       AND item.model_name = ANY(%s)
                       AND publication.status = 'published'
+                      AND publication.published_at <= %s
                 ) AS exists
                 """,
-                [TICKER_RANKING_SCOPE, model_names],
+                [TICKER_RANKING_SCOPE, model_names, publication_cutoff],
             ).fetchone()["exists"]
             if has_projection:
                 rows = connection.execute(
@@ -666,9 +670,10 @@ class TickerDecisionRepository:
                     WHERE item.scope = %s
                       AND item.model_name = ANY(%s)
                       AND publication.status = 'published'
+                      AND publication.published_at <= %s
                     ORDER BY item.model_name, item.rank
                     """,
-                    [TICKER_RANKING_SCOPE, model_names],
+                    [TICKER_RANKING_SCOPE, model_names, publication_cutoff],
                 ).fetchall()
             else:
                 rows = connection.execute(
@@ -704,9 +709,10 @@ class TickerDecisionRepository:
                     WHERE publication.scope = %s
                       AND publication.status = 'published'
                       AND item.model_name = ANY(%s)
+                      AND publication.published_at <= %s
                     ORDER BY item.model_name, item.rank
                     """,
-                    [TICKER_RANKING_SCOPE, model_names],
+                    [TICKER_RANKING_SCOPE, model_names, publication_cutoff],
                 ).fetchall()
         grouped: dict[str, list[dict[str, Any]]] = {
             "alpha_signal": [],

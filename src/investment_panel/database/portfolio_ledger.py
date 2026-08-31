@@ -195,14 +195,26 @@ def portfolio_transaction_rows(
     config: AppConfig,
     limit: int | None = 100,
     *,
+    symbols: set[str] | None = None,
     connection: Any | None = None,
 ) -> list[dict[str, Any]]:
+    normalized_symbols = (
+        sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+        if symbols is not None else None
+    )
+    if normalized_symbols == []:
+        return []
     if connection is None:
         runtime = runtime_for_config(config)
         with runtime.read() as owned_connection:
-            return portfolio_transaction_rows(config, limit, connection=owned_connection)
+            return portfolio_transaction_rows(
+                config, limit, symbols=symbols, connection=owned_connection,
+            )
     limit_clause = "LIMIT %s" if limit is not None else ""
-    parameters = [max(1, min(int(limit), 500))] if limit is not None else []
+    symbol_clause = " AND UPPER(instrument.symbol) = ANY(%s)" if normalized_symbols is not None else ""
+    parameters = [normalized_symbols] if normalized_symbols is not None else []
+    if limit is not None:
+        parameters.append(max(1, min(int(limit), 500)))
     rows = connection.execute(
             f"""
             SELECT transaction.id, instrument.symbol, transaction.transaction_type,
@@ -218,6 +230,8 @@ def portfolio_transaction_rows(
                    ) AS is_reversed
             FROM app.portfolio_transaction transaction
             LEFT JOIN catalog.instrument instrument ON instrument.id = transaction.instrument_id
+            WHERE 1 = 1
+              {symbol_clause}
             ORDER BY transaction.executed_at DESC, transaction.created_at DESC
             {limit_clause}
             """,
