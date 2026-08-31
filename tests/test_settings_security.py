@@ -173,7 +173,7 @@ def test_external_entities_are_rejected_by_content_parsers(
 
     class Response:
         content = payload
-        is_redirect = False
+        status_code = 200
 
         @staticmethod
         def raise_for_status() -> None:
@@ -260,6 +260,130 @@ def test_rss_fetch_rejects_private_redirect_before_second_request(
     with pytest.raises(ValueError, match="private or non-routable"):
         update_content_sources._fetch_rss("https://feed.example.test/rss")
     assert sends == 1
+
+
+def test_rss_fetch_follows_validated_pinned_redirect_without_header_leakage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    addresses = {
+        "feed.example.test": "93.184.216.34",
+        "rss.example.test": "151.101.1.69",
+    }
+    requests = []
+
+    def resolve(host, *_args, **_kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addresses[host], 443))]
+
+    def send(client, request, **kwargs):
+        requests.append(request)
+        assert kwargs["follow_redirects"] is False
+        assert "Authorization" not in request.headers
+        assert "Cookie" not in request.headers
+        if len(requests) == 1:
+            client.cookies.set("session", "secret", domain=".example.test")
+            return update_content_sources.httpx.Response(
+                302,
+                request=request,
+                headers={"Location": "https://rss.example.test/final-feed"},
+            )
+        return update_content_sources.httpx.Response(
+            200,
+            request=request,
+            content=b"<rss><channel><item><title>Redirected</title></item></channel></rss>",
+        )
+
+    monkeypatch.setattr(settings_validation.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(update_content_sources.httpx.Client, "send", send)
+
+    assert update_content_sources._fetch_rss("https://feed.example.test/rss")[0]["title"] == "Redirected"
+    assert [str(request.url) for request in requests] == [
+        "https://93.184.216.34/rss",
+        "https://151.101.1.69/final-feed",
+    ]
+    assert [request.headers["Host"] for request in requests] == [
+        "feed.example.test", "rss.example.test",
+    ]
+    assert [request.extensions["sni_hostname"] for request in requests] == [
+        "feed.example.test", "rss.example.test",
+    ]
+
+
+def test_rss_fetch_rejects_redirect_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    sends = 0
+    monkeypatch.setattr(
+        settings_validation.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
+
+    def send(_client, request, **_kwargs):
+        nonlocal sends
+        sends += 1
+        return update_content_sources.httpx.Response(
+            302, request=request, headers={"Location": "/rss#again"},
+        )
+
+    monkeypatch.setattr(update_content_sources.httpx.Client, "send", send)
+
+    with pytest.raises(ValueError, match="redirect loop"):
+        update_content_sources._fetch_rss("https://feed.example.test/rss")
+    assert sends == 1
+
+
+def test_rss_fetch_enforces_redirect_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    sends = 0
+    monkeypatch.setattr(
+        settings_validation.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
+
+    def send(_client, request, **_kwargs):
+        nonlocal sends
+        sends += 1
+        return update_content_sources.httpx.Response(
+            302, request=request, headers={"Location": f"/redirect-{sends}"},
+        )
+
+    monkeypatch.setattr(update_content_sources.httpx.Client, "send", send)
+
+    with pytest.raises(ValueError, match="exceeded 5 redirects"):
+        update_content_sources._fetch_rss("https://feed.example.test/rss")
+    assert sends == update_content_sources.MAX_RSS_REDIRECTS + 1
+
+
+@pytest.mark.parametrize(
+    ("location", "message"),
+    [(None, "missing Location"), ("http://[::1", "Location is invalid")],
+)
+def test_rss_fetch_rejects_missing_or_invalid_redirect_location(
+    monkeypatch: pytest.MonkeyPatch,
+    location: str | None,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        settings_validation.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
+
+    def send(_client, request, **_kwargs):
+        return update_content_sources.httpx.Response(
+            302,
+            request=request,
+            headers={"Location": location} if location is not None else {},
+        )
+
+    monkeypatch.setattr(update_content_sources.httpx.Client, "send", send)
+
+    with pytest.raises(ValueError, match=message):
+        update_content_sources._fetch_rss("https://feed.example.test/rss")
 
 
 def test_substack_uses_the_pinned_rss_fetch_path(

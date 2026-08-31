@@ -44,6 +44,7 @@ BEARISH_MARKERS = (
     "weak demand", "revenue decline", "profit warning", "downgrade", "downgraded",
     "recall", "fraud", "default", "dilution", "layoffs", "investigation",
 )
+MAX_RSS_REDIRECTS = 5
 
 
 def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dict[str, Any]:
@@ -382,25 +383,42 @@ def _archive_payload(config: AppConfig, source_id: str, run_id: Any, payload: An
 
 
 def _fetch_rss(url: str) -> list[dict[str, Any]]:
-    target = resolve_public_http_url(url)
+    current_url = url
+    visited: set[str] = set()
     with httpx.Client(timeout=25, trust_env=False) as client:
-        request = client.build_request(
-            "GET",
-            httpx.URL(target.url).copy_with(host=target.address),
-            headers={
-                "Host": target.authority,
-                "User-Agent": "joehu-market-panel/0.1 contact:local",
-            },
-            extensions={"sni_hostname": target.hostname},
-        )
-        response = client.send(request, follow_redirects=False)
-    if response.is_redirect:
-        location = response.headers.get("Location")
-        if location:
-            resolve_public_http_url(urljoin(target.url, location))
-        raise ValueError("source URL redirects are not allowed")
-    response.raise_for_status()
-    root = ET.fromstring(response.content)
+        for redirect_count in range(MAX_RSS_REDIRECTS + 1):
+            target = resolve_public_http_url(current_url)
+            canonical_url = str(httpx.URL(target.url).copy_with(fragment=None))
+            if canonical_url in visited:
+                raise ValueError("source URL redirect loop detected")
+            visited.add(canonical_url)
+            client.cookies.clear()
+            request = client.build_request(
+                "GET",
+                httpx.URL(target.url).copy_with(host=target.address),
+                headers={
+                    "Host": target.authority,
+                    "User-Agent": "joehu-market-panel/0.1 contact:local",
+                },
+                extensions={"sni_hostname": target.hostname},
+            )
+            response = client.send(request, follow_redirects=False)
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                response.raise_for_status()
+                payload = response.content
+                break
+            if redirect_count >= MAX_RSS_REDIRECTS:
+                raise ValueError(f"source URL exceeded {MAX_RSS_REDIRECTS} redirects")
+            location = response.headers.get("Location")
+            if not location or not location.strip():
+                raise ValueError("source URL redirect is missing Location")
+            try:
+                current_url = urljoin(target.url, location.strip())
+            except ValueError as exc:
+                raise ValueError("source URL redirect Location is invalid") from exc
+        else:  # pragma: no cover - the bounded loop always returns or raises
+            raise ValueError("source URL redirect failed")
+    root = ET.fromstring(payload)
     rows: list[dict[str, Any]] = []
     for node in root.findall(".//item"):
         rows.append({
