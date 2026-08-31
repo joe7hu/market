@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision import (
     AvailabilityStatus,
+    DecisionResolutionV2,
     ExpressionKind,
     Horizon,
     OUTCOME_ATTRIBUTION_CONTRACT_VERSION,
@@ -21,7 +22,9 @@ from investment_panel.core.decision import (
     OutcomeEvidence,
     OutcomeEvidenceState,
     PaperExecutionOutcome,
+    PortfolioImpact,
     TickerDecision,
+    TradeExpression,
     TradePlan,
     InputLineage,
     MarketStateSnapshot,
@@ -33,6 +36,8 @@ from investment_panel.core.decision import (
     is_us_market_day,
     market_evidence_for_decision,
     portfolio_impacts_from_persisted,
+    portfolio_impact_from_persisted,
+    trade_expression_identity,
     trade_plan_from_persisted,
     valid_outcome_error_type,
 )
@@ -331,6 +336,74 @@ class TickerDecisionRepository:
         decisions: list[dict[str, Any]] = []
         market_publications: dict[str, dict[str, Any] | None] = {}
         for row in self._current_funnel_rows(reference=reference):
+            ticker = str(row.get("ticker") or "").strip().upper()
+            compact_contract_valid = True
+            try:
+                stock_expression = TradeExpression.model_validate(row.get("stock_expression"))
+                if stock_expression.kind is not ExpressionKind.STOCK or stock_expression.ticker.strip().upper() != ticker:
+                    raise ValueError("stock expression does not match its ticker decision")
+                stock_expression_projection = {
+                    "availability_status": stock_expression.availability_status.value,
+                    "blockers": list(stock_expression.blockers),
+                }
+            except (KeyError, TypeError, ValueError):
+                compact_contract_valid = False
+                stock_expression = None
+                stock_expression_projection = {
+                    "availability_status": AvailabilityStatus.ERROR.value,
+                    "blockers": ["stock_expression_invalid"],
+                }
+            try:
+                stock_impact = PortfolioImpact.model_validate(portfolio_impact_from_persisted(
+                    row.get("stock_portfolio_impact"), ticker=ticker,
+                ))
+                if (
+                    stock_impact.expression_kind is not ExpressionKind.STOCK
+                    or stock_impact.ticker.strip().upper() != ticker
+                    or stock_impact.opportunity_episode_id != row.get("opportunity_episode_id")
+                    or stock_impact.decision_revision != row.get("decision_revision")
+                    or stock_impact.risk_policy_version != row.get("policy_version")
+                    or _utc(stock_impact.cutoff) != _utc(row["as_of"])
+                    or stock_impact.market_state_publication_id
+                    != (str(row.get("market_state_publication_id") or "") or None)
+                    or stock_expression is None
+                    or stock_impact.expression_identity != trade_expression_identity(stock_expression)
+                ):
+                    raise ValueError("stock portfolio impact does not match its ticker decision")
+                stock_impact_projection = {
+                    "availability_status": stock_impact.availability_status.value,
+                    "blockers": list(stock_impact.blockers),
+                }
+            except (KeyError, TypeError, ValueError):
+                compact_contract_valid = False
+                stock_impact = None
+                stock_impact_projection = {
+                    "availability_status": AvailabilityStatus.ERROR.value,
+                    "blockers": ["stock_portfolio_impact_invalid"],
+                }
+            try:
+                resolution = DecisionResolutionV2.model_validate(row.get("resolution"))
+                if (
+                    resolution.decision_revision != row.get("decision_revision")
+                    or resolution.policy_version != row.get("policy_version")
+                    or (
+                        resolution.ticker is not None
+                        and resolution.ticker.strip().upper() != ticker
+                    )
+                ):
+                    raise ValueError("resolution does not match its ticker decision")
+                resolution_projection = {
+                    "eligibility": resolution.eligibility.value,
+                    "action": resolution.action.value,
+                    "blockers": list(resolution.blockers),
+                }
+            except (KeyError, TypeError, ValueError):
+                compact_contract_valid = False
+                resolution_projection = {
+                    "eligibility": "BLOCKED",
+                    "action": "NO_TRADE",
+                    "blockers": ["decision_resolution_invalid"],
+                }
             selected = row.get("selected_expression")
             selected_mapping = selected if isinstance(selected, Mapping) else None
             selected_kind: ExpressionKind | None
@@ -358,6 +431,16 @@ class TickerDecisionRepository:
                     publication_id=market_publication_id,
                     decision_cutoff=decision_cutoff,
                 )
+            if (
+                stock_impact is not None
+                and snapshot is not None
+                and stock_impact.market_snapshot_id != snapshot.snapshot_id
+            ):
+                compact_contract_valid = False
+                stock_impact_projection = {
+                    "availability_status": AvailabilityStatus.ERROR.value,
+                    "blockers": ["stock_portfolio_impact_invalid"],
+                }
             assessment = (
                 market_evidence_for_decision(snapshot, selected_kind, selected_horizon)
                 if selected_kind is not None and selected_horizon is not None
@@ -365,7 +448,8 @@ class TickerDecisionRepository:
             )
             cash_selected = selected_kind is ExpressionKind.CASH
             facts_available = bool(
-                row.get("has_valid_opportunity_lineage")
+                compact_contract_valid
+                and row.get("has_valid_opportunity_lineage")
                 and (
                     cash_selected
                     or (
@@ -378,19 +462,21 @@ class TickerDecisionRepository:
                 )
             )
             decisions.append({
-                "ticker": row.get("ticker"),
+                "ticker": ticker,
                 "opportunity_episode": (
                     {"present": True} if row.get("has_valid_opportunity_lineage") else None
                 ),
                 "market_state_publication_id": market_publication_id,
-                "expressions": {"STOCK": dict(row.get("stock_expression") or {})},
-                "portfolio_impacts": {"STOCK": dict(row.get("stock_portfolio_impact") or {})},
-                "resolution": dict(row.get("resolution") or {}),
+                "expressions": {"STOCK": stock_expression_projection},
+                "portfolio_impacts": {"STOCK": stock_impact_projection},
+                "resolution": resolution_projection,
                 "published_at": row["published_at"],
                 "point_in_time_facts_available": facts_available,
                 "point_in_time_fact_blockers": (
                     []
                     if facts_available
+                    else ["ticker_decision_contract_invalid"]
+                    if not compact_contract_valid
                     else list(assessment.blockers) if assessment is not None and assessment.blockers
                     else list(snapshot.blockers) if snapshot is not None and snapshot.blockers
                     else ["point_in_time_facts_unavailable"]
@@ -435,37 +521,19 @@ class TickerDecisionRepository:
                       AND decision.published_at <= %s
                 )
                 SELECT candidate.ticker, decision.as_of, decision.published_at,
+                       decision.decision_revision, decision.policy_version,
+                       decision.opportunity_episode_id,
                        CASE WHEN decision.selected_expression IS NULL THEN NULL
                            ELSE jsonb_strip_nulls(jsonb_build_object(
                                'kind', decision.selected_expression->'kind',
                                'horizon', decision.selected_expression->'horizon'
                            ))
                        END AS selected_expression,
-                       jsonb_strip_nulls(jsonb_build_object(
-                           'availability_status', coalesce(
-                               decision.expressions->'STOCK',
-                               decision.expressions->'stock'
-                           )->'availability_status',
-                           'blockers', coalesce(
-                               decision.expressions->'STOCK',
-                               decision.expressions->'stock'
-                           )->'blockers'
-                       )) AS stock_expression,
-                       jsonb_strip_nulls(jsonb_build_object(
-                           'availability_status', coalesce(
-                               decision.portfolio_impacts->'STOCK',
-                               decision.portfolio_impacts->'stock'
-                           )->'availability_status',
-                           'blockers', coalesce(
-                               decision.portfolio_impacts->'STOCK',
-                               decision.portfolio_impacts->'stock'
-                           )->'blockers'
-                       )) AS stock_portfolio_impact,
-                       jsonb_strip_nulls(jsonb_build_object(
-                           'eligibility', decision.resolution->'eligibility',
-                           'action', decision.resolution->'action',
-                           'blockers', decision.resolution->'blockers'
-                       )) AS resolution,
+                       coalesce(decision.expressions->'STOCK', decision.expressions->'stock')
+                           AS stock_expression,
+                       coalesce(decision.portfolio_impacts->'STOCK', decision.portfolio_impacts->'stock')
+                           AS stock_portfolio_impact,
+                       decision.resolution,
                        decision.market_state_publication_id::text,
                        jsonb_typeof(decision.opportunity_episode) = 'object'
                            AND jsonb_typeof(decision.opportunity_episode->'episode_id') = 'string'

@@ -406,6 +406,11 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         assert funnel["policy_version"] == decision.opportunity_rank["ranking_version"]
         assert lane_action["policy_version"] == decision.policy_version
         assert next(stage for stage in funnel["stages"] if stage["stage"] == "action_queue")["count"] == 1
+
+        current_funnel = TickerDecisionRepository(runtime).decision_funnel(now=datetime.now(UTC))
+        assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "stock_expression")["count"] == 1
+        assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "portfolio_impact")["count"] == 1
+        assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "decision_resolution")["count"] == 1
     finally:
         runtime.close()
 
@@ -650,20 +655,50 @@ def test_exact_market_publication_history_remains_valid_after_supersession(
         monkeypatch.setattr(AnalysisRepository, "publication_rows", lambda *_args, **_kwargs: [])
         selected_publication = {"id": first_id}
         decision_repository = TickerDecisionRepository(runtime)
-        monkeypatch.setattr(
-            decision_repository,
-            "_current_funnel_rows",
-            lambda **_kwargs: [{
+        expression = _expression(ExpressionKind.STOCK, decision_cutoff, selected=True)
+        impact = PortfolioImpact(
+            impact_id="impact:market-history", ticker="LANE",
+            opportunity_episode_id="episode:market-history",
+            expression_kind=ExpressionKind.STOCK,
+            expression_identity=trade_expression_identity(expression),
+            decision_revision="decision:market-history",
+            risk_policy_version="risk-policy.v2:test",
+            market_snapshot_id="phase0-market-state:v1",
+            market_state_publication_id=first_id,
+            cutoff=decision_cutoff,
+            availability="unavailable",
+            blockers=("portfolio_context_missing",),
+        )
+        resolution = build_decision_resolution(
+            action="NO_TRADE", decision_revision="decision:market-history",
+            policy_version="risk-policy.v2:test", ticker="LANE",
+            provenance={},
+            blockers=("portfolio_context_missing",), blocked=True,
+            authorization_mode="NONE", data_quality="INCOMPLETE",
+        )
+
+        def compact_rows(**_kwargs):
+            impact_row = impact.model_dump(mode="json")
+            impact_row["market_state_publication_id"] = selected_publication["id"]
+            return [{
                 "ticker": "LANE",
                 "as_of": decision_cutoff,
                 "published_at": decision_cutoff,
+                "decision_revision": "decision:market-history",
+                "policy_version": "risk-policy.v2:test",
+                "opportunity_episode_id": "episode:market-history",
                 "selected_expression": {"kind": "STOCK", "horizon": "FUNDAMENTAL"},
-                "stock_expression": {"availability_status": "available"},
-                "stock_portfolio_impact": {"availability_status": "available"},
-                "resolution": {"eligibility": "ACTIONABLE", "action": "BUY"},
+                "stock_expression": expression.model_dump(mode="json"),
+                "stock_portfolio_impact": impact_row,
+                "resolution": resolution.model_dump(mode="json"),
                 "market_state_publication_id": selected_publication["id"],
                 "has_valid_opportunity_lineage": True,
-            }],
+            }]
+
+        monkeypatch.setattr(
+            decision_repository,
+            "_current_funnel_rows",
+            compact_rows,
         )
 
         funnel = decision_repository.decision_funnel(now=decision_cutoff)
