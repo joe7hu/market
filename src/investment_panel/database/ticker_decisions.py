@@ -684,14 +684,18 @@ class TickerDecisionRepository:
                 rows = connection.execute(
                     """
                     WITH chosen_publication AS MATERIALIZED (
-                        SELECT publication.id, publication.bundle_id, publication.published_at
+                        SELECT publication.id, publication.bundle_id, publication.published_at,
+                               run.input_cutoff
                         FROM app.publication publication
+                        JOIN analysis.run run
+                          ON run.id = publication.analysis_run_id
                         WHERE publication.scope = %s
                           AND publication.status IN ('published', 'superseded')
                           AND publication.published_at IS NOT NULL
                           AND publication.published_at <= %s
-                        ORDER BY publication.published_at DESC, publication.created_at DESC,
-                                 publication.id DESC
+                          AND run.input_cutoff <= %s
+                        ORDER BY run.input_cutoff DESC, publication.published_at DESC,
+                                 publication.created_at DESC, publication.id DESC
                         LIMIT 1
                     ), source_rows AS MATERIALIZED (
                         SELECT item.model_name, item.rank,
@@ -742,7 +746,10 @@ class TickerDecisionRepository:
                     FROM source_rows source
                     ORDER BY source.model_name, source.rank
                     """,
-                    [TICKER_RANKING_SCOPE, publication_cutoff, model_names, model_names],
+                    [
+                        TICKER_RANKING_SCOPE, publication_cutoff, publication_cutoff,
+                        model_names, model_names,
+                    ],
                 ).fetchall()
         grouped: dict[str, list[dict[str, Any]]] = {
             "alpha_signal": [],
