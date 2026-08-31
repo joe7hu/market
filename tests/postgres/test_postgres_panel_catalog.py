@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
+from app.data_access.loaders import load_panel_scope_data
+from app.data_access.payloads import panel_snapshot_payload
 from conftest import typed_config
 from investment_panel.core.decision import build_ticker_decision
 from investment_panel.database.migrations import upgrade_database
@@ -91,7 +93,7 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     prefix = f"TB{uuid4().hex[:5].upper()}"
-    symbols = [f"{prefix}{index:03d}" for index in range(102)]
+    symbols = [f"{prefix}{index:03d}" for index in range(104)]
     as_of = datetime.now(UTC) - timedelta(minutes=1)
     try:
         instrument_ids: list[int] = []
@@ -120,7 +122,7 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
             ).fetchone()
             for index, instrument_id in enumerate(instrument_ids):
                 manifest = dict(template_row["input_manifest"])
-                if index < 100:
+                if index < 102:
                     manifest.update({
                         "opportunity_rank": {"trade_rank": index + 1, "research_rank": index + 1},
                         "trade_plan": {"present": True},
@@ -164,18 +166,45 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
                     ],
                 )
 
+        config = typed_config(migrated_postgres_dsn)
         tables, metadata = load_postgres_tables(
-            typed_config(migrated_postgres_dsn),
+            config,
             ("today_ticker_actions",),
             query_row_limits={"today_ticker_actions": 100},
         )
         rows = tables["today_ticker_actions"]
 
         assert len(rows) == 100
-        assert metadata["table_counts"]["today_ticker_actions"] == 102
+        assert metadata["table_counts"]["today_ticker_actions"] == 104
         assert all("__panel_total_count" not in row for row in rows)
         assert {row["missing_plan_count"] for row in rows} == {2}
+        assert {row["opportunity_rank_count"] for row in rows} == {102}
+        assert {row["trade_plan_count"] for row in rows} == {102}
         assert all(row["opportunity_rank"]["research_rank"] is not None for row in rows)
+
+        panel = load_panel_scope_data(config, "today")
+        snapshot = panel_snapshot_payload(panel, "today")
+
+        assert len(panel.rows("ticker_decisions")) == 100
+        assert {
+            name: panel.metadata["table_counts"][name]
+            for name in ("ticker_decisions", "opportunity_rank", "trade_plan")
+        } == {
+            "ticker_decisions": 104,
+            "opportunity_rank": 102,
+            "trade_plan": 102,
+        }
+        for table_name, total in (
+            ("ticker_decisions", 104),
+            ("opportunity_rank", 102),
+            ("trade_plan", 102),
+        ):
+            assert snapshot["tables"][table_name]["count"] == total
+            assert len(snapshot["tables"][table_name]["rows"]) == 3
+        assert all(
+            "opportunity_rank_count" not in row and "trade_plan_count" not in row
+            for row in panel.rows("ticker_decisions")
+        )
     finally:
         runtime.close()
 

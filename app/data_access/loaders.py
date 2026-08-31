@@ -194,6 +194,15 @@ def load_panel_scope_data(
         )
         action_rows = loaded.rows(compact_name)
         exact_missing_plan_count: int | None = 0 if not action_rows and loaded.status.ready else None
+        exact_authority_counts: dict[str, int] = (
+            {"opportunity_rank": 0, "trade_plan": 0}
+            if not action_rows and loaded.status.ready
+            else {}
+        )
+        authority_count_fields = {
+            "opportunity_rank": "opportunity_rank_count",
+            "trade_plan": "trade_plan_count",
+        }
         decisions: list[dict[str, Any]] = []
         ranks: list[dict[str, Any]] = []
         plans: list[dict[str, Any]] = []
@@ -207,6 +216,15 @@ def load_panel_scope_data(
                 and count >= 0
             ):
                 exact_missing_plan_count = count
+            for table_name, field_name in authority_count_fields.items():
+                authority_count = decision.pop(field_name, None)
+                if (
+                    table_name not in exact_authority_counts
+                    and isinstance(authority_count, int)
+                    and not isinstance(authority_count, bool)
+                    and authority_count >= 0
+                ):
+                    exact_authority_counts[table_name] = authority_count
             rank = decision.get("opportunity_rank")
             if isinstance(rank, dict):
                 rank = dict(rank)
@@ -231,6 +249,7 @@ def load_panel_scope_data(
         action_count = table_counts.get(compact_name)
         if isinstance(action_count, int) and not isinstance(action_count, bool):
             table_counts["ticker_decisions"] = action_count
+        table_counts.update(exact_authority_counts)
         metadata = {
             **loaded.metadata,
             "table_count": len(requested),

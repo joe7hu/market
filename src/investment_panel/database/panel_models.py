@@ -359,6 +359,12 @@ DIRECT_QUERIES: dict[str, str] = {
                policy_version, opportunity_episode_id, selected_expression,
                opportunity_rank, trade_plan,
                count(*) FILTER (
+                   WHERE jsonb_typeof(opportunity_rank) = 'object'
+               ) OVER () AS opportunity_rank_count,
+               count(*) FILTER (
+                   WHERE jsonb_typeof(trade_plan) = 'object'
+               ) OVER () AS trade_plan_count,
+               count(*) FILTER (
                    WHERE jsonb_typeof(trade_plan) IS DISTINCT FROM 'object'
                      AND (
                          jsonb_typeof(opportunity_rank) IS DISTINCT FROM 'object'
