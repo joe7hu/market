@@ -118,13 +118,62 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["count"] == 1
-    assert payload["actions"][0]["ticker"] == "ACME"
-    assert payload["actions"][0]["action"] == "NO_TRADE"
-    assert payload["actions"][0]["selected_expression"] == "CASH"
-    assert payload["actions"][0]["primary_blocker"] == "trade_plan_missing"
-    assert payload["actions"][0]["projection_identity"].startswith("capital:ticker-decision:")
-    assert payload["actions"][0]["resolution"]["action"] == "NO_TRADE"
+    assert payload["count"] == 0
+    assert payload["actions"] == []
+    assert payload["missing_plan_count"] == 1
+    assert payload["book_actions"][0]["ticker"] == "ACME"
+    assert payload["book_actions"][0]["action"] == "NO_TRADE"
+    assert payload["book_actions"][0]["selected_expression"] == "CASH"
+    assert payload["book_actions"][0]["primary_blocker"] == "trade_plan_missing"
+    assert payload["book_actions"][0]["projection_identity"].startswith("capital:ticker-decision:")
+    assert payload["book_actions"][0]["resolution"]["action"] == "NO_TRADE"
+
+
+def test_today_aggregates_missing_plan_backlog_before_queue_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "missing-plan-backlog.json")
+    transitions = [
+        {
+            "id": f"inbox-{index}",
+            "event_type": "ready",
+            "status": "active",
+            "created_at": "2026-08-28T14:00:00Z",
+            "payload": {"symbol": f"I{index:03d}"},
+        }
+        for index in range(10)
+    ]
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_options_actions,
+        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": transitions}),
+    )
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={
+            "ticker_decisions": [
+                {
+                    "symbol": f"T{index:03d}",
+                    "decision_revision": f"ticker-decision.v1:{index}",
+                    "capital_action": {"action": "NO_TRADE", "owned": False},
+                    "as_of": "2026-08-28T14:00:00Z",
+                }
+                for index in range(100)
+            ],
+        },
+    )
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+
+    response = TestClient(app).get("/api/today")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["missing_plan_count"] == 100
+    assert payload["count"] == 10
+    assert [item["projection_identity"] for item in payload["actions"]] == [
+        f"inbox:decision-inbox:inbox-{index}" for index in range(10)
+    ]
+    assert all(item["source"] == "decision_inbox" for item in payload["actions"])
 
 
 def test_today_keeps_other_sources_when_ticker_capital_exceeds_limit(
@@ -151,7 +200,7 @@ def test_today_keeps_other_sources_when_ticker_capital_exceeds_limit(
                 {
                     "symbol": f"T{index:03d}",
                     "decision_revision": f"ticker-decision.v1:{index}",
-                    "capital_action": {"action": "BUY", "owned": False},
+                    "capital_action": {"action": "BUY", "owned": True},
                     "as_of": "2026-08-28T14:00:00Z",
                 }
                 for index in range(150)

@@ -5976,6 +5976,11 @@ export interface components {
              * @default 0
              */
             count: number;
+            /**
+             * Missing Plan Count
+             * @default 0
+             */
+            missing_plan_count: number;
             status: components["schemas"]["ApiStatusResponse"];
         };
         /**

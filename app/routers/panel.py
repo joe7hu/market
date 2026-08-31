@@ -130,8 +130,10 @@ def today(
         int(row.get("research_rank") or 0) if row.get("research_rank") is not None else 0,
         str(row.get("ticker")),
     ))
+    missing_plan_count = sum(_is_unranked_missing_plan_action(row) for row in capital_actions)
+    visible_capital_actions = [row for row in capital_actions if not _is_unranked_missing_plan_action(row)]
     queue_items = _bounded_today_queue(
-        capital_actions,
+        visible_capital_actions,
         decision_inbox_queue(_read_inbox(option_actions)),
         _portfolio_risk_queue(panel_data.rows("portfolio_risk_cards")),
         research_queue(panel_data.rows("feed_signals")),
@@ -148,6 +150,7 @@ def today(
         "as_of": as_of,
         "actions": queue_items,
         "book_actions": book_action_queue(capital_actions),
+        "missing_plan_count": missing_plan_count,
         "count": len(queue_items),
     }
 
@@ -387,6 +390,18 @@ def _bounded_today_queue(
     queue.extend(capital_actions[capital_limit:])
     queue.extend(row for rows in secondary for row in rows[1:])
     return dedupe_queue(queue)[:ACTION_QUEUE_LIMIT]
+
+
+def _is_unranked_missing_plan_action(row: dict[str, Any]) -> bool:
+    return (
+        row.get("source") == "capital_action"
+        and row.get("lifecycle_state") == "blocked"
+        and row.get("primary_blocker") == "trade_plan_missing"
+        and row.get("trade_plan") is None
+        and row.get("trade_rank") is None
+        and row.get("research_rank") is None
+        and not row.get("owned")
+    )
 
 
 def _queue_value(row: dict[str, Any], payload: dict[str, Any], *names: str) -> Any:

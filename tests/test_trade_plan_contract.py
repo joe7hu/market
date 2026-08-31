@@ -408,7 +408,9 @@ def test_today_api_projects_the_bound_plan_terms(monkeypatch: pytest.MonkeyPatch
 
     result = panel_router.today(config=object())
 
-    action = result["actions"][0]
+    assert result["actions"] == []
+    assert result["missing_plan_count"] == 1
+    action = result["book_actions"][0]
     assert action["action"] == "NO_TRADE"
     assert action["selected_expression"] == "CASH"
     assert action["trade_plan"] is None
@@ -489,8 +491,13 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert "octet_length((decision.input_manifest->'trade_plan')::text) <= 327680" in query
     assert "pg_input_is_valid(opportunity_rank->>'trade_rank', 'integer')" in query
     assert all("input_manifest" not in row for row in panel.rows("ticker_decisions"))
-    assert [row["ticker"] for row in queue["actions"]] == [f"T{index}" for index in range(5)]
-    assert all(row["trade_rank_unavailable_reason"] != "opportunity_rank_missing" for row in queue["actions"])
+    assert queue["actions"] == []
+    assert queue["missing_plan_count"] == 5
+    assert [row["ticker"] for row in queue["book_actions"][:-1]] == [f"T{index}" for index in range(5)]
+    assert all(
+        row["trade_rank_unavailable_reason"] != "opportunity_rank_missing"
+        for row in queue["book_actions"][:-1]
+    )
     assert snapshot["tables"]["ticker_decisions"]["count"] == 5
     assert len(snapshot["tables"]["ticker_decisions"]["rows"]) == 3
     assert snapshot["tables"]["portfolio"]["rows"] == [{"symbol": "HELD"}]

@@ -5,13 +5,14 @@ import { createElement } from "react";
 import type { TodayResponse } from "@/api/panel";
 import type { components } from "@/generated/apiSchema";
 import { PortfolioImpactCard, TradePlanCard } from "./TradePlanCard";
-import { ActionQueueCard, actionQueueDisplay, tradePlanForAction } from "./today";
+import { ActionQueueCard, tradePlanForAction } from "./today";
 
 type TradePlan = components["schemas"]["TradePlan"];
 
 const response: TodayResponse = {
   status: { ready: true, message: "test", source: "test" },
   count: 1,
+  missing_plan_count: 0,
   actions: [{
     projection_identity: "capital:ticker-decision:decision:AAA",
     source_authority: "ticker-decision:decision:AAA",
@@ -209,20 +210,6 @@ describe("Today Action Queue", () => {
     expect(tradePlanForAction({ ...response.actions![0], source: "inbox_transition" })).toBeUndefined();
   });
 
-  it("aggregates only the exact unranked missing-plan backlog", () => {
-    const backlog = Array.from({ length: 100 }, (_, index) => ({
-      ...response.actions![0],
-      projection_identity: `capital:ticker-decision:decision:${index}`,
-    }));
-    const ranked = { ...response.actions![0], projection_identity: "capital:ranked", trade_rank: 1 };
-    const owned = { ...response.actions![0], projection_identity: "capital:owned", owned: true };
-    const transition = { ...response.actions![0], projection_identity: "inbox:transition", source: "inbox_transition" };
-
-    const display = actionQueueDisplay([...backlog, ranked, owned, transition]);
-
-    expect(display.missingPlanCount).toBe(100);
-    expect(display.items.map((item) => item.projection_identity)).toEqual(["capital:ranked", "capital:owned", "inbox:transition"]);
-  });
 });
 
 const plan = (overrides: Partial<TradePlan> = {}): TradePlan => ({

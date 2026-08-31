@@ -13689,6 +13689,11 @@
             "title": "Count",
             "type": "integer"
           },
+          "missing_plan_count": {
+            "default": 0,
+            "title": "Missing Plan Count",
+            "type": "integer"
+          },
           "status": {
             "$ref": "#/components/schemas/ApiStatusResponse"
           }

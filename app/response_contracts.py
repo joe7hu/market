@@ -127,6 +127,7 @@ class TodayResponse(BaseModel):
     as_of: datetime | None = None
     actions: list[TodayCapitalAction] = Field(default_factory=list)
     book_actions: list[TodayCapitalAction] = Field(default_factory=list)
+    missing_plan_count: int = 0
     count: int = 0
 
 
