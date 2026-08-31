@@ -15,6 +15,7 @@ from investment_panel.database.ticker_decisions import (
     TickerDecisionRepository,
     decision_funnel_payload,
 )
+import investment_panel.database.ticker_decisions as ticker_decisions
 
 
 NOW = datetime(2026, 8, 29, 14, tzinfo=UTC)
@@ -133,6 +134,25 @@ def test_decision_funnel_keeps_backend_policy_and_blocker_ownership() -> None:
         "affected_symbols": ["BBB"],
     }
     assert alpha["owner"] == "strategy-governance"
+    assert next(stage for stage in payload["stages"] if stage["stage"] == "action_queue")["count"] == 1
+
+
+def test_decision_funnel_derives_action_queue_from_compact_authority(monkeypatch) -> None:
+    repository = TickerDecisionRepository(object())
+    monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
+    monkeypatch.setattr(repository, "_current_funnel_rows", lambda **_kwargs: [_valid_compact_row()])
+    monkeypatch.setattr(
+        ticker_decisions,
+        "_funnel_action_queue_row",
+        lambda **_kwargs: {
+            "ticker": "AAA", "source": "capital_action",
+            "lifecycle_state": "actionable", "selected_expression": "STOCK",
+            "trade_plan": {"trade_plan_id": "plan:aaa"},
+        },
+    )
+
+    payload = repository.decision_funnel(now=NOW)
+
     assert next(stage for stage in payload["stages"] if stage["stage"] == "action_queue")["count"] == 1
 
 

@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
+from math import isfinite
 from typing import Any, Iterable, Mapping
 from uuid import UUID
 
@@ -333,6 +334,8 @@ class TickerDecisionRepository:
         reference = _utc(now or datetime.now(UTC))
         analysis = AnalysisRepository(self.runtime)
         alpha_rows, rank_rows, plan_rows = self._current_funnel_publication_rows()
+        supplied_action_queue = list(action_queue)
+        derived_action_queue: list[dict[str, Any]] = []
         decisions: list[dict[str, Any]] = []
         market_publications: dict[str, dict[str, Any] | None] = {}
         for row in self._current_funnel_rows(reference=reference):
@@ -393,13 +396,16 @@ class TickerDecisionRepository:
                 ):
                     raise ValueError("resolution does not match its ticker decision")
                 resolution_projection = {
+                    "trade_plan_id": resolution.trade_plan_id,
                     "eligibility": resolution.eligibility.value,
                     "action": resolution.action.value,
                     "blockers": list(resolution.blockers),
                 }
             except (KeyError, TypeError, ValueError):
                 compact_contract_valid = False
+                resolution = None
                 resolution_projection = {
+                    "trade_plan_id": None,
                     "eligibility": "BLOCKED",
                     "action": "NO_TRADE",
                     "blockers": ["decision_resolution_invalid"],
@@ -584,9 +590,24 @@ class TickerDecisionRepository:
                     else ["point_in_time_facts_unavailable"]
                 ),
             })
+            if not supplied_action_queue and facts_available:
+                action = _funnel_action_queue_row(
+                    row=row,
+                    ticker=ticker,
+                    opportunity_episode=opportunity_episode,
+                    selected_kind=selected_kind,
+                    stock_expression=stock_expression,
+                    stock_impact=stock_impact,
+                    resolution=resolution,
+                    rank_rows=rank_rows,
+                    plan_rows=plan_rows,
+                ) if compact_contract_valid else None
+                if action is not None:
+                    derived_action_queue.append(action)
         return decision_funnel_payload(
             decisions, alpha_rows, rank_rows, plan_rows,
-            action_queue_rows=list(action_queue), now=reference,
+            action_queue_rows=supplied_action_queue or derived_action_queue,
+            now=reference,
         )
 
     def _current_funnel_publication_rows(
@@ -624,6 +645,17 @@ class TickerDecisionRepository:
                                AS trade_rank_unavailable_reason,
                            payload.payload->>'eligibility' AS eligibility,
                            payload.payload->>'ranking_version' AS ranking_version,
+                           payload.payload->>'decision_revision' AS decision_revision,
+                           payload.payload->>'opportunity_episode_id' AS opportunity_episode_id,
+                           payload.payload->>'policy_version' AS policy_version,
+                           payload.payload->>'selected_expression_kind' AS selected_expression_kind,
+                           payload.payload->>'selected_expression_identity' AS selected_expression_identity,
+                           payload.payload->>'rank_id' AS rank_id,
+                           payload.payload->>'portfolio_impact_id' AS portfolio_impact_id,
+                           payload.payload->>'market_state_publication_id' AS market_state_publication_id,
+                           payload.payload->'evaluated_universe_complete' AS evaluated_universe_complete,
+                           payload.payload->>'trade_utility' AS trade_utility,
+                           payload.payload->>'trade_plan_id' AS trade_plan_id,
                            publication.id::text AS publication_id,
                            publication.published_at
                     FROM app.current_publication_item item
@@ -653,6 +685,17 @@ class TickerDecisionRepository:
                                AS trade_rank_unavailable_reason,
                            item.payload->>'eligibility' AS eligibility,
                            item.payload->>'ranking_version' AS ranking_version,
+                           item.payload->>'decision_revision' AS decision_revision,
+                           item.payload->>'opportunity_episode_id' AS opportunity_episode_id,
+                           item.payload->>'policy_version' AS policy_version,
+                           item.payload->>'selected_expression_kind' AS selected_expression_kind,
+                           item.payload->>'selected_expression_identity' AS selected_expression_identity,
+                           item.payload->>'rank_id' AS rank_id,
+                           item.payload->>'portfolio_impact_id' AS portfolio_impact_id,
+                           item.payload->>'market_state_publication_id' AS market_state_publication_id,
+                           item.payload->'evaluated_universe_complete' AS evaluated_universe_complete,
+                           item.payload->>'trade_utility' AS trade_utility,
+                           item.payload->>'trade_plan_id' AS trade_plan_id,
                            publication.id::text AS publication_id,
                            publication.published_at
                     FROM app.publication publication
@@ -672,7 +715,7 @@ class TickerDecisionRepository:
         }
         for row in rows:
             projected = {
-                key: row[key]
+                key: row.get(key)
                 for key in (
                     "ticker",
                     "availability_status",
@@ -682,9 +725,20 @@ class TickerDecisionRepository:
                     "trade_rank_unavailable_reason",
                     "eligibility",
                     "ranking_version",
+                    "decision_revision",
+                    "opportunity_episode_id",
+                    "policy_version",
+                    "selected_expression_kind",
+                    "selected_expression_identity",
+                    "rank_id",
+                    "portfolio_impact_id",
+                    "market_state_publication_id",
+                    "evaluated_universe_complete",
+                    "trade_utility",
+                    "trade_plan_id",
                     "publication_id",
                 )
-                if row[key] is not None
+                if row.get(key) is not None
             }
             if row["published_at"] is not None:
                 projected["publication_published_at"] = row["published_at"].isoformat()
@@ -2560,6 +2614,97 @@ def _parse_datetime(value: Any) -> datetime | None:
         return _utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except (TypeError, ValueError):
         return None
+
+
+def _funnel_action_queue_row(
+    *,
+    row: Mapping[str, Any],
+    ticker: str,
+    opportunity_episode: OpportunityEpisode | None,
+    selected_kind: ExpressionKind | None,
+    stock_expression: TradeExpression | None,
+    stock_impact: PortfolioImpact | None,
+    resolution: DecisionResolutionV2 | None,
+    rank_rows: list[dict[str, Any]],
+    plan_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Derive the action-queue stage from the same compact current authority."""
+
+    if (
+        opportunity_episode is None
+        or selected_kind is not ExpressionKind.STOCK
+        or stock_expression is None
+        or stock_expression.availability_status is not AvailabilityStatus.AVAILABLE
+        or stock_impact is None
+        or stock_impact.availability_status is not AvailabilityStatus.AVAILABLE
+        or resolution is None
+        or resolution.eligibility.value != "ACTIONABLE"
+        or resolution.action.value in {"NO_TRADE", "AVOID"}
+    ):
+        return None
+    revision = str(row.get("decision_revision") or "")
+    episode_id = str(row.get("opportunity_episode_id") or "")
+    policy_version = str(row.get("policy_version") or "")
+    expression_identity = trade_expression_identity(stock_expression)
+    rank_matches = [
+        candidate for candidate in rank_rows
+        if str(candidate.get("ticker") or candidate.get("symbol") or "").strip().upper() == ticker
+        and str(candidate.get("decision_revision") or "") == revision
+        and str(candidate.get("opportunity_episode_id") or "") == episode_id
+    ]
+    plan_matches = [
+        candidate for candidate in plan_rows
+        if str(candidate.get("ticker") or candidate.get("symbol") or "").strip().upper() == ticker
+        and str(candidate.get("decision_revision") or "") == revision
+        and str(candidate.get("opportunity_episode_id") or "") == episode_id
+    ]
+    if len(rank_matches) != 1 or len(plan_matches) != 1:
+        return None
+    rank = rank_matches[0]
+    plan = plan_matches[0]
+    publication_id = str(rank.get("publication_id") or "")
+    plan_id = str(plan.get("trade_plan_id") or "")
+    if (
+        not publication_id
+        or str(plan.get("publication_id") or "") != publication_id
+        or str(rank.get("policy_version") or "") != policy_version
+        or str(plan.get("policy_version") or "") != policy_version
+        or str(rank.get("selected_expression_kind") or "") != "STOCK"
+        or str(plan.get("selected_expression_kind") or "") != "STOCK"
+        or str(rank.get("selected_expression_identity") or "") != expression_identity
+        or str(plan.get("selected_expression_identity") or "") != expression_identity
+        or str(rank.get("portfolio_impact_id") or "") != stock_impact.impact_id
+        or str(plan.get("portfolio_impact_id") or "") != stock_impact.impact_id
+        or str(rank.get("market_state_publication_id") or "")
+            != str(stock_impact.market_state_publication_id or "")
+        or str(plan.get("market_state_publication_id") or "")
+            != str(stock_impact.market_state_publication_id or "")
+        or str(resolution.trade_plan_id or "") != plan_id
+        or not plan_id
+        or str(plan.get("availability_status") or "").lower() != "available"
+        or str(plan.get("eligibility") or "").upper() != "ACTIONABLE"
+        or str(rank.get("availability_status") or "").lower() != "available"
+        or not _funnel_bool(rank.get("evaluated_universe_complete"))
+    ):
+        return None
+    try:
+        trade_rank = int(rank.get("trade_rank"))
+        trade_utility = float(rank.get("trade_utility"))
+    except (TypeError, ValueError):
+        return None
+    if trade_rank <= 0 or not isfinite(trade_utility) or trade_utility <= 0:
+        return None
+    return {
+        "ticker": ticker,
+        "source": "capital_action",
+        "lifecycle_state": "actionable",
+        "selected_expression": "STOCK",
+        "trade_plan": {"trade_plan_id": plan_id},
+    }
+
+
+def _funnel_bool(value: Any) -> bool:
+    return value is True or str(value or "").strip().lower() == "true"
 
 
 def _funnel_lineage_timestamp(value: Any) -> datetime | None:
