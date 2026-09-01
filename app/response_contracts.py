@@ -39,6 +39,7 @@ from investment_panel.core.decision import (
     MarketEvidenceAssessment,
     OpportunityEpisode,
     OpportunityRank,
+    ResolutionAction,
     ResolutionEligibility,
     ResolutionLifecycle,
     InstrumentStateSnapshot,
@@ -95,6 +96,56 @@ class PanelSnapshotResponse(BaseModel):
     tables: dict[str, TablePayloadResponse] = Field(default_factory=dict)
 
 
+class TodayResolutionSummaryResponse(BaseModel):
+    """The action-queue resolution without immutable audit bodies."""
+
+    contract_version: str
+    lifecycle: ResolutionLifecycle
+    eligibility: ResolutionEligibility
+    authorization_mode: AuthorizationMode
+    data_quality: str
+    action: ResolutionAction
+    trade_plan_id: str | None = None
+    primary_blocker: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+    next_action: str
+    policy_version: str
+    decision_revision: str
+    ticker: str | None = None
+    rationale: str = ""
+    owned: bool = False
+    price_condition: str | None = None
+    catalyst: str | None = None
+    expires_at: date | datetime | None = None
+
+
+class TodayTradePlanSummaryResponse(BaseModel):
+    """The action-queue plan identity and display terms only."""
+
+    contract_version: str
+    trade_plan_id: str
+    publication_id: str | None = None
+    ticker: str
+    opportunity_episode_id: str
+    decision_revision: str
+    policy_version: str
+    selected_expression_kind: ExpressionKind
+    selected_expression_identity: str
+    rank_id: str | None = None
+    alpha_signal_id: str | None = None
+    portfolio_impact_id: str | None = None
+    market_snapshot_id: str | None = None
+    market_state_publication_id: str | None = None
+    action: str
+    eligibility: str
+    authorization_mode: str
+    data_quality: str
+    rationale: str = ""
+    primary_blocker: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+    next_action: str
+
+
 class TodayCapitalAction(FlexibleResponse):
     projection_identity: str
     source_authority: str
@@ -112,7 +163,7 @@ class TodayCapitalAction(FlexibleResponse):
     rationale: str = ""
     decision_revision: str | None = None
     policy_version: str = "risk-policy.v2:legacy"
-    resolution: DecisionResolutionV2 | None = None
+    resolution: TodayResolutionSummaryResponse | None = None
     selected_expression: str | None = None
     price_condition: str | None = None
     catalyst: str | None = None
@@ -121,7 +172,7 @@ class TodayCapitalAction(FlexibleResponse):
     trade_rank: int | None = None
     trade_rank_unavailable_reason: str | None = None
     trade_utility: float | None = None
-    trade_plan: TradePlan | None = None
+    trade_plan: TodayTradePlanSummaryResponse | None = None
 
 
 ActionQueueItem = TodayCapitalAction
@@ -742,7 +793,9 @@ __all__ = [
     "SuperinvestorDetailResponse",
     "TablePayloadResponse",
     "TodayCapitalAction",
+    "TodayResolutionSummaryResponse",
     "TodayResponse",
+    "TodayTradePlanSummaryResponse",
     "ThesisAutomationResponse",
     "ThesisHistoryResponse",
     "ThesisMutationResponse",

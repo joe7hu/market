@@ -174,7 +174,7 @@ export function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onO
   );
 }
 
-type TradePlan = components["schemas"]["TradePlan"];
+type TradePlan = components["schemas"]["TodayTradePlanSummaryResponse"];
 
 function CompactPlanSummary({ plan }: { plan: TradePlan | null }) {
   if (!plan) {

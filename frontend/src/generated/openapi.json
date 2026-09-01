@@ -13434,7 +13434,7 @@
           "resolution": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/DecisionResolutionV2"
+                "$ref": "#/components/schemas/TodayResolutionSummaryResponse"
               },
               {
                 "type": "null"
@@ -13478,7 +13478,7 @@
           "trade_plan": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/TradePlan"
+                "$ref": "#/components/schemas/TodayTradePlanSummaryResponse"
               },
               {
                 "type": "null"
@@ -13541,6 +13541,144 @@
         "title": "TodayCapitalAction",
         "type": "object"
       },
+      "TodayResolutionSummaryResponse": {
+        "description": "The action-queue resolution without immutable audit bodies.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ResolutionAction"
+          },
+          "authorization_mode": {
+            "$ref": "#/components/schemas/AuthorizationMode"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "catalyst": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst"
+          },
+          "contract_version": {
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "data_quality": {
+            "title": "Data Quality",
+            "type": "string"
+          },
+          "decision_revision": {
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/ResolutionEligibility"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/ResolutionLifecycle"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "owned": {
+            "default": false,
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "price_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Condition"
+          },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
+          },
+          "rationale": {
+            "default": "",
+            "title": "Rationale",
+            "type": "string"
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker"
+          },
+          "trade_plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Plan Id"
+          }
+        },
+        "required": [
+          "contract_version",
+          "lifecycle",
+          "eligibility",
+          "authorization_mode",
+          "data_quality",
+          "action",
+          "next_action",
+          "policy_version",
+          "decision_revision"
+        ],
+        "title": "TodayResolutionSummaryResponse",
+        "type": "object"
+      },
       "TodayResponse": {
         "properties": {
           "actions": {
@@ -13587,6 +13725,168 @@
           "status"
         ],
         "title": "TodayResponse",
+        "type": "object"
+      },
+      "TodayTradePlanSummaryResponse": {
+        "description": "The action-queue plan identity and display terms only.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "alpha_signal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alpha Signal Id"
+          },
+          "authorization_mode": {
+            "title": "Authorization Mode",
+            "type": "string"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "contract_version": {
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "data_quality": {
+            "title": "Data Quality",
+            "type": "string"
+          },
+          "decision_revision": {
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "eligibility": {
+            "title": "Eligibility",
+            "type": "string"
+          },
+          "market_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Snapshot Id"
+          },
+          "market_state_publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market State Publication Id"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "opportunity_episode_id": {
+            "title": "Opportunity Episode Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "portfolio_impact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Impact Id"
+          },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
+          },
+          "publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Id"
+          },
+          "rank_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Id"
+          },
+          "rationale": {
+            "default": "",
+            "title": "Rationale",
+            "type": "string"
+          },
+          "selected_expression_identity": {
+            "title": "Selected Expression Identity",
+            "type": "string"
+          },
+          "selected_expression_kind": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "trade_plan_id": {
+            "title": "Trade Plan Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_version",
+          "trade_plan_id",
+          "ticker",
+          "opportunity_episode_id",
+          "decision_revision",
+          "policy_version",
+          "selected_expression_kind",
+          "selected_expression_identity",
+          "action",
+          "eligibility",
+          "authorization_mode",
+          "data_quality",
+          "next_action"
+        ],
+        "title": "TodayTradePlanSummaryResponse",
         "type": "object"
       },
       "TradePlan": {

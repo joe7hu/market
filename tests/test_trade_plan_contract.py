@@ -542,6 +542,11 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
         row["trade_rank_unavailable_reason"] != "opportunity_rank_missing"
         for row in queue["book_actions"][:-1]
     )
+    for row in queue["book_actions"]:
+        assert "portfolio_context" not in (row.get("resolution") or {})
+        plan = row.get("trade_plan") or {}
+        assert "input_lineage" not in plan
+        assert "portfolio_impact" not in plan
     assert snapshot["tables"]["ticker_decisions"]["count"] == 5
     assert len(snapshot["tables"]["ticker_decisions"]["rows"]) == 3
     assert snapshot["tables"]["portfolio"]["rows"] == [{"symbol": "HELD"}]

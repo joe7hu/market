@@ -5924,7 +5924,7 @@ export interface components {
             rationale: string;
             /** Research Rank */
             research_rank?: number | null;
-            resolution?: components["schemas"]["DecisionResolutionV2"] | null;
+            resolution?: components["schemas"]["TodayResolutionSummaryResponse"] | null;
             /** Selected Expression */
             selected_expression?: string | null;
             /** Source */
@@ -5935,7 +5935,7 @@ export interface components {
             ticker?: string | null;
             /** Title */
             title: string;
-            trade_plan?: components["schemas"]["TradePlan"] | null;
+            trade_plan?: components["schemas"]["TodayTradePlanSummaryResponse"] | null;
             /** Trade Rank */
             trade_rank?: number | null;
             /** Trade Rank Unavailable Reason */
@@ -5946,6 +5946,50 @@ export interface components {
             transition?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * TodayResolutionSummaryResponse
+         * @description The action-queue resolution without immutable audit bodies.
+         */
+        TodayResolutionSummaryResponse: {
+            action: components["schemas"]["ResolutionAction"];
+            authorization_mode: components["schemas"]["AuthorizationMode"];
+            /** Blockers */
+            blockers?: string[];
+            /** Catalyst */
+            catalyst?: string | null;
+            /** Contract Version */
+            contract_version: string;
+            /** Data Quality */
+            data_quality: string;
+            /** Decision Revision */
+            decision_revision: string;
+            eligibility: components["schemas"]["ResolutionEligibility"];
+            /** Expires At */
+            expires_at?: string | null;
+            lifecycle: components["schemas"]["ResolutionLifecycle"];
+            /** Next Action */
+            next_action: string;
+            /**
+             * Owned
+             * @default false
+             */
+            owned: boolean;
+            /** Policy Version */
+            policy_version: string;
+            /** Price Condition */
+            price_condition?: string | null;
+            /** Primary Blocker */
+            primary_blocker?: string | null;
+            /**
+             * Rationale
+             * @default
+             */
+            rationale: string;
+            /** Ticker */
+            ticker?: string | null;
+            /** Trade Plan Id */
+            trade_plan_id?: string | null;
         };
         /** TodayResponse */
         TodayResponse: {
@@ -5966,6 +6010,58 @@ export interface components {
              */
             missing_plan_count: number;
             status: components["schemas"]["ApiStatusResponse"];
+        };
+        /**
+         * TodayTradePlanSummaryResponse
+         * @description The action-queue plan identity and display terms only.
+         */
+        TodayTradePlanSummaryResponse: {
+            /** Action */
+            action: string;
+            /** Alpha Signal Id */
+            alpha_signal_id?: string | null;
+            /** Authorization Mode */
+            authorization_mode: string;
+            /** Blockers */
+            blockers?: string[];
+            /** Contract Version */
+            contract_version: string;
+            /** Data Quality */
+            data_quality: string;
+            /** Decision Revision */
+            decision_revision: string;
+            /** Eligibility */
+            eligibility: string;
+            /** Market Snapshot Id */
+            market_snapshot_id?: string | null;
+            /** Market State Publication Id */
+            market_state_publication_id?: string | null;
+            /** Next Action */
+            next_action: string;
+            /** Opportunity Episode Id */
+            opportunity_episode_id: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Portfolio Impact Id */
+            portfolio_impact_id?: string | null;
+            /** Primary Blocker */
+            primary_blocker?: string | null;
+            /** Publication Id */
+            publication_id?: string | null;
+            /** Rank Id */
+            rank_id?: string | null;
+            /**
+             * Rationale
+             * @default
+             */
+            rationale: string;
+            /** Selected Expression Identity */
+            selected_expression_identity: string;
+            selected_expression_kind: components["schemas"]["ExpressionKind"];
+            /** Ticker */
+            ticker: string;
+            /** Trade Plan Id */
+            trade_plan_id: string;
         };
         /**
          * TradePlan

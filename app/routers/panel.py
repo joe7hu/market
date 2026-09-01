@@ -114,7 +114,7 @@ def today(
             "ticker": symbol,
             "decision_revision": revision or None,
             "policy_version": resolution.policy_version,
-            "resolution": resolution.model_dump(mode="json"),
+            "resolution": _today_resolution_payload(resolution),
             "selected_expression": plan.selected_expression_kind.value if plan is not None else "CASH",
             "research_rank": (
                 rank.get("research_rank")
@@ -124,7 +124,7 @@ def today(
             "trade_rank": rank.get("trade_rank") if plan is not None and rank_ready and rank else None,
             "trade_rank_unavailable_reason": None if plan is not None and rank_ready else rank_reason,
             "trade_utility": rank.get("trade_utility") if plan is not None and rank_ready and rank else None,
-            "trade_plan": plan.model_dump(mode="json") if plan is not None else None,
+            "trade_plan": _today_trade_plan_payload(plan) if plan is not None else None,
         })
     capital_actions.sort(key=lambda row: (
         0 if row.get("trade_rank") is not None else 1,
@@ -162,6 +162,24 @@ def today(
         "missing_plan_count": missing_plan_count,
         "count": len(queue_items),
     }
+
+
+def _today_resolution_payload(resolution: Any) -> dict[str, Any]:
+    return resolution.model_dump(mode="json", include={
+        "contract_version", "lifecycle", "eligibility", "authorization_mode", "data_quality",
+        "action", "trade_plan_id", "primary_blocker", "blockers", "next_action", "policy_version",
+        "decision_revision", "ticker", "rationale", "owned", "price_condition", "catalyst", "expires_at",
+    })
+
+
+def _today_trade_plan_payload(plan: Any) -> dict[str, Any]:
+    return plan.model_dump(mode="json", include={
+        "contract_version", "trade_plan_id", "publication_id", "ticker", "opportunity_episode_id",
+        "decision_revision", "policy_version", "selected_expression_kind", "selected_expression_identity",
+        "rank_id", "alpha_signal_id", "portfolio_impact_id", "market_snapshot_id",
+        "market_state_publication_id", "action", "eligibility", "authorization_mode", "data_quality",
+        "rationale", "primary_blocker", "blockers", "next_action",
+    })
 
 
 def book_action_queue(rows: list[dict[str, Any]], *, limit: int = ACTION_QUEUE_LIMIT) -> list[dict[str, Any]]:
