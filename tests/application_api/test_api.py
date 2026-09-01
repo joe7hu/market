@@ -1521,8 +1521,6 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
 
 
 def test_local_api_guard_allows_private_lan_clients(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MARKET_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128")
-
     def request(host: str, headers: dict[str, str] | None = None) -> SimpleNamespace:
         return SimpleNamespace(
             client=SimpleNamespace(host=host),
@@ -1532,14 +1530,7 @@ def test_local_api_guard_allows_private_lan_clients(monkeypatch: pytest.MonkeyPa
     require_local_request(request("100.120.95.8"))
     require_local_request(request("192.168.50.197"))
     require_local_request(request("127.0.0.1"))
-    require_local_request(request("127.0.0.1", {"x-forwarded-for": "192.168.50.42"}))
-    require_local_request(
-        request("127.0.0.1", {"x-forwarded-for": "100.120.95.8, 192.168.50.42"})
-    )
     require_local_request(request("::ffff:100.120.95.8"))
-    require_local_request(
-        request("::1", {"x-forwarded-for": "::ffff:100.120.95.8, 192.168.50.42"})
-    )
 
     with pytest.raises(HTTPException):
         require_local_request(request("8.8.8.8"))
@@ -1547,6 +1538,10 @@ def test_local_api_guard_allows_private_lan_clients(monkeypatch: pytest.MonkeyPa
         require_local_request(request("2001:4860:4860::8888"))
     with pytest.raises(HTTPException):
         require_local_request(request("127.0.0.1", {"x-forwarded-for": "8.8.8.8"}))
+    with pytest.raises(HTTPException):
+        require_local_request(request("127.0.0.1", {"x-forwarded-for": "192.168.50.42"}))
+    with pytest.raises(HTTPException):
+        require_local_request(request("127.0.0.1", {"forwarded": "for=192.168.50.42"}))
     with pytest.raises(HTTPException):
         require_local_request(request("localhost", {"x-forwarded-for": "8.8.8.8"}))
     with pytest.raises(HTTPException):
@@ -1597,8 +1592,7 @@ def test_api_rejects_unauthorized_or_malformed_host_headers(path: str, host_head
     assert response.status_code == 403
 
 
-def test_api_rejects_public_network_clients(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("MARKET_TRUSTED_PROXY_CIDRS", raising=False)
+def test_api_rejects_public_network_clients() -> None:
     direct_response = TestClient(app, client=("8.8.8.8", 50000)).get(
         "/api/status",
         headers={"host": "mini1.local", "x-forwarded-for": "192.168.50.42"},
@@ -1633,9 +1627,8 @@ def test_api_documentation_rejects_public_network_clients(path: str) -> None:
 
 @pytest.mark.parametrize("path", ["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"])
 def test_api_documentation_allows_private_network_clients(
-    path: str, monkeypatch: pytest.MonkeyPatch,
+    path: str,
 ) -> None:
-    monkeypatch.setenv("MARKET_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128")
     direct_response = TestClient(app, client=("192.168.50.42", 50000)).get(
         path, headers={"host": "192.168.50.197:8000"}
     )
@@ -1643,7 +1636,6 @@ def test_api_documentation_allows_private_network_clients(
         path,
         headers={
             "host": "mini1.tail46d3fb.ts.net:8000",
-            "x-forwarded-for": "100.120.95.8, 192.168.50.42",
         },
     )
 

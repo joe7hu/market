@@ -10,7 +10,7 @@ The audit covered security boundaries, point-in-time data authority, decision co
 
 - Contained SPA fallback paths so encoded traversal cannot expose project files.
 - Applied the LAN and Tailscale request guard to every API route, including docs.
-- Rejected untrusted Host values and authorized the originating forwarded client only when every proxy hop stays inside the allowed LAN, link-local, or Tailscale boundary.
+- Rejected untrusted Host values and rejected forwarded-client headers at the API boundary; LAN and Tailscale access uses the direct peer address.
 - Validated content-source URLs, resolved and pinned public addresses, and revalidated every redirect to stop SSRF, DNS rebinding, and redirect escape.
 - Replaced unsafe XML parsing with hardened parsing.
 - Rejected malformed persisted settings, made credential-file replacement atomic, and rejected symlink-backed credential paths without changing their targets.
