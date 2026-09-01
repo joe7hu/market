@@ -545,11 +545,14 @@ def load_watchlist_scope_data(
     active_config = config if config is not None else load_config()
     seed = load_panel_data(active_config, table_names=("universe_screen", "manual_watchlist", "portfolio"))
     rows = seed.rows("universe_screen")
+    page_offset = max(0, int(offset or 0))
+    page_limit = max(1, int(limit)) if limit is not None else 80
     if scope == "watchlist-watched":
         selected = [row for row in rows if str(row.get("watch_state") or "").lower() in {"watched", "owned"}]
+        selected = selected[page_offset : page_offset + page_limit]
     elif scope == "watchlist-unwatched":
         selected = [row for row in rows if str(row.get("watch_state") or "").lower() == "candidate"]
-        selected = selected[max(0, offset): max(0, offset) + max(1, limit or 80)]
+        selected = selected[page_offset : page_offset + page_limit]
     else:
         selected = rows
     symbols = {str(row.get("symbol") or "").upper() for row in selected if row.get("symbol")}

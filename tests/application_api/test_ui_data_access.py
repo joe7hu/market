@@ -679,6 +679,42 @@ def test_watchlist_scope_bounds_current_ticker_decisions_to_selected_symbols(
     assert panel.rows("ticker_decisions")[0]["portfolio_impacts"]["STOCK"] == impact
 
 
+def test_watched_watchlist_page_bounds_detail_symbols_and_keeps_seed_rows(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(_config, table_names: tuple[str, ...], **kwargs):
+        calls.append({"table_names": table_names, **kwargs})
+        if table_names == ("universe_screen", "manual_watchlist", "portfolio"):
+            return {
+                "universe_screen": [
+                    {"symbol": "AAA", "watch_state": "watched"},
+                    {"symbol": "BBB", "watch_state": "owned"},
+                    {"symbol": "CCC", "watch_state": "watched"},
+                ],
+                "manual_watchlist": [],
+                "portfolio": [],
+            }, {"database": "postgresql", "available_model_count": 3, "unavailable_models": []}
+        return {name: [] for name in table_names}, {
+            "database": "postgresql", "available_model_count": len(table_names), "unavailable_models": [],
+        }
+
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
+
+    panel = loaders_owner.load_watchlist_scope_data(
+        typed_config("postgresql:///watchlist-watched-page"),
+        "watchlist-watched",
+        offset=1,
+        limit=1,
+    )
+
+    assert calls[1]["query_symbol_filter"] == {"BBB"}
+    assert panel.rows("universe_screen") == [
+        {"symbol": "AAA", "watch_state": "watched"},
+        {"symbol": "BBB", "watch_state": "owned"},
+        {"symbol": "CCC", "watch_state": "watched"},
+    ]
+
+
 def test_panel_loader_preserves_explicit_empty_symbol_filter(monkeypatch) -> None:
     received: dict[str, object] = {}
 
