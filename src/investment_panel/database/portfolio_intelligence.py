@@ -20,6 +20,7 @@ from investment_panel.database.authority import runtime_for_config
 
 PERFORMANCE_METHOD = "daily-close external-flow adjusted"
 CORRELATION_WINDOWS = (20, 60, 120)
+CORRELATION_LOOKBACK_CALENDAR_DAYS = 365
 MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
@@ -192,11 +193,16 @@ def portfolio_correlation_rows(
     weights = {str(row["symbol"]): float(row.get("portfolio_weight") or 0) for row in positions}
     runtime = runtime_for_config(config) if connection is None else None
     with (runtime.read() if runtime is not None else nullcontext(connection)) as connection:
+        # Keep the bounded de-duplication sort in memory without changing the
+        # database-wide work_mem setting.
+        connection.execute("SET LOCAL work_mem = '8MB'")
         instrument_rows = connection.execute(
             "SELECT id FROM catalog.instrument WHERE symbol = ANY(%s)", [symbols]
         ).fetchall()
         bars = _confirmed_daily_price_bars(
-            connection, [int(row["id"]) for row in instrument_rows],
+            connection,
+            [int(row["id"]) for row in instrument_rows],
+            lookback_days=CORRELATION_LOOKBACK_CALENDAR_DAYS,
         )
         split_rows = [dict(row) for row in connection.execute(
             """
@@ -267,6 +273,7 @@ def _confirmed_daily_price_bars(
     instrument_ids: Iterable[int],
     *,
     require_observed_date: bool = False,
+    lookback_days: int | None = None,
 ) -> list[dict[str, Any]]:
     """Read confirmed daily bars after restricting the raw facts to instruments."""
 
@@ -278,6 +285,14 @@ def _confirmed_daily_price_bars(
         if require_observed_date
         else ""
     )
+    lookback_filter = (
+        "AND fact.trading_date >= CURRENT_DATE - (%s * INTERVAL '1 day')"
+        if lookback_days is not None
+        else ""
+    )
+    parameters: list[Any] = [identifiers]
+    if lookback_days is not None:
+        parameters.extend([max(1, int(lookback_days))] * 2)
     rows = connection.execute(
         f"""
         WITH requested_instruments AS MATERIALIZED (
@@ -290,12 +305,14 @@ def _confirmed_daily_price_bars(
             FROM raw.price_bar fact
             JOIN requested_instruments requested ON requested.id = fact.instrument_id
             WHERE fact.interval = '1d'
+              {lookback_filter}
             UNION ALL
             SELECT fact.id, fact.instrument_id, fact.source_id, fact.interval,
                    fact.trading_date, fact.observed_at, fact.close, fact.available_at
             FROM raw.price_bar_history fact
             JOIN requested_instruments requested ON requested.id = fact.instrument_id
             WHERE fact.interval = '1d'
+              {lookback_filter}
         ), confirmed AS MATERIALIZED (
             SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.observed_at)
                    fact.*
@@ -328,7 +345,7 @@ def _confirmed_daily_price_bars(
         ORDER BY confirmed.instrument_id, confirmed.trading_date,
                  confirmed.observed_at DESC, confirmed.available_at DESC
         """,
-        [identifiers],
+        parameters,
     ).fetchall()
     return [dict(row) for row in rows]
 
