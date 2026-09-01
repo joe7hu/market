@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import nullcontext
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from itertools import combinations
 from math import isfinite, sqrt
 from statistics import fmean
@@ -138,6 +138,16 @@ def portfolio_performance_rows(
         ).fetchall()]
         if not transactions:
             return []
+        transaction_dates: list[date] = []
+        for row in transactions:
+            executed_at = _as_datetime(row.get("executed_at"))
+            if executed_at is not None:
+                transaction_dates.append(executed_at.astimezone(MARKET_TIMEZONE).date())
+        min_trading_date = (
+            min(transaction_dates) - timedelta(days=7)
+            if transaction_dates
+            else None
+        )
         instrument_ids = sorted({int(row["instrument_id"]) for row in transactions if row.get("instrument_id") is not None})
         benchmark_id_row = connection.execute(
             "SELECT id FROM catalog.instrument WHERE symbol = 'SPY'"
@@ -145,7 +155,10 @@ def portfolio_performance_rows(
         benchmark_id = int(benchmark_id_row["id"]) if benchmark_id_row else None
         all_instrument_ids = sorted(set(instrument_ids) | ({benchmark_id} if benchmark_id is not None else set()))
         all_bars = _confirmed_daily_price_bars(
-            connection, all_instrument_ids, require_observed_date=True,
+            connection,
+            all_instrument_ids,
+            require_observed_date=True,
+            min_trading_date=min_trading_date,
         )
         bars = [row for row in all_bars if int(row["instrument_id"]) in set(instrument_ids)]
         current_quotes = [dict(row) for row in connection.execute(
@@ -273,6 +286,7 @@ def _confirmed_daily_price_bars(
     instrument_ids: Iterable[int],
     *,
     require_observed_date: bool = False,
+    min_trading_date: date | None = None,
     lookback_days: int | None = None,
 ) -> list[dict[str, Any]]:
     """Read confirmed daily bars after restricting the raw facts to instruments."""
@@ -285,14 +299,15 @@ def _confirmed_daily_price_bars(
         if require_observed_date
         else ""
     )
-    lookback_filter = (
-        "AND fact.trading_date >= CURRENT_DATE - (%s * INTERVAL '1 day')"
-        if lookback_days is not None
-        else ""
-    )
-    parameters: list[Any] = [identifiers]
+    fact_date_filter = ""
+    fact_date_parameters: list[Any] = []
+    if min_trading_date is not None:
+        fact_date_filter += "\n              AND fact.trading_date >= %s"
+        fact_date_parameters.append(min_trading_date)
     if lookback_days is not None:
-        parameters.extend([max(1, int(lookback_days))] * 2)
+        fact_date_filter += "\n              AND fact.trading_date >= CURRENT_DATE - (%s * INTERVAL '1 day')"
+        fact_date_parameters.append(max(1, int(lookback_days)))
+    parameters: list[Any] = [identifiers, *fact_date_parameters, *fact_date_parameters]
     rows = connection.execute(
         f"""
         WITH requested_instruments AS MATERIALIZED (
@@ -305,14 +320,14 @@ def _confirmed_daily_price_bars(
             FROM raw.price_bar fact
             JOIN requested_instruments requested ON requested.id = fact.instrument_id
             WHERE fact.interval = '1d'
-              {lookback_filter}
+              {fact_date_filter}
             UNION ALL
             SELECT fact.id, fact.instrument_id, fact.source_id, fact.interval,
                    fact.trading_date, fact.observed_at, fact.close, fact.available_at
             FROM raw.price_bar_history fact
             JOIN requested_instruments requested ON requested.id = fact.instrument_id
             WHERE fact.interval = '1d'
-              {lookback_filter}
+              {fact_date_filter}
         ), confirmed AS MATERIALIZED (
             SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.observed_at)
                    fact.*
