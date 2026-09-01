@@ -30,8 +30,8 @@ export function dedupeOpportunityEpisodes(input: RowRecord[]): RowRecord[] {
   });
 }
 
-export function shouldLoadScreener(view: SavedView, screenerLength: number, loadStarted: boolean): boolean {
-  return view === "screener" && screenerLength === 0 && !loadStarted;
+export function shouldLoadScreener(view: SavedView, loadStarted: boolean): boolean {
+  return view === "screener" && !loadStarted;
 }
 
 export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, onLoadScreener, onRefresh }: { data: PanelData; loading: boolean; scopeStatus?: ScopeSnapshotStatus; onOpenTicker: OpenTicker; onLoadScreener: () => Promise<void>; onRefresh: (includeScreener?: boolean) => Promise<void> }) {
@@ -40,7 +40,6 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
   const [selected, setSelected] = useState<RowRecord | null>(null);
   const screenerLoadStarted = useRef(false);
   const rankedRows = useMemo(() => dedupeOpportunityEpisodes(rows(data.opportunitiesRanked)), [data.opportunitiesRanked]);
-  const screenerLength = rows(data.screener).length;
   const visibleRows = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle ? rankedRows.filter((row) => JSON.stringify(row).toLowerCase().includes(needle)) : rankedRows;
@@ -51,10 +50,10 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
   }, [view]);
 
   useEffect(() => {
-    if (!shouldLoadScreener(view, screenerLength, screenerLoadStarted.current)) return;
+    if (!shouldLoadScreener(view, screenerLoadStarted.current)) return;
     screenerLoadStarted.current = true;
     void onLoadScreener();
-  }, [onLoadScreener, screenerLength, view]);
+  }, [onLoadScreener, view]);
 
   return (
     <section>
