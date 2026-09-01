@@ -229,7 +229,7 @@ def watchlist_section_payload(
     watched = scope == "watchlist-watched"
     prefix = "watchlist_watched" if watched else "watchlist_unwatched"
     sanitized_offset = max(0, int(offset or 0))
-    sanitized_limit = max(1, int(limit)) if limit is not None else None
+    sanitized_limit = max(1, int(limit)) if limit is not None else 80
     universe_rows = [row for row in watchlist_universe_rows(rows_for_table) if _is_active_watchlist_row(row) == watched]
     total_count = len(universe_rows)
     page_rows = universe_rows[sanitized_offset : sanitized_offset + sanitized_limit] if sanitized_limit is not None else universe_rows

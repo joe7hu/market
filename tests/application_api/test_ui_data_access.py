@@ -987,6 +987,26 @@ def test_watchlist_unwatched_scope_pages_rows_and_keeps_total_count() -> None:
     assert page["tables"]["watchlist_unwatched_quotes"]["rows"] == [{"symbol": "MSFT", "price": 100}]
 
 
+def test_watchlist_default_page_bounds_rows_and_keeps_total_count() -> None:
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [
+                {"symbol": f"W{index:03d}", "watch_state": "watched"}
+                for index in range(81)
+            ],
+        },
+    )
+
+    page = payloads_owner.panel_snapshot_payload(panel_data, "watchlist-watched")
+    table = page["tables"]["watchlist_watched"]
+
+    assert table["count"] == 81
+    assert len(table["rows"]) == 80
+    assert table["offset"] == 0
+    assert table["limit"] == 80
+
+
 def test_watchlist_loader_page_keeps_symbol_details_after_payload_pagination(monkeypatch) -> None:
     seed = PanelData(
         status=DataStatus(True, "ok", "test"),
