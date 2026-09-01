@@ -1083,6 +1083,7 @@
           "available",
           "unsupported",
           "missing",
+          "conflicted",
           "stale",
           "not_calibrated",
           "policy_blocked",

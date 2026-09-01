@@ -2,6 +2,7 @@ import { ExternalLink } from "lucide-react";
 
 import { resolveTradingViewSymbol, tradingViewEmbedUrl } from "@/adapters/tradingView";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
+import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
 import { Button } from "@/components/ui/button";
 import type { components } from "@/generated/apiSchema";
 import type { JsonValue, RowRecord, TickerDossier, TickerLearning, TickerPayload } from "@/types";
@@ -193,7 +194,7 @@ export function TickerMarketEvidence({ decision }: { decision: TickerDecisionCon
             <p className="mt-1 text-muted-foreground">{assessment.status} · required: {requiredDimensions.join(", ") || "none"}</p>
             {blockers.length ? <p className="mt-1 text-muted-foreground">Blocking: {blockers.join(", ")}</p> : null}
           </div>
-        ) : <p className="text-muted-foreground">Decision-bound market evidence is unavailable.</p>}
+        ) : <DataFieldStateNotice compact state={missingFieldState({ field: "market_evidence_assessment", source: "ticker_decision", reason: "market_evidence_assessment_missing", nextAction: "Refresh the canonical ticker decision before using market evidence." })} />}
       </div>
     </DataTableFrame>
   );
@@ -204,12 +205,12 @@ function SelectedPortfolioImpact({ decision }: { decision: TickerDecisionContrac
   const impact = kind ? decision.portfolio_impacts?.[kind] : undefined;
   const blockers = impact?.blockers ?? [];
   return (
-    <DataTableFrame title="Selected portfolio impact" action={<StatusBadge tone={impact?.availability === "available" ? "good" : "warn"}>{impact?.availability ?? "unavailable"}</StatusBadge>}>
-      <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
+    <DataTableFrame title="Selected portfolio impact" action={<StatusBadge tone={impact?.availability === "available" ? "good" : "warn"}>{impact?.availability ?? "not supplied"}</StatusBadge>}>
+      {impact ? <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
         <KeyValue label="Expression" value={kind ?? "No selected expression"} />
-        <KeyValue label="Marginal risk" value={impact?.marginal_risk == null ? "Unavailable" : String(impact.marginal_risk)} />
-        <KeyValue label="Risk budget" value={impact?.risk_budget_consumed == null ? "Unavailable" : String(impact.risk_budget_consumed)} />
-      </div>
+        {impact.marginal_risk == null ? <DataFieldStateNotice compact state={missingFieldState({ field: "marginal_risk", source: "portfolio_impact", reason: "marginal_risk_missing", nextAction: "Refresh the selected portfolio impact before sizing the trade." })} /> : <KeyValue label="Marginal risk" value={String(impact.marginal_risk)} />}
+        {impact.risk_budget_consumed == null ? <DataFieldStateNotice compact state={missingFieldState({ field: "risk_budget_consumed", source: "portfolio_impact", reason: "risk_budget_consumed_missing", nextAction: "Refresh the selected portfolio impact before sizing the trade." })} /> : <KeyValue label="Risk budget" value={String(impact.risk_budget_consumed)} />}
+      </div> : <div className="p-4"><DataFieldStateNotice state={missingFieldState({ field: "selected_portfolio_impact", source: "portfolio_impact", reason: "selected_portfolio_impact_missing", nextAction: "Refresh the canonical ticker decision before sizing the trade." })} /></div>}
       {blockers.length ? <ReasonList title="Blockers" rows={blockers.map(String)} empty="No blockers" /> : null}
     </DataTableFrame>
   );
@@ -270,22 +271,8 @@ export function OpportunityRankPanel({
   return (
     <DataTableFrame title="Book opportunity rank" action={<StatusBadge tone={rank?.trade_rank ? "good" : "warn"}>{rank?.trade_rank ? `Trade #${rank.trade_rank}` : "Cash"}</StatusBadge>}>
       <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        <KeyValue label="Research rank" value={rank?.research_rank == null ? "Unavailable" : `#${rank.research_rank}`} />
-        <KeyValue label="Trade utility" value={rank?.trade_utility == null ? "Unavailable" : String(rank.trade_utility)} />
-        <KeyValue label="Rank reason" value={rank?.trade_rank_unavailable_reason ?? "Positive current rank"} />
-        <KeyValue label="Forecast target" value={signal?.target ?? "Unavailable"} />
-        <KeyValue label="Horizon" value={signal?.horizon ?? "Unavailable"} />
-        <KeyValue label="Model / features" value={signal ? `${signal.model_version ?? "-"} · ${signal.feature_version ?? "-"}` : "Unavailable"} />
-        <KeyValue label="OOS interval" value={signal?.oos_period_start && signal?.oos_period_end ? `${signal.oos_period_start} → ${signal.oos_period_end}` : "Unavailable"} />
-        <KeyValue label="Cohort path" value={signal?.cohort_path?.join(" → ") ?? "Unavailable"} />
-        <KeyValue label="Fallback parent" value={signal?.fallback_parent ?? "None"} />
-        <KeyValue label="Effective sample" value={signal?.effective_sample_size == null ? "Unavailable" : String(signal.effective_sample_size)} />
-        <KeyValue label="Calibration" value={signal ? `${signal.calibration_state ?? "-"} · Brier ${numberText(signal.calibration_metrics?.brier_score)}` : "Unavailable"} />
-        <KeyValue label="Research score" value={numberText(signal?.research_score)} />
-        <KeyValue label="Cost / slippage" value={signal?.cost_model_version ?? "Unavailable"} />
-        <KeyValue label="Net lower utility" value={numberText(signal?.lower_confidence_net_utility_after_costs)} />
-        <KeyValue label="Promotion stage" value={signal?.promotion_stage ?? "Unavailable"} />
-        <KeyValue label="Instrument snapshot" value={rank?.instrument_state_snapshot_id ?? "Unavailable"} />
+        {rank ? <><KeyValue label="Research rank" value={rank.research_rank == null ? "Not supplied" : `#${rank.research_rank}`} /><KeyValue label="Trade utility" value={rank.trade_utility == null ? "Not supplied" : String(rank.trade_utility)} /><KeyValue label="Rank reason" value={rank.trade_rank_unavailable_reason ?? "Positive current rank"} /><KeyValue label="Instrument snapshot" value={rank.instrument_state_snapshot_id ?? "Not supplied"} /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "opportunity_rank", source: "ticker_decision_snapshot", reason: "opportunity_rank_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
+        {signal ? <><KeyValue label="Forecast target" value={signal.target ?? "Not supplied"} /><KeyValue label="Horizon" value={signal.horizon ?? "Not supplied"} /><KeyValue label="Model / features" value={`${signal.model_version ?? "-"} · ${signal.feature_version ?? "-"}`} /><KeyValue label="OOS interval" value={signal.oos_period_start && signal.oos_period_end ? `${signal.oos_period_start} → ${signal.oos_period_end}` : "Not supplied"} /><KeyValue label="Cohort path" value={signal.cohort_path?.join(" → ") ?? "Not supplied"} /><KeyValue label="Fallback parent" value={signal.fallback_parent ?? "None"} /><KeyValue label="Effective sample" value={signal.effective_sample_size == null ? "Not supplied" : String(signal.effective_sample_size)} /><KeyValue label="Calibration" value={`${signal.calibration_state ?? "-"} · Brier ${numberText(signal.calibration_metrics?.brier_score)}`} /><KeyValue label="Research score" value={numberText(signal.research_score)} /><KeyValue label="Cost / slippage" value={signal.cost_model_version ?? "Not supplied"} /><KeyValue label="Net lower utility" value={numberText(signal.lower_confidence_net_utility_after_costs)} /><KeyValue label="Promotion stage" value={signal.promotion_stage ?? "Not supplied"} /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "alpha_signal", source: "ticker_decision_snapshot", reason: "alpha_signal_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
       </div>
     </DataTableFrame>
   );
@@ -705,7 +692,7 @@ export function OptionsIntelligencePanel({ options }: { options: TickerDossier["
   const capability = rowList(options.capabilities).find((row) => textField(row, ["provider"]) === "tradingview");
   const unavailableRows = rowList(options.unavailable_signals).slice(0, 6).map((row) => ({
     signal: displayField(row, ["signal"], "Signal"),
-    reason: displayField(row, ["reason"], "Unavailable from TradingView V1"),
+    reason: displayField(row, ["reason"], "Not supplied by TradingView V1"),
   }));
   const metrics = presentMetricCells([
     ["Status", displayField(signal, ["status"], "Missing"), displayField(signal, ["source"], "No options signal row")],

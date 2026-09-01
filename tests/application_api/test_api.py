@@ -139,7 +139,7 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     }]
 
 
-def test_default_today_snapshot_reuses_today_context_cache_key(
+def test_today_and_snapshot_share_one_authoritative_load_and_invalidate_together(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _use_temp_api_db(monkeypatch, tmp_path / "today-shared-cache.json")
@@ -165,6 +165,38 @@ def test_default_today_snapshot_reuses_today_context_cache_key(
     assert today_response.status_code == 200
     assert snapshot_response.status_code == 200
     assert loads == 1
+
+    panel_owner.invalidate_context_cache()
+    refreshed = client.get("/api/today")
+
+    assert refreshed.status_code == 200
+    assert loads == 2
+
+
+@pytest.mark.parametrize(
+    ("reason", "availability_status"),
+    (
+        ("trade_plan_missing", "missing"),
+        ("trade_plan_identity_mismatch", "conflicted"),
+        ("trade_plan_invalid", "error"),
+        ("risk_policy_blocked", "policy_blocked"),
+    ),
+)
+def test_today_missing_plan_field_state_preserves_blocker_semantics(
+    reason: str, availability_status: str,
+) -> None:
+    from app.routers.panel import today_field_states
+
+    states = today_field_states(identity_missing=False, plan_missing=True, reason=reason)
+
+    assert states == [{
+        "field": "trade_plan",
+        "availability_status": availability_status,
+        "source": "trade_plan",
+        "reason": reason,
+        "blocking": True,
+        "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+    }]
 
 
 def test_non_today_snapshot_caches_compiled_payload(monkeypatch: pytest.MonkeyPatch) -> None:

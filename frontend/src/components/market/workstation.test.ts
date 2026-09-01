@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { navItems } from "./workstation";
+import { criticalDataCoverageTone, navItems } from "./workstation";
 
 describe("primary navigation", () => {
   it("keeps the five Command Center destinations on desktop and mobile", () => {
@@ -11,5 +11,11 @@ describe("primary navigation", () => {
       ["Research", "/sources"],
       ["System", "/health"],
     ]);
+  });
+});
+
+describe("critical data coverage", () => {
+  it("does not show an empty source set as good coverage", () => {
+    expect(criticalDataCoverageTone([], false)).toBe("warn");
   });
 });

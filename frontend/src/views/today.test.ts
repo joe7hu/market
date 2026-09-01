@@ -29,11 +29,19 @@ const response: TodayResponse = {
     rationale: "Cash is selected.",
     policy_version: "risk-policy.v2:legacy",
     selected_expression: "CASH",
+    field_states: [{
+      field: "trade_plan",
+      availability_status: "missing",
+      source: "trade_plan",
+      reason: "trade_plan_missing",
+      blocking: true,
+      next_action: "Refresh the ticker decision and publish its canonical TradePlan.",
+    }],
   }],
 };
 
 describe("Today Action Queue", () => {
-  it("uses the generated backend item and its stable identity", () => {
+  it("uses the generated backend item and exact required field names", () => {
     expect(response.actions?.[0]).toMatchObject({
       projection_identity: "capital:ticker-decision:decision:AAA",
       source_authority: "ticker-decision:decision:AAA",
@@ -113,8 +121,10 @@ describe("Today Action Queue", () => {
 
     expect(markup).toContain("NO TRADE");
     expect(markup).toContain("CASH");
-    expect(markup).toContain("Missing field: canonical TradePlan");
-    expect(markup).toContain("This blocks a capital action");
+    expect(markup).toContain("Field unavailable: trade_plan");
+    expect(markup).toContain("Source: trade_plan");
+    expect(markup).toContain("Reason: trade_plan_missing");
+    expect(markup).toContain("This blocks the decision.");
     expect(markup).not.toContain("BUY");
     expect(markup).not.toContain("queue rationale leak");
     expect(markup).not.toContain("queue blocker leak");

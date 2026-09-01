@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { loadOptionTicketDetail } from "@/api/options";
+import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
 import { StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -70,6 +71,16 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
   const agentProvenance = recordOf(detail?.agent_provenance);
   const blockers = listField(ticket, ["blockers"]);
   const resolution = recordOf(ticket.resolution);
+  const requiredFieldStates = [
+    textField(ticket, ["required_next_action"]) ? null : missingFieldState({
+      field: "required_next_action", source: "option_ticket", reason: "required_next_action_missing",
+      nextAction: "Refresh the immutable option ticket before acting.",
+    }),
+    textField(resolution, ["primary_blocker"]) || blockers.length ? null : missingFieldState({
+      field: "primary_blocker", source: "option_ticket_resolution", reason: "primary_blocker_missing",
+      nextAction: "Refresh the ticket resolution and confirm its policy state.",
+    }),
+  ].filter((state): state is NonNullable<typeof state> => state !== null);
 
   return (
     <Sheet open={Boolean(decisionId)} onOpenChange={(open) => (open ? undefined : onClose())}>
@@ -98,13 +109,14 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
                   ["Maximum risk", formatMoney(numberField(risk, ["one_unit_max_loss", "one_unit_collateral"], Number.NaN))],
                   ["Quote expires", textField(ticket, ["expires_at"], textField(entry, ["valid_until"], "—"))],
                   ["Lower-confidence EV / risk", decimal(numberField(ticket, ["lower_confidence_expectancy_per_max_risk"], Number.NaN))],
-                  ["Next action", textField(ticket, ["required_next_action"], "Unavailable")],
+                  ["Next action", textField(ticket, ["required_next_action"], "Not supplied")],
                   ["Resolution", `${textField(resolution, ["eligibility"], "UNKNOWN")} · ${textField(resolution, ["lifecycle"], "—")}`],
                   ["Authorization", textField(resolution, ["authorization_mode"], "—")],
                   ["Policy", textField(ticket, ["policy_version", "risk_policy_version"], "—")],
                   ["Decision revision", textField(ticket, ["decision_revision"], textField(resolution, ["decision_revision"], "—"))],
-                  ["Primary blocker", textField(resolution, ["primary_blocker"], "Unavailable")],
+                  ["Primary blocker", textField(resolution, ["primary_blocker"], "Not supplied")],
                 ]} />
+                {requiredFieldStates.map((state) => <DataFieldStateNotice key={state.field} state={state} />)}
               </DetailSection>
 
               <DetailSection title="Ticket legs">

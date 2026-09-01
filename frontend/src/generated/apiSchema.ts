@@ -1690,7 +1690,7 @@ export interface components {
          * @description Typed evidence availability; absence is never treated as available.
          * @enum {string}
          */
-        AvailabilityStatus: "available" | "unsupported" | "missing" | "stale" | "not_calibrated" | "policy_blocked" | "error" | "not_applicable" | "pending";
+        AvailabilityStatus: "available" | "unsupported" | "missing" | "conflicted" | "stale" | "not_calibrated" | "policy_blocked" | "error" | "not_applicable" | "pending";
         /** CapitalAction */
         CapitalAction: {
             action: components["schemas"]["CapitalActionType"];

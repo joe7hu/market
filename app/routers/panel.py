@@ -18,6 +18,7 @@ from investment_panel.core.config import AppConfig
 from investment_panel.core.panel import tables_for_scope
 from investment_panel.core.decision import (
     AvailabilityStatus,
+    availability_status_for_blockers,
     build_decision_resolution,
     capital_action_from_resolution,
     resolution_from_legacy,
@@ -126,7 +127,7 @@ def today(
             "trade_rank_unavailable_reason": None if plan is not None and rank_ready else rank_reason,
             "trade_utility": rank.get("trade_utility") if plan is not None and rank_ready and rank else None,
             "trade_plan": _today_trade_plan_payload(plan) if plan is not None else None,
-            "field_states": _today_field_states(
+            "field_states": today_field_states(
                 identity_missing=identity_missing,
                 plan_missing=plan is None,
                 reason=rank_reason or "trade_plan_missing",
@@ -188,8 +189,8 @@ def _today_trade_plan_payload(plan: Any) -> dict[str, Any]:
     })
 
 
-def _today_field_states(*, identity_missing: bool, plan_missing: bool, reason: str) -> list[dict[str, Any]]:
-    """Describe missing decision inputs without treating absence as a value."""
+def today_field_states(*, identity_missing: bool, plan_missing: bool, reason: str) -> list[dict[str, Any]]:
+    """Describe unavailable decision inputs without treating absence as a value."""
 
     states: list[dict[str, Any]] = []
     if identity_missing:
@@ -204,7 +205,7 @@ def _today_field_states(*, identity_missing: bool, plan_missing: bool, reason: s
     if plan_missing:
         states.append({
             "field": "trade_plan",
-            "availability_status": AvailabilityStatus.MISSING,
+            "availability_status": availability_status_for_blockers([reason]),
             "source": "trade_plan",
             "reason": reason,
             "blocking": True,

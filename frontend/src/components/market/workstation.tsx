@@ -313,8 +313,13 @@ export function SourceHealthBadge() {
   const { model, loading, lastRefresh } = useMarketData();
   const sourceStates = Object.values(model.sources);
   const available = sourceStates.filter((state) => state === "live").length;
-  const tone: Tone = loading ? "info" : available === sourceStates.length ? "good" : "warn";
+  const tone = criticalDataCoverageTone(sourceStates, loading);
   return <StatusBadge tone={tone}>{loading ? "Checking critical data" : `Critical data: ${available}/${sourceStates.length} available`}</StatusBadge>;
+}
+
+export function criticalDataCoverageTone(sourceStates: string[], loading: boolean): Tone {
+  if (loading) return "info";
+  return sourceStates.length > 0 && sourceStates.every((state) => state === "live") ? "good" : "warn";
 }
 
 function toneSurface(tone: Tone) {

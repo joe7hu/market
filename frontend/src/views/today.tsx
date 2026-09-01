@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
+import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { cn } from "@/lib/utils";
 import type { TodayResponse } from "@/api/panel";
@@ -139,7 +140,7 @@ export function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onO
           {plan === undefined ? <StatusBadge tone={tone}>{statusLabel}</StatusBadge> : null}
         </div>
         {ticker ? <p className="text-sm font-medium">{item.title}</p> : null}
-        {plan !== undefined ? <CompactPlanSummary plan={plan} /> : (
+        {plan !== undefined ? <CompactPlanSummary plan={plan} fieldStates={item.field_states ?? []} /> : (
           <>
             {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{item.rationale}</p> : null}
             {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {item.primary_blocker}</p> : null}
@@ -155,9 +156,13 @@ export function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onO
 
 type TradePlan = components["schemas"]["TodayTradePlanSummaryResponse"];
 
-function CompactPlanSummary({ plan }: { plan: TradePlan | null }) {
+function CompactPlanSummary({ plan, fieldStates }: { plan: TradePlan | null; fieldStates: components["schemas"]["DataFieldStateV1"][] }) {
   if (!plan) {
-    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">NO TRADE · CASH</p><p className="mt-1 text-muted-foreground">Missing field: canonical TradePlan. This blocks a capital action.</p><p className="mt-1 text-muted-foreground">Next: refresh the ticker decision and publish its TradePlan.</p></div>;
+    const state = fieldStates.find((candidate) => candidate.field === "trade_plan") ?? missingFieldState({
+      field: "trade_plan", source: "trade_plan", reason: "trade_plan_missing",
+      nextAction: "Refresh the ticker decision and publish its canonical TradePlan.",
+    });
+    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">NO TRADE · CASH</p><div className="mt-2"><DataFieldStateNotice state={state} /></div></div>;
   }
   return (
     <div className="rounded-md border border-border p-3 text-sm">
