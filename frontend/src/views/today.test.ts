@@ -91,7 +91,8 @@ describe("Today Action Queue", () => {
     expect(blocked).not.toContain("contract-1");
     expect(missing).toContain("NO TRADE");
     expect(missing).toContain("CASH");
-    expect(missing).toContain("Unavailable");
+    expect(missing).toContain("trade_plan_missing");
+    expect(missing).toContain("ticker decision");
     expect(missing).not.toContain("BUY");
   });
 
@@ -112,7 +113,8 @@ describe("Today Action Queue", () => {
 
     expect(markup).toContain("NO TRADE");
     expect(markup).toContain("CASH");
-    expect(markup).toContain("Unavailable");
+    expect(markup).toContain("Missing field: canonical TradePlan");
+    expect(markup).toContain("This blocks a capital action");
     expect(markup).not.toContain("BUY");
     expect(markup).not.toContain("queue rationale leak");
     expect(markup).not.toContain("queue blocker leak");
@@ -131,7 +133,7 @@ describe("Today Action Queue", () => {
     expect(markup).not.toContain("Canonical trade plan");
   });
 
-  it("keeps three ranked actions plus CASH and rejects unranked capital actions", () => {
+  it("does not render a second capital ranking outside the canonical queue", () => {
     const base = response.actions![0];
     const data = emptyPanelData();
     const ranked = Array.from({ length: 4 }, (_, index) => ({
@@ -176,11 +178,9 @@ describe("Today Action Queue", () => {
       onOpenTicker: () => undefined,
     }));
 
-    expect(markup).toContain(">RANKED1<");
-    expect(markup).toContain(">RANKED2<");
-    expect(markup).toContain(">RANKED3<");
-    expect(markup).not.toContain(">RANKED4<");
-    expect(markup).toContain("Hold cash until a ranked opportunity appears.");
+    expect(markup).not.toContain("Top three ranked capital actions");
+    expect(markup).not.toContain(">RANKED1<");
+    expect(markup).not.toContain("Hold cash until a ranked opportunity appears.");
     expect(markup).not.toContain(">UNRANKED<");
     expect(markup).not.toContain("Unranked capital action must stay hidden");
   });
@@ -257,7 +257,7 @@ describe("Today Action Queue", () => {
       selected_expression_kind: "CASH",
     }) }));
 
-    expect(markup).toContain("Unavailable");
+    expect(markup).toContain("Not supplied");
     expect(markup).not.toContain("list_only_blocker");
   });
 

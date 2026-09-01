@@ -35,6 +35,7 @@ from investment_panel.core.decision import (
     DecisionResolutionV2,
     ExpressionDecision,
     ExpressionKind,
+    AvailabilityStatus,
     HorizonDecision,
     MarketEvidenceAssessment,
     OpportunityEpisode,
@@ -146,6 +147,17 @@ class TodayTradePlanSummaryResponse(BaseModel):
     next_action: str
 
 
+class DataFieldStateV1(BaseModel):
+    """One explicit state for a decision field that is not currently usable."""
+
+    field: str
+    availability_status: AvailabilityStatus
+    source: str
+    reason: str
+    blocking: bool
+    next_action: str
+
+
 class TodayCapitalAction(FlexibleResponse):
     projection_identity: str
     source_authority: str
@@ -173,6 +185,7 @@ class TodayCapitalAction(FlexibleResponse):
     trade_rank_unavailable_reason: str | None = None
     trade_utility: float | None = None
     trade_plan: TodayTradePlanSummaryResponse | None = None
+    field_states: list[DataFieldStateV1] = Field(default_factory=list)
 
 
 ActionQueueItem = TodayCapitalAction
@@ -742,6 +755,7 @@ __all__ = [
     "AgentResearchPromptResponse",
     "AgentSubmissionResponse",
     "ActionQueueItem",
+    "DataFieldStateV1",
     "ApiStatusResponse",
     "DashboardResponse",
     "DecisionInboxResponse",

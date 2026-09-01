@@ -1816,6 +1816,23 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * DataFieldStateV1
+         * @description One explicit state for a decision field that is not currently usable.
+         */
+        DataFieldStateV1: {
+            availability_status: components["schemas"]["AvailabilityStatus"];
+            /** Blocking */
+            blocking: boolean;
+            /** Field */
+            field: string;
+            /** Next Action */
+            next_action: string;
+            /** Reason */
+            reason: string;
+            /** Source */
+            source: string;
+        };
+        /**
          * DataQuality
          * @enum {string}
          */
@@ -5897,6 +5914,8 @@ export interface components {
             drill_down?: string | null;
             /** Expires At */
             expires_at?: string | null;
+            /** Field States */
+            field_states?: components["schemas"]["DataFieldStateV1"][];
             /** Lifecycle State */
             lifecycle_state: string;
             /** Next Action */

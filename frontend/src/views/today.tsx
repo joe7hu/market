@@ -11,6 +11,7 @@ import type { components } from "@/generated/apiSchema";
 import type { AppModel } from "@/model";
 import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
+import { expressionLabel } from "@/viewModels/expression";
 import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
 
@@ -72,7 +73,6 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       </div>
 
       <ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} />
-      <CommandCenterPanels data={data} response={actionQueue} onOpenTicker={onOpenTicker} />
       <PreopenBrief row={vm.preopenBrief} />
       <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
 
@@ -94,27 +94,6 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       ) : (
         <EmptyState title="No daily brief loaded" detail="Refresh /today to load decisions, source changes, catalysts, and portfolio moves." />
       )}
-    </section>
-  );
-}
-
-function CommandCenterPanels({ data, response, onOpenTicker }: { data: PanelData; response: TodayResponse | null; onOpenTicker: (symbol: string) => void }) {
-  const bookActions = response?.book_actions ?? response?.actions ?? [];
-  const cashAction = bookActions.find((item) => item.source === "cash");
-  const capitalActions = [
-    ...bookActions.filter((item) => item.source === "capital_action" && item.trade_rank != null).slice(0, 3),
-    ...(cashAction ? [cashAction] : []),
-  ];
-  const marketState = data.marketStateSnapshot?.rows?.[0];
-  const risks = (data.portfolioRiskCards?.rows ?? []).slice(0, 3);
-  const sourceRows = [...(data.sourceFreshness?.rows ?? []), ...(data.sourceHealth?.rows ?? [])];
-  const blockers = sourceRows.filter((row) => /stale|fail|error|blocked|missing|degraded/i.test(textField(row, ["status", "freshness", "health", "effective_status"]))).slice(0, 4);
-  return (
-    <section className="mb-6 grid min-w-0 gap-4 xl:grid-cols-2" aria-label="Command Center context">
-      <Card><CardHeader><CardTitle>Market-state delta</CardTitle></CardHeader><CardContent><dl className="grid gap-3 sm:grid-cols-3">{[["Stance", displayField(marketState, ["stance", "regime", "market_regime"]), "Current state"], ["Delta", displayField(marketState, ["delta", "change", "state_delta"]), "Since prior snapshot"], ["As of", displayField(marketState, ["as_of", "published_at", "available_at"]), "Point-in-time" ]].map(([label, value, detail]) => <div key={label}><dt className="text-xs uppercase text-muted-foreground">{label}</dt><dd className="mt-1 break-words font-semibold">{value}</dd><dd className="text-xs text-muted-foreground">{detail}</dd></div>)}</dl></CardContent></Card>
-      <Card><CardHeader><CardTitle>Top three ranked capital actions</CardTitle></CardHeader><CardContent className="space-y-2">{capitalActions.length ? capitalActions.map((item) => <button type="button" key={item.projection_identity} className="flex w-full items-center justify-between gap-3 rounded-md border border-border p-3 text-left hover:bg-accent/40" onClick={() => item.ticker && onOpenTicker(item.ticker)}><span className="min-w-0"><span className="block font-medium">{item.ticker || item.title}</span><span className="block truncate text-xs text-muted-foreground">{item.next_action}</span></span><StatusBadge tone={item.lifecycle_state === "actionable" ? "good" : "warn"}>{item.trade_rank ? `#${item.trade_rank}` : item.action}</StatusBadge></button>) : <p className="text-sm text-muted-foreground">No ranked capital actions are currently available.</p>}</CardContent></Card>
-      <Card><CardHeader><CardTitle>Active-position management</CardTitle></CardHeader><CardContent className="space-y-2">{risks.length ? risks.map((row, index) => <div key={textField(row, ["card_id", "title"], String(index))} className="rounded-md border border-border p-3"><div className="flex items-center justify-between gap-3"><span className="font-medium">{textField(row, ["title"], "Position review")}</span><StatusBadge tone={toneFromText(textField(row, ["severity", "risk_level"], "review"))}>{titleLabel(textField(row, ["severity", "risk_level"], "review"))}</StatusBadge></div><p className="mt-1 text-sm text-muted-foreground">{textField(row, ["next_step", "summary"], "Review the affected position.")}</p></div>) : <p className="text-sm text-muted-foreground">No active position exception is loaded.</p>}</CardContent></Card>
-      <Card><CardHeader><CardTitle>Blocking source degradation</CardTitle></CardHeader><CardContent>{blockers.length ? <ul className="space-y-2 text-sm">{blockers.map((row, index) => <li key={`${textField(row, ["source_id", "provider", "source"], "source")}:${index}`} className="rounded-md border border-amber-200 bg-amber-50/40 p-3"><span className="font-medium">{textField(row, ["source_name", "source_id", "provider", "source"], "Source")}</span><span className="ml-2 text-muted-foreground">{displayField(row, ["failure_detail", "error", "detail", "status", "freshness"], "Needs review")}</span></li>)}</ul> : <p className="text-sm text-muted-foreground">No blocking source degradation is recorded.</p>}</CardContent></Card>
     </section>
   );
 }
@@ -178,11 +157,11 @@ type TradePlan = components["schemas"]["TodayTradePlanSummaryResponse"];
 
 function CompactPlanSummary({ plan }: { plan: TradePlan | null }) {
   if (!plan) {
-    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">NO TRADE · CASH</p><p className="mt-1 text-muted-foreground">Unavailable: canonical trade plan is missing.</p></div>;
+    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">NO TRADE · CASH</p><p className="mt-1 text-muted-foreground">Missing field: canonical TradePlan. This blocks a capital action.</p><p className="mt-1 text-muted-foreground">Next: refresh the ticker decision and publish its TradePlan.</p></div>;
   }
   return (
     <div className="rounded-md border border-border p-3 text-sm">
-      <p><span className="font-semibold">Action:</span> {plan.action} · <span className="font-semibold">Expression:</span> {plan.selected_expression_kind}</p>
+      <p><span className="font-semibold">Action:</span> {plan.action} · <span className="font-semibold">Expression:</span> {expressionLabel(plan.selected_expression_kind)}</p>
       <p className="mt-2 text-muted-foreground"><span className="font-semibold text-foreground">Rationale:</span> {plan.rationale}</p>
       <p className="mt-2"><span className="font-semibold">Next:</span> {plan.next_action}</p>
     </div>

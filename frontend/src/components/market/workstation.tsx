@@ -311,9 +311,10 @@ export function EmptyState({ title, detail, icon: Icon = Database }: { title: st
 
 export function SourceHealthBadge() {
   const { model, loading, lastRefresh } = useMarketData();
-  const anyDataLoaded = Object.values(model.sources).some((state) => state === "live");
-  const tone: Tone = loading ? "info" : anyDataLoaded || lastRefresh ? "good" : "warn";
-  return <StatusBadge tone={tone}>{loading ? "Loading" : anyDataLoaded || lastRefresh ? "Data loaded" : "Data pending"}</StatusBadge>;
+  const sourceStates = Object.values(model.sources);
+  const available = sourceStates.filter((state) => state === "live").length;
+  const tone: Tone = loading ? "info" : available === sourceStates.length ? "good" : "warn";
+  return <StatusBadge tone={tone}>{loading ? "Checking critical data" : `Critical data: ${available}/${sourceStates.length} available`}</StatusBadge>;
 }
 
 function toneSurface(tone: Tone) {

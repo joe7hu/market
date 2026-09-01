@@ -129,6 +129,14 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     assert payload["book_actions"][0]["primary_blocker"] == "trade_plan_missing"
     assert payload["book_actions"][0]["projection_identity"].startswith("capital:ticker-decision:")
     assert payload["book_actions"][0]["resolution"]["action"] == "NO_TRADE"
+    assert payload["book_actions"][0]["field_states"] == [{
+        "field": "trade_plan",
+        "availability_status": "missing",
+        "source": "trade_plan",
+        "reason": "trade_plan_missing",
+        "blocking": True,
+        "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+    }]
 
 
 def test_default_today_snapshot_reuses_today_context_cache_key(

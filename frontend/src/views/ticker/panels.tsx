@@ -517,13 +517,14 @@ export function TradingViewChart({ symbol, ticker }: { symbol: string; ticker: T
   const externalUrl = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tradingViewSymbol)}`;
   return (
     <DataTableFrame
-      title="Chart"
+      title="External live chart"
       action={
         <Button asChild type="button" variant="outline" size="sm">
           <a href={externalUrl} target="_blank" rel="noreferrer"><ExternalLink /> Open TradingView</a>
         </Button>
       }
     >
+      <p className="px-4 pt-3 text-xs text-muted-foreground">Live external reference only. It is not Market snapshot data and cannot authorize a decision.</p>
       <div className="h-[360px] w-full bg-muted/30 sm:h-[440px]">
         <iframe
           title={`${symbol} TradingView chart`}

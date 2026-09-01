@@ -1,0 +1,23 @@
+{
+  "as_of": "2026-08-27T15:00:00Z",
+  "actions": [
+    {
+      "projection_identity": "capital:ticker-decision:decision:AAA",
+      "source_authority": "ticker-decision:decision:AAA",
+      "source": "capital_action",
+      "ticker": "AAA",
+      "action": "NO_TRADE",
+      "selected_expression": "CASH",
+      "field_states": [
+        {
+          "field": "trade_plan",
+          "availability_status": "missing",
+          "source": "trade_plan",
+          "reason": "trade_plan_missing",
+          "blocking": true,
+          "next_action": "Refresh the ticker decision and publish its canonical TradePlan."
+        }
+      ]
+    }
+  ]
+}

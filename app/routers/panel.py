@@ -17,6 +17,7 @@ from app.response_contracts import PanelContractResponse, PanelSnapshotResponse,
 from investment_panel.core.config import AppConfig
 from investment_panel.core.panel import tables_for_scope
 from investment_panel.core.decision import (
+    AvailabilityStatus,
     build_decision_resolution,
     capital_action_from_resolution,
     resolution_from_legacy,
@@ -104,7 +105,7 @@ def today(
             "projection_identity": f"capital:ticker-decision:{authority}",
             "source_authority": f"ticker-decision:{authority}",
             "source": "capital_action",
-            "title": f"{symbol} capital action" if symbol else "Unavailable ticker decision",
+            "title": f"{symbol} capital action" if symbol else "Ticker decision needs identity",
             "lifecycle_state": "unavailable" if identity_missing else "blocked" if blocked else "actionable",
             "transition": None,
             "current_at": _queue_datetime(row.get("published_at") or row.get("available_at") or row.get("as_of")),
@@ -125,6 +126,11 @@ def today(
             "trade_rank_unavailable_reason": None if plan is not None and rank_ready else rank_reason,
             "trade_utility": rank.get("trade_utility") if plan is not None and rank_ready and rank else None,
             "trade_plan": _today_trade_plan_payload(plan) if plan is not None else None,
+            "field_states": _today_field_states(
+                identity_missing=identity_missing,
+                plan_missing=plan is None,
+                reason=rank_reason or "trade_plan_missing",
+            ),
         })
     capital_actions.sort(key=lambda row: (
         0 if row.get("trade_rank") is not None else 1,
@@ -180,6 +186,31 @@ def _today_trade_plan_payload(plan: Any) -> dict[str, Any]:
         "market_state_publication_id", "action", "eligibility", "authorization_mode", "data_quality",
         "rationale", "primary_blocker", "blockers", "next_action",
     })
+
+
+def _today_field_states(*, identity_missing: bool, plan_missing: bool, reason: str) -> list[dict[str, Any]]:
+    """Describe missing decision inputs without treating absence as a value."""
+
+    states: list[dict[str, Any]] = []
+    if identity_missing:
+        states.append({
+            "field": "ticker_decision_id",
+            "availability_status": AvailabilityStatus.MISSING,
+            "source": "ticker_decision",
+            "reason": "ticker_decision_identity_missing",
+            "blocking": True,
+            "next_action": "Publish a ticker decision with a stable identity.",
+        })
+    if plan_missing:
+        states.append({
+            "field": "trade_plan",
+            "availability_status": AvailabilityStatus.MISSING,
+            "source": "trade_plan",
+            "reason": reason,
+            "blocking": True,
+            "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+        })
+    return states
 
 
 def book_action_queue(rows: list[dict[str, Any]], *, limit: int = ACTION_QUEUE_LIMIT) -> list[dict[str, Any]]:

@@ -1374,6 +1374,44 @@
         "title": "DashboardResponse",
         "type": "object"
       },
+      "DataFieldStateV1": {
+        "description": "One explicit state for a decision field that is not currently usable.",
+        "properties": {
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus"
+          },
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "availability_status",
+          "source",
+          "reason",
+          "blocking",
+          "next_action"
+        ],
+        "title": "DataFieldStateV1",
+        "type": "object"
+      },
       "DataQuality": {
         "enum": [
           "UNKNOWN",
@@ -13370,6 +13408,13 @@
               }
             ],
             "title": "Expires At"
+          },
+          "field_states": {
+            "items": {
+              "$ref": "#/components/schemas/DataFieldStateV1"
+            },
+            "title": "Field States",
+            "type": "array"
           },
           "lifecycle_state": {
             "title": "Lifecycle State",

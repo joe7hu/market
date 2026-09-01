@@ -1,6 +1,7 @@
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import type { components } from "@/generated/apiSchema";
 import type { ReactNode } from "react";
+import { expressionLabel } from "@/viewModels/expression";
 
 type TradePlan = components["schemas"]["TradePlan"];
 type PortfolioImpact = components["schemas"]["PortfolioImpact"];
@@ -59,7 +60,7 @@ function ActionablePlan({ plan }: { plan: TradePlan }) {
           <Field label="Authorization" value={authorizationLabel(plan.authorization_mode)} />
           <Field label="Action" value={displayText(plan.action)} />
           <Field label="Ticker" value={displayText(plan.ticker)} />
-          <Field label="Expression" value={displayText(plan.selected_expression_kind)} />
+          <Field label="Expression" value={expressionLabel(plan.selected_expression_kind)} />
           <Field label="Entry range" value={priceRange(plan.entry)} />
           <Field label="Entry limit" value={money(plan.entry_limit)} />
           <Field label="Cutoff" value={displayText(plan.cutoff)} />
@@ -196,13 +197,16 @@ function OptionLegs({ legs }: { legs: TradePlanLeg[] }) {
 }
 
 function BlockedPlan({ plan }: { plan?: TradePlan | null }) {
+  const missing = !plan;
   return (
     <div className="min-w-0 p-4 text-sm">
       <dl className="grid min-w-0 gap-3 sm:grid-cols-2">
         <Field label="State" value="NO TRADE" />
         <Field label="Expression" value="CASH" />
-        <Field label="Primary blocker" value={displayText(plan?.primary_blocker)} />
-        <Field label="Next action" value={displayText(plan?.next_action)} />
+        <Field label="Source" value={missing ? "ticker decision" : "canonical TradePlan"} />
+        <Field label="Reason" value={missing ? "trade_plan_missing" : displayText(plan?.primary_blocker)} />
+        <Field label="Blocking" value="yes" />
+        <Field label="Next action" value={missing ? "Refresh the ticker decision and publish its canonical TradePlan." : displayText(plan?.next_action)} />
         {plan?.trade_plan_id ? <Field label="Plan" value={plan.trade_plan_id} /> : null}
       </dl>
     </div>
@@ -229,35 +233,35 @@ function authorizationLabel(mode: string): "PAPER ONLY" | "ADVISORY" {
 function displayText(value: unknown): string {
   if (typeof value === "string" && value.trim()) return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return "Unavailable";
+  return "Not supplied";
 }
 
 function numberValue(value: number | null | undefined): string {
-  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 20 }) : "Unavailable";
+  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 20 }) : "Not supplied";
 }
 
 function listValue(value: string[] | null | undefined): string {
-  return value?.length ? value.join(", ") : "Unavailable";
+  return value?.length ? value.join(", ") : "Not supplied";
 }
 
 function jsonValue(value: unknown): string {
-  if (!value || typeof value !== "object" || !Object.keys(value).length) return "Unavailable";
+  if (!value || typeof value !== "object" || !Object.keys(value).length) return "Not supplied";
   return JSON.stringify(value);
 }
 
 function money(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value)
     ? value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 20 })
-    : "Unavailable";
+    : "Not supplied";
 }
 
 function priceRange(value: PriceRange | null | undefined): string {
-  if (!value) return "Unavailable";
+  if (!value) return "Not supplied";
   return value.low === value.high ? money(value.low) : `${money(value.low)}–${money(value.high)}`;
 }
 
 function invalidation(value: Invalidation | null | undefined): string {
-  if (!value) return "Unavailable";
+  if (!value) return "Not supplied";
   return `${displayText(value.kind)} · ${displayText(value.statement)} · ${displayText(value.value)}`;
 }
 
@@ -267,5 +271,5 @@ function legValue(leg: TradePlanLeg, keys: string[]): string {
     const value = record[key];
     if (value !== undefined && value !== null && value !== "") return displayText(value);
   }
-  return "Unavailable";
+  return "Not supplied";
 }
