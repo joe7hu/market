@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dedupeOpportunityEpisodes, EXPRESSION_KINDS } from "./opportunities";
+import { dedupeOpportunityEpisodes, EXPRESSION_KINDS, shouldLoadScreener } from "./opportunities";
 
 describe("opportunity decision surface", () => {
   it("keeps one row per episode while preserving the first published row", () => {
@@ -17,5 +17,11 @@ describe("opportunity decision surface", () => {
 
   it("defines the complete expression comparison contract", () => {
     expect(EXPRESSION_KINDS).toEqual(["stock", "option/spread", "CSP", "crypto", "hedge", "cash"]);
+  });
+
+  it("starts an empty screener only once", () => {
+    expect(shouldLoadScreener("screener", 0, false)).toBe(true);
+    expect(shouldLoadScreener("screener", 0, true)).toBe(false);
+    expect(shouldLoadScreener("episodes", 0, false)).toBe(false);
   });
 });

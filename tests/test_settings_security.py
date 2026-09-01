@@ -165,6 +165,12 @@ def test_agent_setting_update_preserves_non_editable_fields() -> None:
     assert result["pricing"] == current["pricing"]
 
 
+@pytest.mark.parametrize("value", [True, 1.0, 1.5, "1.5", "true"])
+def test_settings_integer_values_reject_non_integer_inputs(value: object) -> None:
+    with pytest.raises(ValueError, match="timeout_seconds must be an integer"):
+        apply_agent_settings_update({}, {"option_agent": {"timeout_seconds": value}})
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [(True, True), ("true", True), ("1", True), (False, False), ("false", False), ("0", False)],

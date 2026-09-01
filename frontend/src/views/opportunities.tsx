@@ -1,5 +1,5 @@
 import { RefreshCw, SlidersHorizontal } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { components } from "@/generated/apiSchema";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,10 +30,15 @@ export function dedupeOpportunityEpisodes(input: RowRecord[]): RowRecord[] {
   });
 }
 
+export function shouldLoadScreener(view: SavedView, screenerLength: number, loadStarted: boolean): boolean {
+  return view === "screener" && screenerLength === 0 && !loadStarted;
+}
+
 export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, onLoadScreener, onRefresh }: { data: PanelData; loading: boolean; scopeStatus?: ScopeSnapshotStatus; onOpenTicker: OpenTicker; onLoadScreener: () => Promise<void>; onRefresh: (includeScreener?: boolean) => Promise<void> }) {
   const [view, setView] = useState<SavedView>(() => readSavedView());
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<RowRecord | null>(null);
+  const screenerLoadStarted = useRef(false);
   const rankedRows = useMemo(() => dedupeOpportunityEpisodes(rows(data.opportunitiesRanked)), [data.opportunitiesRanked]);
   const screenerLength = rows(data.screener).length;
   const visibleRows = useMemo(() => {
@@ -46,7 +51,9 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
   }, [view]);
 
   useEffect(() => {
-    if (view === "screener" && screenerLength === 0) void onLoadScreener();
+    if (!shouldLoadScreener(view, screenerLength, screenerLoadStarted.current)) return;
+    screenerLoadStarted.current = true;
+    void onLoadScreener();
   }, [onLoadScreener, screenerLength, view]);
 
   return (
