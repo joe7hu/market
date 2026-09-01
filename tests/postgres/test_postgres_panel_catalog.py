@@ -402,6 +402,8 @@ def test_today_page_hydrates_plan_for_selected_decision_when_plan_stream_is_spar
                 "ranking_publication_id": publication_id,
                 "trade_rank": index,
                 "research_rank": index,
+                "evaluated_universe_complete": True,
+                "trade_utility": 1.0,
             }
             if index == 1:
                 published = TickerDecisionRepository(runtime).publish(
@@ -426,6 +428,8 @@ def test_today_page_hydrates_plan_for_selected_decision_when_plan_stream_is_spar
         assert decision_row["ticker"] == f"{prefix}2"
         rank = today_rank_for_row(decision_row, panel.rows("opportunity_rank"), f"{prefix}2")
         assert rank is not None
+        assert rank["evaluated_universe_complete"] is True
+        assert rank["trade_utility"] == 1.0
         assert today_plan_for_row(decision_row, panel.rows("trade_plan"), rank, f"{prefix}2") is not None
         assert panel.rows("trade_plan") == []
     finally:

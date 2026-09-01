@@ -1253,7 +1253,7 @@ def today_authority_pages(
                               <= {safe_decision_end}
                           AND jsonb_typeof(positioned_actions.opportunity_rank)
                               = 'object'
-                    THEN positioned_actions.validation_rank
+                    THEN positioned_actions.opportunity_rank
                END AS decision_opportunity_rank,
                CASE WHEN positioned_actions.decision_position
                               > {safe_decision_offset}

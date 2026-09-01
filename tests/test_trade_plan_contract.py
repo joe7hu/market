@@ -500,7 +500,12 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
 
     query = QUERY_POLICIES["today_ticker_actions"].query
     authority_source = inspect.getsource(today_authority_pages)
-    assert calls == [{}]
+    assert calls == [{
+        "preopen_daily_brief": 1,
+        "daily_brief": 12,
+        "portfolio_risk_cards": 8,
+        "feed_signals": 12,
+    }]
     assert authority_calls == [{
         "decision_offset": 0,
         "rank_offset": 0,
@@ -524,7 +529,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert "JOIN analysis.ticker_decision stored_decision" in authority_source
     assert authority_source.count(
         "THEN stored_decision.input_manifest->'trade_plan'"
-    ) == 1
+    ) == 2
     assert "END AS validation_plan," not in authority_source
     assert "END AS validation_plan_valid" in authority_source
     assert panel.metadata["today_missing_plan_count"] == 7
