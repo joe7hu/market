@@ -1247,6 +1247,21 @@ def today_authority_pages(
                         'selected_expression',
                             positioned_actions.selected_expression
                     )) END AS ticker_decision,
+               CASE WHEN positioned_actions.decision_position
+                              > {safe_decision_offset}
+                          AND positioned_actions.decision_position
+                              <= {safe_decision_end}
+                          AND jsonb_typeof(positioned_actions.opportunity_rank)
+                              = 'object'
+                    THEN positioned_actions.validation_rank
+               END AS decision_opportunity_rank,
+               CASE WHEN positioned_actions.decision_position
+                              > {safe_decision_offset}
+                          AND positioned_actions.decision_position
+                              <= {safe_decision_end}
+                          AND positioned_actions.trade_plan_present
+                    THEN stored_decision.input_manifest->'trade_plan'
+               END AS decision_trade_plan,
                CASE WHEN jsonb_typeof(
                             positioned_actions.opportunity_rank
                          ) = 'object'
@@ -1565,7 +1580,8 @@ def load_postgres_tables(
         publication_options.update(row_limits=query_row_limits, total_counts=published_counts)
     if query_symbol_filter is not None:
         publication_options["symbols"] = query_symbol_filter
-    tables = _published_tables(runtime, requested, **publication_options)
+    publication_requested = tuple(name for name in requested if name in PUBLICATION_MODELS)
+    tables = _published_tables(runtime, publication_requested, **publication_options)
     if {"option_radar_opportunity", "option_radar_summary"}.intersection(tables):
         from investment_panel.database.option_ticket_read import reconcile_loaded_radar_tables
 

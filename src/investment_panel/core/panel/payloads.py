@@ -361,6 +361,10 @@ def _table_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _compact_scoped_row(scope: str, table_name: str, row: dict[str, Any]) -> dict[str, Any]:
+    if scope == "today" and table_name == "ticker_decisions":
+        # Selected-page evidence is an internal join aid for /api/today. It is
+        # not part of the compact panel-snapshot decision-row contract.
+        row = {key: value for key, value in row.items() if key != "_today_authority"}
     if table_name == "portfolio_summary" and "available_at" in row:
         # This is an internal PIT selector field for ticker composition, not
         # part of the established portfolio summary response contract.

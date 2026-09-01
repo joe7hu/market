@@ -48,6 +48,9 @@ def today_rank_for_row(
     revision = str(row.get("decision_revision") or "")
     episode_id = str(row.get("opportunity_episode_id") or "")
     embedded = row.get("opportunity_rank")
+    if not isinstance(embedded, dict):
+        authority = row.get("_today_authority")
+        embedded = authority.get("opportunity_rank") if isinstance(authority, dict) else None
     candidates = (
         [embedded]
         if isinstance(embedded, dict)
@@ -81,6 +84,9 @@ def today_plan_for_row(
     revision = str(row.get("decision_revision") or "")
     episode_id = str(row.get("opportunity_episode_id") or "")
     embedded = row.get("trade_plan")
+    if not isinstance(embedded, dict):
+        authority = row.get("_today_authority")
+        embedded = authority.get("trade_plan") if isinstance(authority, dict) else None
     candidates = (
         [embedded]
         if isinstance(embedded, dict)
@@ -162,6 +168,15 @@ def _load_today_authority(
                 has_exact_correction_count = True
             decision = row.get("ticker_decision")
             if isinstance(decision, dict):
+                hydrated_authority: dict[str, dict[str, Any]] = {}
+                decision_rank = row.get("decision_opportunity_rank")
+                if isinstance(decision_rank, dict):
+                    hydrated_authority["opportunity_rank"] = dict(decision_rank)
+                decision_plan = row.get("decision_trade_plan")
+                if isinstance(decision_plan, dict):
+                    hydrated_authority["trade_plan"] = dict(decision_plan)
+                if hydrated_authority:
+                    decision["_today_authority"] = hydrated_authority
                 decisions.append(dict(decision))
             rank_page = row.get("opportunity_rank_page")
             if isinstance(rank_page, dict):

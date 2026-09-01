@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
-from app.data_access.loaders import load_panel_scope_data
+from app.data_access.loaders import load_panel_scope_data, today_plan_for_row, today_rank_for_row
 from app.data_access.payloads import panel_snapshot_payload
 from conftest import typed_config
 from investment_panel.core.decision import (
@@ -357,6 +357,77 @@ def test_today_action_limit_keeps_exact_missing_plan_backlog_count(
             name: empty_snapshot["tables"][name]["count"]
             for name in ("ticker_decisions", "opportunity_rank", "trade_plan")
         } == {"ticker_decisions": 105, "opportunity_rank": 101, "trade_plan": 102}
+    finally:
+        runtime.close()
+
+
+def test_today_page_hydrates_plan_for_selected_decision_when_plan_stream_is_sparse(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    prefix = f"TP{uuid4().hex[:7].upper()}"
+    as_of = datetime.now(UTC) - timedelta(minutes=1)
+    try:
+        for index in (1, 2):
+            symbol = f"{prefix}{index}"
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity')",
+                    [symbol, symbol],
+                )
+            decision = build_ticker_decision(
+                symbol,
+                {"decision_queue": [{
+                    "symbol": symbol,
+                    "stance": "NEUTRAL",
+                    "available_at": (as_of - timedelta(minutes=1)).isoformat(),
+                }]},
+                as_of=as_of,
+            )
+            selected = decision.selected_expression
+            assert selected is not None
+            impact = decision.portfolio_impacts.get(selected.kind)
+            publication_id = str(uuid4())
+            rank = {
+                "rank_id": f"rank:{symbol.lower()}",
+                "ticker": symbol,
+                "decision_revision": decision.decision_revision,
+                "opportunity_episode_id": decision.opportunity_episode_id,
+                "policy_version": decision.policy_version,
+                "selected_expression_kind": selected.kind.value,
+                "selected_expression_identity": trade_expression_identity(selected),
+                "portfolio_impact_id": impact.impact_id if impact is not None else None,
+                "market_state_publication_id": decision.market_state_publication_id,
+                "ranking_publication_id": publication_id,
+                "trade_rank": index,
+                "research_rank": index,
+            }
+            if index == 1:
+                published = TickerDecisionRepository(runtime).publish(
+                    decision.model_copy(update={"opportunity_rank": rank})
+                )
+            else:
+                plan = build_trade_plan(
+                    decision=decision,
+                    rank=rank,
+                    publication_id=publication_id,
+                )
+                published = TickerDecisionRepository(runtime).publish(
+                    bind_trade_plan(decision, plan).model_copy(update={"opportunity_rank": rank})
+                )
+            assert published["ticker_decision_id"]
+
+        panel = load_panel_scope_data(
+            typed_config(migrated_postgres_dsn), "today", offset=1, limit=1,
+        )
+
+        decision_row = panel.rows("ticker_decisions")[0]
+        assert decision_row["ticker"] == f"{prefix}2"
+        rank = today_rank_for_row(decision_row, panel.rows("opportunity_rank"), f"{prefix}2")
+        assert rank is not None
+        assert today_plan_for_row(decision_row, panel.rows("trade_plan"), rank, f"{prefix}2") is not None
+        assert panel.rows("trade_plan") == []
     finally:
         runtime.close()
 
