@@ -30,6 +30,10 @@ describe("OpportunityRankPanel Phase 2 evidence", () => {
     const compactHtml = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} />);
     expect(compactHtml).toContain("Load decision context");
     expect(compactHtml).not.toContain("Book opportunity rank");
+    expect(compactHtml).toContain("Canonical trade plan");
+    expect(compactHtml).toContain("PENDING");
+    expect(compactHtml).toContain("Reason: trade_plan_snapshot_not_loaded");
+    expect(compactHtml).toContain("Source: ticker_decision_snapshot");
 
     const snapshotHtml = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} snapshot={{
       ...compactDecision,
@@ -40,6 +44,8 @@ describe("OpportunityRankPanel Phase 2 evidence", () => {
       learning: {},
     } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"]} />);
     expect(snapshotHtml).toContain("Book opportunity rank");
+    expect(snapshotHtml).toContain("NO TRADE · CASH");
+    expect(snapshotHtml).toContain("Reason: trade_plan_missing");
   });
 
   it("uses rank alpha identity and renders all qualification evidence", () => {
@@ -121,5 +127,36 @@ describe("OpportunityRankPanel Phase 2 evidence", () => {
     expect(html).toContain("This blocks the decision.");
     expect(html).toContain("Refresh the options signal before selecting an options expression.");
     expect(html).not.toContain("IV regime unavailable");
+  });
+
+  it("renders nullable expression terms as structured blocking states", () => {
+    const decision = {
+      ...compactDecision,
+      expressions: {
+        CALL: {
+          kind: "CALL",
+          status: "blocked",
+          selected: false,
+          availability_status: "missing",
+          blockers: [],
+          horizon: "TACTICAL",
+          rationale: "Missing expression terms block selection.",
+          quantity: null,
+          planned_loss: null,
+          net_expected_value_per_loss_dollar: null,
+          expected_transaction_costs: null,
+          horizon_fit: null,
+        },
+      },
+    } as unknown as components["schemas"]["TickerDecisionDetailResponse"];
+    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={decision} />);
+
+    for (const field of ["quantity", "planned_loss", "net_expected_value_per_loss_dollar", "expected_transaction_costs", "horizon_fit"]) {
+      expect(html).toContain(`Field unavailable: ${field}`);
+    }
+    expect(html).toContain("Source: expression_decision");
+    expect(html).toContain("Reason: horizon_fit_missing");
+    expect(html).toContain("This blocks the decision.");
+    expect(html).toContain("Refresh the canonical ticker decision before selecting an expression.");
   });
 });

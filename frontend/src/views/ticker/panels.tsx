@@ -131,15 +131,18 @@ export function TickerDecisionPanel({
           {learningPayload ? <LearningLoopPanel learning={learningPayload} /> : null}
         </>
       ) : (
-        <DataTableFrame title="Additional decision context" action={<StatusBadge tone="muted">On demand</StatusBadge>}>
-          <div className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
-            <p className="text-muted-foreground">Load the full validated decision snapshot to inspect rank, trade-plan, and collection evidence.</p>
-            <Button type="button" variant="outline" disabled={snapshotLoading} onClick={() => void onLoadSnapshot()}>
-              {snapshotLoading ? "Loading…" : "Load decision context"}
-            </Button>
-          </div>
-          {snapshotError ? <p className="border-t border-border px-4 py-3 text-sm text-[var(--destructive)]">{snapshotError}</p> : null}
-        </DataTableFrame>
+        <>
+          <TradePlanCard pending />
+          <DataTableFrame title="Additional decision context" action={<StatusBadge tone="muted">On demand</StatusBadge>}>
+            <div className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+              <p className="text-muted-foreground">Load the full validated decision snapshot to inspect rank, trade-plan, and collection evidence.</p>
+              <Button type="button" variant="outline" disabled={snapshotLoading} onClick={() => void onLoadSnapshot()}>
+                {snapshotLoading ? "Loading…" : "Load decision context"}
+              </Button>
+            </div>
+            {snapshotError ? <p className="border-t border-border px-4 py-3 text-sm text-[var(--destructive)]">{snapshotError}</p> : null}
+          </DataTableFrame>
+        </>
       )}
       <SelectedPortfolioImpact decision={decision} />
       <TickerMarketEvidence decision={decision} />
@@ -281,22 +284,32 @@ export function OpportunityRankPanel({
 }
 
 function ExpressionTable({ expressions }: { expressions: components["schemas"]["ExpressionDecision"][] }) {
-  const rows = expressions.map((expression) => ({
-    expression: expression.kind,
-    state: expression.selected ? "SELECTED" : expression.status.toUpperCase(),
-    quantity: expression.quantity == null ? "—" : expression.quantity.toLocaleString(),
-    loss: money(expression.planned_loss),
-    utility: numberText(expression.net_expected_value_per_loss_dollar),
-    costs: money(expression.expected_transaction_costs),
-    fit: expression.horizon_fit == null ? "—" : percent(expression.horizon_fit),
-  }));
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Expression tournament</h3>
         <span className="text-xs text-muted-foreground">same thesis · same invalidation</span>
       </div>
-      <SimpleTable rows={rows} empty="No expression comparison is available." columns={[["expression", "Expression"], ["state", "State"], ["quantity", "Qty"], ["loss", "Planned loss"], ["utility", "Net utility"], ["costs", "Costs"], ["fit", "Horizon"]]} />
+      {expressions.length ? <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[900px] text-sm">
+          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+            <tr>{["Expression", "State", "Qty", "Planned loss", "Net utility", "Costs", "Horizon"].map((label) => <th key={label} className="px-3 py-3 font-medium">{label}</th>)}</tr>
+          </thead>
+          <tbody>
+            {expressions.map((expression) => (
+              <tr key={expression.kind} className="border-b border-border last:border-b-0 align-top">
+                <td className="px-3 py-3">{expression.kind}</td>
+                <td className="px-3 py-3">{expression.selected ? "SELECTED" : expression.status.toUpperCase()}</td>
+                <td className="px-3 py-3"><ExpressionTerm field="quantity" value={expression.quantity == null ? null : expression.quantity.toLocaleString()} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="planned_loss" value={moneyText(expression.planned_loss)} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="net_expected_value_per_loss_dollar" value={numberTextOrNull(expression.net_expected_value_per_loss_dollar)} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="expected_transaction_costs" value={moneyText(expression.expected_transaction_costs)} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="horizon_fit" value={percentText(expression.horizon_fit)} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div> : <p className="text-sm text-muted-foreground">No expression comparison is available.</p>}
     </div>
   );
 }
@@ -426,6 +439,10 @@ function numberText(value: JsonValue | undefined): string {
   return "—";
 }
 
+function numberTextOrNull(value: number | null | undefined): string | null {
+  return value == null || !Number.isFinite(value) ? null : numberText(value);
+}
+
 function percentValue(value: JsonValue | undefined): string {
   if (typeof value === "number" && Number.isFinite(value)) return `${(value * 100).toFixed(1)}%`;
   if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return `${(Number(value) * 100).toFixed(1)}%`;
@@ -451,6 +468,16 @@ function DecisionTerm({
 }) {
   if (value != null && value.trim()) return <KeyValue label={label} value={value} />;
   return <DataFieldStateNotice compact state={missingFieldState({ field, source, reason: `${field}_missing`, nextAction })} />;
+}
+
+function ExpressionTerm({ field, value }: { field: string; value: string | null }) {
+  if (value != null) return <>{value}</>;
+  return <DataFieldStateNotice compact state={missingFieldState({
+    field,
+    source: "expression_decision",
+    reason: `${field}_missing`,
+    nextAction: "Refresh the canonical ticker decision before selecting an expression.",
+  })} />;
 }
 
 function DecisionKeyValue({ label, value, field, source }: { label: string; value: string | null | undefined; field: string; source: string }) {

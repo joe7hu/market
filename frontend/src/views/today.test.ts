@@ -64,6 +64,19 @@ describe("Today Action Queue", () => {
     expect(markup).toContain("contract-1");
   });
 
+  it("renders missing option bid and ask as separate structured quote states", () => {
+    const markup = renderToStaticMarkup(createElement(TradePlanCard, { plan: plan() }));
+
+    expect(markup).toContain("Field unavailable: bid");
+    expect(markup).toContain("Field unavailable: ask");
+    expect(markup).toContain("Source: option_quote");
+    expect(markup).toContain("Reason: bid_missing");
+    expect(markup).toContain("Reason: ask_missing");
+    expect(markup).toContain("This blocks the decision.");
+    expect(markup).toContain("Refresh the option quote before placing an order.");
+    expect(markup).not.toContain("Not supplied / Not supplied");
+  });
+
   it("labels advisory terms without implying paper authorization", () => {
     const markup = renderToStaticMarkup(createElement(TradePlanCard, { plan: plan({ authorization_mode: "ADVISORY" }) }));
 

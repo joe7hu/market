@@ -11,14 +11,14 @@ type PriceRange = components["schemas"]["PriceRange"];
 type Invalidation = components["schemas"]["Invalidation"];
 type TradePlanLeg = NonNullable<TradePlan["selected_expression"]["legs"]>[number];
 
-export function TradePlanCard({ plan }: { plan?: TradePlan | null }) {
+export function TradePlanCard({ plan, pending = false }: { plan?: TradePlan | null; pending?: boolean }) {
   const actionable = isRenderableActionable(plan);
   return (
     <DataTableFrame
       title="Canonical trade plan"
-      action={<StatusBadge tone={actionable ? "good" : "warn"}>{actionable ? authorizationLabel(plan.authorization_mode) : "NO TRADE"}</StatusBadge>}
+      action={<StatusBadge tone={actionable ? "good" : "warn"}>{actionable ? authorizationLabel(plan.authorization_mode) : pending ? "PENDING" : "NO TRADE"}</StatusBadge>}
     >
-      {actionable ? <ActionablePlan plan={plan} /> : <BlockedPlan plan={plan} />}
+      {actionable ? <ActionablePlan plan={plan} /> : <BlockedPlan plan={plan} pending={pending} />}
     </DataTableFrame>
   );
 }
@@ -189,7 +189,8 @@ function OptionLegs({ legs }: { legs: TradePlanLeg[] }) {
               <Field label="Option type" value={legValue(leg, ["option_type"])} />
               <Field label="Strike" value={legValue(leg, ["strike"])} />
               <Field label="Expiration" value={legValue(leg, ["expiration"])} />
-              <Field label="Bid / ask" value={`${legValue(leg, ["bid"])} / ${legValue(leg, ["ask"])}`} />
+              <Field label="Bid" value={legValue(leg, ["bid"])} source="option_quote" nextAction="Refresh the option quote before placing an order." />
+              <Field label="Ask" value={legValue(leg, ["ask"])} source="option_quote" nextAction="Refresh the option quote before placing an order." />
             </dl>
           </li>
         ))}
@@ -198,17 +199,17 @@ function OptionLegs({ legs }: { legs: TradePlanLeg[] }) {
   );
 }
 
-function BlockedPlan({ plan }: { plan?: TradePlan | null }) {
+function BlockedPlan({ plan, pending }: { plan?: TradePlan | null; pending: boolean }) {
   const missing = !plan;
   const state = missingFieldState({
     field: "trade_plan",
-    source: missing ? "ticker_decision" : "canonical_trade_plan",
-    reason: missing ? "trade_plan_missing" : plan.primary_blocker || "trade_plan_required_field_missing",
-    nextAction: missing ? "Refresh the ticker decision and publish its canonical TradePlan." : plan.next_action,
+    source: pending ? "ticker_decision_snapshot" : missing ? "ticker_decision" : "canonical_trade_plan",
+    reason: pending ? "trade_plan_snapshot_not_loaded" : missing ? "trade_plan_missing" : plan.primary_blocker || "trade_plan_required_field_missing",
+    nextAction: pending ? "Load the full validated decision snapshot before acting." : missing ? "Refresh the ticker decision and publish its canonical TradePlan." : plan.next_action,
   });
   return (
     <div className="min-w-0 p-4 text-sm">
-      <p className="font-semibold">NO TRADE · CASH</p>
+      <p className="font-semibold">{pending ? "PENDING · NO TRADE · CASH" : "NO TRADE · CASH"}</p>
       <div className="mt-3"><DataFieldStateNotice state={state} /></div>
       {plan?.trade_plan_id ? <dl className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Plan" value={plan.trade_plan_id} /></dl> : null}
     </div>
