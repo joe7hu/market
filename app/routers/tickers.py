@@ -22,6 +22,7 @@ router = APIRouter()
 # not the immutable evidence bodies.  The complete validated artifact remains
 # available from ``/decision-snapshot`` for audit and paper-entry checks.
 _TICKER_DETAIL_EXCLUDE = {
+    "resolution": True,
     "opportunity_episode": True,
     "learning_history": True,
     "instrument_state_snapshot": True,

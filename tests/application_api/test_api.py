@@ -697,6 +697,7 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
         "portfolio_impacts", "resolution", "selected_expression", "tactical", "ticker",
     }
     assert "opportunity_episode" not in payload
+    assert "resolution" not in payload
     assert "alpha_signals" not in payload
     assert "opportunity_rank" not in payload
     assert "trade_plan" not in payload
