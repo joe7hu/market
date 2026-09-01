@@ -25,6 +25,13 @@ _TICKER_DETAIL_EXCLUDE = {
     "opportunity_episode": True,
     "learning_history": True,
     "instrument_state_snapshot": True,
+    "alpha_signals": True,
+    "opportunity_rank": True,
+    "trade_plan": True,
+    "outcome_attributions": True,
+    "expressions": True,
+    "data_requests": True,
+    "learning": True,
 }
 
 

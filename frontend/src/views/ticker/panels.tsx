@@ -112,11 +112,8 @@ export function TickerDecisionPanel({
           </div>
         </div>
       </DataTableFrame>
-      <OpportunityRankPanel
-        signals={alphaSignals ?? []}
-        rank={opportunityRank}
-      />
-      <TradePlanCard plan={tradePlan ?? null} />
+      {opportunityRank ? <OpportunityRankPanel signals={alphaSignals ?? []} rank={opportunityRank} /> : null}
+      {tradePlan ? <TradePlanCard plan={tradePlan} /> : null}
       {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
       <SelectedPortfolioImpact decision={decision} />
       <TickerMarketEvidence decision={decision} />

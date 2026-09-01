@@ -665,7 +665,13 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
         "portfolio_impacts", "resolution", "selected_expression", "tactical", "ticker",
     }
     assert "opportunity_episode" not in payload
-    assert payload["outcome_attributions"] == []
+    assert "alpha_signals" not in payload
+    assert "opportunity_rank" not in payload
+    assert "trade_plan" not in payload
+    assert "outcome_attributions" not in payload
+    assert "expressions" not in payload
+    assert "data_requests" not in payload
+    assert "learning" not in payload
     assert "learning_history" not in payload
     assert "instrument_state_snapshot" not in payload
     assert decision["resolution"]["eligibility"] == "BLOCKED"
