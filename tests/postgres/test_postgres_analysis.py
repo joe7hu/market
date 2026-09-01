@@ -800,6 +800,35 @@ def test_panel_publications_filter_symbol_scoped_rows_and_counts(analysis_contex
     assert total_counts == {"ticker_decisions": 1}
 
 
+def test_panel_publications_preserve_symbol_less_global_rows(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    repository: AnalysisRepository = analysis_context["analysis"]
+    run_id = _start_run(repository, "global-panel-symbol-filter")
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(
+        run_id,
+        "market",
+        {
+            "market_environment_model": [
+                {"stable_key": "global", "category": "Overall", "score": 55},
+                {"stable_key": "symbol-row", "symbol": "BBB", "score": 20},
+            ],
+        },
+    )
+
+    total_counts: dict[str, int] = {}
+    tables = published_tables(
+        runtime,
+        ("market_environment_model",),
+        row_limits={"market_environment_model": 12},
+        total_counts=total_counts,
+        symbols={"AAA"},
+    )
+
+    assert [row["stable_key"] for row in tables["market_environment_model"]] == ["global"]
+    assert total_counts == {"market_environment_model": 1}
+
+
 def test_concurrent_same_input_publish_reuses_one_generation(analysis_context, postgres_dsn: str) -> None:
     repository: AnalysisRepository = analysis_context["analysis"]
     runs = [_start_run(repository, "same-input") for _ in range(2)]

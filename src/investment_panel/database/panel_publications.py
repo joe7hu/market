@@ -68,12 +68,21 @@ def published_tables(
                 , filtered_rows AS (
                     SELECT *
                     FROM published_rows
-                    WHERE UPPER(COALESCE(
+                    WHERE COALESCE(
+                        UPPER(COALESCE(
+                            payload->>'ticker',
+                            payload->>'symbol',
+                            payload->>'underlying',
+                            payload->'ticker_decision'->>'ticker'
+                        )),
+                        ''
+                    ) = ANY(%s)
+                    OR COALESCE(
                         payload->>'ticker',
                         payload->>'symbol',
                         payload->>'underlying',
                         payload->'ticker_decision'->>'ticker'
-                    )) = ANY(%s)
+                    ) IS NULL
                 )
             """
             source_table = "filtered_rows"

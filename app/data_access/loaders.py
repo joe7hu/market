@@ -624,13 +624,13 @@ def load_ticker_panel_data(config: AppConfig | None, ticker: str) -> PanelData:
         query_row_limits={name: 24 for name in core_tables},
     )
     optional_failures: dict[str, str] = {}
-    optional = load_panel_data(
-        active_config,
-        table_names=_TICKER_OPTIONAL_DEEP_TABLES,
-        query_symbol_filter={normalized},
-        query_row_limits={name: 24 for name in _TICKER_OPTIONAL_DEEP_TABLES},
-    )
     for table_name in _TICKER_OPTIONAL_DEEP_TABLES:
+        optional = load_panel_data(
+            active_config,
+            table_names=(table_name,),
+            query_symbol_filter={normalized},
+            query_row_limits={table_name: 24},
+        )
         panel.tables[table_name] = optional.tables.get(table_name, [])
         if not optional.status.ready:
             optional_failures[table_name] = optional.status.message

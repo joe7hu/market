@@ -70,11 +70,17 @@ def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_d
 def test_ticker_optional_slow_reads_do_not_hide_ready_core(monkeypatch) -> None:
     def fake_load_panel_data(_config, *, table_names, **_kwargs):
         names = tuple(table_names)
-        if names == ("liquidity", "options_payoff_scenarios"):
+        if names == ("liquidity",):
             return PanelData(
-                status=DataStatus(False, "optional ticker reads: statement timeout", "postgresql-error"),
-                tables={name: [] for name in names},
+                status=DataStatus(False, "liquidity: statement timeout", "postgresql-error"),
+                tables={"liquidity": []},
                 metadata={"database": "postgresql", "available_model_count": 0, "unavailable_models": []},
+            )
+        if names == ("options_payoff_scenarios",):
+            return PanelData(
+                status=DataStatus(True, "PostgreSQL loaded.", "postgresql"),
+                tables={"options_payoff_scenarios": [{"symbol": "QQQ", "scenario": "available"}]},
+                metadata={"database": "postgresql", "available_model_count": 1, "unavailable_models": []},
             )
         return PanelData(
             status=DataStatus(True, "PostgreSQL loaded.", "postgresql"),
@@ -94,9 +100,9 @@ def test_ticker_optional_slow_reads_do_not_hide_ready_core(monkeypatch) -> None:
     assert panel_data.status.source == "postgresql-partial"
     assert panel_data.rows("quotes") == [{"symbol": "QQQ", "price": 500}]
     assert panel_data.rows("liquidity") == []
-    assert panel_data.rows("options_payoff_scenarios") == []
-    assert set(panel_data.metadata["unavailable_models"]) == {"liquidity", "options_payoff_scenarios"}
-    assert set(panel_data.metadata["ticker_optional_unavailable"]) == {"liquidity", "options_payoff_scenarios"}
+    assert panel_data.rows("options_payoff_scenarios") == [{"symbol": "QQQ", "scenario": "available"}]
+    assert panel_data.metadata["unavailable_models"] == ["liquidity"]
+    assert panel_data.metadata["ticker_optional_unavailable"] == {"liquidity": "liquidity: statement timeout"}
 
 
 def test_complete_contract_has_no_unavailable_postgresql_models(migrated_postgres_dsn: str) -> None:
