@@ -91,7 +91,9 @@ def test_ticker_option_queries_keep_symbol_filter_before_dense_joins() -> None:
     assert "candidate_instruments AS MATERIALIZED" in payoff_query
     assert "WHERE instrument.symbol = ANY(%s)" in payoff_query
     assert payoff_query.index("candidate_instruments AS MATERIALIZED") < payoff_query.index("JOIN analysis.option_decision")
-    assert payoff_query.index("WHERE EXISTS (") < payoff_query.index("LIMIT 200")
+    assert "LIMIT 200" not in payoff_query
+    assert payoff_query.rindex("JOIN raw.option_quote") < payoff_query.rindex("LIMIT %s")
+    assert payoff_query.rindex("ORDER BY decision.as_of DESC, decision.rank") < payoff_query.rindex("LIMIT %s")
     assert payoff_parameters == [["QQQ"], 24]
 
 

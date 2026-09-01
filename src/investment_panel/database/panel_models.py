@@ -1921,7 +1921,6 @@ def _options_payoff_scenario_rows(
         return []
     filter_sql = "WHERE instrument.symbol = ANY(%s)" if normalized is not None else ""
     params: list[Any] = [normalized] if normalized is not None else []
-    candidate_limit_sql = "LIMIT 200" if limit else ""
     query = f"""
         WITH candidate_instruments AS MATERIALIZED (
             SELECT instrument.id, instrument.symbol
@@ -1938,7 +1937,6 @@ def _options_payoff_scenario_rows(
                 WHERE option_decision.decision_id = decision.id
             )
             ORDER BY decision.as_of DESC, decision.rank, decision.id DESC
-            {candidate_limit_sql}
         )
         SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
                contract.id::text AS contract_id, contract.expiration, contract.strike, contract.option_type,
