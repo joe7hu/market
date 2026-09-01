@@ -223,6 +223,7 @@ def portfolio_transaction_rows(
                    transaction.account, transaction.executed_at, transaction.notes,
                    transaction.idempotency_key, transaction.reverses_transaction_id,
                    transaction.created_at,
+                   count(*) OVER () AS __panel_total_count,
                    (transaction.reverses_transaction_id IS NOT NULL) AS is_reversal,
                    EXISTS (
                        SELECT 1 FROM app.portfolio_transaction reversal

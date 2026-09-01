@@ -1111,6 +1111,28 @@ def test_portfolio_panel_scope_publishes_reconciled_intelligence_tables(client: 
     assert tables["portfolio_transactions"]["rows"][0]["symbol"] == "NVDA"
 
 
+def test_portfolio_transaction_page_reports_exact_total_count(client: TestClient) -> None:
+    for index, executed_at in enumerate(("2026-07-01T15:30:00Z", "2026-07-02T15:30:00Z")):
+        assert client.post(
+            "/api/portfolio/transactions",
+            json={
+                "symbol": "NVDA",
+                "transaction_type": "buy",
+                "quantity": 1,
+                "price": 100 + index,
+                "executed_at": executed_at,
+                "idempotency_key": f"transaction-count-nvda-{index}",
+            },
+        ).status_code == 200
+
+    payload = client.get("/api/panel-snapshot?scope=portfolio&offset=0&limit=1")
+    assert payload.status_code == 200
+    transactions = payload.json()["tables"]["portfolio_transactions"]
+    assert transactions["count"] == 2
+    assert len(transactions["rows"]) == 1
+    assert transactions["limit"] == 1
+
+
 def test_portfolio_only_panel_read_skips_full_intelligence_bundle(
     client: TestClient,
     postgres_dsn: str,

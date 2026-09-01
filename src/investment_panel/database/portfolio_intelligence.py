@@ -542,7 +542,12 @@ def portfolio_intelligence_tables(
             tables["review_actions"] = portfolio_review_action_rows(config, risk_rows=risks)
     for name, rows in tuple(tables.items()):
         if total_counts is not None:
-            total_counts[name] = len(rows)
+            panel_total = rows[0].get("__panel_total_count") if rows else None
+            total_counts[name] = (
+                int(panel_total)
+                if isinstance(panel_total, int) and not isinstance(panel_total, bool)
+                else len(rows)
+            )
         if row_limits is not None and name in row_limits and row_limits[name] > 0:
             tables[name] = rows[: int(row_limits[name])]
     return tables
