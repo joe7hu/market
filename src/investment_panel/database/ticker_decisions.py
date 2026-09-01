@@ -346,6 +346,7 @@ class TickerDecisionRepository:
         for row in self._current_funnel_rows(reference=reference):
             ticker = str(row.get("ticker") or "").strip().upper()
             compact_contract_valid = True
+            fast_cash = row.get("funnel_fast_path") is True
             try:
                 stock_expression = TradeExpression.model_validate(row.get("stock_expression"))
                 if stock_expression.kind is not ExpressionKind.STOCK or stock_expression.ticker.strip().upper() != ticker:
@@ -361,34 +362,41 @@ class TickerDecisionRepository:
                     "availability_status": AvailabilityStatus.ERROR.value,
                     "blockers": ["stock_expression_invalid"],
                 }
-            try:
-                stock_impact = PortfolioImpact.model_validate(portfolio_impact_from_persisted(
-                    row.get("stock_portfolio_impact"), ticker=ticker,
-                ))
-                if (
-                    stock_impact.expression_kind is not ExpressionKind.STOCK
-                    or stock_impact.ticker.strip().upper() != ticker
-                    or stock_impact.opportunity_episode_id != row.get("opportunity_episode_id")
-                    or stock_impact.decision_revision != row.get("decision_revision")
-                    or stock_impact.risk_policy_version != row.get("policy_version")
-                    or _utc(stock_impact.cutoff) != _utc(row["as_of"])
-                    or stock_impact.market_state_publication_id
-                    != (str(row.get("market_state_publication_id") or "") or None)
-                    or stock_expression is None
-                    or stock_impact.expression_identity != trade_expression_identity(stock_expression)
-                ):
-                    raise ValueError("stock portfolio impact does not match its ticker decision")
-                stock_impact_projection = {
-                    "availability_status": stock_impact.availability_status.value,
-                    "blockers": list(stock_impact.blockers),
-                }
-            except (KeyError, TypeError, ValueError):
-                compact_contract_valid = False
+            if fast_cash:
                 stock_impact = None
                 stock_impact_projection = {
-                    "availability_status": AvailabilityStatus.ERROR.value,
-                    "blockers": ["stock_portfolio_impact_invalid"],
+                    "availability_status": AvailabilityStatus.MISSING.value,
+                    "blockers": ["portfolio_context_missing"],
                 }
+            else:
+                try:
+                    stock_impact = PortfolioImpact.model_validate(portfolio_impact_from_persisted(
+                        row.get("stock_portfolio_impact"), ticker=ticker,
+                    ))
+                    if (
+                        stock_impact.expression_kind is not ExpressionKind.STOCK
+                        or stock_impact.ticker.strip().upper() != ticker
+                        or stock_impact.opportunity_episode_id != row.get("opportunity_episode_id")
+                        or stock_impact.decision_revision != row.get("decision_revision")
+                        or stock_impact.risk_policy_version != row.get("policy_version")
+                        or _utc(stock_impact.cutoff) != _utc(row["as_of"])
+                        or stock_impact.market_state_publication_id
+                        != (str(row.get("market_state_publication_id") or "") or None)
+                        or stock_expression is None
+                        or stock_impact.expression_identity != trade_expression_identity(stock_expression)
+                    ):
+                        raise ValueError("stock portfolio impact does not match its ticker decision")
+                    stock_impact_projection = {
+                        "availability_status": stock_impact.availability_status.value,
+                        "blockers": list(stock_impact.blockers),
+                    }
+                except (KeyError, TypeError, ValueError):
+                    compact_contract_valid = False
+                    stock_impact = None
+                    stock_impact_projection = {
+                        "availability_status": AvailabilityStatus.ERROR.value,
+                        "blockers": ["stock_portfolio_impact_invalid"],
+                    }
             try:
                 resolution = DecisionResolutionV2.model_validate(row.get("resolution"))
                 if (
@@ -496,7 +504,8 @@ class TickerDecisionRepository:
                 opportunity_episode = None
             episode_authority_valid = opportunity_episode is not None or episode_intentionally_omitted
             impact_lineage_valid = (
-                episode_intentionally_omitted
+                fast_cash
+                or episode_intentionally_omitted
                 or (
                     opportunity_episode is not None
                     and bool(opportunity_episode.input_lineage)
@@ -511,7 +520,7 @@ class TickerDecisionRepository:
                     )
                 )
             )
-            if not episode_authority_valid or stock_impact is None or not impact_lineage_valid:
+            if not episode_authority_valid or (stock_impact is None and not fast_cash) or not impact_lineage_valid:
                 compact_contract_valid = False
                 stock_impact = None
                 stock_impact_projection = {
@@ -845,6 +854,7 @@ class TickerDecisionRepository:
                 SELECT candidate.ticker, decision.as_of, decision.published_at,
                        decision.decision_revision, decision.policy_version,
                        decision.opportunity_episode_id,
+                       compact_candidate.fast_cash AS funnel_fast_path,
                        funnel_candidate.required AS funnel_candidate_required,
                        CASE WHEN funnel_candidate.required
                                       AND episode_lineage.valid
@@ -886,48 +896,50 @@ class TickerDecisionRepository:
                        END AS selected_expression,
                        coalesce(decision.expressions->'STOCK', decision.expressions->'stock')
                            AS stock_expression,
-                       CASE
-                           WHEN lower(coalesce(
-                               impact.stock_impact->>'availability',
-                               impact.stock_impact->>'availability_status',
-                               ''
-                           )) = 'available'
-                           THEN CASE WHEN octet_length(impact.stock_impact::text) <= 262144
-                                THEN jsonb_set(
-                                    impact.stock_impact,
-                                    '{input_lineage}',
-                                    CASE WHEN episode_lineage.valid
-                                              AND episode_lineage.within_limit
-                                         THEN decision.opportunity_episode->'input_lineage'
-                                         ELSE '[]'::jsonb
-                                    END,
-                                    false
+                       CASE WHEN compact_candidate.fast_cash THEN NULL
+                            ELSE CASE
+                                WHEN lower(coalesce(
+                                    impact.stock_impact->>'availability',
+                                    impact.stock_impact->>'availability_status',
+                                    ''
+                                )) = 'available'
+                                THEN CASE WHEN octet_length(impact.stock_impact::text) <= 262144
+                                     THEN jsonb_set(
+                                         impact.stock_impact,
+                                         '{input_lineage}',
+                                         CASE WHEN episode_lineage.valid
+                                                   AND episode_lineage.within_limit
+                                              THEN decision.opportunity_episode->'input_lineage'
+                                              ELSE '[]'::jsonb
+                                         END,
+                                         false
+                                     )
+                                END
+                                WHEN octet_length(coalesce(
+                                    impact.stock_impact->'blockers', '[]'::jsonb
+                                )::text) <= 8192
+                                THEN jsonb_build_object(
+                                    'contract_version', impact.stock_impact->'contract_version',
+                                    'impact_id', impact.stock_impact->'impact_id',
+                                    'ticker', impact.stock_impact->'ticker',
+                                    'symbol', impact.stock_impact->'symbol',
+                                    'instrument_symbol', impact.stock_impact->'instrument_symbol',
+                                    'opportunity_episode_id', impact.stock_impact->'opportunity_episode_id',
+                                    'expression_kind', impact.stock_impact->'expression_kind',
+                                    'expression', impact.stock_impact->'expression',
+                                    'expression_identity', impact.stock_impact->'expression_identity',
+                                    'decision_revision', impact.stock_impact->'decision_revision',
+                                    'risk_policy_version', impact.stock_impact->'risk_policy_version',
+                                    'policy_version', impact.stock_impact->'policy_version',
+                                    'market_snapshot_id', impact.stock_impact->'market_snapshot_id',
+                                    'snapshot_id', impact.stock_impact->'snapshot_id',
+                                    'market_state_publication_id', impact.stock_impact->'market_state_publication_id',
+                                    'cutoff', impact.stock_impact->'cutoff',
+                                    'availability', impact.stock_impact->'availability',
+                                    'availability_status', impact.stock_impact->'availability_status',
+                                    'blockers', coalesce(impact.stock_impact->'blockers', '[]'::jsonb)
                                 )
-                           END
-                           WHEN octet_length(coalesce(
-                               impact.stock_impact->'blockers', '[]'::jsonb
-                           )::text) <= 8192
-                           THEN jsonb_build_object(
-                               'contract_version', impact.stock_impact->'contract_version',
-                               'impact_id', impact.stock_impact->'impact_id',
-                               'ticker', impact.stock_impact->'ticker',
-                               'symbol', impact.stock_impact->'symbol',
-                               'instrument_symbol', impact.stock_impact->'instrument_symbol',
-                               'opportunity_episode_id', impact.stock_impact->'opportunity_episode_id',
-                               'expression_kind', impact.stock_impact->'expression_kind',
-                               'expression', impact.stock_impact->'expression',
-                               'expression_identity', impact.stock_impact->'expression_identity',
-                               'decision_revision', impact.stock_impact->'decision_revision',
-                               'risk_policy_version', impact.stock_impact->'risk_policy_version',
-                               'policy_version', impact.stock_impact->'policy_version',
-                               'market_snapshot_id', impact.stock_impact->'market_snapshot_id',
-                               'snapshot_id', impact.stock_impact->'snapshot_id',
-                               'market_state_publication_id', impact.stock_impact->'market_state_publication_id',
-                               'cutoff', impact.stock_impact->'cutoff',
-                               'availability', impact.stock_impact->'availability',
-                               'availability_status', impact.stock_impact->'availability_status',
-                               'blockers', coalesce(impact.stock_impact->'blockers', '[]'::jsonb)
-                           )
+                            END
                        END AS stock_portfolio_impact,
                        CASE WHEN funnel_candidate.required
                                   AND decision.opportunity_episode->'input_lineage'
@@ -938,7 +950,23 @@ class TickerDecisionRepository:
                             THEN true
                             WHEN funnel_candidate.required THEN false
                        END AS impact_lineage_match,
-                       CASE WHEN octet_length(decision.resolution::text) <= 196608
+                       CASE WHEN compact_candidate.fast_cash
+                            THEN jsonb_build_object(
+                                'contract_version', decision.resolution->'contract_version',
+                                'lifecycle', decision.resolution->'lifecycle',
+                                'eligibility', decision.resolution->'eligibility',
+                                'authorization_mode', decision.resolution->'authorization_mode',
+                                'data_quality', decision.resolution->'data_quality',
+                                'action', decision.resolution->'action',
+                                'trade_plan_id', decision.resolution->'trade_plan_id',
+                                'primary_blocker', decision.resolution->'primary_blocker',
+                                'blockers', coalesce(decision.resolution->'blockers', '[]'::jsonb),
+                                'next_action', decision.resolution->'next_action',
+                                'policy_version', decision.resolution->'policy_version',
+                                'decision_revision', decision.resolution->'decision_revision',
+                                'ticker', decision.resolution->'ticker'
+                            )
+                            WHEN octet_length(decision.resolution::text) <= 196608
                             THEN jsonb_build_object(
                                 'contract_version', decision.resolution->'contract_version',
                                 'lifecycle', decision.resolution->'lifecycle',
@@ -987,13 +1015,21 @@ class TickerDecisionRepository:
                 FROM candidate_keys candidate
                 JOIN analysis.ticker_decision decision ON decision.id = candidate.id
                 CROSS JOIN LATERAL (
-                    SELECT coalesce(
-                        decision.portfolio_impacts->'STOCK',
-                        decision.portfolio_impacts->'stock'
-                    ) AS stock_impact
+                    SELECT lower(coalesce(decision.capital_action->>'action', ''))
+                               IN ('avoid', 'no_trade', 'cash')
+                               AND lower(coalesce(decision.selected_expression->>'kind', 'cash')) = 'cash'
+                           AS fast_cash
+                ) compact_candidate
+                CROSS JOIN LATERAL (
+                    SELECT CASE WHEN compact_candidate.fast_cash THEN NULL
+                                ELSE coalesce(
+                                    decision.portfolio_impacts->'STOCK',
+                                    decision.portfolio_impacts->'stock'
+                                )
+                           END AS stock_impact
                 ) impact
                 CROSS JOIN LATERAL (
-                    SELECT (
+                    SELECT CASE WHEN compact_candidate.fast_cash THEN false ELSE (
                         lower(coalesce(
                             coalesce(
                                 decision.expressions->'STOCK',
@@ -1016,7 +1052,7 @@ class TickerDecisionRepository:
                             decision.resolution->>'status',
                             ''
                         )) <> 'blocked'
-                    ) AS required
+                    ) END AS required
                 ) funnel_candidate
                 CROSS JOIN LATERAL (
                     SELECT CASE WHEN funnel_candidate.required THEN CASE
