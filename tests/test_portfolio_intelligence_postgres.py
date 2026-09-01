@@ -91,6 +91,42 @@ def test_portfolio_performance_limit_keeps_newest_rows(monkeypatch) -> None:
     assert tables["portfolio_performance"] == rows[-80:]
 
 
+def test_portfolio_risk_models_use_all_positions_for_a_paged_request(monkeypatch) -> None:
+    positions = [
+        {"symbol": "AAA", "portfolio_weight": 60},
+        {"symbol": "BBB", "portfolio_weight": 40},
+    ]
+    seen: dict[str, list[dict[str, object]]] = {}
+
+    class Runtime:
+        def snapshot(self):
+            return nullcontext(object())
+
+    def capture(name: str, result: object):
+        def wrapped(_config, *, positions, **_kwargs):
+            seen[name] = positions
+            return result
+
+        return wrapped
+
+    monkeypatch.setattr(portfolio_intelligence, "runtime_for_config", lambda _config: Runtime())
+    monkeypatch.setattr(portfolio_intelligence, "portfolio_rows", lambda _config, connection=None: positions)
+    monkeypatch.setattr(portfolio_intelligence, "portfolio_summary", capture("summary", {"holdings_count": 2}))
+    monkeypatch.setattr(portfolio_intelligence, "portfolio_correlation_rows", capture("correlations", []))
+    monkeypatch.setattr(portfolio_intelligence, "portfolio_risk_rows", capture("risks", []))
+    monkeypatch.setattr(portfolio_intelligence, "portfolio_exposure_rows", capture("exposure", []))
+
+    tables = portfolio_intelligence.portfolio_intelligence_tables(
+        {},
+        models={"portfolio", "portfolio_summary", "correlation_edges", "exposure_clusters", "portfolio_risk_cards"},
+        include_performance=False,
+        symbols={"AAA"},
+    )
+
+    assert tables["portfolio"] == [positions[0]]
+    assert all(seen[name] == positions for name in ("summary", "correlations", "risks", "exposure"))
+
+
 def test_performance_buckets_executions_on_new_york_market_date() -> None:
     transactions = [{
         "instrument_id": 1,

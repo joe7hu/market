@@ -56,6 +56,20 @@ def test_opportunities_loads_dense_screener_only_when_requested(monkeypatch) -> 
     ]
 
 
+def test_opportunities_snapshot_keeps_the_on_demand_screener() -> None:
+    panel = PanelData(
+        status=DataStatus(True, "ok", "test"),
+        tables={
+            "opportunities_ranked": [{"symbol": "AAA"}],
+            "screener": [{"symbol": "BBB"}],
+        },
+    )
+
+    payload = payloads_owner.panel_snapshot_payload(panel, "opportunities")
+
+    assert payload["tables"]["screener"]["rows"] == [{"symbol": "BBB"}]
+
+
 def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_dsn: str) -> None:
     panel_data = loaders_owner.load_table_panel_data(
         typed_config(migrated_postgres_dsn), "technicals"

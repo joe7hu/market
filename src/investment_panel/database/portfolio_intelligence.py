@@ -507,6 +507,9 @@ def portfolio_intelligence_tables(
             row for row in all_positions
             if normalized_symbols is None or str(row.get("symbol") or "").upper() in normalized_symbols
         ]
+        # Detail rows may be symbol-scoped, but portfolio risk models must use
+        # the complete held-position set so page slicing cannot change risk.
+        intelligence_positions = all_positions
         performance = portfolio_performance_rows(
             config, connection=connection,
         ) if needs_performance else []
@@ -516,8 +519,8 @@ def portfolio_intelligence_tables(
             performance=performance,
             connection=connection,
         ) if needs_summary else {}
-        correlations = portfolio_correlation_rows(config, positions=positions, connection=connection) if needs_correlations else []
-        risks = portfolio_risk_rows(config, positions=positions, summary=summary, correlations=correlations, performance=performance) if requested & {"portfolio_risk_cards", "review_actions"} else []
+        correlations = portfolio_correlation_rows(config, positions=intelligence_positions, connection=connection) if needs_correlations else []
+        risks = portfolio_risk_rows(config, positions=intelligence_positions, summary=summary, correlations=correlations, performance=performance) if requested & {"portfolio_risk_cards", "review_actions"} else []
         tables: dict[str, list[dict[str, Any]]] = {}
         if "portfolio" in requested:
             tables["portfolio"] = positions
@@ -535,7 +538,7 @@ def portfolio_intelligence_tables(
         if "correlation_edges" in requested:
             tables["correlation_edges"] = correlations
         if "exposure_clusters" in requested:
-            tables["exposure_clusters"] = portfolio_exposure_rows(config, positions=positions)
+            tables["exposure_clusters"] = portfolio_exposure_rows(config, positions=intelligence_positions)
         if "portfolio_risk_cards" in requested:
             tables["portfolio_risk_cards"] = risks
         if "review_actions" in requested:
