@@ -1,6 +1,6 @@
 import type { PanelData, TickerPayload } from "@/types";
 import { loadTickerDecisionSnapshot, startRefreshJob, type TickerDecisionSnapshot } from "@/api/panel";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { WorkspacePage, type OpenTicker } from "@/views/workspacePage";
 
 import { tickerHeaderMetrics } from "./data";
@@ -24,10 +24,14 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
   const [decisionSnapshot, setDecisionSnapshot] = useState<TickerDecisionSnapshot | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const snapshotGeneration = useRef(0);
+  const decisionRevision = ticker?.ticker_decision?.decision_revision;
   useEffect(() => {
+    snapshotGeneration.current += 1;
     setDecisionSnapshot(null);
+    setSnapshotLoading(false);
     setSnapshotError(null);
-  }, [symbol]);
+  }, [symbol, decisionRevision]);
   const dossier = ticker?.dossier;
   const metrics = tickerHeaderMetrics(ticker);
   const notFound = ticker?.found === false;
@@ -51,10 +55,12 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
               snapshotLoading={snapshotLoading}
               snapshotError={snapshotError}
               onLoadSnapshot={async () => {
+                const requestGeneration = snapshotGeneration.current;
                 setSnapshotLoading(true);
                 setSnapshotError(null);
                 try {
                   const loaded = await loadTickerDecisionSnapshot(symbol);
+                  if (snapshotGeneration.current !== requestGeneration) return;
                   if (
                     loaded.ticker.trim().toUpperCase() !== symbol.trim().toUpperCase() ||
                     loaded.decision_revision !== ticker.ticker_decision.decision_revision
@@ -63,9 +69,10 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
                   }
                   setDecisionSnapshot(loaded);
                 } catch (error) {
+                  if (snapshotGeneration.current !== requestGeneration) return;
                   setSnapshotError(error instanceof Error ? error.message : "Decision snapshot unavailable.");
                 } finally {
-                  setSnapshotLoading(false);
+                  if (snapshotGeneration.current === requestGeneration) setSnapshotLoading(false);
                 }
               }}
               collecting={collecting}
