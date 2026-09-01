@@ -13,7 +13,7 @@ const compactDecision = {
   fundamental: { stance: "NEUTRAL", action: "HOLD", conviction_tier: "LOW", confidence: 0, scenarios: [] },
   expressions: {},
   portfolio_impacts: {},
-} as never;
+} as unknown as components["schemas"]["TickerDecisionDetailResponse"];
 
 const panelProps = {
   decision: compactDecision,
@@ -37,7 +37,7 @@ describe("OpportunityRankPanel Phase 2 evidence", () => {
       trade_plan: null,
       data_requests: [],
       learning: {},
-    }} />);
+    } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"]} />);
     expect(snapshotHtml).toContain("Book opportunity rank");
   });
 
