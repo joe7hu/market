@@ -566,6 +566,10 @@ def test_portfolio_scope_loads_all_unpaged_detail_rows(monkeypatch) -> None:
     assert calls[1]["query_row_limits"]["ticker_decisions"] == len(symbols)
     assert calls[1]["query_row_limits"]["portfolio_performance"] == 80
     assert calls[1]["query_row_limits"]["portfolio_transactions"] == 100
+    assert calls[1]["query_row_limits"]["correlation_edges"] == 80
+    assert calls[1]["query_row_limits"]["exposure_clusters"] == 24
+    assert calls[1]["query_row_limits"]["portfolio_risk_cards"] == 8
+    assert calls[1]["query_row_limits"]["review_actions"] == 8
     assert calls[1]["query_row_limits"]["quotes"] == len(symbols) * 2
 
 

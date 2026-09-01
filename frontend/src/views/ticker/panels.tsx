@@ -32,14 +32,12 @@ import {
 type TickerDecisionContract = components["schemas"]["TickerDecisionDetailResponse"];
 type HorizonDecisionContract = components["schemas"]["HorizonDecision"];
 type DataRequestContract = components["schemas"]["DataRequest"];
-type InstrumentStateSnapshotContract = components["schemas"]["InstrumentStateSnapshot"];
 type AlphaSignalContract = components["schemas"]["AlphaSignal"];
 type OpportunityRankContract = components["schemas"]["OpportunityRank"];
 type TradePlanContract = components["schemas"]["TradePlan"];
 
 export function TickerDecisionPanel({
   decision,
-  instrumentStateSnapshot,
   alphaSignals,
   opportunityRank,
   tradePlan,
@@ -49,7 +47,6 @@ export function TickerDecisionPanel({
   onCollect,
 }: {
   decision: TickerDecisionContract;
-  instrumentStateSnapshot?: InstrumentStateSnapshotContract | null;
   alphaSignals?: AlphaSignalContract[];
   opportunityRank?: OpportunityRankContract | null;
   tradePlan?: TradePlanContract | null;
@@ -116,7 +113,6 @@ export function TickerDecisionPanel({
         </div>
       </DataTableFrame>
       <OpportunityRankPanel
-        snapshot={instrumentStateSnapshot}
         signals={alphaSignals ?? []}
         rank={opportunityRank}
       />
@@ -244,11 +240,9 @@ function ScenarioRail({ scenarios }: { scenarios: TickerDecisionContract["tactic
 }
 
 export function OpportunityRankPanel({
-  snapshot,
   signals,
   rank,
 }: {
-  snapshot?: InstrumentStateSnapshotContract | null;
   signals: AlphaSignalContract[];
   rank?: OpportunityRankContract | null;
 }) {
@@ -271,7 +265,7 @@ export function OpportunityRankPanel({
         <KeyValue label="Cost / slippage" value={signal?.cost_model_version ?? "Unavailable"} />
         <KeyValue label="Net lower utility" value={numberText(signal?.lower_confidence_net_utility_after_costs)} />
         <KeyValue label="Promotion stage" value={signal?.promotion_stage ?? "Unavailable"} />
-        <KeyValue label="Instrument snapshot" value={snapshot?.snapshot_id ?? "Unavailable"} />
+        <KeyValue label="Instrument snapshot" value={rank?.instrument_state_snapshot_id ?? "Unavailable"} />
       </div>
     </DataTableFrame>
   );

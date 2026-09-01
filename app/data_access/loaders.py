@@ -503,10 +503,16 @@ def load_portfolio_scope_data(
     # requested offset to the seed positions, not to these pre-scoped rows.
     query_row_limits = {name: page_limit for name in detail_names}
     if limit is None:
-        # Historical tables have a different cardinality from the holding page:
-        # one position can have many daily bars and ledger entries.
-        query_row_limits["portfolio_performance"] = 80
-        query_row_limits["portfolio_transactions"] = 100
+        # Detail tables have their own cardinalities. Do not let one holding
+        # hide the portfolio's risk, review, or historical context.
+        query_row_limits.update({
+            "portfolio_performance": 80,
+            "portfolio_transactions": 100,
+            "correlation_edges": 80,
+            "exposure_clusters": 24,
+            "portfolio_risk_cards": 8,
+            "review_actions": 8,
+        })
     query_row_limits["quotes"] = max(24, len(page_symbols) * 2)
     detail = load_panel_data(
         active_config,

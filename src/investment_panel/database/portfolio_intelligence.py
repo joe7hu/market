@@ -549,7 +549,8 @@ def portfolio_intelligence_tables(
                 else len(rows)
             )
         if row_limits is not None and name in row_limits and row_limits[name] > 0:
-            tables[name] = rows[: int(row_limits[name])]
+            limit = int(row_limits[name])
+            tables[name] = rows[-limit:] if name == "portfolio_performance" else rows[:limit]
     return tables
 
 

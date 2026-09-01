@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from investment_panel.database import portfolio_intelligence
 from investment_panel.database.portfolio_intelligence import performance_rows, portfolio_risk_rows
 from investment_panel.database.portfolio_math import adjacent_session_dates, aligned_pair_returns
 
@@ -64,6 +66,29 @@ def test_performance_all_history_is_not_silently_truncated() -> None:
         for index in range(800)
     ]
     assert len(performance_rows(transactions, bars, [])) == 800
+
+
+def test_portfolio_performance_limit_keeps_newest_rows(monkeypatch) -> None:
+    rows = [{"date": f"2026-01-{index:02d}"} for index in range(100)]
+
+    class Runtime:
+        def snapshot(self):
+            return nullcontext(object())
+
+    monkeypatch.setattr(portfolio_intelligence, "runtime_for_config", lambda _config: Runtime())
+    monkeypatch.setattr(
+        portfolio_intelligence,
+        "portfolio_performance_rows",
+        lambda *_args, **_kwargs: rows,
+    )
+
+    tables = portfolio_intelligence.portfolio_intelligence_tables(
+        {},
+        models={"portfolio_performance"},
+        row_limits={"portfolio_performance": 80},
+    )
+
+    assert tables["portfolio_performance"] == rows[-80:]
 
 
 def test_performance_buckets_executions_on_new_york_market_date() -> None:

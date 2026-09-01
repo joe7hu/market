@@ -33,6 +33,7 @@ describe("OpportunityRankPanel Phase 2 evidence", () => {
       research_rank: 2,
       trade_rank: 1,
       trade_utility: 0.03,
+      instrument_state_snapshot_id: "snapshot:AAA",
     } as components["schemas"]["OpportunityRank"];
 
     const html = renderToStaticMarkup(<OpportunityRankPanel signals={signals} rank={rank} />);
@@ -43,6 +44,7 @@ describe("OpportunityRankPanel Phase 2 evidence", () => {
       "stock-research-features.v1", "2026-01-01", "2026-06-30",
       "cohort:large-liquid", "horizon:TACTICAL", "global", "84", "0.17",
       "0.72", "stock-cost-slippage.v1", "0.03", "paper",
+      "snapshot:AAA",
     ]) expect(html).toContain(text);
   });
 });
