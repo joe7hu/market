@@ -163,7 +163,7 @@ SOURCE_UNIVERSE_QUERIES = {
         ), latest_market AS (
             SELECT candidate.id AS instrument_id, observation.values
             FROM bounded_candidates candidate
-            JOIN LATERAL (
+            LEFT JOIN LATERAL (
                 SELECT observation.values
                 FROM raw.fundamental_observation observation
                 WHERE observation.instrument_id = candidate.id
@@ -174,7 +174,7 @@ SOURCE_UNIVERSE_QUERIES = {
         ), latest_sec AS (
             SELECT candidate.id AS instrument_id, observation.values
             FROM bounded_candidates candidate
-            JOIN LATERAL (
+            LEFT JOIN LATERAL (
                 SELECT observation.values
                 FROM raw.fundamental_observation observation
                 WHERE observation.instrument_id = candidate.id
@@ -185,7 +185,7 @@ SOURCE_UNIVERSE_QUERIES = {
         ), latest_quotes AS (
             SELECT candidate.id AS instrument_id, quote.price, quote.observed_at
             FROM bounded_candidates candidate
-            JOIN LATERAL (
+            LEFT JOIN LATERAL (
                 SELECT quote.price, quote.observed_at
                 FROM raw.quote quote
                 WHERE quote.instrument_id = candidate.id

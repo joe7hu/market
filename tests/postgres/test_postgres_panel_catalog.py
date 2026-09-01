@@ -47,6 +47,36 @@ def test_screener_is_candidate_bounded_and_compact(migrated_postgres_dsn: str) -
     assert all("__panel_total_count" not in row for row in tables["screener"])
 
 
+def test_screener_keeps_candidate_without_optional_observations(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    symbol = f"SC{uuid4().hex[:8].upper()}"
+    try:
+        with runtime.transaction() as connection:
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+                "VALUES (%s, %s, 'equity') RETURNING id",
+                [symbol, symbol],
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT INTO app.watchlist_item (instrument_id, watch_state) VALUES (%s, 'watched')",
+                [instrument_id],
+            )
+
+        tables, metadata = load_postgres_tables(
+            typed_config(migrated_postgres_dsn),
+            ("screener",),
+            query_row_limits={"screener": 5},
+        )
+
+        row = next(row for row in tables["screener"] if row["symbol"] == symbol)
+        assert row["market_cap"] is None
+        assert row["price"] is None
+        assert metadata["table_counts"]["screener"] >= 1
+    finally:
+        runtime.close()
+
+
 def test_screener_keeps_the_api_maximum_page_window() -> None:
     captured: list[str] = []
 
