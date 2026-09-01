@@ -88,9 +88,10 @@ export function TickerDecisionPanel({
                 <p className="mt-1 text-3xl font-semibold tracking-tight">{action.action}</p>
               </div>
               <div className="pb-1 text-sm text-muted-foreground">
-                {action.owned ? "Owned ticker" : "Unowned ticker"} · {decision.selected_expression?.kind ?? "No expression"}
+                {action.owned ? "Owned ticker" : "Unowned ticker"} · {decision.selected_expression?.kind ?? "Expression state below"}
               </div>
             </div>
+            {!decision.selected_expression?.kind ? <div className="mt-3"><DataFieldStateNotice compact state={missingFieldState({ field: "selected_expression", source: "ticker_decision", reason: "selected_expression_missing", nextAction: "Refresh the canonical ticker decision before acting." })} /></div> : null}
             <p className="mt-4 max-w-2xl text-base leading-7">{action.rationale}</p>
             {resolution ? (
               <div className="mt-5 grid gap-2 rounded-md border border-border/80 bg-background/60 p-3 text-xs sm:grid-cols-2">
@@ -103,9 +104,9 @@ export function TickerDecisionPanel({
             ) : null}
             {action.action === "WAIT_FOR_PRICE" ? (
               <div className="mt-5 grid gap-3 rounded-md border border-[var(--warning)]/35 bg-[var(--warning)]/8 p-3 text-sm sm:grid-cols-3">
-                <KeyValue label="Price" value={action.price_condition ?? "-"} />
-                <KeyValue label="Catalyst" value={action.catalyst ?? "-"} />
-                <KeyValue label="Expires" value={action.expires_at ?? "-"} />
+                <DecisionTerm label="Price" value={action.price_condition} field="price_condition" />
+                <DecisionTerm label="Catalyst" value={action.catalyst} field="catalyst" />
+                <DecisionTerm label="Expires" value={action.expires_at} field="expires_at" />
               </div>
             ) : null}
             <p className="mt-5 text-xs text-muted-foreground">Point-in-time inputs: {decision.input_manifest.input_hash.slice(0, 16)}… · {decision.input_manifest.experiment_id}</p>
@@ -125,7 +126,7 @@ export function TickerDecisionPanel({
       {snapshot ? (
         <>
           {opportunityRank ? <OpportunityRankPanel signals={alphaSignals} rank={opportunityRank} /> : null}
-          {tradePlan ? <TradePlanCard plan={tradePlan} /> : null}
+          <TradePlanCard plan={tradePlan} />
           {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
           {learningPayload ? <LearningLoopPanel learning={learningPayload} /> : null}
         </>
@@ -206,9 +207,9 @@ function SelectedPortfolioImpact({ decision }: { decision: TickerDecisionContrac
   const impact = kind ? decision.portfolio_impacts?.[kind] : undefined;
   const blockers = impact?.blockers ?? [];
   return (
-    <DataTableFrame title="Selected portfolio impact" action={<StatusBadge tone={impact?.availability === "available" ? "good" : "warn"}>{impact?.availability ?? "not supplied"}</StatusBadge>}>
+    <DataTableFrame title="Selected portfolio impact" action={<StatusBadge tone={impact?.availability === "available" ? "good" : "warn"}>{impact?.availability ?? "NO DATA"}</StatusBadge>}>
       {impact ? <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        <KeyValue label="Expression" value={kind ?? "No selected expression"} />
+        <DecisionTerm label="Expression" value={kind} field="selected_expression" source="ticker_decision" />
         {impact.marginal_risk == null ? <DataFieldStateNotice compact state={missingFieldState({ field: "marginal_risk", source: "portfolio_impact", reason: "marginal_risk_missing", nextAction: "Refresh the selected portfolio impact before sizing the trade." })} /> : <KeyValue label="Marginal risk" value={String(impact.marginal_risk)} />}
         {impact.risk_budget_consumed == null ? <DataFieldStateNotice compact state={missingFieldState({ field: "risk_budget_consumed", source: "portfolio_impact", reason: "risk_budget_consumed_missing", nextAction: "Refresh the selected portfolio impact before sizing the trade." })} /> : <KeyValue label="Risk budget" value={String(impact.risk_budget_consumed)} />}
       </div> : <div className="p-4"><DataFieldStateNotice state={missingFieldState({ field: "selected_portfolio_impact", source: "portfolio_impact", reason: "selected_portfolio_impact_missing", nextAction: "Refresh the canonical ticker decision before sizing the trade." })} /></div>}
@@ -228,12 +229,12 @@ function HorizonCard({ view, label }: { view: HorizonDecisionContract; label: st
         <StatusBadge tone={toneFromText(view.stance)}>{view.conviction_tier}</StatusBadge>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-        <KeyValue label="Current" value={money(view.current_price)} />
-        <KeyValue label="Review" value={view.expiry_date} />
-        <KeyValue label="Entry" value={priceRange(view.entry_range)} />
-        <KeyValue label="Target" value={priceRange(view.target_range)} />
-        <KeyValue label="Invalidation" value={invalidation(view.invalidation)} />
-        <KeyValue label="Confidence" value={percent(view.confidence)} />
+        <DecisionTerm label="Current" value={moneyText(view.current_price)} field="current_price" />
+        <DecisionTerm label="Review" value={view.expiry_date} field="expiry_date" />
+        <DecisionTerm label="Entry" value={priceRangeText(view.entry_range)} field="entry_range" />
+        <DecisionTerm label="Target" value={priceRangeText(view.target_range)} field="target_range" />
+        <DecisionTerm label="Invalidation" value={invalidationText(view.invalidation)} field="invalidation" />
+        <DecisionTerm label="Confidence" value={percentText(view.confidence)} field="confidence" />
       </div>
       <ScenarioRail scenarios={view.scenarios} />
     </article>
@@ -435,6 +436,23 @@ function KeyValue({ label, value }: { label: string; value: string }) {
   return <div><span className="block uppercase tracking-[0.08em] text-muted-foreground">{label}</span><strong className="mt-0.5 block break-words font-medium text-foreground">{value}</strong></div>;
 }
 
+function DecisionTerm({
+  label,
+  value,
+  field,
+  source = "ticker_decision",
+  nextAction = "Refresh the canonical ticker decision before acting.",
+}: {
+  label: string;
+  value: string | null | undefined;
+  field: string;
+  source?: string;
+  nextAction?: string;
+}) {
+  if (value != null && value.trim()) return <KeyValue label={label} value={value} />;
+  return <DataFieldStateNotice compact state={missingFieldState({ field, source, reason: `${field}_missing`, nextAction })} />;
+}
+
 function DecisionKeyValue({ label, value, field, source }: { label: string; value: string | null | undefined; field: string; source: string }) {
   if (value != null && value.trim()) return <KeyValue label={label} value={value} />;
   return <DataFieldStateNotice compact state={missingFieldState({ field, source, reason: `${field}_missing`, nextAction: "Refresh the validated ticker decision snapshot before acting." })} />;
@@ -449,9 +467,17 @@ function money(value: number | null | undefined): string {
   return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: value >= 100 ? 0 : 2 });
 }
 
+function moneyText(value: number | null | undefined): string | null {
+  return value == null || !Number.isFinite(value) ? null : money(value);
+}
+
 function percent(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";
   return `${(value * 100).toFixed(0)}%`;
+}
+
+function percentText(value: number | null | undefined): string | null {
+  return value == null || !Number.isFinite(value) ? null : percent(value);
 }
 
 function priceRange(value: components["schemas"]["PriceRange"] | null | undefined): string {
@@ -459,9 +485,19 @@ function priceRange(value: components["schemas"]["PriceRange"] | null | undefine
   return value.low === value.high ? money(value.low) : `${money(value.low)}–${money(value.high)}`;
 }
 
+function priceRangeText(value: components["schemas"]["PriceRange"] | null | undefined): string | null {
+  return value ? priceRange(value) : null;
+}
+
 function invalidation(value: components["schemas"]["Invalidation"] | null | undefined): string {
   if (!value) return "—";
   return value.statement || String(value.value);
+}
+
+function invalidationText(value: components["schemas"]["Invalidation"] | null | undefined): string | null {
+  if (!value) return null;
+  if (value.statement?.trim()) return value.statement;
+  return value.value == null ? null : String(value.value);
 }
 
 export function DecisionPanel({ brief }: { brief: RowRecord }) {
@@ -696,13 +732,14 @@ export function OptionsIntelligencePanel({ options }: { options: TickerDossier["
   const signal = options.signal ?? {};
   const expiries = rowList(options.expiries).slice(0, 8);
   const capability = rowList(options.capabilities).find((row) => textField(row, ["provider"]) === "tradingview");
+  const ivRegime = displayField(signal, ["iv_regime"], "");
   const unavailableRows = rowList(options.unavailable_signals).slice(0, 6).map((row) => ({
     signal: displayField(row, ["signal"], "Signal"),
     reason: displayField(row, ["reason"], "Not supplied by TradingView V1"),
   }));
   const metrics = presentMetricCells([
     ["Status", displayField(signal, ["status"], "Missing"), displayField(signal, ["source"], "No options signal row")],
-    ["ATM IV", ratioMetric(signal, "atm_iv"), displayField(signal, ["iv_regime"], "IV regime unavailable")],
+    ["ATM IV", ratioMetric(signal, "atm_iv"), ivRegime || "See the IV regime field state below"],
     ["Expected Move", optionMove(signal), displayField(signal, ["nearest_expiry"], "No expiry")],
     ["Skew", displayField(signal, ["skew_signal"], "-"), skewDetail(signal)],
     ["Spread", displayField(signal, ["spread_quality"], "-"), "bid/ask quality"],
@@ -726,6 +763,7 @@ export function OptionsIntelligencePanel({ options }: { options: TickerDossier["
       <div className="grid gap-0 xl:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.65fr)]">
         <div className="border-b border-border p-4 xl:border-b-0 xl:border-r">
           <MetricGrid rows={metrics} empty="No options signal row is loaded for this ticker." />
+          {!ivRegime ? <div className="mt-3"><DataFieldStateNotice compact state={missingFieldState({ field: "iv_regime", source: "options_signal", reason: "iv_regime_missing", nextAction: "Refresh the options signal before selecting an options expression." })} /></div> : null}
           <div className="mt-4 overflow-x-auto">
             <SimpleTable
               rows={expiryRows}

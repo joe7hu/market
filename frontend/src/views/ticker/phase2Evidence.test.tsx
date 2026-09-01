@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { components } from "@/generated/apiSchema";
-import { OpportunityRankPanel, TickerDecisionPanel } from "@/views/ticker/panels";
+import { OpportunityRankPanel, OptionsIntelligencePanel, TickerDecisionPanel } from "@/views/ticker/panels";
+import type { TickerDossier } from "@/types";
 
 const compactDecision = {
   ticker: "QQQ",
@@ -82,5 +83,43 @@ describe("OpportunityRankPanel Phase 2 evidence", () => {
       "0.72", "stock-cost-slippage.v1", "0.03", "paper",
       "snapshot:AAA",
     ]) expect(html).toContain(text);
+  });
+
+  it("renders missing decision terms and a null trade plan as structured blocking states", () => {
+    const nullDecision = {
+      ...compactDecision,
+      capital_action: { ...compactDecision.capital_action, action: "WAIT_FOR_PRICE", price_condition: null, catalyst: null, expires_at: null },
+      tactical: { ...compactDecision.tactical, current_price: null, expiry_date: null, entry_range: null, target_range: null, invalidation: null, confidence: null },
+      fundamental: { ...compactDecision.fundamental, current_price: null, expiry_date: null, entry_range: null, target_range: null, invalidation: null, confidence: null },
+    } as unknown as components["schemas"]["TickerDecisionDetailResponse"];
+    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={nullDecision} snapshot={{
+      ...nullDecision,
+      alpha_signals: [],
+      opportunity_rank: null,
+      trade_plan: null,
+      data_requests: [],
+      learning: {},
+    } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"]} />);
+
+    for (const field of ["price_condition", "selected_expression", "current_price", "entry_range", "target_range", "invalidation", "confidence", "selected_portfolio_impact", "trade_plan"]) {
+      expect(html).toContain(`Field unavailable: ${field}`);
+    }
+    expect(html).toContain("Source: ticker_decision");
+    expect(html).toContain("Reason: entry_range_missing");
+    expect(html).toContain("This blocks the decision.");
+    expect(html).toContain("Next: Refresh the canonical ticker decision before acting.");
+    expect(html).toContain("Canonical trade plan");
+    expect(html).toContain("NO TRADE · CASH");
+  });
+
+  it("renders a structured IV regime state instead of a plain unavailable label", () => {
+    const html = renderToStaticMarkup(<OptionsIntelligencePanel options={{ signal: {}, expiries: [], capabilities: [], unavailable_signals: [] } as unknown as TickerDossier["options"]} />);
+
+    expect(html).toContain("Field unavailable: iv_regime");
+    expect(html).toContain("Source: options_signal");
+    expect(html).toContain("Reason: iv_regime_missing");
+    expect(html).toContain("This blocks the decision.");
+    expect(html).toContain("Refresh the options signal before selecting an options expression.");
+    expect(html).not.toContain("IV regime unavailable");
   });
 });
