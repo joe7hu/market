@@ -19,9 +19,8 @@ describe("opportunity decision surface", () => {
     expect(EXPRESSION_KINDS).toEqual(["stock", "option/spread", "CSP", "crypto", "hedge", "cash"]);
   });
 
-  it("loads the selected screener once even when shared data has rows", () => {
-    expect(shouldLoadScreener("screener", false)).toBe(true);
-    expect(shouldLoadScreener("screener", true)).toBe(false);
-    expect(shouldLoadScreener("episodes", false)).toBe(false);
+  it("loads the screener only for the selected view", () => {
+    expect(shouldLoadScreener("screener")).toBe(true);
+    expect(shouldLoadScreener("episodes")).toBe(false);
   });
 });
