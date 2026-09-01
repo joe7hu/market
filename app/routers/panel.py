@@ -116,7 +116,11 @@ def today(
             "policy_version": resolution.policy_version,
             "resolution": resolution.model_dump(mode="json"),
             "selected_expression": plan.selected_expression_kind.value if plan is not None else "CASH",
-            "research_rank": rank.get("research_rank") if rank else None,
+            "research_rank": (
+                rank.get("research_rank")
+                if rank and _has_positive_research_rank(rank.get("research_rank"))
+                else None
+            ),
             "trade_rank": rank.get("trade_rank") if plan is not None and rank_ready and rank else None,
             "trade_rank_unavailable_reason": None if plan is not None and rank_ready else rank_reason,
             "trade_utility": rank.get("trade_utility") if plan is not None and rank_ready and rank else None,
@@ -409,9 +413,16 @@ def _is_unranked_today_action(row: dict[str, Any]) -> bool:
         row.get("source") == "capital_action"
         and row.get("trade_plan") is None
         and row.get("trade_rank") is None
-        and row.get("research_rank") is None
+        and not _has_positive_research_rank(row.get("research_rank"))
         and not row.get("owned")
     )
+
+
+def _has_positive_research_rank(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    text = value if isinstance(value, str) else str(value) if isinstance(value, int) else ""
+    return bool(text) and len(text) <= 9 and text.isascii() and text.isdecimal() and text[0] != "0"
 
 
 def _queue_value(row: dict[str, Any], payload: dict[str, Any], *names: str) -> Any:

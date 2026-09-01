@@ -502,6 +502,11 @@ def load_portfolio_scope_data(
     # page offset to their SQL limit: the payload builder applies the
     # requested offset to the seed positions, not to these pre-scoped rows.
     query_row_limits = {name: page_limit for name in detail_names}
+    if limit is None:
+        # Historical tables have a different cardinality from the holding page:
+        # one position can have many daily bars and ledger entries.
+        query_row_limits["portfolio_performance"] = 80
+        query_row_limits["portfolio_transactions"] = 100
     query_row_limits["quotes"] = max(24, len(page_symbols) * 2)
     detail = load_panel_data(
         active_config,

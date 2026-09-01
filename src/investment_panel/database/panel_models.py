@@ -50,7 +50,14 @@ RESEARCH_PACKETS_BASE_QUERY = """
 # the focused publication module.
 _published_tables = published_tables
 
-TODAY_ACTION_ORDER_SQL = """
+TODAY_RESEARCH_RANK_VALID_SQL = """
+    opportunity_rank->>'research_rank' ~ '^[1-9][0-9]*$'
+    AND length(opportunity_rank->>'research_rank') <= 9
+    AND pg_input_is_valid(opportunity_rank->>'research_rank', 'integer')
+"""
+
+
+TODAY_ACTION_ORDER_SQL = f"""
     CASE
       WHEN opportunity_rank->>'trade_rank' ~ '^[1-9][0-9]*$'
        AND length(opportunity_rank->>'trade_rank') <= 9
@@ -58,9 +65,7 @@ TODAY_ACTION_ORDER_SQL = """
       THEN (opportunity_rank->>'trade_rank')::integer
     END ASC NULLS LAST,
     CASE
-      WHEN opportunity_rank->>'research_rank' ~ '^[1-9][0-9]*$'
-       AND length(opportunity_rank->>'research_rank') <= 9
-       AND pg_input_is_valid(opportunity_rank->>'research_rank', 'integer')
+      WHEN {TODAY_RESEARCH_RANK_VALID_SQL}
       THEN (opportunity_rank->>'research_rank')::integer
     END ASC NULLS LAST,
     ticker,
@@ -387,7 +392,9 @@ DIRECT_QUERIES: dict[str, str] = {
                    WHERE jsonb_typeof(trade_plan) IS DISTINCT FROM 'object'
                      AND (
                          jsonb_typeof(opportunity_rank) IS DISTINCT FROM 'object'
-                         OR opportunity_rank->>'research_rank' IS NULL
+                         OR (
+                             {TODAY_RESEARCH_RANK_VALID_SQL}
+                         ) IS NOT TRUE
                      )
                      AND COALESCE(capital_action->>'owned', 'false') <> 'true'
                ) OVER () AS missing_plan_count
@@ -936,7 +943,9 @@ def today_authority_pages(
                    ) OVER (
                        ORDER BY {TODAY_ACTION_ORDER_SQL}
                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                   ) AS trade_plan_position
+                   ) AS trade_plan_position,
+                   CASE WHEN ({TODAY_RESEARCH_RANK_VALID_SQL})
+                        THEN true ELSE false END AS research_rank_present
             FROM current_authority
         ), authority_validated AS (
             SELECT positioned_actions.*,
@@ -949,8 +958,7 @@ def today_authority_pages(
                           ) = 'object'
                           AND (
                               positioned_actions.trade_plan_present
-                              OR positioned_actions.opportunity_rank
-                                  ->>'research_rank' IS NOT NULL
+                              OR positioned_actions.research_rank_present
                           )
                     THEN jsonb_build_object(
                         'ticker',
@@ -988,8 +996,7 @@ def today_authority_pages(
                           AND jsonb_typeof(
                               positioned_actions.opportunity_rank
                           ) = 'object'
-                          AND positioned_actions.opportunity_rank
-                              ->>'research_rank' IS NULL
+                          AND NOT positioned_actions.research_rank_present
                           AND positioned_actions.trade_plan_present
                     THEN COALESCE(
                         validation_payload.trade_plan->>'contract_version'
@@ -1058,14 +1065,30 @@ def today_authority_pages(
                         AND NULLIF(BTRIM(
                             validation_payload.trade_plan
                                 ->>'portfolio_impact_id'
-                        ), '') IS NOT DISTINCT FROM NULLIF(BTRIM(
+                        ), '') IS NOT NULL
+                        AND NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'portfolio_impact_id'
+                        ), '') IS NOT NULL
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'portfolio_impact_id'
+                        ), '') = NULLIF(BTRIM(
                             positioned_actions.opportunity_rank
                                 ->>'portfolio_impact_id'
                         ), '')
                         AND NULLIF(BTRIM(
                             validation_payload.trade_plan
                                 ->>'market_state_publication_id'
-                        ), '') IS NOT DISTINCT FROM NULLIF(BTRIM(
+                        ), '') IS NOT NULL
+                        AND NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'market_state_publication_id'
+                        ), '') IS NOT NULL
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'market_state_publication_id'
+                        ), '') = NULLIF(BTRIM(
                             positioned_actions.opportunity_rank
                                 ->>'market_state_publication_id'
                         ), '')
@@ -1116,8 +1139,7 @@ def today_authority_pages(
                    positioned_actions.capital_action->>'owned', 'false'
                ) <> 'true'
                    AND jsonb_typeof(positioned_actions.opportunity_rank) = 'object'
-                   AND positioned_actions.opportunity_rank
-                       ->>'research_rank' IS NOT NULL
+                   AND positioned_actions.research_rank_present
                    AS raw_research_rank_present,
                COALESCE(
                    positioned_actions.capital_action->>'owned', 'false'
@@ -1128,8 +1150,7 @@ def today_authority_pages(
                            jsonb_typeof(
                                positioned_actions.opportunity_rank
                            ) = 'object'
-                           AND positioned_actions.opportunity_rank
-                               ->>'research_rank' IS NOT NULL
+                           AND positioned_actions.research_rank_present
                        )
                    ) AS needs_missing_plan_validation
             FROM positioned_actions
@@ -1180,7 +1201,7 @@ def today_authority_pages(
                          AND (
                              jsonb_typeof(opportunity_rank)
                                  IS DISTINCT FROM 'object'
-                             OR opportunity_rank->>'research_rank' IS NULL
+                             OR NOT research_rank_present
                          )
                          AND COALESCE(capital_action->>'owned', 'false') <> 'true'
                    ) AS missing_plan_count,
@@ -1254,8 +1275,7 @@ def today_authority_pages(
                           ) = 'object'
                           AND (
                               positioned_actions.trade_plan_present
-                              OR positioned_actions.opportunity_rank
-                                  ->>'research_rank' IS NOT NULL
+                              OR positioned_actions.research_rank_present
                           )
                     THEN jsonb_build_object(
                         'ticker',
@@ -1293,8 +1313,7 @@ def today_authority_pages(
                           AND jsonb_typeof(
                               positioned_actions.opportunity_rank
                           ) = 'object'
-                          AND positioned_actions.opportunity_rank
-                              ->>'research_rank' IS NULL
+                          AND NOT positioned_actions.research_rank_present
                           AND positioned_actions.trade_plan_present
                     THEN COALESCE(
                         validation_payload.trade_plan->>'contract_version'
@@ -1363,14 +1382,30 @@ def today_authority_pages(
                         AND NULLIF(BTRIM(
                             validation_payload.trade_plan
                                 ->>'portfolio_impact_id'
-                        ), '') IS NOT DISTINCT FROM NULLIF(BTRIM(
+                        ), '') IS NOT NULL
+                        AND NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'portfolio_impact_id'
+                        ), '') IS NOT NULL
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'portfolio_impact_id'
+                        ), '') = NULLIF(BTRIM(
                             positioned_actions.opportunity_rank
                                 ->>'portfolio_impact_id'
                         ), '')
                         AND NULLIF(BTRIM(
                             validation_payload.trade_plan
                                 ->>'market_state_publication_id'
-                        ), '') IS NOT DISTINCT FROM NULLIF(BTRIM(
+                        ), '') IS NOT NULL
+                        AND NULLIF(BTRIM(
+                            positioned_actions.opportunity_rank
+                                ->>'market_state_publication_id'
+                        ), '') IS NOT NULL
+                        AND NULLIF(BTRIM(
+                            validation_payload.trade_plan
+                                ->>'market_state_publication_id'
+                        ), '') = NULLIF(BTRIM(
                             positioned_actions.opportunity_rank
                                 ->>'market_state_publication_id'
                         ), '')
@@ -1421,8 +1456,7 @@ def today_authority_pages(
                    positioned_actions.capital_action->>'owned', 'false'
                ) <> 'true'
                    AND jsonb_typeof(positioned_actions.opportunity_rank) = 'object'
-                   AND positioned_actions.opportunity_rank
-                       ->>'research_rank' IS NOT NULL
+                   AND positioned_actions.research_rank_present
                    AS raw_research_rank_present,
                COALESCE(
                    positioned_actions.capital_action->>'owned', 'false'
@@ -1433,8 +1467,7 @@ def today_authority_pages(
                            jsonb_typeof(
                                positioned_actions.opportunity_rank
                            ) = 'object'
-                           AND positioned_actions.opportunity_rank
-                               ->>'research_rank' IS NOT NULL
+                           AND positioned_actions.research_rank_present
                        )
                    ) AS needs_missing_plan_validation
         FROM authority_totals

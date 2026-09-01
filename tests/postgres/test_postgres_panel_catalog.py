@@ -415,14 +415,65 @@ def test_today_authority_validates_plan_authority_without_returning_full_plan(
                 "WHERE id = %s::uuid",
                 [published["ticker_decision_id"]],
             ).fetchone()["input_manifest"])
-            manifest["trade_plan"] = {
-                **manifest["trade_plan"],
-                "decision_revision": "revision:poisoned",
+            base_rank = dict(manifest["opportunity_rank"])
+            base_plan = dict(manifest["trade_plan"])
+            null_identity_manifest = {
+                **manifest,
+                "opportunity_rank": {
+                    **base_rank,
+                    "portfolio_impact_id": None,
+                    "market_state_publication_id": None,
+                },
+                "trade_plan": {
+                    **base_plan,
+                    "portfolio_impact_id": None,
+                    "market_state_publication_id": None,
+                },
             }
             connection.execute(
                 "UPDATE analysis.ticker_decision SET input_manifest = %s "
                 "WHERE id = %s::uuid",
-                [Jsonb(manifest), published["ticker_decision_id"]],
+                [Jsonb(null_identity_manifest), published["ticker_decision_id"]],
+            )
+
+        assert authority_row()["validation_plan_valid"] is False
+        null_identity_missing_count = load_panel_scope_data(
+            typed_config(migrated_postgres_dsn), "today",
+        ).metadata["today_missing_plan_count"]
+        assert null_identity_missing_count == valid_missing_count + 1
+
+        with runtime.transaction() as connection:
+            malformed_rank_manifest = {
+                **manifest,
+                "opportunity_rank": {**base_rank, "research_rank": "0"},
+            }
+            malformed_rank_manifest.pop("trade_plan", None)
+            connection.execute(
+                "UPDATE analysis.ticker_decision SET input_manifest = %s "
+                "WHERE id = %s::uuid",
+                [Jsonb(malformed_rank_manifest), published["ticker_decision_id"]],
+            )
+
+        malformed_rank_row = authority_row()
+        assert malformed_rank_row["raw_research_rank_present"] is False
+        assert malformed_rank_row["needs_missing_plan_validation"] is False
+        malformed_rank_missing_count = load_panel_scope_data(
+            typed_config(migrated_postgres_dsn), "today",
+        ).metadata["today_missing_plan_count"]
+        assert malformed_rank_missing_count == valid_missing_count + 1
+
+        with runtime.transaction() as connection:
+            poisoned_manifest = {
+                **manifest,
+                "trade_plan": {
+                    **base_plan,
+                    "decision_revision": "revision:poisoned",
+                },
+            }
+            connection.execute(
+                "UPDATE analysis.ticker_decision SET input_manifest = %s "
+                "WHERE id = %s::uuid",
+                [Jsonb(poisoned_manifest), published["ticker_decision_id"]],
             )
 
         assert authority_row()["validation_plan_valid"] is False

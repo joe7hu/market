@@ -575,6 +575,46 @@ def test_today_hides_non_owned_decisions_without_sampled_rank(
     assert result["book_actions"][0]["action"] == "NO_TRADE"
 
 
+def test_today_hides_non_owned_decisions_with_malformed_research_rank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.data_access.types import DataStatus, PanelData
+    from app.routers import panel as panel_router
+
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={
+            "ticker_decisions": [{
+                "symbol": "BADRANK",
+                "ticker_decision_id": "decision:bad-rank",
+                "decision_revision": "ticker-decision.v1:bad-rank",
+                "opportunity_episode_id": "episode:bad-rank",
+                "capital_action": {"action": "BUY", "owned": False},
+                "as_of": AS_OF.isoformat(),
+            }],
+            "opportunity_rank": [{
+                "ticker": "BADRANK",
+                "decision_revision": "ticker-decision.v1:bad-rank",
+                "opportunity_episode_id": "episode:bad-rank",
+                "research_rank": "0",
+            }],
+            "trade_plan": [],
+        },
+    )
+    monkeypatch.setattr(panel_router.panel_owner, "context", lambda **_kwargs: (None, panel))
+
+    result = panel_router.today(
+        config=object(),
+        option_actions=SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+
+    assert result["actions"] == []
+    assert result["count"] == 0
+    assert result["missing_plan_count"] == 1
+    assert result["book_actions"][0]["research_rank"] is None
+    assert result["book_actions"][0]["action"] == "NO_TRADE"
+
+
 def test_today_plan_validation_count_failure_is_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
