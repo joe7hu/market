@@ -95,6 +95,26 @@ def test_ticker_option_queries_keep_symbol_filter_before_dense_joins() -> None:
     assert payoff_parameters == [["QQQ"], 24]
 
 
+def test_symbol_scoped_technicals_keep_positive_close_guard() -> None:
+    captured: list[tuple[str, object]] = []
+
+    class Result:
+        @staticmethod
+        def fetchall() -> list[dict[str, object]]:
+            return []
+
+    class Connection:
+        def execute(self, query: str, parameters: object = None) -> Result:
+            captured.append((query, parameters))
+            return Result()
+
+    assert panel_models.technical_rows(Connection(), symbols={"QQQ"}) == []
+
+    query, parameters = captured[0]
+    assert query.count("WHERE fact.interval = '1d' AND fact.close > 0") == 2
+    assert parameters == [["QQQ"]]
+
+
 def test_every_query_alias_resolves_to_owned_policy() -> None:
     query_aliases = {
         alias: target

@@ -112,14 +112,14 @@ def technical_rows(connection: Any, *, symbols: set[str] | None = None) -> list[
                        fact.high, fact.low, fact.close, fact.volume
                 FROM raw.price_bar fact
                 JOIN candidate_instruments candidate ON candidate.id = fact.instrument_id
-                WHERE fact.interval = '1d'
+                WHERE fact.interval = '1d' AND fact.close > 0
                 UNION ALL
                 SELECT fact.id, fact.instrument_id, fact.source_id, fact.interval,
                        fact.trading_date, fact.observed_at, fact.available_at,
                        fact.high, fact.low, fact.close, fact.volume
                 FROM raw.price_bar_history fact
                 JOIN candidate_instruments candidate ON candidate.id = fact.instrument_id
-                WHERE fact.interval = '1d'
+                WHERE fact.interval = '1d' AND fact.close > 0
             ), confirmed_price_bars AS MATERIALIZED (
                 SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.observed_at)
                        fact.*
