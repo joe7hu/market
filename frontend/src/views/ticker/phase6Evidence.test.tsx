@@ -22,6 +22,16 @@ describe("ExecutionEvidencePanel Phase 6 evidence", () => {
     }
   });
 
+  it("renders a structured blocking state when execution evidence is absent", () => {
+    const html = renderToStaticMarkup(<ExecutionEvidencePanel executionEvidence={null} />);
+
+    expect(html).toContain("Field unavailable: execution_evidence");
+    expect(html).toContain("Source: ticker_decision_snapshot");
+    expect(html).toContain("Reason: execution_evidence_missing");
+    expect(html).toContain("This blocks the decision.");
+    expect(html).toContain("Refresh execution evidence before placing an order.");
+  });
+
   it("renders a market assessment when omitted default lists are absent", () => {
     const decision = {
       market_evidence_assessment: {

@@ -173,6 +173,68 @@ def test_today_and_snapshot_share_one_authoritative_load_and_invalidate_together
     assert loads == 2
 
 
+def test_today_projects_named_context_contract_without_row_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "today-context.json")
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_options_actions,
+        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={
+            "daily_brief": [{
+                "stable_key": "daily:AAA",
+                "category": "decide_now",
+                "headline": "Named decision title",
+                "summary": "Named decision summary.",
+                "score": 2.5,
+                "symbol": "AAA",
+                "sentiment": "bullish",
+                "severity": "warn",
+                "research_rank": 1,
+            }],
+            "preopen_daily_brief": [{
+                "stable_key": "preopen:2026-09-01",
+                "headline": "Named pre-open headline",
+                "summary": "Named pre-open narrative.",
+                "qqq_forecast": {"bias": "neutral", "expected_close": 500.0},
+                "qqq_outcome": {"status": "pending"},
+                "key_events": [{"event": "Payrolls"}],
+            }],
+            "portfolio_risk_cards": [],
+            "ticker_decisions": [],
+            "portfolio": [],
+        },
+    )
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+
+    response = TestClient(app).get("/api/today")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["brief_items"] == [{
+        "stable_key": "daily:AAA",
+        "category": "decide_now",
+        "title": "Named decision title",
+        "summary": "Named decision summary.",
+        "score": 2.5,
+        "symbol": "AAA",
+        "sentiment": "bullish",
+        "severity": "warn",
+        "antithesis": None,
+        "action": None,
+        "next_action": None,
+        "blockers": [],
+        "days_until": None,
+        "stats": ["Research rank 1"],
+    }]
+    assert payload["preopen_brief"]["headline"] == "Named pre-open headline"
+    assert payload["preopen_brief"]["key_events"] == ["Payrolls"]
+
+
 @pytest.mark.parametrize(
     ("reason", "availability_status"),
     (

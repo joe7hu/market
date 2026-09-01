@@ -153,6 +153,7 @@ export function ExecutionEvidencePanel({
   executionEvidence?: Record<string, unknown> | null;
 }) {
   const evidence = executionEvidence ?? {};
+  const status = typeof evidence.status === "string" && evidence.status.trim() ? evidence.status : null;
   const fields = [
     ["Status", evidence.status],
     ["Version", evidence.version],
@@ -172,10 +173,10 @@ export function ExecutionEvidencePanel({
   ].filter(([, value]) => value != null);
   const blockers = Array.isArray(evidence.blockers) ? evidence.blockers.map(String) : [];
   return (
-    <DataTableFrame title="Execution-grade evidence" action={<StatusBadge tone={evidence.status === "available" ? "good" : "warn"}>{String(evidence.status ?? "unavailable")}</StatusBadge>}>
-      <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        {fields.map(([label, value]) => <KeyValue key={String(label)} label={String(label)} value={typeof value === "object" ? JSON.stringify(value) : String(value)} />)}
-      </div>
+    <DataTableFrame title="Execution-grade evidence" action={<StatusBadge tone={status === "available" ? "good" : "warn"}>{status ?? "NO DATA"}</StatusBadge>}>
+      {fields.length ? <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
+        {fields.map(([label, value]) => <DecisionKeyValue key={String(label)} label={String(label)} value={typeof value === "object" ? JSON.stringify(value) : String(value)} field={String(label).toLowerCase().replace(/[^a-z0-9]+/g, "_")} source="execution_evidence" />)}
+      </div> : <div className="p-4"><DataFieldStateNotice state={missingFieldState({ field: "execution_evidence", source: "ticker_decision_snapshot", reason: "execution_evidence_missing", nextAction: "Refresh execution evidence before placing an order." })} /></div>}
       {blockers.length ? <ReasonList title="Evidence blockers" rows={blockers} empty="No blockers" /> : null}
     </DataTableFrame>
   );
@@ -252,7 +253,7 @@ function ScenarioRail({ scenarios }: { scenarios: TickerDecisionContract["tactic
             title={`${scenario.name} ${percent(scenario.probability)}`}
           />
         ))}
-      </div> : <p className="text-xs text-muted-foreground">Scenario probabilities unavailable.</p>}
+      </div> : <DataFieldStateNotice compact state={missingFieldState({ field: "scenario_probabilities", source: "ticker_decision_snapshot", reason: "scenario_probabilities_missing", nextAction: "Refresh scenario evidence before placing an order." })} />}
       <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-muted-foreground">
         {scenarios.map((scenario) => <span key={scenario.name}><strong className="text-foreground">{scenario.name}</strong> {percent(scenario.probability)}</span>)}
       </div>
@@ -271,8 +272,8 @@ export function OpportunityRankPanel({
   return (
     <DataTableFrame title="Book opportunity rank" action={<StatusBadge tone={rank?.trade_rank ? "good" : "warn"}>{rank?.trade_rank ? `Trade #${rank.trade_rank}` : "Cash"}</StatusBadge>}>
       <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        {rank ? <><KeyValue label="Research rank" value={rank.research_rank == null ? "Not supplied" : `#${rank.research_rank}`} /><KeyValue label="Trade utility" value={rank.trade_utility == null ? "Not supplied" : String(rank.trade_utility)} /><KeyValue label="Rank reason" value={rank.trade_rank_unavailable_reason ?? "Positive current rank"} /><KeyValue label="Instrument snapshot" value={rank.instrument_state_snapshot_id ?? "Not supplied"} /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "opportunity_rank", source: "ticker_decision_snapshot", reason: "opportunity_rank_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
-        {signal ? <><KeyValue label="Forecast target" value={signal.target ?? "Not supplied"} /><KeyValue label="Horizon" value={signal.horizon ?? "Not supplied"} /><KeyValue label="Model / features" value={`${signal.model_version ?? "-"} · ${signal.feature_version ?? "-"}`} /><KeyValue label="OOS interval" value={signal.oos_period_start && signal.oos_period_end ? `${signal.oos_period_start} → ${signal.oos_period_end}` : "Not supplied"} /><KeyValue label="Cohort path" value={signal.cohort_path?.join(" → ") ?? "Not supplied"} /><KeyValue label="Fallback parent" value={signal.fallback_parent ?? "None"} /><KeyValue label="Effective sample" value={signal.effective_sample_size == null ? "Not supplied" : String(signal.effective_sample_size)} /><KeyValue label="Calibration" value={`${signal.calibration_state ?? "-"} · Brier ${numberText(signal.calibration_metrics?.brier_score)}`} /><KeyValue label="Research score" value={numberText(signal.research_score)} /><KeyValue label="Cost / slippage" value={signal.cost_model_version ?? "Not supplied"} /><KeyValue label="Net lower utility" value={numberText(signal.lower_confidence_net_utility_after_costs)} /><KeyValue label="Promotion stage" value={signal.promotion_stage ?? "Not supplied"} /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "alpha_signal", source: "ticker_decision_snapshot", reason: "alpha_signal_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
+        {rank ? <><DecisionKeyValue label="Research rank" value={rank.research_rank == null ? null : `#${rank.research_rank}`} field="research_rank" source="opportunity_rank" /><DecisionKeyValue label="Trade utility" value={rank.trade_utility == null ? null : String(rank.trade_utility)} field="trade_utility" source="opportunity_rank" /><DecisionKeyValue label="Rank reason" value={rank.trade_rank_unavailable_reason ?? "Positive current rank"} field="trade_rank_unavailable_reason" source="opportunity_rank" /><DecisionKeyValue label="Instrument snapshot" value={rank.instrument_state_snapshot_id} field="instrument_state_snapshot_id" source="opportunity_rank" /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "opportunity_rank", source: "ticker_decision_snapshot", reason: "opportunity_rank_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
+        {signal ? <><DecisionKeyValue label="Forecast target" value={signal.target} field="target" source="alpha_signal" /><DecisionKeyValue label="Horizon" value={signal.horizon} field="horizon" source="alpha_signal" /><DecisionKeyValue label="Model / features" value={signal.model_version && signal.feature_version ? `${signal.model_version} · ${signal.feature_version}` : null} field="model_and_feature_version" source="alpha_signal" /><DecisionKeyValue label="OOS interval" value={signal.oos_period_start && signal.oos_period_end ? `${signal.oos_period_start} → ${signal.oos_period_end}` : null} field="oos_interval" source="alpha_signal" /><DecisionKeyValue label="Cohort path" value={signal.cohort_path?.length ? signal.cohort_path.join(" → ") : null} field="cohort_path" source="alpha_signal" /><DecisionKeyValue label="Fallback parent" value={signal.fallback_parent ?? "None"} field="fallback_parent" source="alpha_signal" /><DecisionKeyValue label="Effective sample" value={signal.effective_sample_size == null ? null : String(signal.effective_sample_size)} field="effective_sample_size" source="alpha_signal" /><DecisionKeyValue label="Calibration" value={signal.calibration_state ? `${signal.calibration_state} · Brier ${numberText(signal.calibration_metrics?.brier_score)}` : null} field="calibration" source="alpha_signal" /><DecisionKeyValue label="Research score" value={numberText(signal.research_score) === "—" ? null : numberText(signal.research_score)} field="research_score" source="alpha_signal" /><DecisionKeyValue label="Cost / slippage" value={signal.cost_model_version} field="cost_model_version" source="alpha_signal" /><DecisionKeyValue label="Net lower utility" value={numberText(signal.lower_confidence_net_utility_after_costs) === "—" ? null : numberText(signal.lower_confidence_net_utility_after_costs)} field="lower_confidence_net_utility_after_costs" source="alpha_signal" /><DecisionKeyValue label="Promotion stage" value={signal.promotion_stage} field="promotion_stage" source="alpha_signal" /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "alpha_signal", source: "ticker_decision_snapshot", reason: "alpha_signal_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
       </div>
     </DataTableFrame>
   );
@@ -371,9 +372,9 @@ function LearningLoopPanel({ learning }: { learning: TickerLearning }) {
       {governance ? (
         <div className="border-b border-border bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
-            <span>Governance: <strong className="text-foreground">{textValue(governance.status, "unavailable").toUpperCase()}</strong></span>
+            {textValue(governance.status) ? <span>Governance: <strong className="text-foreground">{textValue(governance.status).toUpperCase()}</strong></span> : <DataFieldStateNotice compact state={missingFieldState({ field: "governance_status", source: "strategy_learning", reason: "governance_status_missing", nextAction: "Refresh governance evidence before using learning output." })} />}
             <span>Paper only: {governance.paper_only ? "YES" : "NO"}</span>
-            <span>Live: {textValue(governance.live_eligibility, "unavailable")}</span>
+            {textValue(governance.live_eligibility) ? <span>Live: {textValue(governance.live_eligibility)}</span> : <DataFieldStateNotice compact state={missingFieldState({ field: "live_eligibility", source: "strategy_learning", reason: "live_eligibility_missing", nextAction: "Refresh governance evidence before using learning output." })} />}
           </div>
           {governance.blockers?.length ? <p className="mt-1">Blocked by: {governance.blockers.map((item) => textValue(item)).join(" · ")}</p> : null}
         </div>
@@ -432,6 +433,11 @@ function percentValue(value: JsonValue | undefined): string {
 
 function KeyValue({ label, value }: { label: string; value: string }) {
   return <div><span className="block uppercase tracking-[0.08em] text-muted-foreground">{label}</span><strong className="mt-0.5 block break-words font-medium text-foreground">{value}</strong></div>;
+}
+
+function DecisionKeyValue({ label, value, field, source }: { label: string; value: string | null | undefined; field: string; source: string }) {
+  if (value != null && value.trim()) return <KeyValue label={label} value={value} />;
+  return <DataFieldStateNotice compact state={missingFieldState({ field, source, reason: `${field}_missing`, nextAction: "Refresh the validated ticker decision snapshot before acting." })} />;
 }
 
 function KeyValueBlock({ title, value }: { title: string; value?: string | null }) {

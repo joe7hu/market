@@ -1,5 +1,4 @@
 import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
-import { useMemo } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,10 +9,9 @@ import { cn } from "@/lib/utils";
 import type { TodayResponse } from "@/api/panel";
 import type { components } from "@/generated/apiSchema";
 import type { AppModel } from "@/model";
-import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
-import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
+import type { PanelData, ScopeSnapshotStatus } from "@/types";
 import { expressionLabel } from "@/viewModels/expression";
-import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
+import { formatMoney, formatPct, toneFromText, type Tone } from "./rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
 
 type TodayPageProps = {
@@ -29,8 +27,24 @@ type TodayPageProps = {
   onOpenTicker: (symbol: string) => void;
 };
 
-type JsonObject = { [key: string]: JsonValue };
 type TodayAction = NonNullable<TodayResponse["actions"]>[number];
+type TodayBriefItem = components["schemas"]["TodayBriefItemResponse"];
+type TodayPreopenBrief = components["schemas"]["TodayPreopenBriefResponse"];
+
+type TodayCategory = {
+  key: string;
+  title: string;
+  subtitle: string;
+  tone: Tone;
+  dot: string;
+};
+
+const todayCategories: TodayCategory[] = [
+  { key: "decide_now", title: "Decide now", subtitle: "Candidates, risks, and thesis reviews that want an action today", tone: "warn", dot: "bg-amber-500" },
+  { key: "whats_changed", title: "What changed", subtitle: "Fresh source-backed signals on names you own or watch", tone: "info", dot: "bg-blue-600" },
+  { key: "catalysts", title: "This week", subtitle: "Scheduled catalysts in the next two weeks", tone: "good", dot: "bg-violet-600" },
+  { key: "portfolio_pulse", title: "Portfolio pulse", subtitle: "Biggest movers and concentration in your book", tone: "info", dot: "bg-emerald-600" },
+];
 
 export function tradePlanForAction(item: TodayAction) {
   return item.source === "capital_action" ? item.trade_plan ?? null : undefined;
@@ -38,9 +52,17 @@ export function tradePlanForAction(item: TodayAction) {
 
 const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCategories.map((category) => [category.key, category]));
 export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLoading, actionQueueError, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
-  const vm = useMemo(() => buildTodayViewModel(data, model), [data, model]);
-  const riskExceptions = (data.portfolioRiskCards?.rows ?? vm.portfolioPulse).slice(0, 3);
-  const hasBrief = vm.briefCount > 0;
+  const briefItems = actionQueue?.brief_items ?? [];
+  const riskExceptions = actionQueue?.portfolio_risk_items ?? [];
+  const decideNow = briefItems.filter((item) => item.category === "decide_now");
+  const whatsChanged = briefItems.filter((item) => item.category === "whats_changed");
+  const catalysts = briefItems.filter((item) => item.category === "catalysts").slice().sort((a, b) => (a.days_until ?? Number.MAX_SAFE_INTEGER) - (b.days_until ?? Number.MAX_SAFE_INTEGER));
+  const hero = decideNow[0] ?? whatsChanged[0] ?? null;
+  const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
+  const largestHolding = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
+  const portfolioPnl = model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0);
+  const portfolioPnlPct = model.portfolioValue ? (portfolioPnl / model.portfolioValue) * 100 : 0;
+  const hasBrief = briefItems.length > 0;
 
   return (
     <section>
@@ -60,34 +82,34 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricTile
           label="Portfolio P&L"
-          value={model.holdings.length ? `${formatMoney(vm.portfolioPnl)} (${formatPct(vm.portfolioPnlPct)})` : "No positions"}
-          tone={vm.portfolioPnl >= 0 ? "good" : "bad"}
+          value={model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "No positions"}
+          tone={portfolioPnl >= 0 ? "good" : "bad"}
         />
-        <MetricTile label="Decisions due" value={vm.decisionsDue} caption="candidates, risks, thesis reviews" tone={vm.decisionsDue ? "warn" : "good"} />
-        <MetricTile label="Source updates" value={vm.sourceUpdates} caption="fresh signals on owned / watched" tone={vm.sourceUpdates ? "info" : "muted"} />
+        <MetricTile label="Decisions due" value={decideNow.length} caption="candidates, risks, thesis reviews" tone={decideNow.length ? "warn" : "good"} />
+        <MetricTile label="Source updates" value={whatsChanged.length} caption="fresh signals on owned / watched" tone={whatsChanged.length ? "info" : "muted"} />
         <MetricTile
           label="Top exposure"
-          value={vm.largestHolding ? `${vm.largestHolding.ticker} ${vm.largestHolding.weight.toFixed(1)}%` : "None"}
-          caption={vm.largestHolding?.nextStep}
-          tone={vm.largestHolding && vm.largestHolding.weight > 30 ? "warn" : "info"}
+          value={largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "None"}
+          caption={largestHolding?.nextStep}
+          tone={largestHolding && largestHolding.weight > 30 ? "warn" : "info"}
         />
       </div>
 
       <ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} />
-      <PreopenBrief row={vm.preopenBrief} />
+      <PreopenBrief brief={actionQueue?.preopen_brief} />
       <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
 
       {hasBrief ? (
         <>
           <div className="grid gap-6">
-            <BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk exceptions", subtitle: "The three highest-priority concentration, loss, or thesis-risk exceptions." }} rows={riskExceptions} onOpenTicker={onOpenTicker} columns />
-            <CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalyst and macro veto", subtitle: "Near-term events and the current deterministic pre-open veto context." }} rows={vm.catalysts.slice(0, 3)} onOpenTicker={onOpenTicker} />
+            <BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk exceptions", subtitle: "The three highest-priority concentration, loss, or thesis-risk exceptions." }} rows={riskExceptions.slice(0, 3)} onOpenTicker={onOpenTicker} columns />
+            <CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalyst and macro veto", subtitle: "Near-term events and the current deterministic pre-open veto context." }} rows={catalysts.slice(0, 3)} onOpenTicker={onOpenTicker} />
             <details className="rounded-md border border-border bg-card p-4">
               <summary className="cursor-pointer text-sm font-semibold">More daily context</summary>
               <div className="mt-5 grid gap-6">
-                <HeroDecision row={vm.hero} onOpenTicker={onOpenTicker} />
-                <BriefSection section={SECTION_BY_KEY.decide_now} rows={vm.decideNow} onOpenTicker={onOpenTicker} columns />
-                <BriefSection section={SECTION_BY_KEY.whats_changed} rows={vm.whatsChanged} onOpenTicker={onOpenTicker} columns />
+                <HeroDecision item={hero} onOpenTicker={onOpenTicker} />
+                <BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} onOpenTicker={onOpenTicker} columns />
+                <BriefSection section={SECTION_BY_KEY.whats_changed} rows={whatsChanged} onOpenTicker={onOpenTicker} columns />
               </div>
             </details>
           </div>
@@ -173,27 +195,24 @@ function CompactPlanSummary({ plan, fieldStates }: { plan: TradePlan | null; fie
   );
 }
 
-function PreopenBrief({ row }: { row: RowRecord | null }) {
-  if (!row) return null;
-  const forecast = recordField(row, "qqq_forecast");
-  const backtest = recordField(row, "backtest");
-  const outcome = recordField(row, "qqq_outcome");
-  const events = recordList(row, "key_events");
-  const risks = listField(row, ["risks"]);
-  const watchItems = listField(row, ["watch_items"]);
-  const bias = String(forecast.bias ?? "neutral");
+function PreopenBrief({ brief }: { brief: TodayPreopenBrief | null | undefined }) {
+  if (!brief) return null;
+  const bias = brief.bias;
+  const events = brief.key_events ?? [];
+  const risks = brief.risks ?? [];
+  const watchItems = brief.watch_items ?? [];
   const forecastStats = [
-    moneyStat("Expected", forecast.expected_close),
-    moneyStat("Support", forecast.support),
-    moneyStat("Resistance", forecast.resistance),
-    pctStat("Move", forecast.expected_return_pct),
-    pctStat("Backtest MAE", backtest.mae_pct),
-    pctStat("Range hit", backtest.range_hit_rate_pct),
+    moneyStat("Expected", brief.expected_close),
+    moneyStat("Support", brief.support),
+    moneyStat("Resistance", brief.resistance),
+    pctStat("Move", brief.expected_return_pct),
+    pctStat("Backtest MAE", brief.backtest_mae_pct),
+    pctStat("Range hit", brief.range_hit_rate_pct),
   ].filter(Boolean) as string[];
   const outcomeStats = [
-    moneyStat("Actual mark", outcome.actual_price),
-    pctStat("Actual move", outcome.actual_return_pct),
-    pctStat("Error", outcome.absolute_error_pct),
+    moneyStat("Actual mark", brief.actual_price),
+    pctStat("Actual move", brief.actual_return_pct),
+    pctStat("Error", brief.absolute_error_pct),
   ].filter(Boolean) as string[];
 
   return (
@@ -201,32 +220,32 @@ function PreopenBrief({ row }: { row: RowRecord | null }) {
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-xs font-semibold uppercase text-muted-foreground">Pre-open macro brief</p>
-          <h2 className="mt-1 text-lg font-semibold leading-6">{textField(row, ["headline"], "Market open brief")}</h2>
+          <h2 className="mt-1 text-lg font-semibold leading-6">{brief.headline}</h2>
         </div>
         <StatusBadge tone={bias === "bullish" ? "good" : bias === "bearish" ? "bad" : "info"}>{bias}</StatusBadge>
       </div>
-      <p className="text-sm leading-6 text-muted-foreground">{textField(row, ["macro_regime"])}</p>
-      <p className="mt-2 text-sm leading-6 text-foreground">{textField(row, ["narrative"])}</p>
+      {brief.macro_regime ? <p className="text-sm leading-6 text-muted-foreground">{brief.macro_regime}</p> : null}
+      {brief.narrative ? <p className="mt-2 text-sm leading-6 text-foreground">{brief.narrative}</p> : null}
       <div className="mt-3 grid gap-3 lg:grid-cols-[1.15fr_0.85fr]">
         <div className="rounded-md border border-border p-3">
           <p className="text-sm font-semibold">QQQ path</p>
           {forecastStats.length ? <StatRow stats={forecastStats} className="mt-2" /> : null}
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">{textField(row, ["qqq_path"])}</p>
-          <p className="mt-1 text-sm leading-6 text-muted-foreground">{textField(row, ["opening_scenario"])}</p>
+          {brief.qqq_path ? <p className="mt-2 text-sm leading-6 text-muted-foreground">{brief.qqq_path}</p> : null}
+          {brief.opening_scenario ? <p className="mt-1 text-sm leading-6 text-muted-foreground">{brief.opening_scenario}</p> : null}
           <div className="mt-3 border-t border-border pt-3">
             <p className="text-sm font-semibold">Forecast loop</p>
-            <p className="mt-1 text-xs text-muted-foreground">{String(outcome.status ?? "pending")} · observed only when a point-in-time QQQ mark is available.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{brief.outcome_status} · observed only when a point-in-time QQQ mark is available.</p>
             {outcomeStats.length ? <StatRow stats={outcomeStats} className="mt-2" /> : null}
-            <p className="mt-1 text-xs text-muted-foreground">Range hit: {outcome.within_forecast_range === true ? "yes" : outcome.within_forecast_range === false ? "no" : "pending"}; direction: {outcome.direction_correct === true ? "correct" : outcome.direction_correct === false ? "wrong" : "pending"}.</p>
+            <p className="mt-1 text-xs text-muted-foreground">Range hit: {brief.within_forecast_range === true ? "yes" : brief.within_forecast_range === false ? "no" : "pending"}; direction: {brief.direction_correct === true ? "correct" : brief.direction_correct === false ? "wrong" : "pending"}.</p>
           </div>
         </div>
         <div className="rounded-md border border-border p-3">
           <p className="text-sm font-semibold">Key events</p>
           {events.length ? (
             <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-              {events.slice(0, 4).map((event, index) => (
-                <li key={String(event.id ?? index)} className="leading-5">
-                  {String(event.event_date ?? "")} {String(event.event ?? "")}
+              {events.slice(0, 4).map((event) => (
+                <li key={event} className="leading-5">
+                  {event}
                 </li>
               ))}
             </ul>
@@ -245,30 +264,28 @@ function PreopenBrief({ row }: { row: RowRecord | null }) {
   );
 }
 
-function HeroDecision({ row, onOpenTicker }: { row: RowRecord | null; onOpenTicker: (symbol: string) => void }) {
-  if (!row) return null;
-  const symbol = symbolList(row)[0];
-  const tone = cardTone(row);
-  const sentiment = sentimentOf(row);
-  const stats = listField(row, ["stats"]);
-  const antithesis = textField(row, ["antithesis"]);
+function HeroDecision({ item, onOpenTicker }: { item: TodayBriefItem | null; onOpenTicker: (symbol: string) => void }) {
+  if (!item) return null;
+  const tone = cardTone(item.severity);
+  const sentiment = sentimentOf(item.sentiment);
+  const stats = item.stats ?? [];
   return (
     <div className={cn("mb-6 rounded-lg border bg-card p-4", toneBorder(tone))}>
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-semibold uppercase text-muted-foreground">Top priority</span>
-        <ContextChip context={textField(row, ["context"])} sentiment={sentiment} tone={tone} />
+        <ContextChip context={item.category} sentiment={sentiment} tone={tone} />
       </div>
       <p className="mt-2 flex items-center gap-2 text-lg font-semibold leading-7 text-foreground">
         {sentiment !== "neutral" ? <SentimentMark sentiment={sentiment} /> : null}
-        <span className="min-w-0">{textField(row, ["title"], "Decision item")}</span>
+        <span className="min-w-0">{item.title}</span>
       </p>
       {stats.length ? <StatRow stats={stats} className="mt-1 text-sm" /> : null}
-      {displayField(row, ["reason"], "") ? <p className="mt-2 text-sm leading-6 text-muted-foreground">{displayField(row, ["reason"], "")}</p> : null}
-      {antithesis ? <p className="mt-1 text-sm leading-6 text-muted-foreground">Counter: {antithesis}</p> : null}
-      {symbol ? (
+      {item.summary ? <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.summary}</p> : null}
+      {item.antithesis ? <p className="mt-1 text-sm leading-6 text-muted-foreground">Counter: {item.antithesis}</p> : null}
+      {item.symbol ? (
         <div className="mt-3">
-          <Button type="button" size="sm" onClick={() => onOpenTicker(symbol)}>
-            Open {symbol}
+          <Button type="button" size="sm" onClick={() => onOpenTicker(item.symbol!)}>
+            Open {item.symbol}
           </Button>
         </div>
       ) : null}
@@ -291,14 +308,14 @@ function SectionHeader({ section, count }: { section: TodayCategory; count: numb
   );
 }
 
-function BriefSection({ section, rows, onOpenTicker, columns }: { section: TodayCategory; rows: RowRecord[]; onOpenTicker: (symbol: string) => void; columns?: boolean }) {
+function BriefSection({ section, rows, onOpenTicker, columns }: { section: TodayCategory; rows: TodayBriefItem[]; onOpenTicker: (symbol: string) => void; columns?: boolean }) {
   return (
     <div className="min-w-0">
       <SectionHeader section={section} count={rows.length} />
       {rows.length ? (
         <div className={cn("grid gap-3", columns && "xl:grid-cols-2")}>
-          {rows.map((row, index) => (
-            <TodayBriefCard key={textField(row, ["item_id", "id"], `${section.key}-${index}`)} row={row} onOpenTicker={onOpenTicker} />
+          {rows.map((item) => (
+            <TodayBriefCard key={item.stable_key} item={item} onOpenTicker={onOpenTicker} />
           ))}
         </div>
       ) : (
@@ -308,14 +325,14 @@ function BriefSection({ section, rows, onOpenTicker, columns }: { section: Today
   );
 }
 
-function CatalystSection({ section, rows, onOpenTicker }: { section: TodayCategory; rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+function CatalystSection({ section, rows, onOpenTicker }: { section: TodayCategory; rows: TodayBriefItem[]; onOpenTicker: (symbol: string) => void }) {
   return (
     <div className="min-w-0">
       <SectionHeader section={section} count={rows.length} />
       {rows.length ? (
         <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
-          {rows.map((row, index) => (
-            <CatalystRow key={textField(row, ["item_id", "id"], `cal-${index}`)} row={row} onOpenTicker={onOpenTicker} />
+          {rows.map((item) => (
+            <CatalystRow key={item.stable_key} item={item} onOpenTicker={onOpenTicker} />
           ))}
         </ul>
       ) : (
@@ -325,9 +342,8 @@ function CatalystSection({ section, rows, onOpenTicker }: { section: TodayCatego
   );
 }
 
-function CatalystRow({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (symbol: string) => void }) {
-  const symbol = symbolList(row)[0];
-  const days = numberField(row, ["days_until"], Number.NaN);
+function CatalystRow({ item, onOpenTicker }: { item: TodayBriefItem; onOpenTicker: (symbol: string) => void }) {
+  const days = item.days_until ?? Number.NaN;
   return (
     <li className="flex items-center gap-3 px-4 py-3">
       <span className={cn("flex w-20 shrink-0 items-center gap-1.5 text-xs font-semibold", Number.isFinite(days) && days <= 1 ? "text-amber-600" : "text-muted-foreground")}>
@@ -335,25 +351,22 @@ function CatalystRow({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (sym
         {dueLabel(days)}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium leading-5">{textField(row, ["title"], "Scheduled event")}</p>
-        <p className="truncate text-xs text-muted-foreground">{textField(row, ["context"])}</p>
+        <p className="truncate text-sm font-medium leading-5">{item.title}</p>
+        {item.summary ? <p className="truncate text-xs text-muted-foreground">{item.summary}</p> : null}
       </div>
-      {symbol ? (
-        <Button type="button" size="sm" variant="ghost" className="h-7 shrink-0 text-xs" onClick={() => onOpenTicker(symbol)}>
-          {symbol}
+      {item.symbol ? (
+        <Button type="button" size="sm" variant="ghost" className="h-7 shrink-0 text-xs" onClick={() => onOpenTicker(item.symbol!)}>
+          {item.symbol}
         </Button>
       ) : null}
     </li>
   );
 }
 
-function TodayBriefCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (symbol: string) => void }) {
-  const symbols = symbolList(row);
-  const tone = cardTone(row);
-  const sentiment = sentimentOf(row);
-  const stats = listField(row, ["stats"]);
-  const reason = displayField(row, ["reason"], "");
-  const antithesis = textField(row, ["antithesis"]);
+function TodayBriefCard({ item, onOpenTicker }: { item: TodayBriefItem; onOpenTicker: (symbol: string) => void }) {
+  const tone = cardTone(item.severity);
+  const sentiment = sentimentOf(item.sentiment);
+  const stats = item.stats ?? [];
 
   return (
     <Card className={cn("min-w-0 overflow-hidden", toneBorder(tone))}>
@@ -361,20 +374,18 @@ function TodayBriefCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (
         <div className="flex items-start justify-between gap-2">
           <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-semibold leading-5">
             {sentiment !== "neutral" ? <SentimentMark sentiment={sentiment} /> : null}
-            <span className="min-w-0">{textField(row, ["title", "symbol", "ticker"], "Decision item")}</span>
+            <span className="min-w-0">{item.title}</span>
           </h3>
-          <ContextChip context={textField(row, ["context"])} sentiment={sentiment} tone={tone} />
+          <ContextChip context={item.category} sentiment={sentiment} tone={tone} />
         </div>
         {stats.length ? <StatRow stats={stats} /> : null}
-        {reason ? <p className="text-sm leading-6 text-muted-foreground">{reason}</p> : null}
-        {antithesis ? <p className="text-sm leading-6 text-muted-foreground">Counter: {antithesis}</p> : null}
-        {symbols.length ? (
+        {item.summary ? <p className="text-sm leading-6 text-muted-foreground">{item.summary}</p> : null}
+        {item.antithesis ? <p className="text-sm leading-6 text-muted-foreground">Counter: {item.antithesis}</p> : null}
+        {item.symbol ? (
           <div className="flex flex-wrap gap-1.5 pt-1">
-            {symbols.slice(0, 6).map((symbol) => (
-              <Button key={symbol} type="button" variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => onOpenTicker(symbol)}>
-                {symbol}
-              </Button>
-            ))}
+            <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => onOpenTicker(item.symbol!)}>
+              {item.symbol}
+            </Button>
           </div>
         ) : null}
       </CardContent>
@@ -409,16 +420,6 @@ function BulletList({ title, rows }: { title: string; rows: string[] }) {
   );
 }
 
-function recordField(row: RowRecord, key: string): JsonObject {
-  const value = row[key];
-  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
-}
-
-function recordList(row: RowRecord, key: string): JsonObject[] {
-  const value = row[key];
-  return Array.isArray(value) ? value.filter((item): item is JsonObject => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
-}
-
 function moneyStat(label: string, value: unknown): string | null {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   return Number.isFinite(parsed) ? `${label} ${formatMoney(parsed)}` : null;
@@ -444,15 +445,15 @@ function SentimentMark({ sentiment }: { sentiment: Sentiment }) {
   return <Icon className={cn("size-4 shrink-0", bullish ? "text-emerald-600" : "text-red-600")} aria-label={bullish ? "Bullish" : "Bearish"} />;
 }
 
-function sentimentOf(row: RowRecord): Sentiment {
-  const value = textField(row, ["sentiment"]).toLowerCase();
+function sentimentOf(value: string): Sentiment {
+  value = value.toLowerCase();
   if (value === "bullish" || value === "good") return "bullish";
   if (value === "bearish" || value === "bad" || value === "sell") return "bearish";
   return "neutral";
 }
 
-function cardTone(row: RowRecord): Tone {
-  return toneFromText(textField(row, ["severity", "status"], "info"));
+function cardTone(value: string): Tone {
+  return toneFromText(value);
 }
 
 function toneBorder(tone: Tone): string {

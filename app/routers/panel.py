@@ -166,6 +166,9 @@ def today(
         "as_of": as_of,
         "actions": queue_items,
         "book_actions": book_action_queue(capital_actions),
+        "preopen_brief": _today_preopen_brief_payload(panel_data.rows("preopen_daily_brief")),
+        "brief_items": _today_brief_items_payload(panel_data.rows("daily_brief")),
+        "portfolio_risk_items": _today_portfolio_risk_payload(panel_data.rows("portfolio_risk_cards")),
         "missing_plan_count": missing_plan_count,
         "count": len(queue_items),
     }
@@ -187,6 +190,112 @@ def _today_trade_plan_payload(plan: Any) -> dict[str, Any]:
         "market_state_publication_id", "action", "eligibility", "authorization_mode", "data_quality",
         "rationale", "primary_blocker", "blockers", "next_action",
     })
+
+
+def _today_preopen_brief_payload(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    row = rows[0]
+    forecast = row.get("qqq_forecast") if isinstance(row.get("qqq_forecast"), dict) else {}
+    backtest = row.get("backtest") if isinstance(row.get("backtest"), dict) else {}
+    outcome = row.get("qqq_outcome") if isinstance(row.get("qqq_outcome"), dict) else {}
+    events = row.get("key_events") if isinstance(row.get("key_events"), list) else []
+    return {
+        "stable_key": str(row.get("stable_key") or "preopen"),
+        "headline": str(row.get("headline") or "Market open brief"),
+        "narrative": str(row.get("summary") or ""),
+        "macro_regime": _optional_text(row.get("macro_regime")),
+        "opening_scenario": _optional_text(row.get("opening_scenario")),
+        "qqq_path": _optional_text(row.get("qqq_path")),
+        "bias": str(forecast.get("bias") or "neutral"),
+        "expected_close": _finite_number(forecast.get("expected_close")),
+        "support": _finite_number(forecast.get("support")),
+        "resistance": _finite_number(forecast.get("resistance")),
+        "expected_return_pct": _finite_number(forecast.get("expected_return_pct")),
+        "backtest_mae_pct": _finite_number(backtest.get("mae_pct")),
+        "range_hit_rate_pct": _finite_number(backtest.get("range_hit_rate_pct")),
+        "outcome_status": str(outcome.get("status") or "pending"),
+        "actual_price": _finite_number(outcome.get("actual_price")),
+        "actual_return_pct": _finite_number(outcome.get("actual_return_pct")),
+        "absolute_error_pct": _finite_number(outcome.get("absolute_error_pct")),
+        "within_forecast_range": outcome.get("within_forecast_range") if isinstance(outcome.get("within_forecast_range"), bool) else None,
+        "direction_correct": outcome.get("direction_correct") if isinstance(outcome.get("direction_correct"), bool) else None,
+        "key_events": [str(item.get("event")) for item in events if isinstance(item, dict) and _optional_text(item.get("event"))],
+        "risks": _text_list(row.get("risks")),
+        "watch_items": _text_list(row.get("watch_items")),
+    }
+
+
+def _today_brief_items_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_today_brief_item_payload(row, index) for index, row in enumerate(rows)]
+
+
+def _today_portfolio_risk_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{
+        "stable_key": str(row.get("card_id") or f"portfolio-risk:{index}"),
+        "category": "portfolio_risk",
+        "title": str(row.get("title") or "Portfolio risk"),
+        "summary": str(row.get("interpretation") or ""),
+        "score": _finite_number(row.get("score")) or 0.0,
+        "symbol": _optional_text(row.get("symbol")),
+        "severity": str(row.get("severity") or "info"),
+        "action": _optional_text(row.get("action")),
+        "next_action": _optional_text(row.get("next_action")),
+        "blockers": _text_list(row.get("blockers")),
+        "stats": _text_list(row.get("symbols")),
+    } for index, row in enumerate(rows)]
+
+
+def _today_brief_item_payload(row: dict[str, Any], index: int) -> dict[str, Any]:
+    return {
+        "stable_key": str(row.get("stable_key") or f"today-brief:{index}"),
+        "category": str(row.get("category") or "uncategorized"),
+        "title": str(row.get("headline") or "Decision item"),
+        "summary": str(row.get("summary") or ""),
+        "score": _finite_number(row.get("score")) or 0.0,
+        "symbol": _optional_text(row.get("symbol")),
+        "sentiment": str(row.get("sentiment") or "neutral"),
+        "severity": str(row.get("severity") or "info"),
+        "antithesis": _optional_text(row.get("antithesis")),
+        "action": _optional_text(row.get("action")),
+        "next_action": _optional_text(row.get("next_action")),
+        "blockers": _text_list(row.get("blockers")),
+        "days_until": _integer(row.get("days_until")),
+        "stats": _today_brief_stats(row),
+    }
+
+
+def _today_brief_stats(row: dict[str, Any]) -> list[str]:
+    values = (
+        ("Research rank", row.get("research_rank")),
+        ("Trade rank", row.get("trade_rank")),
+        ("Execution quality", row.get("execution_quality_score")),
+        ("Weight", row.get("weight")),
+        ("Unrealized P&L", row.get("unrealized_pnl")),
+    )
+    return [f"{label} {value}" for label, value in values if _finite_number(value) is not None]
+
+
+def _optional_text(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _text_list(value: Any) -> list[str]:
+    return [str(item) for item in value if str(item).strip()] if isinstance(value, list) else []
+
+
+def _finite_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if isfinite(number) else None
+
+
+def _integer(value: Any) -> int | None:
+    number = _finite_number(value)
+    return int(number) if number is not None and number.is_integer() else None
 
 
 def today_field_states(*, identity_missing: bool, plan_missing: bool, reason: str) -> list[dict[str, Any]]:

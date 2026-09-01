@@ -191,11 +191,60 @@ class TodayCapitalAction(FlexibleResponse):
 ActionQueueItem = TodayCapitalAction
 
 
+class TodayBriefItemResponse(BaseModel):
+    """One named context item for the Today decision surface."""
+
+    stable_key: str
+    category: str
+    title: str
+    summary: str = ""
+    score: float = 0.0
+    symbol: str | None = None
+    sentiment: str = "neutral"
+    severity: str = "info"
+    antithesis: str | None = None
+    action: str | None = None
+    next_action: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+    days_until: int | None = None
+    stats: list[str] = Field(default_factory=list)
+
+
+class TodayPreopenBriefResponse(BaseModel):
+    """Named pre-open context; nested publication payloads stay server-side."""
+
+    stable_key: str
+    headline: str
+    narrative: str = ""
+    macro_regime: str | None = None
+    opening_scenario: str | None = None
+    qqq_path: str | None = None
+    bias: str = "neutral"
+    expected_close: float | None = None
+    support: float | None = None
+    resistance: float | None = None
+    expected_return_pct: float | None = None
+    backtest_mae_pct: float | None = None
+    range_hit_rate_pct: float | None = None
+    outcome_status: str = "pending"
+    actual_price: float | None = None
+    actual_return_pct: float | None = None
+    absolute_error_pct: float | None = None
+    within_forecast_range: bool | None = None
+    direction_correct: bool | None = None
+    key_events: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    watch_items: list[str] = Field(default_factory=list)
+
+
 class TodayResponse(BaseModel):
     status: ApiStatusResponse
     as_of: datetime | None = None
     actions: list[TodayCapitalAction] = Field(default_factory=list)
     book_actions: list[TodayCapitalAction] = Field(default_factory=list)
+    preopen_brief: TodayPreopenBriefResponse | None = None
+    brief_items: list[TodayBriefItemResponse] = Field(default_factory=list)
+    portfolio_risk_items: list[TodayBriefItemResponse] = Field(default_factory=list)
     missing_plan_count: int = 0
     count: int = 0
 
@@ -807,6 +856,8 @@ __all__ = [
     "SuperinvestorDetailResponse",
     "TablePayloadResponse",
     "TodayCapitalAction",
+    "TodayBriefItemResponse",
+    "TodayPreopenBriefResponse",
     "TodayResolutionSummaryResponse",
     "TodayResponse",
     "TodayTradePlanSummaryResponse",

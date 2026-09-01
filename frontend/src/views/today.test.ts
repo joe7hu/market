@@ -195,6 +195,44 @@ describe("Today Action Queue", () => {
     expect(markup).not.toContain("Unranked capital action must stay hidden");
   });
 
+  it("renders named Today context fields from the generated backend contract", () => {
+    const context: Pick<TodayResponse, "preopen_brief" | "brief_items" | "portfolio_risk_items"> = {
+      preopen_brief: {
+        stable_key: "preopen:2026-09-01",
+        headline: "Named pre-open headline",
+        narrative: "Named pre-open narrative.",
+        bias: "neutral",
+        outcome_status: "pending",
+      },
+      brief_items: [{
+        stable_key: "daily:AAA",
+        category: "decide_now",
+        title: "Named decision title",
+        summary: "Named decision summary.",
+        score: 1,
+        sentiment: "bullish",
+        severity: "warn",
+      }],
+      portfolio_risk_items: [],
+    };
+    const data = emptyPanelData();
+    const markup = renderToStaticMarkup(createElement(TodayPage, {
+      data,
+      model: buildModel(data),
+      lastRefresh: null,
+      actionQueue: { ...response, ...context },
+      actionQueueLoading: false,
+      actionQueueError: null,
+      loading: false,
+      onRefresh: () => undefined,
+      onOpenTicker: () => undefined,
+    }));
+
+    expect(markup).toContain("Named pre-open headline");
+    expect(markup).toContain("Named decision title");
+    expect(markup).toContain("Named decision summary.");
+  });
+
   it("keeps numeric terms at stored precision", () => {
     const base = plan();
     const markup = renderToStaticMarkup(createElement(TradePlanCard, {
@@ -267,7 +305,10 @@ describe("Today Action Queue", () => {
       selected_expression_kind: "CASH",
     }) }));
 
-    expect(markup).toContain("Not supplied");
+    expect(markup).toContain("Field unavailable: trade_plan");
+    expect(markup).toContain("Source: canonical_trade_plan");
+    expect(markup).toContain("Reason: trade_plan_required_field_missing");
+    expect(markup).toContain("This blocks the decision.");
     expect(markup).not.toContain("list_only_blocker");
   });
 
