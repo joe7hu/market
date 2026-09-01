@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { latestWatchlistRefreshFinishedAt } from "./WatchlistRoute";
+import { latestWatchlistRefreshFinishedAt, latestWatchlistRefreshJob } from "./WatchlistRoute";
+
+describe("latestWatchlistRefreshJob", () => {
+  it("uses the newest relevant data refresh instead of an older full refresh", () => {
+    const job = latestWatchlistRefreshJob([
+      { job_name: "full_market_refresh", status: "running", started_at: "2026-07-24T20:00:00Z" },
+      { job_name: "update_market_data", status: "succeeded", started_at: "2026-07-24T21:00:00Z" },
+    ]);
+
+    expect(job?.job_name).toBe("update_market_data");
+  });
+});
 
 describe("latestWatchlistRefreshFinishedAt", () => {
   it("uses the latest successful market-data job instead of legacy status metadata", () => {

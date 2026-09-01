@@ -31,7 +31,7 @@ export function WatchlistRoute() {
   }, [loadWatchlist]);
 
   const updateRefreshState = useCallback(async (payload: RefreshJobsPayload, targetJobId: string | null = activeRefreshJobId.current) => {
-    const latestJob = latestFullRefreshJob(payload.rows ?? []);
+    const latestJob = latestWatchlistRefreshJob(payload.rows ?? []);
     const targetJob = targetJobId ? (payload.rows ?? []).find((job) => job.id === targetJobId) : latestJob;
     const latestFinishedAt = latestWatchlistRefreshFinishedAt(payload.rows ?? []);
     if (latestFinishedAt) {
@@ -126,9 +126,9 @@ export function WatchlistRoute() {
   );
 }
 
-function latestFullRefreshJob(jobs: RefreshJob[]): RefreshJob | null {
+export function latestWatchlistRefreshJob(jobs: RefreshJob[]): RefreshJob | null {
   return jobs
-    .filter((job) => job.job_name === WATCHLIST_REFRESH_JOB)
+    .filter((job) => WATCHLIST_DATA_REFRESH_JOBS.has(job.job_name ?? ""))
     .sort((a, b) => (parseDate(b.started_at)?.getTime() ?? 0) - (parseDate(a.started_at)?.getTime() ?? 0))[0] ?? null;
 }
 

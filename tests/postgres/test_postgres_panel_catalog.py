@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -95,6 +96,46 @@ def test_ticker_option_queries_keep_symbol_filter_before_dense_joins() -> None:
     assert payoff_query.rindex("JOIN raw.option_quote") < payoff_query.rindex("LIMIT %s")
     assert payoff_query.rindex("ORDER BY decision.as_of DESC, decision.rank") < payoff_query.rindex("LIMIT %s")
     assert payoff_parameters == [["QQQ"], 24]
+
+
+def test_custom_option_loaders_preserve_exact_page_counts(monkeypatch) -> None:
+    class Result:
+        @staticmethod
+        def fetchall() -> list[dict[str, object]]:
+            return [{"symbol": "QQQ", "__panel_total_count": 7}]
+
+    class Connection:
+        def execute(self, _query: str, _parameters: object = None) -> Result:
+            return Result()
+
+    connection = Connection()
+
+    class Runtime:
+        def read(self, _profile):
+            return nullcontext(connection)
+
+    monkeypatch.setattr(panel_models, "runtime_for_config", lambda _config: Runtime())
+    tables, metadata = load_postgres_tables(
+        typed_config("postgresql:///option-counts"),
+        ("liquidity", "options_payoff_scenarios", "options_expiries"),
+        query_row_limits={
+            "liquidity": 1,
+            "options_payoff_scenarios": 1,
+            "options_expiries": 1,
+        },
+    )
+
+    assert {name: len(rows) for name, rows in tables.items()} == {
+        "liquidity": 1,
+        "options_payoff_scenarios": 1,
+        "options_expiries": 1,
+    }
+    assert metadata["table_counts"] == {
+        "liquidity": 7,
+        "options_payoff_scenarios": 7,
+        "options_expiries": 7,
+    }
+    assert all("__panel_total_count" not in row for rows in tables.values() for row in rows)
 
 
 def test_symbol_scoped_technicals_keep_positive_close_guard() -> None:

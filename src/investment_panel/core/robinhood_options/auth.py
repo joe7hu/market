@@ -452,6 +452,7 @@ def _codex_credentials_path(config: RobinhoodConfig) -> Path:
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace credential symlink: {path}")
+    _reject_symlinked_parent(path)
     temp = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False,
     )
@@ -470,8 +471,18 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _write_token_payload(path: Path, payload: dict[str, Any]) -> None:
+    _reject_symlinked_parent(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_json_atomically(path, payload)
+
+
+def _reject_symlinked_parent(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:-1]:
+        current /= component
+        if current.is_symlink():
+            raise RuntimeError(f"Refusing to use symlinked credential path component: {current}")
 
 
 def _float_value(value: Any) -> float | None:

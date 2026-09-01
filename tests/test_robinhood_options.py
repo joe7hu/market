@@ -414,6 +414,19 @@ def test_robinhood_token_write_rejects_symlink_without_changing_target(tmp_path:
     assert target_path.read_text(encoding="utf-8") == '{"access_token": "old"}'
 
 
+def test_robinhood_token_write_rejects_symlinked_parent_without_changing_target(tmp_path: Path) -> None:
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    linked_dir = tmp_path / "linked"
+    linked_dir.symlink_to(target_dir, target_is_directory=True)
+    token_path = linked_dir / "token.json"
+
+    with pytest.raises(RuntimeError, match="symlinked credential path component"):
+        robinhood_auth._write_token_payload(token_path, {"access_token": "new"})
+
+    assert not (target_dir / "token.json").exists()
+
+
 def test_load_robinhood_access_token_from_codex_credentials(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
     token_path = tmp_path / "missing-market-token.json"

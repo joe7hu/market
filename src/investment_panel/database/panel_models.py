@@ -1913,7 +1913,8 @@ def _liquidity_rows(
                avg(spread_pct) AS average_option_spread_pct,
                sum(open_interest) AS total_open_interest,
                sum(option_volume) AS total_option_volume,
-               count(*) AS contracts
+               count(*) AS contracts,
+               count(*) OVER () AS __panel_total_count
         FROM ranked_quotes
         WHERE snapshot_rank = 1
         GROUP BY symbol
@@ -1966,7 +1967,8 @@ def _options_payoff_scenario_rows(
                feature.required_2x_price, feature.required_5x_price,
                feature.required_10x_price, feature.required_move_pct,
                COALESCE(option_quote.available_at, decision.as_of) AS available_at,
-               option_quote.id::text AS source_version, option_quote.id::text AS revision
+               option_quote.id::text AS source_version, option_quote.id::text AS revision,
+               count(*) OVER () AS __panel_total_count
         FROM candidate_decisions decision
         JOIN candidate_instruments instrument ON instrument.id = decision.instrument_id
         JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
@@ -2019,7 +2021,8 @@ def _options_expiry_rows(
                      snapshot.id DESC
         )
         SELECT instrument.symbol, contract.expiration AS expiry,
-               max(quote.observed_at) AS observed_at, snapshot.source_id AS source
+               max(quote.observed_at) AS observed_at, snapshot.source_id AS source,
+               count(*) OVER () AS __panel_total_count
         FROM raw.option_quote quote
         JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
         JOIN catalog.option_contract contract ON contract.id = quote.contract_id
