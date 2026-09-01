@@ -1057,6 +1057,67 @@ def test_context_cache_invalidation_rejects_stale_inflight_value() -> None:
     assert cached_result is fresh
 
 
+def test_context_cache_waiter_reloads_config_after_invalidation() -> None:
+    panel_owner.invalidate_context_cache()
+    old_config = object()
+    fresh_config = object()
+    old = PanelData(status=DataStatus(True, "old", "test"), tables={})
+    fresh = PanelData(status=DataStatus(True, "fresh", "test"), tables={})
+    old_started = threading.Event()
+    waiter_configured = threading.Event()
+    fresh_started = threading.Event()
+    release_old = threading.Event()
+    fresh_mode = threading.Event()
+    results: list[PanelData] = []
+    errors: list[BaseException] = []
+    config_calls = 0
+
+    def config_loader() -> object:
+        nonlocal config_calls
+        config_calls += 1
+        if config_calls >= 2:
+            waiter_configured.set()
+        return fresh_config if fresh_mode.is_set() else old_config
+
+    def load(active_config: object) -> PanelData:
+        if active_config is old_config:
+            old_started.set()
+            release_old.wait(timeout=2)
+            return old
+        fresh_started.set()
+        return fresh
+
+    def read_context() -> None:
+        try:
+            _, panel_data = panel_owner.context(
+                cache_key="invalidate-waiter",
+                loader=load,
+                config_loader=config_loader,
+                database_url_loader=lambda _config: "postgresql:///invalidate-waiter",
+            )
+            results.append(panel_data)
+        except BaseException as exc:  # pragma: no cover - threaded assertion capture
+            errors.append(exc)
+
+    leader = threading.Thread(target=read_context)
+    leader.start()
+    assert old_started.wait(timeout=1)
+    waiter = threading.Thread(target=read_context)
+    waiter.start()
+    assert waiter_configured.wait(timeout=1)
+
+    fresh_mode.set()
+    panel_owner.invalidate_context_cache()
+    assert fresh_started.wait(timeout=1)
+    release_old.set()
+    leader.join(timeout=1)
+    waiter.join(timeout=1)
+
+    assert errors == []
+    assert results == [fresh, fresh]
+    assert panel_owner._CONTEXT_INFLIGHT == {}
+
+
 def test_context_cache_evicts_expired_entries_and_bounds_cardinality(monkeypatch) -> None:
     panel_owner.invalidate_context_cache()
     clock = [0.0]

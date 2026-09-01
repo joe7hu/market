@@ -64,11 +64,11 @@ def context(
     active_config_loader = config_loader or load_config
     active_database_url_loader = database_url_loader or database_url
     active_panel_loader = panel_loader or loaders_owner.load_panel_data
-    config = active_config_loader()
-    config_key = active_database_url_loader(config)
     active_loader = loader or (lambda active_config: _load_panel_data_without_repairs(active_config, panel_loader=active_panel_loader))
-    flight_key = (cache_key, config_key)
     while True:
+        config = active_config_loader()
+        config_key = active_database_url_loader(config)
+        flight_key = (cache_key, config_key)
         now = time.monotonic()
         with _CONTEXT_LOCK:
             entries = _CONTEXT_CACHE.setdefault("entries", {})
