@@ -1018,15 +1018,17 @@ class TickerDecisionRepository:
                         )) <> 'blocked'
                     ) AS required
                 ) funnel_candidate
-                LEFT JOIN LATERAL (
-                    SELECT CASE
+                CROSS JOIN LATERAL (
+                    SELECT CASE WHEN funnel_candidate.required THEN CASE
                         WHEN jsonb_typeof(decision.opportunity_episode->'input_lineage') = 'array'
                         THEN jsonb_array_length(decision.opportunity_episode->'input_lineage') > 0
                              AND jsonb_typeof(decision.opportunity_episode->'input_lineage'->0) = 'object'
                         ELSE false
-                    END AS valid,
-                    octet_length(decision.opportunity_episode::text) <= 262144 AS within_limit
-                ) episode_lineage ON funnel_candidate.required
+                    END END AS valid,
+                    CASE WHEN funnel_candidate.required
+                         THEN octet_length(decision.opportunity_episode::text) <= 262144
+                    END AS within_limit
+                ) episode_lineage
                 WHERE candidate.current_row = 1
                   AND candidate.authority_count = 1
                   AND candidate.opportunity_authority_count = 1

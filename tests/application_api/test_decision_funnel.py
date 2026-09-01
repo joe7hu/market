@@ -451,6 +451,8 @@ def test_current_funnel_query_does_not_select_full_market_snapshot() -> None:
     assert "AS opportunity_selected_expression_match" in captured["query"]
     assert "octet_length(decision.opportunity_episode::text) <= 262144" in captured["query"]
     assert "THEN decision.opportunity_episode->'input_lineage'" in captured["query"]
+    assert "CASE WHEN funnel_candidate.required THEN CASE" in captured["query"]
+    assert "LEFT JOIN LATERAL" not in captured["query"]
     assert "decision.expressions," not in captured["query"]
     assert "AS has_valid_opportunity_lineage" not in captured["query"]
     assert "jsonb_array_elements" not in captured["query"]

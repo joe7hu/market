@@ -25,7 +25,10 @@ from investment_panel.database.ticker_decisions import TickerDecisionRepository
 # These dossier models are useful when present but can require deep historical
 # joins. Keep their timeout or partial state local to the optional panel rather
 # than aborting the complete ticker response and its decision evidence.
-_TICKER_OPTIONAL_DEEP_TABLES = ("liquidity", "options_payoff_scenarios")
+# Payoff scenarios are not part of the initial dossier and can exceed the API
+# read budget on a cold database. Keep the initial ticker response focused on
+# the tables used by its visible panels.
+_TICKER_OPTIONAL_DEEP_TABLES = ("liquidity",)
 _TODAY_SECONDARY_QUERY_LIMITS = {
     "preopen_daily_brief": 1,
     "daily_brief": 12,

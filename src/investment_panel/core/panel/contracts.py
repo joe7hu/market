@@ -330,7 +330,6 @@ TICKER_INITIAL_TABLES = (
     "technicals",
     "liquidity",
     "options_ticker_signals",
-    "options_payoff_scenarios",
     "instrument_state_snapshot",
     "alpha_signal",
     "opportunity_rank",

@@ -82,19 +82,16 @@ def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_d
 
 
 def test_ticker_optional_slow_reads_do_not_hide_ready_core(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
     def fake_load_panel_data(_config, *, table_names, **_kwargs):
         names = tuple(table_names)
+        calls.append(names)
         if names == ("liquidity",):
             return PanelData(
                 status=DataStatus(False, "liquidity: statement timeout", "postgresql-error"),
                 tables={"liquidity": []},
                 metadata={"database": "postgresql", "available_model_count": 0, "unavailable_models": []},
-            )
-        if names == ("options_payoff_scenarios",):
-            return PanelData(
-                status=DataStatus(True, "PostgreSQL loaded.", "postgresql"),
-                tables={"options_payoff_scenarios": [{"symbol": "QQQ", "scenario": "available"}]},
-                metadata={"database": "postgresql", "available_model_count": 1, "unavailable_models": []},
             )
         return PanelData(
             status=DataStatus(True, "PostgreSQL loaded.", "postgresql"),
@@ -114,7 +111,8 @@ def test_ticker_optional_slow_reads_do_not_hide_ready_core(monkeypatch) -> None:
     assert panel_data.status.source == "postgresql-partial"
     assert panel_data.rows("quotes") == [{"symbol": "QQQ", "price": 500}]
     assert panel_data.rows("liquidity") == []
-    assert panel_data.rows("options_payoff_scenarios") == [{"symbol": "QQQ", "scenario": "available"}]
+    assert panel_data.rows("options_payoff_scenarios") == []
+    assert all("options_payoff_scenarios" not in names for names in calls)
     assert panel_data.metadata["unavailable_models"] == ["liquidity"]
     assert panel_data.metadata["ticker_optional_unavailable"] == {"liquidity": "liquidity: statement timeout"}
 
