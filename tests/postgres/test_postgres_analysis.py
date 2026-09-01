@@ -771,6 +771,31 @@ def test_panel_publications_keep_unlimited_models_when_one_model_is_limited(anal
     assert total_counts == {"limited_model": 2, "unlimited_model": 2}
 
 
+def test_panel_publications_keep_zero_count_for_model_with_empty_page(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    repository: AnalysisRepository = analysis_context["analysis"]
+    run_id = _start_run(repository, "empty-panel-page")
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(
+        run_id,
+        "today",
+        {"other_model": [{"stable_key": "other", "value": 1}]},
+    )
+
+    total_counts: dict[str, int] = {}
+    tables = published_tables(
+        runtime,
+        ("empty_model", "other_model"),
+        row_limits={"empty_model": 1, "other_model": 1},
+        total_counts=total_counts,
+    )
+
+    assert tables["empty_model"] == []
+    assert tables["other_model"][0]["stable_key"] == "other"
+    assert tables["other_model"][0]["value"] == 1
+    assert total_counts == {"empty_model": 0, "other_model": 1}
+
+
 def test_panel_publications_filter_symbol_scoped_rows_and_counts(analysis_context) -> None:
     runtime: DatabaseRuntime = analysis_context["runtime"]
     repository: AnalysisRepository = analysis_context["analysis"]

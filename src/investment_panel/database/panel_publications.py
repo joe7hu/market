@@ -95,20 +95,28 @@ def published_tables(
         }
         if limits_by_model:
             query += f"""
+                , model_counts AS (
+                    SELECT model_name, count(*) AS total_count
+                    FROM {source_table}
+                    GROUP BY model_name
+                )
                 , ranked_rows AS (
                     SELECT {source_table}.*,
-                           row_number() OVER (PARTITION BY model_name ORDER BY rank) AS row_number,
-                           count(*) OVER (PARTITION BY model_name) AS total_count
+                           row_number() OVER (PARTITION BY model_name ORDER BY rank) AS row_number
                     FROM {source_table}
                 )
-                SELECT ranked_rows.model_name, ranked_rows.payload, ranked_rows.publication_id,
-                       ranked_rows.published_at, ranked_rows.rank, ranked_rows.total_count
-                FROM ranked_rows
-                LEFT JOIN unnest(%s::text[], %s::integer[]) AS requested_limit(model_name, row_limit)
+                SELECT requested_limit.model_name, ranked_rows.payload, ranked_rows.publication_id,
+                       ranked_rows.published_at, ranked_rows.rank,
+                       COALESCE(model_counts.total_count, 0) AS total_count
+                FROM unnest(%s::text[], %s::integer[]) AS requested_limit(model_name, row_limit)
+                LEFT JOIN model_counts
+                  ON model_counts.model_name = requested_limit.model_name
+                LEFT JOIN ranked_rows
                   ON requested_limit.model_name = ranked_rows.model_name
-                WHERE requested_limit.row_limit IS NULL
+                WHERE ranked_rows.model_name IS NULL
+                   OR requested_limit.row_limit IS NULL
                    OR ranked_rows.row_number <= requested_limit.row_limit
-                ORDER BY ranked_rows.model_name, ranked_rows.rank
+                ORDER BY requested_limit.model_name, ranked_rows.rank
             """
             params.extend((list(requested), [limits_by_model.get(name) for name in requested]))
         else:
@@ -125,15 +133,19 @@ def published_tables(
         )
     output: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
+        model_name = str(row["model_name"])
+        output.setdefault(model_name, [])
         if total_counts is not None and "total_count" in row:
-            total_counts[str(row["model_name"])] = int(row["total_count"])
+            total_counts[model_name] = int(row["total_count"] or 0)
+        if row.get("payload") is None:
+            continue
         payload = dict(row["payload"] or {})
-        if str(row["model_name"]) in {"trade_plan", "outcome_attribution"} or "publication_id" not in payload:
+        if model_name in {"trade_plan", "outcome_attribution"} or "publication_id" not in payload:
             payload["publication_id"] = str(row["publication_id"])
         published_at = row["published_at"]
         if published_at is not None:
             payload.setdefault("publication_published_at", published_at.isoformat())
-        output.setdefault(str(row["model_name"]), []).append(payload)
+        output[model_name].append(payload)
     if option_rows is not None:
         output["option_radar_opportunity"] = []
         for row in option_rows:
