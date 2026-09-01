@@ -141,10 +141,17 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
 
 def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
     table_offsets = panel_data.metadata.get("table_offsets")
+    normalized_rows: dict[str, list[dict[str, Any]]] = {}
+
+    def rows_for_table(name: str) -> list[dict[str, Any]]:
+        if name not in normalized_rows:
+            normalized_rows[name] = panel_data.rows(name)
+        return normalized_rows[name]
+
     payload = core_panel_snapshot_payload(
         scope=scope,
         status=status_payload(panel_data),
-        rows_for_table=panel_data.rows,
+        rows_for_table=rows_for_table,
         offset=offset,
         limit=limit,
         row_offsets=table_offsets if isinstance(table_offsets, dict) else None,
@@ -153,7 +160,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
     if isinstance(table_counts, dict):
         for name, table in payload["tables"].items():
             total = table_counts.get(name)
-            if isinstance(total, int) and not isinstance(total, bool) and total >= len(panel_data.rows(name)):
+            if isinstance(total, int) and not isinstance(total, bool) and total >= len(rows_for_table(name)):
                 table["count"] = total
     return payload
 

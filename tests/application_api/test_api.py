@@ -159,6 +159,38 @@ def test_default_today_snapshot_reuses_today_context_cache_key(
     assert loads == 1
 
 
+def test_non_today_snapshot_caches_compiled_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    panel_owner.invalidate_context_cache()
+    loads = 0
+    builds = 0
+    panel = PanelData(status=DataStatus(True, "loaded", "test"), tables={})
+
+    def load_snapshot(_config: AppConfig, _scope: str, **_kwargs: Any) -> PanelData:
+        nonlocal loads
+        loads += 1
+        return panel
+
+    def build_snapshot(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal builds
+        builds += 1
+        return {
+            "scope": "portfolio",
+            "status": {"ready": True, "message": "loaded", "source": "test", "metadata": {}},
+            "dashboard": None,
+            "tables": {},
+        }
+
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", load_snapshot)
+    monkeypatch.setattr(panel_owner, "scope_snapshot_payload", build_snapshot)
+    client = TestClient(app)
+
+    first = client.get("/api/panel-snapshot?scope=portfolio")
+    second = client.get("/api/panel-snapshot?scope=portfolio")
+
+    assert first.status_code == second.status_code == 200
+    assert loads == builds == 1
+
+
 def test_today_aggregates_missing_plan_backlog_before_queue_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

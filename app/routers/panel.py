@@ -584,18 +584,42 @@ def panel_snapshot(
         if scope == "today" and offset == 0 and limit is None
         else f"scope:{scope}:{offset}:{limit}:{include_screener}"
     )
-    config, panel_data = panel_owner.context(
-        cache_key=cache_key,
-        loader=lambda active_config: loaders.load_panel_scope_data(
+    if scope == "today":
+        config, panel_data = panel_owner.context(
+            cache_key=cache_key,
+            loader=lambda active_config: loaders.load_panel_scope_data(
+                active_config,
+                scope,
+                offset=offset,
+                limit=limit,
+                include_screener=include_screener,
+            ),
+            config_loader=lambda: config,
+        )
+        return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+
+    def load_snapshot(active_config: AppConfig) -> dict[str, Any]:
+        panel_data = loaders.load_panel_scope_data(
             active_config,
             scope,
             offset=offset,
             limit=limit,
             include_screener=include_screener,
-        ),
+        )
+        return panel_owner.scope_snapshot_payload(
+            active_config,
+            panel_data,
+            scope,
+            offset=offset,
+            limit=limit,
+        )
+
+    _, snapshot_payload = panel_owner.context(
+        cache_key=cache_key,
+        loader=load_snapshot,
         config_loader=lambda: config,
     )
-    return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+    return snapshot_payload
 
 
 __all__ = ["router"]
