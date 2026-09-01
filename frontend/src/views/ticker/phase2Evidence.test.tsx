@@ -32,6 +32,7 @@ describe("OpportunityRankPanel Phase 2 evidence", () => {
     expect(compactHtml).not.toContain("Book opportunity rank");
     expect(compactHtml).toContain("Canonical trade plan");
     expect(compactHtml).toContain("PENDING");
+    expect(compactHtml).toContain("Status: pending");
     expect(compactHtml).toContain("Reason: trade_plan_snapshot_not_loaded");
     expect(compactHtml).toContain("Source: ticker_decision_snapshot");
 

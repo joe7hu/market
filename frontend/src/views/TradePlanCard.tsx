@@ -206,6 +206,7 @@ function BlockedPlan({ plan, pending }: { plan?: TradePlan | null; pending: bool
     source: pending ? "ticker_decision_snapshot" : missing ? "ticker_decision" : "canonical_trade_plan",
     reason: pending ? "trade_plan_snapshot_not_loaded" : missing ? "trade_plan_missing" : plan.primary_blocker || "trade_plan_required_field_missing",
     nextAction: pending ? "Load the full validated decision snapshot before acting." : missing ? "Refresh the ticker decision and publish its canonical TradePlan." : plan.next_action,
+    availabilityStatus: pending ? "pending" : "missing",
   });
   return (
     <div className="min-w-0 p-4 text-sm">
