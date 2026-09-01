@@ -1217,6 +1217,7 @@ def today_authority_pages(
                    ) AS missing_plan_correction_count
             FROM authority_rows
         )
+        -- Keep the aggregate totals row when a requested page is empty.
         SELECT positioned_actions.decision_position,
                authority_totals.ticker_decision_count,
                authority_totals.opportunity_rank_count,
