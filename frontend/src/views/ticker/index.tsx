@@ -1,6 +1,6 @@
 import type { PanelData, TickerPayload } from "@/types";
-import { startRefreshJob } from "@/api/panel";
-import { useState } from "react";
+import { loadTickerDecisionSnapshot, startRefreshJob, type TickerDecisionSnapshot } from "@/api/panel";
+import { useEffect, useState } from "react";
 import { WorkspacePage, type OpenTicker } from "@/views/workspacePage";
 
 import { tickerHeaderMetrics } from "./data";
@@ -21,6 +21,13 @@ import {
 
 export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; ticker: TickerPayload | null; data: PanelData; onOpenTicker: OpenTicker }) {
   const [collecting, setCollecting] = useState<string | null>(null);
+  const [decisionSnapshot, setDecisionSnapshot] = useState<TickerDecisionSnapshot | null>(null);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  useEffect(() => {
+    setDecisionSnapshot(null);
+    setSnapshotError(null);
+  }, [symbol]);
   const dossier = ticker?.dossier;
   const metrics = tickerHeaderMetrics(ticker);
   const notFound = ticker?.found === false;
@@ -40,11 +47,27 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
           {ticker?.ticker_decision ? (
             <TickerDecisionPanel
               decision={ticker.ticker_decision}
-              alphaSignals={ticker.alpha_signals}
-              opportunityRank={ticker.opportunity_rank}
-              tradePlan={ticker.trade_plan}
-              dataRequests={ticker.data_requests ?? []}
-              learning={ticker.learning}
+              snapshot={decisionSnapshot}
+              snapshotLoading={snapshotLoading}
+              snapshotError={snapshotError}
+              onLoadSnapshot={async () => {
+                setSnapshotLoading(true);
+                setSnapshotError(null);
+                try {
+                  const loaded = await loadTickerDecisionSnapshot(symbol);
+                  if (
+                    loaded.ticker.trim().toUpperCase() !== symbol.trim().toUpperCase() ||
+                    loaded.decision_revision !== ticker.ticker_decision.decision_revision
+                  ) {
+                    throw new Error("The decision snapshot does not match this ticker revision.");
+                  }
+                  setDecisionSnapshot(loaded);
+                } catch (error) {
+                  setSnapshotError(error instanceof Error ? error.message : "Decision snapshot unavailable.");
+                } finally {
+                  setSnapshotLoading(false);
+                }
+              }}
               collecting={collecting}
               onCollect={async (job) => {
                 setCollecting(job);

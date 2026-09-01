@@ -65,7 +65,10 @@ def ticker_decision_snapshot(
         loader=lambda active_config: loaders.load_ticker_panel_data(active_config, normalized),
         config_loader=lambda: config,
     )
-    return payloads.ticker_payload(panel_data, normalized)["ticker_decision"]
+    full_payload = payloads.ticker_payload(panel_data, normalized)
+    snapshot = dict(full_payload["ticker_decision"])
+    snapshot["learning"] = full_payload.get("learning") or {}
+    return snapshot
 
 
 @router.post(

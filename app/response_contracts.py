@@ -639,7 +639,9 @@ class TickerDetailResponse(FlexibleResponse):
 
 
 class TickerDecisionSnapshotResponse(TickerDecision):
-    """The typed ticker decision; no flexible legacy snapshot fields remain."""
+    """The full validated decision and its derived learning context."""
+
+    learning: JsonObject = Field(default_factory=dict)
 
 
 class ThesisMutationResponse(FlexibleResponse):

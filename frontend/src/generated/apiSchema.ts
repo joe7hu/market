@@ -5672,7 +5672,7 @@ export interface components {
         };
         /**
          * TickerDecisionSnapshotResponse
-         * @description The typed ticker decision; no flexible legacy snapshot fields remain.
+         * @description The full validated decision and its derived learning context.
          */
         TickerDecisionSnapshotResponse: {
             /** Alpha Signals */
@@ -5704,6 +5704,10 @@ export interface components {
             instrument_state_snapshot?: {
                 [key: string]: unknown;
             } | null;
+            /** Learning */
+            learning?: {
+                [key: string]: unknown;
+            };
             /** Learning History */
             learning_history?: {
                 [key: string]: unknown;

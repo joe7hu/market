@@ -120,6 +120,10 @@ export async function loadTicker(symbol: string): Promise<TickerPayload> {
   return getJson<TickerPayload>(`/api/tickers/${encodeURIComponent(symbol)}`);
 }
 
+export async function loadTickerDecisionSnapshot(symbol: string): Promise<TickerDecisionSnapshot> {
+  return getJson<TickerDecisionSnapshot>(`/api/tickers/${encodeURIComponent(symbol)}/decision-snapshot`);
+}
+
 export async function loadSourceCatalog(): Promise<SourceCatalogPayload> {
   return getJson<SourceCatalogPayload>("/api/source-catalog");
 }

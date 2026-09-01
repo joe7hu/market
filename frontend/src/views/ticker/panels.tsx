@@ -30,6 +30,7 @@ import {
 } from "./data";
 
 type TickerDecisionContract = components["schemas"]["TickerDecisionDetailResponse"];
+type TickerDecisionSnapshotContract = components["schemas"]["TickerDecisionSnapshotResponse"];
 type HorizonDecisionContract = components["schemas"]["HorizonDecision"];
 type DataRequestContract = components["schemas"]["DataRequest"];
 type AlphaSignalContract = components["schemas"]["AlphaSignal"];
@@ -38,19 +39,19 @@ type TradePlanContract = components["schemas"]["TradePlan"];
 
 export function TickerDecisionPanel({
   decision,
-  alphaSignals,
-  opportunityRank,
-  tradePlan,
-  dataRequests,
+  snapshot,
+  snapshotLoading,
+  snapshotError,
+  onLoadSnapshot,
   learning,
   collecting,
   onCollect,
 }: {
   decision: TickerDecisionContract;
-  alphaSignals?: AlphaSignalContract[];
-  opportunityRank?: OpportunityRankContract | null;
-  tradePlan?: TradePlanContract | null;
-  dataRequests: DataRequestContract[];
+  snapshot?: TickerDecisionSnapshotContract | null;
+  snapshotLoading: boolean;
+  snapshotError: string | null;
+  onLoadSnapshot: () => Promise<void>;
   learning?: TickerLearning;
   collecting: string | null;
   onCollect: (job: string) => Promise<void>;
@@ -58,7 +59,15 @@ export function TickerDecisionPanel({
   const action = decision.capital_action;
   const resolution = decision.resolution;
   const expressions = Object.values(decision.expressions ?? {});
-  const disagreement = learning?.disagreement;
+  const alphaSignals = (snapshot?.alpha_signals ?? []) as AlphaSignalContract[];
+  const opportunityRank = snapshot?.opportunity_rank as OpportunityRankContract | null | undefined;
+  const tradePlan = snapshot?.trade_plan as TradePlanContract | null | undefined;
+  const dataRequests = snapshot?.data_requests ?? [];
+  const snapshotLearning = snapshot?.learning;
+  const learningPayload = snapshotLearning && Object.keys(snapshotLearning).length
+    ? snapshotLearning as TickerLearning
+    : learning;
+  const disagreement = learningPayload?.disagreement;
   return (
     <>
       <DataTableFrame
@@ -112,13 +121,27 @@ export function TickerDecisionPanel({
           </div>
         </div>
       </DataTableFrame>
-      {opportunityRank ? <OpportunityRankPanel signals={alphaSignals ?? []} rank={opportunityRank} /> : null}
-      {tradePlan ? <TradePlanCard plan={tradePlan} /> : null}
-      {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
+      {snapshot ? (
+        <>
+          {opportunityRank ? <OpportunityRankPanel signals={alphaSignals} rank={opportunityRank} /> : null}
+          {tradePlan ? <TradePlanCard plan={tradePlan} /> : null}
+          {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
+          {learningPayload ? <LearningLoopPanel learning={learningPayload} /> : null}
+        </>
+      ) : (
+        <DataTableFrame title="Additional decision context" action={<StatusBadge tone="muted">On demand</StatusBadge>}>
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+            <p className="text-muted-foreground">Load the full validated decision snapshot to inspect rank, trade-plan, and collection evidence.</p>
+            <Button type="button" variant="outline" disabled={snapshotLoading} onClick={() => void onLoadSnapshot()}>
+              {snapshotLoading ? "Loading…" : "Load decision context"}
+            </Button>
+          </div>
+          {snapshotError ? <p className="border-t border-border px-4 py-3 text-sm text-[var(--destructive)]">{snapshotError}</p> : null}
+        </DataTableFrame>
+      )}
       <SelectedPortfolioImpact decision={decision} />
       <TickerMarketEvidence decision={decision} />
-      {disagreement ? <DisagreementPanel learning={learning} /> : null}
-      {learning ? <LearningLoopPanel learning={learning} /> : null}
+      {disagreement ? <DisagreementPanel learning={learningPayload} /> : null}
     </>
   );
 }

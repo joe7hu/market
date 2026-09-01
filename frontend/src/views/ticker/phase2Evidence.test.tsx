@@ -2,9 +2,45 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { components } from "@/generated/apiSchema";
-import { OpportunityRankPanel } from "@/views/ticker/panels";
+import { OpportunityRankPanel, TickerDecisionPanel } from "@/views/ticker/panels";
+
+const compactDecision = {
+  ticker: "QQQ",
+  decision_revision: "revision-1",
+  capital_action: { ticker: "QQQ", action: "CASH", owned: false, rationale: "Wait for complete evidence." },
+  input_manifest: { input_hash: "a".repeat(64), experiment_id: "test" },
+  tactical: { stance: "NEUTRAL", action: "HOLD", conviction_tier: "LOW", confidence: 0, scenarios: [] },
+  fundamental: { stance: "NEUTRAL", action: "HOLD", conviction_tier: "LOW", confidence: 0, scenarios: [] },
+  expressions: {},
+  portfolio_impacts: {},
+} as never;
+
+const panelProps = {
+  decision: compactDecision,
+  snapshotLoading: false,
+  snapshotError: null,
+  onLoadSnapshot: async () => {},
+  collecting: null,
+  onCollect: async () => {},
+};
 
 describe("OpportunityRankPanel Phase 2 evidence", () => {
+  it("keeps the compact ticker page bounded and loads heavy context on demand", () => {
+    const compactHtml = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} />);
+    expect(compactHtml).toContain("Load decision context");
+    expect(compactHtml).not.toContain("Book opportunity rank");
+
+    const snapshotHtml = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} snapshot={{
+      ...compactDecision,
+      alpha_signals: [],
+      opportunity_rank: { trade_rank: 1 },
+      trade_plan: null,
+      data_requests: [],
+      learning: {},
+    }} />);
+    expect(snapshotHtml).toContain("Book opportunity rank");
+  });
+
   it("uses rank alpha identity and renders all qualification evidence", () => {
     const signals = [{
       signal_id: "not-ranked",

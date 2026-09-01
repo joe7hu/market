@@ -12687,7 +12687,7 @@
         "type": "object"
       },
       "TickerDecisionSnapshotResponse": {
-        "description": "The typed ticker decision; no flexible legacy snapshot fields remain.",
+        "description": "The full validated decision and its derived learning context.",
         "properties": {
           "alpha_signals": {
             "items": {
@@ -12748,6 +12748,11 @@
               }
             ],
             "title": "Instrument State Snapshot"
+          },
+          "learning": {
+            "additionalProperties": true,
+            "title": "Learning",
+            "type": "object"
           },
           "learning_history": {
             "items": {

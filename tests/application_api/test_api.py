@@ -684,6 +684,7 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
     assert snapshot_response.status_code == 200
     snapshot = snapshot_response.json()
     snapshot_kind = snapshot["selected_expression"]["kind"]
+    assert snapshot["learning"]
     assert len(snapshot["opportunity_episode"]["input_lineage"]) == 5
     assert snapshot["portfolio_impacts"][snapshot_kind]["input_lineage"]
     assert snapshot["market_state_snapshot"]["coverage_matrix"]["rows"][0]["current_status"] == "unavailable"
