@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import os
+from urllib.parse import quote
 
 import psycopg
 import pytest
@@ -10,10 +11,12 @@ from psycopg.rows import dict_row
 from psycopg.sql import Identifier, Literal, SQL
 from psycopg.types.json import Jsonb
 
+from app.data_access.loaders import load_daily_research_panel_data, load_panel_data
+from conftest import typed_config
 from investment_panel.analysis.stock_alpha import FEATURE_VERSION, research_score
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, activate_application_role
-from investment_panel.jobs.stock_alpha_walk_forward import load_observations, run
+from investment_panel.jobs.stock_alpha_walk_forward import load_observations, load_universe_members, run
 
 
 def _observations(count: int, cutoff: datetime) -> list[dict[str, object]]:
@@ -63,6 +66,13 @@ def _application_dsn(postgres_dsn: str, login: str, password: str) -> str:
     connection_info = conninfo_to_dict(postgres_dsn)
     connection_info.update(user=login, password=password)
     return make_conninfo(**connection_info)
+
+
+def _application_url(postgres_dsn: str, login: str, password: str) -> str:
+    connection_info = conninfo_to_dict(postgres_dsn)
+    host = quote(str(connection_info["host"]), safe="[]:")
+    database = quote(str(connection_info["dbname"]), safe="")
+    return f"postgresql://{quote(login, safe='')}:{quote(password, safe='')}@{host}:{connection_info['port']}/{database}"
 
 
 def _configured_application_dsn(postgres_dsn: str) -> str:
@@ -205,7 +215,7 @@ def test_production_run_uses_configured_application_login_for_evaluator_writer(
             identity = connection.execute(
                 "SELECT current_user, session_user, rolinherit FROM pg_roles WHERE rolname = current_user"
             ).fetchone()
-        assert identity["current_user"] == os.environ["MARKET_APP_LOGIN_ROLE"]
+        assert identity["current_user"] == "market_app"
         assert identity["session_user"] == os.environ["MARKET_APP_LOGIN_ROLE"]
         assert identity["rolinherit"] is False
 
@@ -229,6 +239,78 @@ def test_production_run_uses_configured_application_login_for_evaluator_writer(
         assert source["count"] == 6
     finally:
         app_runtime.close()
+        owner_runtime.close()
+
+
+def test_configured_login_read_context_activates_market_app_for_pit_and_research_loaders(
+    migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    safe_login = "phase1_read_runtime_login"
+    safe_password = "phase1-read-runtime-password"
+    owner_runtime = DatabaseRuntime(migrated_postgres_dsn)
+    owner_runtime.open()
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute(
+            SQL("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOBYPASSRLS NOINHERIT").format(
+                Identifier(safe_login), Literal(safe_password)
+            ),
+        )
+        connection.execute(SQL("GRANT market_app TO {}").format(Identifier(safe_login)))
+    monkeypatch.setenv("MARKET_APP_LOGIN_ROLE", safe_login)
+    monkeypatch.setenv("MARKET_APP_DATABASE_PASSWORD", safe_password)
+    cutoff = datetime.now(UTC) + timedelta(seconds=5)
+    symbols = [f"R{index:02d}" for index in range(4)]
+    try:
+        _seed_universe_tape(owner_runtime, cutoff, symbols, as_of=cutoff - timedelta(microseconds=2))
+        app_dsn = _application_dsn(migrated_postgres_dsn, safe_login, safe_password)
+        app_runtime = DatabaseRuntime(app_dsn)
+        app_runtime.open()
+        try:
+            with app_runtime.read() as connection:
+                identity = connection.execute(
+                    "SELECT current_user, session_user, rolinherit "
+                    "FROM pg_roles WHERE rolname = current_user"
+                ).fetchone()
+            assert identity == {
+                "current_user": "market_app",
+                "session_user": safe_login,
+                "rolinherit": False,
+            }
+            with app_runtime.snapshot() as connection:
+                assert connection.execute(
+                    "SELECT current_user"
+                ).fetchone()["current_user"] == "market_app"
+            assert load_universe_members(app_runtime, cutoff=cutoff) == symbols
+            assert load_observations(app_runtime, cutoff=cutoff) == []
+            config = typed_config(_application_url(migrated_postgres_dsn, safe_login, safe_password))
+            seed = load_panel_data(
+                config,
+                table_names=("portfolio", "manual_watchlist", "option_radar_opportunity"),
+            )
+            assert seed.status.ready is True, seed.metadata
+            panel = load_daily_research_panel_data(config)
+            assert panel.status.ready is True, panel.metadata
+            assert "research_trials" in panel.tables
+            assert "research_validation_dossiers" in panel.tables
+            with app_runtime.transaction() as connection:
+                connection.execute("SELECT set_config('app.research_evaluator_signing_key', 'attacker-key', true)")
+                connection.execute("SAVEPOINT protected_read_writer")
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    connection.execute("SELECT secret FROM analysis.research_evaluator_signing_secret")
+                connection.execute("ROLLBACK TO SAVEPOINT protected_read_writer")
+                connection.execute("SAVEPOINT protected_direct_insert")
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    connection.execute(
+                        "INSERT INTO analysis.research_evaluator_output (research_trial_id) "
+                        "VALUES (gen_random_uuid())"
+                    )
+                connection.execute("ROLLBACK TO SAVEPOINT protected_direct_insert")
+        finally:
+            app_runtime.close()
+    finally:
+        with psycopg.connect(migrated_postgres_dsn) as connection:
+            connection.execute(SQL("REVOKE market_app FROM {}").format(Identifier(safe_login)))
+            connection.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(safe_login)))
         owner_runtime.close()
 
 
@@ -305,7 +387,7 @@ def test_distinct_noinherit_login_is_the_only_runtime_activation_boundary(
                 ).fetchone()
             identity.update(privileges)
             assert identity == {
-                "current_user": safe_login,
+                "current_user": "market_app",
                 "session_user": safe_login,
                 "rolsuper": False,
                 "rolbypassrls": False,

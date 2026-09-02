@@ -72,6 +72,7 @@ class DatabaseRuntime:
             with connection.transaction():
                 connection.execute("SET TRANSACTION READ ONLY")
                 _set_local_timeouts(connection, profile)
+                _activate_configured_application_role(connection)
                 yield connection
 
     @contextmanager
@@ -85,6 +86,7 @@ class DatabaseRuntime:
             try:
                 with connection.transaction():
                     _set_local_timeouts(connection, profile)
+                    _activate_configured_application_role(connection)
                     yield connection
             finally:
                 connection.read_only = previous_read_only
@@ -126,6 +128,24 @@ class DatabaseRuntime:
 def _set_local_timeouts(connection: Connection[dict[str, Any]], profile: RuntimeProfile) -> None:
     connection.execute("SELECT set_config('statement_timeout', %s, true)", [f"{profile.statement_timeout_ms}ms"])
     connection.execute("SELECT set_config('lock_timeout', %s, true)", [f"{profile.lock_timeout_ms}ms"])
+
+
+def _activate_configured_application_role(connection: Connection[dict[str, Any]]) -> None:
+    """Activate ``market_app`` for configured-login read contexts only.
+
+    Migration and owner connections remain unchanged. A production
+    connection using the configured NOINHERIT login must pass the same strict
+    activation checks as the protected evaluator writer before any read-model
+    query is allowed to run.
+    """
+
+    configured_login = os.environ.get("MARKET_APP_LOGIN_ROLE", "").strip()
+    if not configured_login:
+        return
+    session_user = connection.execute("SELECT session_user AS session_user").fetchone()
+    if session_user is None or session_user["session_user"] != configured_login:
+        return
+    activate_application_role(connection)
 
 
 def activate_application_role(connection: Connection[dict[str, Any]]) -> None:

@@ -167,6 +167,48 @@ def upgrade() -> None:
     op.execute(
         """
         REVOKE market_research_signer, market_migrator FROM market_app;
+        GRANT USAGE ON SCHEMA app, raw, ingest TO market_app;
+        GRANT SELECT ON ALL TABLES IN SCHEMA catalog TO market_app;
+        GRANT SELECT ON
+            app.current_publication_item,
+            app.publication,
+            app.publication_payload,
+            app.publication_item,
+            app.publication_bundle,
+            app.publication_bundle_item,
+            app.portfolio_position,
+            app.portfolio_transaction,
+            app.watchlist_item,
+            app.thesis,
+            app.option_history_policy,
+            app.catalyst,
+            app.thesis_automation_run,
+            app.thesis_evidence_assessment,
+            app.paper_order,
+            catalog.option_contract,
+            raw.content_item_instrument,
+            raw.content_item,
+            raw.disclosure,
+            raw.market_event,
+            raw.fundamental_observation,
+            raw.quote,
+            raw.confirmed_price_bar,
+            raw.confirmed_quote,
+            raw.price_bar,
+            raw.price_bar_history,
+            raw.price_bar_fact_availability,
+            raw.option_quote,
+            raw.option_snapshot,
+            raw.broker_account_snapshot,
+            ingest.source,
+            ingest.run
+          TO market_app;
+        GRANT SELECT ON analysis.decision, analysis.option_decision,
+                       analysis.ticker_decision, analysis.ticker_outcome,
+                       analysis.symbol_feature
+          TO market_app;
+        GRANT SELECT ON analysis.source_signal TO market_app;
+        GRANT EXECUTE ON FUNCTION raw.current_price_at(TIMESTAMPTZ, BIGINT[]) TO market_app;
         REVOKE ALL ON analysis.research_evaluator_signing_secret FROM PUBLIC, market_app, market_migrator;
         REVOKE ALL ON analysis.research_evaluator_output FROM PUBLIC, market_app, market_migrator;
         REVOKE ALL ON FUNCTION analysis.research_evaluator_signing_key() FROM PUBLIC, market_app, market_migrator;
