@@ -14,6 +14,7 @@ from investment_panel.analysis.research_validation import (
     validate_trial,
 )
 from investment_panel.core.decision import build_strategy_forecast, strategy_forecast_id_for_payload
+from investment_panel.database.research import ResearchRepository
 
 
 def test_phase1_validation_is_deterministic_and_fail_closed() -> None:
@@ -133,3 +134,15 @@ def test_strategy_forecast_identity_normalizes_equivalent_numeric_forms() -> Non
     }
     equivalent = {**base, "forecast_value": "1", "forecast_range": {"low": "0", "high": "1.000"}, "forecast_distribution": {"positive": "1.0000"}}
     assert strategy_forecast_id_for_payload(base) == strategy_forecast_id_for_payload(equivalent)
+    negative_zero = {**base, "forecast_value": -0.0, "forecast_range": {"low": -0.0, "high": 1.0}, "forecast_distribution": {"positive": -0.0, "negative": 1.0}}
+    zero_equivalent = {**base, "forecast_value": 0, "forecast_range": {"low": 0, "high": 1}, "forecast_distribution": {"positive": 0, "negative": 1}}
+    assert strategy_forecast_id_for_payload(negative_zero) == strategy_forecast_id_for_payload(zero_equivalent)
+
+
+def test_research_repository_rejects_caller_owned_gate_timestamps() -> None:
+    with pytest.raises(ValueError, match="database-owned"):
+        ResearchRepository(None).record_gate(  # type: ignore[arg-type]
+            dossier_id="dossier", code="pit_integrity", verdict="fail",
+            evaluated_at=datetime.now(UTC) - timedelta(days=1),
+            available_at=datetime.now(UTC) - timedelta(days=1),
+        )

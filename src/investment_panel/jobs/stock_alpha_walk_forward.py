@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+import hmac
+import os
 from statistics import fmean
 from typing import Any, Iterable, Mapping
 
@@ -502,6 +504,9 @@ def _persist_research_evidence(
     """
 
     primary_artifact = dict(trial_run.get("artifact") or {})
+    signing_key = os.environ.get("MARKET_RESEARCH_EVALUATOR_SIGNING_KEY", "").strip()
+    if not signing_key:
+        raise ValueError("stock-alpha evaluator signing key is not configured")
     predictions = [row for row in primary_artifact.get("predictions") or () if isinstance(row, Mapping)]
     observed = [float(row["net_utility_after_costs"]) for row in predictions if row.get("net_utility_after_costs") is not None]
     path_records = [dict(row) for row in primary_artifact.get("validation_path_records") or () if isinstance(row, Mapping)]
@@ -568,6 +573,7 @@ def _persist_research_evidence(
          trial_input_hash, Jsonb({"trial_result_id": str(result_id), "evidence_groups": 6}),
          Jsonb({"trial_result_id": str(result_id), "evaluator_id": EVALUATOR_ID})],
     ).fetchone()["id"]
+    connection.execute("SELECT set_config('app.research_evaluator_signing_key', %s, true)", [signing_key])
     for kind, sample_count, payload in rows:
         if sample_count <= 0:
             raise ValueError(f"{kind} evidence is missing raw evaluator output")
@@ -591,15 +597,35 @@ def _persist_research_evidence(
                 differing = next((index for index, (old, new) in enumerate(zip(prior_values, expected_source)) if old != new), -1)
                 raise ValueError(f"immutable evaluator output conflicts with the current trial ({kind}, field={differing})")
             continue
+        available_at = connection.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+        output_hash = connection.execute(
+            """SELECT analysis.research_evaluator_output_hash_v2(
+                       %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s) AS output_hash""",
+            [trial_id, result_id, run, kind, EVALUATOR_ID, EVALUATOR_CODE_VERSION,
+             trial_input_hash, universe_hash, feature_hash, sample_count, Jsonb(payload), available_at],
+        ).fetchone()["output_hash"]
+        signature = hmac.new(
+            signing_key.encode("utf-8"),
+            _evaluator_signature_payload(
+                trial_id=trial_id, result_id=result_id, run_id=run, evidence_kind=kind,
+                evaluator_id=EVALUATOR_ID, code_version=EVALUATOR_CODE_VERSION,
+                input_hash=trial_input_hash, universe_hash=universe_hash,
+                feature_hash=feature_hash, sample_count=sample_count, domain_valid=True,
+                output_hash=str(output_hash), available_at=available_at,
+            ).encode("utf-8"),
+            "sha256",
+        ).hexdigest()
         source = connection.execute(
             """INSERT INTO analysis.research_evaluator_output
                (research_trial_id, trial_result_id, analysis_run_id, evidence_kind,
                 evaluator_id, evaluator_code_version, input_hash, universe_hash,
-                feature_hash, sample_count, domain_valid, raw_output)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s)
+                feature_hash, sample_count, domain_valid, raw_output,
+                output_hash, signature, available_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, %s, %s)
                RETURNING id""",
             [trial_id, result_id, run, kind, EVALUATOR_ID, EVALUATOR_CODE_VERSION,
-             trial_input_hash, universe_hash, feature_hash, sample_count, Jsonb(payload)],
+             trial_input_hash, universe_hash, feature_hash, sample_count, Jsonb(payload),
+             output_hash, signature, available_at],
         ).fetchone()
         if source is None:
             raise ValueError(f"{kind} evaluator output was not persisted")
@@ -703,8 +729,8 @@ def _ensure_research_dossier(
             domain_valid = all(bool((value or {}).get("domain_valid")) for value in evidence_checks.values())
             connection.execute(
                 """INSERT INTO analysis.validation_gate_result
-                   (dossier_id, gate_code, verdict, metrics, evidence, evaluated_at, available_at)
-                   VALUES (%s, %s, %s, %s, %s, clock_timestamp(), now()) ON CONFLICT DO NOTHING""",
+                   (dossier_id, gate_code, verdict, metrics, evidence)
+                   VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
             [dossier["id"], code, "pass" if gate.get("passed") else "fail", Jsonb({
                 **gate, "domain_valid": domain_valid, "checks": evidence_checks,
                 "validation_result_id": str(result_id),
@@ -724,6 +750,23 @@ def _ensure_research_dossier(
         if seal:
             connection.execute("UPDATE analysis.validation_dossier SET status = 'sealed', sealed_at = clock_timestamp() WHERE id = %s", [dossier["id"]])
     return dossier["id"]
+
+
+def _evaluator_signature_payload(
+    *, trial_id: Any, result_id: Any, run_id: Any, evidence_kind: str,
+    evaluator_id: str, code_version: str, input_hash: str, universe_hash: str,
+    feature_hash: str, sample_count: int, domain_valid: bool,
+    output_hash: str, available_at: datetime,
+) -> str:
+    """Build the delimiter-safe canonical envelope verified by PostgreSQL."""
+
+    timestamp = available_at.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return "\x1f".join((
+        "research-evaluator-signature.v1", str(trial_id), str(result_id), str(run_id),
+        evidence_kind, evaluator_id, code_version, input_hash, universe_hash,
+        feature_hash, str(sample_count), "true" if domain_valid else "false",
+        output_hash, timestamp,
+    ))
 
 
 def _trial_configurations(*, min_train: int, fold_size: int, min_cohort: int,

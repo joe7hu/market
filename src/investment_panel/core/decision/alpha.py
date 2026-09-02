@@ -966,6 +966,8 @@ def _canonical_scalar(value: Any) -> str | None:
         return str(value)
     if not number.is_finite():
         raise ValueError("forecast numeric payload must be finite")
+    if number == 0:
+        return "0"
     text = format(number, "f")
     if "." in text:
         text = text.rstrip("0").rstrip(".")

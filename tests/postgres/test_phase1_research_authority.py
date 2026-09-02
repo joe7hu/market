@@ -148,6 +148,15 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                VALUES (%s, %s, %s, %s, 'p1-artifact', %s) RETURNING id""",
             [revision, successful_trial, Jsonb({"hypothesis": "incomplete"}), Jsonb({"paper_only": True}), "5" * 64],
         ).fetchone()[0]
+        connection.execute("SAVEPOINT backdated_gate")
+        with pytest.raises(psycopg.errors.RaiseException, match="database-owned"):
+            connection.execute(
+                """INSERT INTO analysis.validation_gate_result
+                   (dossier_id, gate_code, verdict, evaluated_at, available_at)
+                   VALUES (%s, 'pit_integrity', 'fail', now() - interval '1 day', now() - interval '1 day')""",
+                [dossier],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT backdated_gate")
         connection.execute("SAVEPOINT incomplete_dossier")
         with pytest.raises(psycopg.errors.RaiseException, match="mandatory sections"):
             connection.execute("UPDATE analysis.validation_dossier SET status = 'sealed' WHERE id = %s", [dossier])
@@ -182,6 +191,8 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                RETURNING id""",
             [cutoff, "9" * 64, Jsonb({"fixture": True}), Jsonb({"fixture": True})],
         ).fetchone()[0]
+        signing_key = "phase1-test-signing-key"
+        connection.execute("SELECT set_config('app.research_evaluator_signing_key', %s, true)", [signing_key])
         source_rows = {}
         for kind, payload in evidence_payloads.items():
             payload = {
@@ -193,17 +204,43 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                 "evaluator_code_version": "fixture-code.v1",
             }
             sample_count = 2 if kind == "controls" else 3 if kind == "parameter_stability" else 1
+            available_at = connection.execute("SELECT clock_timestamp() AS now").fetchone()[0]
+            output_hash = connection.execute(
+                """SELECT analysis.research_evaluator_output_hash_v2(
+                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s)""",
+                [successful_trial, validation_result, evaluator_run, kind, "fixture.v1", "fixture-code.v1",
+                 "9" * 64, content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload), available_at],
+            ).fetchone()[0]
+            signature = connection.execute(
+                """SELECT encode(hmac(analysis.research_evaluator_signature_payload(
+                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s), %s, 'sha256'), 'hex')""",
+                [successful_trial, validation_result, evaluator_run, kind, "fixture.v1", "fixture-code.v1",
+                 "9" * 64, content_hash([str(instrument)]), "b" * 64, sample_count, output_hash, available_at, signing_key],
+            ).fetchone()[0]
             source_rows[kind] = connection.execute(
                 """INSERT INTO analysis.research_evaluator_output
                    (research_trial_id, trial_result_id, analysis_run_id, evidence_kind,
                     evaluator_id, evaluator_code_version, input_hash, universe_hash,
-                    feature_hash, sample_count, domain_valid, raw_output)
+                    feature_hash, sample_count, domain_valid, raw_output, output_hash, signature, available_at)
                    VALUES (%s, %s, %s, %s, 'fixture.v1', 'fixture-code.v1', %s, %s,
-                           %s, %s, true, %s)
+                           %s, %s, true, %s, %s, %s, %s)
                    RETURNING id, output_hash, raw_output""",
                 [successful_trial, validation_result, evaluator_run, kind, "9" * 64,
-                 content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload)],
+                     content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload), output_hash, signature, available_at],
             ).fetchone()
+        connection.execute("SAVEPOINT forged_evaluator_output")
+        with pytest.raises(psycopg.errors.RaiseException, match="signature or content hash"):
+            connection.execute(
+                """INSERT INTO analysis.research_evaluator_output
+                   (research_trial_id, trial_result_id, analysis_run_id, evidence_kind,
+                    evaluator_id, evaluator_code_version, input_hash, universe_hash,
+                    feature_hash, sample_count, domain_valid, raw_output, output_hash, signature, available_at)
+                   VALUES (%s, %s, %s, 'controls', 'fixture.v1', 'fixture-code.v1', %s, %s,
+                           %s, 2, true, %s, %s, %s, now())""",
+                [successful_trial, validation_result, evaluator_run, "9" * 64,
+                 content_hash([str(instrument)]), "b" * 64, Jsonb(source_rows["controls"][2]), "f" * 64, "f" * 64],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT forged_evaluator_output")
         for kind, payload in evidence_payloads.items():
             connection.execute(
                 """INSERT INTO analysis.research_evidence_manifest
@@ -218,9 +255,9 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                  Jsonb(source_rows[kind][2]), source_rows[kind][1]],
             )
         numeric_formats = connection.execute(
-            "SELECT analysis.canonical_forecast_number(1.0), analysis.canonical_forecast_number(0.0), analysis.canonical_forecast_number(0.1000)"
+            "SELECT analysis.canonical_forecast_number(1.0), analysis.canonical_forecast_number(0.0), analysis.canonical_forecast_number(-0.0), analysis.canonical_forecast_number(0.1000)"
         ).fetchone()
-        assert tuple(numeric_formats) == ("1", "0", "0.1")
+        assert tuple(numeric_formats) == ("1", "0", "0", "0.1")
         connection.execute("SAVEPOINT fabricated_evidence")
         with pytest.raises(psycopg.errors.RaiseException, match="immutable evaluator output|linked non-empty|incomplete"):
             connection.execute(
@@ -252,7 +289,7 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
         connection.execute("ROLLBACK TO SAVEPOINT forged_gate_evidence")
         for gate in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             connection.execute(
-                "INSERT INTO analysis.validation_gate_result (dossier_id, gate_code, verdict, metrics, evidence, available_at) VALUES (%s, %s, 'pass', %s, %s, now())",
+                "INSERT INTO analysis.validation_gate_result (dossier_id, gate_code, verdict, metrics, evidence) VALUES (%s, %s, 'pass', %s, %s)",
                     [dossier, gate, Jsonb({"passed": True, "domain_valid": True, "validation_result_id": str(validation_result), "validation_result_input_hash": "9" * 64, "evidence_manifest_hashes": evidence_hashes, "checks": {name: successful_checks[name] for name in gate_check_names[gate]}}), Jsonb({"trial_result_id": str(validation_result), "input_hash": "9" * 64, "checks": gate_check_names[gate]})],
             )
         connection.execute("UPDATE analysis.validation_dossier SET sections = %s, status = 'sealed' WHERE id = %s", [sections, dossier])

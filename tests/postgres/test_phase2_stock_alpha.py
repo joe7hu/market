@@ -38,6 +38,11 @@ def _controls() -> dict[str, list[float]]:
     return {"randomized_label_returns": [0.0, 0.0], "white_noise_market_returns": [0.0, 0.0]}
 
 
+@pytest.fixture(autouse=True)
+def _configured_evaluator_signing_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MARKET_RESEARCH_EVALUATOR_SIGNING_KEY", "phase2-test-signing-key")
+
+
 def _seed_universe_tape(runtime: DatabaseRuntime, cutoff: datetime, symbols: list[str], *, as_of: datetime | None = None) -> None:
     tape_as_of = as_of or cutoff
     with runtime.transaction() as connection:

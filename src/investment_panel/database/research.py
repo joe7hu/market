@@ -150,9 +150,9 @@ class ResearchRepository:
                 passed = bool(gate.get("passed")) if isinstance(gate, Mapping) else bool(gate)
                 connection.execute(
                     """INSERT INTO analysis.validation_gate_result
-                       (dossier_id, gate_code, verdict, metrics, evidence, evaluated_at, available_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                    [dossier_id, code, "pass" if passed else "fail", Jsonb(dict(gate) if isinstance(gate, Mapping) else {"passed": passed}), Jsonb({"trial_result_id": str(result)}), observed_at, available_at],
+                       (dossier_id, gate_code, verdict, metrics, evidence)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    [dossier_id, code, "pass" if passed else "fail", Jsonb(dict(gate) if isinstance(gate, Mapping) else {"passed": passed}), Jsonb({"trial_result_id": str(result)})],
                 )
         return result
 
@@ -165,13 +165,15 @@ class ResearchRepository:
                 [strategy_revision_id, trial_id, Jsonb(dict(sections or {})), Jsonb(dict(policy or {})), artifact_id, artifact_hash],
             ).fetchone()["id"]
 
-    def record_gate(self, *, dossier_id: UUID, code: str, verdict: str, metrics: Mapping[str, Any] | None = None, evidence: Mapping[str, Any] | None = None, evaluated_at: Any, available_at: Any) -> UUID:
+    def record_gate(self, *, dossier_id: UUID, code: str, verdict: str, metrics: Mapping[str, Any] | None = None, evidence: Mapping[str, Any] | None = None, evaluated_at: Any | None = None, available_at: Any | None = None) -> UUID:
+        if evaluated_at is not None or available_at is not None:
+            raise ValueError("validation gate timestamps are database-owned")
         with self.runtime.transaction(JOB_PROFILE) as connection:
             return connection.execute(
                 """INSERT INTO analysis.validation_gate_result
-                   (dossier_id, gate_code, verdict, metrics, evidence, evaluated_at, available_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                [dossier_id, code, verdict, Jsonb(dict(metrics or {})), Jsonb(dict(evidence or {})), evaluated_at, available_at],
+                   (dossier_id, gate_code, verdict, metrics, evidence)
+                   VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                [dossier_id, code, verdict, Jsonb(dict(metrics or {})), Jsonb(dict(evidence or {}))],
             ).fetchone()["id"]
 
     def seal_dossier(self, dossier_id: UUID) -> None:
