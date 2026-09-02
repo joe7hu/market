@@ -7,6 +7,7 @@ import sys
 import psycopg
 import pytest
 from psycopg.errors import RaiseException
+from psycopg.sql import Identifier, Literal, SQL
 
 from investment_panel.database.migrations import HEAD_REVISION, downgrade_database, main as migration_main, upgrade_database
 from investment_panel.database.authority import close_cached_runtimes, runtime_for_url
@@ -46,6 +47,80 @@ def test_migration_creates_layered_postgresql_authority(postgres_dsn: str) -> No
     assert revision == HEAD_REVISION
     assert schemas == {"catalog", "ingest", "raw", "analysis", "app", "ops"}
     assert tables >= 35
+
+
+def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ci_login = "phase1_ci_login"
+    ci_password = "phase1-ci-bootstrap-password"
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        connection.execute(
+            SQL("DROP ROLE IF EXISTS {};").format(Identifier(ci_login))
+        )
+        connection.execute(
+            SQL("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOBYPASSRLS "
+                "NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION").format(
+                Identifier(ci_login), Literal(ci_password),
+            )
+        )
+        connection.commit()
+    monkeypatch.setenv("MARKET_APP_LOGIN_ROLE", ci_login)
+    monkeypatch.setenv("MARKET_APP_DATABASE_PASSWORD", "phase1-ci-bootstrap-password")
+
+    try:
+        upgrade_database(postgres_dsn)
+
+        with closing(psycopg.connect(postgres_dsn)) as connection:
+            role = connection.execute(
+                """
+                SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit,
+                       rolcreaterole, rolcreatedb, rolreplication
+                FROM pg_roles WHERE rolname = %s
+                """,
+                [ci_login],
+            ).fetchone()
+            membership = connection.execute(
+                """
+                SELECT pg_has_role(%s, 'market_app', 'member'),
+                       pg_has_role(%s, 'market_research_signer', 'member')
+                           OR pg_has_role(%s, 'market_migrator', 'member')
+                """,
+                [ci_login, ci_login, ci_login],
+            ).fetchone()
+            privileges = connection.execute(
+                """
+                SELECT has_function_privilege(
+                           'market_app',
+                           'analysis.write_research_evaluator_output(uuid,uuid,uuid,text,text,text,text,text,text,integer,boolean,jsonb,text)',
+                           'EXECUTE'
+                       ),
+                       has_table_privilege('market_app', 'analysis.research_evaluator_output', 'SELECT')
+                """
+            ).fetchone()
+
+        assert tuple(role) == (True, False, False, False, False, False, False)
+        assert tuple(membership) == (True, False)
+        assert tuple(privileges) == (True, False)
+    finally:
+        with closing(psycopg.connect(postgres_dsn)) as connection:
+            connection.execute(
+                SQL("REVOKE market_app FROM {};").format(Identifier(ci_login))
+            )
+            connection.execute(
+                SQL("DROP ROLE IF EXISTS {};").format(Identifier(ci_login))
+            )
+            connection.commit()
+
+
+def test_clean_migration_fails_closed_without_a_configured_application_login(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MARKET_APP_LOGIN_ROLE", raising=False)
+    monkeypatch.delenv("MARKET_APP_DATABASE_PASSWORD", raising=False)
+
+    with pytest.raises(RuntimeError, match="MARKET_APP_LOGIN_ROLE"):
+        upgrade_database(postgres_dsn)
 
 
 def test_mungermode_migration_backfills_local_refresh_owner(postgres_dsn: str) -> None:

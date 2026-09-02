@@ -44,12 +44,21 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --extra test --locked
 
-      - name: Migrate CI PostgreSQL
-        # Keep only this bootstrap on the TCP service database. Tests create
-        # isolated PostgreSQL databases and must retain their explicit DSNs.
+      - name: Bootstrap and migrate CI PostgreSQL
+        # CI has no deployment-provided application login. Create one with
+        # an ephemeral password, then let the role-boundary migrations verify
+        # its attributes, membership, protected-role reachability, and ACLs.
         env:
           MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
-        run: uv run market-db-migrate
+        run: |
+          set -euo pipefail
+          ci_password="$(openssl rand -hex 32)"
+          PGPASSWORD=postgres psql "$MARKET_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -v ci_password="$ci_password" \
+            -c "CREATE ROLE market_ci_login LOGIN PASSWORD :'ci_password' NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION"
+          export MARKET_APP_LOGIN_ROLE=market_ci_login
+          export MARKET_APP_DATABASE_PASSWORD="$ci_password"
+          uv run market-db-migrate
 
       - name: Install Node dependencies
         run: npm ci
