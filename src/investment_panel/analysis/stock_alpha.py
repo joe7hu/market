@@ -275,15 +275,16 @@ def walk_forward(
 
 def build_control_results(
     observations: Iterable[Mapping[str, Any]], *, cutoff: datetime, repeats: int = 8,
-) -> dict[str, list[float]]:
-    """Build repeated, antithetic randomized-label and white-noise controls.
+    min_train: int | None = None, fold_size: int | None = None, min_cohort: int | None = None,
+) -> dict[str, Any]:
+    """Run the production fold evaluator on two independent control datasets.
 
-    The controls use the same PIT-resolved rows as the production run. Each
-    randomized draw is paired with its antithetic draw, so the aggregate has no
-    accidental directional edge while retaining the observed return and cost
-    scale. This is a bounded deterministic approximation, not a cyclic-shift
-    substitute: the seed, repeat count, source row count, and control outputs
-    are persisted with the research result.
+    Randomized-label controls change the target labels before fitting. The
+    white-noise controls replace both research features and realized price
+    returns with deterministic independent draws from the observed scale. Both
+    controls execute ``walk_forward`` itself, including fold calibration and
+    path generation. No sign clipping, antithetic pairing, or return transform
+    is applied to the evaluator output.
     """
 
     if repeats < 2 or repeats > 32:
@@ -301,25 +302,73 @@ def build_control_results(
             continue
         rows.append((realized, cost, 1.0 if label > 0.5 else -1.0))
     if not rows:
-        return {"randomized_label_returns": [], "white_noise_market_returns": []}
+        return {"randomized_label_returns": [], "white_noise_market_returns": [], "control_metadata": {}}
     seed = content_hash({"cutoff": cutoff, "rows": source_rows, "control": "phase1-v1"})
     generator = Random(seed)
     randomized: list[float] = []
     noise: list[float] = []
-    scale = stdev([row[0] for row in rows]) if len(rows) > 1 else abs(rows[0][0])
+    return_values = [row[0] for row in rows]
+    scale = stdev(return_values) if len(return_values) > 1 else abs(return_values[0])
     scale = max(scale, 1e-12)
     labels = [row[2] for row in rows]
+    feature_values = {
+        name: [float(dict(raw.get("features") or {}).get(name)) for raw in source_rows if dict(raw.get("features") or {}).get(name) is not None]
+        for name in RESEARCH_FEATURES
+    }
+    feature_scale = {
+        name: max(stdev(values) if len(values) > 1 else abs(values[0]), 1e-12)
+        for name, values in feature_values.items() if values
+    }
+    feature_mean = {name: fmean(values) for name, values in feature_values.items() if values}
+    run_min_train = min_train if min_train is not None else max(2, min(20, len(rows) // 3))
+    run_fold_size = fold_size if fold_size is not None else max(1, min(10, len(rows) // 5))
+    run_min_cohort = min_cohort if min_cohort is not None else max(1, min(20, run_min_train))
+    metadata: dict[str, Any] = {
+        "repeats": repeats,
+        "source_sample_count": len(rows),
+        "randomized_label": {"runs": 0, "sample_count": 0, "path_count": 0, "input_hashes": []},
+        "white_noise_market": {"runs": 0, "sample_count": 0, "path_count": 0, "input_hashes": []},
+    }
     for _ in range(repeats):
         shuffled = list(labels)
         generator.shuffle(shuffled)
-        for (realized, cost, _), label in zip(rows, shuffled):
-            value = realized * label - cost
-            randomized.extend((value, -value - 2.0 * cost))
-            draw = generator.gauss(0.0, scale)
-            noise.extend((draw - cost, -draw - cost))
+        randomized_rows = [dict(raw, outcome=label) for raw, label in zip(source_rows, shuffled)]
+        randomized_artifact = walk_forward(
+            randomized_rows, cutoff=cutoff, min_train=run_min_train,
+            fold_size=run_fold_size, min_cohort=run_min_cohort,
+        )
+        randomized_values = [float(row["net_utility_after_costs"]) for row in randomized_artifact.get("predictions") or []]
+        randomized.extend(randomized_values)
+        randomized_meta = metadata["randomized_label"]
+        randomized_meta["runs"] += 1
+        randomized_meta["sample_count"] += len(randomized_values)
+        randomized_meta["path_count"] += len(randomized_artifact.get("validation_paths") or [])
+        randomized_meta["input_hashes"].append(content_hash(randomized_rows))
+
+        white_noise_rows: list[dict[str, Any]] = []
+        for raw in source_rows:
+            features = dict(raw.get("features") or {})
+            for name in RESEARCH_FEATURES:
+                if name not in feature_mean:
+                    continue
+                features[name] = generator.gauss(feature_mean[name], feature_scale[name])
+            realized = generator.gauss(0.0, scale)
+            white_noise_rows.append(dict(raw, features=features, realized_return=realized, outcome=float(realized > 0.0)))
+        white_noise_artifact = walk_forward(
+            white_noise_rows, cutoff=cutoff, min_train=run_min_train,
+            fold_size=run_fold_size, min_cohort=run_min_cohort,
+        )
+        white_noise_values = [float(row["net_utility_after_costs"]) for row in white_noise_artifact.get("predictions") or []]
+        noise.extend(white_noise_values)
+        noise_meta = metadata["white_noise_market"]
+        noise_meta["runs"] += 1
+        noise_meta["sample_count"] += len(white_noise_values)
+        noise_meta["path_count"] += len(white_noise_artifact.get("validation_paths") or [])
+        noise_meta["input_hashes"].append(content_hash(white_noise_rows))
     return {
         "randomized_label_returns": randomized,
         "white_noise_market_returns": noise,
+        "control_metadata": metadata,
     }
 
 

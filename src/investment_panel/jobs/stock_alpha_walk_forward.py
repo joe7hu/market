@@ -41,7 +41,7 @@ def run(
     min_cohort: int = 20,
     universe_members: Iterable[str] | None = None,
     trial_plan: Iterable[Mapping[str, Any]] | None = None,
-    control_results: Mapping[str, Iterable[float]] | None = None,
+    control_results: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Append one idempotent evaluation and promote only with explicit paper authority."""
 
@@ -56,7 +56,13 @@ def run(
     )
     input_hash = content_hash({"cutoff": reference, "observations": source_rows, "trial_plan": configurations})
     members = sorted({str(member).strip().upper() for member in universe_members or () if str(member).strip()})
-    controls = {key: [float(value) for value in values] for key, values in (control_results or {}).items()}
+    raw_controls = dict(control_results or {})
+    controls = {
+        key: [float(value) for value in raw_controls.get(key, ())]
+        for key in ("randomized_label_returns", "white_noise_market_returns")
+    }
+    raw_control_metadata = raw_controls.get("control_metadata")
+    control_metadata = dict(raw_control_metadata) if isinstance(raw_control_metadata, Mapping) and raw_control_metadata else None
     promotion_blockers: list[str] = []
     artifacts = []
     for configuration in configurations:
@@ -92,6 +98,7 @@ def run(
                 item["artifact"], source_rows=source_rows, cutoff=reference,
                 expected_members=members, trial_keys=[config["trial_key"] for config in configurations],
                 parameter_neighborhood=parameter_neighborhood, controls=controls,
+                control_metadata=control_metadata,
                 family_p_values=family_p_values,
             ),
         }
@@ -152,7 +159,7 @@ def run(
         research_ids = _ensure_research_prerequisites(
             connection, cutoff=reference, input_hash=input_hash,
             trial_runs=trial_runs, observations=source_rows, universe_members=members,
-            controls=controls,
+            controls=controls, control_metadata=control_metadata,
         )
         strategy = connection.execute(
             """
@@ -315,6 +322,7 @@ def _ensure_research_prerequisites(
     connection: Any, *, cutoff: datetime, input_hash: str,
     trial_runs: list[Mapping[str, Any]], observations: list[Mapping[str, Any]],
     universe_members: list[str], controls: Mapping[str, Iterable[float]],
+    control_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[Any, Any, Any, Any]:
     key = f"{STRATEGY_KEY}:{input_hash}"
     hypothesis = connection.execute(
@@ -411,7 +419,8 @@ def _ensure_research_prerequisites(
             "randomized_label_returns": [float(value) for value in controls.get("randomized_label_returns", ())],
             "white_noise_market_returns": [float(value) for value in controls.get("white_noise_market_returns", ())],
             "source": "stock_alpha_walk_forward",
-            "repeats": 8,
+            "repeats": int((control_metadata or {}).get("repeats", 0)),
+            "metadata": dict(control_metadata or {}),
         }
         control_result = connection.execute(
             """INSERT INTO analysis.trial_result
@@ -420,7 +429,13 @@ def _ensure_research_prerequisites(
                ON CONFLICT (research_trial_id, result_kind, result_version) DO NOTHING
                RETURNING id""",
             [trial_id, trial_hash,
-             Jsonb({"randomized_label_count": len(control_outcome["randomized_label_returns"]), "white_noise_count": len(control_outcome["white_noise_market_returns"])}),
+             Jsonb({
+                 "randomized_label_count": len(control_outcome["randomized_label_returns"]),
+                 "white_noise_count": len(control_outcome["white_noise_market_returns"]),
+                 "control_metadata": dict(control_metadata or {}),
+                 "randomized_label_returns": control_outcome["randomized_label_returns"],
+                 "white_noise_market_returns": control_outcome["white_noise_market_returns"],
+             }),
              Jsonb(control_outcome)],
         ).fetchone()
         if control_result is None:
@@ -485,25 +500,30 @@ def _ensure_research_dossier(
         ).fetchone()
     if dossier["status"] == "draft":
         checks = dict(validation.get("checks") or {})
-        check_by_gate = {
-            "pit_integrity": ("pit",),
-            "denominator_completeness": ("denominator", "attempt_manifest"),
-            "oos_predictive_validity": ("predictive", "multiple_testing"),
-            "falsification_and_robustness": (
-                "mechanism", "negative_controls", "parameter_stability", "neutralization",
-                "combinatorial_paths", "robustness",
-            ),
-            "economic_promotability": ("cost_capacity", "neutralization"),
-        }
         for code in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             gate = dict((validation.get("gates") or {}).get(code) or {})
-            evidence_checks = {name: checks.get(name) for name in check_by_gate[code]}
+            # Store the complete immutable check object on every gate. This
+            # lets PostgreSQL compare gate evidence to the linked trial result,
+            # instead of accepting a small or generic passed=true subset.
+            evidence_checks = checks
             domain_valid = all(bool((value or {}).get("domain_valid")) for value in evidence_checks.values())
             connection.execute(
                 """INSERT INTO analysis.validation_gate_result
                    (dossier_id, gate_code, verdict, metrics, evidence, evaluated_at, available_at)
                    VALUES (%s, %s, %s, %s, %s, clock_timestamp(), now()) ON CONFLICT DO NOTHING""",
-            [dossier["id"], code, "pass" if gate.get("passed") else "fail", Jsonb({**gate, "domain_valid": domain_valid, "checks": evidence_checks}), Jsonb({"trial_result_id": str(result_id), "checks": list(evidence_checks)})],
+            [dossier["id"], code, "pass" if gate.get("passed") else "fail", Jsonb({
+                **gate, "domain_valid": domain_valid, "checks": evidence_checks,
+                "validation_result_id": str(result_id),
+                "validation_result_input_hash": str(connection.execute(
+                    "SELECT input_hash FROM analysis.trial_result WHERE id = %s", [result_id]
+                ).fetchone()["input_hash"]),
+            }), Jsonb({
+                "trial_result_id": str(result_id),
+                "input_hash": str(connection.execute(
+                    "SELECT input_hash FROM analysis.trial_result WHERE id = %s", [result_id]
+                ).fetchone()["input_hash"]),
+                "checks": list(evidence_checks),
+            })],
             )
         if seal:
             connection.execute("UPDATE analysis.validation_dossier SET status = 'sealed', sealed_at = clock_timestamp() WHERE id = %s", [dossier["id"]])
@@ -555,6 +575,7 @@ def _validate_walk_forward_artifact(
     artifact: Mapping[str, Any], *, source_rows: list[Mapping[str, Any]], cutoff: datetime,
     expected_members: list[str], trial_keys: list[str], parameter_neighborhood: list[Mapping[str, Any]],
     controls: Mapping[str, list[float]], family_p_values: list[float],
+    control_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     predictions = list(artifact.get("predictions") or [])
     observed = [float(row["net_utility_after_costs"]) for row in predictions if row.get("net_utility_after_costs") is not None]
@@ -601,6 +622,7 @@ def _validate_walk_forward_artifact(
         # remain a bounded fallback for callers supplying an artifact without
         # path records; production artifacts always have both.
         p_values=path_p_values or family_p_values,
+        control_metadata=control_metadata,
         policy={"min_psr": 0.5, "min_dsr": 0.5, "max_pbo": 0.5},
     )
 

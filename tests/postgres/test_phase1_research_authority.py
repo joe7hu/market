@@ -30,18 +30,18 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             [hypothesis, "2" * 64],
         ).fetchone()[0]
         successful_checks = {
-            "pit": {"passed": True, "domain_valid": True},
-            "denominator": {"passed": True, "domain_valid": True},
-            "attempt_manifest": {"passed": True, "domain_valid": True},
-            "negative_controls": {"passed": True, "domain_valid": True, "controls_present": True},
-            "mechanism": {"passed": True, "domain_valid": True, "evidence_count": 1},
+            "pit": {"passed": True, "domain_valid": True, "future_count": 0, "observed_count": 1},
+            "denominator": {"passed": True, "domain_valid": True, "expected_count": 1, "observed_count": 1},
+            "attempt_manifest": {"passed": True, "domain_valid": True, "expected_count": 2, "completed_count": 2},
+            "negative_controls": {"passed": True, "domain_valid": True, "controls_present": True, "randomized_sample_count": 1, "white_noise_sample_count": 1},
+            "mechanism": {"passed": True, "domain_valid": True, "evidence_count": 1, "mechanism_class": "quality", "falsification_rule": "negative"},
             "parameter_stability": {"passed": True, "domain_valid": True, "sample_size": 3},
-            "neutralization": {"passed": True, "domain_valid": True, "result_exists": True},
-            "combinatorial_paths": {"passed": True, "domain_valid": True, "path_count": 1},
+            "neutralization": {"passed": True, "domain_valid": True, "result_exists": True, "sample_size": 1},
+            "combinatorial_paths": {"passed": True, "domain_valid": True, "path_count": 1, "path_records": [{"test_folds": [0], "train_folds": [1], "metrics": {"fit_train_count": 1, "evaluated_test_count": 1}}]},
             "robustness": {"passed": True, "domain_valid": True},
-            "multiple_testing": {"psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1, "domain_valid": True, "paths_domain_valid": True, "p_values_domain_valid": True, "trials_tested": 2},
-            "cost_capacity": {"passed": True, "domain_valid": True, "multiples": {"1x": {"net_return": 0.1}, "2x": {"net_return": 0.09}, "3x": {"net_return": 0.08}}},
-            "predictive": {"passed": True, "domain_valid": True},
+            "multiple_testing": {"psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1, "domain_valid": True, "paths_domain_valid": True, "p_values_domain_valid": True, "trials_tested": 2, "sample_size": 1, "path_count": 1, "p_value_count": 1},
+            "cost_capacity": {"passed": True, "domain_valid": True, "multiples": {"1x": {"net_return": 0.1, "capacity": 1.0}, "2x": {"net_return": 0.09, "capacity": 0.5}, "3x": {"net_return": 0.08, "capacity": 0.333}}},
+            "predictive": {"passed": True, "domain_valid": True, "metrics": {"domain_valid": True, "sample_size": 1, "path_count": 1, "p_value_count": 1, "trials_tested": 2, "psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1}},
         }
         connection.execute(
             """INSERT INTO analysis.experiment_manifest
@@ -75,9 +75,14 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             connection.execute(
                 """INSERT INTO analysis.universe_observation
                    (research_trial_id, instrument_id, cutoff, eligible, rank, observed_at, available_at, input_hash)
-                   VALUES (%s, %s, %s, true, 1, now(), now(), %s)""",
+                   VALUES (%s, %s, %s, true, 1, now() - interval '1 day', now() - interval '1 day', %s)""",
                 [trial_id, instrument, cutoff, result_hash],
             )
+        availability = connection.execute(
+            "SELECT min(observed_at) AS observed_at, min(available_at) AS available_at FROM analysis.universe_observation"
+        ).fetchone()
+        assert availability[0] > datetime.now(UTC) - timedelta(minutes=1)
+        assert availability[1] > datetime.now(UTC) - timedelta(minutes=1)
         connection.execute(
             """INSERT INTO analysis.trial_result
                (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics)
@@ -162,7 +167,7 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
         for gate in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             connection.execute(
                 "INSERT INTO analysis.validation_gate_result (dossier_id, gate_code, verdict, metrics, evidence, available_at) VALUES (%s, %s, 'pass', %s, %s, now())",
-                [dossier, gate, Jsonb({"passed": True, "domain_valid": True, "checks": {name: successful_checks[name] for name in gate_check_names[gate]}}), Jsonb({"trial_result_id": str(validation_result), "checks": gate_check_names[gate]})],
+                [dossier, gate, Jsonb({"passed": True, "domain_valid": True, "validation_result_id": str(validation_result), "validation_result_input_hash": "9" * 64, "checks": {name: successful_checks[name] for name in gate_check_names[gate]}}), Jsonb({"trial_result_id": str(validation_result), "input_hash": "9" * 64, "checks": gate_check_names[gate]})],
             )
         connection.execute("UPDATE analysis.validation_dossier SET sections = %s, status = 'sealed' WHERE id = %s", [sections, dossier])
         evaluation = connection.execute(
@@ -176,6 +181,7 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
         forecast = build_strategy_forecast(
             ticker="P1T", opportunity_episode_id="episode:p1", strategy_revision_id=revision,
             strategy_evaluation_id=str(evaluation), target="return", horizon="1d", forecast_value=0.1,
+            forecast_distribution={"positive_return_after_costs": 0.1},
             model_artifact_id="p1-artifact", artifact_hash="5" * 64, input_hash="7" * 64,
             as_of=cutoff, generated_at=forecast_time, available_at=forecast_time,
         )
@@ -199,7 +205,7 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                    VALUES ('forecast:strategy-forecast:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', %s, %s,
                            (SELECT id FROM catalog.instrument WHERE symbol = 'P1T'), 'episode:p1', 'return',
                            '1d-backdated', 0.1, %s, 'p1-artifact', %s, %s, %s, %s,
-                           now() - interval '6 seconds', now() - interval '6 seconds')""",
+                           now() - interval '1 day', now() - interval '1 day')""",
                 [revision, evaluation, Jsonb({"positive_return_after_costs": 0.1}), "5" * 64, "7" * 64, cutoff, cutoff],
             )
         connection.execute("ROLLBACK TO SAVEPOINT backdated_forecast")

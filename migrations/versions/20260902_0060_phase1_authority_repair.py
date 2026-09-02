@@ -607,10 +607,10 @@ def upgrade() -> None:
                OR lower(NEW.artifact_hash) = repeat('0', 64)
                OR lower(NEW.input_hash) = repeat('0', 64)
                OR NEW.as_of <> NEW.input_cutoff
-               OR NEW.generated_at < actual - interval '5 seconds'
-               OR NEW.generated_at > actual + interval '5 seconds'
+               OR NEW.generated_at < date_trunc('day', actual)
+               OR NEW.generated_at > actual
                OR NEW.available_at < NEW.generated_at
-               OR NEW.available_at > actual + interval '5 seconds'
+               OR NEW.available_at > actual
                OR (NEW.forecast_value IS NULL AND NEW.forecast_range IS NULL AND NEW.forecast_distribution IS NULL)
             THEN
                 RAISE EXCEPTION 'strategy forecast requires current immutable content, non-zero hashes, and actual availability';

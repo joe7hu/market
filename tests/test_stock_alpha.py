@@ -7,6 +7,7 @@ from investment_panel.analysis.stock_alpha import (
     FEATURE_VERSION,
     MODEL_VERSION,
     build_control_results,
+    content_hash,
     hierarchical_calibration,
     research_score,
     walk_forward,
@@ -122,6 +123,14 @@ def test_production_controls_are_repeated_nonempty_and_deterministic() -> None:
     first = build_control_results(rows, cutoff=cutoff)
     second = build_control_results(rows, cutoff=cutoff)
     assert first == second
-    assert len(first["randomized_label_returns"]) == len(first["white_noise_market_returns"]) >= 12 * 2 * 2
-    assert sum(first["randomized_label_returns"]) <= 0
-    assert sum(first["white_noise_market_returns"]) <= 0
+    assert first["randomized_label_returns"]
+    assert first["white_noise_market_returns"]
+    assert first["control_metadata"]["repeats"] == 8
+    assert first["control_metadata"]["source_sample_count"] == 12
+    assert first["control_metadata"]["randomized_label"]["runs"] == 8
+    assert first["control_metadata"]["white_noise_market"]["runs"] == 8
+    source_hash = content_hash(rows)
+    assert all(value != source_hash for value in first["control_metadata"]["randomized_label"]["input_hashes"])
+    assert all(value != source_hash for value in first["control_metadata"]["white_noise_market"]["input_hashes"])
+    assert any(value > 0 for value in first["white_noise_market_returns"])
+    assert any(value < 0 for value in first["white_noise_market_returns"])

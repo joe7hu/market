@@ -40,7 +40,16 @@ def negative_control(observed: Sequence[float], *, randomized: Sequence[float] =
         "negative_controls_domain_invalid" if not controls_domain_valid else
         "negative_control_positive_edge"
     )
-    return {"passed": passed, "observed_edge": average(observed), "randomized_edge": randomized_edge, "white_noise_edge": noise_edge, "tolerance": tolerance, "controls_present": controls_present, "domain_valid": controls_domain_valid, "persistent_positive_edge": any(value > tolerance for value in controls), "reason": reason}
+    return {
+        "passed": passed, "observed_edge": average(observed),
+        "randomized_edge": randomized_edge, "white_noise_edge": noise_edge,
+        "randomized_sample_count": len(randomized_values),
+        "white_noise_sample_count": len(white_noise_values),
+        "tolerance": tolerance, "controls_present": controls_present,
+        "domain_valid": controls_domain_valid,
+        "persistent_positive_edge": any(value > tolerance for value in controls),
+        "reason": reason,
+    }
 
 
 def future_information_trap(*, feature_available_at: Sequence[Any], cutoff: Any, decision_times: Sequence[Any] = ()) -> dict[str, Any]:
@@ -252,12 +261,30 @@ def validate_trial(
     expected_attempts: Sequence[Any] = (), completed_attempts: Sequence[Any] = (),
     path_returns: Sequence[float] = (), path_records: Sequence[Mapping[str, Any]] = (),
     p_values: Sequence[float] = (), policy: Mapping[str, Any] | None = None,
+    control_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     policy = dict(policy or {})
     controls = negative_control(
         observed_returns, randomized=randomized_returns, white_noise=white_noise_returns,
         tolerance=float(policy.get("negative_control_tolerance", 0.0)),
     )
+    if control_metadata is not None:
+        metadata = dict(control_metadata)
+        randomized_meta = dict(metadata.get("randomized_label") or {})
+        noise_meta = dict(metadata.get("white_noise_market") or {})
+        metadata_valid = (
+            int(metadata.get("repeats", 0)) >= 2
+            and int(randomized_meta.get("runs", 0)) == int(metadata.get("repeats", 0))
+            and int(noise_meta.get("runs", 0)) == int(metadata.get("repeats", 0))
+            and int(randomized_meta.get("sample_count", 0)) == len(randomized_returns)
+            and int(noise_meta.get("sample_count", 0)) == len(white_noise_returns)
+            and len(randomized_meta.get("input_hashes") or []) == int(metadata.get("repeats", 0))
+            and len(noise_meta.get("input_hashes") or []) == int(metadata.get("repeats", 0))
+        )
+        controls["control_metadata"] = metadata
+        controls["metadata_domain_valid"] = metadata_valid
+        controls["domain_valid"] = controls["domain_valid"] and metadata_valid
+        controls["passed"] = controls["passed"] and metadata_valid
     metrics = multiple_testing_metrics(observed_returns, trials_tested=trials_tested, observations=len(observed_returns), path_returns=path_returns, p_values=p_values)
     pit = future_information_trap(feature_available_at=feature_available_at, decision_times=decision_times, cutoff=cutoff) if cutoff is not None else {"passed": False, "domain_valid": False, "reason": "cutoff_missing", "future_count": None}
     denominator = {"passed": bool(expected_members) and sorted(map(str, expected_members)) == sorted(map(str, observed_members)), "domain_valid": bool(expected_members), "expected_count": len(expected_members), "observed_count": len(observed_members), "reason": None}
@@ -268,6 +295,7 @@ def validate_trial(
         attempts["reason"] = "trial_manifest_incomplete"
     predictive = {"passed": metrics["domain_valid"] and metrics["psr"] >= float(policy.get("min_psr", 0.5)) and (metrics["dsr"] >= float(policy.get("min_dsr", 0.5))), "domain_valid": metrics["domain_valid"], "metrics": metrics, "reason": None}
     stability = parameter_stability(parameter_neighborhood)
+    path_records = [dict(record) for record in path_records]
     cpcv = {
         "passed": bool(path_records) and all(
             isinstance(record.get("test_folds"), list)
@@ -278,7 +306,7 @@ def validate_trial(
             for record in path_records
         ),
         "domain_valid": bool(path_records),
-        "path_count": len(path_records),
+        "path_count": len(path_records), "path_records": path_records,
         "reason": None if path_records else "combinatorial_path_evidence_missing",
     }
     robustness_passed = controls["passed"] and stability["passed"] and cpcv["passed"] and (metrics["pbo"] is not None and metrics["pbo"] <= float(policy.get("max_pbo", 0.5)))
@@ -289,6 +317,7 @@ def validate_trial(
         evidence=(*path_returns, *randomized_returns, *white_noise_returns),
     )
     neutralized = neutralization(gross_returns=observed_returns, neutralized_returns=neutralized_returns)
+    neutralized["sample_size"] = len(neutralized_returns)
     economics = cost_capacity_stress(gross_return=gross_return, base_cost=base_cost)
     economics["passed"] = economics["passed"] and neutralized["passed"]
     robustness["passed"] = robustness["passed"] and mechanism["passed"] and pit["passed"]

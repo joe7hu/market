@@ -134,6 +134,8 @@ class StrategyForecast(BaseModel):
             raise ValueError("strategy forecast timestamps must be timezone-aware")
         if _utc(self.as_of) != _utc(self.input_cutoff):
             raise ValueError("strategy forecast as_of and input_cutoff must match")
+        if _utc(self.available_at) < _utc(self.generated_at):
+            raise ValueError("strategy forecast availability cannot precede generation")
         # Actual wall-clock generation and availability are retained. Historical
         # readers and promotion queries apply the cutoff filter; backdating here
         # would hide future-information traps.
@@ -930,7 +932,28 @@ def strategy_forecast_id_for_payload(value: Mapping[str, Any]) -> str:
                     normalized[field] = parsed.astimezone(UTC).isoformat()
             except ValueError:
                 pass
-    return "forecast:" + _content_id("strategy-forecast", normalized)
+    # Use a scalar canonical vector. PostgreSQL can recompute this exact
+    # representation without depending on jsonb object key ordering.
+    forecast_range = normalized.get("forecast_range") or {}
+    distribution = normalized.get("forecast_distribution") or {}
+    vector = [
+        normalized.get("contract_version"), normalized.get("ticker"),
+        normalized.get("opportunity_episode_id"), str(normalized.get("strategy_revision_id")),
+        normalized.get("strategy_evaluation_id"), normalized.get("target"),
+        normalized.get("horizon"), _canonical_scalar(normalized.get("forecast_value")),
+        _canonical_scalar(forecast_range.get("low")), _canonical_scalar(forecast_range.get("high")),
+        "|".join(f"{key}={_canonical_scalar(distribution[key])}" for key in sorted(distribution)),
+        normalized.get("probability_semantics"), normalized.get("model_artifact_id"),
+        normalized.get("artifact_hash"), normalized.get("input_hash"),
+        normalized.get("as_of"), normalized.get("input_cutoff"),
+        normalized.get("generated_at"), normalized.get("available_at"),
+    ]
+    encoded = json.dumps(vector, separators=(", ", ": "), ensure_ascii=True)
+    return "forecast:strategy-forecast:" + hashlib.sha256(encoded.encode()).hexdigest()[:32]
+
+
+def _canonical_scalar(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 def _jsonable(value: Any) -> Any:

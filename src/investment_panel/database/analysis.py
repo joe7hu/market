@@ -653,6 +653,13 @@ class AnalysisRepository:
             raise ValueError("strategy forecast identity does not match its immutable payload")
         ticker = model.ticker.strip().upper()
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            authority_clock = connection.execute(
+                "SELECT current_date AS authority_date, clock_timestamp() AS actual_now"
+            ).fetchone()
+            if model.generated_at.date() < authority_clock["authority_date"] or model.generated_at > authority_clock["actual_now"]:
+                raise ValueError("strategy forecast generation timestamp is not authoritative server time")
+            if model.available_at.date() < authority_clock["authority_date"] or model.available_at > authority_clock["actual_now"]:
+                raise ValueError("strategy forecast availability timestamp is not authoritative server time")
             instrument = connection.execute(
                 "SELECT id FROM catalog.instrument WHERE symbol = %s LIMIT 1", [ticker]
             ).fetchone()
