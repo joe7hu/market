@@ -147,9 +147,16 @@ def run(
         contract = next((item for item in source_contracts() if item.source_id == source_id), None)
         credential_missing = contract is not None and contract.credential_env and not _credential(contract.credential_env)
         with db.read() as connection:
-            existing_source = connection.execute("SELECT enabled, operational_state FROM ingest.source WHERE id = %s", [source_id]).fetchone()
+            existing_source = connection.execute(
+                "SELECT family, kind, origin, enabled, operational_state FROM ingest.source WHERE id = %s",
+                [source_id],
+            ).fetchone()
         definition["enabled"] = bool(existing_source["enabled"]) if existing_source is not None else True
         definition["operational_state"] = str(existing_source["operational_state"]) if existing_source is not None else "active"
+        if existing_source is not None:
+            definition["family"] = str(existing_source["family"])
+            definition["kind"] = str(existing_source["kind"])
+            definition["origin"] = existing_source["origin"]
         definition["capabilities"] = {**definition["capabilities"], "phase2_status": Phase2Status.MISSING_SOURCE.value if credential_missing else "PENDING"}
         ingestion.register_source(source_id, **definition)
         with ingestion.run(source_id, "phase2") as source_run:

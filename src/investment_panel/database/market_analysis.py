@@ -289,7 +289,7 @@ def refresh_market_publication(
     phase2_coverage = build_coverage_vector(
         as_of,
         {
-            "stock": {"daily": ("macro.value", "rates.nominal_yield", "credit.spread")},
+            "stock": {"daily": ("macro.value", "rates.nominal_yield", "credit.spread"), "positioning": ("positioning.flow",)},
             "options": {"positioning": ("option.open_interest", "option.volume")},
             "crypto": {"venue_derivatives": ("crypto.depth",)},
         },

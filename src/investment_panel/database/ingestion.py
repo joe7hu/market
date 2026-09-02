@@ -118,21 +118,31 @@ class IngestionRepository:
                 f"active source {source_id!r} requires an explicit health owner and positive cadence"
             )
         with self.runtime.transaction() as connection:
+            existing = connection.execute(
+                "SELECT family, kind, origin FROM ingest.source WHERE id = %s FOR UPDATE",
+                [source_id],
+            ).fetchone()
+            if existing is not None:
+                for column, requested in (("family", family), ("kind", kind), ("origin", origin)):
+                    if existing[column] != requested:
+                        raise ValueError(
+                            f"canonical source identity conflict for {source_id!r}: {column} is immutable"
+                        )
+                # Registration may refresh descriptive capabilities, but it is
+                # not lifecycle authority. Identity and lifecycle rows are
+                # changed only by the explicit source lifecycle APIs.
+                connection.execute(
+                    "UPDATE ingest.source SET name = %s, capabilities = %s, updated_at = now() WHERE id = %s",
+                    [name, Jsonb(capabilities or {}), source_id],
+                )
+                return
             connection.execute(
                 """
                 INSERT INTO ingest.source
                     (id, name, family, kind, origin, capabilities, enabled,
                      operational_state, health_owner, freshness_seconds)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE
-                SET name = EXCLUDED.name, family = EXCLUDED.family, kind = EXCLUDED.kind,
-                    origin = EXCLUDED.origin,
-                    capabilities = EXCLUDED.capabilities,
-                    enabled = EXCLUDED.enabled,
-                    operational_state = EXCLUDED.operational_state,
-                    health_owner = EXCLUDED.health_owner,
-                    freshness_seconds = EXCLUDED.freshness_seconds,
-                    updated_at = now()
+                ON CONFLICT (id) DO NOTHING
                 """,
                 [
                     source_id,
@@ -411,11 +421,7 @@ class IngestionRepository:
                 INSERT INTO ingest.payload
                     (run_id, archive_uri, sha256, encoding, byte_count, schema_version, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sha256) DO UPDATE
-                SET metadata = ingest.payload.metadata || EXCLUDED.metadata
-                WHERE ingest.payload.encoding = EXCLUDED.encoding
-                  AND ingest.payload.byte_count = EXCLUDED.byte_count
-                  AND ingest.payload.schema_version IS NOT DISTINCT FROM EXCLUDED.schema_version
+                ON CONFLICT (sha256) DO NOTHING
                 RETURNING id
                 """,
                 [run_id, archive_uri, digest, encoding, byte_count, schema_version, Jsonb(metadata or {})],

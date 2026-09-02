@@ -131,12 +131,17 @@ def run_social(config_path: str | None = None) -> dict[str, Any]:
 def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str, Any]) -> dict[str, Any]:
     repository = IngestionRepository(runtime)
     source_id = str(spec["source_id"])
+    with runtime.read() as connection:
+        existing = connection.execute(
+            "SELECT family, kind, origin FROM ingest.source WHERE id = %s",
+            [source_id],
+        ).fetchone()
     repository.register_source(
         source_id,
         name=str(spec["name"]),
-        family="social" if spec["kind"] == "social" else "research",
-        kind=str(spec["kind"]),
-        origin=str(spec["key"]),
+        family=str(existing["family"]) if existing is not None else ("social" if spec["kind"] == "social" else "research"),
+        kind=str(existing["kind"]) if existing is not None else str(spec["kind"]),
+        origin=existing["origin"] if existing is not None else str(spec["key"]),
         capabilities=(
             {"content": True, str(spec["capability"]): True}
             if source_id == "birdclaw_primary_tweets"

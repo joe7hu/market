@@ -91,6 +91,10 @@ class Phase2Repository:
     ) -> dict[str, Any]:
         if posterior.input_cutoff != coverage.as_of:
             raise ValueError("Phase 2 coverage and posterior must share one cutoff")
+        if posterior.input_content_hash != coverage.input_content_hash:
+            raise ValueError("Phase 2 coverage and posterior input hashes must match")
+        if tuple(posterior.ingest_run_ids) != tuple(coverage.ingest_run_ids):
+            raise ValueError("Phase 2 coverage and posterior ingest runs must match")
         paths = tuple(scenarios)
         with self.runtime.transaction() as connection:
             if coverage.parent_snapshot_id != posterior.parent_snapshot_id:

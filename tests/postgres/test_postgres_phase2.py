@@ -79,8 +79,10 @@ def test_phase2_market_app_has_writers_but_artifacts_remain_immutable(
         with runtime.read() as connection:
             privileges = connection.execute(
                 """SELECT has_table_privilege('market_app', 'raw.market_observation', 'INSERT') AS raw_insert,
-                          has_table_privilege('market_app', 'analysis.market_state_posterior', 'INSERT') AS posterior_insert""",
+                          has_table_privilege('market_app', 'analysis.market_state_posterior', 'INSERT') AS posterior_insert,
+                          has_table_privilege('market_app', 'ingest.source_lifecycle_history', 'INSERT') AS lifecycle_insert""",
             ).fetchone()
         assert privileges["raw_insert"] and privileges["posterior_insert"]
+        assert not privileges["lifecycle_insert"]
     finally:
         runtime.close()

@@ -45,6 +45,15 @@ def upgrade() -> None:
             FOR EACH ROW WHEN (OLD.enabled IS DISTINCT FROM NEW.enabled OR OLD.operational_state IS DISTINCT FROM NEW.operational_state)
             EXECUTE FUNCTION ingest.record_source_lifecycle();
 
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM raw.market_observation WHERE payload_id IS NULL) THEN
+                RAISE EXCEPTION 'Phase 2 upgrade refused: raw.market_observation has rows without payload_id';
+            END IF;
+            IF EXISTS (SELECT 1 FROM analysis.option_liquidity_sla) THEN
+                RAISE EXCEPTION 'Phase 2 upgrade refused: option_liquidity_sla rows need an explicit payload lineage backfill';
+            END IF;
+        END $$;
         ALTER TABLE raw.market_observation
             ALTER COLUMN payload_id SET NOT NULL;
         ALTER TABLE analysis.option_liquidity_sla
@@ -55,6 +64,9 @@ def upgrade() -> None:
         CREATE FUNCTION ingest.reject_identity_update() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
+            IF TG_TABLE_NAME = 'payload' AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN
+                RAISE EXCEPTION 'ingest payload rows are immutable';
+            END IF;
             IF TG_TABLE_NAME = 'payload' AND (
                 to_jsonb(NEW)->'id' IS DISTINCT FROM to_jsonb(OLD)->'id' OR
                 to_jsonb(NEW)->'run_id' IS DISTINCT FROM to_jsonb(OLD)->'run_id' OR
@@ -79,9 +91,14 @@ def upgrade() -> None:
         CREATE TRIGGER run_identity_immutable BEFORE UPDATE ON ingest.run
             FOR EACH ROW EXECUTE FUNCTION ingest.reject_identity_update();
 
-        GRANT USAGE, SELECT ON SEQUENCE ingest.payload_id_seq, ingest.source_lifecycle_history_id_seq TO market_app;
-        GRANT SELECT, INSERT ON ingest.source_lifecycle_history TO market_app;
-        GRANT EXECUTE ON FUNCTION ingest.record_source_lifecycle(), ingest.reject_identity_update() TO market_app;
+        ALTER FUNCTION ingest.record_source_lifecycle() OWNER TO market_migrator;
+        ALTER FUNCTION ingest.record_source_lifecycle() SECURITY DEFINER;
+        ALTER FUNCTION ingest.record_source_lifecycle() SET search_path = pg_catalog, ingest;
+        GRANT USAGE ON SCHEMA ingest TO market_migrator;
+        GRANT INSERT ON ingest.source_lifecycle_history TO market_migrator;
+        GRANT SELECT ON ingest.source_lifecycle_history TO market_app;
+        REVOKE INSERT ON ingest.source_lifecycle_history FROM market_app;
+        REVOKE ALL ON FUNCTION ingest.record_source_lifecycle(), ingest.reject_identity_update() FROM PUBLIC, market_app;
         """
     )
 
@@ -89,8 +106,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(
         """
-        REVOKE EXECUTE ON FUNCTION ingest.record_source_lifecycle(), ingest.reject_identity_update() FROM market_app;
-        REVOKE SELECT, INSERT ON ingest.source_lifecycle_history FROM market_app;
+        REVOKE ALL ON FUNCTION ingest.record_source_lifecycle(), ingest.reject_identity_update() FROM PUBLIC, market_app;
+        REVOKE SELECT, INSERT ON ingest.source_lifecycle_history FROM market_app, market_migrator;
         DROP TRIGGER IF EXISTS run_identity_immutable ON ingest.run;
         DROP TRIGGER IF EXISTS payload_identity_immutable ON ingest.payload;
         DROP FUNCTION IF EXISTS ingest.reject_identity_update();

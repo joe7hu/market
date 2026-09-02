@@ -144,7 +144,7 @@ export function MarketStateProjection({ snapshotRows, coverageRows, posteriorRow
           const distribution = isRecord(regime.distribution) ? Object.entries(regime.distribution).map(([key, item]) => `${key} ${String(item)}`).join(" · ") : "unavailable";
           return <div key={`regime:${horizon}`} className="rounded border border-border/70 p-2 text-[11px] text-muted-foreground">
             <p className="font-semibold text-foreground">{horizon} regime evidence</p>
-            <p>{typeof regime.status === "string" ? regime.status : "advisory"} · distribution: {distribution}</p>
+            <p>{typeof regime.status === "string" ? regime.status : "unavailable"} · distribution: {distribution}</p>
             <p>method/version: {typeof regime.method === "string" ? regime.method : "unavailable"} / {typeof regime.version === "string" ? regime.version : "unavailable"} · sample: {regime.sample_count == null ? "unavailable" : String(regime.sample_count)}</p>
             <p>uncertainty: {typeof regime.uncertainty === "string" ? regime.uncertainty : "unavailable"}</p>
           </div>;
@@ -177,14 +177,15 @@ export function MarketStateProjection({ snapshotRows, coverageRows, posteriorRow
 
 function Phase2Evidence({ posteriorRows, coverageVectorRows, scenarioRows, optionSlaRows, observationRows }: { posteriorRows: RowRecord[]; coverageVectorRows: RowRecord[]; scenarioRows: RowRecord[]; optionSlaRows: RowRecord[]; observationRows: RowRecord[] }) {
   const posterior = isRecord(posteriorRows[0]?.payload) ? posteriorRows[0].payload : posteriorRows[0];
-  const status = isRecord(posterior) ? String(posterior.status ?? posteriorRows[0]?.status ?? "MISSING_HISTORY").toUpperCase() : "MISSING_HISTORY";
+  const status = String(posteriorRows[0]?.status ?? (isRecord(posterior) ? posterior.status : undefined) ?? "MISSING_HISTORY").toUpperCase();
   const confidence = isRecord(posterior) ? String(posterior.overall_confidence ?? "unavailable") : "unavailable";
+  const missingness = isRecord(posterior) ? String(posterior.missingness ?? "unavailable") : "unavailable";
   const sla = isRecord(optionSlaRows[0]?.payload) ? optionSlaRows[0].payload : optionSlaRows[0];
   const tone = phase2StatusTone(status);
   return <div className="space-y-2 rounded border border-border/70 bg-muted/20 p-3 text-[11px]">
     <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Phase 2 evidence</p><StatusBadge tone={tone}>{status}</StatusBadge></div>
     <p className="text-muted-foreground">Posterior status is {status}. Observable baseline and bounded latent challenger are read-only. Advisory-only: no rank or execution authorization.</p>
-    <p>Posterior confidence: {confidence} · retained source facts: {observationRows.length} · reproducible scenarios: {scenarioRows.length}</p>
+    <p>Posterior confidence: {confidence} · missingness: {missingness} · retained source facts: {observationRows.length} · reproducible scenarios: {scenarioRows.length}</p>
     <p>Per-expression coverage rows: {coverageVectorRows.length} · option OI/volume SLA: {isRecord(sla) ? String(sla.status ?? "MISSING_HISTORY").toUpperCase() : "MISSING_HISTORY"} · positioning allowed: {isRecord(sla) ? String(sla.positioning_allowed ?? false) : "false"}</p>
   </div>;
 }

@@ -104,6 +104,7 @@ FIELD_CONTRACTS: dict[str, dict[str, str]] = {
     "crypto.depth": {"definition": "Venue-level executable derivative depth observation.", "clock": "observed_at and available_at."},
     "option.open_interest": {"definition": "Contract-level end-of-session open interest.", "clock": "observed_at and available_at."},
     "option.volume": {"definition": "Contract-level session volume.", "clock": "observed_at and available_at."},
+    "positioning.flow": {"definition": "Reported institutional positioning and flow from SEC 13F filings.", "clock": "filing/publication clock and source available_at; never received_at."},
 }
 
 
@@ -166,7 +167,7 @@ def source_status(source_id: str, *, env: Mapping[str, str] | None = None, has_h
     contract = SOURCE_CONTRACTS.get(str(source_id))
     if contract is None:
         return Phase2Status.UNSUPPORTED
-    if str(source_id) == Phase2Source.SHORT_INTEREST:
+    if str(source_id) in {Phase2Source.SHORT_INTEREST, Phase2Source.COINGECKO}:
         return Phase2Status.UNSUPPORTED
     active_env = os.environ if env is None else env
     if contract.credential_env and not str(active_env.get(contract.credential_env) or "").strip():
@@ -700,14 +701,32 @@ def build_market_state_posterior(
             source_status_values.append(value if isinstance(value, Phase2Status) else Phase2Status(value))
         except ValueError:
             continue
-    status = Phase2Status.AVAILABLE if valid_count else Phase2Status.MISSING_SOURCE if Phase2Status.MISSING_SOURCE in source_status_values else Phase2Status.STALE if Phase2Status.STALE in source_status_values else Phase2Status.UNSUPPORTED if Phase2Status.UNSUPPORTED in source_status_values else Phase2Status.MISSING_HISTORY
+    degraded_statuses = {
+        Phase2Status.MISSING_SOURCE, Phase2Status.MISSING_HISTORY,
+        Phase2Status.STALE, Phase2Status.UNSUPPORTED,
+    }
+    if Phase2Status.MISSING_SOURCE in source_status_values:
+        status = Phase2Status.MISSING_SOURCE
+    elif Phase2Status.STALE in source_status_values:
+        status = Phase2Status.STALE
+    elif Phase2Status.MISSING_HISTORY in source_status_values:
+        status = Phase2Status.MISSING_HISTORY
+    elif Phase2Status.UNSUPPORTED in source_status_values:
+        status = Phase2Status.UNSUPPORTED
+    elif any(row.status is Phase2Status.CONFLICTED for row in rows):
+        status = Phase2Status.CONFLICTED
+    elif any(row.status is Phase2Status.FALLBACK for row in rows):
+        status = Phase2Status.FALLBACK
+    else:
+        status = Phase2Status.AVAILABLE if valid_count else Phase2Status.MISSING_HISTORY
+    degraded_count = sum(value in degraded_statuses for value in source_status_values)
     baseline_dimensions = {}
     for key, group in by_dimension.items():
         labels = [_state_label(float(row.value)) for row in group if row.status in {Phase2Status.AVAILABLE, Phase2Status.FALLBACK} and _number(row.value) is not None]
         counts = Counter(labels)
         baseline_dimensions[key] = {label: (counts[label] / len(labels) if labels else 0.0) for label in STATE_LABELS}
-    baseline = {"method": "observable-frequency.v1", "dimensions": baseline_dimensions, "status": status.value}
-    challenger = {"method": "hmm-noisy-emission.v1", "semantics": "bounded three-state forward HMM with posterior transition-change probability", "dimensions": {key: value.transition_probabilities for key, value in dimensions.items()}, "status": "advisory", "incremental_oos_net_utility": None}
+    baseline = {"method": "observable-frequency.v1", "dimensions": baseline_dimensions, "status": status.value, "degraded_source_count": degraded_count}
+    challenger = {"method": "hmm-noisy-emission.v1", "semantics": "bounded three-state forward HMM with posterior transition-change probability", "dimensions": {key: value.transition_probabilities for key, value in dimensions.items()}, "status": "advisory", "incremental_oos_net_utility": None, "degraded_source_count": degraded_count}
     transitions = {key: value.transition_probabilities for key, value in dimensions.items()}
     payload = {"as_of": cutoff.isoformat(), "status": status.value, "baseline": baseline, "challenger": challenger, "dimensions": {key: value.model_dump(mode="json") for key, value in dimensions.items()}}
     content_hash = input_content_hash or _stable_id("phase2-input", tuple(sorted(row.content_hash or row.observation_id for row in rows)))
@@ -719,9 +738,9 @@ def build_market_state_posterior(
         baseline=baseline,
         challenger=challenger,
         dimensions=dimensions,
-        overall_confidence=(valid_count / total_count) * (sum(row.confidence for row in rows if row.status in {Phase2Status.AVAILABLE, Phase2Status.FALLBACK} and _number(row.value) is not None) / valid_count if valid_count else 0.0) if total_count else 0.0,
+        overall_confidence=(valid_count / max(total_count + degraded_count, 1)) * (sum(row.confidence for row in rows if row.status in {Phase2Status.AVAILABLE, Phase2Status.FALLBACK} and _number(row.value) is not None) / valid_count if valid_count else 0.0) if total_count or degraded_count else 0.0,
         entropy=sum(item.entropy for item in dimensions.values() if item.entropy is not None) / len([item for item in dimensions.values() if item.entropy is not None]) if any(item.entropy is not None for item in dimensions.values()) else None,
-        missingness=1 - (valid_count / total_count if total_count else 0),
+        missingness=1 - (valid_count / max(total_count + degraded_count, 1) if total_count or degraded_count else 0),
         persistence=sum(item.persistence for item in dimensions.values() if item.persistence is not None) / len([item for item in dimensions.values() if item.persistence is not None]) if any(item.persistence is not None for item in dimensions.values()) else None,
         transition_probabilities=transitions,
         ingest_run_ids=tuple(sorted(set(ingest_run_ids))),
@@ -733,15 +752,9 @@ def build_market_state_posterior(
 def posterior_can_influence_rank(posterior: MarketStatePosterior, *, runtime: Any | None = None, phase1_evidence: Mapping[str, Any] | None = None) -> bool:
     """Require independent, verified Phase 1 evidence in addition to utility."""
 
-    if runtime is None or not (
-        not posterior.advisory_only
-        and posterior.rank_authorized
-        and posterior.incremental_oos_net_utility is not None
-        and posterior.incremental_oos_net_utility > 0
-        and posterior.phase1_evidence_verified
-        and posterior.phase1_evidence_id
-        and posterior.phase1_evidence_hash
-    ):
+    if runtime is None or posterior.advisory_only or not posterior.rank_authorized:
+        return False
+    if not posterior.phase1_evidence_id or not posterior.phase1_evidence_hash:
         return False
     # Caller mappings and model_copy fields are not evidence.  The only
     # authorizing fact is the canonical PostgreSQL Phase 1 result and its
@@ -749,12 +762,40 @@ def posterior_can_influence_rank(posterior: MarketStatePosterior, *, runtime: An
     try:
         with runtime.read() as connection:
             row = connection.execute(
-                "SELECT input_hash, analysis.research_evidence_complete(id) AS complete FROM analysis.trial_result WHERE id = %s",
+                """SELECT result.result_kind, result.input_hash,
+                          trial.input_hash AS trial_input_hash,
+                          dossier.strategy_revision_id, revision.strategy_key,
+                          revision.status AS strategy_status,
+                          evaluation.verdict AS evaluation_verdict,
+                          evaluation.metrics AS evaluation_metrics,
+                          analysis.research_evidence_complete(result.id) AS complete
+                   FROM analysis.trial_result result
+                   JOIN analysis.research_trial trial ON trial.id = result.research_trial_id
+                   JOIN analysis.validation_dossier dossier ON dossier.research_trial_id = trial.id
+                   JOIN analysis.strategy_revision revision ON revision.id = dossier.strategy_revision_id
+                   JOIN analysis.strategy_evaluation evaluation
+                     ON evaluation.research_trial_id = trial.id
+                    AND evaluation.strategy_revision_id = revision.id
+                    AND evaluation.evaluation_type = 'out_of_sample'
+                  WHERE result.id = %s""",
                 [posterior.phase1_evidence_id],
             ).fetchone()
     except Exception:
         return False
-    return bool(row and row["complete"] and str(row["input_hash"]) == posterior.phase1_evidence_hash)
+    if not row or not row["complete"] or row["result_kind"] != "validation":
+        return False
+    if str(row["input_hash"]) != str(row["trial_input_hash"]) or str(row["input_hash"]) != posterior.phase1_evidence_hash:
+        return False
+    if not row["strategy_revision_id"] or not row["strategy_key"] or row["strategy_status"] not in {"active", "superseded"}:
+        return False
+    if row["evaluation_verdict"] != "pass":
+        return False
+    metrics = row["evaluation_metrics"] if isinstance(row["evaluation_metrics"], Mapping) else {}
+    utility = metrics.get("lower_confidence_net_utility_after_costs")
+    try:
+        return math.isfinite(float(utility)) and float(utility) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -802,7 +843,7 @@ def build_scenario_paths(snapshot_id: str, posterior: MarketStatePosterior, *, s
 
 def replay_scenario_path(path: ScenarioPath) -> bool:
     expected = _stable_id(path.snapshot_id, path.parent_snapshot_id, path.posterior_id, path.model_version, path.input_content_hash, tuple(path.ingest_run_ids), path.nodes[0].state.split(":", 1)[0] if path.nodes else "", [node.__dict__ for node in path.nodes])
-    return expected == path.scenario_hash
+    return path.path_id == path.scenario_hash and expected == path.scenario_hash
 
 
 def _state_label(value: float) -> str:

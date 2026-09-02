@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -35,7 +36,7 @@ def observation(key: str, field: str, value: float, *, available_at: datetime = 
 
 
 def test_p2_a01_contracts_and_pit_clock_are_canonical() -> None:
-    assert set(("macro.value", "rates.nominal_yield", "rates.real_yield", "credit.spread", "event.actual", "event.consensus", "event.surprise", "event.revision", "corporate.expected", "crypto.venue_derivatives", "option.open_interest", "option.volume")) <= FIELD_CONTRACTS.keys()
+    assert set(("macro.value", "rates.nominal_yield", "rates.real_yield", "credit.spread", "event.actual", "event.consensus", "event.surprise", "event.revision", "corporate.expected", "crypto.venue_derivatives", "option.open_interest", "option.volume", "positioning.flow")) <= FIELD_CONTRACTS.keys()
     selected = select_point_in_time([observation("old", "rates.nominal_yield", 3), observation("future", "rates.nominal_yield", 4, available_at=AS_OF + timedelta(minutes=1))], AS_OF)
     assert [row.observation_id for row in selected.selected] == ["old"]
 
@@ -64,6 +65,8 @@ def test_p2_a03_coverage_is_per_expression_and_fails_closed() -> None:
     rows = {(row.strategy, row.expression): row for row in vector.rows}
     assert rows["trend", "stock"].status is Phase2Status.AVAILABLE
     assert rows["options", "positioning"].status is Phase2Status.MISSING_HISTORY
+    positioning = build_coverage_vector(AS_OF, {"stock": {"flow": ("positioning.flow",)}}, [observation("flow", "positioning.flow", 1, source="sec_13f")])
+    assert positioning.rows[0].status is Phase2Status.AVAILABLE
 
 
 def test_p2_a04_event_keeps_actual_consensus_surprise_revision_and_clocks() -> None:
@@ -121,6 +124,50 @@ def test_p2_a02_unsupported_is_never_pit_selected_or_safe() -> None:
     assert not selection.selected and selection.missing_fields == ("macro.value",)
     assert vector.rows[0].status is Phase2Status.MISSING_HISTORY
     assert not vector.rows[0].point_in_time_safe
+    assert source_status("coingecko") is Phase2Status.UNSUPPORTED
+
+
+def test_p2_a10_mixed_fallback_and_missing_source_never_reports_available() -> None:
+    posterior = build_market_state_posterior(
+        [observation("fallback", "macro.value", 1, source="treasury", status=Phase2Status.FALLBACK)],
+        as_of=AS_OF,
+        source_statuses={"fred": Phase2Status.MISSING_SOURCE, "treasury": Phase2Status.AVAILABLE},
+    )
+    assert posterior.status is Phase2Status.MISSING_SOURCE
+    assert posterior.missingness > 0
+    assert posterior.baseline["degraded_source_count"] == 1
+
+
+class _AdversarialConnection:
+    def execute(self, _query: str, _params: list[str]) -> "_AdversarialConnection":
+        return self
+
+    def fetchone(self) -> dict[str, object]:
+        return {
+            "result_kind": "negative_controls",
+            "input_hash": "phase1-hash",
+            "trial_input_hash": "phase1-hash",
+            "metrics": {"lower_confidence_net_utility_after_costs": 999.0},
+            "outcome": {},
+            "strategy_revision_id": 1,
+            "strategy_key": "forged-strategy",
+            "strategy_status": "active",
+            "complete": True,
+        }
+
+
+class _AdversarialRuntime:
+    @contextmanager
+    def read(self):
+        yield _AdversarialConnection()
+
+
+def test_phase1_rank_authorization_rejects_forged_runtime_evidence() -> None:
+    posterior = build_market_state_posterior([observation("a", "macro.value", 1)], as_of=AS_OF).model_copy(update={
+        "advisory_only": False, "rank_authorized": True, "incremental_oos_net_utility": 999.0,
+        "phase1_evidence_verified": True, "phase1_evidence_id": "forged", "phase1_evidence_hash": "phase1-hash",
+    })
+    assert not posterior_can_influence_rank(posterior, runtime=_AdversarialRuntime())
 
 
 def test_missing_source_and_history_are_never_selected_and_explain_coverage() -> None:
@@ -168,4 +215,5 @@ def test_p2_a11_scenario_hash_replays_and_tampering_fails() -> None:
     path = build_scenario_paths("snapshot-1", posterior)[0]
     assert replay_scenario_path(path)
     assert not replay_scenario_path(path.model_copy(update={"scenario_hash": "tampered"}))
+    assert not replay_scenario_path(path.model_copy(update={"path_id": "tampered"}))
     assert not replay_scenario_path(path.model_copy(update={"parent_snapshot_id": "other-snapshot"}))

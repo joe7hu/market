@@ -88,6 +88,8 @@ def source_health_contract(
         state = str(requested_state).strip().lower()
         if state not in VALID_OPERATIONAL_STATES:
             raise ValueError(f"invalid source operational state: {requested_state}")
+        if state == ACTIVE and source_id in _RETIRED_IDENTITIES:
+            raise ValueError(f"retired source {source_id!r} cannot be active")
         if state == ARCHIVED:
             return SourceHealthContract(ARCHIVED, None, None)
 
