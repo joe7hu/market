@@ -140,7 +140,7 @@ def upgrade() -> None:
             metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
             UNIQUE (champion_revision_id, challenger_revision_id, input_cutoff, input_hash),
             CHECK (champion_revision_id <> challenger_revision_id),
-            CHECK (distinctness IN ('distinct', 'replica', 'exposure_sleeve', 'inconclusive')),
+            CHECK (distinctness IN ('distinct', 'replica', 'exposure_sleeve', 'inconclusive', 'blocked')),
             CHECK (available_at <= observed_at AND available_at <= input_cutoff),
             CHECK (input_hash ~ '^[0-9a-f]{64}$')
         );
@@ -165,6 +165,12 @@ def upgrade() -> None:
                           OR observation.available_at > trial.input_cutoff
                           OR jsonb_typeof(observation.outcome) <> 'object'
                           OR observation.outcome = '{}'::jsonb)
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM analysis.trial_result result
+                   JOIN analysis.research_trial trial ON trial.id = result.research_trial_id
+                   WHERE result.research_trial_id = trial_uuid
+                     AND result.available_at > trial.input_cutoff
                )
         $$;
 
@@ -249,6 +255,17 @@ def upgrade() -> None:
                OR NEW.available_at > NEW.input_cutoff THEN
                 RAISE EXCEPTION 'Phase 3 P&L tape has invalid canonical lineage or PIT clock';
             END IF;
+            IF NOT analysis.research_trial_p3_denominator_complete(NEW.research_trial_id)
+               OR NOT EXISTS (
+                   SELECT 1 FROM analysis.universe_observation observation
+                   WHERE observation.research_trial_id = NEW.research_trial_id
+                     AND observation.instrument_id = NEW.instrument_id
+                     AND observation.cutoff = NEW.input_cutoff
+                     AND observation.input_hash = (SELECT input_hash FROM analysis.research_trial WHERE id = NEW.research_trial_id)
+                     AND observation.outcome <> '{}'::jsonb
+               ) THEN
+                RAISE EXCEPTION 'Phase 3 P&L tape requires a complete canonical trial denominator';
+            END IF;
             NEW.input_hash := analysis.phase3_json_hash(jsonb_build_object(
                 'strategy_revision_id', NEW.strategy_revision_id,
                 'strategy_forecast_id', NEW.strategy_forecast_id,
@@ -271,8 +288,10 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION analysis.enforce_phase3_monitoring()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE result_input_hash TEXT; manifest_digest TEXT; trial_input_cutoff TIMESTAMPTZ;
-              tape_count INTEGER;
-              mean_return DOUBLE PRECISION; mean_cost DOUBLE PRECISION; tape_hashes JSONB;
+              tape_count INTEGER; forecast_count INTEGER; instrument_count INTEGER;
+              tail_count INTEGER; regime_count INTEGER;
+              mean_return DOUBLE PRECISION; mean_cost DOUBLE PRECISION; max_cost DOUBLE PRECISION;
+              tape_hashes JSONB;
         BEGIN
             SELECT input_hash::TEXT INTO result_input_hash FROM analysis.trial_result
             WHERE id = NEW.trial_result_id AND research_trial_id = NEW.research_trial_id;
@@ -287,31 +306,65 @@ def upgrade() -> None:
                OR NEW.available_at > NEW.input_cutoff THEN
                 RAISE EXCEPTION 'Phase 3 monitoring evidence has invalid trial, manifest, or PIT lineage';
             END IF;
-            SELECT count(*), avg(net_return), avg(cost),
-                   COALESCE(jsonb_agg(to_jsonb(input_hash::TEXT) ORDER BY id), '[]'::jsonb)
-              INTO tape_count, mean_return, mean_cost, tape_hashes
-              FROM analysis.strategy_pnl_tape
-             WHERE strategy_revision_id = NEW.strategy_revision_id
-               AND research_trial_id = NEW.research_trial_id
-               AND trial_result_id = NEW.trial_result_id
-               AND universe_manifest_hash::TEXT = NEW.universe_manifest_hash::TEXT
-               AND result_hash::TEXT = NEW.result_hash::TEXT
-               AND available_at <= NEW.input_cutoff;
-            IF tape_count = 0 THEN
+            SELECT count(*), count(DISTINCT tape.instrument_id),
+                   count(*) FILTER (WHERE tape.tail_return IS NOT NULL),
+                   count(DISTINCT tape.regime) FILTER (WHERE tape.regime IS NOT NULL),
+                   count(forecast.id), avg(tape.net_return), avg(tape.cost), max(tape.cost),
+                   COALESCE(jsonb_agg(to_jsonb(tape.input_hash::TEXT) ORDER BY tape.id), '[]'::jsonb)
+              INTO tape_count, instrument_count, tail_count, regime_count, forecast_count,
+                   mean_return, mean_cost, max_cost, tape_hashes
+              FROM analysis.strategy_pnl_tape tape
+              JOIN analysis.strategy_forecast forecast
+                ON forecast.id = tape.strategy_forecast_id
+               AND forecast.research_trial_id = tape.research_trial_id
+               AND forecast.trial_result_id = tape.trial_result_id
+               AND forecast.universe_manifest_hash::TEXT = tape.universe_manifest_hash::TEXT
+               AND forecast.result_hash::TEXT = tape.result_hash::TEXT
+             WHERE tape.strategy_revision_id = NEW.strategy_revision_id
+               AND tape.research_trial_id = NEW.research_trial_id
+               AND tape.trial_result_id = NEW.trial_result_id
+               AND tape.universe_manifest_hash::TEXT = NEW.universe_manifest_hash::TEXT
+               AND tape.result_hash::TEXT = NEW.result_hash::TEXT
+               AND tape.available_at <= NEW.input_cutoff
+               AND forecast.available_at <= NEW.input_cutoff;
+            IF tape_count = 0 OR forecast_count <> tape_count THEN
                 RAISE EXCEPTION 'Phase 3 monitoring evidence requires canonical P&L tape lineage';
+            END IF;
+            IF (NEW.evidence_kind = 'correlation' AND tape_count < 2)
+               OR (NEW.evidence_kind = 'tail_correlation' AND tail_count = 0)
+               OR (NEW.evidence_kind = 'crowding' AND instrument_count = 0)
+               OR (NEW.evidence_kind = 'capacity' AND max_cost IS NULL)
+               OR (NEW.evidence_kind = 'decay' AND tape_count < 2)
+               OR (NEW.evidence_kind = 'regime' AND regime_count = 0) THEN
+                RAISE EXCEPTION 'Phase 3 monitoring evidence kind lacks required canonical metric';
             END IF;
             NEW.lineage := jsonb_build_object(
                 'research_trial_id', NEW.research_trial_id,
                 'trial_result_id', NEW.trial_result_id,
                 'universe_manifest_hash', NEW.universe_manifest_hash,
+                'result_hash', NEW.result_hash,
+                'forecast_observation_count', forecast_count,
                 'pnl_input_hashes', tape_hashes,
                 'generated_by', 'postgresql'
             );
             NEW.metrics := jsonb_build_object(
                 'evidence_kind', NEW.evidence_kind,
                 'pnl_observation_count', tape_count,
+                'instrument_count', instrument_count,
+                'tail_observation_count', tail_count,
+                'regime_count', regime_count,
                 'mean_net_return', mean_return,
-                'mean_cost', mean_cost
+                'mean_cost', mean_cost,
+                'max_cost', max_cost,
+                'required_metric', CASE NEW.evidence_kind
+                    WHEN 'correlation' THEN 'pnl_observation_count'
+                    WHEN 'tail_correlation' THEN 'tail_observation_count'
+                    WHEN 'crowding' THEN 'instrument_count'
+                    WHEN 'capacity' THEN 'max_cost'
+                    WHEN 'decay' THEN 'pnl_observation_count'
+                    WHEN 'regime' THEN 'regime_count'
+                END,
+                'generated_by', 'postgresql'
             );
             NEW.evidence := jsonb_build_object(
                 'canonical_pnl_input_hashes', tape_hashes,
@@ -338,11 +391,12 @@ def upgrade() -> None:
               champion_trial_cutoff TIMESTAMPTZ; challenger_trial_cutoff TIMESTAMPTZ;
               pair_count INTEGER; return_correlation DOUBLE PRECISION; computed_distinctness TEXT;
               champion_hashes JSONB; challenger_hashes JSONB; challenger_class TEXT;
+              champion_outcome JSONB; challenger_outcome JSONB; factor_evidence_valid BOOLEAN;
         BEGIN
-            SELECT input_hash::TEXT INTO champion_result FROM analysis.trial_result
+            SELECT input_hash::TEXT, outcome INTO champion_result, champion_outcome FROM analysis.trial_result
             WHERE id = NEW.champion_result_id AND research_trial_id = NEW.champion_trial_id
               AND input_hash::TEXT = NEW.champion_result_hash::TEXT;
-            SELECT input_hash::TEXT INTO challenger_result FROM analysis.trial_result
+            SELECT input_hash::TEXT, outcome INTO challenger_result, challenger_outcome FROM analysis.trial_result
             WHERE id = NEW.challenger_result_id AND research_trial_id = NEW.challenger_trial_id
               AND input_hash::TEXT = NEW.challenger_result_hash::TEXT;
             SELECT manifest_hash::TEXT INTO champion_manifest FROM analysis.strategy_manifest
@@ -382,7 +436,14 @@ def upgrade() -> None:
                AND challenger.available_at <= NEW.input_cutoff;
             SELECT promotability INTO challenger_class FROM analysis.strategy_revision
             WHERE id = NEW.challenger_revision_id;
+            factor_evidence_valid := COALESCE(jsonb_typeof(champion_outcome->'factor_exposure') = 'object'
+                AND champion_outcome->'factor_exposure' <> '{}'::jsonb
+                AND champion_outcome->>'neutralized' = 'true'
+                AND jsonb_typeof(challenger_outcome->'factor_exposure') = 'object'
+                AND challenger_outcome->'factor_exposure' <> '{}'::jsonb
+                AND challenger_outcome->>'neutralized' = 'true', false);
             computed_distinctness := CASE
+                WHEN NOT factor_evidence_valid THEN 'blocked'
                 WHEN challenger_class = 'exposure_sleeve' THEN 'exposure_sleeve'
                 WHEN pair_count < 2 OR return_correlation IS NULL THEN 'inconclusive'
                 WHEN abs(return_correlation) >= 0.8 THEN 'replica'
@@ -438,20 +499,26 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION analysis.enforce_phase3_strategy_status()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE evidence_count INTEGER; pnl_count INTEGER; forecast_count INTEGER;
+                member_count INTEGER; invalid_member_count INTEGER;
                 comparison_count INTEGER; expected_count INTEGER;
                 promotion_trial UUID; promotion_result UUID; promotion_result_hash TEXT;
                 promotion_manifest_hash TEXT; martingale_family BOOLEAN;
         BEGIN
-            martingale_family := lower(coalesce(NEW.strategy_family, '')) = 'martingale'
-                OR lower(coalesce(NEW.mechanism_class, '')) = 'martingale'
-                OR lower(NEW.strategy_key) ~ '(^|_)martingale(_|$)'
-                OR lower(coalesce(NEW.name, '')) ~ '(^|[^a-z])martingale([^a-z]|$)';
+            martingale_family := position('martingale' in lower(coalesce(NEW.strategy_family, ''))) > 0
+                OR position('martingale' in lower(coalesce(NEW.mechanism_class, ''))) > 0
+                OR position('martingale' in lower(coalesce(NEW.strategy_key, ''))) > 0
+                OR position('martingale' in lower(coalesce(NEW.name, ''))) > 0;
             IF martingale_family AND (
                 NEW.status IN ('active', 'promoted')
                 OR NEW.promotability <> 'negative_control'
                 OR NEW.actionability <> 'research_only'
             ) THEN
                 RAISE EXCEPTION 'Martingale strategy family is a permanent research-only negative control';
+            END IF;
+            IF TG_OP = 'UPDATE' AND OLD.p3_enabled
+               AND OLD.status IS DISTINCT FROM NEW.status
+               AND current_setting('analysis.phase3_transition', true) IS DISTINCT FROM 'canonical' THEN
+                RAISE EXCEPTION 'Phase 3 status changes require the canonical evidence-backed transition';
             END IF;
             IF NEW.p3_enabled AND NEW.status IN ('active', 'promoted') THEN
                 IF NEW.promotability <> 'standard' THEN
@@ -474,6 +541,7 @@ def upgrade() -> None:
                  WHERE dossier.strategy_revision_id = NEW.id
                    AND dossier.status = 'sealed'
                    AND trial.status = 'succeeded'
+                   AND result.available_at <= trial.input_cutoff
                    AND analysis.research_trial_p3_denominator_complete(trial.id)
                    AND manifest.available_at <= trial.input_cutoff
                  ORDER BY result.available_at DESC
@@ -481,8 +549,16 @@ def upgrade() -> None:
                 IF promotion_trial IS NULL THEN
                     RAISE EXCEPTION 'Phase 3 strategy promotion requires complete PIT denominator outcomes';
                 END IF;
-                SELECT count(*), count(DISTINCT strategy_forecast_id)
-                  INTO pnl_count, forecast_count
+                SELECT count(*), count(DISTINCT strategy_forecast_id), count(DISTINCT instrument_id),
+                       count(*) FILTER (WHERE NOT EXISTS (
+                           SELECT 1 FROM analysis.universe_observation observation
+                           WHERE observation.research_trial_id = strategy_pnl_tape.research_trial_id
+                             AND observation.instrument_id = strategy_pnl_tape.instrument_id
+                             AND observation.cutoff = strategy_pnl_tape.input_cutoff
+                             AND observation.input_hash = (SELECT input_hash FROM analysis.research_trial WHERE id = strategy_pnl_tape.research_trial_id)
+                             AND observation.outcome <> '{}'::jsonb
+                       ))
+                  INTO pnl_count, forecast_count, member_count, invalid_member_count
                   FROM analysis.strategy_pnl_tape
                  WHERE strategy_revision_id = NEW.id
                    AND research_trial_id = promotion_trial
@@ -490,7 +566,8 @@ def upgrade() -> None:
                    AND result_hash::TEXT = promotion_result_hash
                    AND universe_manifest_hash::TEXT = promotion_manifest_hash
                    AND available_at <= input_cutoff;
-                IF pnl_count <> expected_count OR forecast_count <> expected_count THEN
+                IF pnl_count <> expected_count OR forecast_count <> expected_count
+                   OR member_count <> expected_count OR invalid_member_count <> 0 THEN
                     RAISE EXCEPTION 'Phase 3 promotion requires complete canonical P&L and forecast linkage';
                 END IF;
                 SELECT count(DISTINCT evidence_kind) INTO evidence_count
@@ -500,7 +577,11 @@ def upgrade() -> None:
                   AND trial_result_id = promotion_result
                   AND result_hash::TEXT = promotion_result_hash
                   AND universe_manifest_hash::TEXT = promotion_manifest_hash
-                  AND available_at <= input_cutoff;
+                  AND available_at <= input_cutoff
+                  AND metrics->>'generated_by' = 'postgresql'
+                  AND lineage->>'generated_by' = 'postgresql'
+                  AND evidence->>'generated_by' = 'postgresql'
+                  AND metrics->>'required_metric' IS NOT NULL;
                 IF evidence_count <> 6 THEN
                     RAISE EXCEPTION 'Phase 3 active strategy requires correlation, tail, crowding, capacity, decay, and regime evidence';
                 END IF;
@@ -527,6 +608,22 @@ def upgrade() -> None:
             BEFORE INSERT OR UPDATE OF status, promotability, actionability, strategy_family,
                                       strategy_key, mechanism_class, p3_enabled ON analysis.strategy_revision
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase3_strategy_status();
+
+        CREATE OR REPLACE FUNCTION analysis.promote_phase3_strategy(revision_id BIGINT)
+        RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER
+        SET search_path = pg_catalog, analysis, public AS $$
+        BEGIN
+            PERFORM set_config('analysis.phase3_transition', 'canonical', true);
+            UPDATE analysis.strategy_revision
+               SET status = 'active', promoted_at = clock_timestamp()
+             WHERE id = revision_id;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'unknown Phase 3 strategy revision: %', revision_id;
+            END IF;
+        END;
+        $$;
+        REVOKE ALL ON FUNCTION analysis.promote_phase3_strategy(BIGINT) FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION analysis.promote_phase3_strategy(BIGINT) TO market_app;
 
         CREATE VIEW analysis.strategy_registry AS
         SELECT revision.id AS strategy_revision_id, revision.strategy_key, revision.revision,
@@ -583,6 +680,7 @@ def downgrade() -> None:
         DROP VIEW IF EXISTS analysis.strategy_registry;
         DROP TRIGGER IF EXISTS enforce_phase3_strategy_status ON analysis.strategy_revision;
         DROP FUNCTION IF EXISTS analysis.enforce_phase3_strategy_status();
+        DROP FUNCTION IF EXISTS analysis.promote_phase3_strategy(BIGINT);
         DROP TRIGGER IF EXISTS enforce_strategy_comparison_lineage ON analysis.strategy_comparison;
         DROP TRIGGER IF EXISTS enforce_strategy_comparison_immutable ON analysis.strategy_comparison;
         DROP TRIGGER IF EXISTS enforce_strategy_monitoring_lineage ON analysis.strategy_monitoring_evidence;

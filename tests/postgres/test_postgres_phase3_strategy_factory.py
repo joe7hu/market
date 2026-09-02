@@ -114,6 +114,34 @@ def test_phase3_evidence_is_immutable_and_martingale_is_not_promotable(
                 [Jsonb({"paper_only": True})],
             )
         connection.execute("ROLLBACK TO SAVEPOINT martingale_variant")
+        connection.execute("SAVEPOINT martingale_family_variant")
+        with pytest.raises(psycopg.errors.RaiseException, match="permanent research-only"):
+            connection.execute(
+                """INSERT INTO analysis.strategy_revision
+                   (strategy_key, revision, name, status, parameters, mechanism_class,
+                    economic_mechanism, falsification_rule, source_definition_version,
+                    strategy_family, promotability, actionability, authority_group)
+                   VALUES ('ordinary_control_v1', 1, 'Ordinary control', %s, %s, 'trend_underreaction',
+                           'negative control', 'never promote', 'ordinary.v1', 'martingale_v2',
+                           'standard', 'daily_research', 'martingale-family-test')""",
+                ["candidate", Jsonb({"paper_only": True})],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT martingale_family_variant")
+
+
+def test_phase3_repository_rejects_conflicting_registration_identity(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = StrategyFactoryRepository(runtime)
+        spec = default_strategy_registry().resolve("daily_trend_underreaction_v1")
+        repository.register(spec)
+        with pytest.raises(ValueError, match="identity conflicts"):
+            repository.register(spec.model_copy(update={"name": "conflicting name"}))
+        with pytest.raises(psycopg.errors.RaiseException, match="complete PIT denominator outcomes"):
+            repository.promote(repository.register(spec))
+    finally:
+        runtime.close()
 
 
 def test_phase3_repository_resolves_only_postgres_registered_strategy(migrated_postgres_dsn: str) -> None:
@@ -177,11 +205,26 @@ def test_phase3_evidence_requires_canonical_pit_lineage_and_computed_claims(
                    VALUES (%s, %s, %s, 'test', %s, now()) RETURNING id""",
                 [family, f"{key}-trial", cutoff, str(index + 3) * 64],
             ).fetchone()[0]
+            expected_members = Jsonb([str(instrument) for instrument in instruments])
+            connection.execute(
+                """INSERT INTO analysis.trial_universe_manifest
+                   (research_trial_id, cutoff, expected_member_count, expected_members, manifest_hash, available_at)
+                   VALUES (%s, %s, %s, %s,
+                           encode(public.digest(convert_to(replace(%s::JSONB::TEXT, ' ', ''), 'UTF8'), 'sha256'), 'hex'), now())""",
+                [trial, cutoff, len(instruments), expected_members, expected_members],
+            )
+            for rank, instrument in enumerate(instruments, start=1):
+                connection.execute(
+                    """INSERT INTO analysis.universe_observation
+                       (research_trial_id, instrument_id, cutoff, eligible, rank, observed_at, available_at, input_hash, outcome)
+                       VALUES (%s, %s, %s, true, %s, now(), now(), %s, %s)""",
+                    [trial, instrument, cutoff, rank, str(index + 3) * 64, Jsonb({"net_return": 0.1})],
+                )
             result = connection.execute(
                 """INSERT INTO analysis.trial_result
                    (research_trial_id, result_kind, observed_at, available_at, input_hash, outcome)
                    VALUES (%s, 'validation', now(), now(), %s, %s) RETURNING id, input_hash""",
-                [trial, str(index + 4) * 64, Jsonb({"passed": True})],
+                [trial, str(index + 4) * 64, Jsonb({"passed": True, "neutralized": True, "factor_exposure": {"market_beta": 0.1}})],
             ).fetchone()
             connection.execute(
                 """INSERT INTO analysis.strategy_manifest
@@ -236,11 +279,12 @@ def test_phase3_evidence_requires_canonical_pit_lineage_and_computed_claims(
                     """INSERT INTO analysis.strategy_pnl_tape
                        (strategy_revision_id, instrument_id, pnl_date, strategy_forecast_id,
                         research_trial_id, trial_result_id, universe_manifest_hash, result_hash,
-                        input_cutoff, gross_return, cost, net_return, observed_at, available_at, input_hash)
+                        input_cutoff, gross_return, cost, net_return, tail_return, regime, observed_at, available_at, input_hash)
                        VALUES (%s, %s, '2026-09-02', %s, %s, %s, %s, %s, %s, 0.1, 0.01,
                                CASE WHEN %s::BIGINT = %s::BIGINT THEN 0.09 ELSE 0.18 END,
-                               now(), now(), %s)""",
-                    [revision, instrument, forecast_id, trials[index], results[index][0], manifests[index], results[index][1], cutoff, instruments[0], instrument, "0" * 64],
+                               CASE WHEN %s::BIGINT = %s::BIGINT THEN 0.08 ELSE 0.17 END,
+                               'normal', now(), now(), %s)""",
+                    [revision, instrument, forecast_id, trials[index], results[index][0], manifests[index], results[index][1], cutoff, instruments[0], instrument, instruments[0], instrument, "0" * 64],
                 )
         connection.execute("SAVEPOINT invalid_pnl_lineage")
         with pytest.raises(psycopg.errors.RaiseException, match="invalid canonical lineage"):
@@ -284,6 +328,32 @@ def test_phase3_evidence_requires_canonical_pit_lineage_and_computed_claims(
         ).fetchone()
         assert comparison[0] == "replica"
         assert comparison[1]["generated_by"] == "postgresql"
+        blocked_results = [
+            connection.execute(
+                """INSERT INTO analysis.trial_result
+                   (research_trial_id, result_kind, result_version, observed_at, available_at, input_hash, outcome)
+                   VALUES (%s, 'validation', 2, now(), now(), %s, %s) RETURNING id, input_hash""",
+                [trial, str(index + 7) * 64, Jsonb({"passed": True})],
+            ).fetchone()
+            for index, trial in enumerate(trials, start=1)
+        ]
+        connection.execute(
+            """INSERT INTO analysis.strategy_comparison
+               (champion_revision_id, challenger_revision_id, champion_trial_id, challenger_trial_id,
+                champion_result_id, challenger_result_id, champion_result_hash, challenger_result_hash,
+                champion_manifest_hash, challenger_manifest_hash, input_cutoff, observed_at, available_at,
+                input_hash, distinctness, explanation, metrics)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now(), %s,
+                       'distinct', 'caller claim', %s)""",
+            [revisions[0], revisions[1], trials[0], trials[1], blocked_results[0][0], blocked_results[1][0],
+             blocked_results[0][1], blocked_results[1][1], manifests[0], manifests[1], cutoff, "0" * 64,
+             Jsonb({"caller_forge": True})],
+        )
+        blocked_comparison = connection.execute(
+            "SELECT distinctness FROM analysis.strategy_comparison WHERE champion_result_id = %s",
+            [blocked_results[0][0]],
+        ).fetchone()[0]
+        assert blocked_comparison == "blocked"
 
 
 def test_phase3_trial_accounting_requires_full_outcome_denominator(migrated_postgres_dsn: str) -> None:

@@ -29,9 +29,14 @@ class StrategyFactoryRepository:
         family = "martingale" if is_martingale_family(
             spec.strategy_key, spec.mechanism_class, spec.name, spec.strategy_family,
         ) else spec.strategy_family
+        authority_group = f"phase3:{spec.strategy_key}"
         with self.runtime.transaction(JOB_PROFILE) as connection:
             existing = connection.execute(
-                "SELECT id FROM analysis.strategy_revision WHERE strategy_key = %s AND revision = %s",
+                """SELECT id, name, mechanism_class, economic_mechanism, falsification_rule,
+                          source_definition_version, strategy_family, promotability,
+                          actionability, p3_enabled, parameters, authority_group
+                     FROM analysis.strategy_revision
+                    WHERE strategy_key = %s AND revision = %s""",
                 [spec.strategy_key, spec.revision],
             ).fetchone()
             if existing is not None:
@@ -42,7 +47,18 @@ class StrategyFactoryRepository:
                     [existing["id"]],
                 ).fetchone()
                 if manifest is None or (
-                    manifest["source_definition_version"] != spec.source_definition_version
+                    existing["name"] != spec.name
+                    or existing["mechanism_class"] != spec.mechanism_class
+                    or existing["economic_mechanism"] != spec.economic_mechanism
+                    or existing["falsification_rule"] != spec.falsification_rule
+                    or existing["source_definition_version"] != spec.source_definition_version
+                    or existing["strategy_family"] != family
+                    or existing["promotability"] != spec.promotability
+                    or existing["actionability"] != spec.actionability
+                    or existing["p3_enabled"] is not True
+                    or existing["parameters"] != spec.parameters
+                    or existing["authority_group"] != authority_group
+                    or manifest["source_definition_version"] != spec.source_definition_version
                     or any(manifest[f"{key}_manifest"] != spec.manifest[key] for key in MANIFEST_PARTS)
                 ):
                     raise ValueError("strategy revision or manifest identity conflicts")
@@ -58,7 +74,7 @@ class StrategyFactoryRepository:
                 [spec.strategy_key, spec.revision, spec.name, status, Jsonb(spec.parameters), supersedes_id,
                  spec.mechanism_class, spec.economic_mechanism, spec.falsification_rule,
                  spec.source_definition_version, family, spec.promotability, spec.actionability,
-                 f"phase3:{family}"],
+                 authority_group],
             ).fetchone()["id"]
             connection.execute(
                 """INSERT INTO analysis.strategy_manifest
@@ -166,7 +182,7 @@ class StrategyFactoryRepository:
 
     def promote(self, strategy_revision_id: int) -> None:
         with self.runtime.transaction(JOB_PROFILE) as connection:
-            connection.execute("UPDATE analysis.strategy_revision SET status = 'active', promoted_at = clock_timestamp() WHERE id = %s", [strategy_revision_id])
+            connection.execute("SELECT analysis.promote_phase3_strategy(%s)", [strategy_revision_id])
 
     def rows(self, *, limit: int = 100) -> dict[str, list[dict[str, Any]]]:
         safe_limit = max(1, min(int(limit), 500))

@@ -20,14 +20,14 @@ MECHANISM_CLASSES = (
 MANIFEST_PARTS = ("source", "data", "cost", "capacity", "failure")
 
 
-def strategy_family_for_key(strategy_key: str, mechanism_class: str = "", name: str = "") -> str:
-    if "martingale" in f"{strategy_key} {mechanism_class} {name}".lower():
+def strategy_family_for_key(strategy_key: str, mechanism_class: str = "", name: str = "", strategy_family: str = "") -> str:
+    if "martingale" in f"{strategy_key} {mechanism_class} {name} {strategy_family}".casefold():
         return "martingale"
     return "legacy"
 
 
 def is_martingale_family(strategy_key: str, mechanism_class: str = "", name: str = "", strategy_family: str = "") -> bool:
-    return strategy_family.lower() == "martingale" or strategy_family_for_key(strategy_key, mechanism_class, name) == "martingale"
+    return strategy_family_for_key(strategy_key, mechanism_class, name, strategy_family) == "martingale"
 
 
 class StrategySpec(BaseModel):
@@ -153,6 +153,9 @@ def _daily_rows(inputs: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     rows = [
         row for row in inputs.get("daily_bars", ())
         if isinstance(row, Mapping)
+        and row.get("status") == "confirmed"
+        and row.get("confirmed") is True
+        and row.get("disabled") is not True
         and (observed := _parse_clock(row.get("observed_at"))) is not None
         and (available := _parse_clock(row.get("available_at"))) is not None
         and observed <= cutoff and available <= cutoff
@@ -210,7 +213,7 @@ def daily_gap_regime(inputs: Mapping[str, Any], *, strategy_key: str = "daily_ga
 def event_propagation(inputs: Mapping[str, Any], *, strategy_key: str = "daily_event_propagation_v1") -> StrategySignal:
     event = inputs.get("event")
     cutoff = _parse_clock(inputs.get("input_cutoff"))
-    if not isinstance(event, Mapping) or cutoff is None or not event.get("release_at"):
+    if not isinstance(event, Mapping) or cutoff is None or event.get("status") != "confirmed" or event.get("confirmed") is not True or event.get("disabled") is True or not event.get("release_at"):
         return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_release_clock_missing",))
     release_at = _parse_clock(event.get("release_at"))
     observed_at = _parse_clock(event.get("observed_at"))
@@ -221,7 +224,7 @@ def event_propagation(inputs: Mapping[str, Any], *, strategy_key: str = "daily_e
     if actual is None or consensus is None:
         return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_actual_or_consensus_missing",))
     surprise = actual - consensus
-    fill_ready = bool(inputs.get("fill_model_proven"))
+    fill_ready = inputs.get("fill_model_proven") is True
     return StrategySignal(
         strategy_key=strategy_key, status="available", value=surprise,
         direction="long" if surprise > 0 else "short" if surprise < 0 else "flat",
@@ -232,8 +235,12 @@ def event_propagation(inputs: Mapping[str, Any], *, strategy_key: str = "daily_e
 
 
 def options_recovery_v2(inputs: Mapping[str, Any], *, strategy_key: str = "options_recovery_v2") -> StrategySignal:
+    cutoff = _parse_clock(inputs.get("input_cutoff"))
     required = ("full_chain_state", "oi_volume_state", "dividend_state")
-    blockers = tuple(f"{key}_invalid" for key in required if not isinstance(inputs.get(key), Mapping) or not inputs[key])
+    blockers = tuple(
+        f"{key}_invalid" for key in required
+        if cutoff is None or not _authoritative_state(inputs.get(key), cutoff)
+    )
     quote_quality = inputs.get("quote_quality")
     if not isinstance(quote_quality, (int, float)) or isinstance(quote_quality, bool) or not isfinite(float(quote_quality)) or float(quote_quality) < 0:
         blockers += ("quote_quality_invalid",)
@@ -242,6 +249,14 @@ def options_recovery_v2(inputs: Mapping[str, Any], *, strategy_key: str = "optio
     if blockers:
         return StrategySignal(strategy_key=strategy_key, status="unavailable", actionability="shadow_only", blockers=blockers)
     return StrategySignal(strategy_key=strategy_key, status="available", actionability="shadow_only", evidence={"controls": [*required, "quote_quality", "fill_model_proven"], "paper_only": True})
+
+
+def _authoritative_state(value: Any, cutoff: datetime) -> bool:
+    if not isinstance(value, Mapping) or not value or value.get("status") != "confirmed" or value.get("confirmed") is not True or value.get("disabled") is True:
+        return False
+    available_at = _parse_clock(value.get("available_at"))
+    observed_at = _parse_clock(value.get("observed_at"))
+    return available_at is not None and observed_at is not None and available_at <= cutoff and observed_at <= cutoff
 
 
 def crypto_funding_basis(inputs: Mapping[str, Any] | None = None, *, strategy_key: str = "crypto_funding_basis_v1") -> StrategySignal:
