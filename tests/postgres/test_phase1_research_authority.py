@@ -9,7 +9,10 @@ from investment_panel.analysis.stock_alpha import content_hash
 from investment_panel.database.migrations import upgrade_database
 
 
-def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str) -> None:
+def test_phase1_trial_dossier_forecast_and_universe_authority(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MARKET_RESEARCH_EVALUATOR_SIGNING_KEY", "phase1-test-signing-key")
     upgrade_database(postgres_dsn)
     cutoff = datetime.now(UTC) + timedelta(days=1)
     with psycopg.connect(postgres_dsn) as connection:
@@ -192,7 +195,6 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             [cutoff, "9" * 64, Jsonb({"fixture": True}), Jsonb({"fixture": True})],
         ).fetchone()[0]
         signing_key = "phase1-test-signing-key"
-        connection.execute("SELECT set_config('app.research_evaluator_signing_key', %s, true)", [signing_key])
         source_rows = {}
         for kind, payload in evidence_payloads.items():
             payload = {
@@ -229,6 +231,23 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                      content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload), output_hash, signature, available_at],
             ).fetchone()
         connection.execute("SAVEPOINT forged_evaluator_output")
+        attacker_available = connection.execute("SELECT clock_timestamp() AS now").fetchone()[0]
+        attacker_hash = connection.execute(
+            """SELECT analysis.research_evaluator_output_hash_v2(
+                       %s, %s, %s, 'controls', 'fixture.v1', 'fixture-code.v1',
+                       %s, %s, %s, 2, true, %s, %s)""",
+            [successful_trial, validation_result, evaluator_run, "9" * 64,
+             content_hash([str(instrument)]), "b" * 64, Jsonb(source_rows["controls"][2]), attacker_available],
+        ).fetchone()[0]
+        attacker_signature = connection.execute(
+            """SELECT encode(hmac(convert_to(analysis.research_evaluator_signature_payload(
+                       %s, %s, %s, 'controls', 'fixture.v1', 'fixture-code.v1',
+                       %s, %s, %s, 2, true, %s, %s), 'UTF8'),
+                       convert_to('attacker-key', 'UTF8'), 'sha256'::TEXT), 'hex')""",
+            [successful_trial, validation_result, evaluator_run, "9" * 64,
+             content_hash([str(instrument)]), "b" * 64, attacker_hash, attacker_available],
+        ).fetchone()[0]
+        connection.execute("SELECT set_config('app.research_evaluator_signing_key', 'attacker-key', true)")
         with pytest.raises(psycopg.errors.RaiseException, match="signature or content hash"):
             connection.execute(
                 """INSERT INTO analysis.research_evaluator_output
@@ -238,7 +257,7 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                    VALUES (%s, %s, %s, 'controls', 'fixture.v1', 'fixture-code.v1', %s, %s,
                            %s, 2, true, %s, %s, %s, now())""",
                 [successful_trial, validation_result, evaluator_run, "9" * 64,
-                 content_hash([str(instrument)]), "b" * 64, Jsonb(source_rows["controls"][2]), "f" * 64, "f" * 64],
+                 content_hash([str(instrument)]), "b" * 64, Jsonb(source_rows["controls"][2]), attacker_hash, attacker_signature],
             )
         connection.execute("ROLLBACK TO SAVEPOINT forged_evaluator_output")
         for kind, payload in evidence_payloads.items():

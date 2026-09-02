@@ -573,7 +573,6 @@ def _persist_research_evidence(
          trial_input_hash, Jsonb({"trial_result_id": str(result_id), "evidence_groups": 6}),
          Jsonb({"trial_result_id": str(result_id), "evaluator_id": EVALUATOR_ID})],
     ).fetchone()["id"]
-    connection.execute("SELECT set_config('app.research_evaluator_signing_key', %s, true)", [signing_key])
     for kind, sample_count, payload in rows:
         if sample_count <= 0:
             raise ValueError(f"{kind} evidence is missing raw evaluator output")
@@ -597,35 +596,24 @@ def _persist_research_evidence(
                 differing = next((index for index, (old, new) in enumerate(zip(prior_values, expected_source)) if old != new), -1)
                 raise ValueError(f"immutable evaluator output conflicts with the current trial ({kind}, field={differing})")
             continue
-        available_at = connection.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
-        output_hash = connection.execute(
-            """SELECT analysis.research_evaluator_output_hash_v2(
-                       %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s) AS output_hash""",
+        authorization_payload = connection.execute(
+            """SELECT analysis.research_evaluator_authorization_payload(
+                       %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s) AS payload""",
             [trial_id, result_id, run, kind, EVALUATOR_ID, EVALUATOR_CODE_VERSION,
-             trial_input_hash, universe_hash, feature_hash, sample_count, Jsonb(payload), available_at],
-        ).fetchone()["output_hash"]
+             trial_input_hash, universe_hash, feature_hash, sample_count, Jsonb(payload)],
+        ).fetchone()["payload"]
         signature = hmac.new(
             signing_key.encode("utf-8"),
-            _evaluator_signature_payload(
-                trial_id=trial_id, result_id=result_id, run_id=run, evidence_kind=kind,
-                evaluator_id=EVALUATOR_ID, code_version=EVALUATOR_CODE_VERSION,
-                input_hash=trial_input_hash, universe_hash=universe_hash,
-                feature_hash=feature_hash, sample_count=sample_count, domain_valid=True,
-                output_hash=str(output_hash), available_at=available_at,
-            ).encode("utf-8"),
+            str(authorization_payload).encode("utf-8"),
             "sha256",
         ).hexdigest()
         source = connection.execute(
-            """INSERT INTO analysis.research_evaluator_output
-               (research_trial_id, trial_result_id, analysis_run_id, evidence_kind,
-                evaluator_id, evaluator_code_version, input_hash, universe_hash,
-                feature_hash, sample_count, domain_valid, raw_output,
-                output_hash, signature, available_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, %s, %s)
-               RETURNING id""",
+            """SELECT id, output_hash, available_at
+               FROM analysis.write_research_evaluator_output(
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s)""",
             [trial_id, result_id, run, kind, EVALUATOR_ID, EVALUATOR_CODE_VERSION,
              trial_input_hash, universe_hash, feature_hash, sample_count, Jsonb(payload),
-             output_hash, signature, available_at],
+             signature],
         ).fetchone()
         if source is None:
             raise ValueError(f"{kind} evaluator output was not persisted")
@@ -750,23 +738,6 @@ def _ensure_research_dossier(
         if seal:
             connection.execute("UPDATE analysis.validation_dossier SET status = 'sealed', sealed_at = clock_timestamp() WHERE id = %s", [dossier["id"]])
     return dossier["id"]
-
-
-def _evaluator_signature_payload(
-    *, trial_id: Any, result_id: Any, run_id: Any, evidence_kind: str,
-    evaluator_id: str, code_version: str, input_hash: str, universe_hash: str,
-    feature_hash: str, sample_count: int, domain_valid: bool,
-    output_hash: str, available_at: datetime,
-) -> str:
-    """Build the delimiter-safe canonical envelope verified by PostgreSQL."""
-
-    timestamp = available_at.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
-    return "\x1f".join((
-        "research-evaluator-signature.v1", str(trial_id), str(result_id), str(run_id),
-        evidence_kind, evaluator_id, code_version, input_hash, universe_hash,
-        feature_hash, str(sample_count), "true" if domain_valid else "false",
-        output_hash, timestamp,
-    ))
 
 
 def _trial_configurations(*, min_train: int, fold_size: int, min_cohort: int,
