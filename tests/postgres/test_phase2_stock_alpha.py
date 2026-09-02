@@ -19,6 +19,7 @@ def _observations(count: int, cutoff: datetime) -> list[dict[str, object]]:
         "cohort_id": "large-liquid",
         "as_of": start + timedelta(days=index),
         "outcome_available_at": start + timedelta(days=index, hours=1),
+        "feature_available_at": start + timedelta(days=index, minutes=30),
         "outcome": 1.0,
         "realized_return": 0.05,
         "modeled_cost": 0.001,
@@ -37,6 +38,17 @@ def _controls() -> dict[str, list[float]]:
     return {"randomized_label_returns": [0.0, 0.0], "white_noise_market_returns": [0.0, 0.0]}
 
 
+def _seed_universe_tape(runtime: DatabaseRuntime, cutoff: datetime, symbols: list[str], *, as_of: datetime | None = None) -> None:
+    tape_as_of = as_of or cutoff
+    with runtime.transaction() as connection:
+        connection.execute(
+            """INSERT INTO analysis.ticker_benchmark_snapshot
+               (benchmark_key, as_of, available_at, membership_hash, member_count, source_id, exact_membership)
+               VALUES ('market-equity-etf', %s, %s, %s, %s, 'phase1-test', %s)""",
+            [tape_as_of, tape_as_of - timedelta(seconds=1), "phase1-membership", len(symbols), Jsonb({symbol: True for symbol in symbols})],
+        )
+
+
 def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -45,6 +57,7 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
     try:
         cutoff = datetime.now(UTC) + timedelta(seconds=5)
         observations = _observations(16, cutoff)
+        _seed_universe_tape(runtime, cutoff, [f"S{index:02d}" for index in range(16)], as_of=cutoff - timedelta(microseconds=2))
         first = run(
             runtime, observations, cutoff=cutoff, promote=True, authorization_mode="PAPER",
             min_train=4, fold_size=2, min_cohort=4, universe_members=[f"S{index:02d}" for index in range(16)], control_results=_controls(),
@@ -118,6 +131,18 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
         assert artifact["effective_sample_size"] >= 4
         assert artifact["calibration_metrics"]["brier_score"] is not None
         assert artifact["lower_confidence_net_utility_after_costs"] > 0
+        with runtime.read() as connection:
+            forecast = connection.execute(
+                """SELECT id, forecast_distribution, generated_at, available_at
+                   FROM analysis.strategy_forecast
+                   WHERE strategy_revision_id = %s AND horizon = 'TACTICAL'
+                   ORDER BY available_at DESC, id DESC LIMIT 1""",
+                [first["strategy_revision_id"]],
+            ).fetchone()
+        assert forecast["id"] == artifact["strategy_forecast_id"]
+        assert forecast["forecast_distribution"] == artifact["forecast"]["forecast_distribution"]
+        assert forecast["generated_at"] <= cutoff
+        assert forecast["available_at"] <= cutoff
     finally:
         runtime.close()
 
@@ -127,6 +152,7 @@ def test_incomplete_challenger_cannot_promote(migrated_postgres_dsn: str) -> Non
     runtime.open()
     try:
         cutoff = datetime.now(UTC) + timedelta(seconds=5)
+        _seed_universe_tape(runtime, cutoff, [f"S{index:02d}" for index in range(3)])
         result = run(
             runtime, _observations(3, cutoff), cutoff=cutoff,
             promote=True, authorization_mode="ADVISORY", min_train=4, min_cohort=4,
@@ -145,14 +171,47 @@ def test_incomplete_challenger_cannot_promote(migrated_postgres_dsn: str) -> Non
         runtime.close()
 
 
+def test_historical_cutoff_keeps_actual_forecast_availability_and_blocks_promotion(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC) - timedelta(days=1)
+        symbols = [f"S{index:02d}" for index in range(16)]
+        _seed_universe_tape(runtime, cutoff, symbols)
+        result = run(
+            runtime, _observations(16, cutoff), cutoff=cutoff,
+            promote=True, authorization_mode="PAPER", min_train=4, fold_size=2,
+            min_cohort=4, universe_members=symbols, control_results=_controls(),
+        )
+        assert result["complete"] is True
+        assert result["promotion_evaluation_id"] is None
+        assert result["promotion_reason"] == "forecast_evidence_not_available_at_cutoff"
+        with runtime.read() as connection:
+            persisted = connection.execute(
+                """SELECT forecast.available_at, dossier.status
+                   FROM analysis.strategy_forecast forecast
+                   JOIN analysis.strategy_evaluation evaluation ON evaluation.id = forecast.strategy_evaluation_id
+                   JOIN analysis.validation_dossier dossier ON dossier.id = evaluation.validation_dossier_id
+                   WHERE forecast.strategy_revision_id = %s
+                   ORDER BY forecast.id LIMIT 1""",
+                [result["strategy_revision_id"]],
+            ).fetchone()
+        assert persisted["available_at"] > cutoff
+        assert persisted["status"] == "sealed"
+    finally:
+        runtime.close()
+
+
 def test_canonical_pit_trend_feature_loads_for_training_and_live_inference(
     migrated_postgres_dsn: str,
 ) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
-        cutoff = datetime.now(UTC) + timedelta(seconds=5)
-        decision_at = cutoff - timedelta(days=2)
+        decision_at = datetime.now(UTC) + timedelta(seconds=1)
+        cutoff = decision_at + timedelta(seconds=5)
         repository = AnalysisRepository(runtime)
         run_id = repository.start_run(
             "daily-trend", input_cutoff=decision_at - timedelta(minutes=1),
@@ -207,10 +266,11 @@ def test_canonical_pit_trend_feature_loads_for_training_and_live_inference(
                 ) VALUES (%s, 'TACTICAL', 5, 'resolved', 0.05, %s, %s)
                 """,
                 [
-                    decision_id, decision_at + timedelta(days=1),
+                    decision_id, decision_at + timedelta(seconds=1),
                     Jsonb({"cost_adjusted_selected_return": 0.049}),
                 ],
             )
+        repository.finish_run(run_id, "succeeded")
 
         observations = load_observations(runtime, cutoff=cutoff)
         assert len(observations) == 1
@@ -231,6 +291,7 @@ def test_latest_oos_input_hash_mismatch_fails_closed(migrated_postgres_dsn: str)
     try:
         cutoff = datetime.now(UTC) + timedelta(seconds=5)
         evaluation_cutoff = cutoff - timedelta(seconds=1)
+        _seed_universe_tape(runtime, evaluation_cutoff, [f"S{index:02d}" for index in range(16)])
         result = run(
             runtime, _observations(16, evaluation_cutoff), cutoff=evaluation_cutoff,
             promote=True, authorization_mode="PAPER",
@@ -269,17 +330,19 @@ def test_superseded_revision_replay_cannot_deactivate_current_champion(
         cutoff = datetime.now(UTC) + timedelta(seconds=5)
         observations_a = _observations(16, cutoff)
         observations_b = _observations(17, cutoff)
+        _seed_universe_tape(runtime, cutoff, [f"S{index:02d}" for index in range(16)], as_of=cutoff - timedelta(microseconds=2))
         first = run(
             runtime, observations_a, cutoff=cutoff, promote=True, authorization_mode="PAPER",
             min_train=4, fold_size=2, min_cohort=4,
             universe_members=[f"S{index:02d}" for index in range(16)], control_results=_controls(),
         )
+        _seed_universe_tape(runtime, cutoff, [f"S{index:02d}" for index in range(17)], as_of=cutoff - timedelta(microseconds=1))
         second = run(
             runtime, observations_b, cutoff=cutoff, promote=True, authorization_mode="PAPER",
             min_train=4, fold_size=2, min_cohort=4,
             universe_members=[f"S{index:02d}" for index in range(17)], control_results=_controls(),
         )
-        with pytest.raises(ValueError, match="superseded stock-alpha"):
+        with pytest.raises(ValueError, match="submitted universe|superseded stock-alpha"):
             run(
                 runtime, observations_a, cutoff=cutoff, promote=True, authorization_mode="PAPER",
                 min_train=4, fold_size=2, min_cohort=4,

@@ -21,7 +21,7 @@ from investment_panel.analysis.stock_alpha import (
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.core.decision import build_strategy_forecast
+from investment_panel.core.decision import build_strategy_forecast, opportunity_episode_id
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -56,6 +56,7 @@ def run(
     input_hash = content_hash({"cutoff": reference, "observations": source_rows, "trial_plan": configurations})
     members = sorted({str(member).strip().upper() for member in universe_members or () if str(member).strip()})
     controls = {key: [float(value) for value in values] for key, values in (control_results or {}).items()}
+    promotion_blockers: list[str] = []
     artifacts = []
     for configuration in configurations:
         try:
@@ -141,6 +142,11 @@ def run(
 
     with runtime.transaction(JOB_PROFILE) as connection:
         connection.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [STRATEGY_KEY])
+        independent_members = _independent_universe_members(connection, cutoff=reference)
+        if not independent_members:
+            raise ValueError("stock-alpha requires an independent PIT universe tape")
+        if members != independent_members:
+            raise ValueError("submitted universe does not match the independent PIT universe tape")
         research_ids = _ensure_research_prerequisites(
             connection, cutoff=reference, input_hash=input_hash,
             trial_runs=trial_runs, observations=source_rows, universe_members=members,
@@ -219,8 +225,18 @@ def run(
         )
         if complete and not forecast_ids:
             raise ValueError("stock-alpha walk-forward produced no persisted model-owned forecasts")
+        forecast_pit = connection.execute(
+            """SELECT count(*) AS count,
+                      bool_and(generated_at <= %s AND available_at <= %s) AS available_at_cutoff
+               FROM analysis.strategy_forecast
+               WHERE strategy_revision_id = %s AND strategy_evaluation_id = %s
+                 AND input_cutoff = %s""",
+            [reference, reference, strategy["id"], evaluation["id"], reference],
+        ).fetchone()
+        if complete and (forecast_pit["count"] != len(forecast_ids) or not forecast_pit["available_at_cutoff"]):
+            promotion_blockers.append("forecast_evidence_not_available_at_cutoff")
         promotion_id = None
-        if promote and complete:
+        if promote and complete and not promotion_blockers:
             promotion = connection.execute(
                 """
                 SELECT id::text FROM analysis.strategy_evaluation
@@ -283,6 +299,8 @@ def run(
         "strategy_evaluation_id": evaluation["id"],
         "promotion_evaluation_id": promotion_id,
         "promotion_stage": mode.lower() if promotion_id else "challenger",
+        "promotion_blockers": promotion_blockers,
+        "promotion_reason": promotion_blockers[0] if promotion_blockers else None,
         "verdict": str(evaluation["verdict"]),
         "complete": complete,
         "input_hash": input_hash,
@@ -319,6 +337,18 @@ def _ensure_research_prerequisites(
            VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING""",
         [family, len(trial_keys), Jsonb(sorted(trial_keys)), content_hash(sorted(trial_keys))],
     )
+    manifest = connection.execute(
+        """SELECT expected_trial_count, expected_trial_keys, manifest_hash
+           FROM analysis.experiment_manifest WHERE experiment_family_id = %s""",
+        [family],
+    ).fetchone()
+    if (
+        manifest is None
+        or manifest["expected_trial_count"] != len(trial_keys)
+        or list(manifest["expected_trial_keys"]) != sorted(trial_keys)
+        or str(manifest["manifest_hash"]).lower() != content_hash(sorted(trial_keys))
+    ):
+        raise ValueError("immutable experiment manifest does not match planned trial attempts")
     instrument_ids = [reconcile_instrument(connection, symbol, name=symbol, asset_class="equity") for symbol in universe_members]
     expected_members = sorted(str(identifier) for identifier in instrument_ids)
     primary_trial_id = None
@@ -331,14 +361,22 @@ def _ensure_research_prerequisites(
                (experiment_family_id, trial_key, input_cutoff, code_version, input_hash, parameters, available_at)
                VALUES (%s, %s, %s, %s, %s, %s, now())
                ON CONFLICT (experiment_family_id, trial_key) DO NOTHING
-               RETURNING id, status""",
+               RETURNING id, status, input_cutoff, input_hash, parameters""",
             [family, trial_key, cutoff, MODEL_VERSION, trial_hash, Jsonb({key: item[key] for key in ("min_train", "fold_size", "min_cohort")})],
         ).fetchone()
         if trial is None:
             trial = connection.execute(
-                "SELECT id, status FROM analysis.research_trial WHERE experiment_family_id = %s AND trial_key = %s",
+                """SELECT id, status, input_cutoff, input_hash, parameters
+                   FROM analysis.research_trial WHERE experiment_family_id = %s AND trial_key = %s""",
                 [family, trial_key],
             ).fetchone()
+        if (
+            trial is None
+            or trial["input_cutoff"] != cutoff
+            or str(trial["input_hash"]) != trial_hash
+            or dict(trial["parameters"] or {}) != {key: item[key] for key in ("min_train", "fold_size", "min_cohort")}
+        ):
+            raise ValueError("immutable research trial manifest does not match planned attempt")
         trial_id = trial["id"]
         if primary_trial_id is None:
             primary_trial_id = trial_id
@@ -375,9 +413,17 @@ def _ensure_research_prerequisites(
         ).fetchone()
         if result is None:
             result = connection.execute(
-                "SELECT id FROM analysis.trial_result WHERE research_trial_id = %s AND result_kind = 'validation' ORDER BY result_version LIMIT 1",
+                """SELECT id, input_hash, metrics, outcome
+                   FROM analysis.trial_result WHERE research_trial_id = %s AND result_kind = 'validation' ORDER BY result_version LIMIT 1""",
                 [trial_id],
             ).fetchone()
+            if (
+                result is None
+                or str(result["input_hash"]) != trial_hash
+                or dict(result["metrics"] or {}) != dict(validation.get("checks") or {})
+                or dict(result["outcome"] or {}) != validation
+            ):
+                raise ValueError("immutable trial result conflicts with the planned trial outcome")
         if primary_result_id is None:
             primary_result_id = result["id"]
         if trial["status"] == "running":
@@ -476,7 +522,7 @@ def _validate_walk_forward_artifact(
         # No fabricated path is permitted. This keeps the PBO gate closed until
         # the walk-forward producer emits its real purged/combinatorial paths.
         paths = []
-    available = [row.get("outcome_available_at") for row in source_rows if row.get("outcome_available_at") is not None]
+    available = [row.get("feature_available_at") for row in source_rows]
     gross = [float(row.get("realized_return", 0.0)) for row in predictions]
     base_cost = fmean([float(row.get("modeled_cost", 0.0)) for row in predictions]) if predictions else 0.0
     return validate_trial(
@@ -495,7 +541,10 @@ def _validate_walk_forward_artifact(
         expected_members=expected_members,
         observed_members=expected_members,
         expected_attempts=trial_keys,
-        completed_attempts=trial_keys if "failure_reason" not in artifact else [],
+        # A failed attempt is still a completed, terminal attempt.  The
+        # manifest gate measures accounting completeness; the other gates
+        # carry the failure evidence and prevent promotion.
+        completed_attempts=trial_keys,
         path_returns=paths,
         p_values=family_p_values,
         policy={"min_psr": 0.5, "min_dsr": 0.5, "max_pbo": 0.5},
@@ -508,29 +557,37 @@ def _persist_strategy_forecasts(connection: Any, *, strategy_revision_id: int, e
     forecasts = [item for item in artifact.get("forecasts") or [] if isinstance(item, Mapping)]
     if not forecasts:
         return []
-    timestamp = datetime.now(UTC)
+    timestamp = connection.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
     persisted: list[str] = []
     for ticker in members:
         instrument = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [ticker]).fetchone()
         if instrument is None:
             continue
         for item in forecasts:
-            try:
-                model = build_strategy_forecast(
-                    ticker=ticker, opportunity_episode_id=f"stock-alpha:{strategy_revision_id}:{ticker}:{item['horizon']}",
-                    strategy_revision_id=strategy_revision_id, strategy_evaluation_id=evaluation_id,
-                    target=str(artifact["target"]), horizon=str(item["horizon"]),
-                    forecast_value=float(item["forecast_value"]), forecast_distribution=dict(item["forecast_distribution"]),
-                    probability_semantics=str(item["probability_semantics"]), model_artifact_id=f"{STRATEGY_KEY}:{artifact['artifact_hash']}",
-                    artifact_hash=str(artifact["artifact_hash"]), input_hash=input_hash,
-                    as_of=cutoff, generated_at=timestamp, available_at=timestamp,
-                )
-            except (KeyError, TypeError, ValueError, OverflowError):
-                continue
-            existing = connection.execute("SELECT id FROM analysis.strategy_forecast WHERE id = %s", [model.strategy_forecast_id]).fetchone()
+            model = build_strategy_forecast(
+                ticker=ticker, opportunity_episode_id=opportunity_episode_id(ticker),
+                strategy_revision_id=strategy_revision_id, strategy_evaluation_id=evaluation_id,
+                target=str(artifact["target"]), horizon=str(item["horizon"]),
+                forecast_value=float(item["forecast_value"]), forecast_distribution=dict(item["forecast_distribution"]),
+                probability_semantics=str(item["probability_semantics"]), model_artifact_id=f"{STRATEGY_KEY}:{artifact['artifact_hash']}",
+                artifact_hash=str(artifact["artifact_hash"]), input_hash=input_hash,
+                as_of=cutoff, generated_at=timestamp, available_at=timestamp,
+            )
+            existing = connection.execute(
+                """SELECT id, strategy_revision_id, strategy_evaluation_id, instrument_id,
+                          opportunity_episode_id, target, horizon, forecast_value,
+                          forecast_distribution, probability_semantics, model_artifact_id,
+                          artifact_hash, input_hash, as_of, input_cutoff, generated_at, available_at
+                   FROM analysis.strategy_forecast WHERE id = %s""",
+                [model.strategy_forecast_id],
+            ).fetchone()
             if existing is None:
                 existing = connection.execute(
-                    """SELECT id FROM analysis.strategy_forecast
+                    """SELECT id, strategy_revision_id, strategy_evaluation_id, instrument_id,
+                                 opportunity_episode_id, target, horizon, forecast_value,
+                                 forecast_distribution, probability_semantics, model_artifact_id,
+                                 artifact_hash, input_hash, as_of, input_cutoff, generated_at, available_at
+                       FROM analysis.strategy_forecast
                        WHERE strategy_revision_id = %s AND instrument_id = %s
                          AND opportunity_episode_id = %s AND horizon = %s
                          AND input_cutoff = %s AND artifact_hash = %s""",
@@ -551,7 +608,33 @@ def _persist_strategy_forecasts(connection: Any, *, strategy_revision_id: int, e
                 )
                 persisted.append(model.strategy_forecast_id)
             else:
+                immutable = {
+                    "strategy_revision_id": model.strategy_revision_id,
+                    "strategy_evaluation_id": model.strategy_evaluation_id,
+                    "instrument_id": instrument["id"],
+                    "opportunity_episode_id": model.opportunity_episode_id,
+                    "target": model.target,
+                    "horizon": model.horizon,
+                    "forecast_value": model.forecast_value,
+                    "forecast_distribution": model.forecast_distribution,
+                    "probability_semantics": model.probability_semantics,
+                    "model_artifact_id": model.model_artifact_id,
+                    "artifact_hash": model.artifact_hash,
+                    "input_hash": model.input_hash,
+                    "as_of": model.as_of,
+                    "input_cutoff": model.input_cutoff,
+                }
+                for field, expected in immutable.items():
+                    actual = existing[field]
+                    if field == "strategy_evaluation_id":
+                        actual, expected = str(actual) if actual is not None else None, str(expected) if expected is not None else None
+                    elif field in {"as_of", "input_cutoff"}:
+                        actual, expected = actual.astimezone(UTC), expected.astimezone(UTC)
+                    if actual != expected:
+                        raise ValueError(f"stock-alpha forecast persistence conflicts with immutable authority: {field}")
                 persisted.append(str(existing["id"]))
+    if len(persisted) != len(members) * len(forecasts):
+        raise ValueError("stock-alpha forecast persistence is incomplete")
     return persisted
 
 
@@ -568,6 +651,7 @@ def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dic
                    feature.feature_version, feature.momentum_5d, feature.momentum_20d,
                    feature.relative_strength_20d, feature.relative_strength_60d,
                    feature.kaufman_er_20d,
+                   feature.feature_available_at,
                    benchmark.membership_hash
             FROM analysis.ticker_outcome outcome
             JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
@@ -575,7 +659,8 @@ def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dic
             JOIN LATERAL (
                 SELECT candidate.feature_version, candidate.momentum_5d,
                        candidate.momentum_20d, candidate.relative_strength_20d,
-                       candidate.relative_strength_60d, candidate.kaufman_er_20d
+                       candidate.relative_strength_60d, candidate.kaufman_er_20d,
+                       feature_run.finished_at AS feature_available_at
                 FROM analysis.symbol_feature candidate
                 JOIN analysis.run feature_run ON feature_run.id = candidate.run_id
                 WHERE candidate.instrument_id = decision.instrument_id
@@ -583,6 +668,8 @@ def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dic
                   AND candidate.feature_version = %s
                   AND candidate.as_of <= decision.as_of
                   AND feature_run.input_cutoff <= decision.as_of
+                  AND feature_run.finished_at IS NOT NULL
+                  AND feature_run.finished_at <= decision.as_of
                   AND candidate.data_quality_status = 'complete'
                 ORDER BY candidate.as_of DESC, feature_run.input_cutoff DESC, candidate.id DESC
                 LIMIT 1
@@ -622,6 +709,7 @@ def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dic
             "cohort_id": f"{row['horizon']}:{metadata.get('sector_slice') or 'unknown'}:{metadata.get('regime_slice') or 'unknown'}",
             "as_of": row["as_of"],
             "outcome_available_at": row["outcome_available_at"],
+            "feature_available_at": row["feature_available_at"],
             "outcome": float(net_return) > 0,
             "realized_return": float(row["realized_return"]),
             "modeled_cost": float(row["realized_return"]) - float(net_return),
@@ -642,6 +730,18 @@ def load_universe_members(runtime: DatabaseRuntime, *, cutoff: datetime) -> list
                ORDER BY as_of DESC, available_at DESC, id DESC LIMIT 1""",
             [cutoff, cutoff],
         ).fetchone()
+    return sorted({str(symbol).strip().upper() for symbol in (row["exact_membership"] if row else []) if str(symbol).strip()})
+
+
+def _independent_universe_members(connection: Any, *, cutoff: datetime) -> list[str]:
+    row = connection.execute(
+        """SELECT exact_membership
+           FROM analysis.ticker_benchmark_snapshot
+           WHERE benchmark_key = 'market-equity-etf'
+             AND as_of <= %s AND available_at <= %s
+           ORDER BY as_of DESC, available_at DESC, id DESC LIMIT 1""",
+        [cutoff, cutoff],
+    ).fetchone()
     return sorted({str(symbol).strip().upper() for symbol in (row["exact_membership"] if row else []) if str(symbol).strip()})
 
 

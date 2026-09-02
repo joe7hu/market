@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from investment_panel.analysis.research_validation import (
+    combinatorial_path_records,
     combinatorial_paths,
     cost_capacity_stress,
     future_information_trap,
@@ -23,7 +24,7 @@ def test_phase1_validation_is_deterministic_and_fail_closed() -> None:
     observations = [{"id": str(index), "as_of": index} for index in range(8)]
     assert purged_embargoed_splits(observations, purge=1, embargo=1)
     assert len(combinatorial_paths(observations, folds=5, max_paths=3)) == 3
-    metrics = multiple_testing_metrics([0.1, 0.2, 0.3], trials_tested=4)
+    metrics = multiple_testing_metrics([0.1, 0.2, 0.3], trials_tested=4, path_returns=[0.1], p_values=[0.2])
     assert set(("psr", "dsr", "pbo", "fdr_q_value")) <= metrics.keys()
     assert parameter_stability([{"return": 0.09}, {"return": 0.1}, {"return": 0.11}])["passed"]
     assert cost_capacity_stress(gross_return=0.2, base_cost=0.01)["explicit_3x"]["net_return"] > 0
@@ -47,6 +48,40 @@ def test_multiple_testing_uses_real_domains_and_validation_binds_all_gates() -> 
         expected_attempts=["t"], completed_attempts=["t"], path_returns=[0.1, 0.2],
     )
     assert set(report["gates"]) == {"pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"}
+
+
+def test_multiple_testing_requires_real_paths_and_rejects_invalid_domains() -> None:
+    assert multiple_testing_metrics([0.1, 0.2], trials_tested=2, path_returns=[0.1], p_values=[0.2])[
+        "domain_valid"
+    ]
+    invalid = multiple_testing_metrics(
+        [0.1, 0.2], trials_tested=2, path_returns=[0.1, float("nan")], p_values=[-0.1],
+    )
+    assert invalid["domain_valid"] is False
+    assert invalid["paths_domain_valid"] is False
+    assert invalid["p_values_domain_valid"] is False
+
+
+def test_combinatorial_paths_are_not_contiguous_window_substitutes() -> None:
+    paths = combinatorial_paths([0, 1, 2, 3], folds=4, max_paths=10, purge=0, embargo=0)
+    assert (0, 2) in paths
+    assert (1, 3) in paths
+    records = combinatorial_path_records([0, 1, 2, 3, 4], folds=5, purge=1, embargo=1)
+    assert records
+    assert all(record["train_folds"] for record in records)
+    assert all(set(record["test_folds"]).isdisjoint(record["train_folds"]) for record in records)
+
+
+def test_validation_fails_closed_when_feature_availability_is_missing() -> None:
+    report = validate_trial(
+        mechanism_class="quality", falsification_rule="controls",
+        observed_returns=[0.1, 0.1], randomized_returns=[0.0], white_noise_returns=[0.0],
+        gross_return=0.2, base_cost=0.01, neutralized_returns=[0.02, 0.02],
+        parameter_neighborhood=[{"return": 0.1}, {"return": 0.1}], trials_tested=1,
+        cutoff=1, expected_members=["a"], observed_members=["a"],
+        expected_attempts=["t"], completed_attempts=["t"], path_returns=[0.1],
+    )
+    assert report["gates"]["pit_integrity"]["passed"] is False
 
 
 def test_strategy_forecast_identity_is_fail_closed_and_actual_availability_is_retained() -> None:

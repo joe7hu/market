@@ -10,6 +10,7 @@ from statistics import fmean, stdev
 from typing import Any, Iterable, Mapping
 
 from investment_panel.analysis.stats import brier_score
+from investment_panel.analysis.research_validation import combinatorial_path_records
 
 
 MODEL_VERSION = "ticker-stock-alpha.v2"
@@ -73,7 +74,11 @@ def walk_forward(
         ]
         test_end = test[-1]["as_of"]
         for row in test:
-            if row["outcome_available_at"] > reference or row["as_of"] > test_end:
+            if (
+                row["outcome_available_at"] > reference
+                or row["feature_available_at"] > reference
+                or row["as_of"] > test_end
+            ):
                 continue
             raw_probability = _probability(float(row["research_score"]))
             calibrated, path, parent, effective_sample = hierarchical_calibration(
@@ -135,14 +140,25 @@ def walk_forward(
         fmean(float(row["net_utility_after_costs"]) for row in predictions if row["fold_test_start"] == fold)
         for fold in sorted({row["fold_test_start"] for row in predictions})
     ]
-    validation_paths = []
-    for width in range(1, len(fold_returns) + 1):
-        for start in range(0, len(fold_returns) - width + 1):
-            validation_paths.append(round(fmean(fold_returns[start:start + width]), 8))
-            if len(validation_paths) >= 64:
-                break
-        if len(validation_paths) >= 64:
-            break
+    fold_keys = sorted({row["fold_test_start"] for row in predictions})
+    path_records = combinatorial_path_records(
+        fold_returns, folds=min(5, len(fold_returns)), max_paths=64,
+        purge=1, embargo=1,
+    ) if len(fold_returns) >= 2 else []
+    validation_paths = [
+        round(fmean(fold_returns[index] for index in record["test_folds"]), 8)
+        for record in path_records
+    ]
+    validation_path_records = [
+        {
+            **record,
+            "test_fold_starts": [fold_keys[fold] for fold in record["test_folds"]],
+            "purge_days": record["purge_folds"],
+            "embargo_days": record["embargo_folds"],
+            "return": validation_paths[index],
+        }
+        for index, record in enumerate(path_records)
+    ]
     artifact = {
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,
@@ -163,6 +179,7 @@ def walk_forward(
         ),
         "predictions": [_jsonable(row) for row in predictions],
         "validation_paths": validation_paths,
+        "validation_path_records": validation_path_records,
     }
     forecasts = []
     for horizon in sorted({row["horizon"] for row in predictions}):
@@ -226,6 +243,7 @@ def _normalise(raw: Mapping[str, Any]) -> dict[str, Any] | None:
         "cohort_id": str(raw.get("cohort_id") or "").strip(),
         "as_of": _maybe_aware(raw.get("as_of")),
         "outcome_available_at": _maybe_aware(raw.get("outcome_available_at")),
+        "feature_available_at": _maybe_aware(raw.get("feature_available_at")),
         "outcome": _number(raw.get("outcome")),
         "realized_return": _number(raw.get("realized_return")),
         "modeled_cost": _number(raw.get("modeled_cost")),

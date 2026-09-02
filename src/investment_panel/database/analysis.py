@@ -390,6 +390,7 @@ class AnalysisRepository:
         *,
         cutoff: datetime,
         horizon: str,
+        ticker: str | None = None,
     ) -> dict[str, Any]:
         """Return the active stock-alpha artifact and its bounded OOS proof."""
 
@@ -404,6 +405,15 @@ class AnalysisRepository:
                        evaluation.available_at AS evaluation_available_at,
                        evaluation.period_start, evaluation.period_end,
                        evaluation.verdict, evaluation.metrics, evaluation.evidence,
+                       forecast.id AS strategy_forecast_id, forecast.forecast_value,
+                       forecast.forecast_range, forecast.forecast_distribution,
+                       forecast.probability_semantics,
+                       forecast.forecast_ticker,
+                       forecast.opportunity_episode_id AS forecast_opportunity_episode_id,
+                       forecast.as_of AS forecast_as_of,
+                       forecast.input_cutoff AS forecast_input_cutoff,
+                       forecast.generated_at AS forecast_generated_at,
+                       forecast.available_at AS forecast_available_at,
                        promotion.id::text AS promotion_evaluation_id,
                        promotion.evaluated_at AS promotion_evaluated_at,
                        promotion.available_at AS promotion_available_at,
@@ -420,6 +430,20 @@ class AnalysisRepository:
                     ORDER BY candidate.evaluated_at DESC, candidate.id DESC
                     LIMIT 1
                 ) evaluation ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT candidate.*, forecast_instrument.symbol AS forecast_ticker
+                    FROM analysis.strategy_forecast candidate
+                    JOIN catalog.instrument forecast_instrument
+                      ON forecast_instrument.id = candidate.instrument_id
+                    WHERE candidate.strategy_evaluation_id = evaluation.id
+                      AND candidate.horizon = %s
+                      AND (%s::text IS NULL OR forecast_instrument.symbol = %s)
+                      AND candidate.status = 'available'
+                      AND candidate.generated_at <= %s
+                      AND candidate.available_at <= %s
+                    ORDER BY candidate.available_at DESC, candidate.id DESC
+                    LIMIT 1
+                ) forecast ON TRUE
                 LEFT JOIN LATERAL (
                     SELECT candidate.*
                     FROM analysis.strategy_evaluation candidate
@@ -438,7 +462,8 @@ class AnalysisRepository:
                          strategy.revision DESC
                 LIMIT 1
                 """,
-                [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff],
+                [cutoff, cutoff, cutoff, horizon, ticker.strip().upper() if ticker else None,
+                 ticker.strip().upper() if ticker else None, cutoff, cutoff, cutoff, cutoff, cutoff],
             ).fetchone()
         if row is None:
             return {
@@ -482,8 +507,35 @@ class AnalysisRepository:
             "promotion_evaluation_id": row["promotion_evaluation_id"],
             "promotion_evaluated_at": row["promotion_evaluated_at"],
             "promotion_available_at": row["promotion_available_at"],
-            "forecast": metrics.get("forecast"),
-            "forecasts": metrics.get("forecasts"),
+            "strategy_forecast_id": row["strategy_forecast_id"],
+            "forecast": ({
+                "horizon": str(horizon),
+                "forecast_value": row["forecast_value"],
+                "forecast_range": row["forecast_range"],
+                "forecast_distribution": row["forecast_distribution"],
+                "probability_semantics": row["probability_semantics"],
+                "strategy_forecast_id": row["strategy_forecast_id"],
+                "ticker": row["forecast_ticker"],
+                "opportunity_episode_id": row["forecast_opportunity_episode_id"],
+                "as_of": row["forecast_as_of"],
+                "input_cutoff": row["forecast_input_cutoff"],
+                "generated_at": row["forecast_generated_at"],
+                "available_at": row["forecast_available_at"],
+            } if row["strategy_forecast_id"] is not None else None),
+            "forecasts": ([{
+                "horizon": str(horizon),
+                "forecast_value": row["forecast_value"],
+                "forecast_range": row["forecast_range"],
+                "forecast_distribution": row["forecast_distribution"],
+                "probability_semantics": row["probability_semantics"],
+                "strategy_forecast_id": row["strategy_forecast_id"],
+                "ticker": row["forecast_ticker"],
+                "opportunity_episode_id": row["forecast_opportunity_episode_id"],
+                "as_of": row["forecast_as_of"],
+                "input_cutoff": row["forecast_input_cutoff"],
+                "generated_at": row["forecast_generated_at"],
+                "available_at": row["forecast_available_at"],
+            }] if row["strategy_forecast_id"] is not None else []),
         }
         if row["strategy_evaluation_id"] is None:
             return {**base, "availability_status": "not_calibrated", "blockers": ["alpha_oos_evaluation_missing"]}
@@ -559,7 +611,7 @@ class AnalysisRepository:
             row = connection.execute(
                 """
                 SELECT instrument.symbol, feature.as_of,
-                       analysis_run.input_cutoff AS available_at,
+                       analysis_run.finished_at AS available_at,
                        'analysis.symbol_feature' AS source,
                        feature.feature_version AS source_version,
                        feature.id::text AS revision,
@@ -574,11 +626,13 @@ class AnalysisRepository:
                   AND feature.feature_version = %s
                   AND feature.as_of <= %s
                   AND analysis_run.input_cutoff <= %s
+                  AND analysis_run.finished_at IS NOT NULL
+                  AND analysis_run.finished_at <= %s
                   AND feature.data_quality_status = 'complete'
                 ORDER BY feature.as_of DESC, analysis_run.input_cutoff DESC, feature.id DESC
                 LIMIT 1
                 """,
-                [symbol.strip().upper(), feature_version, cutoff, cutoff],
+                [symbol.strip().upper(), feature_version, cutoff, cutoff, cutoff],
             ).fetchone()
         return dict(row) if row is not None else None
 

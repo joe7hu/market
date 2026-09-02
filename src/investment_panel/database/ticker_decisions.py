@@ -167,6 +167,101 @@ def _signal_field(signal: Any, field: str) -> Any:
     return getattr(signal, field, None)
 
 
+def _json_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    return value
+
+
+def _same_immutable_forecast_value(left: Any, right: Any) -> bool:
+    left_value, right_value = _json_value(left), _json_value(right)
+    if isinstance(left_value, float) or isinstance(right_value, float):
+        try:
+            return float(left_value) == float(right_value)
+        except (TypeError, ValueError):
+            return False
+    return left_value == right_value or str(left_value) == str(right_value)
+
+
+def _validate_persisted_stock_forecast(
+    connection: Any, *, decision: Any, instrument_id: int, plan: Any,
+    signal: Any, forecast_id: str,
+) -> None:
+    row = connection.execute(
+        """SELECT forecast.*, instrument.symbol AS ticker,
+                  strategy.research_required,
+                  evaluation.research_trial_id AS evaluation_trial_id,
+                  evaluation.validation_dossier_id AS evaluation_dossier_id,
+                  evaluation.artifact_id AS evaluation_artifact_id,
+                  evaluation.artifact_hash AS evaluation_artifact_hash,
+                  evaluation.input_hash AS evaluation_input_hash,
+                  dossier.research_trial_id AS dossier_trial_id
+           FROM analysis.strategy_forecast forecast
+           JOIN catalog.instrument instrument ON instrument.id = forecast.instrument_id
+               LEFT JOIN analysis.strategy_revision strategy ON strategy.id = forecast.strategy_revision_id
+               LEFT JOIN analysis.strategy_evaluation evaluation ON evaluation.id = forecast.strategy_evaluation_id
+           LEFT JOIN analysis.validation_dossier dossier ON dossier.id = evaluation.validation_dossier_id
+           WHERE forecast.id = %s AND forecast.status = 'available'""",
+        [forecast_id],
+    ).fetchone()
+    if row is None or row["instrument_id"] != instrument_id:
+        raise ValueError("actionable stock path forecast persistence is missing or instrument-mismatched")
+    expected = {
+        "strategy_revision_id": _signal_field(signal, "strategy_revision_id"),
+        "strategy_evaluation_id": _signal_field(signal, "strategy_evaluation_id"),
+        "ticker": decision.ticker,
+        "opportunity_episode_id": decision.opportunity_episode_id,
+        "target": _signal_field(signal, "target"),
+        "horizon": _signal_field(signal, "horizon"),
+        "forecast_value": _signal_field(signal, "forecast_value"),
+        "forecast_range": _signal_field(signal, "forecast_range"),
+        "forecast_distribution": _signal_field(signal, "forecast_distribution"),
+        "probability_semantics": _signal_field(signal, "probability_semantics"),
+        "model_artifact_id": _signal_field(signal, "model_artifact_id"),
+        "artifact_hash": _signal_field(signal, "artifact_hash"),
+        "input_hash": _signal_field(signal, "input_hash"),
+        "as_of": decision.as_of,
+        "input_cutoff": decision.as_of,
+    }
+    nullable_forecast_fields = {
+        "forecast_value", "forecast_range", "forecast_distribution", "probability_semantics",
+    }
+    for field, value in expected.items():
+        if (
+            (value is None and field not in nullable_forecast_fields)
+            or not _same_immutable_forecast_value(row[field], value)
+        ):
+            raise ValueError(f"actionable stock path forecast {field} does not match persisted authority")
+    if str(row["id"]) != forecast_id or str(_signal_field(signal, "strategy_forecast_id") or "") != forecast_id:
+        raise ValueError("actionable stock path forecast identity mismatch")
+    if str(getattr(plan, "strategy_forecast_id", "") or "") != forecast_id:
+        raise ValueError("actionable stock path trade plan forecast mismatch")
+    rank = decision.opportunity_rank
+    if rank is not None and str(_signal_field(rank, "strategy_forecast_id") or "") != forecast_id:
+        raise ValueError("actionable stock path opportunity rank forecast mismatch")
+    research_required = bool(row["research_required"])
+    if research_required and (
+        row["strategy_evaluation_id"] is None
+        or row["evaluation_trial_id"] is None
+        or row["evaluation_dossier_id"] is None
+    ):
+        raise ValueError("actionable stock path forecast lacks evaluation, trial, or dossier lineage")
+    if research_required and row["evaluation_dossier_id"] != row["dossier_trial_id"]:
+        raise ValueError("actionable stock path dossier and evaluation trial lineage mismatch")
+    if research_required and (
+        row["evaluation_artifact_id"] != row["model_artifact_id"]
+        or row["evaluation_artifact_hash"] != row["artifact_hash"]
+        or row["evaluation_input_hash"] != row["input_hash"]
+    ):
+        raise ValueError("actionable stock path forecast and evaluation artifact lineage mismatch")
+
+
 class TickerDecisionRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
@@ -216,6 +311,14 @@ class TickerDecisionRepository:
                 ).fetchone()["count"]
                 if persisted != 1:
                     raise ValueError("actionable stock path requires one persisted model-owned strategy forecast")
+                _validate_persisted_stock_forecast(
+                    connection,
+                    decision=decision,
+                    instrument_id=instrument["id"],
+                    plan=plan,
+                    signal=selected_signals[0],
+                    forecast_id=next(iter(forecast_ids)),
+                )
             row = connection.execute(
                 """
                 INSERT INTO analysis.ticker_decision (
@@ -280,9 +383,9 @@ class TickerDecisionRepository:
                 )
         return {"status": "published", "ticker_decision_id": decision_id, "decision_revision": decision.decision_revision}
 
-    def latest(self, ticker: str) -> TickerDecision | None:
+    def latest(self, ticker: str, *, reference: datetime | None = None) -> TickerDecision | None:
         rows = self._current_decision_rows(
-            reference=datetime.now(UTC), ticker=ticker.strip().upper(),
+            reference=_utc(reference or datetime.now(UTC)), ticker=ticker.strip().upper(),
         )
         if not rows:
             return None

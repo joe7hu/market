@@ -20,6 +20,7 @@ def _row(index: int, *, cohort: str = "large-liquid") -> dict[str, object]:
         "cohort_id": cohort,
         "as_of": as_of,
         "outcome_available_at": as_of + timedelta(hours=1),
+        "feature_available_at": as_of + timedelta(minutes=30),
         "outcome": float(index % 2 == 0),
         "realized_return": 0.04 if index % 2 == 0 else -0.02,
         "modeled_cost": 0.002,
@@ -91,3 +92,10 @@ def test_walk_forward_is_deterministic_pit_and_versioned() -> None:
     assert all(row["neutralized_return"] != row["net_utility_after_costs"] for row in first["predictions"])
     assert first["validation_paths"]
     assert len(first["artifact_hash"]) == 64
+
+
+def test_walk_forward_excludes_feature_runs_completed_after_cutoff() -> None:
+    rows = [_row(index) for index in range(14)]
+    rows[0]["feature_available_at"] = datetime(2027, 1, 1, tzinfo=UTC)
+    result = walk_forward(rows, cutoff=datetime(2026, 2, 1, tzinfo=UTC), min_train=4, fold_size=2, min_cohort=4)
+    assert all(row["ticker"] != "T00" for row in result["predictions"])

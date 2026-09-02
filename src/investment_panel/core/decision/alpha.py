@@ -921,8 +921,15 @@ def strategy_forecast_id_for_payload(value: Mapping[str, Any]) -> str:
     normalized.setdefault("contract_version", STRATEGY_FORECAST_CONTRACT_VERSION)
     for field in ("as_of", "input_cutoff", "generated_at", "available_at"):
         timestamp = normalized.get(field)
-        if isinstance(timestamp, str) and timestamp.endswith("Z"):
-            normalized[field] = timestamp[:-1] + "+00:00"
+        if isinstance(timestamp, datetime):
+            timestamp = timestamp.isoformat()
+        if isinstance(timestamp, str):
+            try:
+                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    normalized[field] = parsed.astimezone(UTC).isoformat()
+            except ValueError:
+                pass
     return "forecast:" + _content_id("strategy-forecast", normalized)
 
 

@@ -81,10 +81,13 @@ def publish(
     repository = TickerDecisionRepository(runtime)
     analysis_repository = AnalysisRepository(runtime)
     alpha_artifacts = {
-        horizon: analysis_repository.qualified_stock_alpha_artifact(
-            cutoff=reference, horizon=horizon,
-        )
-        for horizon in ("TACTICAL", "FUNDAMENTAL")
+        symbol: {
+            horizon: analysis_repository.qualified_stock_alpha_artifact(
+                cutoff=reference, horizon=horizon, ticker=symbol,
+            )
+            for horizon in ("TACTICAL", "FUNDAMENTAL")
+        }
+        for symbol in selected
     }
     published: list[dict[str, Any]] = []
     decisions_for_paper: list[Any] = []
@@ -327,13 +330,15 @@ def _rank_records(
     failures: list[dict[str, str]],
     reference: datetime,
     *,
-    alpha_artifacts: Mapping[str, Mapping[str, Any]],
+    alpha_artifacts: Mapping[str, Mapping[str, Mapping[str, Any]]],
     coverage_threshold: float,
 ) -> tuple[list[OpportunityRank], dict[str, list[dict[str, Any]]], dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for record in records:
         decision = record["decision"]
-        snapshot, signals = _alpha_models(decision, record["tables"], alpha_artifacts)
+        snapshot, signals = _alpha_models(
+            decision, record["tables"], alpha_artifacts.get(decision.ticker, {}),
+        )
         record["snapshot"] = snapshot
         record["signals"] = signals
         selected = decision.selected_expression
@@ -618,13 +623,21 @@ def _artifact_forecast(
     )
     if not selected:
         return None
+    persisted_id = str(selected.get("strategy_forecast_id") or artifact.get("strategy_forecast_id") or "").strip()
+    if not persisted_id:
+        return None
+    if selected.get("opportunity_episode_id") not in {None, episode_id}:
+        return None
     value = selected.get("forecast_value", selected.get("value"))
     forecast_range = selected.get("forecast_range", selected.get("range"))
     distribution = selected.get("forecast_distribution", selected.get("distribution"))
     if value is None and not isinstance(forecast_range, Mapping) and not isinstance(distribution, Mapping):
         return None
+    forecast_as_of = selected.get("as_of") or selected.get("input_cutoff") or cutoff
+    if isinstance(forecast_as_of, datetime) and _utc(forecast_as_of) > _utc(cutoff):
+        return None
     try:
-        return build_strategy_forecast(
+        forecast = build_strategy_forecast(
             ticker=ticker, opportunity_episode_id=episode_id,
             strategy_revision_id=int(artifact["strategy_revision_id"]),
             strategy_evaluation_id=str(artifact.get("strategy_evaluation_id") or "") or None,
@@ -636,11 +649,15 @@ def _artifact_forecast(
             model_artifact_id=str(artifact["model_artifact_id"]),
             artifact_hash=str(artifact.get("artifact_hash") or ""),
             input_hash=str(artifact.get("input_hash") or ""),
-            as_of=cutoff, generated_at=artifact.get("artifact_published_at") or cutoff,
-            available_at=artifact.get("evaluation_available_at") or cutoff,
+            as_of=forecast_as_of,
+            generated_at=selected.get("generated_at") or artifact.get("artifact_published_at") or cutoff,
+            available_at=selected.get("available_at") or artifact.get("evaluation_available_at") or cutoff,
         )
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
+    if forecast.strategy_forecast_id != persisted_id:
+        return None
+    return forecast
 
 
 def _same_published_decision(left: Any, right: Any) -> bool:
