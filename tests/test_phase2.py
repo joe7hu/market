@@ -99,7 +99,7 @@ def test_p2_a07_a08_posterior_is_deterministic_uncertain_and_advisory() -> None:
     assert left.baseline["method"] == "observable-frequency.v1"
     assert left.challenger["method"] == "hmm-noisy-emission.v1"
     assert left.dimensions["rates"].transition_probabilities["positive"]["positive"] == 0.8
-    assert left.dimensions["rates"].change_point_probability == 1.0
+    assert 0.0 < left.dimensions["rates"].change_point_probability < 1.0
     assert not posterior_can_influence_rank(left)
     promoted = left.model_copy(update={
         "advisory_only": False,
@@ -111,7 +111,7 @@ def test_p2_a07_a08_posterior_is_deterministic_uncertain_and_advisory() -> None:
     })
     assert not posterior_can_influence_rank(promoted)
     assert not posterior_can_influence_rank(promoted, phase1_evidence={"verified": True, "evidence_id": "wrong", "evidence_hash": "phase1-hash"})
-    assert posterior_can_influence_rank(promoted, phase1_evidence={"verified": True, "evidence_id": "phase1-evidence", "evidence_hash": "phase1-hash"})
+    assert not posterior_can_influence_rank(promoted, phase1_evidence={"verified": True, "evidence_id": "phase1-evidence", "evidence_hash": "phase1-hash"})
 
 
 def test_p2_a02_unsupported_is_never_pit_selected_or_safe() -> None:
@@ -120,6 +120,20 @@ def test_p2_a02_unsupported_is_never_pit_selected_or_safe() -> None:
     vector = build_coverage_vector(AS_OF, {"x": {"macro": ("macro.value",)}}, [unsupported])
     assert not selection.selected and selection.missing_fields == ("macro.value",)
     assert vector.rows[0].status is Phase2Status.MISSING_HISTORY
+    assert not vector.rows[0].point_in_time_safe
+
+
+def test_missing_source_and_history_are_never_selected_and_explain_coverage() -> None:
+    rows = [
+        observation("missing-source", "macro.value", 1, source="fred", status=Phase2Status.MISSING_SOURCE),
+        observation("missing-history", "rates.nominal_yield", 1, source="treasury", status=Phase2Status.MISSING_HISTORY),
+    ]
+    selection = select_point_in_time(rows, AS_OF, fields=("macro.value", "rates.nominal_yield"))
+    vector = build_coverage_vector(AS_OF, {"x": {"all": ("macro.value", "rates.nominal_yield")}}, rows)
+    assert selection.selected == ()
+    assert vector.rows[0].status is Phase2Status.MISSING_HISTORY
+    assert "source_missing_source:fred" in vector.rows[0].blockers
+    assert "source_missing_history:treasury" in vector.rows[0].blockers
     assert not vector.rows[0].point_in_time_safe
 
 
@@ -154,3 +168,4 @@ def test_p2_a11_scenario_hash_replays_and_tampering_fails() -> None:
     path = build_scenario_paths("snapshot-1", posterior)[0]
     assert replay_scenario_path(path)
     assert not replay_scenario_path(path.model_copy(update={"scenario_hash": "tampered"}))
+    assert not replay_scenario_path(path.model_copy(update={"parent_snapshot_id": "other-snapshot"}))

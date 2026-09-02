@@ -38,8 +38,8 @@ class Phase2Repository:
             for row in rows:
                 effective_run_id = row.ingest_run_id or ingest_run_id
                 effective_payload_id = row.payload_id if row.payload_id is not None else payload_id
-                if not effective_run_id or not row.content_hash:
-                    raise ValueError("persisted Phase 2 observations require ingest_run_id and content_hash")
+                if not effective_run_id or effective_payload_id is None or not row.content_hash:
+                    raise ValueError("persisted Phase 2 observations require ingest_run_id, payload_id, and content_hash")
                 self._ensure_source(connection, row.source_id)
                 event_values = {
                     "actual": getattr(row, "actual", None),
@@ -93,6 +93,8 @@ class Phase2Repository:
             raise ValueError("Phase 2 coverage and posterior must share one cutoff")
         paths = tuple(scenarios)
         with self.runtime.transaction() as connection:
+            if coverage.parent_snapshot_id != posterior.parent_snapshot_id:
+                raise ValueError("Phase 2 coverage and posterior parent snapshots must match")
             self._assert_or_insert(
                 connection,
                 "analysis.market_state_posterior",
@@ -114,6 +116,11 @@ class Phase2Repository:
                    VALUES (%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (vector_id) DO NOTHING""", [coverage.vector_id, coverage.as_of, coverage.rows[0].status.value if coverage.rows else "MISSING_HISTORY", Jsonb(coverage.model_dump(mode="json")), Jsonb(list(coverage.ingest_run_ids)), coverage.input_content_hash, coverage.parent_snapshot_id])
             for path in paths:
+                if (path.snapshot_id != coverage.parent_snapshot_id or path.parent_snapshot_id != coverage.parent_snapshot_id
+                        or path.posterior_id != posterior.posterior_id or path.model_version != posterior.contract_version
+                        or path.input_content_hash != posterior.input_content_hash
+                        or tuple(path.ingest_run_ids) != tuple(posterior.ingest_run_ids)):
+                    raise ValueError("scenario path lineage does not reference its parent snapshot and posterior")
                 self._assert_or_insert(connection, "analysis.market_scenario_path", "scenario_hash", path.scenario_hash, {"snapshot_id": path.snapshot_id, "parent_snapshot_id": path.parent_snapshot_id, "posterior_id": path.posterior_id, "model_version": path.model_version, "ingest_run_ids": list(path.ingest_run_ids), "input_content_hash": path.input_content_hash, "path": path.model_dump(mode="json")})
                 connection.execute(
                     """INSERT INTO analysis.market_scenario_path
@@ -125,11 +132,11 @@ class Phase2Repository:
                 )
         return {"posterior_id": posterior.posterior_id, "vector_id": coverage.vector_id, "scenario_count": len(paths)}
 
-    def record_option_liquidity_sla(self, *, as_of: Any, source_id: str, payload: dict[str, Any], ingest_run_id: str | None = None, parent_snapshot_id: str | None = None) -> str:
+    def record_option_liquidity_sla(self, *, as_of: Any, source_id: str, payload: dict[str, Any], ingest_run_id: str | None = None, payload_id: int | None = None, parent_snapshot_id: str | None = None) -> str:
         """Store one immutable OI/volume SLA result from an approved seam."""
 
-        if not ingest_run_id:
-            raise ValueError("option liquidity SLA requires ingest_run_id")
+        if not ingest_run_id or payload_id is None:
+            raise ValueError("option liquidity SLA requires ingest_run_id and payload_id")
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         sla_id = hashlib.sha256(f"{as_of.isoformat()}|{source_id}|{encoded}".encode("utf-8")).hexdigest()
         with self.runtime.transaction() as connection:
@@ -139,16 +146,16 @@ class Phase2Repository:
                 "analysis.option_liquidity_sla",
                 "sla_id",
                 sla_id,
-                {"as_of": as_of, "source_id": source_id, "ingest_run_id": ingest_run_id,
+                {"as_of": as_of, "source_id": source_id, "ingest_run_id": ingest_run_id, "payload_id": payload_id,
                  "payload_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
                  "parent_snapshot_id": parent_snapshot_id, "payload": payload},
             )
             connection.execute(
                 """INSERT INTO analysis.option_liquidity_sla
-                   (sla_id, as_of, source_id, ingest_run_id, payload_hash, parent_snapshot_id, payload)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s)
+                   (sla_id, as_of, source_id, ingest_run_id, payload_id, payload_hash, parent_snapshot_id, payload)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (sla_id) DO NOTHING""",
-                [sla_id, as_of, source_id, ingest_run_id, hashlib.sha256(encoded.encode("utf-8")).hexdigest(), parent_snapshot_id, Jsonb(payload)],
+                [sla_id, as_of, source_id, ingest_run_id, payload_id, hashlib.sha256(encoded.encode("utf-8")).hexdigest(), parent_snapshot_id, Jsonb(payload)],
             )
         return sla_id
 
@@ -162,7 +169,7 @@ class Phase2Repository:
             for column in (
                 "as_of", "input_cutoff", "model_version", "status", "payload", "ingest_run_ids",
                 "input_content_hash", "parent_snapshot_id", "snapshot_id", "path", "source_id",
-                "ingest_run_id", "payload_hash",
+                "ingest_run_id", "payload_id", "payload_hash",
             )
             if column in expected
         }

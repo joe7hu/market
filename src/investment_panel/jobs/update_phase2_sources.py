@@ -20,7 +20,10 @@ from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.phase2 import (
     AdapterResult,
     Phase2Status,
+    assess_option_oi_volume_sla,
     parse_coinmetrics_derivatives,
+    parse_option_history,
+    parse_sec_positioning,
     parse_corporate_expectations,
     parse_event_consensus,
     parse_fred_alfred,
@@ -34,6 +37,11 @@ from investment_panel.database.phase2 import Phase2Repository
 
 
 Fetcher = Callable[[str, Mapping[str, str], Mapping[str, str]], Mapping[str, Any]]
+
+
+def _rows_from_body(body: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+    rows = body.get("observations", body.get("data", body.get("results", ())))
+    return rows if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)) else ()
 
 _URLS = {
     "fred": "https://api.stlouisfed.org/fred/series/observations",
@@ -61,6 +69,10 @@ def _http_fetch(url: str, headers: Mapping[str, str], params: Mapping[str, str])
 
 
 def _payload_for(source_id: str, *, fetcher: Fetcher) -> Mapping[str, Any]:
+    if source_id not in _URLS:
+        # Existing broker and SEC seams are dispatched explicitly below.  An
+        # absent seam is a truthful missing-history result, never a KeyError.
+        return {}
     url = _URLS[source_id]
     headers = {"Accept": "application/json", "User-Agent": "market-phase2-source-producer/1"}
     params: dict[str, str] = {}
@@ -87,6 +99,10 @@ def adapt_source_payload(source_id: str, payload: Mapping[str, Any], *, env: Map
         return parse_corporate_expectations(payload, env=env)
     if source_id == "coinmetrics":
         return parse_coinmetrics_derivatives(payload, env=env)
+    if source_id in {"robinhood_history_full", "ibkr_options"}:
+        return parse_option_history(source_id, payload)
+    if source_id == "sec_13f":
+        return parse_sec_positioning(payload)
     return AdapterResult(source_id=source_id, status=Phase2Status.MISSING_HISTORY, reason="existing source seam has no Phase 2 payload")
 
 
@@ -146,13 +162,19 @@ def run(
                 try:
                     body = (payloads or {}).get(source_id) if payloads is not None else _payload_for(source_id, fetcher=fetcher or _http_fetch)
                     result = adapt_source_payload(source_id, body or {}, env=os.environ)
-                except (httpx.HTTPError, OSError, ValueError) as exc:
+                except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
                     result = AdapterResult(source_id=source_id, status=Phase2Status.MISSING_SOURCE, reason=f"provider request failed: {type(exc).__name__}")
             stored = 0
             payload_id = None
-            if result.observations:
+            if body and (result.observations or source_id in {"robinhood_history_full", "ibkr_options"}):
                 archive = _archive_payload(config, source_id, source_run.id, body)
                 payload_id = ingestion.record_payload_file(source_run.id, archive, phase2_source=source_id)
+                if source_id in {"robinhood_history_full", "ibkr_options"}:
+                    phase2.record_option_liquidity_sla(as_of=datetime.now(UTC), source_id=source_id, payload={"assessment": assess_option_oi_volume_sla(_rows_from_body(body))}, ingest_run_id=str(source_run.id), payload_id=payload_id)
+            if result.observations:
+                if payload_id is None:
+                    archive = _archive_payload(config, source_id, source_run.id, body)
+                    payload_id = ingestion.record_payload_file(source_run.id, archive, phase2_source=source_id)
                 observations = tuple(item.model_copy(update={"ingest_run_id": str(source_run.id), "payload_id": payload_id}) for item in result.observations)
                 stored = phase2.record_observations(observations, ingest_run_id=str(source_run.id), payload_id=payload_id)
             terminal = "succeeded" if result.status is Phase2Status.AVAILABLE else "skipped"

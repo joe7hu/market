@@ -24,3 +24,18 @@ def test_mock_authorized_adapter_marks_absent_clock_as_missing_history() -> None
     )
     assert result.status is Phase2Status.MISSING_HISTORY
     assert result.observations == ()
+
+
+def test_existing_sec_and_option_seams_are_explicitly_dispatched() -> None:
+    now = "2026-09-02T14:00:00+00:00"
+    options = adapt_source_payload("ibkr_options", {"observations": [
+        {"contract_id": "c1", "observed_at": now, "available_at": now, "open_interest": 10, "volume": 2},
+    ]})
+    assert options.status is Phase2Status.AVAILABLE
+    assert {item.field_name for item in options.observations} == {"option.open_interest", "option.volume"}
+    positioning = adapt_source_payload("sec_13f", {"observations": [
+        {"issuer": "issuer-1", "filing_date": now, "observed_at": now, "available_at": now, "shares": 100},
+    ]})
+    assert positioning.status is Phase2Status.AVAILABLE
+    assert positioning.observations[0].field_name == "positioning.flow"
+    assert adapt_source_payload("robinhood_history_full", {}).status is Phase2Status.MISSING_HISTORY

@@ -294,6 +294,7 @@ def source_refresh_job_names() -> set[str]:
     return {
         "update_broker_sources",
         "update_ibkr_options",
+        "update_phase2_sources",
         "options_radar_hard_refresh",
         "update_social_sources",
         "update_arco_data",
@@ -313,6 +314,7 @@ def source_refresh_jobs_sql() -> str:
         WHEN source.health_owner = 'options_radar_hard_refresh' THEN ARRAY['options_radar_hard_refresh']::text[]
         WHEN source.health_owner IN ('update_broker_sources', 'update_ibkr_options',
                                      'update_social_sources', 'update_arco_data',
+                                     'update_phase2_sources',
                                      'update_research_sources', 'update_event_calendar',
                                      'update_disclosures', 'update_market_data',
                                      'update_market_valuations')
@@ -325,8 +327,10 @@ def source_primary_refresh_job_sql() -> str:
         WHEN source.operational_state = 'archived' THEN NULL
         WHEN source.id = 'ibkr' AND worst.capability = 'option_quotes' THEN 'update_ibkr_options'
         WHEN source.health_owner = 'options_radar_hard_refresh' THEN 'options_radar_hard_refresh'
+        WHEN source.health_owner = 'update_phase2_sources' THEN 'update_phase2_sources'
         WHEN source.health_owner IN ('update_broker_sources', 'update_ibkr_options',
                                      'update_social_sources', 'update_arco_data',
+                                     'update_phase2_sources',
                                      'update_research_sources', 'update_event_calendar',
                                      'update_disclosures', 'update_market_data',
                                      'update_market_valuations')

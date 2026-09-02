@@ -413,10 +413,23 @@ class IngestionRepository:
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (sha256) DO UPDATE
                 SET metadata = ingest.payload.metadata || EXCLUDED.metadata
+                WHERE ingest.payload.encoding = EXCLUDED.encoding
+                  AND ingest.payload.byte_count = EXCLUDED.byte_count
+                  AND ingest.payload.schema_version IS NOT DISTINCT FROM EXCLUDED.schema_version
                 RETURNING id
                 """,
                 [run_id, archive_uri, digest, encoding, byte_count, schema_version, Jsonb(metadata or {})],
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT id, encoding, byte_count, schema_version FROM ingest.payload WHERE sha256 = %s",
+                    [digest],
+                ).fetchone()
+                # The hash is the immutable payload identity.  A retry may
+                # arrive in another run or archive location, but divergent
+                # bytes/encoding/schema metadata must never be merged.
+                if row is None or tuple(row[key] for key in ("encoding", "byte_count", "schema_version")) != (encoding, byte_count, schema_version):
+                    raise ValueError(f"immutable payload identity conflicts: {digest}")
         return int(row["id"])
 
     def record_payload_file(

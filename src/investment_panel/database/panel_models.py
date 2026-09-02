@@ -945,12 +945,24 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY as_of DESC, sla_id DESC LIMIT 100
     """,
     "market_observations": """
-        SELECT observation_id, field_name, dimension, asset_class, source_id,
-               source_version, value, unit, ingest_run_id::text AS ingest_run_id, payload_id,
-               content_hash, parent_snapshot_id, observed_at, available_at,
-               publication_at, release_at, vintage_at, actual, consensus, surprise,
-               revision, status, confidence, metadata
-        FROM raw.market_observation
+        SELECT observation.observation_id, observation.field_name, observation.dimension, observation.asset_class, observation.source_id,
+               observation.source_version, observation.value, observation.unit, observation.ingest_run_id::text AS ingest_run_id, observation.payload_id,
+               observation.content_hash, observation.parent_snapshot_id, observation.observed_at, observation.available_at,
+               observation.publication_at, observation.release_at, observation.vintage_at, observation.actual, observation.consensus, observation.surprise,
+               observation.revision, observation.status, observation.confidence, observation.metadata
+        FROM raw.market_observation observation
+        JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
+        JOIN ingest.source source ON source.id = observation.source_id
+        JOIN LATERAL (
+            SELECT history.enabled, history.operational_state
+            FROM ingest.source_lifecycle_history history
+            WHERE history.source_id = source.id AND history.effective_at <= now()
+            ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
+        ) lifecycle ON lifecycle.enabled = true AND lifecycle.operational_state = 'active'
+        WHERE ingest_run.status IN ('succeeded', 'partial')
+          AND ingest_run.finished_at IS NOT NULL
+          AND observation.available_at <= now()
+          AND observation.observed_at <= now()
         ORDER BY available_at DESC, observation_id LIMIT 500
     """,
 }

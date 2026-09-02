@@ -230,22 +230,37 @@ def refresh_market_publication(
                       observation.release_at, observation.vintage_at, observation.actual,
                       observation.consensus, observation.surprise, observation.revision,
                       observation.status, observation.confidence, observation.metadata,
-                      source.enabled AS source_enabled, source.operational_state AS source_operational_state,
+                      lifecycle.enabled AS source_enabled, lifecycle.operational_state AS source_operational_state,
                       ingest_run.status AS ingest_status, ingest_run.finished_at AS ingest_finished_at
                FROM raw.market_observation observation
                JOIN ingest.source source ON source.id = observation.source_id
+               JOIN LATERAL (
+                   SELECT history.enabled, history.operational_state
+                   FROM ingest.source_lifecycle_history history
+                   WHERE history.source_id = source.id AND history.effective_at <= %s
+                   ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
+               ) lifecycle ON lifecycle.enabled = true AND lifecycle.operational_state = 'active'
                JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
-               WHERE observation.observed_at <= %s
+               WHERE observation.observed_at <= %s AND observation.available_at <= %s
+                 AND ingest_run.status IN ('succeeded', 'partial')
+                 AND ingest_run.finished_at IS NOT NULL AND ingest_run.finished_at <= %s
                ORDER BY observation.dimension, observation.observed_at, observation.observation_id
                LIMIT 500""",
-            [as_of],
+            [as_of, as_of, as_of, as_of],
         ).fetchall()]
         phase2_source_rows = [dict(row) for row in connection.execute(
-            """SELECT id AS source_id, enabled AS source_enabled, operational_state AS source_operational_state,
-                      capabilities->>'phase2_status' AS phase2_status
-               FROM ingest.source
-               WHERE family = 'phase2' AND created_at <= %s""",
-            [as_of],
+            """SELECT source.id AS source_id, lifecycle.enabled AS source_enabled,
+                      lifecycle.operational_state AS source_operational_state,
+                      source.capabilities->>'phase2_status' AS phase2_status
+               FROM ingest.source source
+               JOIN LATERAL (
+                   SELECT history.enabled, history.operational_state
+                   FROM ingest.source_lifecycle_history history
+                   WHERE history.source_id = source.id AND history.effective_at <= %s
+                   ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
+               ) lifecycle ON true
+               WHERE source.family = 'phase2' AND source.created_at <= %s""",
+            [as_of, as_of],
         ).fetchall()]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in price_rows:

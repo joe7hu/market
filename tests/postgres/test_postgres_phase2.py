@@ -34,14 +34,18 @@ def test_phase2_event_fields_lineage_and_divergent_identity_are_authoritative(
         surprise=0.2,
         revision=-0.1,
         content_hash="a" * 64,
-    )
+        )
     try:
         ingestion.register_source(
             "trading_economics", name="TE test seam", family="phase2", kind="test",
             operational_state="active", health_owner="update_phase2_sources", freshness_seconds=86400,
         )
         with ingestion.run("trading_economics", "phase2-test") as source_run:
-            repository.record_observations((event,), ingest_run_id=str(source_run.id), parent_snapshot_id="snapshot-parent")
+            payload_id = ingestion.record_payload(
+                source_run.id, "phase2-test/event.json", sha256="b" * 64,
+                byte_count=1, schema_version="phase2-test.v1",
+            )
+            repository.record_observations((event,), ingest_run_id=str(source_run.id), payload_id=payload_id, parent_snapshot_id="snapshot-parent")
             source_run.finish("succeeded")
         with runtime.read() as connection:
             row = connection.execute(
@@ -59,6 +63,7 @@ def test_phase2_event_fields_lineage_and_divergent_identity_are_authoritative(
             repository.record_observations(
                 (event.model_copy(update={"actual": 9.9}),),
                 ingest_run_id=str(source_run.id),
+                payload_id=payload_id,
                 parent_snapshot_id="snapshot-parent",
             )
     finally:
