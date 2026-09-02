@@ -241,7 +241,13 @@ def test_distinct_noinherit_login_is_the_only_runtime_activation_boundary(
         "phase1_superuser_login": "SUPERUSER NOINHERIT",
         "phase1_bypassrls_login": "NOSUPERUSER BYPASSRLS NOINHERIT",
         "phase1_inherit_login": "NOSUPERUSER NOBYPASSRLS INHERIT",
+        "phase1_createrole_login": "NOSUPERUSER NOBYPASSRLS NOINHERIT CREATEROLE",
+        "phase1_createdb_login": "NOSUPERUSER NOBYPASSRLS NOINHERIT CREATEDB",
+        "phase1_replication_login": "NOSUPERUSER NOBYPASSRLS NOINHERIT REPLICATION",
     }
+    direct_signer_login = "phase1_direct_signer_login"
+    recursive_parent = "phase1_recursive_parent"
+    recursive_migrator_login = "phase1_recursive_migrator_login"
     owner_runtime = DatabaseRuntime(migrated_postgres_dsn)
     owner_runtime.open()
     try:
@@ -258,6 +264,24 @@ def test_distinct_noinherit_login_is_the_only_runtime_activation_boundary(
                         Identifier(role), Literal(f"{role}-password")
                     ),
                 )
+            connection.execute(
+                SQL("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOBYPASSRLS NOINHERIT").format(
+                    Identifier(direct_signer_login), Literal(f"{direct_signer_login}-password")
+                ),
+            )
+            connection.execute(
+                SQL("CREATE ROLE {} NOLOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT").format(
+                    Identifier(recursive_parent)
+                ),
+            )
+            connection.execute(
+                SQL("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOBYPASSRLS NOINHERIT").format(
+                    Identifier(recursive_migrator_login), Literal(f"{recursive_migrator_login}-password")
+                ),
+            )
+            connection.execute(SQL("GRANT market_research_signer TO {}").format(Identifier(direct_signer_login)))
+            connection.execute(SQL("GRANT market_migrator TO {}").format(Identifier(recursive_parent)))
+            connection.execute(SQL("GRANT {} TO {}").format(Identifier(recursive_parent), Identifier(recursive_migrator_login)))
 
         monkeypatch.setenv("MARKET_APP_LOGIN_ROLE", safe_login)
         monkeypatch.setenv("MARKET_APP_DATABASE_PASSWORD", safe_password)
@@ -269,7 +293,8 @@ def test_distinct_noinherit_login_is_the_only_runtime_activation_boundary(
         try:
             with app_runtime.read() as connection:
                 identity = connection.execute(
-                    """SELECT current_user, session_user, role.rolsuper, role.rolbypassrls, role.rolinherit
+                    """SELECT current_user, session_user, role.rolsuper, role.rolbypassrls, role.rolinherit,
+                              role.rolcreaterole, role.rolcreatedb, role.rolreplication
                        FROM pg_roles role WHERE role.rolname = current_user"""
                 ).fetchone()
             with owner_runtime.read() as connection:
@@ -285,6 +310,9 @@ def test_distinct_noinherit_login_is_the_only_runtime_activation_boundary(
                 "rolsuper": False,
                 "rolbypassrls": False,
                 "rolinherit": False,
+                "rolcreaterole": False,
+                "rolcreatedb": False,
+                "rolreplication": False,
                 "output_insert": False,
                 "key_select": False,
             }
@@ -302,6 +330,8 @@ def test_distinct_noinherit_login_is_the_only_runtime_activation_boundary(
                 for statement in (
                     "SELECT secret FROM analysis.research_evaluator_signing_secret",
                     "INSERT INTO analysis.research_evaluator_output (research_trial_id) VALUES (gen_random_uuid())",
+                    "SET ROLE market_research_signer",
+                    "SET ROLE market_migrator",
                 ):
                     connection.execute("SAVEPOINT protected_role_boundary")
                     with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -324,10 +354,25 @@ def test_distinct_noinherit_login_is_the_only_runtime_activation_boundary(
                     RuntimeError, match="unsafe attributes|cannot activate"
                 ):
                     activate_application_role(connection)
+        for role in (direct_signer_login, recursive_migrator_login):
+            monkeypatch.setenv("MARKET_APP_LOGIN_ROLE", role)
+            with psycopg.connect(
+                _application_dsn(migrated_postgres_dsn, role, f"{role}-password"),
+                row_factory=dict_row,
+            ) as connection:
+                with connection.transaction(), pytest.raises(
+                    RuntimeError, match="unsafe role membership path|protected evaluator role|cannot activate"
+                ):
+                    activate_application_role(connection)
     finally:
         with psycopg.connect(migrated_postgres_dsn) as connection:
+            connection.execute(SQL("REVOKE market_research_signer FROM {}").format(Identifier(direct_signer_login)))
+            connection.execute(SQL("REVOKE market_migrator FROM {}").format(Identifier(recursive_parent)))
+            connection.execute(SQL("REVOKE {} FROM {}").format(Identifier(recursive_parent), Identifier(recursive_migrator_login)))
             connection.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(safe_login)))
             for role in rejected_roles:
+                connection.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(role)))
+            for role in (direct_signer_login, recursive_migrator_login, recursive_parent):
                 connection.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(role)))
         owner_runtime.close()
 

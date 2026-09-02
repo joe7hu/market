@@ -142,7 +142,8 @@ def activate_application_role(connection: Connection[dict[str, Any]]) -> None:
         raise RuntimeError("MARKET_APP_LOGIN_ROLE is required for evaluator authority")
     identity = connection.execute(
         """SELECT session_user, current_user, rolcanlogin, rolsuper,
-                  rolbypassrls, rolinherit,
+                  rolbypassrls, rolinherit, rolcreaterole, rolcreatedb,
+                  rolreplication,
                   pg_has_role(session_user, %s, 'MEMBER') AS role_membership
            FROM pg_roles WHERE rolname = session_user""",
         [APPLICATION_ROLE],
@@ -154,11 +155,66 @@ def activate_application_role(connection: Connection[dict[str, Any]]) -> None:
         or identity["rolsuper"]
         or identity["rolbypassrls"]
         or identity["rolinherit"]
-        or (
-            identity["current_user"] != APPLICATION_ROLE
-            and not identity["role_membership"]
-        )
+        or identity["rolcreaterole"]
+        or identity["rolcreatedb"]
+        or identity["rolreplication"]
     ):
+        raise RuntimeError("configured PostgreSQL login has unsafe attributes or is not a member of market_app")
+    protected = connection.execute(
+        """SELECT count(*) AS role_count,
+                  count(*) FILTER (
+                      WHERE NOT rolcanlogin AND NOT rolsuper
+                        AND NOT rolbypassrls AND NOT rolinherit
+                        AND NOT rolcreaterole AND NOT rolcreatedb
+                        AND NOT rolreplication
+                  ) AS safe_count
+           FROM pg_roles
+           WHERE rolname IN ('market_research_signer', 'market_migrator')"""
+    ).fetchone()
+    membership = connection.execute(
+        """WITH RECURSIVE role_graph(member, granted_role) AS (
+               SELECT member, roleid FROM pg_auth_members
+               UNION
+               SELECT graph.member, membership.roleid
+               FROM role_graph graph
+               JOIN pg_auth_members membership ON membership.member = graph.granted_role
+           )
+           SELECT bool_or(protected_role.rolname IN ('market_research_signer', 'market_migrator'))
+                      AS reaches_protected,
+                  bool_or(protected_role.rolname <> 'market_app') AS reaches_unapproved
+           FROM role_graph graph
+           JOIN pg_roles protected_role ON protected_role.oid = graph.granted_role
+           WHERE graph.member = (SELECT oid FROM pg_roles WHERE rolname = %s)""",
+        [configured_login],
+    ).fetchone()
+    direct_membership = connection.execute(
+        """SELECT EXISTS (
+               SELECT 1
+               FROM pg_auth_members
+               WHERE member = (SELECT oid FROM pg_roles WHERE rolname = %s)
+                 AND roleid = (SELECT oid FROM pg_roles WHERE rolname = 'market_app')
+           ) OR (SELECT oid FROM pg_roles WHERE rolname = %s) =
+               (SELECT oid FROM pg_roles WHERE rolname = 'market_app') AS direct_market_app,
+           NOT EXISTS (
+               SELECT 1
+               FROM pg_auth_members
+               WHERE member = (SELECT oid FROM pg_roles WHERE rolname = 'market_app')
+           ) AS market_app_is_leaf""",
+        [configured_login, configured_login],
+    ).fetchone()
+    if (
+        protected is None
+        or protected["role_count"] != 2
+        or protected["safe_count"] != 2
+        or membership is None
+        or membership["reaches_protected"]
+        or membership["reaches_unapproved"]
+        or direct_membership is None
+        or not direct_membership["direct_market_app"]
+        or not direct_membership["market_app_is_leaf"]
+    ):
+        raise RuntimeError("configured application login has an unsafe role membership path")
+    if identity["current_user"] != APPLICATION_ROLE and not identity["role_membership"]:
         raise RuntimeError("configured PostgreSQL login has unsafe attributes or is not a member of market_app")
     try:
         if identity["current_user"] != APPLICATION_ROLE:
@@ -167,6 +223,35 @@ def activate_application_role(connection: Connection[dict[str, Any]]) -> None:
         raise RuntimeError(
             "configured PostgreSQL login cannot activate market_app evaluator authority"
         ) from exc
+    ownership = connection.execute(
+        """SELECT
+               (SELECT count(*) FROM pg_class
+                WHERE oid IN ('analysis.research_evaluator_signing_secret'::regclass,
+                              'analysis.research_evaluator_output'::regclass)
+                  AND relowner = (SELECT oid FROM pg_roles WHERE rolname = 'market_research_signer')) = 2
+               AND (SELECT count(*) FROM pg_proc procedure
+                    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+                    WHERE namespace.nspname = 'analysis'
+                      AND procedure.proname IN (
+                          'research_evaluator_signing_key',
+                          'research_evaluator_output_hash_v2',
+                          'research_evaluator_signature_payload',
+                          'enforce_research_evaluator_output',
+                          'enforce_research_evidence_manifest',
+                          'enforce_validation_dossier_seal',
+                          'enforce_research_trial_terminal_immutability',
+                          'enforce_research_result_actual_availability',
+                          'enforce_research_gate_actual_availability',
+                          'enforce_research_universe_actual_availability',
+                          'enforce_research_revision_promotion_hardened',
+                          'enforce_research_revision_promotion',
+                          'enforce_strategy_forecast_authority',
+                          'research_evidence_complete',
+                          'research_validation_evidence_complete'
+                      )
+                      AND procedure.proowner = (SELECT oid FROM pg_roles WHERE rolname = 'market_research_signer')) = 15
+           AS ownership_valid"""
+    ).fetchone()
     row = connection.execute(
         """SELECT current_user, pg_has_role(current_user, %s, 'USAGE') AS role_active,
                   has_function_privilege(current_user, %s, 'EXECUTE') AS writer_allowed
@@ -178,6 +263,8 @@ def activate_application_role(connection: Connection[dict[str, Any]]) -> None:
         or row["current_user"] != APPLICATION_ROLE
         or not row["role_active"]
         or not row["writer_allowed"]
+        or ownership is None
+        or not ownership["ownership_valid"]
     ):
         raise RuntimeError(
             "configured PostgreSQL connection cannot activate market_app evaluator authority"
