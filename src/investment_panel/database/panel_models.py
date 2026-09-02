@@ -170,6 +170,52 @@ DIRECT_QUERIES: dict[str, str] = {
         WHERE revision.hypothesis_id IS NOT NULL
         ORDER BY revision.created_at DESC, revision.id DESC LIMIT 500
     """,
+    "research_strategy_registry": """
+        SELECT * FROM analysis.strategy_registry
+        ORDER BY created_at DESC, strategy_key, revision LIMIT 500
+    """,
+    "research_strategy_manifests": """
+        SELECT strategy_revision_id, source_definition_version, source_manifest,
+               data_manifest, cost_manifest, capacity_manifest, failure_manifest,
+               manifest_hash, created_at, available_at
+        FROM analysis.strategy_manifest
+        ORDER BY created_at DESC, strategy_revision_id LIMIT 500
+    """,
+    "research_strategy_trial_accounting": """
+        SELECT * FROM analysis.strategy_trial_accounting
+        ORDER BY input_cutoff DESC, trial_key LIMIT 500
+    """,
+    "research_strategy_pnl_tapes": """
+        SELECT tape.id::text AS strategy_pnl_tape_id, tape.strategy_revision_id,
+               instrument.symbol AS ticker, tape.pnl_date, tape.input_cutoff,
+               tape.gross_return, tape.cost, tape.net_return, tape.tail_return,
+               tape.regime, tape.observed_at, tape.available_at, tape.input_hash,
+               tape.metadata
+        FROM analysis.strategy_pnl_tape tape
+        LEFT JOIN catalog.instrument instrument ON instrument.id = tape.instrument_id
+        ORDER BY tape.pnl_date DESC, tape.id DESC LIMIT 500
+    """,
+    "research_strategy_monitoring": """
+        SELECT id::text AS monitoring_evidence_id, strategy_revision_id,
+               evidence_kind, input_cutoff, observed_at, available_at, input_hash,
+               metrics, evidence
+        FROM analysis.strategy_monitoring_evidence
+        ORDER BY input_cutoff DESC, id DESC LIMIT 500
+    """,
+    "research_strategy_comparisons": """
+        SELECT comparison.id::text AS strategy_comparison_id,
+               comparison.champion_revision_id, champion.strategy_key AS champion_strategy_key,
+               champion.revision AS champion_revision,
+               comparison.challenger_revision_id, challenger.strategy_key AS challenger_strategy_key,
+               challenger.revision AS challenger_revision,
+               comparison.input_cutoff, comparison.observed_at, comparison.available_at,
+               comparison.input_hash, comparison.distinctness, comparison.explanation,
+               comparison.metrics
+        FROM analysis.strategy_comparison comparison
+        JOIN analysis.strategy_revision champion ON champion.id = comparison.champion_revision_id
+        JOIN analysis.strategy_revision challenger ON challenger.id = comparison.challenger_revision_id
+        ORDER BY comparison.input_cutoff DESC, comparison.id DESC LIMIT 500
+    """,
     "options_radar_health": """
         SELECT publication.id::text AS publication_id,
                publication.published_at,
