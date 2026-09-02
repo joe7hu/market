@@ -111,6 +111,18 @@ def test_p3_inputs_are_authoritative_pit_and_options_controls_are_typed() -> Non
     assert invalid_options.status == "unavailable"
 
 
+@pytest.mark.parametrize("disabled", [None, "false", True, 0])
+def test_p3_options_disabled_must_be_exact_false(disabled: object) -> None:
+    state = {"status": "confirmed", "confirmed": True, "disabled": disabled,
+             "observed_at": "2026-09-01T12:00:00Z", "available_at": "2026-09-01T12:00:00Z"}
+    signal = options_recovery_v2({
+        "input_cutoff": "2026-09-02T13:00:00Z",
+        "full_chain_state": state, "oi_volume_state": state, "dividend_state": state,
+        "quote_quality": 0.9, "fill_model_proven": True,
+    })
+    assert signal.status == "unavailable"
+
+
 def test_p3_daily_and_event_numeric_fields_reject_boolean_values() -> None:
     cutoff = "2026-09-02T13:00:00Z"
     daily = daily_trend_underreaction({

@@ -27,6 +27,15 @@ def _require_pit(input_cutoff: Any, available_at: Any) -> None:
         raise ValueError("Phase 3 evidence is not point-in-time available")
 
 
+def _require_result_pit(connection: Any, research_trial_id: Any, trial_result_id: Any, input_cutoff: datetime) -> None:
+    row = connection.execute(
+        "SELECT available_at FROM analysis.trial_result WHERE id = %s AND research_trial_id = %s",
+        [trial_result_id, research_trial_id],
+    ).fetchone()
+    if row is None or row["available_at"] is None or row["available_at"] > input_cutoff:
+        raise ValueError("Phase 3 trial result is not point-in-time available")
+
+
 class StrategyFactoryRepository:
     """Extend the existing strategy revision and research authorities."""
 
@@ -100,6 +109,7 @@ class StrategyFactoryRepository:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for row in records:
                 _require_pit(row["input_cutoff"], row["available_at"])
+                _require_result_pit(connection, row["research_trial_id"], row["trial_result_id"], row["input_cutoff"])
                 connection.execute(
                     """INSERT INTO analysis.strategy_pnl_tape
                        (strategy_revision_id, instrument_id, pnl_date, strategy_forecast_id,
@@ -120,6 +130,7 @@ class StrategyFactoryRepository:
             raise ValueError("unknown strategy monitoring evidence kind")
         _require_pit(input_cutoff, available_at)
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            _require_result_pit(connection, research_trial_id, trial_result_id, input_cutoff)
             connection.execute(
                 """INSERT INTO analysis.strategy_monitoring_evidence
                    (strategy_revision_id, research_trial_id, trial_result_id, universe_manifest_hash,
@@ -136,6 +147,8 @@ class StrategyFactoryRepository:
             raise ValueError("champion and challenger must be different revisions")
         _require_pit(input_cutoff, available_at)
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            _require_result_pit(connection, champion_trial_id, champion_result_id, input_cutoff)
+            _require_result_pit(connection, challenger_trial_id, challenger_result_id, input_cutoff)
             connection.execute(
                 """INSERT INTO analysis.strategy_comparison
                    (champion_revision_id, challenger_revision_id, champion_trial_id, challenger_trial_id,

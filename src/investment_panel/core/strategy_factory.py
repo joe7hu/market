@@ -255,7 +255,7 @@ def options_recovery_v2(inputs: Mapping[str, Any], *, strategy_key: str = "optio
 
 
 def _authoritative_state(value: Any, cutoff: datetime) -> bool:
-    if not isinstance(value, Mapping) or not value or value.get("status") != "confirmed" or value.get("confirmed") is not True or value.get("disabled") is True:
+    if not isinstance(value, Mapping) or not value or value.get("status") != "confirmed" or value.get("confirmed") is not True or value.get("disabled") is not False:
         return False
     available_at = _parse_clock(value.get("available_at"))
     observed_at = _parse_clock(value.get("observed_at"))
