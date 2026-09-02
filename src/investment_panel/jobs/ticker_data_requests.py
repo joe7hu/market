@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from investment_panel.jobs import update_content_sources, update_market_events
+from investment_panel.jobs import update_phase2_sources
 
 
 def update_earnings_and_estimates(config_path: str | None = None) -> dict[str, Any]:
@@ -12,10 +13,11 @@ def update_earnings_and_estimates(config_path: str | None = None) -> dict[str, A
 
     content = update_content_sources.run_research(config_path)
     events = update_market_events.run(config_path)
+    phase2 = update_phase2_sources.run(config_path, source_ids=("alphavantage", "trading_economics"))
     return _partial_result(
         field="earnings_revisions",
         required_source="issuer earnings release, SEC filing, and approved estimate vintage",
-        source_results={"research_content": content, "event_calendar": events},
+        source_results={"research_content": content, "event_calendar": events, "phase2_sources": phase2},
         collected_fields=["scheduled_earnings_events", "public_research_content"],
         missing_fields=["earnings_actuals", "guidance_changes", "analyst_estimate_revisions"],
         reason=(
@@ -31,11 +33,12 @@ def update_macro_series(config_path: str | None = None) -> dict[str, Any]:
     """Collect the official release calendar and identify missing vintage series."""
 
     calendar = update_market_events.run(config_path)
+    phase2 = update_phase2_sources.run(config_path, source_ids=("fred", "treasury", "trading_economics", "coinmetrics"))
     return _partial_result(
         field="macro_regime",
         required_source="FRED real-time vintage, Treasury, and official release calendar",
-        source_results={"official_event_calendar": calendar},
-        collected_fields=["official_macro_release_calendar"],
+        source_results={"official_event_calendar": calendar, "phase2_sources": phase2},
+        collected_fields=["official_macro_release_calendar", "phase2_source_status"],
         missing_fields=[
             "fred_real_time_vintages",
             "treasury_curve",

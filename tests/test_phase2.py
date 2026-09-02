@@ -26,10 +26,10 @@ from investment_panel.core.phase2 import (
 AS_OF = datetime(2026, 9, 2, 14, tzinfo=UTC)
 
 
-def observation(key: str, field: str, value: float, *, available_at: datetime = AS_OF, source: str = "treasury", status: Phase2Status = Phase2Status.AVAILABLE) -> PITObservation:
+def observation(key: str, field: str, value: float, *, available_at: datetime = AS_OF, observed_at: datetime = AS_OF - timedelta(days=1), source: str = "treasury", status: Phase2Status = Phase2Status.AVAILABLE) -> PITObservation:
     return PITObservation(
         observation_id=key, field_name=field, dimension="rates", asset_class="rates", source_id=source,
-        source_version="fixture.v1", value=value, observed_at=AS_OF - timedelta(days=1),
+        source_version="fixture.v1", value=value, observed_at=observed_at,
         available_at=available_at, status=status,
     )
 
@@ -55,6 +55,8 @@ def test_p2_a01_public_treasury_and_credentialed_corporate_seams_keep_clocks() -
     assert corporate.status is Phase2Status.AVAILABLE
     assert treasury.observations[0].publication_at is None
     assert corporate.observations[0].publication_at == AS_OF
+    assert parse_treasury_yield_curve({"observations": [{"date": AS_OF.date().isoformat(), "value": "4.0"}]}).status is Phase2Status.MISSING_HISTORY
+    assert parse_treasury_yield_curve({"observations": [{"date": AS_OF.isoformat(), "available_at": "2026-09-02T14:00:00", "value": "4.0"}]}).observations == ()
 
 
 def test_p2_a03_coverage_is_per_expression_and_fails_closed() -> None:
@@ -89,16 +91,50 @@ def test_p2_a06_crypto_requires_venue_identity_and_depth() -> None:
 
 
 def test_p2_a07_a08_posterior_is_deterministic_uncertain_and_advisory() -> None:
-    rows = [observation("n", "macro.value", -1, source="fred"), observation("p", "macro.value", 1, source="fred")]
+    rows = [observation("n", "macro.value", -1, source="fred", observed_at=AS_OF - timedelta(days=2)), observation("p", "macro.value", 1, source="fred")]
     left = build_market_state_posterior(rows, as_of=AS_OF)
     right = build_market_state_posterior(list(reversed(rows)), as_of=AS_OF)
     assert left.posterior_id == right.posterior_id
-    assert left.entropy == 1.0 and left.missingness == 0.0
+    assert left.entropy is not None and left.entropy != 1.0 and left.missingness == 0.0
     assert left.baseline["method"] == "observable-frequency.v1"
-    assert left.challenger["method"] == "bounded-persistence.v1"
+    assert left.challenger["method"] == "hmm-noisy-emission.v1"
+    assert left.dimensions["rates"].transition_probabilities["positive"]["positive"] == 0.8
+    assert left.dimensions["rates"].change_point_probability == 1.0
     assert not posterior_can_influence_rank(left)
-    promoted = left.model_copy(update={"advisory_only": False, "incremental_oos_net_utility": 0.1})
-    assert posterior_can_influence_rank(promoted)
+    promoted = left.model_copy(update={
+        "advisory_only": False,
+        "rank_authorized": True,
+        "incremental_oos_net_utility": 0.1,
+        "phase1_evidence_verified": True,
+        "phase1_evidence_id": "phase1-evidence",
+        "phase1_evidence_hash": "phase1-hash",
+    })
+    assert not posterior_can_influence_rank(promoted)
+    assert not posterior_can_influence_rank(promoted, phase1_evidence={"verified": True, "evidence_id": "wrong", "evidence_hash": "phase1-hash"})
+    assert posterior_can_influence_rank(promoted, phase1_evidence={"verified": True, "evidence_id": "phase1-evidence", "evidence_hash": "phase1-hash"})
+
+
+def test_p2_a02_unsupported_is_never_pit_selected_or_safe() -> None:
+    unsupported = observation("unsupported", "macro.value", 1, source="short_interest", status=Phase2Status.UNSUPPORTED)
+    selection = select_point_in_time([unsupported], AS_OF, fields=("macro.value",))
+    vector = build_coverage_vector(AS_OF, {"x": {"macro": ("macro.value",)}}, [unsupported])
+    assert not selection.selected and selection.missing_fields == ("macro.value",)
+    assert vector.rows[0].status is Phase2Status.MISSING_HISTORY
+    assert not vector.rows[0].point_in_time_safe
+
+
+def test_p2_a10_lifecycle_removal_uses_fallback_with_confidence_haircut() -> None:
+    rows = [
+        observation("fred-row", "macro.value", 1, source="fred"),
+        observation("treasury-row", "macro.value", 1, source="treasury"),
+    ]
+    selection = select_point_in_time(rows, AS_OF, source_lifecycle={
+        "fred": {"enabled": False, "operational_state": "archived"},
+        "treasury": {"enabled": True, "operational_state": "active"},
+    })
+    assert selection.selected[0].source_id == "treasury"
+    assert selection.selected[0].status is Phase2Status.FALLBACK
+    assert selection.selected[0].confidence == 0.75
 
 
 def test_p2_a10_conflict_and_fallback_are_truthful() -> None:

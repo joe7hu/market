@@ -27,6 +27,7 @@ class Phase2Status(StrEnum):
     CONFLICTED = "CONFLICTED"
     FALLBACK = "FALLBACK"
     UNSUPPORTED = "UNSUPPORTED"
+    STALE = "STALE"
 
 
 class Phase2Source(StrEnum):
@@ -66,6 +67,23 @@ SOURCE_CONTRACTS: dict[str, SourceContract] = {
     Phase2Source.SHORT_INTEREST: SourceContract("short_interest", "short interest", (), public=True),
 }
 
+SOURCE_PRIORITY: dict[str, tuple[str, ...]] = {
+    "macro.value": ("fred", "treasury"),
+    "rates.nominal_yield": ("treasury",),
+    "rates.real_yield": ("treasury",),
+    "credit.spread": ("fred", "treasury"),
+    "event.actual": ("trading_economics", "official-event-calendar"),
+    "event.consensus": ("trading_economics",),
+    "corporate.expected": ("alphavantage",),
+    "option.open_interest": ("robinhood_history_full", "ibkr_options"),
+    "option.volume": ("robinhood_history_full", "ibkr_options"),
+    "crypto.depth": ("coinmetrics",),
+    "crypto.funding": ("coinmetrics",),
+    "crypto.basis": ("coinmetrics",),
+    "crypto.open_interest": ("coinmetrics",),
+    "crypto.liquidations": ("coinmetrics",),
+}
+
 
 FIELD_CONTRACTS: dict[str, dict[str, str]] = {
     "macro.value": {"definition": "A published macro series value for one observation date.", "clock": "vintage_at or release_at; available_at must be source availability."},
@@ -102,6 +120,10 @@ class PITObservation(BaseModel):
     publication_at: datetime | None = None
     release_at: datetime | None = None
     vintage_at: datetime | None = None
+    ingest_run_id: str | None = None
+    payload_id: int | None = None
+    content_hash: str | None = None
+    parent_snapshot_id: str | None = None
     status: Phase2Status = Phase2Status.AVAILABLE
     confidence: float = Field(default=1.0, ge=0, le=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -129,6 +151,7 @@ class AdapterResult(BaseModel):
     source_id: str
     status: Phase2Status
     observations: tuple[PITObservation, ...] = ()
+    content_hash: str | None = None
     reason: str = ""
 
 
@@ -148,6 +171,15 @@ def source_status(source_id: str, *, env: Mapping[str, str] | None = None, has_h
     return Phase2Status.AVAILABLE
 
 
+def _status_value(value: Phase2Status | str) -> Phase2Status | None:
+    if isinstance(value, Phase2Status):
+        return value
+    try:
+        return Phase2Status(str(value))
+    except ValueError:
+        return None
+
+
 def source_contracts() -> tuple[SourceContract, ...]:
     return tuple(SOURCE_CONTRACTS[key] for key in sorted(SOURCE_CONTRACTS))
 
@@ -158,18 +190,31 @@ def _utc(value: datetime) -> datetime:
 
 def _clock(value: Any) -> datetime | None:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
+        return value if value.tzinfo else None
     if not value:
         return None
     text = str(value).replace("Z", "+00:00")
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        return None
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
+        return None
+    return parsed if parsed.tzinfo else None
+
+
+def _observed_clock(value: Any) -> datetime | None:
+    """Accept a date-only observation clock only as an explicit UTC date boundary."""
+
+    parsed = _clock(value)
+    if parsed is not None:
+        return parsed
+    if isinstance(value, str) and len(value) == 10 and value[4] == "-" and value[7] == "-":
         try:
-            parsed = datetime.fromisoformat(f"{text}T00:00:00+00:00")
+            return datetime.fromisoformat(f"{value}T00:00:00+00:00")
         except ValueError:
             return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
 
 
 def _number(value: Any) -> float | None:
@@ -190,30 +235,37 @@ def _payload_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 def _observation(
     row: Mapping[str, Any], *, source_id: str, field_name: str, dimension: str, asset_class: str,
     source_version: str, value: Any, metadata: Mapping[str, Any] | None = None,
+    content_hash: str | None = None,
 ) -> PITObservation | None:
-    observed_at = _clock(row.get("observed_at") or row.get("date") or row.get("period_end") or row.get("period"))
-    available_at = _clock(row.get("available_at", row.get("vintage_at", row.get("publication_at", row.get("release_at")))))
+    observed_at = _observed_clock(row.get("observed_at") or row.get("date") or row.get("period_end") or row.get("period"))
+    available_at = _clock(row.get("available_at"))
     if observed_at is None or available_at is None:
         return None
     return PITObservation(
-        observation_id=_stable_id(source_id, field_name, row.get("date", row.get("period")), value, available_at.isoformat()),
+        observation_id=_stable_id(source_id, field_name, row.get("date", row.get("period_end", row.get("period"))), value, available_at.isoformat(), content_hash),
         field_name=field_name, dimension=dimension, asset_class=asset_class, source_id=source_id,
         source_version=source_version, value=value, unit=str(row.get("unit") or "") or None,
         observed_at=observed_at, available_at=available_at,
         publication_at=_clock(row.get("publication_at")), release_at=_clock(row.get("release_at")),
-        vintage_at=_clock(row.get("vintage_at")), metadata=dict(metadata or {}),
+        vintage_at=_observed_clock(row.get("vintage_at")), content_hash=content_hash, metadata=dict(metadata or {}),
     )
 
 
+def _payload_hash(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def parse_fred_alfred(payload: Mapping[str, Any], *, env: Mapping[str, str] | None = None) -> AdapterResult:
+    content_hash = _payload_hash(payload)
     status = source_status(Phase2Source.FRED, env=env, has_history=bool(_payload_rows(payload)))
     if status is not Phase2Status.AVAILABLE:
         return AdapterResult(source_id=Phase2Source.FRED, status=status, reason="FRED_API_KEY is absent or the vintage payload has no history")
     observations = tuple(
         item for row in _payload_rows(payload)
-        if (item := _observation(row, source_id="fred", field_name=str(row.get("field_name") or row.get("series_id") or "macro.value"), dimension=str(row.get("dimension") or "growth/inflation"), asset_class="macro", source_version=str(payload.get("source_version") or "fred-alfred.v1"), value=_number(row.get("value")), metadata={"series_id": row.get("series_id"), "vintage": row.get("vintage_at")})) is not None and item.value is not None
+        if (item := _observation(row, source_id="fred", field_name=str(row.get("field_name") or row.get("series_id") or "macro.value"), dimension=str(row.get("dimension") or "growth/inflation"), asset_class="macro", source_version=str(payload.get("source_version") or "fred-alfred.v1"), value=_number(row.get("value")), content_hash=content_hash, metadata={"series_id": row.get("series_id"), "vintage": row.get("vintage_at")})) is not None and item.value is not None
     )
-    return AdapterResult(source_id="fred", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=observations, reason="" if observations else "no usable FRED values")
+    return AdapterResult(source_id="fred", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=observations, content_hash=content_hash, reason="" if observations else "no usable FRED values")
 
 
 def parse_treasury_yield_curve(payload: Mapping[str, Any]) -> AdapterResult:
@@ -222,20 +274,21 @@ def parse_treasury_yield_curve(payload: Mapping[str, Any]) -> AdapterResult:
         return AdapterResult(source_id="treasury", status=Phase2Status.MISSING_HISTORY, reason="Treasury yield curve payload has no history")
     observations = tuple(
         item for row in rows
-        if (item := _observation(row, source_id="treasury", field_name=str(row.get("field_name") or ("rates.real_yield" if row.get("real") else "rates.nominal_yield")), dimension="rates", asset_class="rates", source_version=str(payload.get("source_version") or "treasury-curve.v1"), value=_number(row.get("value")), metadata={"tenor": row.get("tenor"), "real": bool(row.get("real"))})) is not None and item.value is not None
+        if (item := _observation(row, source_id="treasury", field_name=str(row.get("field_name") or ("rates.real_yield" if row.get("real") else "rates.nominal_yield")), dimension="rates", asset_class="rates", source_version=str(payload.get("source_version") or "treasury-curve.v1"), value=_number(row.get("value")), content_hash=_payload_hash(payload), metadata={"tenor": row.get("tenor"), "real": bool(row.get("real"))})) is not None and item.value is not None
     )
-    return AdapterResult(source_id="treasury", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=observations, reason="" if observations else "no usable Treasury values")
+    return AdapterResult(source_id="treasury", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=observations, content_hash=_payload_hash(payload), reason="" if observations else "no usable Treasury values")
 
 
 def parse_event_consensus(payload: Mapping[str, Any], *, env: Mapping[str, str] | None = None) -> AdapterResult:
     rows = _payload_rows(payload)
+    content_hash = _payload_hash(payload)
     status = source_status(Phase2Source.TRADING_ECONOMICS, env=env, has_history=bool(rows))
     if status is not Phase2Status.AVAILABLE:
         return AdapterResult(source_id="trading_economics", status=status, reason="Trading Economics credential or event history is unavailable")
     observations: list[PITObservation] = []
     for row in rows:
-        observed_at = _clock(row.get("event_at", row.get("observed_at", row.get("date"))))
-        available_at = _clock(row.get("available_at", row.get("publication_at")))
+        observed_at = _observed_clock(row.get("event_at") or row.get("observed_at") or row.get("date"))
+        available_at = _clock(row.get("available_at"))
         actual = _number(row.get("actual"))
         consensus = _number(row.get("consensus", row.get("forecast")))
         if observed_at is None or available_at is None:
@@ -247,23 +300,24 @@ def parse_event_consensus(payload: Mapping[str, Any], *, env: Mapping[str, str] 
             observation_id=_stable_id("trading_economics", row.get("event_id", row.get("name")), observed_at.isoformat(), actual, consensus, revision),
             field_name="event.actual", dimension="event risk", asset_class="macro", source_id="trading_economics",
             source_version=str(payload.get("source_version") or "trading-economics.v1"), value=actual, unit=str(row.get("unit") or "") or None,
-            observed_at=observed_at, available_at=available_at, publication_at=_clock(row.get("publication_at")), release_at=_clock(row.get("release_at", row.get("event_at"))),
-            status=status_value, actual=actual, consensus=consensus, surprise=surprise, revision=revision,
+            observed_at=observed_at, available_at=available_at, publication_at=_clock(row.get("publication_at")), release_at=_clock(row.get("release_at")),
+            status=status_value, actual=actual, consensus=consensus, surprise=surprise, revision=revision, content_hash=content_hash,
             metadata={"event_id": row.get("event_id"), "name": row.get("name")},
         ))
-    return AdapterResult(source_id="trading_economics", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=tuple(observations), reason="" if observations else "no event clocks or values")
+    return AdapterResult(source_id="trading_economics", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=tuple(observations), content_hash=content_hash, reason="" if observations else "no event clocks or values")
 
 
 def parse_corporate_expectations(payload: Mapping[str, Any], *, env: Mapping[str, str] | None = None) -> AdapterResult:
     rows = _payload_rows(payload)
+    content_hash = _payload_hash(payload)
     status = source_status(Phase2Source.ALPHAVANTAGE, env=env, has_history=bool(rows))
     if status is not Phase2Status.AVAILABLE:
         return AdapterResult(source_id="alphavantage", status=status, reason="Alpha Vantage credential or quarterly history is unavailable")
     observations = tuple(
         item for row in rows
-        if (item := _observation(row, source_id="alphavantage", field_name="corporate.expected", dimension="corporate cycle", asset_class="equity", source_version=str(payload.get("source_version") or "alphavantage-quarterly.v1"), value=_number(row.get("expected", row.get("value")),), metadata={"ticker": row.get("ticker"), "period_end": row.get("period_end"), "metric": row.get("metric")})) is not None and item.value is not None
+        if (item := _observation(row, source_id="alphavantage", field_name="corporate.expected", dimension="corporate cycle", asset_class="equity", source_version=str(payload.get("source_version") or "alphavantage-quarterly.v1"), value=_number(row.get("expected", row.get("value")),), content_hash=content_hash, metadata={"ticker": row.get("ticker"), "period_end": row.get("period_end"), "metric": row.get("metric")})) is not None and item.value is not None
     )
-    return AdapterResult(source_id="alphavantage", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=observations, reason="" if observations else "no usable quarterly expectations")
+    return AdapterResult(source_id="alphavantage", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=observations, content_hash=content_hash, reason="" if observations else "no usable quarterly expectations")
 
 
 def parse_coinmetrics_derivatives(payload: Mapping[str, Any], *, env: Mapping[str, str] | None = None) -> AdapterResult:
@@ -285,7 +339,7 @@ def parse_coinmetrics_derivatives(payload: Mapping[str, Any], *, env: Mapping[st
             item = _observation(row, source_id="coinmetrics", field_name=f"crypto.{field}", dimension="crypto liquidity", asset_class="crypto", source_version=str(payload.get("source_version") or "coinmetrics-derivatives.v1"), value=parsed, metadata={"venue": venue, "instrument": instrument, "depth_usd": depth})
             if item is not None:
                 observations.append(item)
-    return AdapterResult(source_id="coinmetrics", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=tuple(observations), reason="" if observations else "venue identity, depth, or derivative values are missing")
+    return AdapterResult(source_id="coinmetrics", status=Phase2Status.AVAILABLE if observations else Phase2Status.MISSING_HISTORY, observations=tuple(observations), content_hash=_payload_hash(payload), reason="" if observations else "venue identity, depth, or derivative values are missing")
 
 
 def assess_option_oi_volume_sla(rows: Sequence[Mapping[str, Any]], *, minimum_coverage: float = 0.98) -> dict[str, Any]:
@@ -329,9 +383,27 @@ class PITSelection:
     missing_fields: tuple[str, ...]
 
 
-def select_point_in_time(observations: Sequence[PITObservation], cutoff: datetime, *, fields: Sequence[str] = ()) -> PITSelection:
+def _source_is_usable(source_id: str, source_lifecycle: Mapping[str, Mapping[str, Any]] | None) -> bool:
+    if source_lifecycle is None:
+        return True
+    state = source_lifecycle.get(source_id)
+    return bool(state and state.get("enabled") is True and str(state.get("operational_state") or "").lower() == "active")
+
+
+def _source_rank(field_name: str, source_id: str) -> tuple[int, str]:
+    priority = SOURCE_PRIORITY.get(field_name, ())
+    return (priority.index(source_id) if source_id in priority else len(priority), source_id)
+
+
+def select_point_in_time(
+    observations: Sequence[PITObservation],
+    cutoff: datetime,
+    *,
+    fields: Sequence[str] = (),
+    source_lifecycle: Mapping[str, Mapping[str, Any]] | None = None,
+) -> PITSelection:
     cutoff = _utc(cutoff)
-    eligible = tuple(sorted((row for row in observations if _utc(row.observed_at) <= cutoff and _utc(row.available_at) <= cutoff), key=lambda row: (row.field_name, _utc(row.observed_at), _utc(row.available_at), row.source_id, row.observation_id)))
+    eligible = tuple(sorted((row for row in observations if row.status not in {Phase2Status.UNSUPPORTED, Phase2Status.STALE} and _source_is_usable(row.source_id, source_lifecycle) and _utc(row.observed_at) <= cutoff and _utc(row.available_at) <= cutoff), key=lambda row: (row.field_name, _utc(row.observed_at), _utc(row.available_at), row.source_id, row.observation_id)))
     grouped: dict[tuple[str, datetime], list[PITObservation]] = defaultdict(list)
     for row in eligible:
         grouped[(row.field_name, _utc(row.observed_at))].append(row)
@@ -343,7 +415,15 @@ def select_point_in_time(observations: Sequence[PITObservation], cutoff: datetim
             ids = tuple(row.observation_id for row in group)
             conflicts.append(ids)
             continue
-        selected.append(max(group, key=lambda row: (_utc(row.available_at), row.source_id, row.observation_id)))
+        selected_row = min(group, key=lambda row: (_source_rank(row.field_name, row.source_id), -_utc(row.available_at).timestamp(), row.observation_id))
+        preferred = SOURCE_PRIORITY.get(selected_row.field_name, ())
+        if preferred and selected_row.source_id != preferred[0]:
+            selected_row = selected_row.model_copy(update={
+                "status": Phase2Status.FALLBACK,
+                "confidence": selected_row.confidence * 0.75,
+                "metadata": {**selected_row.metadata, "fallback_reason": "preferred source unavailable or removed"},
+            })
+        selected.append(selected_row)
     present = {row.field_name for row in selected}
     missing = tuple(sorted(set(fields) - present))
     return PITSelection(tuple(selected), eligible, tuple(conflicts), missing)
@@ -369,18 +449,32 @@ class CoverageVector(BaseModel):
     vector_id: str
     as_of: datetime
     rows: tuple[CoverageVectorRow, ...]
+    ingest_run_ids: tuple[str, ...] = ()
+    input_content_hash: str
+    parent_snapshot_id: str | None = None
 
 
 def build_coverage_vector(
-    as_of: datetime, strategies: Mapping[str, Mapping[str, Sequence[str]]], observations: Sequence[PITObservation],
+    as_of: datetime,
+    strategies: Mapping[str, Mapping[str, Sequence[str]]],
+    observations: Sequence[PITObservation],
+    *,
+    source_lifecycle: Mapping[str, Mapping[str, Any]] | None = None,
+    source_statuses: Mapping[str, Phase2Status | str] | None = None,
+    ingest_run_ids: Sequence[str] = (),
+    input_content_hash: str | None = None,
+    parent_snapshot_id: str | None = None,
 ) -> CoverageVector:
     rows: list[CoverageVectorRow] = []
     for strategy, expressions in sorted(strategies.items()):
         for expression, fields in sorted(expressions.items()):
             required = tuple(sorted(set(fields)))
-            selection = select_point_in_time(observations, as_of, fields=required)
+            selection = select_point_in_time(observations, as_of, fields=required, source_lifecycle=source_lifecycle)
             by_field = {row.field_name: row for row in selection.selected}
             blockers = [f"missing:{field}" for field in selection.missing_fields]
+            missing_sources = sorted({source for source, status_value in (source_statuses or {}).items() if _status_value(status_value) in {Phase2Status.MISSING_SOURCE, Phase2Status.STALE}})
+            if missing_sources and blockers:
+                blockers.extend(f"missing_source:{source}" for source in missing_sources)
             if selection.conflicts:
                 blockers.append("conflicted:source_observations")
             sources = tuple(sorted({row.source_id for row in by_field.values()}))
@@ -388,7 +482,7 @@ def build_coverage_vector(
             if selection.conflicts or Phase2Status.CONFLICTED in statuses:
                 status = Phase2Status.CONFLICTED
             elif blockers:
-                status = Phase2Status.MISSING_HISTORY
+                status = Phase2Status.MISSING_SOURCE if missing_sources else Phase2Status.MISSING_HISTORY
             elif Phase2Status.FALLBACK in statuses:
                 status = Phase2Status.FALLBACK
             elif all(row.status is Phase2Status.AVAILABLE for row in by_field.values()):
@@ -401,7 +495,8 @@ def build_coverage_vector(
                 blockers.append("fallback_source_confidence_haircut")
             rows.append(CoverageVectorRow(strategy=strategy, expression=expression, required_fields=required, status=status, point_in_time_safe=not blockers and status is not Phase2Status.CONFLICTED, selected_sources=sources, confidence=confidence, blockers=tuple(sorted(set(blockers)))))
     payload = [row.model_dump(mode="json") for row in rows]
-    return CoverageVector(vector_id=_stable_id("coverage-vector", _utc(as_of).isoformat(), payload), as_of=as_of, rows=tuple(rows))
+    content_hash = input_content_hash or _stable_id("phase2-input", tuple(sorted(row.content_hash or row.observation_id for row in observations)))
+    return CoverageVector(vector_id=_stable_id("coverage-vector", _utc(as_of).isoformat(), payload, tuple(sorted(ingest_run_ids)), content_hash, parent_snapshot_id), as_of=as_of, rows=tuple(rows), ingest_run_ids=tuple(sorted(set(ingest_run_ids))), input_content_hash=content_hash, parent_snapshot_id=parent_snapshot_id)
 
 
 STATE_LABELS = ("negative", "neutral", "positive")
@@ -416,6 +511,8 @@ class DimensionPosterior(BaseModel):
     entropy: float | None = None
     persistence: float | None = None
     transition_probabilities: dict[str, dict[str, float]] = Field(default_factory=dict)
+    change_point_probability: float | None = Field(default=None, ge=0, le=1)
+    log_likelihood: float | None = None
     missingness: float
     uncertainty: str
     sample_count: int = Field(ge=0)
@@ -428,6 +525,7 @@ class MarketStatePosterior(BaseModel):
     posterior_id: str
     as_of: datetime
     input_cutoff: datetime
+    status: Phase2Status
     baseline: dict[str, Any]
     challenger: dict[str, Any]
     dimensions: dict[str, DimensionPosterior]
@@ -439,6 +537,12 @@ class MarketStatePosterior(BaseModel):
     incremental_oos_net_utility: float | None = None
     rank_authorized: bool = False
     advisory_only: bool = True
+    ingest_run_ids: tuple[str, ...] = ()
+    input_content_hash: str
+    parent_snapshot_id: str | None = None
+    phase1_evidence_verified: bool = False
+    phase1_evidence_id: str | None = None
+    phase1_evidence_hash: str | None = None
 
     @model_validator(mode="after")
     def preserve_advisory_boundary(self) -> "MarketStatePosterior":
@@ -451,11 +555,53 @@ class MarketStatePosterior(BaseModel):
         return self
 
 
-def build_market_state_posterior(observations: Sequence[PITObservation], *, as_of: datetime, max_observations: int = 500) -> MarketStatePosterior:
-    """Build a bounded deterministic observable baseline and persistence challenger."""
+def _hmm_update(previous: Sequence[float], emission: Sequence[float], transition: Sequence[Sequence[float]]) -> list[float]:
+    predicted = [sum(previous[left] * transition[left][right] for left in range(3)) for right in range(3)]
+    weighted = [predicted[index] * emission[index] for index in range(3)]
+    total = sum(weighted)
+    return [value / total for value in weighted] if total else [1 / 3] * 3
+
+
+def _hmm_dimension(labels: Sequence[str]) -> tuple[dict[str, float], dict[str, dict[str, float]], float, float, float]:
+    """Run a fixed, bounded three-state HMM with explicit noisy emissions."""
+
+    transition = ((0.80, 0.15, 0.05), (0.15, 0.70, 0.15), (0.05, 0.15, 0.80))
+    alpha = [1 / 3] * 3
+    log_likelihood = 0.0
+    change_points = 0.0
+    for previous, label in zip((None, *labels[:-1]), labels):
+        emission = [0.15, 0.70, 0.15] if label == "neutral" else [0.075, 0.075, 0.075]
+        label_index = STATE_LABELS.index(label)
+        if label != "neutral":
+            emission[label_index] = 0.85
+        if previous is not None and previous != label:
+            change_points += 1.0
+        alpha = _hmm_update(alpha, emission, transition)
+        log_likelihood += math.log(max(alpha[label_index], 1e-12))
+    distribution = {state: round(alpha[index], 12) for index, state in enumerate(STATE_LABELS)}
+    transitions = {state: {next_state: transition[index][next_index] for next_index, next_state in enumerate(STATE_LABELS)} for index, state in enumerate(STATE_LABELS)}
+    persistence = sum(transition[index][index] for index in range(3)) / 3
+    return distribution, transitions, persistence, change_points / max(1, len(labels) - 1), log_likelihood
+
+
+def build_market_state_posterior(
+    observations: Sequence[PITObservation],
+    *,
+    as_of: datetime,
+    max_observations: int = 500,
+    source_lifecycle: Mapping[str, Mapping[str, Any]] | None = None,
+    source_statuses: Mapping[str, Phase2Status | str] | None = None,
+    ingest_run_ids: Sequence[str] = (),
+    input_content_hash: str | None = None,
+    parent_snapshot_id: str | None = None,
+) -> MarketStatePosterior:
+    """Build bounded observable and hidden-state posterior models deterministically."""
 
     cutoff = _utc(as_of)
-    rows = sorted((row for row in observations if _utc(row.observed_at) <= cutoff and _utc(row.available_at) <= cutoff), key=lambda row: (row.dimension, _utc(row.observed_at), row.observation_id))[-max(1, min(max_observations, 500)) :]
+    candidates = tuple(row for row in observations if row.status not in {Phase2Status.UNSUPPORTED, Phase2Status.STALE} and _source_is_usable(row.source_id, source_lifecycle) and _utc(row.observed_at) <= cutoff and _utc(row.available_at) <= cutoff)
+    field_names = tuple(sorted({row.field_name for row in candidates}))
+    selected = select_point_in_time(candidates, cutoff, fields=field_names, source_lifecycle=source_lifecycle)
+    rows = sorted(selected.selected, key=lambda row: (row.dimension, _utc(row.observed_at), row.observation_id))[-max(1, min(max_observations, 500)) :]
     by_dimension: dict[str, list[PITObservation]] = defaultdict(list)
     for row in rows:
         by_dimension[row.dimension].append(row)
@@ -464,33 +610,76 @@ def build_market_state_posterior(observations: Sequence[PITObservation], *, as_o
         group = by_dimension[dimension]
         valid = [row for row in group if row.status in {Phase2Status.AVAILABLE, Phase2Status.FALLBACK} and _number(row.value) is not None]
         labels = [_state_label(float(row.value)) for row in valid]
-        counts = Counter(labels)
-        distribution = {label: counts[label] / len(labels) for label in STATE_LABELS} if labels else {}
-        transitions: dict[str, dict[str, float]] = {}
-        for left, right in zip(labels, labels[1:]):
-            transitions.setdefault(left, Counter())[right] += 1  # type: ignore[index]
-        normalized_transitions = {left: {state: count / sum(values.values()) for state, count in sorted(values.items())} for left, values in sorted(transitions.items())}
-        entropy = _entropy(distribution) if distribution else None
-        persistence = sum(1 for left, right in zip(labels, labels[1:]) if left == right) / (len(labels) - 1) if len(labels) > 1 else None
+        distribution, transitions, persistence, change_probability, log_likelihood = _hmm_dimension(labels) if labels else ({}, {}, None, None, None)
         missingness = 1 - (len(valid) / len(group) if group else 0)
-        status = Phase2Status.AVAILABLE if valid else Phase2Status.MISSING_HISTORY
-        dimensions[dimension] = DimensionPosterior(status=status, state=labels[-1] if labels else None, distribution=distribution, entropy=entropy, persistence=persistence, transition_probabilities=normalized_transitions, missingness=missingness, uncertainty="observable frequency with deterministic persistence challenger" if valid else "missing point-in-time history", sample_count=len(valid))
+        dimension_status = Phase2Status.AVAILABLE if valid else Phase2Status.UNSUPPORTED if all(row.status is Phase2Status.UNSUPPORTED for row in group) else Phase2Status.MISSING_HISTORY
+        dimensions[dimension] = DimensionPosterior(
+            status=dimension_status,
+            state=max(distribution, key=lambda state: (-distribution[state], state)) if distribution else None,
+            distribution=distribution,
+            entropy=_entropy(distribution) if distribution else None,
+            persistence=persistence,
+            transition_probabilities=transitions,
+            change_point_probability=change_probability,
+            log_likelihood=log_likelihood,
+            missingness=missingness,
+            uncertainty="bounded HMM posterior with noisy emissions; frequency baseline retained separately" if valid else "missing point-in-time history",
+            sample_count=len(valid),
+        )
     valid_count = sum(item.sample_count for item in dimensions.values())
     total_count = len(rows)
-    overall_confidence = valid_count / total_count if total_count else 0.0
-    entropy_values = [item.entropy for item in dimensions.values() if item.entropy is not None]
-    persistence_values = [item.persistence for item in dimensions.values() if item.persistence is not None]
-    baseline = {"method": "observable-frequency.v1", "dimensions": {key: value.distribution for key, value in dimensions.items()}, "status": "available" if valid_count else "missing_history"}
-    challenger = {"method": "bounded-persistence.v1", "dimensions": {key: value.transition_probabilities for key, value in dimensions.items()}, "status": "advisory", "incremental_oos_net_utility": None}
+    source_status_values = []
+    for value in (source_statuses or {}).values():
+        try:
+            source_status_values.append(value if isinstance(value, Phase2Status) else Phase2Status(value))
+        except ValueError:
+            continue
+    status = Phase2Status.AVAILABLE if valid_count else Phase2Status.MISSING_SOURCE if Phase2Status.MISSING_SOURCE in source_status_values else Phase2Status.STALE if Phase2Status.STALE in source_status_values else Phase2Status.UNSUPPORTED if Phase2Status.UNSUPPORTED in source_status_values else Phase2Status.MISSING_HISTORY
+    baseline_dimensions = {}
+    for key, group in by_dimension.items():
+        labels = [_state_label(float(row.value)) for row in group if row.status in {Phase2Status.AVAILABLE, Phase2Status.FALLBACK} and _number(row.value) is not None]
+        counts = Counter(labels)
+        baseline_dimensions[key] = {label: (counts[label] / len(labels) if labels else 0.0) for label in STATE_LABELS}
+    baseline = {"method": "observable-frequency.v1", "dimensions": baseline_dimensions, "status": status.value}
+    challenger = {"method": "hmm-noisy-emission.v1", "dimensions": {key: value.transition_probabilities for key, value in dimensions.items()}, "status": "advisory", "incremental_oos_net_utility": None}
     transitions = {key: value.transition_probabilities for key, value in dimensions.items()}
-    payload = {"as_of": cutoff.isoformat(), "baseline": baseline, "challenger": challenger, "dimensions": {key: value.model_dump(mode="json") for key, value in dimensions.items()}}
-    return MarketStatePosterior(posterior_id=_stable_id("market-state-posterior", payload), as_of=as_of, input_cutoff=as_of, baseline=baseline, challenger=challenger, dimensions=dimensions, overall_confidence=overall_confidence, entropy=sum(entropy_values) / len(entropy_values) if entropy_values else None, missingness=1 - (valid_count / total_count if total_count else 0), persistence=sum(persistence_values) / len(persistence_values) if persistence_values else None, transition_probabilities=transitions)
+    payload = {"as_of": cutoff.isoformat(), "status": status.value, "baseline": baseline, "challenger": challenger, "dimensions": {key: value.model_dump(mode="json") for key, value in dimensions.items()}}
+    content_hash = input_content_hash or _stable_id("phase2-input", tuple(sorted(row.content_hash or row.observation_id for row in rows)))
+    return MarketStatePosterior(
+        posterior_id=_stable_id("market-state-posterior", payload, tuple(sorted(ingest_run_ids)), content_hash, parent_snapshot_id),
+        as_of=as_of,
+        input_cutoff=as_of,
+        status=status,
+        baseline=baseline,
+        challenger=challenger,
+        dimensions=dimensions,
+        overall_confidence=(valid_count / total_count) * (sum(row.confidence for row in rows if row.status in {Phase2Status.AVAILABLE, Phase2Status.FALLBACK} and _number(row.value) is not None) / valid_count if valid_count else 0.0) if total_count else 0.0,
+        entropy=sum(item.entropy for item in dimensions.values() if item.entropy is not None) / len([item for item in dimensions.values() if item.entropy is not None]) if any(item.entropy is not None for item in dimensions.values()) else None,
+        missingness=1 - (valid_count / total_count if total_count else 0),
+        persistence=sum(item.persistence for item in dimensions.values() if item.persistence is not None) / len([item for item in dimensions.values() if item.persistence is not None]) if any(item.persistence is not None for item in dimensions.values()) else None,
+        transition_probabilities=transitions,
+        ingest_run_ids=tuple(sorted(set(ingest_run_ids))),
+        input_content_hash=content_hash,
+        parent_snapshot_id=parent_snapshot_id,
+    )
 
 
-def posterior_can_influence_rank(posterior: MarketStatePosterior) -> bool:
-    """A positive utility result alone cannot bypass the advisory boundary."""
+def posterior_can_influence_rank(posterior: MarketStatePosterior, *, phase1_evidence: Mapping[str, Any] | None = None) -> bool:
+    """Require independent, verified Phase 1 evidence in addition to utility."""
 
-    return False if posterior.advisory_only else bool(posterior.incremental_oos_net_utility is not None and posterior.incremental_oos_net_utility > 0)
+    evidence = phase1_evidence or {}
+    return bool(
+        not posterior.advisory_only
+        and posterior.rank_authorized
+        and posterior.incremental_oos_net_utility is not None
+        and posterior.incremental_oos_net_utility > 0
+        and posterior.phase1_evidence_verified
+        and posterior.phase1_evidence_id
+        and posterior.phase1_evidence_hash
+        and evidence.get("verified") is True
+        and evidence.get("evidence_id") == posterior.phase1_evidence_id
+        and evidence.get("evidence_hash") == posterior.phase1_evidence_hash
+    )
 
 
 @dataclass(frozen=True)
@@ -506,7 +695,11 @@ class ScenarioPath(BaseModel):
     contract_version: str = "market-scenario-path.v1"
     path_id: str
     snapshot_id: str
+    parent_snapshot_id: str
+    posterior_id: str
     model_version: str
+    ingest_run_ids: tuple[str, ...] = ()
+    input_content_hash: str
     nodes: tuple[ScenarioNode, ...]
     scenario_hash: str
 
@@ -527,13 +720,13 @@ def build_scenario_paths(snapshot_id: str, posterior: MarketStatePosterior, *, s
             nodes.append(ScenarioNode(step=step, state=f"{dimension}:{next_state}", probability=probability))
             current = next_state
         encoded = [node.__dict__ for node in nodes]
-        digest = _stable_id(snapshot_id, posterior.contract_version, dimension, encoded)
-        paths.append(ScenarioPath(path_id=digest, snapshot_id=snapshot_id, model_version=posterior.contract_version, nodes=tuple(nodes), scenario_hash=digest))
+        digest = _stable_id(snapshot_id, posterior.posterior_id, posterior.contract_version, posterior.input_content_hash, tuple(posterior.ingest_run_ids), dimension, encoded)
+        paths.append(ScenarioPath(path_id=digest, snapshot_id=snapshot_id, parent_snapshot_id=snapshot_id, posterior_id=posterior.posterior_id, model_version=posterior.contract_version, ingest_run_ids=posterior.ingest_run_ids, input_content_hash=posterior.input_content_hash, nodes=tuple(nodes), scenario_hash=digest))
     return tuple(paths)
 
 
 def replay_scenario_path(path: ScenarioPath) -> bool:
-    expected = _stable_id(path.snapshot_id, path.model_version, path.nodes[0].state.split(":", 1)[0] if path.nodes else "", [node.__dict__ for node in path.nodes])
+    expected = _stable_id(path.snapshot_id, path.posterior_id, path.model_version, path.input_content_hash, tuple(path.ingest_run_ids), path.nodes[0].state.split(":", 1)[0] if path.nodes else "", [node.__dict__ for node in path.nodes])
     return expected == path.scenario_hash
 
 
@@ -548,6 +741,29 @@ def _entropy(distribution: Mapping[str, float]) -> float:
 def _stable_id(*parts: Any) -> str:
     encoded = json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def phase2_input_content_hash(observations: Sequence[PITObservation]) -> str:
+    """Hash the exact immutable facts used by a posterior or coverage vector."""
+
+    facts = [
+        {
+            "observation_id": row.observation_id,
+            "source_id": row.source_id,
+            "content_hash": row.content_hash,
+            "ingest_run_id": row.ingest_run_id,
+            "payload_id": row.payload_id,
+            "parent_snapshot_id": row.parent_snapshot_id,
+            "field_name": row.field_name,
+            "dimension": row.dimension,
+            "observed_at": row.observed_at.isoformat(),
+            "available_at": row.available_at.isoformat(),
+            "value": row.value,
+            "status": row.status.value,
+        }
+        for row in observations
+    ]
+    return _stable_id("phase2-facts.v1", sorted(facts, key=lambda item: item["observation_id"]))
 
 
 __all__ = [

@@ -922,17 +922,20 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "owned_correlations": OWNED_CORRELATIONS_QUERY,
     "market_state_posterior": """
-        SELECT posterior_id, as_of, input_cutoff, model_version, payload, created_at
+        SELECT posterior_id, as_of, input_cutoff, model_version, status, payload,
+               ingest_run_ids, input_content_hash, parent_snapshot_id, created_at
         FROM analysis.market_state_posterior
         ORDER BY as_of DESC, posterior_id DESC LIMIT 100
     """,
     "market_coverage_vector": """
-        SELECT vector_id, as_of, payload, created_at
+        SELECT vector_id, as_of, status, payload, ingest_run_ids, input_content_hash,
+               parent_snapshot_id, created_at
         FROM analysis.market_coverage_vector
         ORDER BY as_of DESC, vector_id DESC LIMIT 100
     """,
     "market_scenario_paths": """
-        SELECT scenario_hash, snapshot_id, model_version, path, created_at
+        SELECT scenario_hash, snapshot_id, parent_snapshot_id, posterior_id, model_version,
+               ingest_run_ids, input_content_hash, path, created_at
         FROM analysis.market_scenario_path
         ORDER BY created_at DESC, scenario_hash LIMIT 100
     """,
@@ -943,8 +946,10 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "market_observations": """
         SELECT observation_id, field_name, dimension, asset_class, source_id,
-               source_version, value, unit, observed_at, available_at,
-               publication_at, release_at, vintage_at, status, confidence, metadata
+               source_version, value, unit, ingest_run_id::text AS ingest_run_id, payload_id,
+               content_hash, parent_snapshot_id, observed_at, available_at,
+               publication_at, release_at, vintage_at, actual, consensus, surprise,
+               revision, status, confidence, metadata
         FROM raw.market_observation
         ORDER BY available_at DESC, observation_id LIMIT 500
     """,

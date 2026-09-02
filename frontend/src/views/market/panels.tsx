@@ -177,15 +177,23 @@ export function MarketStateProjection({ snapshotRows, coverageRows, posteriorRow
 
 function Phase2Evidence({ posteriorRows, coverageVectorRows, scenarioRows, optionSlaRows, observationRows }: { posteriorRows: RowRecord[]; coverageVectorRows: RowRecord[]; scenarioRows: RowRecord[]; optionSlaRows: RowRecord[]; observationRows: RowRecord[] }) {
   const posterior = isRecord(posteriorRows[0]?.payload) ? posteriorRows[0].payload : posteriorRows[0];
-  const status = isRecord(posterior) ? String(posterior.status ?? "advisory") : "missing_history";
+  const status = isRecord(posterior) ? String(posterior.status ?? posteriorRows[0]?.status ?? "MISSING_HISTORY").toUpperCase() : "MISSING_HISTORY";
   const confidence = isRecord(posterior) ? String(posterior.overall_confidence ?? "unavailable") : "unavailable";
   const sla = isRecord(optionSlaRows[0]?.payload) ? optionSlaRows[0].payload : optionSlaRows[0];
+  const tone = phase2StatusTone(status);
   return <div className="space-y-2 rounded border border-border/70 bg-muted/20 p-3 text-[11px]">
-    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Phase 2 evidence</p><StatusBadge tone="muted">Advisory only</StatusBadge></div>
-    <p className="text-muted-foreground">Observable baseline and bounded latent challenger are read-only. They cannot change rank or authorize execution.</p>
-    <p>Posterior: {status} · confidence {confidence} · observations {observationRows.length} · scenarios {scenarioRows.length}</p>
-    <p>Per-expression coverage rows: {coverageVectorRows.length} · option OI/volume SLA: {isRecord(sla) ? String(sla.status ?? "unavailable") : "MISSING_HISTORY"} · positioning allowed: {isRecord(sla) ? String(sla.positioning_allowed ?? false) : "false"}</p>
+    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Phase 2 evidence</p><StatusBadge tone={tone}>{status}</StatusBadge></div>
+    <p className="text-muted-foreground">Posterior status is {status}. Observable baseline and bounded latent challenger are read-only. Advisory-only: no rank or execution authorization.</p>
+    <p>Posterior confidence: {confidence} · retained source facts: {observationRows.length} · reproducible scenarios: {scenarioRows.length}</p>
+    <p>Per-expression coverage rows: {coverageVectorRows.length} · option OI/volume SLA: {isRecord(sla) ? String(sla.status ?? "MISSING_HISTORY").toUpperCase() : "MISSING_HISTORY"} · positioning allowed: {isRecord(sla) ? String(sla.positioning_allowed ?? false) : "false"}</p>
   </div>;
+}
+
+function phase2StatusTone(status: string): "good" | "warn" | "bad" | "muted" {
+  if (status === "AVAILABLE") return "good";
+  if (status === "FALLBACK" || status === "STALE") return "warn";
+  if (["MISSING_SOURCE", "MISSING_HISTORY", "UNSUPPORTED", "CONFLICTED"].includes(status)) return "bad";
+  return "muted";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

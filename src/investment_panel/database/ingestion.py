@@ -100,6 +100,7 @@ class IngestionRepository:
         operational_state: str | None = None,
         health_owner: str | None = None,
         freshness_seconds: int | None = None,
+        enabled: bool = True,
     ) -> None:
         contract = source_health_contract(
             source_id,
@@ -122,11 +123,12 @@ class IngestionRepository:
                 INSERT INTO ingest.source
                     (id, name, family, kind, origin, capabilities, enabled,
                      operational_state, health_owner, freshness_seconds)
-                VALUES (%s, %s, %s, %s, %s, %s, true, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE
                 SET name = EXCLUDED.name, family = EXCLUDED.family, kind = EXCLUDED.kind,
                     origin = EXCLUDED.origin,
                     capabilities = EXCLUDED.capabilities,
+                    enabled = EXCLUDED.enabled,
                     operational_state = EXCLUDED.operational_state,
                     health_owner = EXCLUDED.health_owner,
                     freshness_seconds = EXCLUDED.freshness_seconds,
@@ -139,6 +141,7 @@ class IngestionRepository:
                     kind,
                     origin,
                     Jsonb(capabilities or {}),
+                    enabled,
                     state,
                     owner,
                     freshness,

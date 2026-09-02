@@ -26,10 +26,13 @@ from investment_panel.core.decision import (
     market_evidence_for_decision,
 )
 from investment_panel.core.phase2 import (
+    EventObservation,
     PITObservation,
+    Phase2Status,
     build_coverage_vector,
     build_market_state_posterior,
     build_scenario_paths,
+    phase2_input_content_hash,
 )
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars, completed_trading_dates
@@ -219,14 +222,30 @@ def refresh_market_publication(
         corporate_cycle_evidence = _corporate_cycle_evidence(connection, instrument_rows, as_of)
         crypto_volume_evidence = _crypto_volume_evidence(connection, instrument_rows, as_of)
         phase2_rows = [dict(row) for row in connection.execute(
-            """SELECT observation_id, field_name, dimension, asset_class, source_id,
-                      source_version, value, unit, observed_at, available_at,
-                      publication_at, release_at, vintage_at, status, confidence, metadata
-               FROM raw.market_observation
-               WHERE observed_at <= %s AND available_at <= %s
-               ORDER BY dimension, observed_at, observation_id
+            """SELECT observation.observation_id, observation.field_name, observation.dimension,
+                      observation.asset_class, observation.source_id, observation.source_version,
+                      observation.value, observation.unit, observation.ingest_run_id::text AS ingest_run_id,
+                      observation.payload_id, observation.content_hash, observation.parent_snapshot_id,
+                      observation.observed_at, observation.available_at, observation.publication_at,
+                      observation.release_at, observation.vintage_at, observation.actual,
+                      observation.consensus, observation.surprise, observation.revision,
+                      observation.status, observation.confidence, observation.metadata,
+                      source.enabled AS source_enabled, source.operational_state AS source_operational_state,
+                      ingest_run.status AS ingest_status, ingest_run.finished_at AS ingest_finished_at
+               FROM raw.market_observation observation
+               JOIN ingest.source source ON source.id = observation.source_id
+               JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
+               WHERE observation.observed_at <= %s
+               ORDER BY observation.dimension, observation.observed_at, observation.observation_id
                LIMIT 500""",
-            [as_of, as_of],
+            [as_of],
+        ).fetchall()]
+        phase2_source_rows = [dict(row) for row in connection.execute(
+            """SELECT id AS source_id, enabled AS source_enabled, operational_state AS source_operational_state,
+                      capabilities->>'phase2_status' AS phase2_status
+               FROM ingest.source
+               WHERE family = 'phase2' AND created_at <= %s""",
+            [as_of],
         ).fetchall()]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in price_rows:
@@ -243,7 +262,15 @@ def refresh_market_publication(
         volatility_evidence, corporate_cycle_evidence, crypto_volume_evidence,
     )
     phase2_observations = _phase2_observations(phase2_rows)
-    phase2_posterior = build_market_state_posterior(phase2_observations, as_of=as_of)
+    phase2_lifecycle = _phase2_source_lifecycle(phase2_rows, phase2_source_rows)
+    phase2_statuses = _phase2_source_statuses(phase2_rows, phase2_source_rows)
+    phase2_run_ids = tuple(sorted({row.ingest_run_id for row in phase2_observations if row.ingest_run_id}))
+    phase2_content_hash = phase2_input_content_hash(phase2_observations)
+    phase2_posterior = build_market_state_posterior(
+        phase2_observations, as_of=as_of, source_lifecycle=phase2_lifecycle,
+        source_statuses=phase2_statuses, ingest_run_ids=phase2_run_ids,
+        input_content_hash=phase2_content_hash, parent_snapshot_id=snapshot.snapshot_id,
+    )
     phase2_coverage = build_coverage_vector(
         as_of,
         {
@@ -252,6 +279,11 @@ def refresh_market_publication(
             "crypto": {"venue_derivatives": ("crypto.depth",)},
         },
         phase2_observations,
+        source_lifecycle=phase2_lifecycle,
+        source_statuses=phase2_statuses,
+        ingest_run_ids=phase2_run_ids,
+        input_content_hash=phase2_content_hash,
+        parent_snapshot_id=snapshot.snapshot_id,
     )
     phase2_scenarios = build_scenario_paths(snapshot.snapshot_id, phase2_posterior)
     snapshot = snapshot.model_copy(update={
@@ -2242,10 +2274,55 @@ def _phase2_observations(rows: list[dict[str, Any]]) -> tuple[PITObservation, ..
     observations: list[PITObservation] = []
     for row in rows:
         try:
-            observations.append(PITObservation.model_validate(row))
+            model = EventObservation if any(row.get(key) is not None for key in ("actual", "consensus", "surprise", "revision")) else PITObservation
+            observations.append(model.model_validate({key: value for key, value in row.items() if not key.startswith("source_") and key not in {"ingest_status", "ingest_finished_at"}}))
         except (TypeError, ValueError):
             continue
     return tuple(observations)
+
+
+def _phase2_source_lifecycle(rows: list[dict[str, Any]], source_rows: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    lifecycle = {
+        str(row["source_id"]): {
+            "enabled": bool(row.get("source_enabled")),
+            "operational_state": str(row.get("source_operational_state") or "archived"),
+        }
+        for row in rows
+        if row.get("source_id")
+    }
+    lifecycle.update({
+        str(row["source_id"]): {
+            "enabled": bool(row.get("source_enabled")),
+            "operational_state": str(row.get("source_operational_state") or "archived"),
+        }
+        for row in source_rows or ()
+        if row.get("source_id")
+    })
+    return lifecycle
+
+
+def _phase2_source_statuses(rows: list[dict[str, Any]], source_rows: list[dict[str, Any]] | None = None) -> dict[str, Phase2Status]:
+    statuses: dict[str, Phase2Status] = {}
+    for row in source_rows or ():
+        value = str(row.get("phase2_status") or "")
+        try:
+            statuses[str(row["source_id"])] = Phase2Status(value)
+        except ValueError:
+            if not row.get("source_enabled") or str(row.get("source_operational_state") or "") != "active":
+                statuses[str(row["source_id"])] = Phase2Status.MISSING_SOURCE
+    for row in rows:
+        source_id = str(row.get("source_id") or "")
+        if not source_id:
+            continue
+        if not row.get("source_enabled") or str(row.get("source_operational_state") or "") != "active":
+            statuses[source_id] = Phase2Status.MISSING_SOURCE
+        elif str(row.get("ingest_status") or "") not in {"succeeded", "partial"}:
+            statuses[source_id] = Phase2Status.MISSING_HISTORY
+        elif row.get("ingest_finished_at") is None:
+            statuses[source_id] = Phase2Status.STALE
+        else:
+            statuses.setdefault(source_id, Phase2Status.AVAILABLE)
+    return statuses
 
 
 def _number(value: Any) -> float | None:

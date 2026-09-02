@@ -80,6 +80,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("update_company_financials", freshness_seconds=86400),
         _job("update_earnings_and_estimates", freshness_seconds=3600),
         _job("update_macro_series", freshness_seconds=86400),
+        _job("update_phase2_sources", timeout_seconds=180, freshness_seconds=86400),
         _job("update_short_interest_and_borrow", freshness_seconds=172800),
         _job("publish_ticker_benchmark", freshness_seconds=86400),
         _job("update_theses", timeout_seconds=1800),
