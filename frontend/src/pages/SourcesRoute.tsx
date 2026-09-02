@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import type { JsonValue, RowRecord } from "@/types";
+import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { rows, tickerSymbol } from "@/utils";
 import { displayField, numberField, textField, titleLabel, toneFromText } from "@/views/rowFormat";
@@ -36,7 +36,7 @@ export function SourcesRoute() {
   const [rankingMode, setRankingMode] = useState<RankingMode>("discussed");
   const [family, setFamily] = useState<SourceFamily>("all");
   const [query, setQuery] = useState("");
-  usePanelScope("sources");
+  usePanelScope("research");
 
   const rankingRows = useMemo(() => rows(data.sourceTickerRankings), [data.sourceTickerRankings]);
   const sourceRows = useMemo(() => rows(data.sources), [data.sources]);
@@ -76,6 +76,8 @@ export function SourcesRoute() {
         })}
       </div>
 
+      <ResearchAuthorityTable data={data} />
+
       <TickerRankingTable mode={rankingMode} rows={rankedTickers.slice(0, 40)} onOpenTicker={openTicker} />
       <SourceConsensusTable rows={sourceConsensus.slice(0, 60)} onOpenTicker={openTicker} />
 
@@ -94,6 +96,44 @@ export function SourcesRoute() {
       </div>
       <SourceDirectoryTable rows={filteredSources.slice(0, 120)} />
     </WorkspacePage>
+  );
+}
+
+function ResearchAuthorityTable({ data }: { data: PanelData }) {
+  const tableGroups: Array<[string, string, string[]]> = [
+    ["Hypotheses", "researchHypotheses", ["hypothesis_key", "statement", "mechanism_class", "status"]],
+    ["Experiment families", "researchExperimentFamilies", ["family_key", "name", "status", "hypothesis_id"]],
+    ["Trials", "researchTrials", ["trial_key", "status", "failure_reason", "input_cutoff"]],
+    ["Trial results", "researchTrialResults", ["result_kind", "research_trial_id", "outcome"]],
+    ["Validation dossiers", "researchValidationDossiers", ["strategy_revision_id", "status", "sealed_at"]],
+    ["Five gates", "researchValidationGates", ["gate_code", "verdict", "dossier_id"]],
+    ["Strategy forecasts", "researchStrategyForecasts", ["ticker", "horizon", "strategy_forecast_id", "input_cutoff"]],
+    ["Universe observations", "researchUniverseObservations", ["ticker", "eligible", "rank", "exclusion_reason"]],
+    ["Rejected revisions", "researchStrategyRevisions", ["strategy_key", "revision", "status", "dossier_status"]],
+  ];
+  const visible = tableGroups.flatMap(([label, key, fields]) =>
+    rows(data[key] as TablePayload | undefined).slice(0, 30).map((row) => ({ label, fields, row }))
+  );
+  return (
+    <DataTableFrame title="Research Authority (read-only)">
+      <table className="w-full min-w-[980px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr><th className="px-3 py-3">Record</th><th className="px-3 py-3">Identity</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Lineage / result</th><th className="px-3 py-3">Detail</th></tr>
+        </thead>
+        <tbody>
+          {visible.map(({ label, fields, row }, index) => (
+            <tr key={`${label}-${textField(row, fields, "record")}-${index}`} className="border-b border-border align-top">
+              <td className="px-3 py-3 font-medium">{label}</td>
+              <td className="px-3 py-3">{textField(row, fields.slice(0, 2), "-")}</td>
+              <td className="px-3 py-3"><StatusBadge tone={toneFromText(textField(row, ["status", "verdict"], "unknown"))}>{displayField(row, ["status", "verdict"], "unknown")}</StatusBadge></td>
+              <td className="max-w-[360px] px-3 py-3 text-muted-foreground">{textField(row, ["strategy_forecast_id", "research_trial_id", "dossier_id", "hypothesis_id"], "-")}</td>
+              <td className="max-w-[420px] px-3 py-3 text-muted-foreground">{textField(row, ["failure_reason", "exclusion_reason", "statement", "outcome", "input_cutoff"], "-")}</td>
+            </tr>
+          ))}
+          {!visible.length ? <EmptyRow colSpan={5} text="No research authority rows available." /> : null}
+        </tbody>
+      </table>
+    </DataTableFrame>
   );
 }
 

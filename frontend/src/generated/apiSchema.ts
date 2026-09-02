@@ -1563,6 +1563,8 @@ export interface components {
          * @description A forecast with explicit target, horizon, calibration, and lineage.
          */
         AlphaSignal: {
+            /** Artifact Hash */
+            artifact_hash?: string | null;
             /** Artifact Published At */
             artifact_published_at?: string | null;
             /**
@@ -1627,6 +1629,8 @@ export interface components {
              * Format: date-time
              */
             input_cutoff: string;
+            /** Input Hash */
+            input_hash?: string | null;
             /**
              * Input Lineage
              * @default []
@@ -1656,6 +1660,8 @@ export interface components {
             signal_id: string;
             /** Strategy Evaluation Id */
             strategy_evaluation_id?: string | null;
+            /** Strategy Forecast Id */
+            strategy_forecast_id?: string | null;
             /** Strategy Key */
             strategy_key?: string | null;
             /** Strategy Revision Id */
@@ -2918,6 +2924,8 @@ export interface components {
             selected_expression_identity?: string | null;
             /** Selected Expression Kind */
             selected_expression_kind?: string | null;
+            /** Strategy Forecast Id */
+            strategy_forecast_id?: string | null;
             /** Ticker */
             ticker: string;
             /** Trade Rank */
@@ -4323,6 +4331,8 @@ export interface components {
             stable_unit_key: string;
             /** @default UNMEASURABLE */
             state: components["schemas"]["OutcomeAttributionState"];
+            /** Strategy Forecast Id */
+            strategy_forecast_id?: string | null;
             /** Ticker */
             ticker: string;
             /** Trade Plan Id */
@@ -6278,6 +6288,8 @@ export interface components {
             /** Selected Expression Identity */
             selected_expression_identity: string;
             selected_expression_kind: components["schemas"]["ExpressionKind"];
+            /** Strategy Forecast Id */
+            strategy_forecast_id?: string | null;
             /** Ticker */
             ticker: string;
             /** Trade Plan Id */

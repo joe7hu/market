@@ -29,6 +29,7 @@ from investment_panel.core.decision import (
     apply_opportunity_rank_safety,
     bind_trade_plan,
     build_alpha_signal,
+    build_strategy_forecast,
     build_instrument_state_snapshot,
     build_trade_plan,
     build_ticker_decision,
@@ -80,10 +81,13 @@ def publish(
     repository = TickerDecisionRepository(runtime)
     analysis_repository = AnalysisRepository(runtime)
     alpha_artifacts = {
-        horizon: analysis_repository.qualified_stock_alpha_artifact(
-            cutoff=reference, horizon=horizon,
-        )
-        for horizon in ("TACTICAL", "FUNDAMENTAL")
+        symbol: {
+            horizon: analysis_repository.qualified_stock_alpha_artifact(
+                cutoff=reference, horizon=horizon, ticker=symbol,
+            )
+            for horizon in ("TACTICAL", "FUNDAMENTAL")
+        }
+        for symbol in selected
     }
     published: list[dict[str, Any]] = []
     decisions_for_paper: list[Any] = []
@@ -162,6 +166,11 @@ def publish(
             alpha_artifacts=alpha_artifacts,
             coverage_threshold=config.analysis.ticker_universe_coverage_threshold,
         )
+        for record in records:
+            for signal in record.get("signals", ()):
+                forecast = getattr(signal, "_strategy_forecast", None)
+                if forecast is not None:
+                    analysis_repository.store_strategy_forecast(forecast)
         ranking_run_id = analysis_repository.start_run(
             RANKING_SCOPE,
             input_cutoff=reference,
@@ -321,13 +330,15 @@ def _rank_records(
     failures: list[dict[str, str]],
     reference: datetime,
     *,
-    alpha_artifacts: Mapping[str, Mapping[str, Any]],
+    alpha_artifacts: Mapping[str, Mapping[str, Mapping[str, Any]]],
     coverage_threshold: float,
 ) -> tuple[list[OpportunityRank], dict[str, list[dict[str, Any]]], dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for record in records:
         decision = record["decision"]
-        snapshot, signals = _alpha_models(decision, record["tables"], alpha_artifacts)
+        snapshot, signals = _alpha_models(
+            decision, record["tables"], alpha_artifacts.get(decision.ticker, {}),
+        )
         record["snapshot"] = snapshot
         record["signals"] = signals
         selected = decision.selected_expression
@@ -355,6 +366,7 @@ def _rank_records(
             "portfolio_impact_id": impact.impact_id if impact is not None else None,
             "risk_policy_version": decision.policy_version,
             "alpha_signal_id": signal.signal_id if signal is not None else None,
+            "strategy_forecast_id": signal.strategy_forecast_id if signal is not None else None,
             "alpha_signal": signal.model_dump(mode="json") if signal is not None else None,
             "instrument_state_snapshot_id": snapshot.snapshot_id,
             "market_snapshot_id": snapshot.market_snapshot_id,
@@ -529,24 +541,19 @@ def _alpha_models(
     signals: list[AlphaSignal] = []
     for view in (decision.tactical, decision.fundamental):
         artifact = dict(artifacts.get(view.horizon.value) or {})
-        expected = view.expected_return_range
-        probabilities = {
-            scenario.name: scenario.probability
-            for scenario in view.scenarios
-        }
-        distribution = probabilities if all(value is not None for value in probabilities.values()) else None
+        forecast = _artifact_forecast(artifact, view.horizon.value, decision.ticker, decision.opportunity_episode_id, decision.cutoff)
         availability_status = str(artifact.get("availability_status") or "missing")
         blockers = list(artifact.get("blockers") or ())
         feature_rows = tables.get("stock_alpha_features") or []
         feature = dict(feature_rows[0]) if feature_rows else {}
         score = research_score(feature)
-        if expected is None:
+        if forecast is None:
             availability_status = "missing"
             blockers.append("forecast_missing")
         if score is None:
             availability_status = "missing"
             blockers.append("alpha_research_features_missing_or_mismatched")
-        signals.append(build_alpha_signal(
+        signal = build_alpha_signal(
             ticker=decision.ticker,
             opportunity_episode_id=decision.opportunity_episode_id,
             decision_revision=decision.decision_revision,
@@ -556,10 +563,10 @@ def _alpha_models(
             target=str(artifact.get("target") or "") or None,
             horizon=view.horizon.value,
             direction=view.stance.value,
-            forecast_value=((expected.low + expected.high) / 2) if expected is not None else None,
-            forecast_range=expected,
-            forecast_distribution=distribution,
-            probability_semantics="scenario_probability" if distribution is not None else None,
+            forecast_value=forecast.forecast_value if forecast else None,
+            forecast_range=forecast.forecast_range if forecast else None,
+            forecast_distribution=forecast.forecast_distribution if forecast else None,
+            probability_semantics=forecast.probability_semantics if forecast else None,
             cohort_id=artifact.get("cohort_id"),
             calibration_state=artifact.get("calibration_state"),
             model_version=artifact.get("model_version"),
@@ -568,7 +575,10 @@ def _alpha_models(
             availability_status=availability_status,
             strategy_key=artifact.get("strategy_key"),
             strategy_revision_id=artifact.get("strategy_revision_id"),
+            strategy_forecast_id=forecast.strategy_forecast_id if forecast else None,
             model_artifact_id=artifact.get("model_artifact_id"),
+            artifact_hash=artifact.get("artifact_hash") or artifact.get("model_artifact_id"),
+            input_hash=artifact.get("input_hash"),
             strategy_evaluation_id=artifact.get("strategy_evaluation_id"),
             artifact_published_at=artifact.get("artifact_published_at"),
             evaluation_evaluated_at=artifact.get("evaluation_evaluated_at"),
@@ -586,8 +596,68 @@ def _alpha_models(
                 "lower_confidence_net_utility_after_costs"
             ),
             blockers=tuple(dict.fromkeys(blockers)),
-        ))
+        )
+        if forecast is not None:
+            signal = signal.model_copy(update={"_strategy_forecast": forecast})
+        signals.append(signal)
     return snapshot, signals
+
+
+def _artifact_forecast(
+    artifact: Mapping[str, Any], horizon: str, ticker: str, episode_id: str, cutoff: datetime,
+) -> Any | None:
+    """Read forecast values only from the qualified artifact, never TickerDecision."""
+
+    candidates: list[Mapping[str, Any]] = []
+    for container in (artifact.get("forecast"), artifact.get("forecasts")):
+        if isinstance(container, Mapping):
+            candidates.append(container)
+            nested = container.get(horizon) or container.get(horizon.lower())
+            if isinstance(nested, Mapping):
+                candidates.append(nested)
+        elif isinstance(container, list):
+            candidates.extend(item for item in container if isinstance(item, Mapping))
+    selected = next(
+        (item for item in candidates if str(item.get("horizon") or horizon).upper() == horizon.upper()),
+        candidates[0] if candidates else None,
+    )
+    if not selected:
+        return None
+    persisted_id = str(selected.get("strategy_forecast_id") or artifact.get("strategy_forecast_id") or "").strip()
+    if not persisted_id:
+        return None
+    if selected.get("opportunity_episode_id") not in {None, episode_id}:
+        return None
+    value = selected.get("forecast_value", selected.get("value"))
+    forecast_range = selected.get("forecast_range", selected.get("range"))
+    distribution = selected.get("forecast_distribution", selected.get("distribution"))
+    if value is None and not isinstance(forecast_range, Mapping) and not isinstance(distribution, Mapping):
+        return None
+    forecast_as_of = selected.get("as_of") or selected.get("input_cutoff") or cutoff
+    if isinstance(forecast_as_of, datetime) and _utc(forecast_as_of) > _utc(cutoff):
+        return None
+    try:
+        forecast = build_strategy_forecast(
+            ticker=ticker, opportunity_episode_id=episode_id,
+            strategy_revision_id=int(artifact["strategy_revision_id"]),
+            strategy_evaluation_id=str(artifact.get("strategy_evaluation_id") or "") or None,
+            target=str(artifact.get("target") or "expected_return"), horizon=horizon,
+            forecast_value=float(value) if value is not None else None,
+            forecast_range=forecast_range if isinstance(forecast_range, Mapping) else None,
+            forecast_distribution=distribution if isinstance(distribution, Mapping) else None,
+            probability_semantics=str(selected.get("probability_semantics") or "") or None,
+            model_artifact_id=str(artifact["model_artifact_id"]),
+            artifact_hash=str(artifact.get("artifact_hash") or ""),
+            input_hash=str(artifact.get("input_hash") or ""),
+            as_of=forecast_as_of,
+            generated_at=selected.get("generated_at") or artifact.get("artifact_published_at") or cutoff,
+            available_at=selected.get("available_at") or artifact.get("evaluation_available_at") or cutoff,
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if forecast.strategy_forecast_id != persisted_id:
+        return None
+    return forecast
 
 
 def _same_published_decision(left: Any, right: Any) -> bool:
@@ -720,7 +790,7 @@ def _freeze_benchmark(runtime: Any, symbols: Iterable[str], as_of: datetime) -> 
     row = {
         "benchmark_key": "market-equity-etf",
         "as_of": as_of,
-        "available_at": as_of,
+        "available_at": datetime.now(UTC),
         "membership_hash": membership_hash,
         "member_count": len(members),
         "source_id": "catalog.instrument",

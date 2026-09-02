@@ -6,6 +6,8 @@ from investment_panel.analysis.stock_alpha import (
     COST_MODEL_VERSION,
     FEATURE_VERSION,
     MODEL_VERSION,
+    build_control_results,
+    content_hash,
     hierarchical_calibration,
     research_score,
     walk_forward,
@@ -20,6 +22,7 @@ def _row(index: int, *, cohort: str = "large-liquid") -> dict[str, object]:
         "cohort_id": cohort,
         "as_of": as_of,
         "outcome_available_at": as_of + timedelta(hours=1),
+        "feature_available_at": as_of - timedelta(minutes=30),
         "outcome": float(index % 2 == 0),
         "realized_return": 0.04 if index % 2 == 0 else -0.02,
         "modeled_cost": 0.002,
@@ -87,4 +90,47 @@ def test_walk_forward_is_deterministic_pit_and_versioned() -> None:
     assert first["calibration_metrics"]["effective_sample_size"] > 0
     assert first["oos_period_start"] < first["oos_period_end"]
     assert all(row["ticker"] != "T14" for row in first["predictions"])
+    assert first["forecasts"] and first["forecasts"][0]["forecast_distribution"]
+    assert all(row["neutralized_return"] != row["net_utility_after_costs"] for row in first["predictions"])
+    assert first["validation_paths"]
     assert len(first["artifact_hash"]) == 64
+
+
+def test_walk_forward_excludes_feature_runs_completed_after_cutoff() -> None:
+    rows = [_row(index) for index in range(14)]
+    rows[0]["feature_available_at"] = datetime(2027, 1, 1, tzinfo=UTC)
+    result = walk_forward(rows, cutoff=datetime(2026, 2, 1, tzinfo=UTC), min_train=4, fold_size=2, min_cohort=4)
+    assert all(row["ticker"] != "T00" for row in result["predictions"])
+
+
+def test_walk_forward_rejects_feature_available_after_row_decision_and_fold_boundary() -> None:
+    rows = [_row(index) for index in range(14)]
+    rows[5]["feature_available_at"] = rows[5]["as_of"] + timedelta(minutes=1)
+    result = walk_forward(rows, cutoff=datetime(2026, 2, 1, tzinfo=UTC), min_train=4, fold_size=2, min_cohort=4)
+    assert all(row["ticker"] != "T05" for row in result["predictions"])
+    assert any(item["ticker"] == "T05" and item["reason"] == "feature_not_available_at_decision" for item in result["pit_rejections"])
+
+    rows = [_row(index) for index in range(14)]
+    rows[5]["feature_available_at"] = rows[5]["as_of"]
+    result = walk_forward(rows, cutoff=datetime(2026, 2, 1, tzinfo=UTC), min_train=4, fold_size=2, min_cohort=4)
+    assert all(row["ticker"] != "T05" for row in result["predictions"])
+    assert any(item["ticker"] == "T05" and item["reason"] == "feature_not_available_at_fold_boundary" for item in result["pit_rejections"])
+
+
+def test_production_controls_are_repeated_nonempty_and_deterministic() -> None:
+    cutoff = datetime(2026, 2, 1, tzinfo=UTC)
+    rows = [_row(index) for index in range(12)]
+    first = build_control_results(rows, cutoff=cutoff)
+    second = build_control_results(rows, cutoff=cutoff)
+    assert first == second
+    assert first["randomized_label_returns"]
+    assert first["white_noise_market_returns"]
+    assert first["control_metadata"]["repeats"] == 8
+    assert first["control_metadata"]["source_sample_count"] == 12
+    assert first["control_metadata"]["randomized_label"]["runs"] == 8
+    assert first["control_metadata"]["white_noise_market"]["runs"] == 8
+    source_hash = content_hash(rows)
+    assert all(value != source_hash for value in first["control_metadata"]["randomized_label"]["input_hashes"])
+    assert all(value != source_hash for value in first["control_metadata"]["white_noise_market"]["input_hashes"])
+    assert any(value > 0 for value in first["white_noise_market_returns"])
+    assert any(value < 0 for value in first["white_noise_market_returns"])

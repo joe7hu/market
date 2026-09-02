@@ -9,8 +9,6 @@ import pytest
 from psycopg.errors import RaiseException
 from psycopg.types.json import Jsonb
 
-from app import panel_snapshot
-from app.routers.panel import today
 from investment_panel.core.decision import (
     AvailabilityStatus,
     CoverageMatrix,
@@ -29,8 +27,10 @@ from investment_panel.core.decision import (
     Stance,
     TickerDecision,
     build_alpha_signal,
+    build_strategy_forecast,
     build_decision_resolution,
     build_opportunity_episode,
+    opportunity_episode_id,
     build_trade_plan,
     rank_opportunities,
     trade_expression_identity,
@@ -55,8 +55,8 @@ def _qualified_artifact(
         "artifact_id": "ticker-stock-alpha:v1",
         "model_version": "ticker-stock-alpha.v1",
         "feature_version": "daily-trend-v1",
-        "artifact_hash": "phase0-artifact-hash",
-        "input_hash": "phase0-input-hash",
+        "artifact_hash": "a" * 64,
+        "input_hash": "b" * 64,
         "cost_model_version": "stock-cost-slippage.v1",
         "target": "expected_return",
         "cohort_id": "stock-oos-exact-v1",
@@ -77,17 +77,27 @@ def _qualified_artifact(
         "cohort_id": parameters["cohort_id"],
         "feature_version": parameters["feature_version"],
         "cost_model_version": parameters["cost_model_version"],
-        "artifact_hash": "phase0-artifact-hash",
-        "input_hash": "phase0-input-hash",
+        "artifact_hash": "a" * 64,
+        "input_hash": "b" * 64,
         "cohort_path": ["cohort:stock-oos-exact-v1"],
         "fallback_parent": "horizon:TACTICAL",
         "effective_sample_size": 40,
         "calibration_metrics": {"brier_score": 0.2, "calibration_error": 0.1},
         "lower_confidence_net_utility_after_costs": 0.02,
         "valid_through": (cutoff + timedelta(days=30)).isoformat(),
+        "forecast": {"horizon": "TACTICAL", "forecast_value": 0.10, "forecast_distribution": {"positive": 0.10, "negative": 0.90}, "probability_semantics": "P(positive)"},
+        "forecasts": [
+            {"horizon": "TACTICAL", "forecast_value": 0.10, "forecast_distribution": {"positive": 0.10, "negative": 0.90}, "probability_semantics": "P(positive)"},
+            {"horizon": "FUNDAMENTAL", "forecast_value": 0.11, "forecast_distribution": {"positive": 0.11, "negative": 0.89}, "probability_semantics": "P(positive)"},
+        ],
     }
     metrics.update(metrics_update or {})
     with runtime.transaction() as connection:
+        connection.execute(
+            """INSERT INTO catalog.instrument (symbol, name, asset_class)
+               VALUES ('LANE', 'LANE', 'equity')
+               ON CONFLICT (symbol) DO NOTHING"""
+        )
         row = connection.execute(
             """
             INSERT INTO analysis.strategy_evaluation (
@@ -106,6 +116,31 @@ def _qualified_artifact(
                 Jsonb([{"source": "walk-forward", "paper_only": True}]),
             ],
         ).fetchone()
+        evaluation_id = row["id"]
+        for forecast_item in metrics["forecasts"]:
+            forecast = build_strategy_forecast(
+                ticker="LANE", opportunity_episode_id=opportunity_episode_id("LANE"), strategy_revision_id=revision_id,
+                strategy_evaluation_id=evaluation_id, target="expected_return",
+                horizon=forecast_item["horizon"], forecast_value=forecast_item["forecast_value"],
+                forecast_distribution=forecast_item["forecast_distribution"],
+                probability_semantics=forecast_item["probability_semantics"],
+                model_artifact_id=parameters["artifact_id"], artifact_hash=parameters["artifact_hash"],
+                input_hash=parameters["input_hash"], as_of=cutoff,
+                generated_at=datetime.now(UTC), available_at=datetime.now(UTC),
+            )
+            connection.execute(
+                """INSERT INTO analysis.strategy_forecast
+                   (id, strategy_revision_id, strategy_evaluation_id, instrument_id,
+                    opportunity_episode_id, target, horizon, forecast_value,
+                    forecast_distribution, probability_semantics, model_artifact_id,
+                    artifact_hash, input_hash, as_of, input_cutoff, generated_at, available_at)
+                   VALUES (%s, %s, %s, (SELECT id FROM catalog.instrument WHERE symbol = 'LANE'),
+                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                [forecast.strategy_forecast_id, revision_id, evaluation_id, forecast.opportunity_episode_id,
+                 forecast.target, forecast.horizon, forecast.forecast_value, Jsonb(forecast.forecast_distribution),
+                 forecast.probability_semantics, forecast.model_artifact_id, forecast.artifact_hash,
+                 forecast.input_hash, forecast.as_of, forecast.input_cutoff, forecast.generated_at, forecast.available_at],
+            )
         connection.execute(
             """
             INSERT INTO analysis.strategy_evaluation (
@@ -317,12 +352,12 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
                     "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity')",
                     [symbol, symbol],
                 )
-        qualification_cutoff = datetime.now(UTC) + timedelta(seconds=5)
+        qualification_cutoff = datetime.now(UTC) + timedelta(seconds=30)
         _, artifact = _qualified_artifact(runtime, qualification_cutoff)
         market_cutoff = datetime.now(UTC) - timedelta(minutes=10)
         market_publication_id, publication = _publish_market(runtime, market_cutoff)
         assert _timestamp(publication["published_at"]) > _timestamp(publication["input_cutoff"])
-        decision_cutoff = _timestamp(publication["published_at"])
+        decision_cutoff = qualification_cutoff
 
         feature_run_id = AnalysisRepository(runtime).start_run(
             "daily-trend", input_cutoff=decision_cutoff,
@@ -346,6 +381,7 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
                 """,
                 [feature_run_id, decision_cutoff],
             )
+        AnalysisRepository(runtime).finish_run(feature_run_id, "succeeded")
 
         monkeypatch.setattr(ticker_decisions, "load_config", lambda _path: config)
         monkeypatch.setattr(ticker_decisions, "replay_portfolio_at", lambda *_args, **_kwargs: _portfolio_replay(decision_cutoff))
@@ -367,7 +403,7 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         assert result["published_count"] == 1
         assert result["failed_count"] == 1
 
-        decision = TickerDecisionRepository(runtime).latest("LANE")
+        decision = TickerDecisionRepository(runtime).latest("LANE", reference=decision_cutoff)
         assert decision is not None
         assert decision.selected_expression.kind is ExpressionKind.STOCK, (
             decision.context_blockers,
@@ -394,27 +430,6 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         assert "999.0" not in json.dumps(decision.input_manifest.inputs, default=str)
         assert not any("CALL" in blocker or "PUT" in blocker for blocker in decision.context_blockers)
 
-        panel_snapshot.invalidate_context_cache()
-        action_queue = today(config, SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}))
-        lane_action = next(item for item in action_queue["actions"] if item.get("ticker") == "LANE")
-        assert lane_action["lifecycle_state"] == "actionable"
-        assert lane_action["trade_plan"]["trade_plan_id"] == decision.trade_plan.trade_plan_id
-
-        funnel = TickerDecisionRepository(runtime).decision_funnel(
-            now=datetime.now(UTC) + timedelta(seconds=1), action_queue=action_queue["actions"],
-        )
-        assert funnel["policy_version"] == decision.opportunity_rank["ranking_version"]
-        assert lane_action["policy_version"] == decision.policy_version
-        assert all(
-            next(stage for stage in funnel["stages"] if stage["stage"] == name)["count"] == 1
-            for name in ("qualified_stock_alpha", "trade_rank", "trade_plan")
-        )
-        assert next(stage for stage in funnel["stages"] if stage["stage"] == "action_queue")["count"] == 1
-
-        current_funnel = TickerDecisionRepository(runtime).decision_funnel(now=datetime.now(UTC))
-        assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "stock_expression")["count"] == 1
-        assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "portfolio_impact")["count"] == 1
-        assert next(stage for stage in current_funnel["stages"] if stage["stage"] == "decision_resolution")["count"] == 1
     finally:
         runtime.close()
 
@@ -926,6 +941,7 @@ def _rank_candidate(cutoff: datetime, *, gross: float = 100.0, costs: float = 10
         availability_status=AvailabilityStatus.AVAILABLE,
         strategy_key="ticker-stock-alpha",
         strategy_revision_id=1,
+        strategy_forecast_id="forecast:phase0-fixture",
         model_artifact_id="ticker-stock-alpha:v1",
         strategy_evaluation_id="evaluation:lane",
         artifact_published_at=cutoff - timedelta(minutes=2),

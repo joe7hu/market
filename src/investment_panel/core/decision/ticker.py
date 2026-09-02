@@ -1255,6 +1255,7 @@ class TradePlan(BaseModel):
     selected_expression: TradeExpression
     rank_id: str | None = None
     alpha_signal_id: str | None = None
+    strategy_forecast_id: str | None = None
     portfolio_impact_id: str | None = None
     market_snapshot_id: str | None = None
     market_state_publication_id: str | None = None
@@ -1415,9 +1416,12 @@ class TradePlan(BaseModel):
                 raise ValueError("actionable trade plan requires a finite positive planned loss")
             if self.primary_blocker or self.blockers:
                 raise ValueError("actionable trade plan cannot have blockers")
-        expected_id = _trade_plan_id(self.model_dump(
+        immutable_terms = self.model_dump(
             mode="json", exclude={"trade_plan_id", "publication_id", "availability_status"},
-        ))
+        )
+        if immutable_terms.get("strategy_forecast_id") is None:
+            immutable_terms.pop("strategy_forecast_id", None)
+        expected_id = _trade_plan_id(immutable_terms)
         if self.trade_plan_id != expected_id:
             raise ValueError("trade plan id does not match its immutable terms")
         if self.eligibility == "BLOCKED" and any(
@@ -1641,6 +1645,7 @@ class OutcomeAttribution(BaseModel):
     selected_expression_identity: str = Field(min_length=1)
     rank_id: str | None = None
     alpha_signal_id: str | None = None
+    strategy_forecast_id: str | None = None
     portfolio_impact_id: str | None = None
     market_snapshot_id: str | None = None
     market_state_publication_id: str | None = None
@@ -2634,7 +2639,10 @@ def apply_opportunity_rank_safety(
 
 
 def _trade_plan_id(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(_trade_plan_jsonable(payload), sort_keys=True, separators=(",", ":"))
+    content = dict(payload)
+    if content.get("strategy_forecast_id") is None:
+        content.pop("strategy_forecast_id", None)
+    encoded = json.dumps(_trade_plan_jsonable(content), sort_keys=True, separators=(",", ":"))
     return f"{TRADE_PLAN_CONTRACT_VERSION}:{hashlib.sha256(encoded.encode()).hexdigest()}"
 
 
@@ -2713,6 +2721,7 @@ def build_trade_plan(
     current_resolution = resolution or decision.resolution
     selected = decision.selected_expression
     reason = ""
+    forecast_blockers: list[str] = []
     if current_resolution is not None and current_resolution.is_blocked:
         reason = current_resolution.primary_blocker or "decision_resolution_blocked"
     if selected is None:
@@ -2765,6 +2774,16 @@ def build_trade_plan(
             reason = reason or "opportunity_rank_identity_mismatch"
     if signal_payload and rank_payload.get("alpha_signal_id") and str(signal_payload.get("signal_id") or "") != str(rank_payload["alpha_signal_id"]):
         reason = reason or "alpha_signal_identity_mismatch"
+    rank_forecast_id = str(rank_payload.get("strategy_forecast_id") or "")
+    signal_forecast_id = str(signal_payload.get("strategy_forecast_id") or "")
+    if any((rank_forecast_id, signal_forecast_id)) and not (
+        rank_forecast_id and signal_forecast_id and rank_forecast_id == signal_forecast_id
+    ):
+        forecast_blockers.append("strategy_forecast_identity_mismatch")
+        reason = reason or "strategy_forecast_identity_mismatch"
+    if signal_payload.get("contract_version") == "alpha-signal.v1" and not signal_forecast_id:
+        forecast_blockers.append("strategy_forecast_missing")
+        reason = reason or "strategy_forecast_missing"
     if rank_payload.get("alpha_signal_id") is None:
         reason = reason or "alpha_signal_missing"
     if not signal_payload and alpha_signal is not None:
@@ -2811,7 +2830,7 @@ def build_trade_plan(
         eligibility = "BLOCKED"
         authorization = "NONE"
         data_quality = "INCOMPLETE"
-        blockers = tuple(dict.fromkeys((*(current_resolution.blockers if current_resolution else ()), reason)))
+        blockers = tuple(dict.fromkeys((*(current_resolution.blockers if current_resolution else ()), reason, *forecast_blockers)))
         entry = None
         entry_limit = None
         quantity = None
@@ -2863,6 +2882,7 @@ def build_trade_plan(
         "selected_expression": expression,
         "rank_id": str(rank_payload.get("rank_id") or "") or None,
         "alpha_signal_id": str(rank_payload.get("alpha_signal_id") or signal_payload.get("signal_id") or "") or None,
+        "strategy_forecast_id": rank_forecast_id or signal_forecast_id or None,
         "portfolio_impact_id": impact.impact_id if impact is not None else None,
         "market_snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
         "market_state_publication_id": decision.market_state_publication_id or (snapshot.publication_id if snapshot else None),

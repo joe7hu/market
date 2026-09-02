@@ -76,6 +76,100 @@ TODAY_ACTION_ORDER_SQL = f"""
 
 
 DIRECT_QUERIES: dict[str, str] = {
+    "research_hypotheses": """
+        SELECT id::text AS hypothesis_id, hypothesis_key, statement, mechanism_class,
+               falsification, status, input_hash, created_at, available_at, metadata
+        FROM analysis.hypothesis
+        ORDER BY created_at DESC, id DESC LIMIT 500
+    """,
+    "research_experiment_families": """
+        SELECT family.id::text AS experiment_family_id, family.family_key,
+               family.hypothesis_id::text, family.name, family.design, family.controls,
+               family.status, family.input_hash, family.created_at, family.available_at
+        FROM analysis.experiment_family family
+        ORDER BY family.created_at DESC, family.id DESC LIMIT 500
+    """,
+    "research_trials": """
+        SELECT trial.id::text AS research_trial_id, trial.experiment_family_id::text,
+               family.family_key, trial.trial_key, trial.input_cutoff, trial.code_version,
+               trial.input_hash, trial.parameters, trial.status, trial.failure_reason,
+               trial.started_at, trial.finished_at, trial.available_at, trial.outcome
+        FROM analysis.research_trial trial
+        JOIN analysis.experiment_family family ON family.id = trial.experiment_family_id
+        ORDER BY trial.input_cutoff DESC, trial.id DESC LIMIT 500
+    """,
+    "research_experiment_manifests": """
+        SELECT experiment_family_id::text, expected_trial_count, expected_trial_keys,
+               manifest_hash, created_at, available_at
+        FROM analysis.experiment_manifest
+        ORDER BY created_at DESC, experiment_family_id LIMIT 100
+    """,
+    "research_universe_manifests": """
+        SELECT research_trial_id::text, cutoff, expected_member_count, expected_members,
+               manifest_hash, created_at, available_at
+        FROM analysis.trial_universe_manifest
+        ORDER BY cutoff DESC, research_trial_id LIMIT 500
+    """,
+    "research_trial_results": """
+        SELECT result.id::text AS trial_result_id, result.research_trial_id::text,
+               result.result_kind, result.result_version, result.observed_at,
+               result.available_at, result.metrics, result.outcome, result.input_hash
+        FROM analysis.trial_result result
+        ORDER BY result.observed_at DESC, result.id DESC LIMIT 500
+    """,
+    "research_validation_dossiers": """
+        SELECT dossier.id::text AS validation_dossier_id, dossier.strategy_revision_id,
+               dossier.research_trial_id::text, dossier.status, dossier.sections,
+               dossier.compiled_policy, dossier.artifact_id, dossier.artifact_hash,
+               dossier.created_at, dossier.sealed_at
+        FROM analysis.validation_dossier dossier
+        ORDER BY dossier.created_at DESC, dossier.id DESC LIMIT 500
+    """,
+    "research_validation_gates": """
+        SELECT gate.id::text AS validation_gate_result_id, gate.dossier_id::text,
+               gate.gate_code, gate.verdict, gate.metrics, gate.evidence,
+               gate.evaluated_at, gate.available_at
+        FROM analysis.validation_gate_result gate
+        ORDER BY gate.evaluated_at DESC, gate.id DESC LIMIT 500
+    """,
+    "research_strategy_forecasts": """
+        SELECT forecast.id AS strategy_forecast_id, forecast.strategy_revision_id,
+               forecast.strategy_evaluation_id::text, instrument.symbol AS ticker,
+               forecast.opportunity_episode_id, forecast.target, forecast.horizon,
+               forecast.forecast_value, forecast.forecast_range, forecast.forecast_distribution,
+               forecast.probability_semantics, forecast.model_artifact_id,
+               forecast.artifact_hash, forecast.input_hash, forecast.as_of,
+               forecast.input_cutoff, forecast.generated_at, forecast.available_at,
+               forecast.status
+        FROM analysis.strategy_forecast forecast
+        JOIN catalog.instrument instrument ON instrument.id = forecast.instrument_id
+        ORDER BY forecast.input_cutoff DESC, forecast.id DESC LIMIT 500
+    """,
+    "research_universe_observations": """
+        SELECT observation.id::text AS universe_observation_id,
+               observation.research_trial_id::text, instrument.symbol AS ticker,
+               observation.cutoff, observation.eligible, observation.rank,
+               observation.candidate_score, observation.exclusion_reason,
+               observation.observed_at, observation.available_at, observation.input_hash,
+               observation.outcome
+        FROM analysis.universe_observation observation
+        JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+        ORDER BY observation.cutoff DESC, observation.rank NULLS LAST, instrument.symbol
+        LIMIT 500
+    """,
+    "research_strategy_revisions": """
+        SELECT revision.id AS strategy_revision_id, revision.strategy_key,
+               revision.revision, revision.name, revision.status, revision.parameters,
+               revision.created_at, revision.promoted_at, revision.supersedes_id,
+               revision.hypothesis_id::text, revision.experiment_family_id::text,
+               revision.artifact_id, revision.artifact_hash,
+               dossier.id::text AS validation_dossier_id, dossier.status AS dossier_status
+        FROM analysis.strategy_revision revision
+        LEFT JOIN analysis.validation_dossier dossier
+          ON dossier.strategy_revision_id = revision.id
+        WHERE revision.hypothesis_id IS NOT NULL
+        ORDER BY revision.created_at DESC, revision.id DESC LIMIT 500
+    """,
     "options_radar_health": """
         SELECT publication.id::text AS publication_id,
                publication.published_at,
@@ -1758,6 +1852,18 @@ def load_postgres_tables(
                             conditions.append("daily_research_rows.starts_at >= current_date")
                         if policy.exclude_future_rows and (alias or name) == "research_packets":
                             conditions.append("COALESCE(daily_research_rows.published_at, daily_research_rows.generated_at) <= now()")
+                        research_alias = alias or name
+                        if research_alias in {
+                            "research_hypotheses", "research_experiment_families", "research_trials",
+                            "research_experiment_manifests", "research_universe_manifests",
+                            "research_trial_results", "research_validation_gates", "research_strategy_forecasts",
+                            "research_universe_observations",
+                        }:
+                            conditions.append("daily_research_rows.available_at <= now()")
+                        elif research_alias == "research_validation_dossiers":
+                            conditions.append("COALESCE(daily_research_rows.sealed_at, daily_research_rows.created_at) <= now()")
+                        elif research_alias == "research_strategy_revisions":
+                            conditions.append("daily_research_rows.created_at <= now()")
                         if symbol_scoped:
                             symbol_clause = "UPPER(daily_research_rows.symbol) = ANY(%s)"
                             if policy.allow_symbol_less:
