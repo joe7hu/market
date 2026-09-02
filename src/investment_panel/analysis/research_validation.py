@@ -296,16 +296,42 @@ def validate_trial(
     predictive = {"passed": metrics["domain_valid"] and metrics["psr"] >= float(policy.get("min_psr", 0.5)) and (metrics["dsr"] >= float(policy.get("min_dsr", 0.5))), "domain_valid": metrics["domain_valid"], "metrics": metrics, "reason": None}
     stability = parameter_stability(parameter_neighborhood)
     path_records = [dict(record) for record in path_records]
+    path_ids: list[str] = []
+
+    def valid_path(record: Mapping[str, Any]) -> bool:
+        path_id = str(record.get("path_id") or "").strip()
+        test_folds = record.get("test_folds")
+        train_folds = record.get("train_folds")
+        metrics = record.get("metrics")
+        if not path_id or path_id in path_ids or not isinstance(test_folds, list) or not isinstance(train_folds, list):
+            return False
+        if not test_folds or not train_folds:
+            return False
+        if any(not isinstance(value, int) or value < 0 for value in (*test_folds, *train_folds)):
+            return False
+        if len(set(test_folds)) != len(test_folds) or len(set(train_folds)) != len(train_folds):
+            return False
+        if not set(test_folds).isdisjoint(train_folds) or not isinstance(metrics, Mapping):
+            return False
+        try:
+            metric_values = [
+                int(metrics["fit_train_count"]), int(metrics["evaluated_test_count"]),
+                int(metrics["sample_size"]), float(metrics["mean_return"]),
+                float(metrics["psr"]), float(metrics["p_value"]),
+            ]
+        except (KeyError, TypeError, ValueError):
+            return False
+        if metric_values[0] <= 0 or metric_values[1] <= 0 or metric_values[2] <= 0:
+            return False
+        if not all(isfinite(value) for value in metric_values[3:]) or not 0 <= metric_values[4] <= 1 or not 0 <= metric_values[5] <= 1:
+            return False
+        path_ids.append(path_id)
+        return metrics.get("domain_valid") is True
+
+    paths_valid = bool(path_records) and all(valid_path(record) for record in path_records)
     cpcv = {
-        "passed": bool(path_records) and all(
-            isinstance(record.get("test_folds"), list)
-            and isinstance(record.get("train_folds"), list)
-            and set(record["test_folds"]).isdisjoint(record["train_folds"])
-            and int((record.get("metrics") or {}).get("evaluated_test_count", 0)) > 0
-            and int((record.get("metrics") or {}).get("fit_train_count", 0)) > 0
-            for record in path_records
-        ),
-        "domain_valid": bool(path_records),
+        "passed": paths_valid,
+        "domain_valid": paths_valid,
         "path_count": len(path_records), "path_records": path_records,
         "reason": None if path_records else "combinatorial_path_evidence_missing",
     }

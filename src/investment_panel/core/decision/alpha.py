@@ -929,7 +929,11 @@ def strategy_forecast_id_for_payload(value: Mapping[str, Any]) -> str:
             try:
                 parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                 if parsed.tzinfo is not None and parsed.utcoffset() is not None:
-                    normalized[field] = parsed.astimezone(UTC).isoformat()
+                    # PostgreSQL uses six fractional digits in its canonical
+                    # forecast vector. Keep exact-second cutoffs identical in
+                    # both implementations instead of relying on formatter
+                    # defaults that omit trailing zeroes.
+                    normalized[field] = parsed.astimezone(UTC).isoformat(timespec="microseconds")
             except ValueError:
                 pass
     # Use a scalar canonical vector. PostgreSQL can recompute this exact

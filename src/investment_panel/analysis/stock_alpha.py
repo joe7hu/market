@@ -216,6 +216,7 @@ def walk_forward(
         validation_paths.append(path_return)
         validation_path_records.append({
             **record,
+            "path_id": f"cpcv-{index}",
             "test_fold_starts": [fold_keys[fold] for fold in record["test_folds"]],
             "purge_days": record["purge_folds"],
             "embargo_days": record["embargo_folds"],
@@ -228,6 +229,7 @@ def walk_forward(
                 "p_value": path_p_value,
                 "fit_train_count": len(training),
                 "evaluated_test_count": len(path_predictions),
+                "domain_valid": True,
             },
         })
     artifact = {

@@ -13,7 +13,7 @@ from investment_panel.analysis.research_validation import (
     purged_embargoed_splits,
     validate_trial,
 )
-from investment_panel.core.decision import build_strategy_forecast
+from investment_panel.core.decision import build_strategy_forecast, strategy_forecast_id_for_payload
 
 
 def test_phase1_validation_is_deterministic_and_fail_closed() -> None:
@@ -103,3 +103,17 @@ def test_strategy_forecast_identity_is_fail_closed_and_actual_availability_is_re
         as_of=cutoff, generated_at=cutoff + timedelta(seconds=1), available_at=cutoff + timedelta(seconds=1),
     )
     assert future.generated_at > future.input_cutoff
+
+
+def test_strategy_forecast_identity_normalizes_exact_second_utc_timestamps() -> None:
+    cutoff = datetime(2026, 8, 22, 14, 0, 0, tzinfo=UTC)
+    forecast = build_strategy_forecast(
+        ticker="ACME", opportunity_episode_id="episode:acme", strategy_revision_id=1,
+        strategy_evaluation_id=None, target="return", horizon="1d", forecast_value=0.1,
+        model_artifact_id="artifact", artifact_hash="a" * 64, input_hash="b" * 64,
+        as_of=cutoff, generated_at=cutoff - timedelta(minutes=1), available_at=cutoff - timedelta(minutes=1),
+    )
+    payload = forecast.model_dump(mode="json")
+    payload["generated_at"] = "2026-08-22T13:59:00.000000+00:00"
+    payload["available_at"] = "2026-08-22T13:59:00.000000+00:00"
+    assert strategy_forecast_id_for_payload(payload) == forecast.strategy_forecast_id

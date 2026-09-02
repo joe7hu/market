@@ -656,9 +656,13 @@ class AnalysisRepository:
             authority_clock = connection.execute(
                 "SELECT current_date AS authority_date, clock_timestamp() AS actual_now"
             ).fetchone()
-            if model.generated_at.date() < authority_clock["authority_date"] or model.generated_at > authority_clock["actual_now"]:
+            if (model.generated_at.date() < authority_clock["authority_date"]
+                    or (model.generated_at.hour, model.generated_at.minute, model.generated_at.second, model.generated_at.microsecond) == (0, 0, 0, 0)
+                    or model.generated_at > authority_clock["actual_now"]):
                 raise ValueError("strategy forecast generation timestamp is not authoritative server time")
-            if model.available_at.date() < authority_clock["authority_date"] or model.available_at > authority_clock["actual_now"]:
+            if (model.available_at.date() < authority_clock["authority_date"]
+                    or (model.available_at.hour, model.available_at.minute, model.available_at.second, model.available_at.microsecond) == (0, 0, 0, 0)
+                    or model.available_at > authority_clock["actual_now"]):
                 raise ValueError("strategy forecast availability timestamp is not authoritative server time")
             instrument = connection.execute(
                 "SELECT id FROM catalog.instrument WHERE symbol = %s LIMIT 1", [ticker]

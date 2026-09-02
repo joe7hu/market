@@ -37,12 +37,20 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             "mechanism": {"passed": True, "domain_valid": True, "evidence_count": 1, "mechanism_class": "quality", "falsification_rule": "negative"},
             "parameter_stability": {"passed": True, "domain_valid": True, "sample_size": 3},
             "neutralization": {"passed": True, "domain_valid": True, "result_exists": True, "sample_size": 1},
-            "combinatorial_paths": {"passed": True, "domain_valid": True, "path_count": 1, "path_records": [{"test_folds": [0], "train_folds": [1], "metrics": {"fit_train_count": 1, "evaluated_test_count": 1}}]},
-            "robustness": {"passed": True, "domain_valid": True},
+            "combinatorial_paths": {"passed": True, "domain_valid": True, "path_count": 1, "path_records": [{"path_id": "manual-0", "test_folds": [0], "train_folds": [1], "metrics": {"domain_valid": True, "sample_size": 1, "mean_return": 0.1, "psr": 0.9, "p_value": 0.1, "fit_train_count": 1, "evaluated_test_count": 1}}]},
+            "robustness": {"passed": True, "domain_valid": True, "negative_controls": {"passed": True, "domain_valid": True, "controls_present": True, "randomized_sample_count": 1, "white_noise_sample_count": 1}, "parameter_stability": {"passed": True, "domain_valid": True, "sample_size": 3}, "combinatorial_paths": {"passed": True, "domain_valid": True, "path_count": 1, "path_records": [{"path_id": "manual-0", "test_folds": [0], "train_folds": [1], "metrics": {"domain_valid": True, "sample_size": 1, "mean_return": 0.1, "psr": 0.9, "p_value": 0.1, "fit_train_count": 1, "evaluated_test_count": 1}}]}},
             "multiple_testing": {"psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1, "domain_valid": True, "paths_domain_valid": True, "p_values_domain_valid": True, "trials_tested": 2, "sample_size": 1, "path_count": 1, "p_value_count": 1},
             "cost_capacity": {"passed": True, "domain_valid": True, "multiples": {"1x": {"net_return": 0.1, "capacity": 1.0}, "2x": {"net_return": 0.09, "capacity": 0.5}, "3x": {"net_return": 0.08, "capacity": 0.333}}},
             "predictive": {"passed": True, "domain_valid": True, "metrics": {"domain_valid": True, "sample_size": 1, "path_count": 1, "p_value_count": 1, "trials_tested": 2, "psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1}},
         }
+        assert not connection.execute(
+            "SELECT analysis.research_check_complete(%s, 'combinatorial_paths')",
+            [Jsonb({"passed": True, "domain_valid": True, "path_count": 1, "path_records": [{}]})],
+        ).fetchone()[0]
+        assert not connection.execute(
+            "SELECT analysis.research_check_complete(%s, 'robustness')",
+            [Jsonb({"passed": True, "domain_valid": True})],
+        ).fetchone()[0]
         connection.execute(
             """INSERT INTO analysis.experiment_manifest
                (experiment_family_id, expected_trial_count, expected_trial_keys, manifest_hash)
@@ -89,6 +97,15 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                VALUES (%s, 'negative-control', now(), now(), %s, %s)""",
             [failed_trial, "4" * 64, Jsonb({"passed": False})],
         )
+        connection.execute("SAVEPOINT future_observation")
+        with pytest.raises(psycopg.errors.RaiseException, match="future-dated"):
+            connection.execute(
+                """INSERT INTO analysis.trial_result
+                   (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics)
+                   VALUES (%s, 'future-observation', now() + interval '1 day', now(), %s, %s)""",
+                [failed_trial, "4" * 64, Jsonb({"passed": False})],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT future_observation")
         connection.execute(
             """INSERT INTO analysis.trial_result
                (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics, outcome)
@@ -209,6 +226,19 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                 [revision, evaluation, Jsonb({"positive_return_after_costs": 0.1}), "5" * 64, "7" * 64, cutoff, cutoff],
             )
         connection.execute("ROLLBACK TO SAVEPOINT backdated_forecast")
+        connection.execute("SAVEPOINT midnight_forecast")
+        with pytest.raises(psycopg.errors.RaiseException, match="actual availability"):
+            connection.execute(
+                """INSERT INTO analysis.strategy_forecast
+                   (id, strategy_revision_id, strategy_evaluation_id, instrument_id, opportunity_episode_id,
+                    target, horizon, forecast_value, forecast_distribution, model_artifact_id, artifact_hash,
+                    input_hash, as_of, input_cutoff, generated_at, available_at)
+                   VALUES (%s, %s, %s, (SELECT id FROM catalog.instrument WHERE symbol = 'P1T'), 'episode:p1',
+                           'return', '1d-midnight', 0.1, %s, 'p1-artifact', %s, %s, %s, %s,
+                           date_trunc('day', now()), date_trunc('day', now()))""",
+                [forecast.strategy_forecast_id, revision, evaluation, Jsonb({"positive_return_after_costs": 0.1}), "5" * 64, "7" * 64, cutoff, cutoff],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT midnight_forecast")
         connection.execute("UPDATE analysis.strategy_revision SET status = 'active' WHERE id = %s", [revision])
         assert connection.execute("SELECT status FROM analysis.validation_dossier WHERE id = %s", [dossier]).fetchone()[0] == "sealed"
         assert connection.execute("SELECT status FROM analysis.strategy_revision WHERE id = %s", [revision]).fetchone()[0] == "active"

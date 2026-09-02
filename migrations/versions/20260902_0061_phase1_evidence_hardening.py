@@ -14,6 +14,68 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         r"""
+        CREATE OR REPLACE FUNCTION analysis.research_combinatorial_paths_complete(item JSONB)
+        RETURNS BOOLEAN LANGUAGE plpgsql STABLE AS $paths$
+        DECLARE
+            record JSONB; path_id TEXT; seen_ids TEXT[] := ARRAY[]::TEXT[];
+            test_folds JSONB; train_folds JSONB; metrics JSONB;
+            path_count INTEGER := 0; expected_count INTEGER;
+        BEGIN
+            IF jsonb_typeof(item) <> 'object'
+               OR jsonb_typeof(item->'path_count') <> 'number'
+               OR (item->>'path_count')::INTEGER <= 0
+               OR jsonb_typeof(item->'path_records') <> 'array'
+            THEN
+                RETURN false;
+            END IF;
+            expected_count := (item->>'path_count')::INTEGER;
+            FOR record IN SELECT value FROM jsonb_array_elements(item->'path_records') LOOP
+                path_id := NULLIF(trim(record->>'path_id'), '');
+                test_folds := record->'test_folds';
+                train_folds := record->'train_folds';
+                metrics := record->'metrics';
+                IF path_id IS NULL OR path_id = ANY(seen_ids)
+                   OR jsonb_typeof(test_folds) <> 'array'
+                   OR jsonb_typeof(train_folds) <> 'array'
+                   OR jsonb_array_length(test_folds) = 0
+                   OR jsonb_array_length(train_folds) = 0
+                   OR jsonb_array_length(test_folds) <> (SELECT count(DISTINCT value) FROM jsonb_array_elements(test_folds))
+                   OR jsonb_array_length(train_folds) <> (SELECT count(DISTINCT value) FROM jsonb_array_elements(train_folds))
+                   OR EXISTS (
+                       SELECT 1 FROM jsonb_array_elements_text(test_folds) test_fold
+                       JOIN jsonb_array_elements_text(train_folds) train_fold ON train_fold.value = test_fold.value
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM jsonb_array_elements_text(test_folds) fold
+                       WHERE fold.value !~ '^[0-9]+$'
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM jsonb_array_elements_text(train_folds) fold
+                       WHERE fold.value !~ '^[0-9]+$'
+                   )
+                   OR jsonb_typeof(metrics) <> 'object'
+                   OR metrics->>'domain_valid' <> 'true'
+                   OR jsonb_typeof(metrics->'sample_size') <> 'number'
+                   OR (metrics->>'sample_size')::INTEGER <= 0
+                   OR jsonb_typeof(metrics->'fit_train_count') <> 'number'
+                   OR (metrics->>'fit_train_count')::INTEGER <= 0
+                   OR jsonb_typeof(metrics->'evaluated_test_count') <> 'number'
+                   OR (metrics->>'evaluated_test_count')::INTEGER <= 0
+                   OR jsonb_typeof(metrics->'mean_return') <> 'number'
+                   OR jsonb_typeof(metrics->'psr') <> 'number'
+                   OR (metrics->>'psr')::DOUBLE PRECISION NOT BETWEEN 0 AND 1
+                   OR jsonb_typeof(metrics->'p_value') <> 'number'
+                   OR (metrics->>'p_value')::DOUBLE PRECISION NOT BETWEEN 0 AND 1
+                THEN
+                    RETURN false;
+                END IF;
+                seen_ids := array_append(seen_ids, path_id);
+                path_count := path_count + 1;
+            END LOOP;
+            RETURN path_count = expected_count;
+        END;
+        $paths$;
+
         CREATE OR REPLACE FUNCTION analysis.research_check_complete(checks JSONB, name TEXT)
         RETURNS BOOLEAN LANGUAGE plpgsql STABLE AS $check$
         DECLARE item JSONB := checks -> name;
@@ -75,12 +137,22 @@ def upgrade() -> None:
                    AND jsonb_typeof(item->'sample_size') = 'number'
                    AND (item->>'sample_size')::INTEGER > 0;
             ELSIF name = 'combinatorial_paths' THEN
-                RETURN jsonb_typeof(item->'path_count') = 'number'
-                   AND (item->>'path_count')::INTEGER > 0
-                   AND jsonb_typeof(item->'path_records') = 'array'
-                   AND jsonb_array_length(item->'path_records') = (item->>'path_count')::INTEGER;
+                RETURN analysis.research_combinatorial_paths_complete(item);
             ELSIF name = 'robustness' THEN
-                RETURN true;
+                RETURN jsonb_typeof(item->'negative_controls') = 'object'
+                   AND item->'negative_controls'->>'passed' = 'true'
+                   AND item->'negative_controls'->>'domain_valid' = 'true'
+                   AND item->'negative_controls'->>'controls_present' = 'true'
+                   AND jsonb_typeof(item->'negative_controls'->'randomized_sample_count') = 'number'
+                   AND jsonb_typeof(item->'negative_controls'->'white_noise_sample_count') = 'number'
+                   AND (item->'negative_controls'->>'randomized_sample_count')::INTEGER > 0
+                   AND (item->'negative_controls'->>'white_noise_sample_count')::INTEGER > 0
+                   AND jsonb_typeof(item->'parameter_stability') = 'object'
+                   AND item->'parameter_stability'->>'passed' = 'true'
+                   AND item->'parameter_stability'->>'domain_valid' = 'true'
+                   AND (item->'parameter_stability'->>'sample_size')::INTEGER >= 3
+                   AND jsonb_typeof(item->'combinatorial_paths') = 'object'
+                   AND analysis.research_combinatorial_paths_complete(item->'combinatorial_paths');
             ELSIF name = 'predictive' THEN
                 RETURN jsonb_typeof(item->'metrics') = 'object'
                    AND item->'metrics'->>'domain_valid' = 'true'
@@ -211,6 +283,25 @@ def upgrade() -> None:
         END;
         $dossier$;
 
+        CREATE OR REPLACE FUNCTION analysis.enforce_research_result_actual_availability()
+        RETURNS trigger LANGUAGE plpgsql AS $result_clock$
+        DECLARE actual TIMESTAMPTZ := clock_timestamp();
+        BEGIN
+            IF NEW.observed_at > actual OR NEW.available_at > actual THEN
+                RAISE EXCEPTION 'trial result observed or available timestamp cannot be future-dated';
+            END IF;
+            -- These are evidence-publication timestamps. A caller cannot
+            -- backdate them to make a historical result appear PIT-available.
+            NEW.observed_at := actual;
+            NEW.available_at := actual;
+            RETURN NEW;
+        END;
+        $result_clock$;
+        DROP TRIGGER IF EXISTS enforce_research_result_actual_availability ON analysis.trial_result;
+        CREATE TRIGGER enforce_research_result_actual_availability
+            BEFORE INSERT ON analysis.trial_result
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_result_actual_availability();
+
         CREATE OR REPLACE FUNCTION analysis.enforce_research_revision_promotion_hardened()
         RETURNS trigger LANGUAGE plpgsql AS $promotion$
         DECLARE trial_cutoff TIMESTAMPTZ; dossier_id UUID; evaluation_id UUID; result_id UUID; expected_members INTEGER; forecast_count INTEGER;
@@ -323,7 +414,7 @@ def upgrade() -> None:
                OR lower(NEW.artifact_hash) = repeat('0', 64)
                OR lower(NEW.input_hash) = repeat('0', 64)
                OR NEW.as_of <> NEW.input_cutoff
-               OR NEW.generated_at < date_trunc('day', actual)
+               OR NEW.generated_at <= date_trunc('day', actual AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
                OR NEW.generated_at > actual
                OR NEW.available_at < NEW.generated_at
                OR NEW.available_at > actual
