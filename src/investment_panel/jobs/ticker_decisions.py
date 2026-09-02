@@ -604,7 +604,7 @@ def _artifact_forecast(
     """Read forecast values only from the qualified artifact, never TickerDecision."""
 
     candidates: list[Mapping[str, Any]] = []
-    for container in (artifact.get("forecast"), artifact.get("forecasts"), artifact.get("metrics")):
+    for container in (artifact.get("forecast"), artifact.get("forecasts")):
         if isinstance(container, Mapping):
             candidates.append(container)
             nested = container.get(horizon) or container.get(horizon.lower())
@@ -634,8 +634,8 @@ def _artifact_forecast(
             forecast_distribution=distribution if isinstance(distribution, Mapping) else None,
             probability_semantics=str(selected.get("probability_semantics") or "") or None,
             model_artifact_id=str(artifact["model_artifact_id"]),
-            artifact_hash=str(artifact.get("artifact_hash") or artifact.get("model_artifact_id")),
-            input_hash=str(artifact.get("input_hash") or ("0" * 64)),
+            artifact_hash=str(artifact.get("artifact_hash") or ""),
+            input_hash=str(artifact.get("input_hash") or ""),
             as_of=cutoff, generated_at=artifact.get("artifact_published_at") or cutoff,
             available_at=artifact.get("evaluation_available_at") or cutoff,
         )
@@ -773,7 +773,7 @@ def _freeze_benchmark(runtime: Any, symbols: Iterable[str], as_of: datetime) -> 
     row = {
         "benchmark_key": "market-equity-etf",
         "as_of": as_of,
-        "available_at": as_of,
+        "available_at": datetime.now(UTC),
         "membership_hash": membership_hash,
         "member_count": len(members),
         "source_id": "catalog.instrument",

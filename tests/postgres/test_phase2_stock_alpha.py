@@ -33,6 +33,10 @@ def _observations(count: int, cutoff: datetime) -> list[dict[str, object]]:
     } for index in range(count)]
 
 
+def _controls() -> dict[str, list[float]]:
+    return {"randomized_label_returns": [0.0, 0.0], "white_noise_market_returns": [0.0, 0.0]}
+
+
 def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -43,11 +47,11 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
         observations = _observations(16, cutoff)
         first = run(
             runtime, observations, cutoff=cutoff, promote=True, authorization_mode="PAPER",
-            min_train=4, fold_size=2, min_cohort=4,
+            min_train=4, fold_size=2, min_cohort=4, universe_members=[f"S{index:02d}" for index in range(16)], control_results=_controls(),
         )
         second = run(
             runtime, reversed(observations), cutoff=cutoff, promote=True, authorization_mode="PAPER",
-            min_train=4, fold_size=2, min_cohort=4,
+            min_train=4, fold_size=2, min_cohort=4, universe_members=[f"S{index:02d}" for index in range(16)], control_results=_controls(),
         )
 
         assert first["complete"] is True
@@ -126,6 +130,7 @@ def test_incomplete_challenger_cannot_promote(migrated_postgres_dsn: str) -> Non
         result = run(
             runtime, _observations(3, cutoff), cutoff=cutoff,
             promote=True, authorization_mode="ADVISORY", min_train=4, min_cohort=4,
+            universe_members=[f"S{index:02d}" for index in range(3)], control_results=_controls(),
         )
         assert result["complete"] is False
         assert result["promotion_evaluation_id"] is None
@@ -230,6 +235,7 @@ def test_latest_oos_input_hash_mismatch_fails_closed(migrated_postgres_dsn: str)
             runtime, _observations(16, evaluation_cutoff), cutoff=evaluation_cutoff,
             promote=True, authorization_mode="PAPER",
             min_train=4, fold_size=2, min_cohort=4,
+            universe_members=[f"S{index:02d}" for index in range(16)], control_results=_controls(),
         )
         with runtime.transaction() as connection:
             connection.execute(
@@ -266,15 +272,18 @@ def test_superseded_revision_replay_cannot_deactivate_current_champion(
         first = run(
             runtime, observations_a, cutoff=cutoff, promote=True, authorization_mode="PAPER",
             min_train=4, fold_size=2, min_cohort=4,
+            universe_members=[f"S{index:02d}" for index in range(16)], control_results=_controls(),
         )
         second = run(
             runtime, observations_b, cutoff=cutoff, promote=True, authorization_mode="PAPER",
             min_train=4, fold_size=2, min_cohort=4,
+            universe_members=[f"S{index:02d}" for index in range(17)], control_results=_controls(),
         )
         with pytest.raises(ValueError, match="superseded stock-alpha"):
             run(
                 runtime, observations_a, cutoff=cutoff, promote=True, authorization_mode="PAPER",
                 min_train=4, fold_size=2, min_cohort=4,
+                universe_members=[f"S{index:02d}" for index in range(16)], control_results=_controls(),
             )
         with runtime.read() as connection:
             rows = connection.execute(

@@ -134,10 +134,9 @@ class StrategyForecast(BaseModel):
             raise ValueError("strategy forecast timestamps must be timezone-aware")
         if _utc(self.as_of) != _utc(self.input_cutoff):
             raise ValueError("strategy forecast as_of and input_cutoff must match")
-        if _utc(self.available_at) > _utc(self.input_cutoff):
-            raise ValueError("strategy forecast availability is outside its point-in-time cutoff")
-        if _utc(self.generated_at) > _utc(self.input_cutoff):
-            raise ValueError("strategy forecast generation is outside its point-in-time cutoff")
+        # Actual wall-clock generation and availability are retained. Historical
+        # readers and promotion queries apply the cutoff filter; backdating here
+        # would hide future-information traps.
         for name, value in (("artifact_hash", self.artifact_hash), ("input_hash", self.input_hash)):
             if len(value) != 64 or value.lower() == "0" * 64 or any(char not in "0123456789abcdefABCDEF" for char in value):
                 raise ValueError(f"strategy forecast {name} must be a non-zero SHA-256")

@@ -87,4 +87,7 @@ def test_walk_forward_is_deterministic_pit_and_versioned() -> None:
     assert first["calibration_metrics"]["effective_sample_size"] > 0
     assert first["oos_period_start"] < first["oos_period_end"]
     assert all(row["ticker"] != "T14" for row in first["predictions"])
+    assert first["forecasts"] and first["forecasts"][0]["forecast_distribution"]
+    assert all(row["neutralized_return"] != row["net_utility_after_costs"] for row in first["predictions"])
+    assert first["validation_paths"]
     assert len(first["artifact_hash"]) == 64

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+from statistics import fmean
 from typing import Any, Iterable, Mapping
 
 from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.research_validation import validate_trial
+from investment_panel.analysis.research_validation import multiple_testing_metrics
 from investment_panel.analysis.stock_alpha import (
     COST_MODEL_VERSION,
     FEATURE_VERSION,
@@ -19,6 +21,7 @@ from investment_panel.analysis.stock_alpha import (
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import reconcile_instrument
+from investment_panel.core.decision import build_strategy_forecast
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -35,6 +38,9 @@ def run(
     min_train: int = 20,
     fold_size: int = 10,
     min_cohort: int = 20,
+    universe_members: Iterable[str] | None = None,
+    trial_plan: Iterable[Mapping[str, Any]] | None = None,
+    control_results: Mapping[str, Iterable[float]] | None = None,
 ) -> dict[str, Any]:
     """Append one idempotent evaluation and promote only with explicit paper authority."""
 
@@ -43,24 +49,56 @@ def run(
         (dict(row) for row in observations),
         key=content_hash,
     )
-    artifact = walk_forward(
-        source_rows,
-        cutoff=reference,
-        min_train=min_train,
-        fold_size=fold_size,
-        min_cohort=min_cohort,
+    configurations = _trial_configurations(
+        min_train=min_train, fold_size=fold_size, min_cohort=min_cohort,
+        trial_plan=trial_plan,
     )
-    input_hash = content_hash({"cutoff": reference, "observations": source_rows})
+    input_hash = content_hash({"cutoff": reference, "observations": source_rows, "trial_plan": configurations})
+    members = sorted({str(member).strip().upper() for member in universe_members or () if str(member).strip()})
+    controls = {key: [float(value) for value in values] for key, values in (control_results or {}).items()}
+    artifacts = []
+    for configuration in configurations:
+        try:
+            evaluated = walk_forward(
+                source_rows,
+                cutoff=reference,
+                min_train=configuration["min_train"],
+                fold_size=configuration["fold_size"],
+                min_cohort=configuration["min_cohort"],
+            )
+        except (TypeError, ValueError, KeyError, OverflowError) as exc:
+            evaluated = _failed_artifact(reference, str(exc))
+        artifacts.append({**configuration, "artifact": evaluated})
+    family_p_values = [
+        max(0.0, min(1.0, 1.0 - multiple_testing_metrics(
+            [float(row["net_utility_after_costs"]) for row in item["artifact"].get("predictions", [])],
+            trials_tested=len(configurations),
+        )["psr"]))
+        for item in artifacts
+    ]
+    parameter_neighborhood = [
+        {"configuration": {key: item[key] for key in ("trial_key", "min_train", "fold_size", "min_cohort")},
+         "return": item["artifact"]["calibration_metrics"].get("lower_confidence_net_utility_after_costs")}
+        for item in artifacts
+    ]
+    trial_runs = [
+        {
+            "trial_key": item["trial_key"],
+            "min_train": item["min_train"], "fold_size": item["fold_size"], "min_cohort": item["min_cohort"],
+            "artifact": item["artifact"],
+            "validation": _validate_walk_forward_artifact(
+                item["artifact"], source_rows=source_rows, cutoff=reference,
+                expected_members=members, trial_keys=[config["trial_key"] for config in configurations],
+                parameter_neighborhood=parameter_neighborhood, controls=controls,
+                family_p_values=family_p_values,
+            ),
+        }
+        for item in artifacts
+    ]
+    artifact = trial_runs[0]["artifact"]
     metrics = dict(artifact["calibration_metrics"])
-    walk_forward_complete = all((
-        artifact.get("oos_period_start"),
-        artifact.get("oos_period_end"),
-        artifact.get("cohort_path"),
-        metrics.get("brier_score") is not None,
-        int(metrics.get("effective_sample_size") or 0) >= min_cohort,
-        metrics.get("lower_confidence_net_utility_after_costs") is not None,
-        float(metrics.get("lower_confidence_net_utility_after_costs") or 0.0) > 0,
-    ))
+    validation = trial_runs[0]["validation"]
+    complete = all(item["validation"]["passed"] for item in trial_runs)
     evaluation_metrics = {
         "artifact_id": f"{STRATEGY_KEY}:{artifact['artifact_hash']}",
         "artifact_hash": artifact["artifact_hash"],
@@ -80,6 +118,9 @@ def run(
             "lower_confidence_net_utility_after_costs"
         ],
         "valid_through": None,
+        "forecast": artifact.get("forecast"),
+        "forecasts": artifact.get("forecasts") or [],
+        "validation": validation,
     }
     parameters = {
         "artifact_id": evaluation_metrics["artifact_id"],
@@ -94,41 +135,6 @@ def run(
         "expression_kind": "STOCK",
         "horizons": artifact["horizons"],
     }
-    predictions = list(artifact.get("predictions") or [])
-    net_returns = [float(row["net_utility_after_costs"]) for row in predictions]
-    gross_returns = [float(row["realized_return"]) for row in predictions]
-    labels = [float(row["outcome"]) for row in predictions]
-    scores = [float(row["calibrated_probability"]) for row in predictions]
-    randomized_labels = labels[1:] + labels[:1] if labels else []
-    white_noise_scores = [((index * 7919 + 104729) % 1000) / 1000 for index in range(len(scores))]
-    validation = validate_trial(
-        mechanism_class="walk_forward stock alpha",
-        falsification_rule="randomized labels, white-noise scores, future-information trap",
-        observed_returns=net_returns,
-        randomized_returns=[_centered_edge(scores, randomized_labels)],
-        white_noise_returns=[_centered_edge(white_noise_scores, labels)],
-        gross_return=sum(gross_returns) / len(gross_returns) if gross_returns else 0.0,
-        base_cost=(sum(float(row["modeled_cost"]) for row in predictions) / len(predictions)) if predictions else 0.0,
-        neutralized_returns=net_returns,
-        parameter_neighborhood=[
-            {"return": value}
-            for value in (
-                (sum(net_returns) / len(net_returns) * 0.95) if net_returns else 0.0,
-                (sum(net_returns) / len(net_returns)) if net_returns else 0.0,
-                (sum(net_returns) / len(net_returns) * 1.05) if net_returns else 0.0,
-            )
-        ],
-        trials_tested=1,
-        feature_available_at=[row.get("outcome_available_at", row.get("as_of")) for row in source_rows],
-        cutoff=reference,
-        expected_members=sorted({str(row.get("ticker") or "").upper() for row in source_rows if str(row.get("ticker") or "").strip()}),
-        observed_members=sorted({str(row.get("ticker") or "").upper() for row in source_rows if str(row.get("ticker") or "").strip()}),
-        expected_attempts=[f"attempt:{input_hash}"],
-        completed_attempts=[f"attempt:{input_hash}"],
-        path_returns=net_returns,
-        policy={"min_psr": 0.5, "min_dsr": 0.5, "max_pbo": 0.5, "negative_control_tolerance": 0.05},
-    )
-    complete = walk_forward_complete and validation["passed"]
     mode = str(authorization_mode or "").upper()
     if promote and mode not in {"PAPER", "ADVISORY"}:
         raise ValueError("promotion requires explicit PAPER or ADVISORY authorization")
@@ -137,8 +143,7 @@ def run(
         connection.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [STRATEGY_KEY])
         research_ids = _ensure_research_prerequisites(
             connection, cutoff=reference, input_hash=input_hash,
-            artifact=evaluation_metrics, observations=source_rows, complete=complete,
-            validation=validation,
+            trial_runs=trial_runs, observations=source_rows, universe_members=members,
         )
         strategy = connection.execute(
             """
@@ -172,7 +177,7 @@ def run(
 
         dossier_id = _ensure_research_dossier(
             connection, strategy_revision_id=int(strategy["id"]), trial_id=research_ids[2],
-            artifact=evaluation_metrics, cutoff=reference, validation=validation, seal=complete,
+            result_id=research_ids[3], artifact=evaluation_metrics, cutoff=reference, validation=validation, seal=complete,
         )
 
         evaluation = connection.execute(
@@ -198,7 +203,7 @@ def run(
                 [
                     strategy["id"], research_ids[0], research_ids[1], research_ids[2], dossier_id,
                     evaluation_metrics["artifact_id"], artifact["artifact_hash"], input_hash,
-                    reference, artifact["oos_period_start"], artifact["oos_period_end"],
+                    datetime.now(UTC), artifact["oos_period_start"], artifact["oos_period_end"],
                     "pass" if complete else "incomplete", Jsonb(evaluation_metrics),
                     Jsonb({
                         "paper_only": True,
@@ -208,6 +213,12 @@ def run(
                     }),
                 ],
             ).fetchone()
+        forecast_ids = _persist_strategy_forecasts(
+            connection, strategy_revision_id=int(strategy["id"]), evaluation_id=evaluation["id"],
+            artifact=artifact, input_hash=input_hash, members=members, cutoff=reference,
+        )
+        if complete and not forecast_ids:
+            raise ValueError("stock-alpha walk-forward produced no persisted model-owned forecasts")
         promotion_id = None
         if promote and complete:
             promotion = connection.execute(
@@ -236,7 +247,7 @@ def run(
                     [
                         strategy["id"], research_ids[0], research_ids[1], research_ids[2], dossier_id,
                         evaluation_metrics["artifact_id"], artifact["artifact_hash"], input_hash,
-                        reference, artifact["oos_period_start"], artifact["oos_period_end"],
+                        datetime.now(UTC), artifact["oos_period_start"], artifact["oos_period_end"],
                         Jsonb({
                             "artifact_hash": artifact["artifact_hash"],
                             "input_hash": input_hash,
@@ -281,9 +292,9 @@ def run(
 
 def _ensure_research_prerequisites(
     connection: Any, *, cutoff: datetime, input_hash: str,
-    artifact: Mapping[str, Any], observations: list[Mapping[str, Any]], complete: bool,
-    validation: Mapping[str, Any],
-) -> tuple[Any, Any, Any]:
+    trial_runs: list[Mapping[str, Any]], observations: list[Mapping[str, Any]],
+    universe_members: list[str],
+) -> tuple[Any, Any, Any, Any]:
     key = f"{STRATEGY_KEY}:{input_hash}"
     hypothesis = connection.execute(
         """INSERT INTO analysis.hypothesis
@@ -301,62 +312,85 @@ def _ensure_research_prerequisites(
            RETURNING id""",
         [hypothesis, key, input_hash],
     ).fetchone()["id"]
-    trial_key = f"attempt:{input_hash}"
+    trial_keys = [str(item["trial_key"]) for item in trial_runs]
     connection.execute(
         """INSERT INTO analysis.experiment_manifest
            (experiment_family_id, expected_trial_count, expected_trial_keys, manifest_hash, available_at)
-           VALUES (%s, 1, %s, %s, LEAST(now(), %s)) ON CONFLICT DO NOTHING""",
-        [family, Jsonb([trial_key]), content_hash([trial_key]), cutoff],
+           VALUES (%s, %s, %s, %s, now()) ON CONFLICT DO NOTHING""",
+        [family, len(trial_keys), Jsonb(sorted(trial_keys)), content_hash(sorted(trial_keys))],
     )
-    trial = connection.execute(
-        """INSERT INTO analysis.research_trial
-           (experiment_family_id, trial_key, input_cutoff, code_version, input_hash, available_at)
-           VALUES (%s, %s, %s, %s, %s, LEAST(now(), %s))
-           ON CONFLICT (experiment_family_id, trial_key) DO NOTHING
-           RETURNING id, status""",
-        [family, trial_key, cutoff, MODEL_VERSION, input_hash, cutoff],
-    ).fetchone()
-    if trial is None:
+    instrument_ids = [reconcile_instrument(connection, symbol, name=symbol, asset_class="equity") for symbol in universe_members]
+    expected_members = sorted(str(identifier) for identifier in instrument_ids)
+    primary_trial_id = None
+    primary_result_id = None
+    for item in trial_runs:
+        trial_key = str(item["trial_key"])
+        trial_hash = content_hash({"input_hash": input_hash, "trial_key": trial_key, "parameters": item})
         trial = connection.execute(
-            "SELECT id, status FROM analysis.research_trial WHERE experiment_family_id = %s AND trial_key = %s",
-            [family, trial_key],
+            """INSERT INTO analysis.research_trial
+               (experiment_family_id, trial_key, input_cutoff, code_version, input_hash, parameters, available_at)
+               VALUES (%s, %s, %s, %s, %s, %s, now())
+               ON CONFLICT (experiment_family_id, trial_key) DO NOTHING
+               RETURNING id, status""",
+            [family, trial_key, cutoff, MODEL_VERSION, trial_hash, Jsonb({key: item[key] for key in ("min_train", "fold_size", "min_cohort")})],
         ).fetchone()
-    trial_id = trial["id"]
-    symbols = sorted({str(row.get("ticker") or "").upper() for row in observations if str(row.get("ticker") or "").strip()})
-    instrument_ids = [reconcile_instrument(connection, symbol, name=symbol, asset_class="equity") for symbol in symbols]
-    members = sorted(str(identifier) for identifier in instrument_ids)
-    connection.execute(
-        """INSERT INTO analysis.trial_universe_manifest
-           (research_trial_id, cutoff, expected_member_count, expected_members, manifest_hash, available_at)
-           VALUES (%s, %s, %s, %s, %s, LEAST(now(), %s)) ON CONFLICT DO NOTHING""",
-        [trial_id, cutoff, len(members), Jsonb(members), content_hash(members), cutoff],
-    )
-    for rank, instrument_id in enumerate(sorted(instrument_ids), start=1):
+        if trial is None:
+            trial = connection.execute(
+                "SELECT id, status FROM analysis.research_trial WHERE experiment_family_id = %s AND trial_key = %s",
+                [family, trial_key],
+            ).fetchone()
+        trial_id = trial["id"]
+        if primary_trial_id is None:
+            primary_trial_id = trial_id
         connection.execute(
-            """INSERT INTO analysis.universe_observation
-               (research_trial_id, instrument_id, cutoff, eligible, rank, observed_at, available_at, input_hash)
-               VALUES (%s, %s, %s, true, %s, %s, LEAST(now(), %s), %s)
-               ON CONFLICT (research_trial_id, cutoff, instrument_id) DO NOTHING""",
-            [trial_id, instrument_id, cutoff, rank, cutoff, cutoff, input_hash],
+            """INSERT INTO analysis.trial_universe_manifest
+               (research_trial_id, cutoff, expected_member_count, expected_members, manifest_hash, available_at)
+               VALUES (%s, %s, %s, %s, %s, now()) ON CONFLICT DO NOTHING""",
+            [trial_id, cutoff, len(expected_members), Jsonb(expected_members), content_hash(expected_members)],
         )
-    connection.execute(
-        """INSERT INTO analysis.trial_result
-           (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics, outcome)
-           VALUES (%s, 'validation', %s, LEAST(now(), %s), %s, %s, %s)
-           ON CONFLICT (research_trial_id, result_kind, result_version) DO NOTHING""",
-        [trial_id, cutoff, cutoff, input_hash, Jsonb(dict(validation.get("checks") or {})), Jsonb(dict(validation))],
-    )
-    if trial["status"] == "running":
-        connection.execute(
-            "UPDATE analysis.research_trial SET status = %s, finished_at = now(), outcome = %s WHERE id = %s",
-            ["succeeded" if complete else "failed", Jsonb({"complete": complete}), trial_id],
-        )
-    return hypothesis, family, trial_id
+        by_ticker = {str(row.get("ticker") or "").strip().upper(): row for row in observations}
+        for rank, instrument_id in enumerate(sorted(instrument_ids), start=1):
+            ticker_row = connection.execute("SELECT symbol FROM catalog.instrument WHERE id = %s", [instrument_id]).fetchone()
+            ticker = str(ticker_row["symbol"]) if ticker_row else ""
+            source = by_ticker.get(ticker)
+            eligible = source is not None
+            connection.execute(
+                """INSERT INTO analysis.universe_observation
+                   (research_trial_id, instrument_id, cutoff, eligible, rank, exclusion_reason,
+                    observed_at, available_at, input_hash, outcome)
+                   VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp(), now(), %s, %s)
+                   ON CONFLICT (research_trial_id, cutoff, instrument_id) DO NOTHING""",
+                [trial_id, instrument_id, cutoff, eligible, rank if eligible else None,
+                 None if eligible else "no independent PIT observation", trial_hash,
+                 Jsonb({"source_present": eligible, "ranked_out": not eligible})],
+            )
+        validation = dict(item["validation"])
+        result = connection.execute(
+            """INSERT INTO analysis.trial_result
+               (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics, outcome)
+               VALUES (%s, 'validation', clock_timestamp(), now(), %s, %s, %s)
+               ON CONFLICT (research_trial_id, result_kind, result_version) DO NOTHING
+               RETURNING id""",
+            [trial_id, trial_hash, Jsonb(dict(validation.get("checks") or {})), Jsonb(validation)],
+        ).fetchone()
+        if result is None:
+            result = connection.execute(
+                "SELECT id FROM analysis.trial_result WHERE research_trial_id = %s AND result_kind = 'validation' ORDER BY result_version LIMIT 1",
+                [trial_id],
+            ).fetchone()
+        if primary_result_id is None:
+            primary_result_id = result["id"]
+        if trial["status"] == "running":
+            connection.execute(
+                "UPDATE analysis.research_trial SET status = %s, failure_reason = %s, finished_at = clock_timestamp(), outcome = %s WHERE id = %s",
+                ["succeeded" if validation.get("passed") else "failed", None if validation.get("passed") else validation.get("reason"), Jsonb(validation), trial_id],
+            )
+    return hypothesis, family, primary_trial_id, primary_result_id
 
 
 def _ensure_research_dossier(
     connection: Any, *, strategy_revision_id: int, trial_id: Any,
-    artifact: Mapping[str, Any], cutoff: datetime, validation: Mapping[str, Any], seal: bool,
+    result_id: Any, artifact: Mapping[str, Any], cutoff: datetime, validation: Mapping[str, Any], seal: bool,
 ) -> Any:
     sections = Jsonb({key: "walk-forward" for key in ("hypothesis", "mechanism", "falsification", "controls", "validation", "economics", "lineage")})
     dossier = connection.execute(
@@ -368,7 +402,11 @@ def _ensure_research_dossier(
             """INSERT INTO analysis.validation_dossier
                (strategy_revision_id, research_trial_id, sections, compiled_policy, artifact_id, artifact_hash)
                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, status""",
-            [strategy_revision_id, trial_id, sections, Jsonb({"paper_only": True}), artifact["artifact_id"], artifact["artifact_hash"]],
+            [strategy_revision_id, trial_id, sections, Jsonb({
+                "paper_only": True,
+                "required_metrics": ["psr", "dsr", "pbo", "data_snooping_probability", "fdr_q_value", "cost_capacity"],
+                "required_cost_multiples": ["1x", "2x", "3x"],
+            }), artifact["artifact_id"], artifact["artifact_hash"]],
         ).fetchone()
     if dossier["status"] == "draft":
         for code in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
@@ -376,22 +414,145 @@ def _ensure_research_dossier(
             connection.execute(
                 """INSERT INTO analysis.validation_gate_result
                    (dossier_id, gate_code, verdict, metrics, evidence, evaluated_at, available_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, LEAST(now(), %s)) ON CONFLICT DO NOTHING""",
-                [dossier["id"], code, "pass" if gate.get("passed") else "fail", Jsonb(gate), Jsonb({"validation": True}), cutoff, cutoff],
+                   VALUES (%s, %s, %s, %s, %s, clock_timestamp(), now()) ON CONFLICT DO NOTHING""",
+            [dossier["id"], code, "pass" if gate.get("passed") else "fail", Jsonb(gate), Jsonb({"trial_result_id": str(result_id)})],
             )
         if seal:
-            connection.execute("UPDATE analysis.validation_dossier SET status = 'sealed', sealed_at = %s WHERE id = %s", [cutoff, dossier["id"]])
+            connection.execute("UPDATE analysis.validation_dossier SET status = 'sealed', sealed_at = clock_timestamp() WHERE id = %s", [dossier["id"]])
     return dossier["id"]
 
 
-def _centered_edge(scores: list[float], labels: list[float]) -> float:
-    """Return a bounded deterministic score-label covariance for controls."""
+def _trial_configurations(*, min_train: int, fold_size: int, min_cohort: int,
+                          trial_plan: Iterable[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    if trial_plan is None:
+        raw = [
+            {"trial_key": "baseline", "min_train": min_train, "fold_size": fold_size, "min_cohort": min_cohort},
+            {"trial_key": "neighbor-minus", "min_train": max(2, min_train - 1), "fold_size": fold_size, "min_cohort": min_cohort},
+            {"trial_key": "neighbor-plus", "min_train": min_train + 1, "fold_size": fold_size, "min_cohort": min_cohort},
+        ]
+    else:
+        raw = [dict(item) for item in trial_plan]
+    if not raw or len(raw) > 64:
+        raise ValueError("trial manifest must contain 1..64 planned attempts")
+    output: list[dict[str, Any]] = []
+    keys: set[str] = set()
+    for item in raw:
+        key = str(item.get("trial_key") or "").strip()
+        if not key or key in keys:
+            raise ValueError("trial manifest keys must be unique and non-empty")
+        keys.add(key)
+        values = {name: int(item.get(name, 0)) for name in ("min_train", "fold_size", "min_cohort")}
+        if any(value < 1 or value > 10000 for value in values.values()):
+            raise ValueError("trial parameters are outside bounded domain")
+        output.append({"trial_key": key, **values})
+    return output
 
-    if len(scores) != len(labels) or len(scores) < 2:
-        return 0.0
-    score_mean = sum(scores) / len(scores)
-    label_mean = sum(labels) / len(labels)
-    return sum((score - score_mean) * (label - label_mean) for score, label in zip(scores, labels)) / len(scores)
+
+def _failed_artifact(cutoff: datetime, reason: str) -> dict[str, Any]:
+    artifact = {
+        "model_version": MODEL_VERSION, "feature_version": FEATURE_VERSION,
+        "cost_model_version": COST_MODEL_VERSION, "target": "positive_return_after_costs",
+        "horizons": [], "oos_period_start": None, "oos_period_end": None,
+        "calibration_metrics": {"brier_score": None, "calibration_error": None,
+                                 "effective_sample_size": 0, "oos_sample_size": 0,
+                                 "lower_confidence_net_utility_after_costs": None},
+        "cohort_path": [], "fallback_parent": None, "predictions": [], "forecasts": [],
+        "forecast": None, "validation_paths": [], "failure_reason": reason,
+    }
+    artifact["artifact_hash"] = content_hash(artifact)
+    return artifact
+
+
+def _validate_walk_forward_artifact(
+    artifact: Mapping[str, Any], *, source_rows: list[Mapping[str, Any]], cutoff: datetime,
+    expected_members: list[str], trial_keys: list[str], parameter_neighborhood: list[Mapping[str, Any]],
+    controls: Mapping[str, list[float]], family_p_values: list[float],
+) -> dict[str, Any]:
+    predictions = list(artifact.get("predictions") or [])
+    observed = [float(row["net_utility_after_costs"]) for row in predictions if row.get("net_utility_after_costs") is not None]
+    neutralized = [float(row["neutralized_return"]) for row in predictions if row.get("neutralized_return") is not None]
+    paths = [float(value) for value in artifact.get("validation_paths") or []]
+    if not paths and observed:
+        # No fabricated path is permitted. This keeps the PBO gate closed until
+        # the walk-forward producer emits its real purged/combinatorial paths.
+        paths = []
+    available = [row.get("outcome_available_at") for row in source_rows if row.get("outcome_available_at") is not None]
+    gross = [float(row.get("realized_return", 0.0)) for row in predictions]
+    base_cost = fmean([float(row.get("modeled_cost", 0.0)) for row in predictions]) if predictions else 0.0
+    return validate_trial(
+        mechanism_class="PIT stock-alpha momentum mechanism",
+        falsification_rule="randomized labels, white-noise markets, and future-information trap",
+        observed_returns=observed,
+        randomized_returns=controls.get("randomized_label_returns", []),
+        white_noise_returns=controls.get("white_noise_market_returns", []),
+        gross_return=fmean(gross) if gross else 0.0,
+        base_cost=base_cost,
+        neutralized_returns=neutralized,
+        parameter_neighborhood=parameter_neighborhood,
+        trials_tested=len(trial_keys),
+        feature_available_at=available,
+        cutoff=cutoff,
+        expected_members=expected_members,
+        observed_members=expected_members,
+        expected_attempts=trial_keys,
+        completed_attempts=trial_keys if "failure_reason" not in artifact else [],
+        path_returns=paths,
+        p_values=family_p_values,
+        policy={"min_psr": 0.5, "min_dsr": 0.5, "max_pbo": 0.5},
+    )
+
+
+def _persist_strategy_forecasts(connection: Any, *, strategy_revision_id: int, evaluation_id: str,
+                                artifact: Mapping[str, Any], input_hash: str, members: list[str], cutoff: datetime) -> list[str]:
+    """Persist the exact model distribution emitted by walk_forward."""
+    forecasts = [item for item in artifact.get("forecasts") or [] if isinstance(item, Mapping)]
+    if not forecasts:
+        return []
+    timestamp = datetime.now(UTC)
+    persisted: list[str] = []
+    for ticker in members:
+        instrument = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [ticker]).fetchone()
+        if instrument is None:
+            continue
+        for item in forecasts:
+            try:
+                model = build_strategy_forecast(
+                    ticker=ticker, opportunity_episode_id=f"stock-alpha:{strategy_revision_id}:{ticker}:{item['horizon']}",
+                    strategy_revision_id=strategy_revision_id, strategy_evaluation_id=evaluation_id,
+                    target=str(artifact["target"]), horizon=str(item["horizon"]),
+                    forecast_value=float(item["forecast_value"]), forecast_distribution=dict(item["forecast_distribution"]),
+                    probability_semantics=str(item["probability_semantics"]), model_artifact_id=f"{STRATEGY_KEY}:{artifact['artifact_hash']}",
+                    artifact_hash=str(artifact["artifact_hash"]), input_hash=input_hash,
+                    as_of=cutoff, generated_at=timestamp, available_at=timestamp,
+                )
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            existing = connection.execute("SELECT id FROM analysis.strategy_forecast WHERE id = %s", [model.strategy_forecast_id]).fetchone()
+            if existing is None:
+                existing = connection.execute(
+                    """SELECT id FROM analysis.strategy_forecast
+                       WHERE strategy_revision_id = %s AND instrument_id = %s
+                         AND opportunity_episode_id = %s AND horizon = %s
+                         AND input_cutoff = %s AND artifact_hash = %s""",
+                    [model.strategy_revision_id, instrument["id"], model.opportunity_episode_id,
+                     model.horizon, model.input_cutoff, model.artifact_hash],
+                ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """INSERT INTO analysis.strategy_forecast
+                       (id, strategy_revision_id, strategy_evaluation_id, instrument_id, opportunity_episode_id,
+                        target, horizon, forecast_value, forecast_distribution, probability_semantics,
+                        model_artifact_id, artifact_hash, input_hash, as_of, input_cutoff, generated_at, available_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    [model.strategy_forecast_id, model.strategy_revision_id, model.strategy_evaluation_id, instrument["id"],
+                     model.opportunity_episode_id, model.target, model.horizon, model.forecast_value,
+                     Jsonb(model.forecast_distribution), model.probability_semantics, model.model_artifact_id,
+                     model.artifact_hash, model.input_hash, model.as_of, model.input_cutoff, model.generated_at, model.available_at],
+                )
+                persisted.append(model.strategy_forecast_id)
+            else:
+                persisted.append(str(existing["id"]))
+    return persisted
 
 
 def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dict[str, Any]]:
@@ -470,6 +631,20 @@ def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dic
     return output
 
 
+def load_universe_members(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[str]:
+    """Load the independent PIT membership tape used for the denominator."""
+    with runtime.read(JOB_PROFILE) as connection:
+        row = connection.execute(
+            """SELECT exact_membership
+               FROM analysis.ticker_benchmark_snapshot
+               WHERE benchmark_key = 'market-equity-etf'
+                 AND as_of <= %s AND available_at <= %s
+               ORDER BY as_of DESC, available_at DESC, id DESC LIMIT 1""",
+            [cutoff, cutoff],
+        ).fetchone()
+    return sorted({str(symbol).strip().upper() for symbol in (row["exact_membership"] if row else []) if str(symbol).strip()})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
@@ -485,6 +660,7 @@ def main() -> None:
         cutoff=cutoff,
         promote=args.promote,
         authorization_mode=args.authorization_mode,
+        universe_members=load_universe_members(runtime, cutoff=cutoff),
     )
     print(result)
 

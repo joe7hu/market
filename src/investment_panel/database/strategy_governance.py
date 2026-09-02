@@ -49,23 +49,39 @@ class StrategyGovernanceRepository:
                               dossier.compiled_policy, trial.id AS trial_id, trial.status AS trial_status,
                               analysis.research_trial_universe_complete(trial.id) AS universe_complete,
                               analysis.research_family_complete(trial.experiment_family_id) AS family_complete,
+                              dossier.sealed_at, trial.input_cutoff,
                               count(gate.id) AS gate_count,
-                              count(gate.id) FILTER (WHERE gate.verdict = 'pass') AS passing_gates
+                              count(gate.id) FILTER (WHERE gate.verdict = 'pass') AS passing_gates,
+                              count(gate.id) FILTER (WHERE gate.verdict = 'pass' AND gate.evidence ? 'trial_result_id') AS evidence_gates,
+                              EXISTS (SELECT 1 FROM analysis.trial_result result
+                                      WHERE result.research_trial_id = trial.id AND result.result_kind = 'validation'
+                                        AND (%s::timestamptz IS NULL OR result.available_at <= %s::timestamptz)
+                                        AND result.outcome->'checks'->'multiple_testing' ?& ARRAY['psr','dsr','pbo','data_snooping_probability','fdr_q_value']
+                                        AND result.outcome->'checks'->'cost_capacity'->'multiples' ?& ARRAY['1x','2x','3x']) AS mandatory_metrics,
+                              EXISTS (SELECT 1 FROM analysis.strategy_forecast forecast
+                                      WHERE forecast.strategy_revision_id = %s
+                                        AND forecast.artifact_hash = revision_artifact.artifact_hash
+                                        AND forecast.forecast_distribution IS NOT NULL
+                                        AND (%s::timestamptz IS NULL OR (forecast.available_at <= %s::timestamptz AND forecast.generated_at <= %s::timestamptz))) AS forecast_lineage
                        FROM analysis.validation_dossier dossier
                        LEFT JOIN analysis.research_trial trial ON trial.id = dossier.research_trial_id
                        LEFT JOIN analysis.validation_gate_result gate ON gate.dossier_id = dossier.id
+                       JOIN analysis.strategy_revision revision_artifact ON revision_artifact.id = dossier.strategy_revision_id
                        WHERE dossier.strategy_revision_id = %s AND dossier.status = 'sealed'
-                       GROUP BY dossier.id, trial.id""",
-                    [strategy_revision_id],
+                       GROUP BY dossier.id, trial.id, revision_artifact.artifact_hash""",
+                    [cutoff, cutoff, strategy_revision_id, cutoff, cutoff, cutoff, strategy_revision_id],
                 ).fetchone()
                 checks = {
                     "validation_dossier_incomplete": dossier is None,
                     "research_trial_incomplete": dossier is None or dossier["trial_status"] != "succeeded",
                     "universe_manifest_incomplete": dossier is None or not dossier["universe_complete"],
                     "trial_manifest_incomplete": dossier is None or not dossier["family_complete"],
-                    "five_gates_incomplete": dossier is None or dossier["gate_count"] != 5 or dossier["passing_gates"] != 5,
+                    "five_gates_incomplete": dossier is None or dossier["gate_count"] != 5 or dossier["passing_gates"] != 5 or dossier["evidence_gates"] != 5,
                     "artifact_lineage_mismatch": dossier is None or dossier["artifact_id"] != linked["artifact_id"] or dossier["artifact_hash"] != linked["artifact_hash"],
                     "paper_only_required": dossier is None or dict(dossier["compiled_policy"] or {}).get("paper_only") is not True,
+                    "validation_metrics_incomplete": dossier is None or not dossier["mandatory_metrics"],
+                    "forecast_lineage_incomplete": dossier is None or not dossier["forecast_lineage"],
+                    "seal_not_available_at_cutoff": dossier is None or cutoff is not None and dossier["sealed_at"] > cutoff,
                 }
                 for blocker, failed in checks.items():
                     if failed and blocker not in blockers:

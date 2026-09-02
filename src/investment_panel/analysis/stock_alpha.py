@@ -102,6 +102,14 @@ def walk_forward(
 
     pairs = [(row["calibrated_probability"], row["outcome"]) for row in predictions]
     utilities = [float(row["net_utility_after_costs"]) for row in predictions]
+    horizon_means = {
+        horizon: fmean(float(row["realized_return"]) for row in predictions if row["horizon"] == horizon)
+        for horizon in sorted({row["horizon"] for row in predictions})
+    }
+    for row in predictions:
+        row["neutralized_return"] = round(
+            float(row["realized_return"]) - horizon_means[row["horizon"]], 8,
+        )
     lower_utility = None
     if utilities:
         lower_utility = fmean(utilities)
@@ -123,6 +131,18 @@ def walk_forward(
         "oos_sample_size": len(predictions),
         "lower_confidence_net_utility_after_costs": round(lower_utility, 8) if lower_utility is not None else None,
     }
+    fold_returns = [
+        fmean(float(row["net_utility_after_costs"]) for row in predictions if row["fold_test_start"] == fold)
+        for fold in sorted({row["fold_test_start"] for row in predictions})
+    ]
+    validation_paths = []
+    for width in range(1, len(fold_returns) + 1):
+        for start in range(0, len(fold_returns) - width + 1):
+            validation_paths.append(round(fmean(fold_returns[start:start + width]), 8))
+            if len(validation_paths) >= 64:
+                break
+        if len(validation_paths) >= 64:
+            break
     artifact = {
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,
@@ -142,7 +162,24 @@ def walk_forward(
             None,
         ),
         "predictions": [_jsonable(row) for row in predictions],
+        "validation_paths": validation_paths,
     }
+    forecasts = []
+    for horizon in sorted({row["horizon"] for row in predictions}):
+        horizon_rows = [row for row in predictions if row["horizon"] == horizon]
+        probability = round(fmean(float(row["calibrated_probability"]) for row in horizon_rows), 8)
+        forecasts.append({
+            "horizon": horizon,
+            "forecast_value": probability,
+            "forecast_distribution": {
+                "positive_return_after_costs": probability,
+                "non_positive_return_after_costs": round(1.0 - probability, 8),
+            },
+            "probability_semantics": "P(positive_return_after_costs)",
+            "source_prediction_count": len(horizon_rows),
+        })
+    artifact["forecasts"] = forecasts
+    artifact["forecast"] = next((item for item in forecasts if item["horizon"] == "TACTICAL"), forecasts[0] if forecasts else None)
     artifact["artifact_hash"] = content_hash(artifact)
     return artifact
 

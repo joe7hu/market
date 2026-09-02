@@ -51,8 +51,8 @@ def upgrade() -> None:
             manifest_hash CHAR(64) NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CHECK (jsonb_typeof(expected_trial_keys) = 'array'),
-            CHECK (available_at <= created_at)
+            CHECK (jsonb_typeof(expected_trial_keys) = 'array')
+            -- availability is retained as actual wall-clock availability
         );
 
         CREATE TABLE analysis.research_trial (
@@ -71,8 +71,8 @@ def upgrade() -> None:
             outcome JSONB NOT NULL DEFAULT '{}'::jsonb,
             UNIQUE (experiment_family_id, trial_key),
             CHECK (status IN ('running', 'succeeded', 'failed', 'rejected')),
-            CHECK (finished_at IS NULL OR finished_at >= started_at),
-            CHECK (available_at <= input_cutoff)
+            CHECK (finished_at IS NULL OR finished_at >= started_at)
+            -- availability is actual wall-clock availability; readers enforce PIT
         );
         CREATE INDEX ix_research_trial_family_cutoff ON analysis.research_trial (experiment_family_id, input_cutoff, id);
 
@@ -98,8 +98,8 @@ def upgrade() -> None:
             manifest_hash CHAR(64) NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CHECK (jsonb_typeof(expected_members) = 'array'),
-            CHECK (available_at <= cutoff)
+            CHECK (jsonb_typeof(expected_members) = 'array')
+            -- availability is actual wall-clock availability; readers enforce PIT
         );
 
         CREATE TABLE analysis.validation_dossier (
@@ -158,8 +158,6 @@ def upgrade() -> None:
             status TEXT NOT NULL DEFAULT 'available',
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (as_of = input_cutoff),
-            CHECK (available_at <= input_cutoff),
-            CHECK (generated_at <= input_cutoff),
             CHECK (forecast_value IS NOT NULL OR forecast_range IS NOT NULL OR forecast_distribution IS NOT NULL)
         );
         CREATE UNIQUE INDEX uq_strategy_forecast_content
@@ -180,7 +178,6 @@ def upgrade() -> None:
             outcome JSONB NOT NULL DEFAULT '{}'::jsonb,
             UNIQUE (research_trial_id, cutoff, instrument_id),
             CHECK (rank IS NULL OR rank > 0),
-            CHECK (available_at <= cutoff),
             CHECK (eligible OR exclusion_reason IS NOT NULL)
         );
         CREATE INDEX ix_universe_observation_trial_cutoff
@@ -257,8 +254,8 @@ def upgrade() -> None:
             FROM analysis.trial_universe_manifest manifest
             WHERE manifest.research_trial_id = NEW.research_trial_id;
             IF manifest_cutoff IS NULL OR NEW.cutoff <> manifest_cutoff
-               OR NEW.observed_at > manifest_cutoff OR NEW.available_at > manifest_cutoff THEN
-                RAISE EXCEPTION 'universe observation is outside its point-in-time cutoff';
+               OR NEW.observed_at IS NULL OR NEW.available_at IS NULL THEN
+                RAISE EXCEPTION 'universe observation has invalid PIT authority';
             END IF;
             RETURN NEW;
         END;
@@ -314,7 +311,7 @@ def upgrade() -> None:
 
         CREATE OR REPLACE FUNCTION analysis.enforce_validation_dossier_seal()
         RETURNS trigger LANGUAGE plpgsql AS $$
-        DECLARE gate_count INTEGER; passing_count INTEGER;
+        DECLARE gate_count INTEGER; passing_count INTEGER; result_id UUID;
         BEGIN
             IF TG_OP = 'DELETE' OR OLD.status IN ('sealed', 'rejected') THEN
                 RAISE EXCEPTION 'validation dossiers are immutable';
@@ -342,10 +339,29 @@ def upgrade() -> None:
             ) THEN
                 RAISE EXCEPTION 'validation dossier research trial or manifest is incomplete';
             END IF;
-            NEW.sealed_at := COALESCE(NEW.sealed_at, clock_timestamp());
-            IF NEW.research_trial_id IS NOT NULL AND NEW.sealed_at > (SELECT input_cutoff FROM analysis.research_trial WHERE id = NEW.research_trial_id) THEN
-                RAISE EXCEPTION 'validation dossier seal is newer than its point-in-time cutoff';
+            IF NEW.research_trial_id IS NOT NULL THEN
+                SELECT result.id INTO result_id
+                FROM analysis.trial_result result
+                WHERE result.research_trial_id = NEW.research_trial_id
+                  AND result.result_kind = 'validation'
+                  AND result.outcome ? 'checks'
+                ORDER BY result.result_version DESC LIMIT 1;
+                IF result_id IS NULL OR (SELECT count(*) FROM analysis.validation_gate_result gate
+                    WHERE gate.dossier_id = NEW.id
+                      AND gate.evidence->>'trial_result_id' = result_id::text
+                      AND gate.metrics <> '{}'::jsonb) <> 5 THEN
+                    RAISE EXCEPTION 'validation dossier requires evidence-backed validation result for every gate';
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM analysis.trial_result result
+                    WHERE result.id = result_id
+                      AND result.outcome->'checks'->'multiple_testing' ?& ARRAY['psr','dsr','pbo','data_snooping_probability','fdr_q_value']
+                      AND result.outcome->'checks'->'cost_capacity'->'multiples' ?& ARRAY['1x','2x','3x']
+                ) THEN
+                    RAISE EXCEPTION 'validation dossier mandatory multiple-testing and cost metrics are missing';
+                END IF;
             END IF;
+            NEW.sealed_at := COALESCE(NEW.sealed_at, clock_timestamp());
             RETURN NEW;
         END;
         $$;
@@ -372,9 +388,58 @@ def upgrade() -> None:
                       AND dossier.artifact_id = NEW.artifact_id
                       AND dossier.artifact_hash = NEW.artifact_hash
                       AND dossier.compiled_policy->>'paper_only' = 'true'
+                      AND dossier.sealed_at <= trial.input_cutoff
+                      AND EXISTS (
+                          SELECT 1 FROM analysis.trial_result result
+                          WHERE result.research_trial_id = trial.id AND result.result_kind = 'validation'
+                            AND result.available_at <= trial.input_cutoff
+                            AND result.outcome->'checks'->'multiple_testing' ?& ARRAY['psr','dsr','pbo','data_snooping_probability','fdr_q_value']
+                            AND result.outcome->'checks'->'cost_capacity'->'multiples' ?& ARRAY['1x','2x','3x']
+                      )
                       AND analysis.research_trial_universe_complete(trial.id)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM analysis.universe_observation observation
+                          WHERE observation.research_trial_id = trial.id
+                            AND observation.available_at > trial.input_cutoff
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM analysis.trial_universe_manifest manifest
+                          WHERE manifest.research_trial_id = trial.id
+                            AND manifest.available_at > trial.input_cutoff
+                      )
                       AND analysis.research_family_complete(trial.experiment_family_id)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM analysis.research_trial family_trial
+                          LEFT JOIN analysis.trial_result family_result
+                            ON family_result.research_trial_id = family_trial.id
+                          WHERE family_trial.experiment_family_id = trial.experiment_family_id
+                            AND (family_trial.available_at > trial.input_cutoff
+                                 OR family_result.available_at > trial.input_cutoff)
+                      )
                       AND (SELECT count(*) FROM analysis.validation_gate_result gate WHERE gate.dossier_id = dossier.id AND gate.verdict = 'pass') = 5
+                      AND (SELECT count(*) FROM analysis.validation_gate_result gate
+                           WHERE gate.dossier_id = dossier.id AND gate.verdict = 'pass'
+                             AND gate.evidence->>'trial_result_id' = (
+                                 SELECT result.id::text FROM analysis.trial_result result
+                                 WHERE result.research_trial_id = trial.id AND result.result_kind = 'validation'
+                                 ORDER BY result.result_version DESC LIMIT 1
+                             )) = 5
+                      AND EXISTS (
+                          SELECT 1 FROM analysis.strategy_evaluation evaluation
+                          JOIN analysis.strategy_forecast forecast ON forecast.strategy_evaluation_id = evaluation.id
+                          WHERE evaluation.strategy_revision_id = NEW.id
+                            AND evaluation.evaluation_type = 'out_of_sample'
+                            AND evaluation.artifact_id = NEW.artifact_id
+                            AND evaluation.artifact_hash = NEW.artifact_hash
+                            AND evaluation.input_hash = forecast.input_hash
+                            AND evaluation.validation_dossier_id = dossier.id
+                            AND forecast.strategy_revision_id = NEW.id
+                            AND forecast.model_artifact_id = NEW.artifact_id
+                            AND forecast.artifact_hash = NEW.artifact_hash
+                            AND forecast.available_at <= trial.input_cutoff
+                            AND forecast.generated_at <= trial.input_cutoff
+                            AND forecast.forecast_distribution IS NOT NULL
+                      )
                 ) THEN
                     RAISE EXCEPTION 'research strategy promotion requires sealed dossier, complete manifests, five gates, matching artifact, and paper-only policy';
                 END IF;
@@ -392,8 +457,8 @@ def upgrade() -> None:
         DECLARE cutoff TIMESTAMPTZ;
         BEGIN
             SELECT input_cutoff INTO cutoff FROM analysis.research_trial WHERE id = NEW.research_trial_id;
-            IF cutoff IS NULL OR NEW.observed_at > cutoff OR NEW.available_at > cutoff THEN
-                RAISE EXCEPTION 'research result is not point-in-time available';
+            IF cutoff IS NULL OR NEW.available_at > NEW.observed_at THEN
+                RAISE EXCEPTION 'research result has invalid actual availability';
             END IF;
             RETURN NEW;
         END;
@@ -410,8 +475,8 @@ def upgrade() -> None:
             FROM analysis.validation_dossier dossier
             JOIN analysis.research_trial trial ON trial.id = dossier.research_trial_id
             WHERE dossier.id = NEW.dossier_id;
-            IF cutoff IS NOT NULL AND (NEW.available_at > cutoff OR NEW.evaluated_at > cutoff) THEN
-                RAISE EXCEPTION 'validation gate is not point-in-time available';
+            IF cutoff IS NOT NULL AND NEW.available_at > NEW.evaluated_at THEN
+                RAISE EXCEPTION 'validation gate has invalid actual availability';
             END IF;
             RETURN NEW;
         END;

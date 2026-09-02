@@ -41,8 +41,8 @@ class ResearchRepository:
             return connection.execute(
                 """INSERT INTO analysis.research_trial
                    (experiment_family_id, trial_key, input_cutoff, code_version, input_hash, parameters, available_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s, LEAST(now(), %s))) RETURNING id""",
-                [family_id, key, input_cutoff, code_version, input_hash, Jsonb(dict(parameters or {})), available_at, input_cutoff],
+                   VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s, now())) RETURNING id""",
+                [family_id, key, input_cutoff, code_version, input_hash, Jsonb(dict(parameters or {})), available_at],
             ).fetchone()["id"]
 
     def create_experiment_manifest(self, *, family_id: UUID, trial_keys: Sequence[str], available_at: Any | None = None) -> str:
@@ -68,8 +68,8 @@ class ResearchRepository:
             connection.execute(
                 """INSERT INTO analysis.trial_universe_manifest
                    (research_trial_id, cutoff, expected_member_count, expected_members, manifest_hash, available_at)
-                   VALUES (%s, %s, %s, %s, %s, COALESCE(%s, LEAST(now(), %s)))""",
-                [trial_id, cutoff, len(members), Jsonb(members), manifest_hash, available_at, cutoff],
+                   VALUES (%s, %s, %s, %s, %s, COALESCE(%s, now()))""",
+                [trial_id, cutoff, len(members), Jsonb(members), manifest_hash, available_at],
             )
         return manifest_hash
 
@@ -103,8 +103,6 @@ class ResearchRepository:
             trial = connection.execute("SELECT input_cutoff FROM analysis.research_trial WHERE id = %s", [trial_id]).fetchone()
             if trial is None:
                 raise ValueError("research trial does not exist")
-            if observed_at > trial["input_cutoff"] or available_at > trial["input_cutoff"]:
-                raise ValueError("research result availability is outside the trial cutoff")
             return connection.execute(
                 """INSERT INTO analysis.trial_result
                    (research_trial_id, result_kind, input_hash, metrics, outcome, observed_at, available_at)

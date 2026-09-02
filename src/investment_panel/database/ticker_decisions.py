@@ -161,6 +161,12 @@ WHERE entry_prices.close > 0
 """
 
 
+def _signal_field(signal: Any, field: str) -> Any:
+    if isinstance(signal, Mapping):
+        return signal.get(field)
+    return getattr(signal, field, None)
+
+
 class TickerDecisionRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
@@ -184,13 +190,21 @@ class TickerDecisionRepository:
             if instrument is None:
                 raise ValueError("ticker instrument is not in the catalog")
             plan = decision.trade_plan
-            typed_signals = tuple(signal for signal in decision.alpha_signals if getattr(signal, "contract_version", None) == "alpha-signal.v1")
+            typed_signals = tuple(
+                signal for signal in decision.alpha_signals
+                if _signal_field(signal, "contract_version") == "alpha-signal.v1"
+            )
             if plan is not None and typed_signals and str(getattr(plan, "eligibility", "")).upper().endswith("ACTIONABLE") and str(getattr(plan, "selected_expression_kind", "")).upper() == "STOCK":
+                selected_signal_id = str(getattr(plan, "alpha_signal_id", None) or "")
+                selected_signals = tuple(signal for signal in typed_signals if str(_signal_field(signal, "signal_id") or "") == selected_signal_id)
+                if not selected_signal_id or len(selected_signals) != 1:
+                    raise ValueError("actionable stock path requires one selected alpha signal")
                 forecast_ids = {
                     str(value or "") for value in (
                         getattr(plan, "strategy_forecast_id", None),
                         getattr(decision.opportunity_rank, "strategy_forecast_id", None),
-                        *(getattr(signal, "strategy_forecast_id", None) for signal in decision.alpha_signals),
+                        *(_signal_field(signal, "strategy_forecast_id") for signal in typed_signals
+                          if _signal_field(signal, "signal_id") == getattr(plan, "alpha_signal_id", None)),
                     ) if str(value or "").strip()
                 }
                 if len(forecast_ids) != 1:

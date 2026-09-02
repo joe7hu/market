@@ -16,6 +16,7 @@ from investment_panel.core.decision import build_strategy_forecast
 
 
 def test_phase1_validation_is_deterministic_and_fail_closed() -> None:
+    assert not negative_control([0.2])["passed"]
     assert negative_control([0.2], randomized=[0.0], white_noise=[-0.01])["passed"]
     assert not negative_control([0.2], randomized=[0.01], white_noise=[0.2])["passed"]
     assert future_information_trap(feature_available_at=[1, 2], cutoff=1)["passed"] is False
@@ -48,7 +49,7 @@ def test_multiple_testing_uses_real_domains_and_validation_binds_all_gates() -> 
     assert set(report["gates"]) == {"pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"}
 
 
-def test_strategy_forecast_identity_and_generation_cutoff_are_fail_closed() -> None:
+def test_strategy_forecast_identity_is_fail_closed_and_actual_availability_is_retained() -> None:
     cutoff = datetime(2026, 8, 22, 14, tzinfo=UTC)
     forecast = build_strategy_forecast(
         ticker="ACME", opportunity_episode_id="episode:acme", strategy_revision_id=1,
@@ -60,10 +61,10 @@ def test_strategy_forecast_identity_and_generation_cutoff_are_fail_closed() -> N
     tampered["forecast_value"] = 0.2
     with pytest.raises(ValueError, match="identity"):
         type(forecast).model_validate(tampered)
-    with pytest.raises(ValueError, match="generation"):
-        build_strategy_forecast(
-            ticker="ACME", opportunity_episode_id="episode:acme", strategy_revision_id=1,
-            strategy_evaluation_id=None, target="return", horizon="1d", forecast_value=0.1,
-            model_artifact_id="artifact", artifact_hash="a" * 64, input_hash="b" * 64,
-            as_of=cutoff, generated_at=cutoff + timedelta(seconds=1), available_at=cutoff,
-        )
+    future = build_strategy_forecast(
+        ticker="ACME", opportunity_episode_id="episode:acme", strategy_revision_id=1,
+        strategy_evaluation_id=None, target="return", horizon="1d", forecast_value=0.1,
+        model_artifact_id="artifact", artifact_hash="a" * 64, input_hash="b" * 64,
+        as_of=cutoff, generated_at=cutoff + timedelta(seconds=1), available_at=cutoff + timedelta(seconds=1),
+    )
+    assert future.generated_at > future.input_cutoff

@@ -1852,6 +1852,18 @@ def load_postgres_tables(
                             conditions.append("daily_research_rows.starts_at >= current_date")
                         if policy.exclude_future_rows and (alias or name) == "research_packets":
                             conditions.append("COALESCE(daily_research_rows.published_at, daily_research_rows.generated_at) <= now()")
+                        research_alias = alias or name
+                        if research_alias in {
+                            "research_hypotheses", "research_experiment_families", "research_trials",
+                            "research_experiment_manifests", "research_universe_manifests",
+                            "research_trial_results", "research_validation_gates", "research_strategy_forecasts",
+                            "research_universe_observations",
+                        }:
+                            conditions.append("daily_research_rows.available_at <= now()")
+                        elif research_alias == "research_validation_dossiers":
+                            conditions.append("COALESCE(daily_research_rows.sealed_at, daily_research_rows.created_at) <= now()")
+                        elif research_alias == "research_strategy_revisions":
+                            conditions.append("daily_research_rows.created_at <= now()")
                         if symbol_scoped:
                             symbol_clause = "UPPER(daily_research_rows.symbol) = ANY(%s)"
                             if policy.allow_symbol_less:

@@ -27,10 +27,19 @@ def negative_control(observed: Sequence[float], *, randomized: Sequence[float] =
         clean = [float(value) for value in values if isfinite(float(value))]
         return fmean(clean) if clean else None
 
-    randomized_edge, noise_edge = average(randomized), average(white_noise)
+    randomized_values = [float(value) for value in randomized]
+    white_noise_values = [float(value) for value in white_noise]
+    controls_present = bool(randomized_values) and bool(white_noise_values)
+    controls_domain_valid = all(isfinite(value) for value in (*randomized_values, *white_noise_values))
+    randomized_edge, noise_edge = average(randomized_values), average(white_noise_values)
     controls = [value for value in (randomized_edge, noise_edge) if value is not None]
-    passed = all(value <= tolerance for value in controls)
-    return {"passed": passed, "observed_edge": average(observed), "randomized_edge": randomized_edge, "white_noise_edge": noise_edge, "tolerance": tolerance, "persistent_positive_edge": any(value > tolerance for value in controls), "reason": None if passed else "negative_control_positive_edge"}
+    passed = controls_present and controls_domain_valid and len(controls) == 2 and all(value <= tolerance for value in controls)
+    reason = None if passed else (
+        "negative_controls_missing" if not controls_present else
+        "negative_controls_domain_invalid" if not controls_domain_valid else
+        "negative_control_positive_edge"
+    )
+    return {"passed": passed, "observed_edge": average(observed), "randomized_edge": randomized_edge, "white_noise_edge": noise_edge, "tolerance": tolerance, "controls_present": controls_present, "domain_valid": controls_domain_valid, "persistent_positive_edge": any(value > tolerance for value in controls), "reason": reason}
 
 
 def future_information_trap(*, feature_available_at: Sequence[Any], cutoff: Any) -> dict[str, Any]:
@@ -68,10 +77,10 @@ def multiple_testing_metrics(
 ) -> dict[str, Any]:
     """Return bounded PSR/DSR/PBO/FDR values with explicit input domains.
 
-    These are deterministic approximations suitable for a promotion gate. PSR
+    These are deterministic bounded approximations suitable for a promotion gate. PSR
     is the one-sided normal approximation. DSR discounts the z score by the
     expected maximum of ``trials_tested`` standard normal draws. PBO is the
-    observed fraction of combinatorial paths at or below the path median. FDR
+    observed fraction of supplied combinatorial paths with negative excess return. FDR
     uses the Benjamini-Hochberg step-up value over supplied p-values (or the
     observed trial p-value when no family vector is available).
     """
@@ -124,8 +133,9 @@ def multiple_testing_metrics(
 
 
 def parameter_stability(neighborhood: Sequence[Mapping[str, Any]], *, metric: str = "return", tolerance: float = 0.25) -> dict[str, Any]:
-    values = [float(row[metric]) for row in neighborhood if row.get(metric) is not None and isfinite(float(row[metric]))]
-    if not values:
+    rows = list(neighborhood)
+    values = [float(row[metric]) for row in rows if row.get(metric) is not None and isfinite(float(row[metric]))]
+    if not values or len(values) != len(rows):
         return {"passed": False, "sample_size": 0, "reason": "parameter_neighborhood_missing"}
     center = values[len(values) // 2]
     spread = max(abs(value - center) for value in values)
@@ -135,7 +145,8 @@ def parameter_stability(neighborhood: Sequence[Mapping[str, Any]], *, metric: st
 def neutralization(*, gross_returns: Sequence[float], neutralized_returns: Sequence[float]) -> dict[str, Any]:
     gross = fmean([float(value) for value in gross_returns]) if gross_returns else 0.0
     neutral = fmean([float(value) for value in neutralized_returns]) if neutralized_returns else 0.0
-    return {"passed": bool(neutralized_returns) and neutral > 0, "gross_mean": gross, "neutralized_mean": neutral, "result_exists": bool(neutralized_returns), "reason": None if neutralized_returns and neutral > 0 else "neutralized_result_missing_or_negative"}
+    finite = bool(neutralized_returns) and all(isfinite(float(value)) for value in neutralized_returns)
+    return {"passed": finite, "gross_mean": gross, "neutralized_mean": neutral, "result_exists": bool(neutralized_returns), "domain_valid": finite, "reason": None if finite else "neutralized_result_missing_or_invalid"}
 
 
 def cost_capacity_stress(*, gross_return: float, base_cost: float, capacity: float = 1.0) -> dict[str, Any]:
@@ -168,9 +179,12 @@ def validate_trial(
         attempts["reason"] = "trial_manifest_incomplete"
     predictive = {"passed": metrics["domain_valid"] and metrics["psr"] >= float(policy.get("min_psr", 0.5)) and (metrics["dsr"] >= float(policy.get("min_dsr", 0.5))), "metrics": metrics, "reason": None}
     robustness = {"passed": controls["passed"] and parameter_stability(parameter_neighborhood)["passed"] and (metrics["pbo"] is not None and metrics["pbo"] <= float(policy.get("max_pbo", 0.5))), "negative_controls": controls, "parameter_stability": parameter_stability(parameter_neighborhood), "reason": None}
+    mechanism = mechanism_and_falsification(mechanism_class=mechanism_class, falsification_rule=falsification_rule)
+    neutralized = neutralization(gross_returns=observed_returns, neutralized_returns=neutralized_returns)
     economics = cost_capacity_stress(gross_return=gross_return, base_cost=base_cost)
-    economics["passed"] = economics["passed"] and neutralization(gross_returns=observed_returns, neutralized_returns=neutralized_returns)["passed"]
-    checks = {"mechanism": mechanism_and_falsification(mechanism_class=mechanism_class, falsification_rule=falsification_rule), "pit": pit, "denominator": denominator, "attempt_manifest": attempts, "negative_controls": controls, "multiple_testing": metrics, "parameter_stability": robustness["parameter_stability"], "neutralization": neutralization(gross_returns=observed_returns, neutralized_returns=neutralized_returns), "cost_capacity": economics, "predictive": predictive, "robustness": robustness}
+    economics["passed"] = economics["passed"] and neutralized["passed"]
+    robustness["passed"] = robustness["passed"] and mechanism["passed"]
+    checks = {"mechanism": mechanism, "pit": pit, "denominator": denominator, "attempt_manifest": attempts, "negative_controls": controls, "multiple_testing": metrics, "parameter_stability": robustness["parameter_stability"], "neutralization": neutralized, "cost_capacity": economics, "predictive": predictive, "robustness": robustness}
     gates = {
         "pit_integrity": pit["passed"], "denominator_completeness": denominator["passed"] and attempts["passed"],
         "oos_predictive_validity": predictive["passed"], "falsification_and_robustness": robustness["passed"],
