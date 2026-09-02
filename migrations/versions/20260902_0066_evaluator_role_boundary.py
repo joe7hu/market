@@ -124,8 +124,17 @@ def upgrade() -> None:
                        analysis.experiment_manifest,
                        analysis.experiment_family,
                        analysis.research_evaluator_output,
-                       analysis.research_evidence_manifest
+                       analysis.research_evidence_manifest,
+                       analysis.strategy_revision,
+                       analysis.strategy_evaluation,
+                       analysis.strategy_forecast,
+                       analysis.validation_dossier,
+                       analysis.validation_gate_result,
+                       analysis.hypothesis,
+                       analysis.ticker_benchmark_snapshot
           TO market_research_signer;
+        GRANT USAGE ON SCHEMA catalog TO market_research_signer;
+        GRANT SELECT ON catalog.instrument TO market_research_signer;
 
         ALTER FUNCTION analysis.research_evaluator_signing_key() OWNER TO market_research_signer;
         ALTER FUNCTION analysis.research_evaluator_signing_key() SECURITY DEFINER;
@@ -137,6 +146,34 @@ def upgrade() -> None:
         ALTER FUNCTION analysis.enforce_research_evidence_manifest() OWNER TO market_research_signer;
         ALTER FUNCTION analysis.enforce_research_evidence_manifest() SECURITY DEFINER;
         ALTER FUNCTION analysis.enforce_research_evidence_manifest() SET search_path = pg_catalog, analysis;
+        -- Phase 1 trigger checks run with the protected authority. This keeps
+        -- the application login from needing EXECUTE on the sealed-dossier
+        -- predicates while still allowing it to persist ordinary research
+        -- rows through the normal production transaction.
+        ALTER FUNCTION analysis.enforce_validation_dossier_seal() OWNER TO market_research_signer;
+        ALTER FUNCTION analysis.enforce_validation_dossier_seal() SECURITY DEFINER;
+        ALTER FUNCTION analysis.enforce_validation_dossier_seal() SET search_path = pg_catalog, analysis, public;
+        ALTER FUNCTION analysis.enforce_research_trial_terminal_immutability() OWNER TO market_research_signer;
+        ALTER FUNCTION analysis.enforce_research_trial_terminal_immutability() SECURITY DEFINER;
+        ALTER FUNCTION analysis.enforce_research_trial_terminal_immutability() SET search_path = pg_catalog, analysis, public;
+        ALTER FUNCTION analysis.enforce_research_result_actual_availability() OWNER TO market_research_signer;
+        ALTER FUNCTION analysis.enforce_research_result_actual_availability() SECURITY DEFINER;
+        ALTER FUNCTION analysis.enforce_research_result_actual_availability() SET search_path = pg_catalog, analysis, public;
+        ALTER FUNCTION analysis.enforce_research_gate_actual_availability() OWNER TO market_research_signer;
+        ALTER FUNCTION analysis.enforce_research_gate_actual_availability() SECURITY DEFINER;
+        ALTER FUNCTION analysis.enforce_research_gate_actual_availability() SET search_path = pg_catalog, analysis, public;
+        ALTER FUNCTION analysis.enforce_research_universe_actual_availability() OWNER TO market_research_signer;
+        ALTER FUNCTION analysis.enforce_research_universe_actual_availability() SECURITY DEFINER;
+        ALTER FUNCTION analysis.enforce_research_universe_actual_availability() SET search_path = pg_catalog, analysis, public;
+        ALTER FUNCTION analysis.enforce_research_revision_promotion_hardened() OWNER TO market_research_signer;
+        ALTER FUNCTION analysis.enforce_research_revision_promotion_hardened() SECURITY DEFINER;
+        ALTER FUNCTION analysis.enforce_research_revision_promotion_hardened() SET search_path = pg_catalog, analysis, public;
+        ALTER FUNCTION analysis.enforce_research_revision_promotion() OWNER TO market_research_signer;
+        ALTER FUNCTION analysis.enforce_research_revision_promotion() SECURITY DEFINER;
+        ALTER FUNCTION analysis.enforce_research_revision_promotion() SET search_path = pg_catalog, analysis, public;
+        ALTER FUNCTION analysis.enforce_strategy_forecast_authority() OWNER TO market_research_signer;
+        ALTER FUNCTION analysis.enforce_strategy_forecast_authority() SECURITY DEFINER;
+        ALTER FUNCTION analysis.enforce_strategy_forecast_authority() SET search_path = pg_catalog, analysis, public;
 
         -- The restricted security-definer search path must use the explicit
         -- pgcrypto bytea signature. The older helpers used an unqualified
@@ -317,6 +354,29 @@ def upgrade() -> None:
         REVOKE ALL ON FUNCTION analysis.research_evaluator_authorization_payload(UUID, UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, BOOLEAN, JSONB) FROM PUBLIC, market_migrator;
         REVOKE ALL ON FUNCTION analysis.write_research_evaluator_output(UUID, UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, BOOLEAN, JSONB, TEXT) FROM PUBLIC, market_migrator;
         GRANT USAGE ON SCHEMA analysis TO market_app;
+        GRANT USAGE ON SCHEMA catalog TO market_app;
+        -- The configured application login runs the ordinary stock-alpha
+        -- transaction. Keep its normal Phase 1 persistence authority
+        -- explicit, while the evaluator-output table remains callable only
+        -- through the protected writer below.
+        GRANT SELECT, INSERT, UPDATE ON catalog.instrument TO market_app;
+        GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA catalog TO market_app;
+        GRANT SELECT, INSERT, UPDATE ON analysis.hypothesis,
+                       analysis.experiment_family,
+                       analysis.experiment_manifest,
+                       analysis.research_trial,
+                       analysis.trial_result,
+                       analysis.trial_universe_manifest,
+                       analysis.universe_observation,
+                       analysis.validation_dossier,
+                       analysis.validation_gate_result,
+                       analysis.strategy_revision,
+                       analysis.strategy_evaluation,
+                       analysis.strategy_forecast,
+                       analysis.research_evidence_manifest,
+                       analysis.run,
+                       analysis.ticker_benchmark_snapshot
+          TO market_app;
         GRANT EXECUTE ON FUNCTION analysis.research_evaluator_authorization_payload(UUID, UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, BOOLEAN, JSONB) TO market_app;
         GRANT EXECUTE ON FUNCTION analysis.write_research_evaluator_output(UUID, UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, BOOLEAN, JSONB, TEXT) TO market_app;
 

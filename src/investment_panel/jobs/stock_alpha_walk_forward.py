@@ -155,6 +155,10 @@ def run(
 
     with runtime.transaction(JOB_PROFILE) as connection:
         connection.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [STRATEGY_KEY])
+        # Activate the explicit NOINHERIT application role before any
+        # stock-alpha persistence. This makes the production run and its
+        # protected evaluator writer use the same configured authority.
+        activate_application_role(connection)
         independent_members = _independent_universe_members(connection, cutoff=reference)
         if not independent_members:
             raise ValueError("stock-alpha requires an independent PIT universe tape")
@@ -591,7 +595,6 @@ def _persist_research_evidence(
         ).fetchone()["id"]
     sample_counts = {kind: sample_count for kind, sample_count, _ in rows}
     persisted_sources: dict[str, tuple[Any, Any, Mapping[str, Any]]] = {}
-    activate_application_role(connection)
     for kind, sample_count, payload in rows:
         if sample_count <= 0:
             raise ValueError(f"{kind} evidence is missing raw evaluator output")
@@ -617,7 +620,6 @@ def _persist_research_evidence(
         if source is None:
             raise ValueError(f"{kind} evaluator output was not persisted")
         persisted_sources[kind] = (source["id"], source["output_hash"], payload)
-    connection.execute("RESET ROLE")
     if len(persisted_sources) != 6:
         raise ValueError("independent evaluator output set is incomplete")
     for kind, (source_id, source_hash, payload) in sorted(persisted_sources.items()):

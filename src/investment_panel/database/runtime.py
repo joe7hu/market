@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator
 
 from psycopg import Connection, IsolationLevel
+from psycopg import errors
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -42,7 +43,10 @@ class DatabaseRuntime:
         max_size: int = 8,
         pool_timeout_seconds: float = 5.0,
     ) -> None:
-        if not dsn.startswith(("postgresql://", "postgresql+psycopg://")) and not dsn.startswith("dbname="):
+        # psycopg's safe ``make_conninfo`` form may begin with a keyword such
+        # as ``user=`` rather than ``dbname=``. Accept it when it identifies a
+        # PostgreSQL database, while continuing to reject non-PostgreSQL URLs.
+        if not dsn.startswith(("postgresql://", "postgresql+psycopg://")) and "dbname=" not in dsn:
             raise ValueError("Market database URL must identify PostgreSQL")
         self.dsn = dsn.replace("postgresql+psycopg://", "postgresql://", 1)
         self.pool_timeout_seconds = pool_timeout_seconds
@@ -127,12 +131,33 @@ def activate_application_role(connection: Connection[dict[str, Any]]) -> None:
     """Run the protected evaluator call as the configured application role.
 
     The migration grants this role to the configured production login. The
-    switch is scoped to the current transaction, so ordinary application
-    table access keeps its existing authority while the evaluator writer is
-    never reached through a migration owner or an unvalidated superuser.
+    switch is scoped to the current transaction, so a NOINHERIT login must
+    explicitly activate the role before ordinary research persistence. The
+    evaluator writer is never reached through the migration role.
     """
 
-    connection.execute("SET LOCAL ROLE market_app")
+    identity = connection.execute(
+        """SELECT session_user, current_user,
+                  rolsuper,
+                  pg_has_role(session_user, %s, 'MEMBER') AS role_membership
+           FROM pg_roles WHERE rolname = session_user""",
+        [APPLICATION_ROLE],
+    ).fetchone()
+    if identity is None or identity["session_user"] == "market_migrator":
+        raise RuntimeError("configured PostgreSQL connection cannot activate market_app evaluator authority")
+    if (
+        identity["current_user"] != APPLICATION_ROLE
+        and not identity["rolsuper"]
+        and not identity["role_membership"]
+    ):
+        raise RuntimeError("configured PostgreSQL login is not a member of market_app")
+    try:
+        if identity["current_user"] != APPLICATION_ROLE:
+            connection.execute("SET LOCAL ROLE market_app")
+    except errors.InsufficientPrivilege as exc:
+        raise RuntimeError(
+            "configured PostgreSQL login cannot activate market_app evaluator authority"
+        ) from exc
     row = connection.execute(
         """SELECT current_user, pg_has_role(current_user, %s, 'USAGE') AS role_active,
                   has_function_privilege(current_user, %s, 'EXECUTE') AS writer_allowed

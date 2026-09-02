@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import os
 
 import pytest
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.stock_alpha import FEATURE_VERSION, research_score
@@ -52,6 +54,14 @@ def _seed_universe_tape(runtime: DatabaseRuntime, cutoff: datetime, symbols: lis
                VALUES ('market-equity-etf', %s, %s, %s, %s, 'phase1-test', %s)""",
             [tape_as_of, tape_as_of - timedelta(seconds=1), "phase1-membership", len(symbols), Jsonb({symbol: True for symbol in symbols})],
         )
+
+
+def _configured_application_dsn(postgres_dsn: str) -> str:
+    login = os.environ["MARKET_APP_LOGIN_ROLE"]
+    password = os.environ["MARKET_APP_DATABASE_PASSWORD"]
+    connection_info = conninfo_to_dict(postgres_dsn)
+    connection_info.update(user=login, password=password)
+    return make_conninfo(**connection_info)
 
 
 def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
@@ -163,6 +173,50 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
         assert forecast["available_at"] <= cutoff
     finally:
         runtime.close()
+
+
+def test_production_run_uses_configured_application_login_for_evaluator_writer(
+    migrated_postgres_dsn: str,
+) -> None:
+    owner_runtime = DatabaseRuntime(migrated_postgres_dsn)
+    owner_runtime.open()
+    app_runtime = DatabaseRuntime(_configured_application_dsn(migrated_postgres_dsn))
+    app_runtime.open()
+    try:
+        cutoff = datetime.now(UTC) + timedelta(seconds=5)
+        symbols = [f"S{index:02d}" for index in range(16)]
+        observations = _observations(16, cutoff)
+        _seed_universe_tape(owner_runtime, cutoff, symbols, as_of=cutoff - timedelta(microseconds=2))
+
+        with app_runtime.read() as connection:
+            identity = connection.execute(
+                "SELECT current_user, session_user, rolinherit FROM pg_roles WHERE rolname = current_user"
+            ).fetchone()
+        assert identity["current_user"] == os.environ["MARKET_APP_LOGIN_ROLE"]
+        assert identity["session_user"] == os.environ["MARKET_APP_LOGIN_ROLE"]
+        assert identity["rolinherit"] is False
+
+        result = run(
+            app_runtime, observations, cutoff=cutoff, promote=False,
+            authorization_mode="PAPER", min_train=4, fold_size=2, min_cohort=4,
+            universe_members=symbols, control_results=_controls(),
+        )
+        assert result["complete"] is True
+        with owner_runtime.read() as connection:
+            source = connection.execute(
+                """SELECT count(*) AS count
+                   FROM analysis.research_evaluator_output output
+                   JOIN analysis.research_trial trial ON trial.id = output.research_trial_id
+                   WHERE trial.id = (
+                       SELECT research_trial_id FROM analysis.validation_dossier
+                       WHERE strategy_revision_id = %s
+                   )""",
+                [result["strategy_revision_id"]],
+            ).fetchone()
+        assert source["count"] == 6
+    finally:
+        app_runtime.close()
+        owner_runtime.close()
 
 
 def test_incomplete_challenger_cannot_promote(migrated_postgres_dsn: str) -> None:
