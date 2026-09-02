@@ -16,9 +16,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
-      # Keep CI on the TCP service path.  A socket-only DSN hides the runtime
-      # connection path used by Market deployments.
-      MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -48,6 +45,10 @@ jobs:
         run: uv sync --extra test --locked
 
       - name: Migrate CI PostgreSQL
+        # Keep only this bootstrap on the TCP service database. Tests create
+        # isolated PostgreSQL databases and must retain their explicit DSNs.
+        env:
+          MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
         run: uv run market-db-migrate
 
       - name: Install Node dependencies
