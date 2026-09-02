@@ -173,19 +173,56 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             "mechanism_falsification": {"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "samples": [0.1]},
             "multiple_testing": {"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "path_returns": [0.1], "p_values": [0.1], "metrics": successful_checks["multiple_testing"]},
         }
+        evaluator_run = connection.execute(
+            """INSERT INTO analysis.run
+               (run_type, input_cutoff, code_version, input_hash, inputs,
+                started_at, finished_at, status, summary)
+               VALUES ('research_evaluator', %s, 'fixture-code.v1', %s, %s,
+                       clock_timestamp(), clock_timestamp(), 'succeeded', %s)
+               RETURNING id""",
+            [cutoff, "9" * 64, Jsonb({"fixture": True}), Jsonb({"fixture": True})],
+        ).fetchone()[0]
+        source_rows = {}
+        for kind, payload in evidence_payloads.items():
+            payload = {
+                **payload,
+                "input_hash": "9" * 64,
+                "universe_hash": content_hash([str(instrument)]),
+                "feature_hash": "b" * 64,
+                "evidence_kind": kind,
+                "evaluator_code_version": "fixture-code.v1",
+            }
+            sample_count = 2 if kind == "controls" else 3 if kind == "parameter_stability" else 1
+            source_rows[kind] = connection.execute(
+                """INSERT INTO analysis.research_evaluator_output
+                   (research_trial_id, trial_result_id, analysis_run_id, evidence_kind,
+                    evaluator_id, evaluator_code_version, input_hash, universe_hash,
+                    feature_hash, sample_count, domain_valid, raw_output)
+                   VALUES (%s, %s, %s, %s, 'fixture.v1', 'fixture-code.v1', %s, %s,
+                           %s, %s, true, %s)
+                   RETURNING id, output_hash, raw_output""",
+                [successful_trial, validation_result, evaluator_run, kind, "9" * 64,
+                 content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload)],
+            ).fetchone()
         for kind, payload in evidence_payloads.items():
             connection.execute(
                 """INSERT INTO analysis.research_evidence_manifest
-                   (research_trial_id, trial_result_id, evidence_kind, evaluator_id, sample_count, domain_valid, payload)
-                   VALUES (%s, %s, %s, 'fixture.v1', %s, true, %s)""",
-                [successful_trial, validation_result, kind, 2 if kind == "controls" else 3 if kind == "parameter_stability" else 1, Jsonb(payload)],
+                   (research_trial_id, trial_result_id, evidence_kind, evaluator_id,
+                    evaluator_code_version, input_hash, universe_hash, feature_hash,
+                    evaluator_output_id, sample_count, domain_valid, payload, evidence_hash)
+                   VALUES (%s, %s, %s, 'fixture.v1', 'fixture-code.v1', %s, %s, %s,
+                           %s, %s, true, %s, %s)""",
+                [successful_trial, validation_result, kind, "9" * 64,
+                 content_hash([str(instrument)]), "b" * 64, source_rows[kind][0],
+                 2 if kind == "controls" else 3 if kind == "parameter_stability" else 1,
+                 Jsonb(source_rows[kind][2]), source_rows[kind][1]],
             )
         numeric_formats = connection.execute(
             "SELECT analysis.canonical_forecast_number(1.0), analysis.canonical_forecast_number(0.0), analysis.canonical_forecast_number(0.1000)"
         ).fetchone()
         assert tuple(numeric_formats) == ("1", "0", "0.1")
         connection.execute("SAVEPOINT fabricated_evidence")
-        with pytest.raises(psycopg.errors.RaiseException, match="linked non-empty|incomplete"):
+        with pytest.raises(psycopg.errors.RaiseException, match="immutable evaluator output|linked non-empty|incomplete"):
             connection.execute(
                 """INSERT INTO analysis.research_evidence_manifest
                    (research_trial_id, trial_result_id, evidence_kind, evaluator_id, sample_count, domain_valid, payload)

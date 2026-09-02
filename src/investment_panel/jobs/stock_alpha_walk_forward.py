@@ -27,6 +27,8 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
 STRATEGY_KEY = "ticker-stock-alpha"
+EVALUATOR_ID = "stock_alpha_walk_forward"
+EVALUATOR_CODE_VERSION = "stock_alpha_walk_forward.v2"
 
 
 def run(
@@ -473,7 +475,10 @@ def _ensure_research_prerequisites(
         if validation.get("passed"):
             _persist_research_evidence(
                 connection, trial_id=trial_id, result_id=result["id"],
-                trial_input_hash=trial_hash, validation=validation,
+                trial_input_hash=trial_hash, trial_run=item,
+                all_trial_runs=trial_runs, observations=observations,
+                universe_hash=content_hash(expected_members), validation=validation,
+                controls=controls,
             )
         if trial["status"] == "running":
             connection.execute(
@@ -485,57 +490,171 @@ def _ensure_research_prerequisites(
 
 def _persist_research_evidence(
     connection: Any, *, trial_id: Any, result_id: Any, trial_input_hash: str,
-    validation: Mapping[str, Any],
+    trial_run: Mapping[str, Any], all_trial_runs: list[Mapping[str, Any]],
+    observations: list[Mapping[str, Any]], universe_hash: str,
+    validation: Mapping[str, Any], controls: Mapping[str, Iterable[float]],
 ) -> None:
-    """Persist source-shaped evidence before a validation dossier can seal."""
+    """Write raw evaluator output, then derive the evidence manifest from it.
 
-    checks = dict(validation.get("checks") or {})
-    evaluator_id = "stock_alpha_walk_forward.v1"
-    controls = dict(checks.get("negative_controls") or {})
-    cpcv = dict(checks.get("combinatorial_paths") or {})
-    neutral = dict(checks.get("neutralization") or {})
-    stability = dict(checks.get("parameter_stability") or {})
-    mechanism = dict(checks.get("mechanism") or {})
-    multiple = dict(checks.get("multiple_testing") or {})
+    The validation object is used only as a consistency check below. It is
+    never used to construct a source row. This keeps a caller from making a
+    shape-valid validation projection into promotion evidence.
+    """
+
+    primary_artifact = dict(trial_run.get("artifact") or {})
+    predictions = [row for row in primary_artifact.get("predictions") or () if isinstance(row, Mapping)]
+    observed = [float(row["net_utility_after_costs"]) for row in predictions if row.get("net_utility_after_costs") is not None]
+    path_records = [dict(row) for row in primary_artifact.get("validation_path_records") or () if isinstance(row, Mapping)]
+    path_returns = [float(value) for value in primary_artifact.get("validation_paths") or ()]
+    p_values = [float((row.get("metrics") or {})["p_value"]) for row in path_records if (row.get("metrics") or {}).get("p_value") is not None]
+    feature_rows = [
+        {key: row.get(key) for key in ("ticker", "horizon", "cohort_id", "as_of", "feature_available_at", "features")}
+        for row in observations
+    ]
+    feature_hash = content_hash(feature_rows)
+    neutralized = [float(row["neutralized_return"]) for row in predictions if row.get("neutralized_return") is not None]
+    stability = [
+        (dict(item.get("artifact") or {}).get("calibration_metrics") or {}).get(
+            "lower_confidence_net_utility_after_costs"
+        )
+        for item in all_trial_runs
+    ]
+    mechanism_samples = path_returns + [float(value) for value in controls.get("randomized_label_returns", ())] + [
+        float(value) for value in controls.get("white_noise_market_returns", ())
+    ]
+    multiple = multiple_testing_metrics(
+        observed, trials_tested=len(all_trial_runs), path_returns=path_returns, p_values=p_values,
+    )
+    common = {
+        "trial_input_hash": trial_input_hash,
+        "input_hash": trial_input_hash,
+        "universe_hash": universe_hash,
+        "feature_hash": feature_hash,
+        "evaluator_id": EVALUATOR_ID,
+        "evaluator_code_version": EVALUATOR_CODE_VERSION,
+    }
     rows = (
-        ("controls", len(controls.get("randomized_label_samples") or ()) + len(controls.get("white_noise_samples") or ()), {
-            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
-            "randomized_label_samples": list(controls.get("randomized_label_samples") or ()),
-            "white_noise_samples": list(controls.get("white_noise_samples") or ()),
+        ("controls", len(list(controls.get("randomized_label_returns", ()))) + len(list(controls.get("white_noise_market_returns", ()))), {
+            **common,
+            "evidence_kind": "controls",
+            "randomized_label_samples": [float(value) for value in controls.get("randomized_label_returns", ())],
+            "white_noise_samples": [float(value) for value in controls.get("white_noise_market_returns", ())],
         }),
-        ("cpcv_paths", len(cpcv.get("path_records") or ()), {
-            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
-            "path_count": cpcv.get("path_count"), "path_records": list(cpcv.get("path_records") or ()),
+        ("cpcv_paths", len(path_records), {
+            **common, "evidence_kind": "cpcv_paths", "path_count": len(path_records), "path_records": path_records,
         }),
-        ("neutralization", len(neutral.get("samples") or ()), {
-            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
-            "samples": list(neutral.get("samples") or ()),
+        ("neutralization", len(neutralized), {
+            **common, "evidence_kind": "neutralization", "samples": neutralized,
         }),
-        ("parameter_stability", len(stability.get("samples") or ()), {
-            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
-            "samples": list(stability.get("samples") or ()),
+        ("parameter_stability", len(stability), {
+            **common, "evidence_kind": "parameter_stability", "samples": stability,
         }),
-        ("mechanism_falsification", len(mechanism.get("evidence_samples") or ()), {
-            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
-            "samples": list(mechanism.get("evidence_samples") or ()),
+        ("mechanism_falsification", len(mechanism_samples), {
+            **common, "evidence_kind": "mechanism_falsification", "samples": mechanism_samples,
         }),
-        ("multiple_testing", len(multiple.get("path_returns") or ()), {
-            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
-            "path_returns": list(multiple.get("path_returns") or ()),
-            "p_values": list(multiple.get("p_values") or ()), "metrics": multiple,
+        ("multiple_testing", len(path_returns), {
+            **common, "evidence_kind": "multiple_testing", "path_returns": path_returns,
+            "p_values": p_values, "metrics": multiple,
         }),
     )
+    run = connection.execute(
+        """INSERT INTO analysis.run
+           (run_type, input_cutoff, code_version, feature_versions, input_hash, inputs,
+            started_at, finished_at, status, summary)
+           VALUES ('research_evaluator', (SELECT input_cutoff FROM analysis.research_trial WHERE id = %s),
+                   %s, %s, %s, %s, clock_timestamp(), clock_timestamp(), 'succeeded', %s)
+           RETURNING id""",
+        [trial_id, EVALUATOR_CODE_VERSION, Jsonb({"model": MODEL_VERSION, "feature": FEATURE_VERSION}),
+         trial_input_hash, Jsonb({"trial_result_id": str(result_id), "evidence_groups": 6}),
+         Jsonb({"trial_result_id": str(result_id), "evaluator_id": EVALUATOR_ID})],
+    ).fetchone()["id"]
     for kind, sample_count, payload in rows:
         if sample_count <= 0:
-            raise ValueError(f"{kind} evidence is missing source samples")
+            raise ValueError(f"{kind} evidence is missing raw evaluator output")
+        prior_source = connection.execute(
+            """SELECT evaluator_id, evaluator_code_version, input_hash,
+                      universe_hash, feature_hash, sample_count, domain_valid, raw_output
+               FROM analysis.research_evaluator_output
+               WHERE trial_result_id = %s AND evidence_kind = %s""",
+            [result_id, kind],
+        ).fetchone()
+        if prior_source is not None:
+            expected_source = (
+                EVALUATOR_ID, EVALUATOR_CODE_VERSION, trial_input_hash,
+                universe_hash, feature_hash, sample_count, True, payload,
+            )
+            prior_values = tuple(prior_source[key] for key in (
+                "evaluator_id", "evaluator_code_version", "input_hash", "universe_hash",
+                "feature_hash", "sample_count", "domain_valid", "raw_output",
+            ))
+            if prior_values != expected_source:
+                differing = next((index for index, (old, new) in enumerate(zip(prior_values, expected_source)) if old != new), -1)
+                raise ValueError(f"immutable evaluator output conflicts with the current trial ({kind}, field={differing})")
+            continue
+        source = connection.execute(
+            """INSERT INTO analysis.research_evaluator_output
+               (research_trial_id, trial_result_id, analysis_run_id, evidence_kind,
+                evaluator_id, evaluator_code_version, input_hash, universe_hash,
+                feature_hash, sample_count, domain_valid, raw_output)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s)
+               RETURNING id""",
+            [trial_id, result_id, run, kind, EVALUATOR_ID, EVALUATOR_CODE_VERSION,
+             trial_input_hash, universe_hash, feature_hash, sample_count, Jsonb(payload)],
+        ).fetchone()
+        if source is None:
+            raise ValueError(f"{kind} evaluator output was not persisted")
+    source_rows = connection.execute(
+        """SELECT id, evidence_kind, evaluator_id, evaluator_code_version,
+                  input_hash, universe_hash, feature_hash, sample_count,
+                  domain_valid, raw_output, output_hash
+           FROM analysis.research_evaluator_output
+           WHERE trial_result_id = %s ORDER BY evidence_kind""",
+        [result_id],
+    ).fetchall()
+    if len(source_rows) != 6:
+        raise ValueError("independent evaluator output set is incomplete")
+    for source in source_rows:
+        existing = connection.execute(
+            """SELECT evaluator_output_id, evaluator_id, evaluator_code_version,
+                      input_hash, universe_hash, feature_hash, sample_count,
+                      domain_valid, payload, evidence_hash
+               FROM analysis.research_evidence_manifest
+               WHERE trial_result_id = %s AND evidence_kind = %s""",
+            [result_id, source["evidence_kind"]],
+        ).fetchone()
+        values = (
+            source["id"], source["evaluator_id"], source["evaluator_code_version"],
+            source["input_hash"], source["universe_hash"], source["feature_hash"],
+            source["sample_count"], source["domain_valid"], source["raw_output"], source["output_hash"],
+        )
+        if existing is not None:
+            existing_values = tuple(existing[key] for key in (
+                "evaluator_output_id", "evaluator_id", "evaluator_code_version", "input_hash",
+                "universe_hash", "feature_hash", "sample_count", "domain_valid", "payload", "evidence_hash",
+            ))
+            if existing_values != values:
+                raise ValueError("immutable evidence manifest conflicts with evaluator output")
+            continue
         connection.execute(
             """INSERT INTO analysis.research_evidence_manifest
-               (research_trial_id, trial_result_id, evidence_kind, evaluator_id,
-                sample_count, domain_valid, payload)
-               VALUES (%s, %s, %s, %s, %s, true, %s)
-               ON CONFLICT (trial_result_id, evidence_kind) DO NOTHING""",
-            [trial_id, result_id, kind, evaluator_id, sample_count, Jsonb(payload)],
+               (research_trial_id, trial_result_id, evidence_kind,
+                evaluator_id, evaluator_code_version, input_hash, universe_hash,
+                feature_hash, evaluator_output_id, sample_count, domain_valid,
+                payload, evidence_hash)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            [trial_id, result_id, source["evidence_kind"], source["evaluator_id"],
+             source["evaluator_code_version"], source["input_hash"], source["universe_hash"],
+             source["feature_hash"], source["id"], source["sample_count"], source["domain_valid"],
+             Jsonb(source["raw_output"]), source["output_hash"]],
         )
+    source_validation = connection.execute(
+        "SELECT analysis.research_evidence_complete(%s) AS complete", [result_id]
+    ).fetchone()["complete"]
+    if not source_validation:
+        raise ValueError("independent research evaluator output set is incomplete")
+    # The manifest trigger compares all source arrays and metrics with the
+    # linked validation result. Full family and attempt completion is checked
+    # only after every planned trial has reached a terminal state.
     if not connection.execute(
         "SELECT analysis.research_evidence_complete(%s) AS complete", [result_id]
     ).fetchone()["complete"]:

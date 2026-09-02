@@ -105,6 +105,19 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
         assert research["dsr"] is not None
         assert research["gate_count"] == 5
         with runtime.read() as connection:
+            evidence = connection.execute(
+                """SELECT count(*) AS source_count,
+                          count(*) FILTER (WHERE manifest.evaluator_output_id IS NOT NULL
+                                           AND manifest.evidence_hash = source.output_hash) AS bound_count
+                   FROM analysis.research_evidence_manifest manifest
+                   JOIN analysis.research_evaluator_output source ON source.id = manifest.evaluator_output_id
+                   JOIN analysis.trial_result result ON result.id = manifest.trial_result_id
+                   JOIN analysis.validation_dossier dossier ON dossier.research_trial_id = result.research_trial_id
+                   WHERE dossier.strategy_revision_id = %s""",
+                [first["strategy_revision_id"]],
+            ).fetchone()
+        assert evidence == {"source_count": 6, "bound_count": 6}
+        with runtime.read() as connection:
             lineage = connection.execute(
                 """
                 SELECT hypothesis_id, experiment_family_id, research_trial_id,
