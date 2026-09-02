@@ -13,6 +13,7 @@ from investment_panel.core.phase2 import (
     MarketStatePosterior,
     PITObservation,
     ScenarioPath,
+    replay_scenario_path,
 )
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -95,7 +96,17 @@ class Phase2Repository:
             raise ValueError("Phase 2 coverage and posterior input hashes must match")
         if tuple(posterior.ingest_run_ids) != tuple(coverage.ingest_run_ids):
             raise ValueError("Phase 2 coverage and posterior ingest runs must match")
+        if not posterior.parent_snapshot_id or not coverage.parent_snapshot_id:
+            raise ValueError("Phase 2 posterior and coverage require a parent snapshot")
         paths = tuple(scenarios)
+        for path in paths:
+            if not replay_scenario_path(path):
+                raise ValueError("scenario path replay validation failed")
+            if (path.snapshot_id != coverage.parent_snapshot_id or path.parent_snapshot_id != coverage.parent_snapshot_id
+                    or path.posterior_id != posterior.posterior_id or path.model_version != posterior.contract_version
+                    or path.input_content_hash != posterior.input_content_hash
+                    or tuple(path.ingest_run_ids) != tuple(posterior.ingest_run_ids)):
+                raise ValueError("scenario path lineage does not reference its parent snapshot and posterior")
         with self.runtime.transaction() as connection:
             if coverage.parent_snapshot_id != posterior.parent_snapshot_id:
                 raise ValueError("Phase 2 coverage and posterior parent snapshots must match")

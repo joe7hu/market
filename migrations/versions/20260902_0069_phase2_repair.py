@@ -53,6 +53,12 @@ def upgrade() -> None:
             IF EXISTS (SELECT 1 FROM analysis.option_liquidity_sla) THEN
                 RAISE EXCEPTION 'Phase 2 upgrade refused: option_liquidity_sla rows need an explicit payload lineage backfill';
             END IF;
+            IF EXISTS (SELECT 1 FROM analysis.market_state_posterior WHERE parent_snapshot_id IS NULL) THEN
+                RAISE EXCEPTION 'Phase 2 upgrade refused: market_state_posterior rows need an explicit parent snapshot';
+            END IF;
+            IF EXISTS (SELECT 1 FROM analysis.market_coverage_vector WHERE parent_snapshot_id IS NULL) THEN
+                RAISE EXCEPTION 'Phase 2 upgrade refused: market_coverage_vector rows need an explicit parent snapshot';
+            END IF;
         END $$;
         ALTER TABLE raw.market_observation
             ALTER COLUMN payload_id SET NOT NULL;
@@ -60,6 +66,10 @@ def upgrade() -> None:
             ADD COLUMN payload_id BIGINT REFERENCES ingest.payload(id);
         ALTER TABLE analysis.option_liquidity_sla
             ALTER COLUMN payload_id SET NOT NULL;
+        ALTER TABLE analysis.market_state_posterior
+            ALTER COLUMN parent_snapshot_id SET NOT NULL;
+        ALTER TABLE analysis.market_coverage_vector
+            ALTER COLUMN parent_snapshot_id SET NOT NULL;
 
         CREATE FUNCTION ingest.reject_identity_update() RETURNS trigger
         LANGUAGE plpgsql AS $$

@@ -22,6 +22,7 @@ from investment_panel.core.phase2 import (
     select_point_in_time,
     source_status,
 )
+from investment_panel.database.phase2 import Phase2Repository
 
 
 AS_OF = datetime(2026, 9, 2, 14, tzinfo=UTC)
@@ -125,6 +126,10 @@ def test_p2_a02_unsupported_is_never_pit_selected_or_safe() -> None:
     assert vector.rows[0].status is Phase2Status.MISSING_HISTORY
     assert not vector.rows[0].point_in_time_safe
     assert source_status("coingecko") is Phase2Status.UNSUPPORTED
+    with pytest.raises(ValueError, match="not a supported"):
+        observation("retired", "macro.value", 1, source="coingecko")
+    forged = observation("forged-retired", "macro.value", 1).model_copy(update={"source_id": "coingecko"})
+    assert not select_point_in_time([forged], AS_OF).selected
 
 
 def test_p2_a10_mixed_fallback_and_missing_source_never_reports_available() -> None:
@@ -217,3 +222,23 @@ def test_p2_a11_scenario_hash_replays_and_tampering_fails() -> None:
     assert not replay_scenario_path(path.model_copy(update={"scenario_hash": "tampered"}))
     assert not replay_scenario_path(path.model_copy(update={"path_id": "tampered"}))
     assert not replay_scenario_path(path.model_copy(update={"parent_snapshot_id": "other-snapshot"}))
+
+
+class _NoopRuntime:
+    @contextmanager
+    def transaction(self):
+        yield None
+
+
+def test_p2_a11_publish_replays_paths_and_requires_snapshot_lineage() -> None:
+    rows = [observation("a", "macro.value", 1)]
+    posterior = build_market_state_posterior(rows, as_of=AS_OF, parent_snapshot_id="snapshot-1")
+    coverage = build_coverage_vector(AS_OF, {"x": {"macro": ("macro.value",)}}, rows, parent_snapshot_id="snapshot-1")
+    repository = Phase2Repository(_NoopRuntime())
+    invalid = build_scenario_paths("snapshot-1", posterior)[0].model_copy(update={"scenario_hash": "tampered"})
+    with pytest.raises(ValueError, match="replay validation"):
+        repository.publish(posterior, coverage, (invalid,))
+    missing_posterior = posterior.model_copy(update={"parent_snapshot_id": None})
+    missing_coverage = coverage.model_copy(update={"parent_snapshot_id": None})
+    with pytest.raises(ValueError, match="require a parent snapshot"):
+        repository.publish(missing_posterior, missing_coverage)

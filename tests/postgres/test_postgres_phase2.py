@@ -86,3 +86,26 @@ def test_phase2_market_app_has_writers_but_artifacts_remain_immutable(
         assert not privileges["lifecycle_insert"]
     finally:
         runtime.close()
+
+
+def test_phase2_artifact_snapshot_lineage_is_database_not_null(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.read() as connection:
+            rows = connection.execute(
+                """SELECT table_name, column_name, is_nullable
+                     FROM information_schema.columns
+                    WHERE table_schema = 'analysis'
+                      AND table_name IN ('market_state_posterior', 'market_coverage_vector')
+                      AND column_name = 'parent_snapshot_id'
+                    ORDER BY table_name""",
+            ).fetchall()
+        assert [(row["table_name"], row["is_nullable"]) for row in rows] == [
+            ("market_coverage_vector", "NO"),
+            ("market_state_posterior", "NO"),
+        ]
+    finally:
+        runtime.close()

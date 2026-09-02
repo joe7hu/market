@@ -141,6 +141,8 @@ class PITObservation(BaseModel):
             raise ValueError("Phase 2 source clocks must be timezone-aware")
         if self.status is Phase2Status.AVAILABLE and self.value is None:
             raise ValueError("available observations require a value")
+        if self.status in {Phase2Status.AVAILABLE, Phase2Status.FALLBACK} and _registry_status_for_fact(self.source_id) is Phase2Status.UNSUPPORTED:
+            raise ValueError(f"source {self.source_id!r} is not a supported Phase 2 source")
         return self
 
 
@@ -175,6 +177,16 @@ def source_status(source_id: str, *, env: Mapping[str, str] | None = None, has_h
     if not has_history:
         return Phase2Status.MISSING_HISTORY
     return Phase2Status.AVAILABLE
+
+
+def _registry_status_for_fact(source_id: str) -> Phase2Status:
+    """Classify a fact without requiring a real provider secret."""
+
+    contract = SOURCE_CONTRACTS.get(str(source_id))
+    if contract is None:
+        return Phase2Status.UNSUPPORTED
+    env = {contract.credential_env: "configured"} if contract.credential_env else {}
+    return source_status(source_id, env=env, has_history=True)
 
 
 def _status_value(value: Phase2Status | str) -> Phase2Status | None:
@@ -460,7 +472,7 @@ def select_point_in_time(
 ) -> PITSelection:
     cutoff = _utc(cutoff)
     excluded = {Phase2Status.UNSUPPORTED, Phase2Status.STALE, Phase2Status.MISSING_SOURCE, Phase2Status.MISSING_HISTORY}
-    eligible = tuple(sorted((row for row in observations if row.status not in excluded and _source_is_usable(row.source_id, source_lifecycle, cutoff) and _utc(row.observed_at) <= cutoff and _utc(row.available_at) <= cutoff), key=lambda row: (row.field_name, _utc(row.observed_at), _utc(row.available_at), row.source_id, row.observation_id)))
+    eligible = tuple(sorted((row for row in observations if row.status not in excluded and _registry_status_for_fact(row.source_id) is not Phase2Status.UNSUPPORTED and _source_is_usable(row.source_id, source_lifecycle, cutoff) and _utc(row.observed_at) <= cutoff and _utc(row.available_at) <= cutoff), key=lambda row: (row.field_name, _utc(row.observed_at), _utc(row.available_at), row.source_id, row.observation_id)))
     grouped: dict[tuple[str, datetime], list[PITObservation]] = defaultdict(list)
     for row in eligible:
         grouped[(row.field_name, _utc(row.observed_at))].append(row)
@@ -605,6 +617,8 @@ class MarketStatePosterior(BaseModel):
     phase1_evidence_verified: bool = False
     phase1_evidence_id: str | None = None
     phase1_evidence_hash: str | None = None
+    phase1_strategy_revision_id: int | None = None
+    phase1_strategy_key: str | None = None
 
     @model_validator(mode="after")
     def preserve_advisory_boundary(self) -> "MarketStatePosterior":
@@ -754,7 +768,8 @@ def posterior_can_influence_rank(posterior: MarketStatePosterior, *, runtime: An
 
     if runtime is None or posterior.advisory_only or not posterior.rank_authorized:
         return False
-    if not posterior.phase1_evidence_id or not posterior.phase1_evidence_hash:
+    if (not posterior.phase1_evidence_id or not posterior.phase1_evidence_hash
+            or posterior.phase1_strategy_revision_id is None or not posterior.phase1_strategy_key):
         return False
     # Caller mappings and model_copy fields are not evidence.  The only
     # authorizing fact is the canonical PostgreSQL Phase 1 result and its
@@ -764,7 +779,8 @@ def posterior_can_influence_rank(posterior: MarketStatePosterior, *, runtime: An
             row = connection.execute(
                 """SELECT result.result_kind, result.input_hash,
                           trial.input_hash AS trial_input_hash,
-                          dossier.strategy_revision_id, revision.strategy_key,
+                          dossier.strategy_revision_id, revision.id AS canonical_strategy_revision_id,
+                          revision.strategy_key,
                           revision.status AS strategy_status,
                           evaluation.verdict AS evaluation_verdict,
                           evaluation.metrics AS evaluation_metrics,
@@ -786,7 +802,10 @@ def posterior_can_influence_rank(posterior: MarketStatePosterior, *, runtime: An
         return False
     if str(row["input_hash"]) != str(row["trial_input_hash"]) or str(row["input_hash"]) != posterior.phase1_evidence_hash:
         return False
-    if not row["strategy_revision_id"] or not row["strategy_key"] or row["strategy_status"] not in {"active", "superseded"}:
+    if (not row["strategy_revision_id"] or not row["strategy_key"]
+            or row["strategy_status"] not in {"active", "superseded"}
+            or int(row["canonical_strategy_revision_id"]) != posterior.phase1_strategy_revision_id
+            or str(row["strategy_key"]) != posterior.phase1_strategy_key):
         return False
     if row["evaluation_verdict"] != "pass":
         return False
