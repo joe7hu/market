@@ -562,40 +562,38 @@ def _persist_research_evidence(
             "p_values": p_values, "metrics": multiple,
         }),
     )
-    run = connection.execute(
-        """INSERT INTO analysis.run
-           (run_type, input_cutoff, code_version, feature_versions, input_hash, inputs,
-            started_at, finished_at, status, summary)
-           VALUES ('research_evaluator', (SELECT input_cutoff FROM analysis.research_trial WHERE id = %s),
-                   %s, %s, %s, %s, clock_timestamp(), clock_timestamp(), 'succeeded', %s)
-           RETURNING id""",
-        [trial_id, EVALUATOR_CODE_VERSION, Jsonb({"model": MODEL_VERSION, "feature": FEATURE_VERSION}),
-         trial_input_hash, Jsonb({"trial_result_id": str(result_id), "evidence_groups": 6}),
-         Jsonb({"trial_result_id": str(result_id), "evaluator_id": EVALUATOR_ID})],
-    ).fetchone()["id"]
+    existing_run = connection.execute(
+        """SELECT id
+           FROM analysis.run
+           WHERE run_type = 'research_evaluator'
+             AND input_hash = %s
+             AND inputs->>'trial_result_id' = %s
+           ORDER BY started_at, id
+           LIMIT 1""",
+        [trial_input_hash, str(result_id)],
+    ).fetchone()
+    if existing_run is not None:
+        # Replays use the original immutable evaluator run. This keeps the
+        # writer's exact trial/result/run identity while retaining idempotent
+        # publication of the same research result.
+        run = existing_run["id"]
+    else:
+        run = connection.execute(
+            """INSERT INTO analysis.run
+               (run_type, input_cutoff, code_version, feature_versions, input_hash, inputs,
+                started_at, finished_at, status, summary)
+               VALUES ('research_evaluator', (SELECT input_cutoff FROM analysis.research_trial WHERE id = %s),
+                       %s, %s, %s, %s, clock_timestamp(), clock_timestamp(), 'succeeded', %s)
+               RETURNING id""",
+            [trial_id, EVALUATOR_CODE_VERSION, Jsonb({"model": MODEL_VERSION, "feature": FEATURE_VERSION}),
+             trial_input_hash, Jsonb({"trial_result_id": str(result_id), "evidence_groups": 6}),
+             Jsonb({"trial_result_id": str(result_id), "evaluator_id": EVALUATOR_ID})],
+        ).fetchone()["id"]
+    sample_counts = {kind: sample_count for kind, sample_count, _ in rows}
+    persisted_sources: dict[str, tuple[Any, Any, Mapping[str, Any]]] = {}
     for kind, sample_count, payload in rows:
         if sample_count <= 0:
             raise ValueError(f"{kind} evidence is missing raw evaluator output")
-        prior_source = connection.execute(
-            """SELECT evaluator_id, evaluator_code_version, input_hash,
-                      universe_hash, feature_hash, sample_count, domain_valid, raw_output
-               FROM analysis.research_evaluator_output
-               WHERE trial_result_id = %s AND evidence_kind = %s""",
-            [result_id, kind],
-        ).fetchone()
-        if prior_source is not None:
-            expected_source = (
-                EVALUATOR_ID, EVALUATOR_CODE_VERSION, trial_input_hash,
-                universe_hash, feature_hash, sample_count, True, payload,
-            )
-            prior_values = tuple(prior_source[key] for key in (
-                "evaluator_id", "evaluator_code_version", "input_hash", "universe_hash",
-                "feature_hash", "sample_count", "domain_valid", "raw_output",
-            ))
-            if prior_values != expected_source:
-                differing = next((index for index, (old, new) in enumerate(zip(prior_values, expected_source)) if old != new), -1)
-                raise ValueError(f"immutable evaluator output conflicts with the current trial ({kind}, field={differing})")
-            continue
         authorization_payload = connection.execute(
             """SELECT analysis.research_evaluator_authorization_payload(
                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s) AS payload""",
@@ -617,17 +615,17 @@ def _persist_research_evidence(
         ).fetchone()
         if source is None:
             raise ValueError(f"{kind} evaluator output was not persisted")
-    source_rows = connection.execute(
-        """SELECT id, evidence_kind, evaluator_id, evaluator_code_version,
-                  input_hash, universe_hash, feature_hash, sample_count,
-                  domain_valid, raw_output, output_hash
-           FROM analysis.research_evaluator_output
-           WHERE trial_result_id = %s ORDER BY evidence_kind""",
-        [result_id],
-    ).fetchall()
-    if len(source_rows) != 6:
+        persisted_sources[kind] = (source["id"], source["output_hash"], payload)
+    if len(persisted_sources) != 6:
         raise ValueError("independent evaluator output set is incomplete")
-    for source in source_rows:
+    for kind, (source_id, source_hash, payload) in sorted(persisted_sources.items()):
+        source = {
+            "id": source_id, "evidence_kind": kind,
+            "evaluator_id": EVALUATOR_ID, "evaluator_code_version": EVALUATOR_CODE_VERSION,
+            "input_hash": trial_input_hash, "universe_hash": universe_hash,
+            "feature_hash": feature_hash, "sample_count": sample_counts[kind],
+            "domain_valid": True, "raw_output": payload, "output_hash": source_hash,
+        }
         existing = connection.execute(
             """SELECT evaluator_output_id, evaluator_id, evaluator_code_version,
                       input_hash, universe_hash, feature_hash, sample_count,
