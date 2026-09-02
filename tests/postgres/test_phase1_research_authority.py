@@ -33,13 +33,13 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             "pit": {"passed": True, "domain_valid": True, "future_count": 0, "observed_count": 1},
             "denominator": {"passed": True, "domain_valid": True, "expected_count": 1, "observed_count": 1},
             "attempt_manifest": {"passed": True, "domain_valid": True, "expected_count": 2, "completed_count": 2},
-            "negative_controls": {"passed": True, "domain_valid": True, "controls_present": True, "randomized_sample_count": 1, "white_noise_sample_count": 1},
-            "mechanism": {"passed": True, "domain_valid": True, "evidence_count": 1, "mechanism_class": "quality", "falsification_rule": "negative"},
-            "parameter_stability": {"passed": True, "domain_valid": True, "sample_size": 3},
-            "neutralization": {"passed": True, "domain_valid": True, "result_exists": True, "sample_size": 1},
+            "negative_controls": {"passed": True, "domain_valid": True, "controls_present": True, "randomized_sample_count": 1, "white_noise_sample_count": 1, "randomized_label_samples": [0.0], "white_noise_samples": [0.0]},
+            "mechanism": {"passed": True, "domain_valid": True, "evidence_count": 1, "evidence_samples": [0.1], "mechanism_class": "quality", "falsification_rule": "negative"},
+            "parameter_stability": {"passed": True, "domain_valid": True, "sample_size": 3, "samples": [0.1, 0.1, 0.1]},
+            "neutralization": {"passed": True, "domain_valid": True, "result_exists": True, "sample_size": 1, "samples": [0.1]},
             "combinatorial_paths": {"passed": True, "domain_valid": True, "path_count": 1, "path_records": [{"path_id": "manual-0", "test_folds": [0], "train_folds": [1], "metrics": {"domain_valid": True, "sample_size": 1, "mean_return": 0.1, "psr": 0.9, "p_value": 0.1, "fit_train_count": 1, "evaluated_test_count": 1}}]},
             "robustness": {"passed": True, "domain_valid": True, "negative_controls": {"passed": True, "domain_valid": True, "controls_present": True, "randomized_sample_count": 1, "white_noise_sample_count": 1}, "parameter_stability": {"passed": True, "domain_valid": True, "sample_size": 3}, "combinatorial_paths": {"passed": True, "domain_valid": True, "path_count": 1, "path_records": [{"path_id": "manual-0", "test_folds": [0], "train_folds": [1], "metrics": {"domain_valid": True, "sample_size": 1, "mean_return": 0.1, "psr": 0.9, "p_value": 0.1, "fit_train_count": 1, "evaluated_test_count": 1}}]}},
-            "multiple_testing": {"psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1, "domain_valid": True, "paths_domain_valid": True, "p_values_domain_valid": True, "trials_tested": 2, "sample_size": 1, "path_count": 1, "p_value_count": 1},
+            "multiple_testing": {"psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1, "domain_valid": True, "paths_domain_valid": True, "p_values_domain_valid": True, "trials_tested": 2, "sample_size": 1, "path_count": 1, "p_value_count": 1, "path_returns": [0.1], "p_values": [0.1]},
             "cost_capacity": {"passed": True, "domain_valid": True, "multiples": {"1x": {"net_return": 0.1, "capacity": 1.0}, "2x": {"net_return": 0.09, "capacity": 0.5}, "3x": {"net_return": 0.08, "capacity": 0.333}}},
             "predictive": {"passed": True, "domain_valid": True, "metrics": {"domain_valid": True, "sample_size": 1, "path_count": 1, "p_value_count": 1, "trials_tested": 2, "psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1}},
         }
@@ -165,6 +165,34 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             "SELECT id FROM analysis.trial_result WHERE research_trial_id = %s AND result_kind = 'validation'",
             [successful_trial],
         ).fetchone()[0]
+        evidence_payloads = {
+            "controls": {"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "randomized_label_samples": [0.0], "white_noise_samples": [0.0]},
+            "cpcv_paths": {"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "path_count": 1, "path_records": successful_checks["combinatorial_paths"]["path_records"]},
+            "neutralization": {"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "samples": [0.1]},
+            "parameter_stability": {"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "samples": [0.1, 0.1, 0.1]},
+            "mechanism_falsification": {"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "samples": [0.1]},
+            "multiple_testing": {"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "path_returns": [0.1], "p_values": [0.1], "metrics": successful_checks["multiple_testing"]},
+        }
+        for kind, payload in evidence_payloads.items():
+            connection.execute(
+                """INSERT INTO analysis.research_evidence_manifest
+                   (research_trial_id, trial_result_id, evidence_kind, evaluator_id, sample_count, domain_valid, payload)
+                   VALUES (%s, %s, %s, 'fixture.v1', %s, true, %s)""",
+                [successful_trial, validation_result, kind, 2 if kind == "controls" else 3 if kind == "parameter_stability" else 1, Jsonb(payload)],
+            )
+        numeric_formats = connection.execute(
+            "SELECT analysis.canonical_forecast_number(1.0), analysis.canonical_forecast_number(0.0), analysis.canonical_forecast_number(0.1000)"
+        ).fetchone()
+        assert tuple(numeric_formats) == ("1", "0", "0.1")
+        connection.execute("SAVEPOINT fabricated_evidence")
+        with pytest.raises(psycopg.errors.RaiseException, match="linked non-empty|incomplete"):
+            connection.execute(
+                """INSERT INTO analysis.research_evidence_manifest
+                   (research_trial_id, trial_result_id, evidence_kind, evaluator_id, sample_count, domain_valid, payload)
+                   VALUES (%s, %s, 'controls', 'fixture.v1', 2, true, %s)""",
+                [successful_trial, validation_result, Jsonb({"trial_input_hash": "9" * 64, "evaluator_id": "fixture.v1", "randomized_label_samples": [0.9], "white_noise_samples": [0.0]})],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT fabricated_evidence")
         gate_check_names = {
             "pit_integrity": ["pit"],
             "denominator_completeness": ["denominator", "attempt_manifest"],
@@ -172,6 +200,10 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             "falsification_and_robustness": ["mechanism", "negative_controls", "parameter_stability", "neutralization", "combinatorial_paths", "robustness"],
             "economic_promotability": ["cost_capacity", "neutralization"],
         }
+        evidence_hashes = [row[0] for row in connection.execute(
+            "SELECT evidence_hash FROM analysis.research_evidence_manifest WHERE trial_result_id = %s ORDER BY evidence_kind",
+            [validation_result],
+        ).fetchall()]
         connection.execute("SAVEPOINT forged_gate_evidence")
         for gate in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             connection.execute(
@@ -184,7 +216,7 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
         for gate in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             connection.execute(
                 "INSERT INTO analysis.validation_gate_result (dossier_id, gate_code, verdict, metrics, evidence, available_at) VALUES (%s, %s, 'pass', %s, %s, now())",
-                [dossier, gate, Jsonb({"passed": True, "domain_valid": True, "validation_result_id": str(validation_result), "validation_result_input_hash": "9" * 64, "checks": {name: successful_checks[name] for name in gate_check_names[gate]}}), Jsonb({"trial_result_id": str(validation_result), "input_hash": "9" * 64, "checks": gate_check_names[gate]})],
+                    [dossier, gate, Jsonb({"passed": True, "domain_valid": True, "validation_result_id": str(validation_result), "validation_result_input_hash": "9" * 64, "evidence_manifest_hashes": evidence_hashes, "checks": {name: successful_checks[name] for name in gate_check_names[gate]}}), Jsonb({"trial_result_id": str(validation_result), "input_hash": "9" * 64, "checks": gate_check_names[gate]})],
             )
         connection.execute("UPDATE analysis.validation_dossier SET sections = %s, status = 'sealed' WHERE id = %s", [sections, dossier])
         evaluation = connection.execute(

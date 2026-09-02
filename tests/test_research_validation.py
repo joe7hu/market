@@ -117,3 +117,19 @@ def test_strategy_forecast_identity_normalizes_exact_second_utc_timestamps() -> 
     payload["generated_at"] = "2026-08-22T13:59:00.000000+00:00"
     payload["available_at"] = "2026-08-22T13:59:00.000000+00:00"
     assert strategy_forecast_id_for_payload(payload) == forecast.strategy_forecast_id
+
+
+def test_strategy_forecast_identity_normalizes_equivalent_numeric_forms() -> None:
+    base = {
+        "contract_version": "strategy-forecast.v1", "ticker": "ACME",
+        "opportunity_episode_id": "episode:acme", "strategy_revision_id": 1,
+        "strategy_evaluation_id": None, "target": "return", "horizon": "1d",
+        "forecast_value": 1.0, "forecast_range": {"low": 0.0, "high": 1.0},
+        "forecast_distribution": {"positive": 1.0}, "probability_semantics": "P(positive)",
+        "model_artifact_id": "artifact", "artifact_hash": "a" * 64,
+        "input_hash": "b" * 64, "as_of": "2026-08-22T14:00:00Z",
+        "input_cutoff": "2026-08-22T14:00:00.000000+00:00",
+        "generated_at": "2026-08-22T13:59:00Z", "available_at": "2026-08-22T13:59:00Z",
+    }
+    equivalent = {**base, "forecast_value": "1", "forecast_range": {"low": "0", "high": "1.000"}, "forecast_distribution": {"positive": "1.0000"}}
+    assert strategy_forecast_id_for_payload(base) == strategy_forecast_id_for_payload(equivalent)

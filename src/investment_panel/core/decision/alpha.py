@@ -8,6 +8,7 @@ order authority by accident.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from math import isfinite
@@ -957,7 +958,18 @@ def strategy_forecast_id_for_payload(value: Mapping[str, Any]) -> str:
 
 
 def _canonical_scalar(value: Any) -> str | None:
-    return None if value is None else str(value)
+    if value is None:
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return str(value)
+    if not number.is_finite():
+        raise ValueError("forecast numeric payload must be finite")
+    text = format(number, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _jsonable(value: Any) -> Any:

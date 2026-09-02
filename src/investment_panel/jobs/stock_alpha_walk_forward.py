@@ -470,12 +470,76 @@ def _ensure_research_prerequisites(
                 raise ValueError("immutable trial result conflicts with the planned trial outcome")
         if primary_result_id is None:
             primary_result_id = result["id"]
+        if validation.get("passed"):
+            _persist_research_evidence(
+                connection, trial_id=trial_id, result_id=result["id"],
+                trial_input_hash=trial_hash, validation=validation,
+            )
         if trial["status"] == "running":
             connection.execute(
                 "UPDATE analysis.research_trial SET status = %s, failure_reason = %s, finished_at = clock_timestamp(), outcome = %s WHERE id = %s",
                 ["succeeded" if validation.get("passed") else "failed", None if validation.get("passed") else validation.get("reason"), Jsonb(validation), trial_id],
             )
     return hypothesis, family, primary_trial_id, primary_result_id
+
+
+def _persist_research_evidence(
+    connection: Any, *, trial_id: Any, result_id: Any, trial_input_hash: str,
+    validation: Mapping[str, Any],
+) -> None:
+    """Persist source-shaped evidence before a validation dossier can seal."""
+
+    checks = dict(validation.get("checks") or {})
+    evaluator_id = "stock_alpha_walk_forward.v1"
+    controls = dict(checks.get("negative_controls") or {})
+    cpcv = dict(checks.get("combinatorial_paths") or {})
+    neutral = dict(checks.get("neutralization") or {})
+    stability = dict(checks.get("parameter_stability") or {})
+    mechanism = dict(checks.get("mechanism") or {})
+    multiple = dict(checks.get("multiple_testing") or {})
+    rows = (
+        ("controls", len(controls.get("randomized_label_samples") or ()) + len(controls.get("white_noise_samples") or ()), {
+            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
+            "randomized_label_samples": list(controls.get("randomized_label_samples") or ()),
+            "white_noise_samples": list(controls.get("white_noise_samples") or ()),
+        }),
+        ("cpcv_paths", len(cpcv.get("path_records") or ()), {
+            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
+            "path_count": cpcv.get("path_count"), "path_records": list(cpcv.get("path_records") or ()),
+        }),
+        ("neutralization", len(neutral.get("samples") or ()), {
+            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
+            "samples": list(neutral.get("samples") or ()),
+        }),
+        ("parameter_stability", len(stability.get("samples") or ()), {
+            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
+            "samples": list(stability.get("samples") or ()),
+        }),
+        ("mechanism_falsification", len(mechanism.get("evidence_samples") or ()), {
+            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
+            "samples": list(mechanism.get("evidence_samples") or ()),
+        }),
+        ("multiple_testing", len(multiple.get("path_returns") or ()), {
+            "trial_input_hash": trial_input_hash, "evaluator_id": evaluator_id,
+            "path_returns": list(multiple.get("path_returns") or ()),
+            "p_values": list(multiple.get("p_values") or ()), "metrics": multiple,
+        }),
+    )
+    for kind, sample_count, payload in rows:
+        if sample_count <= 0:
+            raise ValueError(f"{kind} evidence is missing source samples")
+        connection.execute(
+            """INSERT INTO analysis.research_evidence_manifest
+               (research_trial_id, trial_result_id, evidence_kind, evaluator_id,
+                sample_count, domain_valid, payload)
+               VALUES (%s, %s, %s, %s, %s, true, %s)
+               ON CONFLICT (trial_result_id, evidence_kind) DO NOTHING""",
+            [trial_id, result_id, kind, evaluator_id, sample_count, Jsonb(payload)],
+        )
+    if not connection.execute(
+        "SELECT analysis.research_evidence_complete(%s) AS complete", [result_id]
+    ).fetchone()["complete"]:
+        raise ValueError("independent research evidence manifest is incomplete")
 
 
 def _ensure_research_dossier(
@@ -498,8 +562,19 @@ def _ensure_research_dossier(
                 "required_cost_multiples": ["1x", "2x", "3x"],
             }), artifact["artifact_id"], artifact["artifact_hash"]],
         ).fetchone()
+    if dossier["status"] == "draft" and not validation.get("passed"):
+        return dossier["id"]
     if dossier["status"] == "draft":
         checks = dict(validation.get("checks") or {})
+        evidence_rows = connection.execute(
+            """SELECT id, evidence_kind, evidence_hash
+               FROM analysis.research_evidence_manifest
+               WHERE trial_result_id = %s ORDER BY evidence_kind""",
+            [result_id],
+        ).fetchall()
+        if len(evidence_rows) != 6:
+            raise ValueError("dossier requires six independent research evidence manifests")
+        evidence_hashes = [str(row["evidence_hash"]) for row in evidence_rows]
         for code in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             gate = dict((validation.get("gates") or {}).get(code) or {})
             # Store the complete immutable check object on every gate. This
@@ -517,12 +592,14 @@ def _ensure_research_dossier(
                 "validation_result_input_hash": str(connection.execute(
                     "SELECT input_hash FROM analysis.trial_result WHERE id = %s", [result_id]
                 ).fetchone()["input_hash"]),
+                "evidence_manifest_hashes": evidence_hashes,
             }), Jsonb({
                 "trial_result_id": str(result_id),
                 "input_hash": str(connection.execute(
                     "SELECT input_hash FROM analysis.trial_result WHERE id = %s", [result_id]
                 ).fetchone()["input_hash"]),
                 "checks": list(evidence_checks),
+                "evidence_manifest_ids": [str(row["id"]) for row in evidence_rows],
             })],
             )
         if seal:

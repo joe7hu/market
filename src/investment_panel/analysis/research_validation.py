@@ -18,9 +18,10 @@ GATE_CODES = (
 
 
 def mechanism_and_falsification(*, mechanism_class: str, falsification_rule: str, evidence: Iterable[Any] = ()) -> dict[str, Any]:
-    count = min(10_000, sum(1 for _ in evidence))
+    evidence_samples = list(evidence)[:10_000]
+    count = len(evidence_samples)
     passed = bool(mechanism_class.strip()) and bool(falsification_rule.strip()) and count > 0
-    return {"passed": passed, "domain_valid": count > 0, "mechanism_class": mechanism_class.strip(), "falsification_rule": falsification_rule.strip(), "evidence_count": count, "reason": None if passed else "mechanism_or_falsification_evidence_missing"}
+    return {"passed": passed, "domain_valid": count > 0, "mechanism_class": mechanism_class.strip(), "falsification_rule": falsification_rule.strip(), "evidence_count": count, "evidence_samples": evidence_samples, "reason": None if passed else "mechanism_or_falsification_evidence_missing"}
 
 
 def negative_control(observed: Sequence[float], *, randomized: Sequence[float] = (), white_noise: Sequence[float] = (), tolerance: float = 0.0) -> dict[str, Any]:
@@ -45,6 +46,8 @@ def negative_control(observed: Sequence[float], *, randomized: Sequence[float] =
         "randomized_edge": randomized_edge, "white_noise_edge": noise_edge,
         "randomized_sample_count": len(randomized_values),
         "white_noise_sample_count": len(white_noise_values),
+        "randomized_label_samples": randomized_values,
+        "white_noise_samples": white_noise_values,
         "tolerance": tolerance, "controls_present": controls_present,
         "domain_valid": controls_domain_valid,
         "persistent_positive_edge": any(value > tolerance for value in controls),
@@ -215,6 +218,8 @@ def multiple_testing_metrics(
         "p_values_domain_valid": p_values_domain_valid,
         "domain_valid": domain_valid,
         "dsr_reference": "path_returns" if clean_paths else "returns",
+        "path_returns": clean_paths,
+        "p_values": family_p,
     }
 
 
@@ -234,14 +239,14 @@ def parameter_stability(neighborhood: Sequence[Mapping[str, Any]], *, metric: st
     center = values[len(values) // 2]
     spread = max(abs(value - center) for value in values)
     passed = center > 0 and spread <= max(abs(center) * tolerance, 1e-12)
-    return {"passed": passed, "domain_valid": True, "sample_size": len(values), "center": center, "max_deviation": spread, "reason": None if passed else "parameter_neighborhood_unstable"}
+    return {"passed": passed, "domain_valid": True, "sample_size": len(values), "samples": values, "center": center, "max_deviation": spread, "reason": None if passed else "parameter_neighborhood_unstable"}
 
 
 def neutralization(*, gross_returns: Sequence[float], neutralized_returns: Sequence[float]) -> dict[str, Any]:
     gross = fmean([float(value) for value in gross_returns]) if gross_returns else 0.0
     neutral = fmean([float(value) for value in neutralized_returns]) if neutralized_returns else 0.0
     finite = bool(neutralized_returns) and len(gross_returns) == len(neutralized_returns) and all(isfinite(float(value)) for value in neutralized_returns)
-    return {"passed": finite, "gross_mean": gross, "neutralized_mean": neutral, "result_exists": bool(neutralized_returns), "domain_valid": finite, "reason": None if finite else "neutralized_result_missing_or_invalid"}
+    return {"passed": finite, "gross_mean": gross, "neutralized_mean": neutral, "result_exists": bool(neutralized_returns), "sample_size": len(neutralized_returns), "samples": [float(value) for value in neutralized_returns], "domain_valid": finite, "reason": None if finite else "neutralized_result_missing_or_invalid"}
 
 
 def cost_capacity_stress(*, gross_return: float, base_cost: float, capacity: float = 1.0) -> dict[str, Any]:
