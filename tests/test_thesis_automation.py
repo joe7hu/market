@@ -152,7 +152,8 @@ def test_preopen_skips_codex_when_decision_inputs_are_unchanged(
     repository.finish_run(run_id, status="succeeded", usage={"input_tokens": 1, "output_tokens": 1})
     with psycopg.connect(migrated_postgres_dsn) as connection:
         connection.execute(
-            "UPDATE app.thesis_automation_run SET started_at = now() - interval '1 day', "
+            "UPDATE app.thesis_automation_run SET started_at = (((now() AT TIME ZONE 'America/New_York')::date - 1) "
+            "+ time '23:30') AT TIME ZONE 'America/New_York', "
             "evidence_fingerprint = %s WHERE id = %s",
             [fingerprint, run_id],
         )

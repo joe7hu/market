@@ -263,6 +263,7 @@ def test_today_missing_plan_field_state_preserves_blocker_semantics(
 
 def test_non_today_snapshot_caches_compiled_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     panel_owner.invalidate_context_cache()
+    _use_postgres_api(monkeypatch, "postgresql:///snapshot-cache")
     loads = 0
     builds = 0
     panel = PanelData(status=DataStatus(True, "loaded", "test"), tables={})

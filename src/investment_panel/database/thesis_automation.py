@@ -47,7 +47,8 @@ class ThesisAutomationRepository:
                     """
                     SELECT 1 FROM app.thesis_automation_run
                     WHERE instrument_id = %s AND trigger = 'preopen'
-                      AND started_at::date = (now() AT TIME ZONE 'America/New_York')::date
+                      AND (started_at AT TIME ZONE 'America/New_York')::date
+                          = (now() AT TIME ZONE 'America/New_York')::date
                       AND status IN ('running', 'succeeded')
                     LIMIT 1
                     """,
