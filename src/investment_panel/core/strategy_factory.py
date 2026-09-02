@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from hashlib import sha256
 import json
 from math import isfinite
@@ -19,6 +20,16 @@ MECHANISM_CLASSES = (
 MANIFEST_PARTS = ("source", "data", "cost", "capacity", "failure")
 
 
+def strategy_family_for_key(strategy_key: str, mechanism_class: str = "", name: str = "") -> str:
+    if "martingale" in f"{strategy_key} {mechanism_class} {name}".lower():
+        return "martingale"
+    return "legacy"
+
+
+def is_martingale_family(strategy_key: str, mechanism_class: str = "", name: str = "", strategy_family: str = "") -> bool:
+    return strategy_family.lower() == "martingale" or strategy_family_for_key(strategy_key, mechanism_class, name) == "martingale"
+
+
 class StrategySpec(BaseModel):
     """One versioned strategy definition shared by all research families."""
 
@@ -31,6 +42,7 @@ class StrategySpec(BaseModel):
     economic_mechanism: str = Field(min_length=1)
     falsification_rule: str = Field(min_length=1)
     source_definition_version: str = Field(min_length=1)
+    strategy_family: str = "legacy"
     promotability: str = "standard"
     actionability: str = "daily_research"
     manifest: dict[str, Any]
@@ -39,7 +51,7 @@ class StrategySpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_definition(self) -> "StrategySpec":
-        if self.mechanism_class not in MECHANISM_CLASSES and self.mechanism_class not in {"crypto_basis", "flow_supporting"}:
+        if self.mechanism_class not in MECHANISM_CLASSES and self.mechanism_class not in {"crypto_basis", "flow_supporting", "martingale"}:
             raise ValueError("unknown strategy mechanism class")
         if not self.strategy_key.endswith(f"_v{self.revision}"):
             raise ValueError("strategy key must include its source revision")
@@ -49,8 +61,12 @@ class StrategySpec(BaseModel):
             raise ValueError("strategy manifest parts must be non-empty objects")
         if self.promotability not in {"standard", "negative_control", "registration_only", "exposure_sleeve"}:
             raise ValueError("unknown strategy promotability")
-        if self.promotability == "negative_control" and self.strategy_key != "martingale_v1":
-            raise ValueError("only martingale_v1 may be a permanent negative control")
+        if self.promotability == "negative_control" and not is_martingale_family(self.strategy_key, self.mechanism_class, self.name, self.strategy_family):
+            raise ValueError("only the martingale strategy family may be a permanent negative control")
+        if is_martingale_family(self.strategy_key, self.mechanism_class, self.name, self.strategy_family) and (
+            self.promotability != "negative_control" or self.actionability != "research_only"
+        ):
+            raise ValueError("Martingale variants are permanent research-only negative controls")
         return self
 
     @property
@@ -79,6 +95,13 @@ class StrategyImplementation(Protocol):
 
 
 class StrategyRegistry:
+    """Compatibility-only registration catalog, never runtime authority.
+
+    Production resolution and forecasting use StrategyFactoryRepository, which
+    reads the PostgreSQL registry and manifest. This catalog exists only for
+    deterministic built-in registration specifications and pure unit tests.
+    """
+
     def __init__(self, strategies: tuple[StrategySpec, ...] = (), handlers: Mapping[str, Any] | None = None) -> None:
         self._specs = {item.strategy_key: item for item in strategies}
         self._handlers = dict(handlers or {})
@@ -124,8 +147,32 @@ def _number(value: Any) -> float | None:
 
 
 def _daily_rows(inputs: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    rows = [row for row in inputs.get("daily_bars", ()) if isinstance(row, Mapping)]
+    cutoff = _parse_clock(inputs.get("input_cutoff"))
+    if cutoff is None:
+        return []
+    rows = [
+        row for row in inputs.get("daily_bars", ())
+        if isinstance(row, Mapping)
+        and (observed := _parse_clock(row.get("observed_at"))) is not None
+        and (available := _parse_clock(row.get("available_at"))) is not None
+        and observed <= cutoff and available <= cutoff
+    ]
     return sorted(rows, key=lambda row: (str(row.get("trading_date") or row.get("date") or ""), str(row.get("id") or "")))
+
+
+def _parse_clock(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def daily_trend_underreaction(inputs: Mapping[str, Any], *, strategy_key: str = "daily_trend_underreaction_v1") -> StrategySignal:
@@ -156,14 +203,20 @@ def daily_gap_regime(inputs: Mapping[str, Any], *, strategy_key: str = "daily_ga
     return StrategySignal(
         strategy_key=strategy_key, status="available", value=gap,
         direction="continuation" if gap else "flat", regime=regime,
-        evidence={"gap_pct": gap, "decision": "continuation_vs_reversal_requires_oos_regime_evidence"},
+        evidence={"gap_pct": gap, "branches": ("continuation", "reversal"), "decision": "continuation_vs_reversal_requires_oos_regime_evidence"},
     )
 
 
 def event_propagation(inputs: Mapping[str, Any], *, strategy_key: str = "daily_event_propagation_v1") -> StrategySignal:
     event = inputs.get("event")
-    if not isinstance(event, Mapping) or not event.get("release_at"):
+    cutoff = _parse_clock(inputs.get("input_cutoff"))
+    if not isinstance(event, Mapping) or cutoff is None or not event.get("release_at"):
         return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_release_clock_missing",))
+    release_at = _parse_clock(event.get("release_at"))
+    observed_at = _parse_clock(event.get("observed_at"))
+    available_at = _parse_clock(event.get("available_at"))
+    if release_at is None or observed_at is None or available_at is None or release_at > cutoff or observed_at > cutoff or available_at > cutoff:
+        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_clock_invalid_or_future",))
     actual, consensus = _number(event.get("actual")), _number(event.get("consensus"))
     if actual is None or consensus is None:
         return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_actual_or_consensus_missing",))
@@ -174,16 +227,21 @@ def event_propagation(inputs: Mapping[str, Any], *, strategy_key: str = "daily_e
         direction="long" if surprise > 0 else "short" if surprise < 0 else "flat",
         actionability="daily_research" if fill_ready else "shadow_only",
         blockers=() if fill_ready else ("event_time_fill_model_unproven",),
-        evidence={"release_at": str(event["release_at"]), "surprise": surprise, "daily_only": True},
+        evidence={"release_at": release_at.isoformat(), "surprise": surprise, "daily_only": True},
     )
 
 
 def options_recovery_v2(inputs: Mapping[str, Any], *, strategy_key: str = "options_recovery_v2") -> StrategySignal:
-    required = ("full_chain_state", "oi_volume_state", "dividend_state", "quote_quality", "fill_model_proven")
-    blockers = tuple(f"{key}_missing" for key in required if not inputs.get(key))
+    required = ("full_chain_state", "oi_volume_state", "dividend_state")
+    blockers = tuple(f"{key}_invalid" for key in required if not isinstance(inputs.get(key), Mapping) or not inputs[key])
+    quote_quality = inputs.get("quote_quality")
+    if not isinstance(quote_quality, (int, float)) or isinstance(quote_quality, bool) or not isfinite(float(quote_quality)) or float(quote_quality) < 0:
+        blockers += ("quote_quality_invalid",)
+    if inputs.get("fill_model_proven") is not True:
+        blockers += ("fill_model_unproven",)
     if blockers:
         return StrategySignal(strategy_key=strategy_key, status="unavailable", actionability="shadow_only", blockers=blockers)
-    return StrategySignal(strategy_key=strategy_key, status="available", actionability="shadow_only", evidence={"controls": list(required), "paper_only": True})
+    return StrategySignal(strategy_key=strategy_key, status="available", actionability="shadow_only", evidence={"controls": [*required, "quote_quality", "fill_model_proven"], "paper_only": True})
 
 
 def crypto_funding_basis(inputs: Mapping[str, Any] | None = None, *, strategy_key: str = "crypto_funding_basis_v1") -> StrategySignal:
@@ -243,5 +301,6 @@ def default_strategy_registry() -> StrategyRegistry:
 __all__ = [
     "MANIFEST_PARTS", "MECHANISM_CLASSES", "StrategyImplementation", "StrategyRegistry", "StrategySignal", "StrategySpec",
     "content_hash", "crypto_funding_basis", "daily_gap_regime", "daily_trend_underreaction", "default_strategy_registry",
-    "event_propagation", "full_denominator_complete", "manifest_hash", "monitoring_complete", "options_recovery_v2",
+    "event_propagation", "full_denominator_complete", "is_martingale_family", "manifest_hash", "monitoring_complete",
+    "options_recovery_v2", "strategy_family_for_key",
 ]

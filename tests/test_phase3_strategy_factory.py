@@ -1,10 +1,15 @@
+import pytest
+
 from investment_panel.core.strategy_factory import (
     MECHANISM_CLASSES,
     StrategySpec,
     default_strategy_registry,
+    daily_trend_underreaction,
+    event_propagation,
     full_denominator_complete,
     manifest_hash,
     monitoring_complete,
+    options_recovery_v2,
 )
 
 
@@ -29,6 +34,13 @@ def test_p3_a04_classics_use_normal_promotability_and_martingale_is_negative_con
     martingale = registry.resolve("martingale_v1")
     assert martingale.promotability == "negative_control"
     assert registry.forecast("martingale_v1", {}).status == "blocked"
+    with pytest.raises(ValueError, match="Martingale"):
+        StrategySpec(
+            strategy_key="martingale_v2", revision=2, name="Martingale v2",
+            mechanism_class="gap_regime", economic_mechanism="x", falsification_rule="x",
+            source_definition_version="martingale.v2", manifest={key: {"x": 1} for key in ("source", "data", "cost", "capacity", "failure")},
+            promotability="standard", actionability="daily_research",
+        )
 
 
 def test_p3_a05_keys_are_versioned_and_resolvable() -> None:
@@ -62,7 +74,7 @@ def test_p3_a09_similar_strategies_have_distinct_versioned_definitions() -> None
 def test_p3_a10_daily_only_families_do_not_claim_intraday_actionability() -> None:
     registry = default_strategy_registry()
     assert registry.resolve("daily_event_propagation_v1").actionability == "shadow_only"
-    assert registry.forecast("daily_event_propagation_v1", {"event": {"release_at": "2026-09-02T12:00:00Z", "actual": 3.2, "consensus": 3.0}}).actionability == "shadow_only"
+    assert registry.forecast("daily_event_propagation_v1", {"input_cutoff": "2026-09-02T13:00:00Z", "event": {"release_at": "2026-09-02T12:00:00Z", "observed_at": "2026-09-02T12:01:00Z", "available_at": "2026-09-02T12:01:00Z", "actual": 3.2, "consensus": 3.0}}).actionability == "shadow_only"
 
 
 def test_p3_a11_crypto_registration_is_blocked_without_venue_controls() -> None:
@@ -70,6 +82,25 @@ def test_p3_a11_crypto_registration_is_blocked_without_venue_controls() -> None:
     signal = default_strategy_registry().forecast(spec.strategy_key, {})
     assert spec.promotability == "registration_only"
     assert set(signal.blockers) == {"venue_identity_required", "executable_depth_required", "liquidation_data_required", "failure_scenarios_required"}
+
+
+def test_p3_inputs_are_authoritative_pit_and_options_controls_are_typed() -> None:
+    cutoff = "2026-09-02T13:00:00Z"
+    future_daily = daily_trend_underreaction({
+        "input_cutoff": cutoff,
+        "daily_bars": [{"observed_at": "2026-09-03T13:00:00Z", "available_at": "2026-09-03T13:00:00Z", "close": 101}],
+    })
+    assert future_daily.status == "unavailable"
+    invalid_event = event_propagation({
+        "input_cutoff": cutoff,
+        "event": {"release_at": "2026-09-02T14:00:00Z", "observed_at": "2026-09-02T14:00:00Z", "available_at": "2026-09-02T14:00:00Z", "actual": 3, "consensus": 2},
+    })
+    assert invalid_event.status == "unavailable"
+    invalid_options = options_recovery_v2({
+        "full_chain_state": {"ok": True}, "oi_volume_state": {"ok": True}, "dividend_state": {"ok": True},
+        "quote_quality": True, "fill_model_proven": 1,
+    })
+    assert invalid_options.status == "unavailable"
 
 
 def test_strategy_spec_rejects_unversioned_keys() -> None:

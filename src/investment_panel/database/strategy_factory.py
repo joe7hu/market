@@ -6,7 +6,16 @@ from typing import Any, Iterable, Mapping
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.strategy_factory import MANIFEST_PARTS, StrategySpec, manifest_hash
+from investment_panel.core.strategy_factory import (
+    MANIFEST_PARTS,
+    StrategySignal,
+    StrategySpec,
+    daily_gap_regime,
+    daily_trend_underreaction,
+    event_propagation,
+    is_martingale_family,
+    options_recovery_v2,
+)
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -17,34 +26,46 @@ class StrategyFactoryRepository:
         self.runtime = runtime
 
     def register(self, spec: StrategySpec, *, status: str = "candidate", supersedes_id: int | None = None) -> int:
-        digest = manifest_hash(spec.manifest)
+        family = "martingale" if is_martingale_family(
+            spec.strategy_key, spec.mechanism_class, spec.name, spec.strategy_family,
+        ) else spec.strategy_family
         with self.runtime.transaction(JOB_PROFILE) as connection:
             existing = connection.execute(
-                "SELECT id, status, parameters, mechanism_class, economic_mechanism, falsification_rule, source_definition_version, promotability, actionability FROM analysis.strategy_revision WHERE strategy_key = %s AND revision = %s",
+                "SELECT id FROM analysis.strategy_revision WHERE strategy_key = %s AND revision = %s",
                 [spec.strategy_key, spec.revision],
             ).fetchone()
             if existing is not None:
-                manifest = connection.execute("SELECT manifest_hash FROM analysis.strategy_manifest WHERE strategy_revision_id = %s", [existing["id"]]).fetchone()
-                if manifest is None or str(manifest["manifest_hash"]) != digest:
+                manifest = connection.execute(
+                    """SELECT source_definition_version, source_manifest, data_manifest,
+                              cost_manifest, capacity_manifest, failure_manifest
+                         FROM analysis.strategy_manifest WHERE strategy_revision_id = %s""",
+                    [existing["id"]],
+                ).fetchone()
+                if manifest is None or (
+                    manifest["source_definition_version"] != spec.source_definition_version
+                    or any(manifest[f"{key}_manifest"] != spec.manifest[key] for key in MANIFEST_PARTS)
+                ):
                     raise ValueError("strategy revision or manifest identity conflicts")
                 return int(existing["id"])
             revision = connection.execute(
                 """INSERT INTO analysis.strategy_revision
                    (strategy_key, revision, name, status, parameters, supersedes_id,
                     mechanism_class, economic_mechanism, falsification_rule,
-                    source_definition_version, promotability, actionability, p3_enabled)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true)
+                    source_definition_version, strategy_family, promotability, actionability,
+                    p3_enabled, authority_group)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s)
                    RETURNING id""",
                 [spec.strategy_key, spec.revision, spec.name, status, Jsonb(spec.parameters), supersedes_id,
                  spec.mechanism_class, spec.economic_mechanism, spec.falsification_rule,
-                 spec.source_definition_version, spec.promotability, spec.actionability],
+                 spec.source_definition_version, family, spec.promotability, spec.actionability,
+                 f"phase3:{family}"],
             ).fetchone()["id"]
             connection.execute(
                 """INSERT INTO analysis.strategy_manifest
                    (strategy_revision_id, source_definition_version, source_manifest,
                     data_manifest, cost_manifest, capacity_manifest, failure_manifest, manifest_hash)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                [revision, spec.source_definition_version, *[Jsonb(spec.manifest[key]) for key in MANIFEST_PARTS], digest],
+                [revision, spec.source_definition_version, *[Jsonb(spec.manifest[key]) for key in MANIFEST_PARTS], "0" * 64],
             )
             return int(revision)
 
@@ -54,51 +75,94 @@ class StrategyFactoryRepository:
             raise ValueError("strategy P&L tape exceeds bound")
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for row in records:
-                input_hash = str(row.get("input_hash") or "")
-                if len(input_hash) != 64 or any(char not in "0123456789abcdef" for char in input_hash.lower()):
-                    raise ValueError("strategy P&L tape requires a SHA-256 input hash")
                 connection.execute(
                     """INSERT INTO analysis.strategy_pnl_tape
-                       (strategy_revision_id, instrument_id, pnl_date, input_cutoff,
-                        gross_return, cost, net_return, tail_return, regime,
+                       (strategy_revision_id, instrument_id, pnl_date, strategy_forecast_id,
+                        research_trial_id, trial_result_id, universe_manifest_hash, result_hash,
+                        input_cutoff, gross_return, cost, net_return, tail_return, regime,
                         observed_at, available_at, input_hash, metadata)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                        ON CONFLICT (strategy_revision_id, instrument_id, pnl_date, input_hash) DO NOTHING""",
-                    [row["strategy_revision_id"], row.get("instrument_id"), row["pnl_date"], row["input_cutoff"],
+                    [row["strategy_revision_id"], row["instrument_id"], row["pnl_date"], row["strategy_forecast_id"],
+                     row["research_trial_id"], row["trial_result_id"], row["universe_manifest_hash"], row["result_hash"], row["input_cutoff"],
                      row.get("gross_return"), row.get("cost"), row.get("net_return"), row.get("tail_return"),
-                     row.get("regime"), row["observed_at"], row["available_at"], input_hash, Jsonb(dict(row.get("metadata") or {}))],
+                     row.get("regime"), row["observed_at"], row["available_at"], "0" * 64, Jsonb(dict(row.get("metadata") or {}))],
                 )
         return len(records)
 
-    def record_monitoring(self, *, strategy_revision_id: int, evidence_kind: str, input_cutoff: Any, observed_at: Any, available_at: Any, input_hash: str, metrics: Mapping[str, Any], evidence: Mapping[str, Any] | None = None) -> None:
+    def record_monitoring(self, *, strategy_revision_id: int, research_trial_id: Any, trial_result_id: Any, universe_manifest_hash: str, result_hash: str, evidence_kind: str, input_cutoff: Any, observed_at: Any, available_at: Any, input_hash: str = "", metrics: Mapping[str, Any] | None = None, evidence: Mapping[str, Any] | None = None) -> None:
         if evidence_kind not in {"correlation", "tail_correlation", "crowding", "capacity", "decay", "regime"}:
             raise ValueError("unknown strategy monitoring evidence kind")
-        if len(input_hash) != 64:
-            raise ValueError("strategy monitoring requires a SHA-256 input hash")
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
                 """INSERT INTO analysis.strategy_monitoring_evidence
-                   (strategy_revision_id, evidence_kind, input_cutoff, observed_at,
-                    available_at, input_hash, metrics, evidence)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   (strategy_revision_id, research_trial_id, trial_result_id, universe_manifest_hash,
+                    result_hash, evidence_kind, input_cutoff, observed_at, available_at, input_hash, metrics, evidence)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (strategy_revision_id, evidence_kind, input_cutoff, input_hash) DO NOTHING""",
-                [strategy_revision_id, evidence_kind, input_cutoff, observed_at, available_at, input_hash, Jsonb(dict(metrics)), Jsonb(dict(evidence or {}))],
+                [strategy_revision_id, research_trial_id, trial_result_id, universe_manifest_hash, result_hash,
+                 evidence_kind, input_cutoff, observed_at, available_at, "0" * 64,
+                 Jsonb(dict(metrics or {})), Jsonb(dict(evidence or {}))],
             )
 
-    def record_comparison(self, *, champion_revision_id: int, challenger_revision_id: int, input_cutoff: Any, observed_at: Any, available_at: Any, input_hash: str, distinctness: str, explanation: str, metrics: Mapping[str, Any] | None = None) -> None:
+    def record_comparison(self, *, champion_revision_id: int, challenger_revision_id: int, champion_trial_id: Any, challenger_trial_id: Any, champion_result_id: Any, challenger_result_id: Any, champion_result_hash: str, challenger_result_hash: str, champion_manifest_hash: str, challenger_manifest_hash: str, input_cutoff: Any, observed_at: Any, available_at: Any, input_hash: str = "", distinctness: str = "inconclusive", explanation: str = "", metrics: Mapping[str, Any] | None = None) -> None:
         if champion_revision_id == challenger_revision_id:
             raise ValueError("champion and challenger must be different revisions")
-        if distinctness not in {"distinct", "replica", "exposure_sleeve", "inconclusive"}:
-            raise ValueError("unknown champion/challenger distinctness")
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
                 """INSERT INTO analysis.strategy_comparison
-                   (champion_revision_id, challenger_revision_id, input_cutoff,
-                    observed_at, available_at, input_hash, distinctness, explanation, metrics)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   (champion_revision_id, challenger_revision_id, champion_trial_id, challenger_trial_id,
+                    champion_result_id, challenger_result_id, champion_result_hash, challenger_result_hash,
+                    champion_manifest_hash, challenger_manifest_hash, input_cutoff, observed_at, available_at,
+                    input_hash, distinctness, explanation, metrics)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (champion_revision_id, challenger_revision_id, input_cutoff, input_hash) DO NOTHING""",
-                [champion_revision_id, challenger_revision_id, input_cutoff, observed_at, available_at, input_hash, distinctness, explanation, Jsonb(dict(metrics or {}))],
+                [champion_revision_id, challenger_revision_id, champion_trial_id, challenger_trial_id, champion_result_id,
+                 challenger_result_id, champion_result_hash, challenger_result_hash, champion_manifest_hash,
+                 challenger_manifest_hash, input_cutoff, observed_at, available_at, "0" * 64,
+                 distinctness, explanation or "caller value ignored", Jsonb(dict(metrics or {}))],
             )
+
+    def resolve(self, strategy_key: str, revision: int | None = None) -> StrategySpec:
+        with self.runtime.read() as connection:
+            row = connection.execute(
+                """SELECT revision.id, revision.strategy_key, revision.revision, revision.name,
+                          revision.mechanism_class, revision.economic_mechanism,
+                          revision.falsification_rule, revision.source_definition_version,
+                          revision.strategy_family, revision.promotability, revision.actionability,
+                          revision.parameters, manifest.source_manifest, manifest.data_manifest,
+                          manifest.cost_manifest, manifest.capacity_manifest, manifest.failure_manifest
+                     FROM analysis.strategy_revision revision
+                     JOIN analysis.strategy_manifest manifest ON manifest.strategy_revision_id = revision.id
+                    WHERE revision.strategy_key = %s
+                      AND (%s::integer IS NULL OR revision.revision = %s::integer)
+                    ORDER BY revision.revision DESC LIMIT 1""",
+                [strategy_key, revision, revision],
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown PostgreSQL strategy key: {strategy_key}")
+        return StrategySpec(
+            strategy_key=row["strategy_key"], revision=row["revision"], name=row["name"],
+            mechanism_class=row["mechanism_class"], economic_mechanism=row["economic_mechanism"],
+            falsification_rule=row["falsification_rule"], source_definition_version=row["source_definition_version"],
+            strategy_family=row["strategy_family"], promotability=row["promotability"], actionability=row["actionability"],
+            parameters=row["parameters"], manifest={key: row[f"{key}_manifest"] for key in MANIFEST_PARTS},
+        )
+
+    def forecast(self, strategy_key: str, inputs: Mapping[str, Any], *, revision: int | None = None) -> StrategySignal:
+        spec = self.resolve(strategy_key, revision)
+        if is_martingale_family(spec.strategy_key, spec.mechanism_class, spec.name, spec.strategy_family):
+            return StrategySignal(strategy_key=spec.strategy_key, status="blocked", actionability="research_only", blockers=("permanent_negative_control",))
+        handlers = {
+            "trend_underreaction": daily_trend_underreaction,
+            "gap_regime": daily_gap_regime,
+            "event_propagation": event_propagation,
+            "options_recovery": options_recovery_v2,
+        }
+        handler = handlers.get(spec.mechanism_class)
+        if handler is None:
+            return StrategySignal(strategy_key=spec.strategy_key, status="blocked", actionability=spec.actionability, blockers=("strategy_handler_unregistered",))
+        return handler(inputs, strategy_key=spec.strategy_key)
 
     def promote(self, strategy_revision_id: int) -> None:
         with self.runtime.transaction(JOB_PROFILE) as connection:
