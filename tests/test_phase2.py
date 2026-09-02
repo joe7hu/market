@@ -130,6 +130,10 @@ def test_p2_a02_unsupported_is_never_pit_selected_or_safe() -> None:
         observation("retired", "macro.value", 1, source="coingecko")
     forged = observation("forged-retired", "macro.value", 1).model_copy(update={"source_id": "coingecko"})
     assert not select_point_in_time([forged], AS_OF).selected
+    official = observation("official-event", "event.actual", 3.2, source="official-event-calendar").model_copy(update={"dimension": "event risk", "asset_class": "macro"})
+    selection = select_point_in_time([official], AS_OF)
+    assert selection.selected[0].source_id == "official-event-calendar"
+    assert selection.selected[0].status is Phase2Status.FALLBACK
 
 
 def test_p2_a10_mixed_fallback_and_missing_source_never_reports_available() -> None:

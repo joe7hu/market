@@ -41,6 +41,7 @@ class Phase2Source(StrEnum):
     COINGECKO = "coingecko"
     SEC_COMPANYFACTS = "sec_companyfacts"
     SEC_13F = "sec_13f"
+    OFFICIAL_EVENT_CALENDAR = "official-event-calendar"
     SHORT_INTEREST = "short_interest"
 
 
@@ -64,6 +65,7 @@ SOURCE_CONTRACTS: dict[str, SourceContract] = {
     Phase2Source.COINGECKO: SourceContract("coingecko", "aggregate descriptive crypto data", ("aggregate_volume",), public=True),
     Phase2Source.SEC_COMPANYFACTS: SourceContract("sec_companyfacts", "filed corporate actuals", ("corporate_actuals",), public=True),
     Phase2Source.SEC_13F: SourceContract("sec_13f", "reported positioning and flow", ("positioning",), public=True),
+    Phase2Source.OFFICIAL_EVENT_CALENDAR: SourceContract("official-event-calendar", "official event actuals fallback", ("event_actual",), public=True),
     Phase2Source.SHORT_INTEREST: SourceContract("short_interest", "short interest", (), public=True),
 }
 
