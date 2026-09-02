@@ -231,13 +231,14 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION analysis.enforce_phase3_pnl_tape()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE forecast analysis.strategy_forecast%ROWTYPE;
-              result_input_hash TEXT; manifest_digest TEXT; trial_input_cutoff TIMESTAMPTZ;
+              result_input_hash TEXT; result_available_at TIMESTAMPTZ;
+              manifest_digest TEXT; trial_input_cutoff TIMESTAMPTZ;
         BEGIN
             SELECT * INTO forecast FROM analysis.strategy_forecast
             WHERE id = NEW.strategy_forecast_id;
             SELECT input_cutoff INTO trial_input_cutoff FROM analysis.research_trial
             WHERE id = NEW.research_trial_id;
-            SELECT input_hash::TEXT INTO result_input_hash FROM analysis.trial_result
+            SELECT input_hash::TEXT, available_at INTO result_input_hash, result_available_at FROM analysis.trial_result
             WHERE id = NEW.trial_result_id AND research_trial_id = NEW.research_trial_id;
             SELECT manifest_hash::TEXT INTO manifest_digest FROM analysis.strategy_manifest
             WHERE strategy_revision_id = NEW.strategy_revision_id;
@@ -248,10 +249,12 @@ def upgrade() -> None:
                OR forecast.input_cutoff <> NEW.input_cutoff
                OR forecast.universe_manifest_hash::TEXT <> NEW.universe_manifest_hash::TEXT
                OR forecast.result_hash::TEXT <> NEW.result_hash::TEXT
-               OR result_input_hash IS NULL OR manifest_digest IS NULL
+               OR result_input_hash IS NULL OR result_available_at IS NULL OR manifest_digest IS NULL
                OR NEW.result_hash::TEXT <> result_input_hash
                OR NEW.universe_manifest_hash::TEXT <> manifest_digest
                OR trial_input_cutoff IS NULL OR NEW.input_cutoff > trial_input_cutoff
+               OR result_available_at > trial_input_cutoff
+               OR result_available_at > NEW.input_cutoff
                OR NEW.available_at > NEW.input_cutoff THEN
                 RAISE EXCEPTION 'Phase 3 P&L tape has invalid canonical lineage or PIT clock';
             END IF;
@@ -287,32 +290,51 @@ def upgrade() -> None:
 
         CREATE OR REPLACE FUNCTION analysis.enforce_phase3_monitoring()
         RETURNS trigger LANGUAGE plpgsql AS $$
-        DECLARE result_input_hash TEXT; manifest_digest TEXT; trial_input_cutoff TIMESTAMPTZ;
-              tape_count INTEGER; forecast_count INTEGER; instrument_count INTEGER;
-              tail_count INTEGER; regime_count INTEGER;
-              mean_return DOUBLE PRECISION; mean_cost DOUBLE PRECISION; max_cost DOUBLE PRECISION;
-              tape_hashes JSONB;
+        DECLARE result_input_hash TEXT; result_available_at TIMESTAMPTZ;
+              manifest_digest TEXT; trial_input_cutoff TIMESTAMPTZ;
+              tape_count BIGINT; forecast_count BIGINT; instrument_count BIGINT;
+              tail_count BIGINT; regime_count BIGINT; date_count BIGINT;
+              mean_return DOUBLE PRECISION; mean_cost DOUBLE PRECISION;
+              gross_abs DOUBLE PRECISION; cost_abs DOUBLE PRECISION;
+              return_correlation DOUBLE PRECISION; tail_correlation DOUBLE PRECISION;
+              crowding_hhi DOUBLE PRECISION; capacity_headroom DOUBLE PRECISION;
+              decay_slope DOUBLE PRECISION; regime_mean DOUBLE PRECISION;
+              regime_results JSONB; tape_hashes JSONB; forecast_hashes JSONB;
+              provided_metrics JSONB; provided_evidence JSONB;
+              metric_name TEXT; metric_value DOUBLE PRECISION;
+              expected_metric DOUBLE PRECISION; expected_sample BIGINT;
+              provided_sample BIGINT;
         BEGIN
-            SELECT input_hash::TEXT INTO result_input_hash FROM analysis.trial_result
+            provided_metrics := COALESCE(NEW.metrics, '{}'::jsonb);
+            provided_evidence := COALESCE(NEW.evidence, '{}'::jsonb);
+            SELECT input_hash::TEXT, available_at INTO result_input_hash, result_available_at FROM analysis.trial_result
             WHERE id = NEW.trial_result_id AND research_trial_id = NEW.research_trial_id;
             SELECT manifest_hash::TEXT INTO manifest_digest FROM analysis.strategy_manifest
             WHERE strategy_revision_id = NEW.strategy_revision_id;
             SELECT input_cutoff INTO trial_input_cutoff FROM analysis.research_trial
             WHERE id = NEW.research_trial_id;
-            IF result_input_hash IS NULL OR manifest_digest IS NULL
+            IF result_input_hash IS NULL OR result_available_at IS NULL OR manifest_digest IS NULL
                OR NEW.result_hash::TEXT <> result_input_hash
                OR NEW.universe_manifest_hash::TEXT <> manifest_digest
                OR trial_input_cutoff IS NULL OR NEW.input_cutoff > trial_input_cutoff
+               OR result_available_at > trial_input_cutoff
+               OR result_available_at > NEW.input_cutoff
                OR NEW.available_at > NEW.input_cutoff THEN
                 RAISE EXCEPTION 'Phase 3 monitoring evidence has invalid trial, manifest, or PIT lineage';
             END IF;
             SELECT count(*), count(DISTINCT tape.instrument_id),
                    count(*) FILTER (WHERE tape.tail_return IS NOT NULL),
                    count(DISTINCT tape.regime) FILTER (WHERE tape.regime IS NOT NULL),
-                   count(forecast.id), avg(tape.net_return), avg(tape.cost), max(tape.cost),
-                   COALESCE(jsonb_agg(to_jsonb(tape.input_hash::TEXT) ORDER BY tape.id), '[]'::jsonb)
+                   count(forecast.id), avg(tape.net_return), avg(tape.cost),
+                   sum(abs(tape.gross_return)), sum(abs(tape.cost)),
+                   corr(tape.gross_return, tape.net_return),
+                   corr(tape.tail_return, tape.net_return) FILTER (WHERE tape.tail_return IS NOT NULL),
+                   COALESCE(jsonb_agg(to_jsonb(tape.input_hash::TEXT) ORDER BY tape.id), '[]'::jsonb),
+                   COALESCE(jsonb_agg(to_jsonb(forecast.input_hash::TEXT) ORDER BY tape.id), '[]'::jsonb),
+                   count(DISTINCT tape.pnl_date)
               INTO tape_count, instrument_count, tail_count, regime_count, forecast_count,
-                   mean_return, mean_cost, max_cost, tape_hashes
+                   mean_return, mean_cost, gross_abs, cost_abs, return_correlation,
+                   tail_correlation, tape_hashes, forecast_hashes, date_count
               FROM analysis.strategy_pnl_tape tape
               JOIN analysis.strategy_forecast forecast
                 ON forecast.id = tape.strategy_forecast_id
@@ -327,16 +349,99 @@ def upgrade() -> None:
                AND tape.result_hash::TEXT = NEW.result_hash::TEXT
                AND tape.available_at <= NEW.input_cutoff
                AND forecast.available_at <= NEW.input_cutoff;
+            SELECT COALESCE(sum(power(weight, 2)), NULL) INTO crowding_hhi
+            FROM (
+                SELECT abs(tape.net_return) / NULLIF(sum(abs(tape.net_return)) OVER (), 0) AS weight
+                  FROM analysis.strategy_pnl_tape tape
+                  JOIN analysis.strategy_forecast forecast ON forecast.id = tape.strategy_forecast_id
+                 WHERE tape.strategy_revision_id = NEW.strategy_revision_id
+                   AND tape.research_trial_id = NEW.research_trial_id
+                   AND tape.trial_result_id = NEW.trial_result_id
+                   AND tape.universe_manifest_hash::TEXT = NEW.universe_manifest_hash::TEXT
+                   AND tape.result_hash::TEXT = NEW.result_hash::TEXT
+                   AND tape.available_at <= NEW.input_cutoff
+                   AND forecast.available_at <= NEW.input_cutoff
+            ) weighted;
+            SELECT regr_slope(tape.net_return, extract(epoch FROM tape.pnl_date::timestamp))
+              INTO decay_slope
+              FROM analysis.strategy_pnl_tape tape
+             WHERE tape.strategy_revision_id = NEW.strategy_revision_id
+               AND tape.research_trial_id = NEW.research_trial_id
+               AND tape.trial_result_id = NEW.trial_result_id
+               AND tape.universe_manifest_hash::TEXT = NEW.universe_manifest_hash::TEXT
+               AND tape.result_hash::TEXT = NEW.result_hash::TEXT
+               AND tape.available_at <= NEW.input_cutoff;
+            SELECT COALESCE(jsonb_object_agg(regime, avg_return), '{}'::jsonb)
+              INTO regime_results
+              FROM (
+                  SELECT tape.regime, avg(tape.net_return) AS avg_return
+                    FROM analysis.strategy_pnl_tape tape
+                   WHERE tape.strategy_revision_id = NEW.strategy_revision_id
+                     AND tape.research_trial_id = NEW.research_trial_id
+                     AND tape.trial_result_id = NEW.trial_result_id
+                     AND tape.universe_manifest_hash::TEXT = NEW.universe_manifest_hash::TEXT
+                     AND tape.result_hash::TEXT = NEW.result_hash::TEXT
+                     AND tape.available_at <= NEW.input_cutoff
+                     AND tape.regime IS NOT NULL
+                   GROUP BY tape.regime
+              ) by_regime;
+            regime_mean := mean_return;
+            capacity_headroom := CASE WHEN gross_abs > 0 THEN 1 - cost_abs / gross_abs END;
             IF tape_count = 0 OR forecast_count <> tape_count THEN
                 RAISE EXCEPTION 'Phase 3 monitoring evidence requires canonical P&L tape lineage';
             END IF;
-            IF (NEW.evidence_kind = 'correlation' AND tape_count < 2)
-               OR (NEW.evidence_kind = 'tail_correlation' AND tail_count = 0)
-               OR (NEW.evidence_kind = 'crowding' AND instrument_count = 0)
-               OR (NEW.evidence_kind = 'capacity' AND max_cost IS NULL)
-               OR (NEW.evidence_kind = 'decay' AND tape_count < 2)
-               OR (NEW.evidence_kind = 'regime' AND regime_count = 0) THEN
+            metric_name := CASE NEW.evidence_kind
+                WHEN 'correlation' THEN 'return_correlation'
+                WHEN 'tail_correlation' THEN 'tail_return_correlation'
+                WHEN 'crowding' THEN 'crowding_hhi'
+                WHEN 'capacity' THEN 'capacity_headroom'
+                WHEN 'decay' THEN 'decay_slope'
+                WHEN 'regime' THEN 'regime_mean_net_return'
+            END;
+            expected_sample := CASE NEW.evidence_kind
+                WHEN 'correlation' THEN tape_count
+                WHEN 'tail_correlation' THEN tail_count
+                WHEN 'crowding' THEN instrument_count
+                WHEN 'capacity' THEN tape_count
+                WHEN 'decay' THEN date_count
+                WHEN 'regime' THEN tape_count
+            END;
+            expected_metric := CASE NEW.evidence_kind
+                WHEN 'correlation' THEN return_correlation
+                WHEN 'tail_correlation' THEN tail_correlation
+                WHEN 'crowding' THEN crowding_hhi
+                WHEN 'capacity' THEN capacity_headroom
+                WHEN 'decay' THEN decay_slope
+                WHEN 'regime' THEN regime_mean
+            END;
+            IF expected_sample < 2 OR expected_metric IS NULL THEN
                 RAISE EXCEPTION 'Phase 3 monitoring evidence kind lacks required canonical metric';
+            END IF;
+            IF jsonb_typeof(provided_metrics) <> 'object'
+               OR jsonb_typeof(provided_evidence) <> 'object'
+               OR provided_metrics->>'evidence_kind' IS DISTINCT FROM NEW.evidence_kind
+               OR provided_metrics->>'metric_name' IS DISTINCT FROM metric_name
+               OR COALESCE(provided_metrics->>'sample_size', '') !~ '^[1-9][0-9]*$'
+               OR jsonb_typeof(provided_metrics->metric_name) IS DISTINCT FROM 'number'
+               OR provided_evidence->>'evidence_kind' IS DISTINCT FROM NEW.evidence_kind
+               OR provided_evidence->>'metric_name' IS DISTINCT FROM metric_name
+               OR COALESCE(provided_evidence->>'sample_size', '') !~ '^[1-9][0-9]*$'
+               OR jsonb_typeof(provided_evidence->'metric_value') IS DISTINCT FROM 'number'
+               OR provided_evidence->>'trial_result_hash' IS DISTINCT FROM NEW.result_hash::TEXT
+               OR provided_evidence->>'universe_manifest_hash' IS DISTINCT FROM NEW.universe_manifest_hash::TEXT
+               OR jsonb_typeof(provided_evidence->'pnl_input_hashes') IS DISTINCT FROM 'array'
+               OR jsonb_typeof(provided_evidence->'forecast_input_hashes') IS DISTINCT FROM 'array' THEN
+                RAISE EXCEPTION 'Phase 3 monitoring evidence requires typed canonical content and lineage';
+            END IF;
+            provided_sample := (provided_metrics->>'sample_size')::BIGINT;
+            IF provided_sample <> expected_sample
+               OR (provided_evidence->>'sample_size')::BIGINT <> expected_sample
+               OR abs((provided_metrics->>metric_name)::DOUBLE PRECISION - expected_metric) > 1e-12
+               OR abs((provided_evidence->>'metric_value')::DOUBLE PRECISION - expected_metric) > 1e-12
+               OR provided_evidence->'pnl_input_hashes' IS DISTINCT FROM tape_hashes
+               OR provided_evidence->'forecast_input_hashes' IS DISTINCT FROM forecast_hashes
+               OR (NEW.evidence_kind = 'regime' AND provided_evidence->'regime_results' IS DISTINCT FROM regime_results) THEN
+                RAISE EXCEPTION 'Phase 3 monitoring evidence content or lineage does not match canonical PostgreSQL evidence';
             END IF;
             NEW.lineage := jsonb_build_object(
                 'research_trial_id', NEW.research_trial_id,
@@ -345,6 +450,8 @@ def upgrade() -> None:
                 'result_hash', NEW.result_hash,
                 'forecast_observation_count', forecast_count,
                 'pnl_input_hashes', tape_hashes,
+                'forecast_input_hashes', forecast_hashes,
+                'input_cutoff', NEW.input_cutoff,
                 'generated_by', 'postgresql'
             );
             NEW.metrics := jsonb_build_object(
@@ -355,19 +462,27 @@ def upgrade() -> None:
                 'regime_count', regime_count,
                 'mean_net_return', mean_return,
                 'mean_cost', mean_cost,
-                'max_cost', max_cost,
-                'required_metric', CASE NEW.evidence_kind
-                    WHEN 'correlation' THEN 'pnl_observation_count'
-                    WHEN 'tail_correlation' THEN 'tail_observation_count'
-                    WHEN 'crowding' THEN 'instrument_count'
-                    WHEN 'capacity' THEN 'max_cost'
-                    WHEN 'decay' THEN 'pnl_observation_count'
-                    WHEN 'regime' THEN 'regime_count'
-                END,
+                'sample_size', expected_sample,
+                'metric_name', metric_name,
+                metric_name, expected_metric,
+                'return_correlation', return_correlation,
+                'tail_return_correlation', tail_correlation,
+                'crowding_hhi', crowding_hhi,
+                'capacity_headroom', capacity_headroom,
+                'decay_slope', decay_slope,
+                'regime_results', regime_results,
                 'generated_by', 'postgresql'
             );
             NEW.evidence := jsonb_build_object(
-                'canonical_pnl_input_hashes', tape_hashes,
+                'evidence_kind', NEW.evidence_kind,
+                'metric_name', metric_name,
+                'metric_value', expected_metric,
+                'sample_size', expected_sample,
+                'trial_result_hash', NEW.result_hash,
+                'universe_manifest_hash', NEW.universe_manifest_hash,
+                'pnl_input_hashes', tape_hashes,
+                'forecast_input_hashes', forecast_hashes,
+                'regime_results', regime_results,
                 'generated_by', 'postgresql'
             );
             NEW.input_hash := analysis.phase3_json_hash(jsonb_build_object(
@@ -385,18 +500,46 @@ def upgrade() -> None:
             BEFORE INSERT ON analysis.strategy_monitoring_evidence
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase3_monitoring();
 
+        CREATE OR REPLACE FUNCTION analysis.phase3_factor_evidence_valid(
+            result_uuid UUID, result_hash TEXT
+        ) RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+            SELECT EXISTS (
+                SELECT 1
+                  FROM analysis.trial_result result
+                 WHERE result.id = result_uuid
+                   AND result.input_hash::TEXT = result_hash
+                   AND jsonb_typeof(result.outcome->'factor_exposure') = 'object'
+                   AND result.outcome->'factor_exposure' <> '{}'::jsonb
+                   AND NOT EXISTS (
+                       SELECT 1 FROM jsonb_each(result.outcome->'factor_exposure') factor
+                       WHERE jsonb_typeof(factor.value) <> 'number'
+                   )
+                   AND jsonb_typeof(result.outcome->'neutralized') = 'boolean'
+                   AND (result.outcome->>'neutralized')::BOOLEAN IS TRUE
+                   AND result.outcome->>'factor_exposure_hash' = analysis.phase3_json_hash(result.outcome->'factor_exposure')
+                   AND result.outcome->>'factor_result_hash' = result.input_hash::TEXT
+                   AND result.outcome->>'neutralized_result_hash' = analysis.phase3_json_hash(
+                       jsonb_build_object(
+                           'factor_exposure', result.outcome->'factor_exposure',
+                           'neutralized', true, 'result_hash', result.input_hash
+                       )
+                   )
+            )
+        $$;
+
         CREATE OR REPLACE FUNCTION analysis.enforce_phase3_comparison()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE champion_result TEXT; challenger_result TEXT; champion_manifest TEXT; challenger_manifest TEXT;
               champion_trial_cutoff TIMESTAMPTZ; challenger_trial_cutoff TIMESTAMPTZ;
+              champion_result_available TIMESTAMPTZ; challenger_result_available TIMESTAMPTZ;
               pair_count INTEGER; return_correlation DOUBLE PRECISION; computed_distinctness TEXT;
               champion_hashes JSONB; challenger_hashes JSONB; challenger_class TEXT;
               champion_outcome JSONB; challenger_outcome JSONB; factor_evidence_valid BOOLEAN;
         BEGIN
-            SELECT input_hash::TEXT, outcome INTO champion_result, champion_outcome FROM analysis.trial_result
+            SELECT input_hash::TEXT, available_at, outcome INTO champion_result, champion_result_available, champion_outcome FROM analysis.trial_result
             WHERE id = NEW.champion_result_id AND research_trial_id = NEW.champion_trial_id
               AND input_hash::TEXT = NEW.champion_result_hash::TEXT;
-            SELECT input_hash::TEXT, outcome INTO challenger_result, challenger_outcome FROM analysis.trial_result
+            SELECT input_hash::TEXT, available_at, outcome INTO challenger_result, challenger_result_available, challenger_outcome FROM analysis.trial_result
             WHERE id = NEW.challenger_result_id AND research_trial_id = NEW.challenger_trial_id
               AND input_hash::TEXT = NEW.challenger_result_hash::TEXT;
             SELECT manifest_hash::TEXT INTO champion_manifest FROM analysis.strategy_manifest
@@ -412,7 +555,9 @@ def upgrade() -> None:
             IF champion_result IS NULL OR challenger_result IS NULL
                OR champion_manifest IS NULL OR challenger_manifest IS NULL
                OR champion_trial_cutoff IS NULL OR challenger_trial_cutoff IS NULL
+               OR champion_result_available IS NULL OR challenger_result_available IS NULL
                OR NEW.input_cutoff > champion_trial_cutoff OR NEW.input_cutoff > challenger_trial_cutoff
+               OR champion_result_available > NEW.input_cutoff OR challenger_result_available > NEW.input_cutoff
                OR NEW.available_at > NEW.input_cutoff THEN
                 RAISE EXCEPTION 'Phase 3 comparison has invalid canonical trial, manifest, or PIT lineage';
             END IF;
@@ -436,12 +581,11 @@ def upgrade() -> None:
                AND challenger.available_at <= NEW.input_cutoff;
             SELECT promotability INTO challenger_class FROM analysis.strategy_revision
             WHERE id = NEW.challenger_revision_id;
-            factor_evidence_valid := COALESCE(jsonb_typeof(champion_outcome->'factor_exposure') = 'object'
-                AND champion_outcome->'factor_exposure' <> '{}'::jsonb
-                AND champion_outcome->>'neutralized' = 'true'
-                AND jsonb_typeof(challenger_outcome->'factor_exposure') = 'object'
-                AND challenger_outcome->'factor_exposure' <> '{}'::jsonb
-                AND challenger_outcome->>'neutralized' = 'true', false);
+            factor_evidence_valid := analysis.phase3_factor_evidence_valid(
+                NEW.champion_result_id, champion_result
+            ) AND analysis.phase3_factor_evidence_valid(
+                NEW.challenger_result_id, challenger_result
+            );
             computed_distinctness := CASE
                 WHEN NOT factor_evidence_valid THEN 'blocked'
                 WHEN challenger_class = 'exposure_sleeve' THEN 'exposure_sleeve'
@@ -450,12 +594,16 @@ def upgrade() -> None:
                 ELSE 'distinct'
             END;
             NEW.distinctness := computed_distinctness;
-            NEW.explanation := 'PostgreSQL classification from linked P&L tape correlation';
+            NEW.explanation := CASE WHEN factor_evidence_valid
+                THEN 'PostgreSQL classification from linked factor evidence and P&L tape'
+                ELSE 'blocked: canonical factor exposure and neutralized-result lineage are absent or invalid'
+            END;
             NEW.metrics := jsonb_build_object(
                 'paired_pnl_count', pair_count,
                 'return_correlation', return_correlation,
                 'champion_pnl_input_hashes', champion_hashes,
                 'challenger_pnl_input_hashes', challenger_hashes,
+                'factor_evidence_valid', factor_evidence_valid,
                 'generated_by', 'postgresql'
             );
             NEW.input_hash := analysis.phase3_json_hash(jsonb_build_object(
@@ -567,23 +715,64 @@ def upgrade() -> None:
                    AND universe_manifest_hash::TEXT = promotion_manifest_hash
                    AND available_at <= input_cutoff;
                 IF pnl_count <> expected_count OR forecast_count <> expected_count
-                   OR member_count <> expected_count OR invalid_member_count <> 0 THEN
+                   OR member_count <> expected_count OR invalid_member_count <> 0
+                   OR EXISTS (
+                       SELECT 1
+                         FROM jsonb_array_elements_text((SELECT expected_members FROM analysis.trial_universe_manifest WHERE research_trial_id = promotion_trial)) expected(member)
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM analysis.strategy_pnl_tape tape
+                             WHERE tape.research_trial_id = promotion_trial
+                               AND tape.strategy_revision_id = NEW.id
+                               AND tape.instrument_id::TEXT = expected.member
+                        )
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM analysis.strategy_pnl_tape tape
+                        WHERE tape.research_trial_id = promotion_trial
+                          AND tape.strategy_revision_id = NEW.id
+                          AND NOT EXISTS (
+                              SELECT 1 FROM jsonb_array_elements_text((SELECT expected_members FROM analysis.trial_universe_manifest WHERE research_trial_id = promotion_trial)) expected(member)
+                               WHERE expected.member = tape.instrument_id::TEXT
+                          )
+                   ) THEN
                     RAISE EXCEPTION 'Phase 3 promotion requires complete canonical P&L and forecast linkage';
                 END IF;
-                SELECT count(DISTINCT evidence_kind) INTO evidence_count
-                FROM analysis.strategy_monitoring_evidence
-                WHERE strategy_revision_id = NEW.id
-                  AND research_trial_id = promotion_trial
-                  AND trial_result_id = promotion_result
-                  AND result_hash::TEXT = promotion_result_hash
-                  AND universe_manifest_hash::TEXT = promotion_manifest_hash
-                  AND available_at <= input_cutoff
-                  AND metrics->>'generated_by' = 'postgresql'
-                  AND lineage->>'generated_by' = 'postgresql'
-                  AND evidence->>'generated_by' = 'postgresql'
-                  AND metrics->>'required_metric' IS NOT NULL;
+                SELECT count(*) INTO evidence_count
+                FROM (VALUES
+                    ('correlation', 'return_correlation'),
+                    ('tail_correlation', 'tail_return_correlation'),
+                    ('crowding', 'crowding_hhi'),
+                    ('capacity', 'capacity_headroom'),
+                    ('decay', 'decay_slope'),
+                    ('regime', 'regime_mean_net_return')
+                ) required(evidence_kind, metric_name)
+                WHERE EXISTS (
+                    SELECT 1 FROM analysis.strategy_monitoring_evidence evidence
+                    WHERE evidence.strategy_revision_id = NEW.id
+                      AND evidence.research_trial_id = promotion_trial
+                      AND evidence.trial_result_id = promotion_result
+                      AND evidence.result_hash::TEXT = promotion_result_hash
+                      AND evidence.universe_manifest_hash::TEXT = promotion_manifest_hash
+                      AND evidence.evidence_kind = required.evidence_kind
+                      AND evidence.input_cutoff <= (SELECT input_cutoff FROM analysis.research_trial WHERE id = promotion_trial)
+                      AND evidence.available_at <= evidence.input_cutoff
+                      AND (SELECT result.available_at FROM analysis.trial_result result WHERE result.id = promotion_result) <= evidence.input_cutoff
+                      AND evidence.metrics->>'generated_by' = 'postgresql'
+                      AND evidence.lineage->>'generated_by' = 'postgresql'
+                      AND evidence.evidence->>'generated_by' = 'postgresql'
+                      AND evidence.metrics->>'metric_name' = required.metric_name
+                      AND evidence.evidence->>'metric_name' = required.metric_name
+                      AND jsonb_typeof(evidence.metrics->required.metric_name) = 'number'
+                      AND jsonb_typeof(evidence.evidence->'metric_value') = 'number'
+                      AND evidence.metrics->>'sample_size' ~ '^[2-9][0-9]*$'
+                      AND evidence.evidence->>'sample_size' = evidence.metrics->>'sample_size'
+                      AND evidence.evidence->>'trial_result_hash' = promotion_result_hash
+                      AND evidence.evidence->>'universe_manifest_hash' = promotion_manifest_hash
+                      AND evidence.evidence->'pnl_input_hashes' = evidence.lineage->'pnl_input_hashes'
+                      AND evidence.evidence->'forecast_input_hashes' = evidence.lineage->'forecast_input_hashes'
+                );
                 IF evidence_count <> 6 THEN
-                    RAISE EXCEPTION 'Phase 3 active strategy requires correlation, tail, crowding, capacity, decay, and regime evidence';
+                    RAISE EXCEPTION 'Phase 3 active strategy requires complete typed evidence for all monitoring dimensions';
                 END IF;
                 SELECT count(*) INTO comparison_count
                 FROM analysis.strategy_comparison comparison
@@ -596,6 +785,7 @@ def upgrade() -> None:
                         AND comparison.challenger_result_hash = promotion_result_hash
                         AND comparison.challenger_manifest_hash = promotion_manifest_hash))
                   AND comparison.distinctness IN ('distinct', 'exposure_sleeve')
+                  AND comparison.input_cutoff <= (SELECT input_cutoff FROM analysis.research_trial WHERE id = promotion_trial)
                   AND comparison.available_at <= comparison.input_cutoff;
                 IF comparison_count = 0 THEN
                     RAISE EXCEPTION 'Phase 3 promotion requires canonical champion/challenger evidence';
@@ -613,6 +803,12 @@ def upgrade() -> None:
         RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER
         SET search_path = pg_catalog, analysis, public AS $$
         BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM analysis.strategy_revision
+                 WHERE id = revision_id AND p3_enabled
+            ) THEN
+                RAISE EXCEPTION 'unknown or non-Phase 3 strategy revision: %', revision_id;
+            END IF;
             PERFORM set_config('analysis.phase3_transition', 'canonical', true);
             UPDATE analysis.strategy_revision
                SET status = 'active', promoted_at = clock_timestamp()
@@ -697,6 +893,7 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS analysis.enforce_phase3_manifest_hash();
         DROP FUNCTION IF EXISTS analysis.enforce_phase3_immutable();
         DROP FUNCTION IF EXISTS analysis.research_trial_p3_denominator_complete(UUID);
+        DROP FUNCTION IF EXISTS analysis.phase3_factor_evidence_valid(UUID, TEXT);
         DROP FUNCTION IF EXISTS analysis.phase3_json_hash(JSONB);
         DROP TABLE IF EXISTS analysis.strategy_comparison;
         DROP TABLE IF EXISTS analysis.strategy_monitoring_evidence;

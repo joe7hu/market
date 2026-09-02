@@ -82,7 +82,7 @@ def test_p3_a09_similar_strategies_have_distinct_versioned_definitions() -> None
 def test_p3_a10_daily_only_families_do_not_claim_intraday_actionability() -> None:
     registry = default_strategy_registry()
     assert registry.resolve("daily_event_propagation_v1").actionability == "shadow_only"
-    assert registry.forecast("daily_event_propagation_v1", {"input_cutoff": "2026-09-02T13:00:00Z", "event": {"status": "confirmed", "confirmed": True, "release_at": "2026-09-02T12:00:00Z", "observed_at": "2026-09-02T12:01:00Z", "available_at": "2026-09-02T12:01:00Z", "actual": 3.2, "consensus": 3.0}}).actionability == "shadow_only"
+    assert registry.forecast("daily_event_propagation_v1", {"input_cutoff": "2026-09-02T13:00:00Z", "event": {"status": "confirmed", "confirmed": True, "disabled": False, "release_at": "2026-09-02T12:00:00Z", "observed_at": "2026-09-02T12:01:00Z", "available_at": "2026-09-02T12:01:00Z", "actual": 3.2, "consensus": 3.0}}).actionability == "shadow_only"
 
 
 def test_p3_a11_crypto_registration_is_blocked_without_venue_controls() -> None:
@@ -96,12 +96,12 @@ def test_p3_inputs_are_authoritative_pit_and_options_controls_are_typed() -> Non
     cutoff = "2026-09-02T13:00:00Z"
     future_daily = daily_trend_underreaction({
         "input_cutoff": cutoff,
-        "daily_bars": [{"observed_at": "2026-09-03T13:00:00Z", "available_at": "2026-09-03T13:00:00Z", "close": 101}],
+        "daily_bars": [{"status": "confirmed", "confirmed": True, "disabled": False, "observed_at": "2026-09-03T13:00:00Z", "available_at": "2026-09-03T13:00:00Z", "close": 101}],
     })
     assert future_daily.status == "unavailable"
     invalid_event = event_propagation({
         "input_cutoff": cutoff,
-        "event": {"release_at": "2026-09-02T14:00:00Z", "observed_at": "2026-09-02T14:00:00Z", "available_at": "2026-09-02T14:00:00Z", "actual": 3, "consensus": 2},
+        "event": {"status": "confirmed", "confirmed": True, "disabled": False, "release_at": "2026-09-02T14:00:00Z", "observed_at": "2026-09-02T14:00:00Z", "available_at": "2026-09-02T14:00:00Z", "actual": 3, "consensus": 2},
     })
     assert invalid_event.status == "unavailable"
     invalid_options = options_recovery_v2({
@@ -109,6 +109,33 @@ def test_p3_inputs_are_authoritative_pit_and_options_controls_are_typed() -> Non
         "quote_quality": True, "fill_model_proven": 1,
     })
     assert invalid_options.status == "unavailable"
+
+
+def test_p3_daily_and_event_numeric_fields_reject_boolean_values() -> None:
+    cutoff = "2026-09-02T13:00:00Z"
+    daily = daily_trend_underreaction({
+        "input_cutoff": cutoff,
+        "daily_bars": [
+            {"status": "confirmed", "confirmed": True, "disabled": False, "observed_at": "2026-09-01T13:00:00Z", "available_at": "2026-09-01T13:00:00Z", "close": 100},
+            {"status": "confirmed", "confirmed": True, "disabled": False, "observed_at": "2026-09-02T13:00:00Z", "available_at": "2026-09-02T13:00:00Z", "close": True},
+        ],
+    })
+    assert daily.status == "unavailable"
+    event = event_propagation({
+        "input_cutoff": cutoff,
+        "event": {"status": "confirmed", "confirmed": True, "disabled": False, "release_at": "2026-09-02T12:00:00Z", "observed_at": "2026-09-02T12:01:00Z", "available_at": "2026-09-02T12:01:00Z", "actual": True, "consensus": 2},
+    })
+    assert event.status == "unavailable"
+
+
+def test_p3_actionability_is_a_closed_daily_enum() -> None:
+    with pytest.raises(ValueError):
+        StrategySpec(
+            strategy_key="intraday_test_v1", revision=1, name="Intraday test",
+            mechanism_class="trend_underreaction", economic_mechanism="x", falsification_rule="x",
+            source_definition_version="intraday-test.v1", actionability="intraday",
+            manifest={key: {"x": 1} for key in ("source", "data", "cost", "capacity", "failure")},
+        )
 
 
 def test_strategy_spec_rejects_unversioned_keys() -> None:

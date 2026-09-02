@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from psycopg.types.json import Jsonb
@@ -17,6 +18,13 @@ from investment_panel.core.strategy_factory import (
     options_recovery_v2,
 )
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+
+
+def _require_pit(input_cutoff: Any, available_at: Any) -> None:
+    if not isinstance(input_cutoff, datetime) or input_cutoff.tzinfo is None:
+        raise ValueError("Phase 3 input cutoff must be timezone-aware")
+    if not isinstance(available_at, datetime) or available_at.tzinfo is None or available_at > input_cutoff:
+        raise ValueError("Phase 3 evidence is not point-in-time available")
 
 
 class StrategyFactoryRepository:
@@ -91,6 +99,7 @@ class StrategyFactoryRepository:
             raise ValueError("strategy P&L tape exceeds bound")
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for row in records:
+                _require_pit(row["input_cutoff"], row["available_at"])
                 connection.execute(
                     """INSERT INTO analysis.strategy_pnl_tape
                        (strategy_revision_id, instrument_id, pnl_date, strategy_forecast_id,
@@ -109,6 +118,7 @@ class StrategyFactoryRepository:
     def record_monitoring(self, *, strategy_revision_id: int, research_trial_id: Any, trial_result_id: Any, universe_manifest_hash: str, result_hash: str, evidence_kind: str, input_cutoff: Any, observed_at: Any, available_at: Any, input_hash: str = "", metrics: Mapping[str, Any] | None = None, evidence: Mapping[str, Any] | None = None) -> None:
         if evidence_kind not in {"correlation", "tail_correlation", "crowding", "capacity", "decay", "regime"}:
             raise ValueError("unknown strategy monitoring evidence kind")
+        _require_pit(input_cutoff, available_at)
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
                 """INSERT INTO analysis.strategy_monitoring_evidence
@@ -124,6 +134,7 @@ class StrategyFactoryRepository:
     def record_comparison(self, *, champion_revision_id: int, challenger_revision_id: int, champion_trial_id: Any, challenger_trial_id: Any, champion_result_id: Any, challenger_result_id: Any, champion_result_hash: str, challenger_result_hash: str, champion_manifest_hash: str, challenger_manifest_hash: str, input_cutoff: Any, observed_at: Any, available_at: Any, input_hash: str = "", distinctness: str = "inconclusive", explanation: str = "", metrics: Mapping[str, Any] | None = None) -> None:
         if champion_revision_id == challenger_revision_id:
             raise ValueError("champion and challenger must be different revisions")
+        _require_pit(input_cutoff, available_at)
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
                 """INSERT INTO analysis.strategy_comparison

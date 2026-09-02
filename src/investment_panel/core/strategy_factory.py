@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 import json
 from math import isfinite
-from typing import Any, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -18,6 +18,7 @@ MECHANISM_CLASSES = (
     "options_recovery",
 )
 MANIFEST_PARTS = ("source", "data", "cost", "capacity", "failure")
+DAILY_ACTIONABILITY = Literal["daily_research", "shadow_only", "research_only", "registration_only"]
 
 
 def strategy_family_for_key(strategy_key: str, mechanism_class: str = "", name: str = "", strategy_family: str = "") -> str:
@@ -44,7 +45,7 @@ class StrategySpec(BaseModel):
     source_definition_version: str = Field(min_length=1)
     strategy_family: str = "legacy"
     promotability: str = "standard"
-    actionability: str = "daily_research"
+    actionability: DAILY_ACTIONABILITY = "daily_research"
     manifest: dict[str, Any]
     parameters: dict[str, Any] = Field(default_factory=dict)
     blockers: tuple[str, ...] = ()
@@ -82,7 +83,7 @@ class StrategySignal(BaseModel):
     value: float | None = None
     direction: str | None = None
     horizon: str = "daily"
-    actionability: str = "daily_research"
+    actionability: DAILY_ACTIONABILITY = "daily_research"
     regime: str | None = None
     blockers: tuple[str, ...] = ()
     evidence: dict[str, Any] = Field(default_factory=dict)
@@ -139,6 +140,8 @@ def manifest_hash(manifest: Mapping[str, Any]) -> str:
 
 
 def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         parsed = float(value)
     except (TypeError, ValueError):
@@ -155,7 +158,7 @@ def _daily_rows(inputs: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         if isinstance(row, Mapping)
         and row.get("status") == "confirmed"
         and row.get("confirmed") is True
-        and row.get("disabled") is not True
+        and row.get("disabled") is False
         and (observed := _parse_clock(row.get("observed_at"))) is not None
         and (available := _parse_clock(row.get("available_at"))) is not None
         and observed <= cutoff and available <= cutoff
@@ -213,7 +216,7 @@ def daily_gap_regime(inputs: Mapping[str, Any], *, strategy_key: str = "daily_ga
 def event_propagation(inputs: Mapping[str, Any], *, strategy_key: str = "daily_event_propagation_v1") -> StrategySignal:
     event = inputs.get("event")
     cutoff = _parse_clock(inputs.get("input_cutoff"))
-    if not isinstance(event, Mapping) or cutoff is None or event.get("status") != "confirmed" or event.get("confirmed") is not True or event.get("disabled") is True or not event.get("release_at"):
+    if not isinstance(event, Mapping) or cutoff is None or event.get("status") != "confirmed" or event.get("confirmed") is not True or event.get("disabled") is not False or not event.get("release_at"):
         return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_release_clock_missing",))
     release_at = _parse_clock(event.get("release_at"))
     observed_at = _parse_clock(event.get("observed_at"))

@@ -220,11 +220,25 @@ def test_phase3_evidence_requires_canonical_pit_lineage_and_computed_claims(
                        VALUES (%s, %s, %s, true, %s, now(), now(), %s, %s)""",
                     [trial, instrument, cutoff, rank, str(index + 3) * 64, Jsonb({"net_return": 0.1})],
                 )
+            result_hash = str(index + 4) * 64
+            factor_exposure = {"market_beta": 0.1}
+            factor_exposure_hash = connection.execute(
+                "SELECT analysis.phase3_json_hash(%s::JSONB)", [Jsonb(factor_exposure)],
+            ).fetchone()[0]
+            neutralized_result_hash = connection.execute(
+                """SELECT analysis.phase3_json_hash(jsonb_build_object(
+                           'factor_exposure', %s::JSONB, 'neutralized', true, 'result_hash', %s::TEXT))""",
+                [Jsonb(factor_exposure), result_hash],
+            ).fetchone()[0]
             result = connection.execute(
                 """INSERT INTO analysis.trial_result
                    (research_trial_id, result_kind, observed_at, available_at, input_hash, outcome)
                    VALUES (%s, 'validation', now(), now(), %s, %s) RETURNING id, input_hash""",
-                [trial, str(index + 4) * 64, Jsonb({"passed": True, "neutralized": True, "factor_exposure": {"market_beta": 0.1}})],
+                [trial, result_hash, Jsonb({
+                    "passed": True, "neutralized": True, "factor_exposure": factor_exposure,
+                    "factor_exposure_hash": factor_exposure_hash, "factor_result_hash": result_hash,
+                    "neutralized_result_hash": neutralized_result_hash,
+                })],
             ).fetchone()
             connection.execute(
                 """INSERT INTO analysis.strategy_manifest
@@ -280,11 +294,12 @@ def test_phase3_evidence_requires_canonical_pit_lineage_and_computed_claims(
                        (strategy_revision_id, instrument_id, pnl_date, strategy_forecast_id,
                         research_trial_id, trial_result_id, universe_manifest_hash, result_hash,
                         input_cutoff, gross_return, cost, net_return, tail_return, regime, observed_at, available_at, input_hash)
-                       VALUES (%s, %s, '2026-09-02', %s, %s, %s, %s, %s, %s, 0.1, 0.01,
+                       VALUES (%s, %s, CASE WHEN %s::BIGINT = %s::BIGINT THEN '2026-09-02'::DATE ELSE '2026-09-03'::DATE END, %s, %s, %s, %s, %s, %s,
+                               CASE WHEN %s::BIGINT = %s::BIGINT THEN 0.1 ELSE 0.2 END, 0.01,
                                CASE WHEN %s::BIGINT = %s::BIGINT THEN 0.09 ELSE 0.18 END,
                                CASE WHEN %s::BIGINT = %s::BIGINT THEN 0.08 ELSE 0.17 END,
                                'normal', now(), now(), %s)""",
-                    [revision, instrument, forecast_id, trials[index], results[index][0], manifests[index], results[index][1], cutoff, instruments[0], instrument, instruments[0], instrument, "0" * 64],
+                        [revision, instrument, instruments[0], instrument, forecast_id, trials[index], results[index][0], manifests[index], results[index][1], cutoff, instruments[0], instrument, instruments[0], instrument, instruments[0], instrument, "0" * 64],
                 )
         connection.execute("SAVEPOINT invalid_pnl_lineage")
         with pytest.raises(psycopg.errors.RaiseException, match="invalid canonical lineage"):
@@ -297,14 +312,81 @@ def test_phase3_evidence_requires_canonical_pit_lineage_and_computed_claims(
                 [revisions[0], instruments[0], forecast_ids[1][0], trials[0], results[0][0], manifests[0], results[0][1], cutoff, "0" * 64],
             )
         connection.execute("ROLLBACK TO SAVEPOINT invalid_pnl_lineage")
+        connection.execute("SAVEPOINT label_only_monitoring")
+        with pytest.raises(psycopg.errors.RaiseException, match="typed canonical content"):
+            connection.execute(
+                """INSERT INTO analysis.strategy_monitoring_evidence
+                   (strategy_revision_id, research_trial_id, trial_result_id, universe_manifest_hash,
+                    result_hash, evidence_kind, input_cutoff, observed_at, available_at, input_hash, metrics, evidence)
+                   VALUES (%s, %s, %s, %s, %s, 'capacity', %s, now(), now(), %s, %s, %s)""",
+                [revisions[0], trials[0], results[0][0], manifests[0], results[0][1], cutoff, "0" * 64,
+                 Jsonb({"max_cost": 0.01}), Jsonb({"evidence_kind": "capacity"})],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT label_only_monitoring")
+        connection.execute("SAVEPOINT future_result_monitoring")
+        with pytest.raises(psycopg.errors.RaiseException, match="PIT lineage"):
+            result_available_at = connection.execute(
+                "SELECT available_at FROM analysis.trial_result WHERE id = %s", [results[0][0]],
+            ).fetchone()[0]
+            connection.execute(
+                """INSERT INTO analysis.strategy_monitoring_evidence
+                   (strategy_revision_id, research_trial_id, trial_result_id, universe_manifest_hash,
+                    result_hash, evidence_kind, input_cutoff, observed_at, available_at, input_hash, metrics, evidence)
+                   VALUES (%s, %s, %s, %s, %s, 'capacity', %s, now(), now(), %s, %s, %s)""",
+                [revisions[0], trials[0], results[0][0], manifests[0], results[0][1],
+                    result_available_at - timedelta(microseconds=1), "1" * 64, Jsonb({}), Jsonb({})],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT future_result_monitoring")
+        canonical = connection.execute(
+            """WITH tape AS (
+                     SELECT tape.*, forecast.input_hash AS forecast_input_hash
+                       FROM analysis.strategy_pnl_tape tape
+                       JOIN analysis.strategy_forecast forecast ON forecast.id = tape.strategy_forecast_id
+                      WHERE tape.strategy_revision_id = %s
+                        AND tape.research_trial_id = %s
+                        AND tape.trial_result_id = %s
+                        AND tape.available_at <= %s
+                        AND forecast.available_at <= %s
+                 ), weighted AS (
+                     SELECT abs(net_return) / NULLIF(sum(abs(net_return)) OVER (), 0) AS weight FROM tape
+                 ), regimes AS (
+                     SELECT regime, avg(net_return) AS avg_return FROM tape WHERE regime IS NOT NULL GROUP BY regime
+                 )
+                 SELECT count(*), count(*) FILTER (WHERE tail_return IS NOT NULL), count(DISTINCT instrument_id),
+                        count(DISTINCT regime) FILTER (WHERE regime IS NOT NULL), count(DISTINCT pnl_date),
+                        corr(gross_return, net_return), corr(tail_return, net_return) FILTER (WHERE tail_return IS NOT NULL),
+                        sum(abs(gross_return)), sum(abs(cost)),
+                        (SELECT sum(power(weight, 2)) FROM weighted),
+                        (SELECT regr_slope(net_return, extract(epoch FROM pnl_date::timestamp)) FROM tape),
+                        (SELECT COALESCE(jsonb_object_agg(regime, avg_return), '{}'::jsonb) FROM regimes),
+                        COALESCE(jsonb_agg(input_hash::TEXT ORDER BY id), '[]'::jsonb),
+                        COALESCE(jsonb_agg(forecast_input_hash::TEXT ORDER BY id), '[]'::jsonb)
+                   FROM tape""",
+            [revisions[0], trials[0], results[0][0], cutoff, cutoff],
+        ).fetchone()
+        metric_names = {
+            "correlation": ("return_correlation", canonical[5], canonical[0]),
+            "tail_correlation": ("tail_return_correlation", canonical[6], canonical[1]),
+            "crowding": ("crowding_hhi", canonical[9], canonical[2]),
+            "capacity": ("capacity_headroom", 1 - canonical[8] / canonical[7], canonical[0]),
+            "decay": ("decay_slope", canonical[10], canonical[4]),
+            "regime": ("regime_mean_net_return", 0.135, canonical[0]),
+        }
         for evidence_kind in ("correlation", "tail_correlation", "crowding", "capacity", "decay", "regime"):
+            metric_name, metric_value, sample_size = metric_names[evidence_kind]
+            metrics = {"evidence_kind": evidence_kind, "metric_name": metric_name, "sample_size": sample_size, metric_name: metric_value}
+            evidence = {
+                "evidence_kind": evidence_kind, "metric_name": metric_name, "metric_value": metric_value,
+                "sample_size": sample_size, "trial_result_hash": results[0][1], "universe_manifest_hash": manifests[0],
+                "pnl_input_hashes": canonical[12], "forecast_input_hashes": canonical[13], "regime_results": canonical[11],
+            }
             connection.execute(
                 """INSERT INTO analysis.strategy_monitoring_evidence
                    (strategy_revision_id, research_trial_id, trial_result_id, universe_manifest_hash,
                     result_hash, evidence_kind, input_cutoff, observed_at, available_at, input_hash, metrics, evidence)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now(), %s, %s, %s)""",
                 [revisions[0], trials[0], results[0][0], manifests[0], results[0][1], evidence_kind,
-                 cutoff, "0" * 64, Jsonb({"caller_forge": True}), Jsonb({"caller_forge": True})],
+                 cutoff, "0" * 64, Jsonb(metrics), Jsonb(evidence)],
             )
         monitoring = connection.execute(
             "SELECT metrics, lineage FROM analysis.strategy_monitoring_evidence WHERE strategy_revision_id = %s ORDER BY evidence_kind LIMIT 1",
@@ -354,6 +436,31 @@ def test_phase3_evidence_requires_canonical_pit_lineage_and_computed_claims(
             [blocked_results[0][0]],
         ).fetchone()[0]
         assert blocked_comparison == "blocked"
+        forged_result = connection.execute(
+            """INSERT INTO analysis.trial_result
+               (research_trial_id, result_kind, result_version, observed_at, available_at, input_hash, outcome)
+               VALUES (%s, 'validation', 3, now(), now(), %s, %s) RETURNING id, input_hash""",
+            [trials[0], "8" * 64, Jsonb({
+                "passed": True, "neutralized": True, "factor_exposure": {"market_beta": 0.1},
+                "factor_exposure_hash": "0" * 64, "factor_result_hash": "0" * 64,
+                "neutralized_result_hash": "0" * 64,
+            })],
+        ).fetchone()
+        connection.execute(
+            """INSERT INTO analysis.strategy_comparison
+               (champion_revision_id, challenger_revision_id, champion_trial_id, challenger_trial_id,
+                champion_result_id, challenger_result_id, champion_result_hash, challenger_result_hash,
+                champion_manifest_hash, challenger_manifest_hash, input_cutoff, observed_at, available_at,
+                input_hash, distinctness, explanation, metrics)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now(), %s,
+                       'distinct', 'caller claim', %s)""",
+            [revisions[0], revisions[1], trials[0], trials[1], forged_result[0], results[1][0], forged_result[1], results[1][1],
+             manifests[0], manifests[1], cutoff, "2" * 64, Jsonb({"caller_forge": True})],
+        )
+        assert connection.execute(
+            "SELECT distinctness FROM analysis.strategy_comparison WHERE champion_result_id = %s",
+            [forged_result[0]],
+        ).fetchone()[0] == "blocked"
 
 
 def test_phase3_trial_accounting_requires_full_outcome_denominator(migrated_postgres_dsn: str) -> None:
