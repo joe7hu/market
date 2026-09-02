@@ -35,7 +35,21 @@ class StrategyGovernanceRepository:
             ).fetchall()
             evaluations = [dict(row) for row in rows]
             _quarantine_unverified_paper_evaluations(connection, strategy_revision_id, evaluations)
-            return promotion_readiness(evaluations, now=cutoff)
+            result = promotion_readiness(evaluations, now=cutoff)
+            linked = connection.execute(
+                "SELECT hypothesis_id FROM analysis.strategy_revision WHERE id = %s",
+                [strategy_revision_id],
+            ).fetchone()
+            if linked and linked["hypothesis_id"] is not None:
+                sealed = connection.execute(
+                    "SELECT 1 FROM analysis.validation_dossier WHERE strategy_revision_id = %s AND status = 'sealed' LIMIT 1",
+                    [strategy_revision_id],
+                ).fetchone()
+                if sealed is None:
+                    result["status"] = "unavailable"
+                    result["promotion_eligible"] = False
+                    result.setdefault("blockers", []).append("validation_dossier_incomplete")
+            return result
 
     def automatic_promote_eligible(self, *, enabled: bool = True) -> int:
         if not enabled:

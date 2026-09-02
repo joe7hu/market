@@ -29,6 +29,7 @@ INSTRUMENT_STATE_SNAPSHOT_CONTRACT_VERSION = "instrument-state-snapshot.v1"
 ALPHA_SIGNAL_CONTRACT_VERSION = "alpha-signal.v1"
 OPPORTUNITY_RANK_CONTRACT_VERSION = "opportunity-rank.v1"
 TICKER_OPPORTUNITY_RANKING_VERSION = "ticker-opportunity-ranking.v1"
+STRATEGY_FORECAST_CONTRACT_VERSION = "strategy-forecast.v1"
 
 
 class EligibleUniverseSnapshot(BaseModel):
@@ -101,6 +102,81 @@ class InstrumentStateSnapshot(BaseModel):
         return self
 
 
+class StrategyForecast(BaseModel):
+    """The model-owned forecast authority consumed by an AlphaSignal."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    contract_version: str = STRATEGY_FORECAST_CONTRACT_VERSION
+    strategy_forecast_id: str = Field(min_length=1)
+    strategy_revision_id: int
+    strategy_evaluation_id: str | None = None
+    ticker: str = Field(min_length=1)
+    opportunity_episode_id: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    horizon: str = Field(min_length=1)
+    forecast_value: float | None = None
+    forecast_range: NumericRange | None = None
+    forecast_distribution: dict[str, float] | None = None
+    probability_semantics: str | None = None
+    model_artifact_id: str = Field(min_length=1)
+    artifact_hash: str = Field(min_length=1)
+    input_hash: str = Field(min_length=1)
+    as_of: datetime
+    input_cutoff: datetime
+    generated_at: datetime
+    available_at: datetime
+
+    @model_validator(mode="after")
+    def enforce_lineage(self) -> "StrategyForecast":
+        timestamps = (self.as_of, self.input_cutoff, self.generated_at, self.available_at)
+        if any(value.tzinfo is None or value.utcoffset() is None for value in timestamps):
+            raise ValueError("strategy forecast timestamps must be timezone-aware")
+        if _utc(self.as_of) != _utc(self.input_cutoff):
+            raise ValueError("strategy forecast as_of and input_cutoff must match")
+        if _utc(self.available_at) > _utc(self.input_cutoff):
+            raise ValueError("strategy forecast availability is outside its point-in-time cutoff")
+        if self.forecast_value is None and self.forecast_range is None and self.forecast_distribution is None:
+            raise ValueError("strategy forecast must contain a value, range, or distribution")
+        return self
+
+
+def build_strategy_forecast(
+    *, ticker: str, opportunity_episode_id: str, strategy_revision_id: int,
+    strategy_evaluation_id: str | None, target: str, horizon: str,
+    forecast_value: float | None = None, forecast_range: NumericRange | Mapping[str, Any] | None = None,
+    forecast_distribution: Mapping[str, float] | None = None,
+    probability_semantics: str | None = None, model_artifact_id: str,
+    artifact_hash: str, input_hash: str, as_of: datetime, generated_at: datetime,
+    available_at: datetime,
+) -> StrategyForecast:
+    """Build one content-addressed forecast from qualified model output."""
+
+    range_value = forecast_range
+    if isinstance(range_value, Mapping):
+        range_value = NumericRange.model_validate(range_value)
+    payload = {
+        "ticker": ticker.strip().upper(), "opportunity_episode_id": opportunity_episode_id,
+        "strategy_revision_id": strategy_revision_id, "strategy_evaluation_id": strategy_evaluation_id,
+        "target": target, "horizon": horizon, "forecast_value": forecast_value,
+        "forecast_range": _jsonable(range_value), "forecast_distribution": dict(forecast_distribution or {}) or None,
+        "probability_semantics": probability_semantics, "model_artifact_id": model_artifact_id,
+        "artifact_hash": artifact_hash, "input_hash": input_hash, "as_of": _jsonable(as_of),
+        "input_cutoff": _jsonable(as_of), "generated_at": _jsonable(generated_at),
+        "available_at": _jsonable(available_at),
+    }
+    return StrategyForecast(
+        strategy_forecast_id="forecast:" + _content_id("strategy-forecast", payload),
+        ticker=payload["ticker"], opportunity_episode_id=opportunity_episode_id,
+        strategy_revision_id=strategy_revision_id, strategy_evaluation_id=strategy_evaluation_id,
+        target=target, horizon=horizon, forecast_value=forecast_value, forecast_range=range_value,
+        forecast_distribution=dict(forecast_distribution or {}) or None,
+        probability_semantics=probability_semantics, model_artifact_id=model_artifact_id,
+        artifact_hash=artifact_hash, input_hash=input_hash, as_of=as_of, input_cutoff=as_of,
+        generated_at=generated_at, available_at=available_at,
+    )
+
+
 class AlphaSignal(BaseModel):
     """A forecast with explicit target, horizon, calibration, and lineage."""
 
@@ -124,7 +200,10 @@ class AlphaSignal(BaseModel):
     availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     strategy_key: str | None = None
     strategy_revision_id: int | None = None
+    strategy_forecast_id: str | None = None
     model_artifact_id: str | None = None
+    artifact_hash: str | None = None
+    input_hash: str | None = None
     strategy_evaluation_id: str | None = None
     artifact_published_at: datetime | None = None
     evaluation_evaluated_at: datetime | None = None
@@ -185,6 +264,8 @@ class AlphaSignal(BaseModel):
                     *qualification_timestamps,
                 ) if value in {None, ""}
             ]
+            if not self.strategy_forecast_id:
+                missing_artifact.append("strategy_forecast_id")
             if missing_artifact:
                 raise ValueError("available alpha signals require qualified artifact evidence: " + ", ".join(missing_artifact))
             phase2_missing = [
@@ -286,6 +367,7 @@ class OpportunityRank(BaseModel):
     portfolio_impact_id: str | None = None
     risk_policy_version: str | None = None
     alpha_signal_id: str | None = None
+    strategy_forecast_id: str | None = None
     instrument_state_snapshot_id: str | None = None
     market_snapshot_id: str | None = None
     market_state_publication_id: str | None = None
@@ -416,7 +498,10 @@ def build_alpha_signal(
     availability_status: AvailabilityStatus | str = AvailabilityStatus.MISSING,
     strategy_key: str | None = None,
     strategy_revision_id: int | None = None,
+    strategy_forecast_id: str | None = None,
     model_artifact_id: str | None = None,
+    artifact_hash: str | None = None,
+    input_hash: str | None = None,
     strategy_evaluation_id: str | None = None,
     artifact_published_at: datetime | None = None,
     evaluation_evaluated_at: datetime | None = None,
@@ -445,7 +530,10 @@ def build_alpha_signal(
         "availability_status": availability_status,
         "strategy_key": strategy_key,
         "strategy_revision_id": strategy_revision_id,
+        "strategy_forecast_id": strategy_forecast_id,
         "model_artifact_id": model_artifact_id,
+        "artifact_hash": artifact_hash,
+        "input_hash": input_hash,
         "strategy_evaluation_id": strategy_evaluation_id,
         "artifact_published_at": artifact_published_at,
         "evaluation_evaluated_at": evaluation_evaluated_at,
@@ -468,6 +556,11 @@ def build_alpha_signal(
         "input_lineage": [_jsonable(item) for item in lineage],
         "blockers": list(blockers),
     }
+    if strategy_forecast_id is None and any(
+        values.get(key) is not None for key in ("forecast_value", "forecast_range", "forecast_distribution")
+    ):
+        strategy_forecast_id = "forecast:" + _content_id("strategy-forecast", values)
+        values["strategy_forecast_id"] = strategy_forecast_id
     return AlphaSignal(
         signal_id=_content_id("alpha-signal", values),
         as_of=reference,
@@ -600,6 +693,8 @@ def rank_opportunities(
             "portfolio_impact_id": row.get("portfolio_impact_id"),
             "risk_policy_version": row.get("risk_policy_version") or row.get("policy_version"),
             "alpha_signal_id": row.get("alpha_signal_id"),
+            "strategy_forecast_id": row.get("strategy_forecast_id")
+            or _model_dump(row.get("alpha_signal")).get("strategy_forecast_id"),
             "instrument_state_snapshot_id": row.get("instrument_state_snapshot_id"),
             "market_snapshot_id": row.get("market_snapshot_id"),
             "market_state_publication_id": row.get("market_state_publication_id"),
@@ -685,6 +780,8 @@ def _unavailable_reason(candidate: Mapping[str, Any], utility: TradeUtility, uni
 def _signal_metadata_complete(signal: Mapping[str, Any]) -> bool:
     if not signal:
         return False
+    if signal.get("contract_version") == ALPHA_SIGNAL_CONTRACT_VERSION and not str(signal.get("strategy_forecast_id") or "").strip():
+        return False
     numerical = any(signal.get(key) is not None for key in ("forecast_value", "forecast_range", "forecast_distribution"))
     if not numerical:
         return False
@@ -711,7 +808,7 @@ def _lineage_matches(
     policy: Mapping[str, Any],
     signal: Mapping[str, Any],
 ) -> bool:
-    pairs = (
+    pairs = [
         (candidate.get("ticker"), signal.get("ticker")),
         (candidate.get("opportunity_episode_id"), signal.get("opportunity_episode_id")),
         (candidate.get("decision_revision"), signal.get("decision_revision")),
@@ -726,7 +823,13 @@ def _lineage_matches(
         (candidate.get("policy_version"), impact.get("risk_policy_version")),
         (candidate.get("risk_policy_version"), policy.get("policy_version")),
         (candidate.get("risk_policy_version"), impact.get("risk_policy_version")),
+    ]
+    forecast_pair = (
+        candidate.get("strategy_forecast_id") or signal.get("strategy_forecast_id"),
+        signal.get("strategy_forecast_id"),
     )
+    if any(forecast_pair):
+        pairs.append(forecast_pair)
     if not all(_identity_equal(left, right) for left, right in pairs):
         return False
 

@@ -85,6 +85,7 @@ def _qualified_artifact(
         "calibration_metrics": {"brier_score": 0.2, "calibration_error": 0.1},
         "lower_confidence_net_utility_after_costs": 0.02,
         "valid_through": (cutoff + timedelta(days=30)).isoformat(),
+        "forecast": {"horizon": "TACTICAL", "forecast_value": 0.10},
     }
     metrics.update(metrics_update or {})
     with runtime.transaction() as connection:

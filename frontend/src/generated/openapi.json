@@ -637,6 +637,17 @@
         "additionalProperties": true,
         "description": "A forecast with explicit target, horizon, calibration, and lineage.",
         "properties": {
+          "artifact_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Hash"
+          },
           "artifact_published_at": {
             "anyOf": [
               {
@@ -864,6 +875,17 @@
             "title": "Input Cutoff",
             "type": "string"
           },
+          "input_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Hash"
+          },
           "input_lineage": {
             "default": [],
             "items": {
@@ -987,6 +1009,17 @@
               }
             ],
             "title": "Strategy Evaluation Id"
+          },
+          "strategy_forecast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Forecast Id"
           },
           "strategy_key": {
             "anyOf": [
@@ -4302,6 +4335,17 @@
               }
             ],
             "title": "Selected Expression Kind"
+          },
+          "strategy_forecast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Forecast Id"
           },
           "ticker": {
             "minLength": 1,
@@ -8810,6 +8854,17 @@
           "state": {
             "$ref": "#/components/schemas/OutcomeAttributionState",
             "default": "UNMEASURABLE"
+          },
+          "strategy_forecast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Forecast Id"
           },
           "ticker": {
             "minLength": 1,
@@ -14546,6 +14601,17 @@
           },
           "selected_expression_kind": {
             "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "strategy_forecast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Forecast Id"
           },
           "ticker": {
             "minLength": 1,

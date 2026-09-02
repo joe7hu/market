@@ -16,8 +16,9 @@ describe("SourcesRoute", () => {
 
     const html = renderToStaticMarkup(<SourcesRoute />);
 
-    expect(panelScope.mock.calls).toEqual([["sources"]]);
+    expect(panelScope.mock.calls).toEqual([["research"]]);
     expect(html).toContain("Source-backed ticker evidence and consensus");
+    expect(html).toContain("Research Authority (read-only)");
     expect(html).not.toContain("Market diagnostics");
     expect(html).not.toContain("Model diagnostics");
     expect(html).not.toContain("Agent research history");

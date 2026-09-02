@@ -445,6 +445,8 @@ class AnalysisRepository:
             "strategy_revision": int(row["revision"]),
             "artifact_published_at": row["promoted_at"] or row["created_at"],
             "model_artifact_id": parameters.get("artifact_id"),
+            "artifact_hash": parameters.get("artifact_hash"),
+            "input_hash": parameters.get("input_hash"),
             "model_version": parameters.get("model_version"),
             "feature_version": parameters.get("feature_version"),
             "target": parameters.get("target"),
@@ -472,6 +474,8 @@ class AnalysisRepository:
             "promotion_evaluation_id": row["promotion_evaluation_id"],
             "promotion_evaluated_at": row["promotion_evaluated_at"],
             "promotion_available_at": row["promotion_available_at"],
+            "forecast": metrics.get("forecast"),
+            "forecasts": metrics.get("forecasts"),
         }
         if row["strategy_evaluation_id"] is None:
             return {**base, "availability_status": "not_calibrated", "blockers": ["alpha_oos_evaluation_missing"]}
@@ -569,6 +573,52 @@ class AnalysisRepository:
                 [symbol.strip().upper(), feature_version, cutoff, cutoff],
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def store_strategy_forecast(self, forecast: Mapping[str, Any]) -> str | None:
+        """Persist one model-owned forecast without replacing an immutable row."""
+
+        forecast_id = str(forecast.get("strategy_forecast_id") or "").strip()
+        ticker = str(forecast.get("ticker") or "").strip().upper()
+        if not forecast_id or not ticker:
+            return None
+        as_of = forecast.get("as_of") or forecast.get("input_cutoff")
+        input_cutoff = forecast.get("input_cutoff") or as_of
+        generated_at = forecast.get("generated_at") or forecast.get("artifact_published_at") or as_of
+        available_at = forecast.get("available_at") or forecast.get("evaluation_available_at") or as_of
+        artifact_hash = str(forecast.get("artifact_hash") or forecast.get("model_artifact_id") or ("0" * 64))
+        input_hash = str(forecast.get("input_hash") or ("0" * 64))
+        if not as_of or not input_cutoff or not generated_at or not available_at:
+            return None
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            instrument = connection.execute(
+                "SELECT id FROM catalog.instrument WHERE symbol = %s LIMIT 1", [ticker]
+            ).fetchone()
+            if instrument is None:
+                return None
+            connection.execute(
+                """
+                INSERT INTO analysis.strategy_forecast (
+                    id, strategy_revision_id, strategy_evaluation_id, instrument_id,
+                    opportunity_episode_id, target, horizon, forecast_value,
+                    forecast_range, forecast_distribution, probability_semantics,
+                    model_artifact_id, artifact_hash, input_hash, as_of, input_cutoff,
+                    generated_at, available_at, metadata
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s
+                ) ON CONFLICT (id) DO NOTHING
+                """,
+                [
+                    forecast_id, forecast["strategy_revision_id"], forecast.get("strategy_evaluation_id"),
+                    instrument["id"], forecast["opportunity_episode_id"], forecast["target"], forecast["horizon"],
+                    forecast.get("forecast_value"), Jsonb(forecast.get("forecast_range") or {}) if forecast.get("forecast_range") else None,
+                    Jsonb(forecast.get("forecast_distribution") or {}) if forecast.get("forecast_distribution") else None,
+                    forecast.get("probability_semantics"), forecast["model_artifact_id"], artifact_hash,
+                    input_hash, as_of, input_cutoff, generated_at,
+                    available_at, Jsonb({"contract_version": forecast.get("contract_version", "strategy-forecast.v1")}),
+                ],
+            )
+        return forecast_id
 
     def start_run(
         self,

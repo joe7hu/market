@@ -1984,6 +1984,17 @@ def plan_authority(row: Any) -> tuple[TradePlan | None, str | None]:
     ]
     if len(signals) != 1:
         return plan, "alpha_signal_missing_or_duplicated"
+    signal = signals[0]
+    signal_forecast_id = str(signal.get("strategy_forecast_id") or "")
+    plan_forecast_id = str(plan.strategy_forecast_id or "")
+    rank_forecast_id = str(rank.get("strategy_forecast_id") or "")
+    if signal.get("contract_version") == "alpha-signal.v1" and not signal_forecast_id:
+        return plan, "trade_plan_strategy_forecast_missing"
+    if (plan_forecast_id or rank_forecast_id or signal_forecast_id) and not (
+        plan_forecast_id and rank_forecast_id and signal_forecast_id
+        and plan_forecast_id == rank_forecast_id == signal_forecast_id
+    ):
+        return plan, "trade_plan_strategy_forecast_mismatch"
     return plan, None
 
 

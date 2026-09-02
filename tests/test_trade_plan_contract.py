@@ -175,6 +175,24 @@ def test_blocked_plan_is_cash_no_trade_with_one_blocker() -> None:
     assert plan.blockers == (plan.primary_blocker,)
 
 
+def test_strategy_forecast_missing_or_mismatched_blocks_action() -> None:
+    decision, rank, signal, _, resolution = _actionable_plan()
+    missing = build_trade_plan(
+        decision=decision, rank=rank,
+        alpha_signal={**signal, "contract_version": "alpha-signal.v1"},
+        resolution=resolution,
+    )
+    assert "strategy_forecast_missing" in missing.blockers
+
+    mismatched = build_trade_plan(
+        decision=decision,
+        rank={**rank, "strategy_forecast_id": "forecast:rank"},
+        alpha_signal={**signal, "contract_version": "alpha-signal.v1", "strategy_forecast_id": "forecast:signal"},
+        resolution=resolution,
+    )
+    assert "strategy_forecast_identity_mismatch" in mismatched.blockers
+
+
 def test_blocked_resolution_preserves_diagnostic_blockers() -> None:
     resolution = build_decision_resolution(
         action="NO_TRADE",

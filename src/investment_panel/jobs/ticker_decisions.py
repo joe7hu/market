@@ -29,6 +29,7 @@ from investment_panel.core.decision import (
     apply_opportunity_rank_safety,
     bind_trade_plan,
     build_alpha_signal,
+    build_strategy_forecast,
     build_instrument_state_snapshot,
     build_trade_plan,
     build_ticker_decision,
@@ -162,6 +163,13 @@ def publish(
             alpha_artifacts=alpha_artifacts,
             coverage_threshold=config.analysis.ticker_universe_coverage_threshold,
         )
+        for record in records:
+            for signal in record.get("signals", ()):
+                if signal.strategy_forecast_id and any(
+                    value is not None
+                    for value in (signal.forecast_value, signal.forecast_range, signal.forecast_distribution)
+                ):
+                    analysis_repository.store_strategy_forecast(signal.model_dump(mode="json"))
         ranking_run_id = analysis_repository.start_run(
             RANKING_SCOPE,
             input_cutoff=reference,
@@ -355,6 +363,7 @@ def _rank_records(
             "portfolio_impact_id": impact.impact_id if impact is not None else None,
             "risk_policy_version": decision.policy_version,
             "alpha_signal_id": signal.signal_id if signal is not None else None,
+            "strategy_forecast_id": signal.strategy_forecast_id if signal is not None else None,
             "alpha_signal": signal.model_dump(mode="json") if signal is not None else None,
             "instrument_state_snapshot_id": snapshot.snapshot_id,
             "market_snapshot_id": snapshot.market_snapshot_id,
@@ -529,18 +538,13 @@ def _alpha_models(
     signals: list[AlphaSignal] = []
     for view in (decision.tactical, decision.fundamental):
         artifact = dict(artifacts.get(view.horizon.value) or {})
-        expected = view.expected_return_range
-        probabilities = {
-            scenario.name: scenario.probability
-            for scenario in view.scenarios
-        }
-        distribution = probabilities if all(value is not None for value in probabilities.values()) else None
+        forecast = _artifact_forecast(artifact, view.horizon.value, decision.ticker, decision.opportunity_episode_id, decision.cutoff)
         availability_status = str(artifact.get("availability_status") or "missing")
         blockers = list(artifact.get("blockers") or ())
         feature_rows = tables.get("stock_alpha_features") or []
         feature = dict(feature_rows[0]) if feature_rows else {}
         score = research_score(feature)
-        if expected is None:
+        if forecast is None:
             availability_status = "missing"
             blockers.append("forecast_missing")
         if score is None:
@@ -556,10 +560,10 @@ def _alpha_models(
             target=str(artifact.get("target") or "") or None,
             horizon=view.horizon.value,
             direction=view.stance.value,
-            forecast_value=((expected.low + expected.high) / 2) if expected is not None else None,
-            forecast_range=expected,
-            forecast_distribution=distribution,
-            probability_semantics="scenario_probability" if distribution is not None else None,
+            forecast_value=forecast.forecast_value if forecast else None,
+            forecast_range=forecast.forecast_range if forecast else None,
+            forecast_distribution=forecast.forecast_distribution if forecast else None,
+            probability_semantics=forecast.probability_semantics if forecast else None,
             cohort_id=artifact.get("cohort_id"),
             calibration_state=artifact.get("calibration_state"),
             model_version=artifact.get("model_version"),
@@ -568,7 +572,10 @@ def _alpha_models(
             availability_status=availability_status,
             strategy_key=artifact.get("strategy_key"),
             strategy_revision_id=artifact.get("strategy_revision_id"),
+            strategy_forecast_id=forecast.strategy_forecast_id if forecast else None,
             model_artifact_id=artifact.get("model_artifact_id"),
+            artifact_hash=artifact.get("artifact_hash") or artifact.get("model_artifact_id"),
+            input_hash=artifact.get("input_hash"),
             strategy_evaluation_id=artifact.get("strategy_evaluation_id"),
             artifact_published_at=artifact.get("artifact_published_at"),
             evaluation_evaluated_at=artifact.get("evaluation_evaluated_at"),
@@ -588,6 +595,51 @@ def _alpha_models(
             blockers=tuple(dict.fromkeys(blockers)),
         ))
     return snapshot, signals
+
+
+def _artifact_forecast(
+    artifact: Mapping[str, Any], horizon: str, ticker: str, episode_id: str, cutoff: datetime,
+) -> Any | None:
+    """Read forecast values only from the qualified artifact, never TickerDecision."""
+
+    candidates: list[Mapping[str, Any]] = []
+    for container in (artifact.get("forecast"), artifact.get("forecasts"), artifact.get("metrics")):
+        if isinstance(container, Mapping):
+            candidates.append(container)
+            nested = container.get(horizon) or container.get(horizon.lower())
+            if isinstance(nested, Mapping):
+                candidates.append(nested)
+        elif isinstance(container, list):
+            candidates.extend(item for item in container if isinstance(item, Mapping))
+    selected = next(
+        (item for item in candidates if str(item.get("horizon") or horizon).upper() == horizon.upper()),
+        candidates[0] if candidates else None,
+    )
+    if not selected:
+        return None
+    value = selected.get("forecast_value", selected.get("value"))
+    forecast_range = selected.get("forecast_range", selected.get("range"))
+    distribution = selected.get("forecast_distribution", selected.get("distribution"))
+    if value is None and not isinstance(forecast_range, Mapping) and not isinstance(distribution, Mapping):
+        return None
+    try:
+        return build_strategy_forecast(
+            ticker=ticker, opportunity_episode_id=episode_id,
+            strategy_revision_id=int(artifact["strategy_revision_id"]),
+            strategy_evaluation_id=str(artifact.get("strategy_evaluation_id") or "") or None,
+            target=str(artifact.get("target") or "expected_return"), horizon=horizon,
+            forecast_value=float(value) if value is not None else None,
+            forecast_range=forecast_range if isinstance(forecast_range, Mapping) else None,
+            forecast_distribution=distribution if isinstance(distribution, Mapping) else None,
+            probability_semantics=str(selected.get("probability_semantics") or "") or None,
+            model_artifact_id=str(artifact["model_artifact_id"]),
+            artifact_hash=str(artifact.get("artifact_hash") or artifact.get("model_artifact_id")),
+            input_hash=str(artifact.get("input_hash") or ("0" * 64)),
+            as_of=cutoff, generated_at=artifact.get("artifact_published_at") or cutoff,
+            available_at=artifact.get("evaluation_available_at") or cutoff,
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
 
 
 def _same_published_decision(left: Any, right: Any) -> bool:
