@@ -25,10 +25,17 @@ from investment_panel.core.decision import (
     is_us_market_day,
     market_evidence_for_decision,
 )
+from investment_panel.core.phase2 import (
+    PITObservation,
+    build_coverage_vector,
+    build_market_state_posterior,
+    build_scenario_paths,
+)
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars, completed_trading_dates
 from investment_panel.database.fundamental_history import hydrate_history
 from investment_panel.database.portfolio_ledger import replay_portfolio_at
+from investment_panel.database.phase2 import Phase2Repository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -211,6 +218,16 @@ def refresh_market_publication(
         event_risk_evidence = _event_risk_evidence(connection, as_of)
         corporate_cycle_evidence = _corporate_cycle_evidence(connection, instrument_rows, as_of)
         crypto_volume_evidence = _crypto_volume_evidence(connection, instrument_rows, as_of)
+        phase2_rows = [dict(row) for row in connection.execute(
+            """SELECT observation_id, field_name, dimension, asset_class, source_id,
+                      source_version, value, unit, observed_at, available_at,
+                      publication_at, release_at, vintage_at, status, confidence, metadata
+               FROM raw.market_observation
+               WHERE observed_at <= %s AND available_at <= %s
+               ORDER BY dimension, observed_at, observation_id
+               LIMIT 500""",
+            [as_of, as_of],
+        ).fetchall()]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in price_rows:
         grouped[str(row["symbol"])].append(row)
@@ -225,6 +242,23 @@ def refresh_market_publication(
         as_of, assets, drivers, input_lineage, horizon_evidence, event_risk_evidence,
         volatility_evidence, corporate_cycle_evidence, crypto_volume_evidence,
     )
+    phase2_observations = _phase2_observations(phase2_rows)
+    phase2_posterior = build_market_state_posterior(phase2_observations, as_of=as_of)
+    phase2_coverage = build_coverage_vector(
+        as_of,
+        {
+            "stock": {"daily": ("macro.value", "rates.nominal_yield", "credit.spread")},
+            "options": {"positioning": ("option.open_interest", "option.volume")},
+            "crypto": {"venue_derivatives": ("crypto.depth",)},
+        },
+        phase2_observations,
+    )
+    phase2_scenarios = build_scenario_paths(snapshot.snapshot_id, phase2_posterior)
+    snapshot = snapshot.model_copy(update={
+        "phase2_posterior": phase2_posterior.model_dump(mode="json"),
+        "phase2_coverage_vector": phase2_coverage.model_dump(mode="json"),
+        "phase2_scenario_paths": tuple(path.model_dump(mode="json") for path in phase2_scenarios),
+    })
     coverage_rows = _coverage_rows(snapshot.coverage_matrix)
     analysis = AnalysisRepository(runtime)
     volatility_inputs = {
@@ -280,6 +314,7 @@ def refresh_market_publication(
     publication = analysis.publication_by_id("market", publication_id)
     if publication is None or publication.get("published_at") is None:
         raise RuntimeError("published MarketState is not visible in PostgreSQL")
+    Phase2Repository(runtime).publish(phase2_posterior, phase2_coverage, phase2_scenarios)
     return {
         "status": "ok",
         "publication_id": str(publication_id),
@@ -2199,6 +2234,18 @@ def _coverage_rows(matrix: CoverageMatrix | None) -> list[dict[str, Any]]:
         }
         for row in matrix.rows
     ]
+
+
+def _phase2_observations(rows: list[dict[str, Any]]) -> tuple[PITObservation, ...]:
+    """Decode only persisted source facts; malformed rows remain unavailable."""
+
+    observations: list[PITObservation] = []
+    for row in rows:
+        try:
+            observations.append(PITObservation.model_validate(row))
+        except (TypeError, ValueError):
+            continue
+    return tuple(observations)
 
 
 def _number(value: Any) -> float | None:

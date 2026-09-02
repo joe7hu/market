@@ -921,6 +921,33 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY abs(corr(left_side.daily_return, right_side.daily_return)) DESC LIMIT 500
     """,
     "owned_correlations": OWNED_CORRELATIONS_QUERY,
+    "market_state_posterior": """
+        SELECT posterior_id, as_of, input_cutoff, model_version, payload, created_at
+        FROM analysis.market_state_posterior
+        ORDER BY as_of DESC, posterior_id DESC LIMIT 100
+    """,
+    "market_coverage_vector": """
+        SELECT vector_id, as_of, payload, created_at
+        FROM analysis.market_coverage_vector
+        ORDER BY as_of DESC, vector_id DESC LIMIT 100
+    """,
+    "market_scenario_paths": """
+        SELECT scenario_hash, snapshot_id, model_version, path, created_at
+        FROM analysis.market_scenario_path
+        ORDER BY created_at DESC, scenario_hash LIMIT 100
+    """,
+    "option_liquidity_sla": """
+        SELECT sla_id, as_of, source_id, payload, created_at
+        FROM analysis.option_liquidity_sla
+        ORDER BY as_of DESC, sla_id DESC LIMIT 100
+    """,
+    "market_observations": """
+        SELECT observation_id, field_name, dimension, asset_class, source_id,
+               source_version, value, unit, observed_at, available_at,
+               publication_at, release_at, vintage_at, status, confidence, metadata
+        FROM raw.market_observation
+        ORDER BY available_at DESC, observation_id LIMIT 500
+    """,
 }
 
 

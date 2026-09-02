@@ -37,6 +37,15 @@ _EXACT_CONTRACTS: dict[str, SourceHealthContract] = {
     "official-event-calendar": SourceHealthContract(ACTIVE, "update_event_calendar", 86400),
     "mungermode-market-valuations": SourceHealthContract(ACTIVE, "update_market_valuations", 86400),
     "sec_companyfacts": SourceHealthContract(ACTIVE, "update_company_financials", 86400),
+    # Phase 2 producers stay standby until their credential/history contract
+    # is proven. The adapter reports MISSING_SOURCE or MISSING_HISTORY.
+    "fred": SourceHealthContract(STANDBY, "update_phase2_sources", 86400),
+    "treasury": SourceHealthContract(STANDBY, "update_phase2_sources", 86400),
+    "trading_economics": SourceHealthContract(STANDBY, "update_phase2_sources", 86400),
+    "alphavantage": SourceHealthContract(STANDBY, "update_phase2_sources", 86400),
+    "robinhood_history_full": SourceHealthContract(STANDBY, "update_phase2_sources", 900),
+    "ibkr_options": SourceHealthContract(STANDBY, "update_phase2_sources", 900),
+    "coinmetrics": SourceHealthContract(STANDBY, "update_phase2_sources", 3600),
 }
 
 _PREFIX_CONTRACTS: tuple[tuple[str, SourceHealthContract], ...] = (

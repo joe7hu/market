@@ -1,0 +1,120 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from investment_panel.core.phase2 import (
+    FIELD_CONTRACTS,
+    PITObservation,
+    Phase2Status,
+    assess_crypto_venue_data,
+    assess_option_oi_volume_sla,
+    build_coverage_vector,
+    build_market_state_posterior,
+    build_scenario_paths,
+    parse_coinmetrics_derivatives,
+    parse_corporate_expectations,
+    parse_event_consensus,
+    parse_fred_alfred,
+    parse_treasury_yield_curve,
+    posterior_can_influence_rank,
+    replay_scenario_path,
+    select_point_in_time,
+    source_status,
+)
+
+
+AS_OF = datetime(2026, 9, 2, 14, tzinfo=UTC)
+
+
+def observation(key: str, field: str, value: float, *, available_at: datetime = AS_OF, source: str = "treasury", status: Phase2Status = Phase2Status.AVAILABLE) -> PITObservation:
+    return PITObservation(
+        observation_id=key, field_name=field, dimension="rates", asset_class="rates", source_id=source,
+        source_version="fixture.v1", value=value, observed_at=AS_OF - timedelta(days=1),
+        available_at=available_at, status=status,
+    )
+
+
+def test_p2_a01_contracts_and_pit_clock_are_canonical() -> None:
+    assert set(("macro.value", "rates.nominal_yield", "rates.real_yield", "credit.spread", "event.actual", "event.consensus", "event.surprise", "event.revision", "corporate.expected", "crypto.venue_derivatives", "option.open_interest", "option.volume")) <= FIELD_CONTRACTS.keys()
+    selected = select_point_in_time([observation("old", "rates.nominal_yield", 3), observation("future", "rates.nominal_yield", 4, available_at=AS_OF + timedelta(minutes=1))], AS_OF)
+    assert [row.observation_id for row in selected.selected] == ["old"]
+
+
+def test_p2_a02_missing_credentials_never_make_fake_rows() -> None:
+    result = parse_fred_alfred({"observations": [{"series_id": "GDP", "date": "2026-01-01", "value": "1", "vintage_at": "2026-02-01"}]}, env={})
+    assert result.status is Phase2Status.MISSING_SOURCE
+    assert result.observations == ()
+    assert source_status("short_interest") is Phase2Status.UNSUPPORTED
+    assert source_status("fred", env={"FRED_API_KEY": "present"}, has_history=False) is Phase2Status.MISSING_HISTORY
+
+
+def test_p2_a01_public_treasury_and_credentialed_corporate_seams_keep_clocks() -> None:
+    treasury = parse_treasury_yield_curve({"observations": [{"date": AS_OF.isoformat(), "available_at": AS_OF.isoformat(), "tenor": "10Y", "value": "4.0"}]})
+    corporate = parse_corporate_expectations({"observations": [{"period": "2026-Q3", "period_end": "2026-09-30", "publication_at": AS_OF.isoformat(), "available_at": AS_OF.isoformat(), "expected": "2.1"}]}, env={"ALPHAVANTAGE_API_KEY": "present"})
+    assert treasury.status is Phase2Status.AVAILABLE
+    assert corporate.status is Phase2Status.AVAILABLE
+    assert treasury.observations[0].publication_at is None
+    assert corporate.observations[0].publication_at == AS_OF
+
+
+def test_p2_a03_coverage_is_per_expression_and_fails_closed() -> None:
+    vector = build_coverage_vector(AS_OF, {"trend": {"stock": ("rates.nominal_yield",)}, "options": {"positioning": ("option.open_interest", "option.volume")}}, [observation("rate", "rates.nominal_yield", 3)])
+    rows = {(row.strategy, row.expression): row for row in vector.rows}
+    assert rows["trend", "stock"].status is Phase2Status.AVAILABLE
+    assert rows["options", "positioning"].status is Phase2Status.MISSING_HISTORY
+
+
+def test_p2_a04_event_keeps_actual_consensus_surprise_revision_and_clocks() -> None:
+    result = parse_event_consensus({"observations": [{"event_id": "cpi", "event_at": AS_OF.isoformat(), "available_at": AS_OF.isoformat(), "release_at": AS_OF.isoformat(), "actual": 3.2, "consensus": 3.0, "revision": -0.1}]}, env={"TRADING_ECONOMICS_API_KEY": "present"})
+    event = result.observations[0]
+    assert result.status is Phase2Status.AVAILABLE
+    assert (event.actual, event.consensus, event.surprise, event.revision) == (3.2, 3.0, 0.2, -0.1)
+    assert event.release_at == AS_OF
+    with pytest.raises(ValueError):
+        PITObservation.model_validate({**observation("bad", "rates.nominal_yield", 3).model_dump(), "received_at": AS_OF})
+
+
+def test_p2_a05_option_sla_blocks_until_oi_and_volume_coverage() -> None:
+    incomplete = assess_option_oi_volume_sla([{"open_interest": 10, "volume": 1}, {"open_interest": 10, "volume": None}])
+    complete = assess_option_oi_volume_sla([{"open_interest": 10, "volume": 1}] * 50 + [{"open_interest": None, "volume": 1}])
+    assert incomplete["status"] == "MISSING_HISTORY" and not incomplete["positioning_allowed"]
+    assert complete["status"] == "AVAILABLE" and complete["positioning_allowed"]
+
+
+def test_p2_a06_crypto_requires_venue_identity_and_depth() -> None:
+    assert assess_crypto_venue_data([{"symbol": "BTC-PERP", "depth": 1000}][0:1])["executable"] is False
+    assert assess_crypto_venue_data([{"venue": "venue-a", "instrument": "BTC-PERP", "depth": -1}])["executable"] is False
+    result = parse_coinmetrics_derivatives({"observations": [{"venue": "venue-a", "instrument": "BTC-PERP", "observed_at": AS_OF.isoformat(), "available_at": AS_OF.isoformat(), "depth_usd": 1000, "funding": 0.001}]}, env={"COINMETRICS_API_KEY": "present"})
+    assert result.status is Phase2Status.AVAILABLE and result.observations[0].metadata["venue"] == "venue-a"
+
+
+def test_p2_a07_a08_posterior_is_deterministic_uncertain_and_advisory() -> None:
+    rows = [observation("n", "macro.value", -1, source="fred"), observation("p", "macro.value", 1, source="fred")]
+    left = build_market_state_posterior(rows, as_of=AS_OF)
+    right = build_market_state_posterior(list(reversed(rows)), as_of=AS_OF)
+    assert left.posterior_id == right.posterior_id
+    assert left.entropy == 1.0 and left.missingness == 0.0
+    assert left.baseline["method"] == "observable-frequency.v1"
+    assert left.challenger["method"] == "bounded-persistence.v1"
+    assert not posterior_can_influence_rank(left)
+    promoted = left.model_copy(update={"advisory_only": False, "incremental_oos_net_utility": 0.1})
+    assert posterior_can_influence_rank(promoted)
+
+
+def test_p2_a10_conflict_and_fallback_are_truthful() -> None:
+    conflict = select_point_in_time([observation("a", "rates.nominal_yield", 3), observation("b", "rates.nominal_yield", 4)], AS_OF)
+    assert conflict.conflicts and not conflict.selected
+    explicit_conflict = build_coverage_vector(AS_OF, {"x": {"rate": ("rates.nominal_yield",)}}, [observation("c", "rates.nominal_yield", 3, status=Phase2Status.CONFLICTED)])
+    assert explicit_conflict.rows[0].status is Phase2Status.CONFLICTED
+    fallback = observation("fallback", "rates.nominal_yield", 3, source="treasury", status=Phase2Status.FALLBACK)
+    vector = build_coverage_vector(AS_OF, {"x": {"rate": ("rates.nominal_yield",)}}, [fallback])
+    assert vector.rows[0].status is Phase2Status.FALLBACK
+    assert vector.rows[0].confidence == 0.75
+    assert "fallback_source_confidence_haircut" in vector.rows[0].blockers
+
+
+def test_p2_a11_scenario_hash_replays_and_tampering_fails() -> None:
+    posterior = build_market_state_posterior([observation("a", "macro.value", 1), observation("b", "macro.value", 1)], as_of=AS_OF)
+    path = build_scenario_paths("snapshot-1", posterior)[0]
+    assert replay_scenario_path(path)
+    assert not replay_scenario_path(path.model_copy(update={"scenario_hash": "tampered"}))

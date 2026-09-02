@@ -2755,6 +2755,21 @@ export interface components {
              * @default []
              */
             input_lineage: components["schemas"]["InputLineage"][];
+            /** Phase2 Coverage Vector */
+            phase2_coverage_vector?: {
+                [key: string]: unknown;
+            };
+            /** Phase2 Posterior */
+            phase2_posterior?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Phase2 Scenario Paths
+             * @default []
+             */
+            phase2_scenario_paths: {
+                [key: string]: unknown;
+            }[];
             /** Publication Id */
             publication_id?: string | null;
             /** Regime Distributions */
