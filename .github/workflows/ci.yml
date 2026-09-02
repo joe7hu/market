@@ -54,8 +54,7 @@ jobs:
           set -euo pipefail
           ci_password="$(openssl rand -hex 32)"
           PGPASSWORD=postgres psql "$MARKET_DATABASE_URL" -v ON_ERROR_STOP=1 \
-            -v ci_password="$ci_password" \
-            -c "CREATE ROLE market_ci_login LOGIN PASSWORD :'ci_password' NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION"
+            -c "CREATE ROLE market_ci_login LOGIN PASSWORD '$ci_password' NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION"
           export MARKET_APP_LOGIN_ROLE=market_ci_login
           export MARKET_APP_DATABASE_PASSWORD="$ci_password"
           uv run market-db-migrate
