@@ -15,7 +15,7 @@
 PY := uv run python
 RUFF := uvx ruff
 
-.PHONY: check contracts guards lint frontend typecheck test test-unit test-api test-options test-postgres test-all coverage build
+.PHONY: check contracts guards lint frontend typecheck test test-unit test-api test-options test-postgres test-all coverage build phase0-gate
 
 check: contracts guards lint frontend
 	@echo "✓ check passed"
@@ -64,3 +64,7 @@ coverage:
 
 build:
 	@npm run build
+
+phase0-gate: check build
+	@$(PY) -m pytest tests -q --run-slow --cov=src/investment_panel/database --cov=app --cov-fail-under=80
+	@git diff --check

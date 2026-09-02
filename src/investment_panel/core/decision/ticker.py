@@ -153,6 +153,7 @@ class AvailabilityStatus(StrEnum):
     AVAILABLE = "available"
     UNSUPPORTED = "unsupported"
     MISSING = "missing"
+    CONFLICTED = "conflicted"
     STALE = "stale"
     NOT_CALIBRATED = "not_calibrated"
     POLICY_BLOCKED = "policy_blocked"
@@ -184,7 +185,9 @@ def availability_status_for_blockers(
         return AvailabilityStatus.STALE
     if "calibrat" in primary or "evaluation" in primary or "oos" in primary:
         return AvailabilityStatus.NOT_CALIBRATED
-    if any(token in primary for token in ("error", "invalid", "mismatch", "duplicat")):
+    if any(token in primary for token in ("conflict", "mismatch", "duplicat")):
+        return AvailabilityStatus.CONFLICTED
+    if any(token in primary for token in ("error", "invalid")):
         return AvailabilityStatus.ERROR
     if any(token in primary for token in ("missing", "incomplete", "required")):
         return AvailabilityStatus.MISSING

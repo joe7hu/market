@@ -5,25 +5,28 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
 import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { rows } from "@/utils";
-import { displayField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
+import { displayField, textField, titleLabel, toneFromText } from "./rowFormat";
 import type { PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import type { OpenTicker } from "./workspacePage";
-import { TradePlanCard } from "./TradePlanCard";
 
 type SavedView = "episodes" | "screener";
-type TradePlan = components["schemas"]["TradePlan"];
+export type OpportunityDecisionRow = components["schemas"]["OpportunityRank"];
 
 export const OPPORTUNITIES_SAVED_VIEW_KEY = "market.opportunities.saved-view";
 export const EXPRESSION_KINDS = ["stock", "option/spread", "CSP", "crypto", "hedge", "cash"] as const;
 
-export function dedupeOpportunityEpisodes(input: RowRecord[]): RowRecord[] {
+export function opportunityDecisionRows(input: { rows?: RowRecord[] } | undefined): OpportunityDecisionRow[] {
+  return rows(input).flatMap((row) => isOpportunityDecisionRow(row) ? [row as unknown as OpportunityDecisionRow] : []);
+}
+
+export function dedupeOpportunityEpisodes(input: OpportunityDecisionRow[]): OpportunityDecisionRow[] {
   const seen = new Set<string>();
   return input.filter((row) => {
-    const symbol = textField(row, ["symbol", "ticker"]).toUpperCase();
-    const identity = textField(row, ["episode_id", "opportunity_id", "episode", "id"], `${symbol}:${textField(row, ["horizon"], "unknown")}`);
+    const identity = row.opportunity_episode_id;
     if (seen.has(identity)) return false;
     seen.add(identity);
     return true;
@@ -37,8 +40,8 @@ export function shouldLoadScreener(view: SavedView): boolean {
 export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, onLoadScreener, onRefresh }: { data: PanelData; loading: boolean; scopeStatus?: ScopeSnapshotStatus; onOpenTicker: OpenTicker; onLoadScreener: () => Promise<void>; onRefresh: (includeScreener?: boolean) => Promise<void> }) {
   const [view, setView] = useState<SavedView>(() => readSavedView());
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<RowRecord | null>(null);
-  const rankedRows = useMemo(() => dedupeOpportunityEpisodes(rows(data.opportunitiesRanked)), [data.opportunitiesRanked]);
+  const [selected, setSelected] = useState<OpportunityDecisionRow | null>(null);
+  const rankedRows = useMemo(() => dedupeOpportunityEpisodes(opportunityDecisionRows(data.opportunitiesRanked)), [data.opportunitiesRanked]);
   const visibleRows = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle ? rankedRows.filter((row) => JSON.stringify(row).toLowerCase().includes(needle)) : rankedRows;
@@ -80,7 +83,7 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
   );
 }
 
-function EpisodeTable({ rows: episodeRows, onSelect }: { rows: RowRecord[]; onSelect: (row: RowRecord) => void }) {
+function EpisodeTable({ rows: episodeRows, onSelect }: { rows: OpportunityDecisionRow[]; onSelect: (row: OpportunityDecisionRow) => void }) {
   return (
     <DataTableFrame title="Current opportunity episodes">
       <div className="divide-y divide-border md:hidden">
@@ -88,7 +91,7 @@ function EpisodeTable({ rows: episodeRows, onSelect }: { rows: RowRecord[]; onSe
       </div>
       <div className="hidden overflow-x-auto md:block">
         <table className="w-full min-w-[1420px] text-sm">
-          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground"><tr>{["Episode", "Horizon", "Thesis delta", "Research rank", "Trade rank", "Action", "Best expression", "Utility range", "Primary blocker", "Catalyst / TTL", "Portfolio impact"].map((label) => <th key={label} className="whitespace-nowrap px-3 py-3">{label}</th>)}</tr></thead>
+          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground"><tr>{["Episode", "Ticker", "Research rank", "Trade rank", "Availability", "Selected expression", "Trade utility", "Primary blocker", "Decision revision"].map((label) => <th key={label} className="whitespace-nowrap px-3 py-3">{label}</th>)}</tr></thead>
           <tbody>{episodeRows.map((row, index) => <EpisodeRow key={episodeIdentity(row, index)} row={row} onSelect={onSelect} />)}</tbody>
         </table>
       </div>
@@ -97,15 +100,12 @@ function EpisodeTable({ rows: episodeRows, onSelect }: { rows: RowRecord[]; onSe
   );
 }
 
-function EpisodeRow({ row, onSelect }: { row: RowRecord; onSelect: (row: RowRecord) => void }) {
-  const symbol = textField(row, ["symbol", "ticker"], "—").toUpperCase();
-  const blocker = displayField(row, ["primary_blocker", "blocker", "trade_rank_unavailable_reason"], "Clear");
-  return <tr className="cursor-pointer border-b border-border align-top hover:bg-accent/40" onClick={() => onSelect(row)}><td className="px-3 py-3 font-semibold">{textField(row, ["episode", "episode_id", "opportunity_id"], symbol)}</td><td className="px-3 py-3">{displayField(row, ["horizon", "horizon_label"])}</td><td className="max-w-56 px-3 py-3">{displayField(row, ["thesis_delta", "thesis_change", "thesis"])}</td><td className="px-3 py-3 tabular-nums">{rank(row, ["research_rank"])}</td><td className="px-3 py-3 tabular-nums">{rank(row, ["trade_rank"])}</td><td className="px-3 py-3"><StatusBadge tone={toneFromText(textField(row, ["action", "decision"], "NO_TRADE"))}>{titleLabel(textField(row, ["action", "decision"], "NO_TRADE"))}</StatusBadge></td><td className="px-3 py-3">{displayField(row, ["best_expression", "selected_expression", "selected_expression_kind"])}</td><td className="px-3 py-3">{utilityRange(row)}</td><td className="max-w-56 px-3 py-3 text-muted-foreground">{blocker}</td><td className="px-3 py-3">{displayField(row, ["catalyst", "catalyst_or_ttl", "expires_at", "ttl"])}</td><td className="max-w-56 px-3 py-3">{displayField(row, ["portfolio_impact", "impact", "portfolio_fit"])}</td></tr>;
+function EpisodeRow({ row, onSelect }: { row: OpportunityDecisionRow; onSelect: (row: OpportunityDecisionRow) => void }) {
+  return <tr className="cursor-pointer border-b border-border align-top hover:bg-accent/40" onClick={() => onSelect(row)}><td className="px-3 py-3 font-semibold">{row.opportunity_episode_id}</td><td className="px-3 py-3 font-semibold">{row.ticker}</td><td className="px-3 py-3 tabular-nums">{rank(row.research_rank)}</td><td className="px-3 py-3 tabular-nums">{rank(row.trade_rank)}</td><td className="px-3 py-3"><StatusBadge tone={toneFromText(row.availability_status)}>{titleLabel(row.availability_status)}</StatusBadge></td><td className="px-3 py-3">{row.selected_expression_kind ?? "CASH"}</td><td className="px-3 py-3">{utilityRange(row.trade_utility)}</td><td className="max-w-56 px-3 py-3 text-muted-foreground">{row.primary_blocker ?? row.trade_rank_unavailable_reason ?? "Clear"}</td><td className="px-3 py-3 text-xs text-muted-foreground">{row.decision_revision}</td></tr>;
 }
 
-function EpisodeCard({ row, onSelect }: { row: RowRecord; onSelect: (row: RowRecord) => void }) {
-  const symbol = textField(row, ["symbol", "ticker"], "Opportunity").toUpperCase();
-  return <button type="button" className="p-4 text-left" onClick={() => onSelect(row)}><div className="flex items-start justify-between gap-3"><span className="font-semibold">{textField(row, ["episode", "episode_id", "opportunity_id"], symbol)}</span><StatusBadge tone={toneFromText(textField(row, ["action", "decision"], "NO_TRADE"))}>{titleLabel(textField(row, ["action", "decision"], "NO_TRADE"))}</StatusBadge></div><p className="mt-1 text-sm text-muted-foreground">{displayField(row, ["horizon", "horizon_label"])} · {displayField(row, ["thesis_delta", "thesis_change", "thesis"])}</p><p className="mt-3 text-sm">{displayField(row, ["best_expression", "selected_expression_kind"])} · utility {utilityRange(row)}</p><p className="mt-1 text-xs text-muted-foreground">Blocker: {displayField(row, ["primary_blocker", "blocker"], "Clear")}</p></button>;
+function EpisodeCard({ row, onSelect }: { row: OpportunityDecisionRow; onSelect: (row: OpportunityDecisionRow) => void }) {
+  return <button type="button" className="p-4 text-left" onClick={() => onSelect(row)}><div className="flex items-start justify-between gap-3"><span className="font-semibold">{row.opportunity_episode_id} · {row.ticker}</span><StatusBadge tone={toneFromText(row.availability_status)}>{titleLabel(row.availability_status)}</StatusBadge></div><p className="mt-1 text-sm text-muted-foreground">Research {rank(row.research_rank)} · trade {rank(row.trade_rank)}</p><p className="mt-3 text-sm">{row.selected_expression_kind ?? "CASH"} · utility {utilityRange(row.trade_utility)}</p><p className="mt-1 text-xs text-muted-foreground">Blocker: {row.primary_blocker ?? row.trade_rank_unavailable_reason ?? "Clear"}</p></button>;
 }
 
 function SceenerCell({ row, keys }: { row: RowRecord; keys: string[] }) { return <>{displayField(row, keys)}</>; }
@@ -114,22 +114,19 @@ function ScreenerTable({ rows: screenerRows, onOpenTicker }: { rows: RowRecord[]
   return <DataTableFrame title="Dense screener (secondary saved view)"><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-sm"><thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground"><tr>{["Ticker", "Price", "Quality", "Value", "Momentum", "Research", "Options", "Open"].map((label) => <th key={label} className="px-3 py-3">{label}</th>)}</tr></thead><tbody>{screenerRows.map((row, index) => { const symbol = textField(row, ["symbol", "ticker"]).toUpperCase(); return <tr key={`${symbol}:${index}`} className="border-b border-border"><td className="px-3 py-3 font-semibold">{symbol || "—"}</td><td className="px-3 py-3 tabular-nums"><SceenerCell row={row} keys={["price", "close"]} /></td><td className="px-3 py-3"><SceenerCell row={row} keys={["quality_score", "quality", "roic"]} /></td><td className="px-3 py-3"><SceenerCell row={row} keys={["value_signal", "forward_pe", "valuation_percentile"]} /></td><td className="px-3 py-3"><SceenerCell row={row} keys={["momentum", "technical_score", "return_3m"]} /></td><td className="px-3 py-3"><SceenerCell row={row} keys={["research_status", "research_rank"]} /></td><td className="px-3 py-3"><SceenerCell row={row} keys={["options_status", "options_iv_regime"]} /></td><td className="px-3 py-2">{symbol ? <Button type="button" variant="ghost" size="sm" onClick={() => onOpenTicker(symbol)}>Open</Button> : "—"}</td></tr>; })}</tbody></table>{!screenerRows.length ? <p className="p-4 text-sm text-muted-foreground">No screener rows available.</p> : null}</div></DataTableFrame>;
 }
 
-function OpportunityDetail({ row, onClose, onOpenTicker }: { row: RowRecord | null; onClose: () => void; onOpenTicker: OpenTicker }) {
-  const symbol = textField(row ?? undefined, ["symbol", "ticker"]).toUpperCase();
-  const plan = recordField(row, "trade_plan") as unknown as TradePlan | null;
-  return <Sheet open={Boolean(row)} onOpenChange={(open) => !open && onClose()}><SheetContent side="right" className="w-full overflow-y-auto sm:max-w-2xl"><SheetHeader><SheetTitle>{textField(row ?? undefined, ["episode", "episode_id", "opportunity_id"], symbol || "Opportunity episode")}</SheetTitle><SheetDescription>One canonical episode with the current recommendation, reason, and expression comparison.</SheetDescription></SheetHeader>{row ? <div className="space-y-5 py-5"><Card><CardHeader><CardTitle>Current recommendation</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex flex-wrap gap-2"><StatusBadge tone={toneFromText(textField(row, ["action", "decision"], "NO_TRADE"))}>{titleLabel(textField(row, ["action", "decision"], "NO_TRADE"))}</StatusBadge><StatusBadge tone="info">{displayField(row, ["best_expression", "selected_expression_kind"], "CASH")}</StatusBadge></div><p><strong>Reason:</strong> {displayField(row, ["reason", "rationale", "thesis_delta"], "No reason recorded.")}</p><p><strong>Blocker:</strong> {displayField(row, ["primary_blocker", "blocker"], "None recorded.")}</p><p><strong>Portfolio impact:</strong> {displayField(row, ["portfolio_impact", "impact", "portfolio_fit"], "Unavailable")}</p>{symbol ? <Button type="button" variant="outline" onClick={() => onOpenTicker(symbol)}>Open canonical ticker</Button> : null}</CardContent></Card><ExpressionComparison row={row} />{plan ? <TradePlanCard plan={plan} /> : null}</div> : null}</SheetContent></Sheet>;
-}
-
-function ExpressionComparison({ row }: { row: RowRecord }) {
-  const source = arrayField(row, ["expressions", "expression_comparison", "alternatives"]);
-  const byKind = new Map(source.map((item) => [textField(item, ["kind", "expression", "expression_kind"]).toLowerCase(), item]));
-  const selected = textField(row, ["best_expression", "selected_expression_kind"]).toLowerCase();
-  return <DataTableFrame title="Expression comparison"><div className="overflow-x-auto"><table className="w-full min-w-[560px] text-sm"><thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground"><tr><th className="px-3 py-3">Expression</th><th className="px-3 py-3">State</th><th className="px-3 py-3">Utility</th><th className="px-3 py-3">Blocker</th></tr></thead><tbody>{EXPRESSION_KINDS.map((kind) => { const item = byKind.get(kind.toLowerCase()) ?? byKind.get(kind === "option/spread" ? "option" : kind); const state = item ? displayField(item, ["status", "state", "eligibility"], kind.toLowerCase() === selected ? "SELECTED" : "AVAILABLE") : "Unavailable"; return <tr key={kind} className="border-b border-border"><td className="px-3 py-3 font-medium">{kind}</td><td className="px-3 py-3"><StatusBadge tone={toneFromText(state)}>{titleLabel(state)}</StatusBadge></td><td className="px-3 py-3">{item ? displayField(item, ["utility", "trade_utility", "expectancy", "utility_range"]) : "Unavailable"}</td><td className="px-3 py-3 text-muted-foreground">{item ? displayField(item, ["primary_blocker", "blocker"], "None") : "Unavailable"}</td></tr>; })}</tbody></table></div></DataTableFrame>;
+function OpportunityDetail({ row, onClose, onOpenTicker }: { row: OpportunityDecisionRow | null; onClose: () => void; onOpenTicker: OpenTicker }) {
+  return <Sheet open={Boolean(row)} onOpenChange={(open) => !open && onClose()}><SheetContent side="right" className="w-full overflow-y-auto sm:max-w-2xl"><SheetHeader><SheetTitle>{row?.opportunity_episode_id ?? "Opportunity episode"}</SheetTitle><SheetDescription>Canonical rank fields for one published episode. Open the ticker decision for the immutable plan and expression evidence.</SheetDescription></SheetHeader>{row ? <div className="space-y-5 py-5"><Card><CardHeader><CardTitle>Current ranked decision</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><div className="flex flex-wrap gap-2"><StatusBadge tone={toneFromText(row.availability_status)}>{titleLabel(row.availability_status)}</StatusBadge>{row.selected_expression_kind ? <StatusBadge tone="info">{row.selected_expression_kind}</StatusBadge> : null}</div><p><strong>Ticker:</strong> {row.ticker}</p><p><strong>Trade utility:</strong> {utilityRange(row.trade_utility)}</p><p><strong>Research rank:</strong> {rank(row.research_rank)} · <strong>Trade rank:</strong> {rank(row.trade_rank)}</p><p><strong>Blocker:</strong> {row.primary_blocker ?? row.trade_rank_unavailable_reason ?? "None recorded."}</p>{row.selected_expression_kind ? null : <DataFieldStateNotice state={missingFieldState({ field: "selected_expression_kind", source: "opportunity_rank", reason: "selected_expression_missing", nextAction: "Open the canonical ticker decision and refresh the published rank." })} />}{row.ticker ? <Button type="button" variant="outline" onClick={() => onOpenTicker(row.ticker)}>Open canonical ticker</Button> : null}</CardContent></Card><DataTableFrame title="Expression comparison"><div className="p-4"><DataFieldStateNotice state={missingFieldState({ field: "expression_comparison", source: "ticker_decision", reason: "opportunity_rank_does_not_own_expression_alternatives", nextAction: "Open the canonical ticker decision to inspect stored expression evidence." })} /></div></DataTableFrame></div> : null}</SheetContent></Sheet>;
 }
 
 function readSavedView(): SavedView { if (typeof window === "undefined") return "episodes"; return window.localStorage.getItem(OPPORTUNITIES_SAVED_VIEW_KEY) === "screener" ? "screener" : "episodes"; }
-function episodeIdentity(row: RowRecord, index: number): string { return textField(row, ["episode_id", "opportunity_id", "episode", "id"], `${textField(row, ["symbol", "ticker"], "episode")}:${index}`); }
-function rank(row: RowRecord, keys: string[]): string { const value = numberField(row, keys, Number.NaN); return Number.isFinite(value) ? `#${value}` : "—"; }
-function utilityRange(row: RowRecord): string { return displayField(row, ["utility_range", "trade_utility_range", "utility", "trade_utility"], "—"); }
-function recordField(row: RowRecord | null, key: string): Record<string, unknown> | null { const value = row?.[key]; return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null; }
-function arrayField(row: RowRecord, keys: string[]): RowRecord[] { for (const key of keys) { const value = row[key]; if (Array.isArray(value)) return value.filter((item) => Boolean(item) && typeof item === "object" && !Array.isArray(item)) as RowRecord[]; } return []; }
+function episodeIdentity(row: OpportunityDecisionRow, index: number): string { return `${row.opportunity_episode_id}:${index}`; }
+function rank(value: number | null | undefined): string { return typeof value === "number" && Number.isFinite(value) ? `#${value}` : "—"; }
+function utilityRange(value: number | null | undefined): string { return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "—"; }
+function isOpportunityDecisionRow(row: RowRecord): boolean {
+  return typeof row.ticker === "string"
+    && typeof row.opportunity_episode_id === "string"
+    && typeof row.rank_id === "string"
+    && typeof row.decision_revision === "string"
+    && typeof row.availability_status === "string"
+    && Array.isArray(row.blockers);
+}

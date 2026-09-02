@@ -44,16 +44,15 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --extra test --locked
 
+      - name: Migrate CI PostgreSQL
+        # Keep only this bootstrap on the TCP service database. Tests create
+        # isolated PostgreSQL databases and must retain their explicit DSNs.
+        env:
+          MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: uv run market-db-migrate
+
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Run checks
-        run: make check
-
-      - name: Build frontend
-        run: make build
-
-      - name: Run full tests
-        run: >-
-          uv run pytest tests -q --run-slow
-          --cov=src/investment_panel/database --cov=app --cov-fail-under=80
+      - name: Run Phase 0 gate
+        run: make phase0-gate

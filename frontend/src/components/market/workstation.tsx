@@ -311,9 +311,15 @@ export function EmptyState({ title, detail, icon: Icon = Database }: { title: st
 
 export function SourceHealthBadge() {
   const { model, loading, lastRefresh } = useMarketData();
-  const anyDataLoaded = Object.values(model.sources).some((state) => state === "live");
-  const tone: Tone = loading ? "info" : anyDataLoaded || lastRefresh ? "good" : "warn";
-  return <StatusBadge tone={tone}>{loading ? "Loading" : anyDataLoaded || lastRefresh ? "Data loaded" : "Data pending"}</StatusBadge>;
+  const sourceStates = Object.values(model.sources);
+  const available = sourceStates.filter((state) => state === "live").length;
+  const tone = criticalDataCoverageTone(sourceStates, loading);
+  return <StatusBadge tone={tone}>{loading ? "Checking critical data" : `Critical data: ${available}/${sourceStates.length} available`}</StatusBadge>;
+}
+
+export function criticalDataCoverageTone(sourceStates: string[], loading: boolean): Tone {
+  if (loading) return "info";
+  return sourceStates.length > 0 && sourceStates.every((state) => state === "live") ? "good" : "warn";
 }
 
 function toneSurface(tone: Tone) {

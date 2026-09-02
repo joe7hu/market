@@ -1690,7 +1690,7 @@ export interface components {
          * @description Typed evidence availability; absence is never treated as available.
          * @enum {string}
          */
-        AvailabilityStatus: "available" | "unsupported" | "missing" | "stale" | "not_calibrated" | "policy_blocked" | "error" | "not_applicable" | "pending";
+        AvailabilityStatus: "available" | "unsupported" | "missing" | "conflicted" | "stale" | "not_calibrated" | "policy_blocked" | "error" | "not_applicable" | "pending";
         /** CapitalAction */
         CapitalAction: {
             action: components["schemas"]["CapitalActionType"];
@@ -1814,6 +1814,23 @@ export interface components {
             status?: components["schemas"]["ApiStatusResponse"] | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * DataFieldStateV1
+         * @description One explicit state for a decision field that is not currently usable.
+         */
+        DataFieldStateV1: {
+            availability_status: components["schemas"]["AvailabilityStatus"];
+            /** Blocking */
+            blocking: boolean;
+            /** Field */
+            field: string;
+            /** Next Action */
+            next_action: string;
+            /** Reason */
+            reason: string;
+            /** Source */
+            source: string;
         };
         /**
          * DataQuality
@@ -5880,6 +5897,52 @@ export interface components {
             /** Primary Blocker */
             primary_blocker?: string | null;
         };
+        /**
+         * TodayBriefItemResponse
+         * @description One named context item for the Today decision surface.
+         */
+        TodayBriefItemResponse: {
+            /** Action */
+            action?: string | null;
+            /** Antithesis */
+            antithesis?: string | null;
+            /** Blockers */
+            blockers?: string[];
+            /** Category */
+            category: string;
+            /** Days Until */
+            days_until?: number | null;
+            /** Next Action */
+            next_action?: string | null;
+            /**
+             * Score
+             * @default 0
+             */
+            score: number;
+            /**
+             * Sentiment
+             * @default neutral
+             */
+            sentiment: string;
+            /**
+             * Severity
+             * @default info
+             */
+            severity: string;
+            /** Stable Key */
+            stable_key: string;
+            /** Stats */
+            stats?: string[];
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Symbol */
+            symbol?: string | null;
+            /** Title */
+            title: string;
+        };
         /** TodayCapitalAction */
         TodayCapitalAction: {
             /**
@@ -5897,6 +5960,8 @@ export interface components {
             drill_down?: string | null;
             /** Expires At */
             expires_at?: string | null;
+            /** Field States */
+            field_states?: components["schemas"]["DataFieldStateV1"][];
             /** Lifecycle State */
             lifecycle_state: string;
             /** Next Action */
@@ -5946,6 +6011,65 @@ export interface components {
             transition?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * TodayPreopenBriefResponse
+         * @description Named pre-open context; nested publication payloads stay server-side.
+         */
+        TodayPreopenBriefResponse: {
+            /** Absolute Error Pct */
+            absolute_error_pct?: number | null;
+            /** Actual Price */
+            actual_price?: number | null;
+            /** Actual Return Pct */
+            actual_return_pct?: number | null;
+            /** Backtest Mae Pct */
+            backtest_mae_pct?: number | null;
+            /**
+             * Bias
+             * @default neutral
+             */
+            bias: string;
+            /** Direction Correct */
+            direction_correct?: boolean | null;
+            /** Expected Close */
+            expected_close?: number | null;
+            /** Expected Return Pct */
+            expected_return_pct?: number | null;
+            /** Headline */
+            headline: string;
+            /** Key Events */
+            key_events?: string[];
+            /** Macro Regime */
+            macro_regime?: string | null;
+            /**
+             * Narrative
+             * @default
+             */
+            narrative: string;
+            /** Opening Scenario */
+            opening_scenario?: string | null;
+            /**
+             * Outcome Status
+             * @default pending
+             */
+            outcome_status: string;
+            /** Qqq Path */
+            qqq_path?: string | null;
+            /** Range Hit Rate Pct */
+            range_hit_rate_pct?: number | null;
+            /** Resistance */
+            resistance?: number | null;
+            /** Risks */
+            risks?: string[];
+            /** Stable Key */
+            stable_key: string;
+            /** Support */
+            support?: number | null;
+            /** Watch Items */
+            watch_items?: string[];
+            /** Within Forecast Range */
+            within_forecast_range?: boolean | null;
         };
         /**
          * TodayResolutionSummaryResponse
@@ -5999,6 +6123,8 @@ export interface components {
             as_of?: string | null;
             /** Book Actions */
             book_actions?: components["schemas"]["TodayCapitalAction"][];
+            /** Brief Items */
+            brief_items?: components["schemas"]["TodayBriefItemResponse"][];
             /**
              * Count
              * @default 0
@@ -6009,6 +6135,9 @@ export interface components {
              * @default 0
              */
             missing_plan_count: number;
+            /** Portfolio Risk Items */
+            portfolio_risk_items?: components["schemas"]["TodayBriefItemResponse"][];
+            preopen_brief?: components["schemas"]["TodayPreopenBriefResponse"] | null;
             status: components["schemas"]["ApiStatusResponse"];
         };
         /**

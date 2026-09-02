@@ -66,9 +66,13 @@ class AgentRepository:
                   AND request->>'ticker' = %s AND request->>'trigger' = %s
                   AND (
                       status IN ('queued', 'running')
-                      OR (%s = 'scheduled' AND created_at::date = (now() AT TIME ZONE 'America/New_York')::date)
+                      OR (
+                          %s = 'scheduled'
+                          AND (created_at AT TIME ZONE 'America/New_York')::date
+                              = (now() AT TIME ZONE 'America/New_York')::date
+                      )
                   )
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY created_at DESC, id DESC LIMIT 1
                 """,
                 [symbol, trigger, trigger],
             ).fetchone()

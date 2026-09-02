@@ -29,11 +29,19 @@ const response: TodayResponse = {
     rationale: "Cash is selected.",
     policy_version: "risk-policy.v2:legacy",
     selected_expression: "CASH",
+    field_states: [{
+      field: "trade_plan",
+      availability_status: "missing",
+      source: "trade_plan",
+      reason: "trade_plan_missing",
+      blocking: true,
+      next_action: "Refresh the ticker decision and publish its canonical TradePlan.",
+    }],
   }],
 };
 
 describe("Today Action Queue", () => {
-  it("uses the generated backend item and its stable identity", () => {
+  it("uses the generated backend item and exact required field names", () => {
     expect(response.actions?.[0]).toMatchObject({
       projection_identity: "capital:ticker-decision:decision:AAA",
       source_authority: "ticker-decision:decision:AAA",
@@ -54,6 +62,19 @@ describe("Today Action Queue", () => {
     expect(markup).toContain("BUY");
     expect(markup).toContain("AAA");
     expect(markup).toContain("contract-1");
+  });
+
+  it("renders missing option bid and ask as separate structured quote states", () => {
+    const markup = renderToStaticMarkup(createElement(TradePlanCard, { plan: plan() }));
+
+    expect(markup).toContain("Field unavailable: bid");
+    expect(markup).toContain("Field unavailable: ask");
+    expect(markup).toContain("Source: option_quote");
+    expect(markup).toContain("Reason: bid_missing");
+    expect(markup).toContain("Reason: ask_missing");
+    expect(markup).toContain("This blocks the decision.");
+    expect(markup).toContain("Refresh the option quote before placing an order.");
+    expect(markup).not.toContain("Not supplied / Not supplied");
   });
 
   it("labels advisory terms without implying paper authorization", () => {
@@ -91,7 +112,8 @@ describe("Today Action Queue", () => {
     expect(blocked).not.toContain("contract-1");
     expect(missing).toContain("NO TRADE");
     expect(missing).toContain("CASH");
-    expect(missing).toContain("Unavailable");
+    expect(missing).toContain("trade_plan_missing");
+    expect(missing).toContain("ticker decision");
     expect(missing).not.toContain("BUY");
   });
 
@@ -112,7 +134,10 @@ describe("Today Action Queue", () => {
 
     expect(markup).toContain("NO TRADE");
     expect(markup).toContain("CASH");
-    expect(markup).toContain("Unavailable");
+    expect(markup).toContain("Field unavailable: trade_plan");
+    expect(markup).toContain("Source: trade_plan");
+    expect(markup).toContain("Reason: trade_plan_missing");
+    expect(markup).toContain("This blocks the decision.");
     expect(markup).not.toContain("BUY");
     expect(markup).not.toContain("queue rationale leak");
     expect(markup).not.toContain("queue blocker leak");
@@ -131,7 +156,7 @@ describe("Today Action Queue", () => {
     expect(markup).not.toContain("Canonical trade plan");
   });
 
-  it("keeps three ranked actions plus CASH and rejects unranked capital actions", () => {
+  it("does not render a second capital ranking outside the canonical queue", () => {
     const base = response.actions![0];
     const data = emptyPanelData();
     const ranked = Array.from({ length: 4 }, (_, index) => ({
@@ -176,13 +201,49 @@ describe("Today Action Queue", () => {
       onOpenTicker: () => undefined,
     }));
 
-    expect(markup).toContain(">RANKED1<");
-    expect(markup).toContain(">RANKED2<");
-    expect(markup).toContain(">RANKED3<");
-    expect(markup).not.toContain(">RANKED4<");
-    expect(markup).toContain("Hold cash until a ranked opportunity appears.");
+    expect(markup).not.toContain("Top three ranked capital actions");
+    expect(markup).not.toContain(">RANKED1<");
+    expect(markup).not.toContain("Hold cash until a ranked opportunity appears.");
     expect(markup).not.toContain(">UNRANKED<");
     expect(markup).not.toContain("Unranked capital action must stay hidden");
+  });
+
+  it("renders named Today context fields from the generated backend contract", () => {
+    const context: Pick<TodayResponse, "preopen_brief" | "brief_items" | "portfolio_risk_items"> = {
+      preopen_brief: {
+        stable_key: "preopen:2026-09-01",
+        headline: "Named pre-open headline",
+        narrative: "Named pre-open narrative.",
+        bias: "neutral",
+        outcome_status: "pending",
+      },
+      brief_items: [{
+        stable_key: "daily:AAA",
+        category: "decide_now",
+        title: "Named decision title",
+        summary: "Named decision summary.",
+        score: 1,
+        sentiment: "bullish",
+        severity: "warn",
+      }],
+      portfolio_risk_items: [],
+    };
+    const data = emptyPanelData();
+    const markup = renderToStaticMarkup(createElement(TodayPage, {
+      data,
+      model: buildModel(data),
+      lastRefresh: null,
+      actionQueue: { ...response, ...context },
+      actionQueueLoading: false,
+      actionQueueError: null,
+      loading: false,
+      onRefresh: () => undefined,
+      onOpenTicker: () => undefined,
+    }));
+
+    expect(markup).toContain("Named pre-open headline");
+    expect(markup).toContain("Named decision title");
+    expect(markup).toContain("Named decision summary.");
   });
 
   it("keeps numeric terms at stored precision", () => {
@@ -257,7 +318,10 @@ describe("Today Action Queue", () => {
       selected_expression_kind: "CASH",
     }) }));
 
-    expect(markup).toContain("Unavailable");
+    expect(markup).toContain("Field unavailable: trade_plan");
+    expect(markup).toContain("Source: canonical_trade_plan");
+    expect(markup).toContain("Reason: trade_plan_required_field_missing");
+    expect(markup).toContain("This blocks the decision.");
     expect(markup).not.toContain("list_only_blocker");
   });
 

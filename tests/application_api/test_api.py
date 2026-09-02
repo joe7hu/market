@@ -129,9 +129,17 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     assert payload["book_actions"][0]["primary_blocker"] == "trade_plan_missing"
     assert payload["book_actions"][0]["projection_identity"].startswith("capital:ticker-decision:")
     assert payload["book_actions"][0]["resolution"]["action"] == "NO_TRADE"
+    assert payload["book_actions"][0]["field_states"] == [{
+        "field": "trade_plan",
+        "availability_status": "missing",
+        "source": "trade_plan",
+        "reason": "trade_plan_missing",
+        "blocking": True,
+        "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+    }]
 
 
-def test_default_today_snapshot_reuses_today_context_cache_key(
+def test_today_and_snapshot_share_one_authoritative_load_and_invalidate_together(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _use_temp_api_db(monkeypatch, tmp_path / "today-shared-cache.json")
@@ -158,9 +166,104 @@ def test_default_today_snapshot_reuses_today_context_cache_key(
     assert snapshot_response.status_code == 200
     assert loads == 1
 
+    panel_owner.invalidate_context_cache()
+    refreshed = client.get("/api/today")
+
+    assert refreshed.status_code == 200
+    assert loads == 2
+
+
+def test_today_projects_named_context_contract_without_row_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "today-context.json")
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_options_actions,
+        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={
+            "daily_brief": [{
+                "stable_key": "daily:AAA",
+                "category": "decide_now",
+                "headline": "Named decision title",
+                "summary": "Named decision summary.",
+                "score": 2.5,
+                "symbol": "AAA",
+                "sentiment": "bullish",
+                "severity": "warn",
+                "research_rank": 1,
+            }],
+            "preopen_daily_brief": [{
+                "stable_key": "preopen:2026-09-01",
+                "headline": "Named pre-open headline",
+                "summary": "Named pre-open narrative.",
+                "qqq_forecast": {"bias": "neutral", "expected_close": 500.0},
+                "qqq_outcome": {"status": "pending"},
+                "key_events": [{"event": "Payrolls"}],
+            }],
+            "portfolio_risk_cards": [],
+            "ticker_decisions": [],
+            "portfolio": [],
+        },
+    )
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+
+    response = TestClient(app).get("/api/today")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["brief_items"] == [{
+        "stable_key": "daily:AAA",
+        "category": "decide_now",
+        "title": "Named decision title",
+        "summary": "Named decision summary.",
+        "score": 2.5,
+        "symbol": "AAA",
+        "sentiment": "bullish",
+        "severity": "warn",
+        "antithesis": None,
+        "action": None,
+        "next_action": None,
+        "blockers": [],
+        "days_until": None,
+        "stats": ["Research rank 1"],
+    }]
+    assert payload["preopen_brief"]["headline"] == "Named pre-open headline"
+    assert payload["preopen_brief"]["key_events"] == ["Payrolls"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "availability_status"),
+    (
+        ("trade_plan_missing", "missing"),
+        ("trade_plan_identity_mismatch", "conflicted"),
+        ("trade_plan_invalid", "error"),
+        ("risk_policy_blocked", "policy_blocked"),
+    ),
+)
+def test_today_missing_plan_field_state_preserves_blocker_semantics(
+    reason: str, availability_status: str,
+) -> None:
+    from app.routers.panel import today_field_states
+
+    states = today_field_states(identity_missing=False, plan_missing=True, reason=reason)
+
+    assert states == [{
+        "field": "trade_plan",
+        "availability_status": availability_status,
+        "source": "trade_plan",
+        "reason": reason,
+        "blocking": True,
+        "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+    }]
+
 
 def test_non_today_snapshot_caches_compiled_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     panel_owner.invalidate_context_cache()
+    _use_postgres_api(monkeypatch, "postgresql:///snapshot-cache")
     loads = 0
     builds = 0
     panel = PanelData(status=DataStatus(True, "loaded", "test"), tables={})

@@ -2,6 +2,7 @@ import { ExternalLink } from "lucide-react";
 
 import { resolveTradingViewSymbol, tradingViewEmbedUrl } from "@/adapters/tradingView";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
+import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
 import { Button } from "@/components/ui/button";
 import type { components } from "@/generated/apiSchema";
 import type { JsonValue, RowRecord, TickerDossier, TickerLearning, TickerPayload } from "@/types";
@@ -87,9 +88,10 @@ export function TickerDecisionPanel({
                 <p className="mt-1 text-3xl font-semibold tracking-tight">{action.action}</p>
               </div>
               <div className="pb-1 text-sm text-muted-foreground">
-                {action.owned ? "Owned ticker" : "Unowned ticker"} · {decision.selected_expression?.kind ?? "No expression"}
+                {action.owned ? "Owned ticker" : "Unowned ticker"} · {decision.selected_expression?.kind ?? "Expression state below"}
               </div>
             </div>
+            {!decision.selected_expression?.kind ? <div className="mt-3"><DataFieldStateNotice compact state={missingFieldState({ field: "selected_expression", source: "ticker_decision", reason: "selected_expression_missing", nextAction: "Refresh the canonical ticker decision before acting." })} /></div> : null}
             <p className="mt-4 max-w-2xl text-base leading-7">{action.rationale}</p>
             {resolution ? (
               <div className="mt-5 grid gap-2 rounded-md border border-border/80 bg-background/60 p-3 text-xs sm:grid-cols-2">
@@ -102,9 +104,9 @@ export function TickerDecisionPanel({
             ) : null}
             {action.action === "WAIT_FOR_PRICE" ? (
               <div className="mt-5 grid gap-3 rounded-md border border-[var(--warning)]/35 bg-[var(--warning)]/8 p-3 text-sm sm:grid-cols-3">
-                <KeyValue label="Price" value={action.price_condition ?? "-"} />
-                <KeyValue label="Catalyst" value={action.catalyst ?? "-"} />
-                <KeyValue label="Expires" value={action.expires_at ?? "-"} />
+                <DecisionTerm label="Price" value={action.price_condition} field="price_condition" />
+                <DecisionTerm label="Catalyst" value={action.catalyst} field="catalyst" />
+                <DecisionTerm label="Expires" value={action.expires_at} field="expires_at" />
               </div>
             ) : null}
             <p className="mt-5 text-xs text-muted-foreground">Point-in-time inputs: {decision.input_manifest.input_hash.slice(0, 16)}… · {decision.input_manifest.experiment_id}</p>
@@ -124,20 +126,23 @@ export function TickerDecisionPanel({
       {snapshot ? (
         <>
           {opportunityRank ? <OpportunityRankPanel signals={alphaSignals} rank={opportunityRank} /> : null}
-          {tradePlan ? <TradePlanCard plan={tradePlan} /> : null}
+          <TradePlanCard plan={tradePlan} />
           {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
           {learningPayload ? <LearningLoopPanel learning={learningPayload} /> : null}
         </>
       ) : (
-        <DataTableFrame title="Additional decision context" action={<StatusBadge tone="muted">On demand</StatusBadge>}>
-          <div className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
-            <p className="text-muted-foreground">Load the full validated decision snapshot to inspect rank, trade-plan, and collection evidence.</p>
-            <Button type="button" variant="outline" disabled={snapshotLoading} onClick={() => void onLoadSnapshot()}>
-              {snapshotLoading ? "Loading…" : "Load decision context"}
-            </Button>
-          </div>
-          {snapshotError ? <p className="border-t border-border px-4 py-3 text-sm text-[var(--destructive)]">{snapshotError}</p> : null}
-        </DataTableFrame>
+        <>
+          <TradePlanCard pending />
+          <DataTableFrame title="Additional decision context" action={<StatusBadge tone="muted">On demand</StatusBadge>}>
+            <div className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+              <p className="text-muted-foreground">Load the full validated decision snapshot to inspect rank, trade-plan, and collection evidence.</p>
+              <Button type="button" variant="outline" disabled={snapshotLoading} onClick={() => void onLoadSnapshot()}>
+                {snapshotLoading ? "Loading…" : "Load decision context"}
+              </Button>
+            </div>
+            {snapshotError ? <p className="border-t border-border px-4 py-3 text-sm text-[var(--destructive)]">{snapshotError}</p> : null}
+          </DataTableFrame>
+        </>
       )}
       <SelectedPortfolioImpact decision={decision} />
       <TickerMarketEvidence decision={decision} />
@@ -152,6 +157,7 @@ export function ExecutionEvidencePanel({
   executionEvidence?: Record<string, unknown> | null;
 }) {
   const evidence = executionEvidence ?? {};
+  const status = typeof evidence.status === "string" && evidence.status.trim() ? evidence.status : null;
   const fields = [
     ["Status", evidence.status],
     ["Version", evidence.version],
@@ -171,10 +177,10 @@ export function ExecutionEvidencePanel({
   ].filter(([, value]) => value != null);
   const blockers = Array.isArray(evidence.blockers) ? evidence.blockers.map(String) : [];
   return (
-    <DataTableFrame title="Execution-grade evidence" action={<StatusBadge tone={evidence.status === "available" ? "good" : "warn"}>{String(evidence.status ?? "unavailable")}</StatusBadge>}>
-      <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        {fields.map(([label, value]) => <KeyValue key={String(label)} label={String(label)} value={typeof value === "object" ? JSON.stringify(value) : String(value)} />)}
-      </div>
+    <DataTableFrame title="Execution-grade evidence" action={<StatusBadge tone={status === "available" ? "good" : "warn"}>{status ?? "NO DATA"}</StatusBadge>}>
+      {fields.length ? <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
+        {fields.map(([label, value]) => <DecisionKeyValue key={String(label)} label={String(label)} value={typeof value === "object" ? JSON.stringify(value) : String(value)} field={String(label).toLowerCase().replace(/[^a-z0-9]+/g, "_")} source="execution_evidence" />)}
+      </div> : <div className="p-4"><DataFieldStateNotice state={missingFieldState({ field: "execution_evidence", source: "ticker_decision_snapshot", reason: "execution_evidence_missing", nextAction: "Refresh execution evidence before placing an order." })} /></div>}
       {blockers.length ? <ReasonList title="Evidence blockers" rows={blockers} empty="No blockers" /> : null}
     </DataTableFrame>
   );
@@ -193,7 +199,7 @@ export function TickerMarketEvidence({ decision }: { decision: TickerDecisionCon
             <p className="mt-1 text-muted-foreground">{assessment.status} · required: {requiredDimensions.join(", ") || "none"}</p>
             {blockers.length ? <p className="mt-1 text-muted-foreground">Blocking: {blockers.join(", ")}</p> : null}
           </div>
-        ) : <p className="text-muted-foreground">Decision-bound market evidence is unavailable.</p>}
+        ) : <DataFieldStateNotice compact state={missingFieldState({ field: "market_evidence_assessment", source: "ticker_decision", reason: "market_evidence_assessment_missing", nextAction: "Refresh the canonical ticker decision before using market evidence." })} />}
       </div>
     </DataTableFrame>
   );
@@ -204,12 +210,12 @@ function SelectedPortfolioImpact({ decision }: { decision: TickerDecisionContrac
   const impact = kind ? decision.portfolio_impacts?.[kind] : undefined;
   const blockers = impact?.blockers ?? [];
   return (
-    <DataTableFrame title="Selected portfolio impact" action={<StatusBadge tone={impact?.availability === "available" ? "good" : "warn"}>{impact?.availability ?? "unavailable"}</StatusBadge>}>
-      <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        <KeyValue label="Expression" value={kind ?? "No selected expression"} />
-        <KeyValue label="Marginal risk" value={impact?.marginal_risk == null ? "Unavailable" : String(impact.marginal_risk)} />
-        <KeyValue label="Risk budget" value={impact?.risk_budget_consumed == null ? "Unavailable" : String(impact.risk_budget_consumed)} />
-      </div>
+    <DataTableFrame title="Selected portfolio impact" action={<StatusBadge tone={impact?.availability === "available" ? "good" : "warn"}>{impact?.availability ?? "NO DATA"}</StatusBadge>}>
+      {impact ? <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
+        <DecisionTerm label="Expression" value={kind} field="selected_expression" source="ticker_decision" />
+        {impact.marginal_risk == null ? <DataFieldStateNotice compact state={missingFieldState({ field: "marginal_risk", source: "portfolio_impact", reason: "marginal_risk_missing", nextAction: "Refresh the selected portfolio impact before sizing the trade." })} /> : <KeyValue label="Marginal risk" value={String(impact.marginal_risk)} />}
+        {impact.risk_budget_consumed == null ? <DataFieldStateNotice compact state={missingFieldState({ field: "risk_budget_consumed", source: "portfolio_impact", reason: "risk_budget_consumed_missing", nextAction: "Refresh the selected portfolio impact before sizing the trade." })} /> : <KeyValue label="Risk budget" value={String(impact.risk_budget_consumed)} />}
+      </div> : <div className="p-4"><DataFieldStateNotice state={missingFieldState({ field: "selected_portfolio_impact", source: "portfolio_impact", reason: "selected_portfolio_impact_missing", nextAction: "Refresh the canonical ticker decision before sizing the trade." })} /></div>}
       {blockers.length ? <ReasonList title="Blockers" rows={blockers.map(String)} empty="No blockers" /> : null}
     </DataTableFrame>
   );
@@ -226,12 +232,12 @@ function HorizonCard({ view, label }: { view: HorizonDecisionContract; label: st
         <StatusBadge tone={toneFromText(view.stance)}>{view.conviction_tier}</StatusBadge>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-        <KeyValue label="Current" value={money(view.current_price)} />
-        <KeyValue label="Review" value={view.expiry_date} />
-        <KeyValue label="Entry" value={priceRange(view.entry_range)} />
-        <KeyValue label="Target" value={priceRange(view.target_range)} />
-        <KeyValue label="Invalidation" value={invalidation(view.invalidation)} />
-        <KeyValue label="Confidence" value={percent(view.confidence)} />
+        <DecisionTerm label="Current" value={moneyText(view.current_price)} field="current_price" />
+        <DecisionTerm label="Review" value={view.expiry_date} field="expiry_date" />
+        <DecisionTerm label="Entry" value={priceRangeText(view.entry_range)} field="entry_range" />
+        <DecisionTerm label="Target" value={priceRangeText(view.target_range)} field="target_range" />
+        <DecisionTerm label="Invalidation" value={invalidationText(view.invalidation)} field="invalidation" />
+        <DecisionTerm label="Confidence" value={percentText(view.confidence)} field="confidence" />
       </div>
       <ScenarioRail scenarios={view.scenarios} />
     </article>
@@ -251,7 +257,7 @@ function ScenarioRail({ scenarios }: { scenarios: TickerDecisionContract["tactic
             title={`${scenario.name} ${percent(scenario.probability)}`}
           />
         ))}
-      </div> : <p className="text-xs text-muted-foreground">Scenario probabilities unavailable.</p>}
+      </div> : <DataFieldStateNotice compact state={missingFieldState({ field: "scenario_probabilities", source: "ticker_decision_snapshot", reason: "scenario_probabilities_missing", nextAction: "Refresh scenario evidence before placing an order." })} />}
       <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-muted-foreground">
         {scenarios.map((scenario) => <span key={scenario.name}><strong className="text-foreground">{scenario.name}</strong> {percent(scenario.probability)}</span>)}
       </div>
@@ -270,44 +276,40 @@ export function OpportunityRankPanel({
   return (
     <DataTableFrame title="Book opportunity rank" action={<StatusBadge tone={rank?.trade_rank ? "good" : "warn"}>{rank?.trade_rank ? `Trade #${rank.trade_rank}` : "Cash"}</StatusBadge>}>
       <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        <KeyValue label="Research rank" value={rank?.research_rank == null ? "Unavailable" : `#${rank.research_rank}`} />
-        <KeyValue label="Trade utility" value={rank?.trade_utility == null ? "Unavailable" : String(rank.trade_utility)} />
-        <KeyValue label="Rank reason" value={rank?.trade_rank_unavailable_reason ?? "Positive current rank"} />
-        <KeyValue label="Forecast target" value={signal?.target ?? "Unavailable"} />
-        <KeyValue label="Horizon" value={signal?.horizon ?? "Unavailable"} />
-        <KeyValue label="Model / features" value={signal ? `${signal.model_version ?? "-"} · ${signal.feature_version ?? "-"}` : "Unavailable"} />
-        <KeyValue label="OOS interval" value={signal?.oos_period_start && signal?.oos_period_end ? `${signal.oos_period_start} → ${signal.oos_period_end}` : "Unavailable"} />
-        <KeyValue label="Cohort path" value={signal?.cohort_path?.join(" → ") ?? "Unavailable"} />
-        <KeyValue label="Fallback parent" value={signal?.fallback_parent ?? "None"} />
-        <KeyValue label="Effective sample" value={signal?.effective_sample_size == null ? "Unavailable" : String(signal.effective_sample_size)} />
-        <KeyValue label="Calibration" value={signal ? `${signal.calibration_state ?? "-"} · Brier ${numberText(signal.calibration_metrics?.brier_score)}` : "Unavailable"} />
-        <KeyValue label="Research score" value={numberText(signal?.research_score)} />
-        <KeyValue label="Cost / slippage" value={signal?.cost_model_version ?? "Unavailable"} />
-        <KeyValue label="Net lower utility" value={numberText(signal?.lower_confidence_net_utility_after_costs)} />
-        <KeyValue label="Promotion stage" value={signal?.promotion_stage ?? "Unavailable"} />
-        <KeyValue label="Instrument snapshot" value={rank?.instrument_state_snapshot_id ?? "Unavailable"} />
+        {rank ? <><DecisionKeyValue label="Research rank" value={rank.research_rank == null ? null : `#${rank.research_rank}`} field="research_rank" source="opportunity_rank" /><DecisionKeyValue label="Trade utility" value={rank.trade_utility == null ? null : String(rank.trade_utility)} field="trade_utility" source="opportunity_rank" /><DecisionKeyValue label="Rank reason" value={rank.trade_rank_unavailable_reason ?? "Positive current rank"} field="trade_rank_unavailable_reason" source="opportunity_rank" /><DecisionKeyValue label="Instrument snapshot" value={rank.instrument_state_snapshot_id} field="instrument_state_snapshot_id" source="opportunity_rank" /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "opportunity_rank", source: "ticker_decision_snapshot", reason: "opportunity_rank_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
+        {signal ? <><DecisionKeyValue label="Forecast target" value={signal.target} field="target" source="alpha_signal" /><DecisionKeyValue label="Horizon" value={signal.horizon} field="horizon" source="alpha_signal" /><DecisionKeyValue label="Model / features" value={signal.model_version && signal.feature_version ? `${signal.model_version} · ${signal.feature_version}` : null} field="model_and_feature_version" source="alpha_signal" /><DecisionKeyValue label="OOS interval" value={signal.oos_period_start && signal.oos_period_end ? `${signal.oos_period_start} → ${signal.oos_period_end}` : null} field="oos_interval" source="alpha_signal" /><DecisionKeyValue label="Cohort path" value={signal.cohort_path?.length ? signal.cohort_path.join(" → ") : null} field="cohort_path" source="alpha_signal" /><DecisionKeyValue label="Fallback parent" value={signal.fallback_parent ?? "None"} field="fallback_parent" source="alpha_signal" /><DecisionKeyValue label="Effective sample" value={signal.effective_sample_size == null ? null : String(signal.effective_sample_size)} field="effective_sample_size" source="alpha_signal" /><DecisionKeyValue label="Calibration" value={signal.calibration_state ? `${signal.calibration_state} · Brier ${numberText(signal.calibration_metrics?.brier_score)}` : null} field="calibration" source="alpha_signal" /><DecisionKeyValue label="Research score" value={numberText(signal.research_score) === "—" ? null : numberText(signal.research_score)} field="research_score" source="alpha_signal" /><DecisionKeyValue label="Cost / slippage" value={signal.cost_model_version} field="cost_model_version" source="alpha_signal" /><DecisionKeyValue label="Net lower utility" value={numberText(signal.lower_confidence_net_utility_after_costs) === "—" ? null : numberText(signal.lower_confidence_net_utility_after_costs)} field="lower_confidence_net_utility_after_costs" source="alpha_signal" /><DecisionKeyValue label="Promotion stage" value={signal.promotion_stage} field="promotion_stage" source="alpha_signal" /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "alpha_signal", source: "ticker_decision_snapshot", reason: "alpha_signal_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
       </div>
     </DataTableFrame>
   );
 }
 
 function ExpressionTable({ expressions }: { expressions: components["schemas"]["ExpressionDecision"][] }) {
-  const rows = expressions.map((expression) => ({
-    expression: expression.kind,
-    state: expression.selected ? "SELECTED" : expression.status.toUpperCase(),
-    quantity: expression.quantity == null ? "—" : expression.quantity.toLocaleString(),
-    loss: money(expression.planned_loss),
-    utility: numberText(expression.net_expected_value_per_loss_dollar),
-    costs: money(expression.expected_transaction_costs),
-    fit: expression.horizon_fit == null ? "—" : percent(expression.horizon_fit),
-  }));
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Expression tournament</h3>
         <span className="text-xs text-muted-foreground">same thesis · same invalidation</span>
       </div>
-      <SimpleTable rows={rows} empty="No expression comparison is available." columns={[["expression", "Expression"], ["state", "State"], ["quantity", "Qty"], ["loss", "Planned loss"], ["utility", "Net utility"], ["costs", "Costs"], ["fit", "Horizon"]]} />
+      {expressions.length ? <div className="overflow-x-auto rounded-md border border-border">
+        <table className="w-full min-w-[900px] text-sm">
+          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+            <tr>{["Expression", "State", "Qty", "Planned loss", "Net utility", "Costs", "Horizon"].map((label) => <th key={label} className="px-3 py-3 font-medium">{label}</th>)}</tr>
+          </thead>
+          <tbody>
+            {expressions.map((expression) => (
+              <tr key={expression.kind} className="border-b border-border last:border-b-0 align-top">
+                <td className="px-3 py-3">{expression.kind}</td>
+                <td className="px-3 py-3">{expression.selected ? "SELECTED" : expression.status.toUpperCase()}</td>
+                <td className="px-3 py-3"><ExpressionTerm field="quantity" value={expression.quantity == null ? null : expression.quantity.toLocaleString()} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="planned_loss" value={moneyText(expression.planned_loss)} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="net_expected_value_per_loss_dollar" value={numberTextOrNull(expression.net_expected_value_per_loss_dollar)} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="expected_transaction_costs" value={moneyText(expression.expected_transaction_costs)} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="horizon_fit" value={percentText(expression.horizon_fit)} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div> : <p className="text-sm text-muted-foreground">No expression comparison is available.</p>}
     </div>
   );
 }
@@ -384,9 +386,9 @@ function LearningLoopPanel({ learning }: { learning: TickerLearning }) {
       {governance ? (
         <div className="border-b border-border bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
-            <span>Governance: <strong className="text-foreground">{textValue(governance.status, "unavailable").toUpperCase()}</strong></span>
+            {textValue(governance.status) ? <span>Governance: <strong className="text-foreground">{textValue(governance.status).toUpperCase()}</strong></span> : <DataFieldStateNotice compact state={missingFieldState({ field: "governance_status", source: "strategy_learning", reason: "governance_status_missing", nextAction: "Refresh governance evidence before using learning output." })} />}
             <span>Paper only: {governance.paper_only ? "YES" : "NO"}</span>
-            <span>Live: {textValue(governance.live_eligibility, "unavailable")}</span>
+            {textValue(governance.live_eligibility) ? <span>Live: {textValue(governance.live_eligibility)}</span> : <DataFieldStateNotice compact state={missingFieldState({ field: "live_eligibility", source: "strategy_learning", reason: "live_eligibility_missing", nextAction: "Refresh governance evidence before using learning output." })} />}
           </div>
           {governance.blockers?.length ? <p className="mt-1">Blocked by: {governance.blockers.map((item) => textValue(item)).join(" · ")}</p> : null}
         </div>
@@ -437,6 +439,10 @@ function numberText(value: JsonValue | undefined): string {
   return "—";
 }
 
+function numberTextOrNull(value: number | null | undefined): string | null {
+  return value == null || !Number.isFinite(value) ? null : numberText(value);
+}
+
 function percentValue(value: JsonValue | undefined): string {
   if (typeof value === "number" && Number.isFinite(value)) return `${(value * 100).toFixed(1)}%`;
   if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return `${(Number(value) * 100).toFixed(1)}%`;
@@ -445,6 +451,38 @@ function percentValue(value: JsonValue | undefined): string {
 
 function KeyValue({ label, value }: { label: string; value: string }) {
   return <div><span className="block uppercase tracking-[0.08em] text-muted-foreground">{label}</span><strong className="mt-0.5 block break-words font-medium text-foreground">{value}</strong></div>;
+}
+
+function DecisionTerm({
+  label,
+  value,
+  field,
+  source = "ticker_decision",
+  nextAction = "Refresh the canonical ticker decision before acting.",
+}: {
+  label: string;
+  value: string | null | undefined;
+  field: string;
+  source?: string;
+  nextAction?: string;
+}) {
+  if (value != null && value.trim()) return <KeyValue label={label} value={value} />;
+  return <DataFieldStateNotice compact state={missingFieldState({ field, source, reason: `${field}_missing`, nextAction })} />;
+}
+
+function ExpressionTerm({ field, value }: { field: string; value: string | null }) {
+  if (value != null) return <>{value}</>;
+  return <DataFieldStateNotice compact state={missingFieldState({
+    field,
+    source: "expression_decision",
+    reason: `${field}_missing`,
+    nextAction: "Refresh the canonical ticker decision before selecting an expression.",
+  })} />;
+}
+
+function DecisionKeyValue({ label, value, field, source }: { label: string; value: string | null | undefined; field: string; source: string }) {
+  if (value != null && value.trim()) return <KeyValue label={label} value={value} />;
+  return <DataFieldStateNotice compact state={missingFieldState({ field, source, reason: `${field}_missing`, nextAction: "Refresh the validated ticker decision snapshot before acting." })} />;
 }
 
 function KeyValueBlock({ title, value }: { title: string; value?: string | null }) {
@@ -456,9 +494,17 @@ function money(value: number | null | undefined): string {
   return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: value >= 100 ? 0 : 2 });
 }
 
+function moneyText(value: number | null | undefined): string | null {
+  return value == null || !Number.isFinite(value) ? null : money(value);
+}
+
 function percent(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";
   return `${(value * 100).toFixed(0)}%`;
+}
+
+function percentText(value: number | null | undefined): string | null {
+  return value == null || !Number.isFinite(value) ? null : percent(value);
 }
 
 function priceRange(value: components["schemas"]["PriceRange"] | null | undefined): string {
@@ -466,9 +512,19 @@ function priceRange(value: components["schemas"]["PriceRange"] | null | undefine
   return value.low === value.high ? money(value.low) : `${money(value.low)}–${money(value.high)}`;
 }
 
+function priceRangeText(value: components["schemas"]["PriceRange"] | null | undefined): string | null {
+  return value ? priceRange(value) : null;
+}
+
 function invalidation(value: components["schemas"]["Invalidation"] | null | undefined): string {
   if (!value) return "—";
   return value.statement || String(value.value);
+}
+
+function invalidationText(value: components["schemas"]["Invalidation"] | null | undefined): string | null {
+  if (!value) return null;
+  if (value.statement?.trim()) return value.statement;
+  return value.value == null ? null : String(value.value);
 }
 
 export function DecisionPanel({ brief }: { brief: RowRecord }) {
@@ -517,13 +573,14 @@ export function TradingViewChart({ symbol, ticker }: { symbol: string; ticker: T
   const externalUrl = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tradingViewSymbol)}`;
   return (
     <DataTableFrame
-      title="Chart"
+      title="External live chart"
       action={
         <Button asChild type="button" variant="outline" size="sm">
           <a href={externalUrl} target="_blank" rel="noreferrer"><ExternalLink /> Open TradingView</a>
         </Button>
       }
     >
+      <p className="px-4 pt-3 text-xs text-muted-foreground">Live external reference only. It is not Market snapshot data and cannot authorize a decision.</p>
       <div className="h-[360px] w-full bg-muted/30 sm:h-[440px]">
         <iframe
           title={`${symbol} TradingView chart`}
@@ -702,13 +759,14 @@ export function OptionsIntelligencePanel({ options }: { options: TickerDossier["
   const signal = options.signal ?? {};
   const expiries = rowList(options.expiries).slice(0, 8);
   const capability = rowList(options.capabilities).find((row) => textField(row, ["provider"]) === "tradingview");
+  const ivRegime = displayField(signal, ["iv_regime"], "");
   const unavailableRows = rowList(options.unavailable_signals).slice(0, 6).map((row) => ({
     signal: displayField(row, ["signal"], "Signal"),
-    reason: displayField(row, ["reason"], "Unavailable from TradingView V1"),
+    reason: displayField(row, ["reason"], "Not supplied by TradingView V1"),
   }));
   const metrics = presentMetricCells([
     ["Status", displayField(signal, ["status"], "Missing"), displayField(signal, ["source"], "No options signal row")],
-    ["ATM IV", ratioMetric(signal, "atm_iv"), displayField(signal, ["iv_regime"], "IV regime unavailable")],
+    ["ATM IV", ratioMetric(signal, "atm_iv"), ivRegime || "See the IV regime field state below"],
     ["Expected Move", optionMove(signal), displayField(signal, ["nearest_expiry"], "No expiry")],
     ["Skew", displayField(signal, ["skew_signal"], "-"), skewDetail(signal)],
     ["Spread", displayField(signal, ["spread_quality"], "-"), "bid/ask quality"],
@@ -732,6 +790,7 @@ export function OptionsIntelligencePanel({ options }: { options: TickerDossier["
       <div className="grid gap-0 xl:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.65fr)]">
         <div className="border-b border-border p-4 xl:border-b-0 xl:border-r">
           <MetricGrid rows={metrics} empty="No options signal row is loaded for this ticker." />
+          {!ivRegime ? <div className="mt-3"><DataFieldStateNotice compact state={missingFieldState({ field: "iv_regime", source: "options_signal", reason: "iv_regime_missing", nextAction: "Refresh the options signal before selecting an options expression." })} /></div> : null}
           <div className="mt-4 overflow-x-auto">
             <SimpleTable
               rows={expiryRows}

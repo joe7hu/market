@@ -35,6 +35,7 @@ from investment_panel.core.decision import (
     DecisionResolutionV2,
     ExpressionDecision,
     ExpressionKind,
+    AvailabilityStatus,
     HorizonDecision,
     MarketEvidenceAssessment,
     OpportunityEpisode,
@@ -146,6 +147,17 @@ class TodayTradePlanSummaryResponse(BaseModel):
     next_action: str
 
 
+class DataFieldStateV1(BaseModel):
+    """One explicit state for a decision field that is not currently usable."""
+
+    field: str
+    availability_status: AvailabilityStatus
+    source: str
+    reason: str
+    blocking: bool
+    next_action: str
+
+
 class TodayCapitalAction(FlexibleResponse):
     projection_identity: str
     source_authority: str
@@ -173,9 +185,56 @@ class TodayCapitalAction(FlexibleResponse):
     trade_rank_unavailable_reason: str | None = None
     trade_utility: float | None = None
     trade_plan: TodayTradePlanSummaryResponse | None = None
+    field_states: list[DataFieldStateV1] = Field(default_factory=list)
 
 
 ActionQueueItem = TodayCapitalAction
+
+
+class TodayBriefItemResponse(BaseModel):
+    """One named context item for the Today decision surface."""
+
+    stable_key: str
+    category: str
+    title: str
+    summary: str = ""
+    score: float = 0.0
+    symbol: str | None = None
+    sentiment: str = "neutral"
+    severity: str = "info"
+    antithesis: str | None = None
+    action: str | None = None
+    next_action: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+    days_until: int | None = None
+    stats: list[str] = Field(default_factory=list)
+
+
+class TodayPreopenBriefResponse(BaseModel):
+    """Named pre-open context; nested publication payloads stay server-side."""
+
+    stable_key: str
+    headline: str
+    narrative: str = ""
+    macro_regime: str | None = None
+    opening_scenario: str | None = None
+    qqq_path: str | None = None
+    bias: str = "neutral"
+    expected_close: float | None = None
+    support: float | None = None
+    resistance: float | None = None
+    expected_return_pct: float | None = None
+    backtest_mae_pct: float | None = None
+    range_hit_rate_pct: float | None = None
+    outcome_status: str = "pending"
+    actual_price: float | None = None
+    actual_return_pct: float | None = None
+    absolute_error_pct: float | None = None
+    within_forecast_range: bool | None = None
+    direction_correct: bool | None = None
+    key_events: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    watch_items: list[str] = Field(default_factory=list)
 
 
 class TodayResponse(BaseModel):
@@ -183,6 +242,9 @@ class TodayResponse(BaseModel):
     as_of: datetime | None = None
     actions: list[TodayCapitalAction] = Field(default_factory=list)
     book_actions: list[TodayCapitalAction] = Field(default_factory=list)
+    preopen_brief: TodayPreopenBriefResponse | None = None
+    brief_items: list[TodayBriefItemResponse] = Field(default_factory=list)
+    portfolio_risk_items: list[TodayBriefItemResponse] = Field(default_factory=list)
     missing_plan_count: int = 0
     count: int = 0
 
@@ -742,6 +804,7 @@ __all__ = [
     "AgentResearchPromptResponse",
     "AgentSubmissionResponse",
     "ActionQueueItem",
+    "DataFieldStateV1",
     "ApiStatusResponse",
     "DashboardResponse",
     "DecisionInboxResponse",
@@ -793,6 +856,8 @@ __all__ = [
     "SuperinvestorDetailResponse",
     "TablePayloadResponse",
     "TodayCapitalAction",
+    "TodayBriefItemResponse",
+    "TodayPreopenBriefResponse",
     "TodayResolutionSummaryResponse",
     "TodayResponse",
     "TodayTradePlanSummaryResponse",

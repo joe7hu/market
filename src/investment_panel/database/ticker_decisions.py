@@ -1018,6 +1018,17 @@ class TickerDecisionRepository:
                     SELECT lower(coalesce(decision.capital_action->>'action', ''))
                                IN ('avoid', 'no_trade', 'cash')
                                AND lower(coalesce(decision.selected_expression->>'kind', 'cash')) = 'cash'
+                               AND lower(coalesce(
+                                   coalesce(
+                                       decision.expressions->'STOCK',
+                                       decision.expressions->'stock'
+                                   )->>'availability',
+                                   coalesce(
+                                       decision.expressions->'STOCK',
+                                       decision.expressions->'stock'
+                                   )->>'availability_status',
+                                   ''
+                               )) <> 'available'
                            AS fast_cash
                 ) compact_candidate
                 CROSS JOIN LATERAL (

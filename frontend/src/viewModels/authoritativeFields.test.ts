@@ -13,6 +13,7 @@ describe("authoritative decision fields", () => {
       eligibility: "ACTIONABLE",
       ticker: "NVDA",
       selected_expression_kind: "STOCK",
+      selected_expression_identity: "stock:NVDA",
       selected_expression: { kind: "STOCK", identity: "stock:NVDA" },
       entry: { low: 101, high: 102 },
       entry_limit: 101.5,

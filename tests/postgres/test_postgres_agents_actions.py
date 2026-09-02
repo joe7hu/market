@@ -855,6 +855,33 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
         runtime.close()
 
 
+def test_agent_repository_uses_new_york_business_date_for_scheduled_dedupe(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    repository = AgentRepository(runtime)
+    try:
+        previous_day = repository.queue_thesis("QBUS", trigger="scheduled")
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE analysis.agent_task
+                SET status = 'completed', created_at = (
+                    ((now() AT TIME ZONE 'America/New_York')::date - 1) + time '23:30'
+                ) AT TIME ZONE 'America/New_York'
+                WHERE id = %s
+                """,
+                [previous_day["request_id"]],
+            )
+
+        current_day = repository.queue_thesis("QBUS", trigger="scheduled")
+
+        assert current_day["request_id"] != previous_day["request_id"]
+        assert current_day["status"] == "queued"
+    finally:
+        runtime.close()
+
+
 def test_consolidated_agent_does_not_record_a_run_without_tasks(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)

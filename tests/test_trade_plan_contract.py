@@ -198,7 +198,7 @@ def test_blocked_resolution_preserves_diagnostic_blockers() -> None:
         ("market_state_stale", AvailabilityStatus.STALE),
         ("alpha_oos_evaluation_missing", AvailabilityStatus.NOT_CALIBRATED),
         ("risk_policy_blocked", AvailabilityStatus.POLICY_BLOCKED),
-        ("publication_lineage_mismatch", AvailabilityStatus.ERROR),
+        ("publication_lineage_mismatch", AvailabilityStatus.CONFLICTED),
         ("cash_selected", AvailabilityStatus.NOT_APPLICABLE),
     ),
 )

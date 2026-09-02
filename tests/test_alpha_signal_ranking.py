@@ -39,7 +39,7 @@ def _phase2_evidence(cutoff: datetime = CUTOFF) -> dict[str, object]:
 
 def test_availability_status_exposes_all_typed_states() -> None:
     assert {item.value for item in AvailabilityStatus} == {
-        "available", "unsupported", "missing", "stale", "not_calibrated",
+        "available", "unsupported", "missing", "conflicted", "stale", "not_calibrated",
         "policy_blocked", "error", "not_applicable", "pending",
     }
     assert {
@@ -63,7 +63,7 @@ def test_availability_status_exposes_all_typed_states() -> None:
         "alpha_oos_evaluation_not_passed": AvailabilityStatus.POLICY_BLOCKED,
         "alpha_evaluation_lineage_mismatch": AvailabilityStatus.ERROR,
         "risk_policy_blocked": AvailabilityStatus.POLICY_BLOCKED,
-        "publication_lineage_mismatch": AvailabilityStatus.ERROR,
+        "publication_lineage_mismatch": AvailabilityStatus.CONFLICTED,
         "cash_selected": AvailabilityStatus.NOT_APPLICABLE,
     }
 

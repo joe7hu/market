@@ -1083,6 +1083,7 @@
           "available",
           "unsupported",
           "missing",
+          "conflicted",
           "stale",
           "not_calibrated",
           "policy_blocked",
@@ -1372,6 +1373,44 @@
           }
         },
         "title": "DashboardResponse",
+        "type": "object"
+      },
+      "DataFieldStateV1": {
+        "description": "One explicit state for a decision field that is not currently usable.",
+        "properties": {
+          "availability_status": {
+            "$ref": "#/components/schemas/AvailabilityStatus"
+          },
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "availability_status",
+          "source",
+          "reason",
+          "blocking",
+          "next_action"
+        ],
+        "title": "DataFieldStateV1",
         "type": "object"
       },
       "DataQuality": {
@@ -13302,6 +13341,119 @@
         "title": "TickerResolutionSummaryResponse",
         "type": "object"
       },
+      "TodayBriefItemResponse": {
+        "description": "One named context item for the Today decision surface.",
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "antithesis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Antithesis"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "days_until": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Until"
+          },
+          "next_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Action"
+          },
+          "score": {
+            "default": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "sentiment": {
+            "default": "neutral",
+            "title": "Sentiment",
+            "type": "string"
+          },
+          "severity": {
+            "default": "info",
+            "title": "Severity",
+            "type": "string"
+          },
+          "stable_key": {
+            "title": "Stable Key",
+            "type": "string"
+          },
+          "stats": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Stats",
+            "type": "array"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stable_key",
+          "category",
+          "title"
+        ],
+        "title": "TodayBriefItemResponse",
+        "type": "object"
+      },
       "TodayCapitalAction": {
         "additionalProperties": true,
         "properties": {
@@ -13370,6 +13522,13 @@
               }
             ],
             "title": "Expires At"
+          },
+          "field_states": {
+            "items": {
+              "$ref": "#/components/schemas/DataFieldStateV1"
+            },
+            "title": "Field States",
+            "type": "array"
           },
           "lifecycle_state": {
             "title": "Lifecycle State",
@@ -13541,6 +13700,215 @@
         "title": "TodayCapitalAction",
         "type": "object"
       },
+      "TodayPreopenBriefResponse": {
+        "description": "Named pre-open context; nested publication payloads stay server-side.",
+        "properties": {
+          "absolute_error_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Absolute Error Pct"
+          },
+          "actual_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Price"
+          },
+          "actual_return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Return Pct"
+          },
+          "backtest_mae_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backtest Mae Pct"
+          },
+          "bias": {
+            "default": "neutral",
+            "title": "Bias",
+            "type": "string"
+          },
+          "direction_correct": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction Correct"
+          },
+          "expected_close": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Close"
+          },
+          "expected_return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Return Pct"
+          },
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "key_events": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Key Events",
+            "type": "array"
+          },
+          "macro_regime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Macro Regime"
+          },
+          "narrative": {
+            "default": "",
+            "title": "Narrative",
+            "type": "string"
+          },
+          "opening_scenario": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opening Scenario"
+          },
+          "outcome_status": {
+            "default": "pending",
+            "title": "Outcome Status",
+            "type": "string"
+          },
+          "qqq_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qqq Path"
+          },
+          "range_hit_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Range Hit Rate Pct"
+          },
+          "resistance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resistance"
+          },
+          "risks": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Risks",
+            "type": "array"
+          },
+          "stable_key": {
+            "title": "Stable Key",
+            "type": "string"
+          },
+          "support": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Support"
+          },
+          "watch_items": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Watch Items",
+            "type": "array"
+          },
+          "within_forecast_range": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Within Forecast Range"
+          }
+        },
+        "required": [
+          "stable_key",
+          "headline"
+        ],
+        "title": "TodayPreopenBriefResponse",
+        "type": "object"
+      },
       "TodayResolutionSummaryResponse": {
         "description": "The action-queue resolution without immutable audit bodies.",
         "properties": {
@@ -13707,6 +14075,13 @@
             "title": "Book Actions",
             "type": "array"
           },
+          "brief_items": {
+            "items": {
+              "$ref": "#/components/schemas/TodayBriefItemResponse"
+            },
+            "title": "Brief Items",
+            "type": "array"
+          },
           "count": {
             "default": 0,
             "title": "Count",
@@ -13716,6 +14091,23 @@
             "default": 0,
             "title": "Missing Plan Count",
             "type": "integer"
+          },
+          "portfolio_risk_items": {
+            "items": {
+              "$ref": "#/components/schemas/TodayBriefItemResponse"
+            },
+            "title": "Portfolio Risk Items",
+            "type": "array"
+          },
+          "preopen_brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TodayPreopenBriefResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "status": {
             "$ref": "#/components/schemas/ApiStatusResponse"

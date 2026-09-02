@@ -470,6 +470,17 @@ def test_migration_cli_upgrades_configured_database(postgres_dsn: str, monkeypat
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
 
 
+def test_explicit_migration_dsn_overrides_market_database_environment(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MARKET_DATABASE_URL", "postgresql://127.0.0.1:1/not-the-test-database")
+
+    upgrade_database(postgres_dsn)
+
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+
+
 def test_runtime_rejects_non_postgresql_authority() -> None:
     with pytest.raises(ValueError, match="PostgreSQL"):
         DatabaseRuntime("sqlite:///data/retired.db")

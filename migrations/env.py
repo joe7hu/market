@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from logging.config import fileConfig
-import os
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
@@ -11,7 +10,7 @@ config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
 
-database_url = os.environ.get("MARKET_DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+database_url = config.get_main_option("sqlalchemy.url")
 config.set_main_option("sqlalchemy.url", database_url.replace("postgresql://", "postgresql+psycopg://", 1))
 target_metadata = None
 

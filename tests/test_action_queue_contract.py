@@ -1,4 +1,6 @@
 from datetime import UTC, datetime
+import json
+from pathlib import Path
 
 from app.routers import panel as panel_router
 from app.routers.panel import dedupe_queue, decision_inbox_queue, research_queue
@@ -18,6 +20,24 @@ def test_action_queue_keeps_current_transitions_and_dedupes_exact_source_identit
     assert [item["projection_identity"] for item in items] == ["inbox:decision-inbox:inbox-1", "inbox:decision-inbox:inbox-2"]
     assert items[1]["lifecycle_state"] == "expired"
     assert all(item["action"] == "NO_TRADE" for item in items)
+
+
+def test_today_replay_fixture_keeps_missing_trade_plan_explicit() -> None:
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "today_replay.json").read_text())
+    action = fixture["actions"][0]
+    state = action["field_states"][0]
+
+    assert action["projection_identity"] == "capital:ticker-decision:decision:AAA"
+    assert action["action"] == "NO_TRADE"
+    assert action["selected_expression"] == "CASH"
+    assert state == {
+        "field": "trade_plan",
+        "availability_status": "missing",
+        "source": "trade_plan",
+        "reason": "trade_plan_missing",
+        "blocking": True,
+        "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+    }
 
 
 def test_research_queue_preserves_source_order_without_cross_source_scoring() -> None:
