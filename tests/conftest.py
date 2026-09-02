@@ -14,10 +14,17 @@ complete run for CI / pre-push.
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 from pathlib import Path
 import tempfile
 
 import pytest
+
+# CI provisions the same explicit app-login contract that production uses.
+# These are test credentials only; the migration still requires deployment
+# configuration rather than falling back to its migration owner.
+os.environ.setdefault("MARKET_APP_LOGIN_ROLE", "market_app")
+os.environ.setdefault("MARKET_APP_DATABASE_PASSWORD", "phase1-test-market-app-password")
 
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.database.configuration import DatabaseConfig

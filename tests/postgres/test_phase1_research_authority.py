@@ -3,6 +3,8 @@ import hmac
 
 import psycopg
 import pytest
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision.alpha import build_strategy_forecast
@@ -197,77 +199,89 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(
         ).fetchone()[0]
         signing_key = "phase1-test-signing-key"
         source_rows = {}
-        connection.execute("SET ROLE market_app")
-        for kind, payload in evidence_payloads.items():
-            payload = {
-                **payload,
-                "input_hash": "9" * 64,
-                "universe_hash": content_hash([str(instrument)]),
-                "feature_hash": "b" * 64,
-                "evidence_kind": kind,
-                "evaluator_code_version": "fixture-code.v1",
-            }
-            sample_count = 2 if kind == "controls" else 3 if kind == "parameter_stability" else 1
-            authorization_payload = connection.execute(
-                """SELECT analysis.research_evaluator_authorization_payload(
-                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s)""",
-                [successful_trial, validation_result, evaluator_run, kind, "fixture.v1", "fixture-code.v1",
-                 "9" * 64, content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload)],
-            ).fetchone()[0]
-            authorization_signature = hmac.new(
-                signing_key.encode("utf-8"), str(authorization_payload).encode("utf-8"), "sha256",
-            ).hexdigest()
-            source = connection.execute(
-                """SELECT id, output_hash, available_at
-                   FROM analysis.write_research_evaluator_output(
-                        %s, %s, %s, %s, 'fixture.v1', 'fixture-code.v1', %s, %s, %s,
-                        %s, true, %s, %s)""",
-                [successful_trial, validation_result, evaluator_run, kind, "9" * 64,
-                 content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload), authorization_signature],
+        connection.commit()
+        app_conninfo = conninfo_to_dict(postgres_dsn)
+        app_conninfo.update(
+            user="market_app",
+            password="phase1-test-market-app-password",
+        )
+        with psycopg.connect(make_conninfo(**app_conninfo), row_factory=dict_row) as app_connection:
+            identity = app_connection.execute(
+                """SELECT current_user, session_user,
+                          has_schema_privilege(current_user, 'analysis', 'USAGE') AS schema_usage,
+                          has_function_privilege(current_user, 'analysis.write_research_evaluator_output(uuid,uuid,uuid,text,text,text,text,text,text,integer,boolean,jsonb,text)', 'EXECUTE') AS writer_execute,
+                          pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = 'analysis.research_evaluator_signing_secret'::regclass)) AS key_owner"""
             ).fetchone()
-            assert source is not None
-            source_rows[kind] = (source[0], source[1], payload)
-        connection.execute("RESET ROLE")
-        # The application role can use only the protected writer. It
-        # cannot read the key/source table or forge a source row, and a
-        # caller GUC cannot replace the protected signing secret.
-        connection.execute("SET ROLE market_app")
+            assert identity["current_user"] == "market_app"
+            assert identity["session_user"] == "market_app"
+            assert identity["schema_usage"] is True
+            assert identity["writer_execute"] is True
+            assert identity["key_owner"] == "market_research_signer"
 
-        def denied(statement: str, params: list[object] | None = None) -> None:
-            connection.execute("SAVEPOINT role_boundary")
-            with pytest.raises(psycopg.errors.InsufficientPrivilege):
-                connection.execute(statement, params)
-            connection.execute("ROLLBACK TO SAVEPOINT role_boundary")
+            for kind, payload in evidence_payloads.items():
+                payload = {
+                    **payload,
+                    "input_hash": "9" * 64,
+                    "universe_hash": content_hash([str(instrument)]),
+                    "feature_hash": "b" * 64,
+                    "evidence_kind": kind,
+                    "evaluator_code_version": "fixture-code.v1",
+                }
+                sample_count = 2 if kind == "controls" else 3 if kind == "parameter_stability" else 1
+                authorization_payload = app_connection.execute(
+                    """SELECT analysis.research_evaluator_authorization_payload(
+                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s) AS payload""",
+                    [successful_trial, validation_result, evaluator_run, kind, "fixture.v1", "fixture-code.v1",
+                     "9" * 64, content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload)],
+                ).fetchone()["payload"]
+                authorization_signature = hmac.new(
+                    signing_key.encode("utf-8"), str(authorization_payload).encode("utf-8"), "sha256",
+                ).hexdigest()
+                source = app_connection.execute(
+                    """SELECT id, output_hash, available_at
+                       FROM analysis.write_research_evaluator_output(
+                            %s, %s, %s, %s, 'fixture.v1', 'fixture-code.v1', %s, %s, %s,
+                            %s, true, %s, %s)""",
+                    [successful_trial, validation_result, evaluator_run, kind, "9" * 64,
+                     content_hash([str(instrument)]), "b" * 64, sample_count, Jsonb(payload), authorization_signature],
+                ).fetchone()
+                assert source is not None
+                source_rows[kind] = (source["id"], source["output_hash"], payload)
 
-        denied("SELECT secret FROM analysis.research_evaluator_signing_secret")
-        denied("SELECT id FROM analysis.research_evaluator_output LIMIT 1")
-        denied(
-            "INSERT INTO analysis.research_evaluator_output (research_trial_id) VALUES (%s)",
-            [successful_trial],
-        )
-        denied(
-            "UPDATE analysis.research_evaluator_output SET raw_output = '{}'::jsonb WHERE id = %s",
-            [source_rows["controls"][0]],
-        )
-        connection.execute("SELECT set_config('app.research_evaluator_signing_key', 'attacker-key', true)")
-        auth_payload = connection.execute(
-            """SELECT analysis.research_evaluator_authorization_payload(
-                       %s, %s, %s, 'controls', 'fixture.v1', 'fixture-code.v1', %s, %s, %s, 2, true, %s)""",
-            [successful_trial, validation_result, evaluator_run, "9" * 64,
-             content_hash([str(instrument)]), "b" * 64, Jsonb(source_rows["controls"][2])],
-        ).fetchone()[0]
-        connection.execute("SAVEPOINT forged_role_writer")
-        with pytest.raises(psycopg.errors.RaiseException, match="authorization signature is invalid"):
-            connection.execute(
-                """SELECT * FROM analysis.write_research_evaluator_output(
-                           %s, %s, %s, 'controls', 'fixture.v1', 'fixture-code.v1', %s, %s, %s,
-                           2, true, %s, %s)""",
-                [successful_trial, validation_result, evaluator_run, "9" * 64,
-                 content_hash([str(instrument)]), "b" * 64, Jsonb(source_rows["controls"][2]),
-                 hmac.new(b"attacker-key", str(auth_payload).encode("utf-8"), "sha256").hexdigest()],
+            def denied(statement: str, params: list[object] | None = None) -> None:
+                app_connection.execute("SAVEPOINT role_boundary")
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    app_connection.execute(statement, params)
+                app_connection.execute("ROLLBACK TO SAVEPOINT role_boundary")
+
+            denied("SELECT secret FROM analysis.research_evaluator_signing_secret")
+            denied("SELECT id FROM analysis.research_evaluator_output LIMIT 1")
+            denied(
+                "INSERT INTO analysis.research_evaluator_output (research_trial_id) VALUES (%s)",
+                [successful_trial],
             )
-        connection.execute("ROLLBACK TO SAVEPOINT forged_role_writer")
-        connection.execute("RESET ROLE")
+            denied(
+                "UPDATE analysis.research_evaluator_output SET raw_output = '{}'::jsonb WHERE id = %s",
+                [source_rows["controls"][0]],
+            )
+            app_connection.execute("SELECT set_config('app.research_evaluator_signing_key', 'attacker-key', true)")
+            auth_payload = app_connection.execute(
+                """SELECT analysis.research_evaluator_authorization_payload(
+                           %s, %s, %s, 'controls', 'fixture.v1', 'fixture-code.v1', %s, %s, %s, 2, true, %s) AS payload""",
+                [successful_trial, validation_result, evaluator_run, "9" * 64,
+                 content_hash([str(instrument)]), "b" * 64, Jsonb(source_rows["controls"][2])],
+            ).fetchone()["payload"]
+            app_connection.execute("SAVEPOINT forged_role_writer")
+            with pytest.raises(psycopg.errors.RaiseException, match="authorization signature is invalid"):
+                app_connection.execute(
+                    """SELECT * FROM analysis.write_research_evaluator_output(
+                               %s, %s, %s, 'controls', 'fixture.v1', 'fixture-code.v1', %s, %s, %s,
+                               2, true, %s, %s)""",
+                    [successful_trial, validation_result, evaluator_run, "9" * 64,
+                     content_hash([str(instrument)]), "b" * 64, Jsonb(source_rows["controls"][2]),
+                     hmac.new(b"attacker-key", str(auth_payload).encode("utf-8"), "sha256").hexdigest()],
+                )
+            app_connection.execute("ROLLBACK TO SAVEPOINT forged_role_writer")
         connection.execute("SAVEPOINT forged_evaluator_output")
         attacker_available = connection.execute("SELECT clock_timestamp() AS now").fetchone()[0]
         attacker_hash = connection.execute(

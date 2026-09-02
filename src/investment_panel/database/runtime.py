@@ -24,6 +24,11 @@ class RuntimeProfile:
 
 API_PROFILE = RuntimeProfile(statement_timeout_ms=3_000)
 JOB_PROFILE = RuntimeProfile(statement_timeout_ms=900_000)
+APPLICATION_ROLE = "market_app"
+EVALUATOR_WRITER_SIGNATURE = (
+    "analysis.write_research_evaluator_output(uuid,uuid,uuid,text,text,text,text,text,text,"
+    "integer,boolean,jsonb,text)"
+)
 
 
 class DatabaseRuntime:
@@ -116,3 +121,30 @@ class DatabaseRuntime:
 def _set_local_timeouts(connection: Connection[dict[str, Any]], profile: RuntimeProfile) -> None:
     connection.execute("SELECT set_config('statement_timeout', %s, true)", [f"{profile.statement_timeout_ms}ms"])
     connection.execute("SELECT set_config('lock_timeout', %s, true)", [f"{profile.lock_timeout_ms}ms"])
+
+
+def activate_application_role(connection: Connection[dict[str, Any]]) -> None:
+    """Run the protected evaluator call as the configured application role.
+
+    The migration grants this role to the configured production login. The
+    switch is scoped to the current transaction, so ordinary application
+    table access keeps its existing authority while the evaluator writer is
+    never reached through a migration owner or an unvalidated superuser.
+    """
+
+    connection.execute("SET LOCAL ROLE market_app")
+    row = connection.execute(
+        """SELECT current_user, pg_has_role(current_user, %s, 'USAGE') AS role_active,
+                  has_function_privilege(current_user, %s, 'EXECUTE') AS writer_allowed
+           """,
+        [APPLICATION_ROLE, EVALUATOR_WRITER_SIGNATURE],
+    ).fetchone()
+    if (
+        row is None
+        or row["current_user"] != APPLICATION_ROLE
+        or not row["role_active"]
+        or not row["writer_allowed"]
+    ):
+        raise RuntimeError(
+            "configured PostgreSQL connection cannot activate market_app evaluator authority"
+        )

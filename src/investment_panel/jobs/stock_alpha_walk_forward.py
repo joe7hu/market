@@ -25,7 +25,7 @@ from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.core.decision import build_strategy_forecast, opportunity_episode_id
-from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE, activate_application_role
 
 
 STRATEGY_KEY = "ticker-stock-alpha"
@@ -591,6 +591,7 @@ def _persist_research_evidence(
         ).fetchone()["id"]
     sample_counts = {kind: sample_count for kind, sample_count, _ in rows}
     persisted_sources: dict[str, tuple[Any, Any, Mapping[str, Any]]] = {}
+    activate_application_role(connection)
     for kind, sample_count, payload in rows:
         if sample_count <= 0:
             raise ValueError(f"{kind} evidence is missing raw evaluator output")
@@ -616,6 +617,7 @@ def _persist_research_evidence(
         if source is None:
             raise ValueError(f"{kind} evaluator output was not persisted")
         persisted_sources[kind] = (source["id"], source["output_hash"], payload)
+    connection.execute("RESET ROLE")
     if len(persisted_sources) != 6:
         raise ValueError("independent evaluator output set is incomplete")
     for kind, (source_id, source_hash, payload) in sorted(persisted_sources.items()):

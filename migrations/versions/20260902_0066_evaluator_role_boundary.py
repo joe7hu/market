@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import re
+
 from alembic import op
+import sqlalchemy as sa
 
 
 revision = "20260902_0066"
@@ -12,6 +16,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    app_password = os.environ.get("MARKET_APP_DATABASE_PASSWORD", "").strip()
+    app_login = os.environ.get("MARKET_APP_LOGIN_ROLE", "").strip()
+    if not app_login or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", app_login):
+        raise RuntimeError(
+            "MARKET_APP_LOGIN_ROLE must name the explicitly configured application login"
+        )
+    if app_password and len(app_password) < 16:
+        raise RuntimeError("MARKET_APP_DATABASE_PASSWORD must contain at least 16 characters")
+
     op.execute(
         r"""
         -- This is the explicit privileged setup path. A migration caller
@@ -27,11 +40,75 @@ def upgrade() -> None:
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'market_migrator') THEN
                 CREATE ROLE market_migrator NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
             END IF;
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'market_research_signer' AND (rolcanlogin OR rolsuper OR rolbypassrls OR rolinherit)) THEN
-                RAISE EXCEPTION 'protected evaluator role has unsafe login, inheritance, superuser, or bypass-RLS privileges';
-            END IF;
         END
         $roles$;
+
+        -- Role activation is explicit. An existing login may be managed by
+        -- deployment, but a newly-created or inactive app role requires the
+        -- configured password below; there is no migration-owner fallback.
+        """
+    )
+    bind = op.get_bind()
+    app_role = bind.execute(
+        sa.text(
+            """SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit
+               FROM pg_roles WHERE rolname = 'market_app'"""
+        )
+    ).mappings().one()
+    if not app_role["rolcanlogin"] and not app_password:
+        raise RuntimeError(
+            "market_app is not an active login; set MARKET_APP_DATABASE_PASSWORD for explicit activation"
+        )
+    if app_password:
+        password_literal = "'" + app_password.replace("'", "''") + "'"
+        bind.exec_driver_sql(
+            f"ALTER ROLE market_app LOGIN PASSWORD {password_literal}"
+        )
+    bind.exec_driver_sql("ALTER ROLE market_app NOSUPERUSER NOBYPASSRLS NOINHERIT")
+    app_role = bind.execute(
+        sa.text(
+            """SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit
+               FROM pg_roles WHERE rolname = 'market_app'"""
+        )
+    ).mappings().one()
+    if (
+        not app_role["rolcanlogin"]
+        or app_role["rolsuper"]
+        or app_role["rolbypassrls"]
+        or app_role["rolinherit"]
+    ):
+        raise RuntimeError("market_app has unsafe or inactive role attributes")
+    configured_login = bind.execute(
+        sa.text(
+            """SELECT rolcanlogin, rolsuper, rolbypassrls
+               FROM pg_roles WHERE rolname = :role"""
+        ),
+        {"role": app_login},
+    ).mappings().one_or_none()
+    if configured_login is None or not configured_login["rolcanlogin"]:
+        raise RuntimeError("MARKET_APP_LOGIN_ROLE must identify an existing login role")
+    if app_login in {"market_research_signer", "market_migrator"}:
+        raise RuntimeError("MARKET_APP_LOGIN_ROLE cannot be a protected signer or migrator role")
+    if app_login != "market_app":
+        bind.exec_driver_sql(f'GRANT market_app TO "{app_login}"')
+    op.execute(
+        r"""
+        DO $validate_roles$
+        DECLARE role_row RECORD;
+        BEGIN
+            SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit INTO role_row
+              FROM pg_roles WHERE rolname = 'market_research_signer';
+            IF role_row.rolcanlogin OR role_row.rolsuper OR role_row.rolbypassrls OR role_row.rolinherit THEN
+                RAISE EXCEPTION 'protected evaluator role has unsafe login, inheritance, superuser, or bypass-RLS privileges';
+            END IF;
+            SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit INTO role_row
+              FROM pg_roles WHERE rolname = 'market_migrator';
+            IF role_row.rolcanlogin OR role_row.rolsuper OR role_row.rolbypassrls OR role_row.rolinherit THEN
+                RAISE EXCEPTION 'migration role has unsafe login, inheritance, superuser, or bypass-RLS privileges';
+            END IF;
+        END
+        $validate_roles$;
+        REVOKE market_app FROM market_research_signer, market_migrator;
 
         ALTER TABLE analysis.research_evaluator_signing_secret OWNER TO market_research_signer;
         ALTER TABLE analysis.research_evaluator_output OWNER TO market_research_signer;
