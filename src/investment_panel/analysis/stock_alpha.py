@@ -6,11 +6,12 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 from math import exp, isfinite, sqrt
+from random import Random
 from statistics import fmean, stdev
 from typing import Any, Iterable, Mapping
 
 from investment_panel.analysis.stats import brier_score
-from investment_panel.analysis.research_validation import combinatorial_path_records
+from investment_panel.analysis.research_validation import combinatorial_path_records, multiple_testing_metrics
 
 
 MODEL_VERSION = "ticker-stock-alpha.v2"
@@ -61,29 +62,37 @@ def walk_forward(
     rows = [_normalise(row) for row in observations]
     rows = [row for row in rows if row is not None and row["as_of"] <= reference]
     rows.sort(key=lambda row: (row["as_of"], row["ticker"], row["horizon"], row["cohort_id"]))
+    pit_rejections: list[dict[str, Any]] = []
     predictions: list[dict[str, Any]] = []
-    for start in range(min_train, len(rows), max(1, fold_size)):
-        test = rows[start:start + max(1, fold_size)]
-        if not test:
-            continue
-        test_start = test[0]["as_of"]
-        training = [
-            row for row in rows[:start]
-            if row["outcome_available_at"] <= test_start - purge
-            and row["as_of"] + embargo <= test_start
-        ]
-        test_end = test[-1]["as_of"]
-        for row in test:
-            if (
-                row["outcome_available_at"] > reference
-                or row["feature_available_at"] > reference
-                or row["as_of"] > test_end
-            ):
+    folds_data: list[dict[str, Any]] = []
+
+    def row_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+        return (row["ticker"], row["horizon"], row["cohort_id"], row["as_of"])
+
+    def evaluate_rows(
+        test_rows: Iterable[Mapping[str, Any]], training: Iterable[Mapping[str, Any]],
+        *, test_start: datetime, test_end: datetime,
+        boundary_by_key: Mapping[tuple[Any, ...], datetime], path_label: str | None = None,
+    ) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        training_rows = list(training)
+        for raw_row in test_rows:
+            row = dict(raw_row)
+            boundary = boundary_by_key.get(row_key(row), test_start)
+            reason = (
+                "outcome_not_available_at_cutoff" if row["outcome_available_at"] > reference else
+                "feature_not_available_at_cutoff" if row["feature_available_at"] > reference else
+                "feature_not_available_at_decision" if row["feature_available_at"] > row["as_of"] else
+                "feature_not_available_at_fold_boundary" if row["feature_available_at"] > boundary else
+                None
+            )
+            if reason:
+                pit_rejections.append({"ticker": row["ticker"], "as_of": row["as_of"].isoformat(), "reason": reason})
                 continue
             raw_probability = _probability(float(row["research_score"]))
             calibrated, path, parent, effective_sample = hierarchical_calibration(
                 raw_probability,
-                training,
+                training_rows,
                 horizon=row["horizon"],
                 cohort_id=row["cohort_id"],
                 min_cohort=min_cohort,
@@ -91,7 +100,7 @@ def walk_forward(
             if calibrated is None:
                 continue
             modeled_cost = float(row["modeled_cost"])
-            predictions.append({
+            output.append({
                 **row,
                 "raw_probability": raw_probability,
                 "calibrated_probability": calibrated,
@@ -103,7 +112,32 @@ def walk_forward(
                 "fold_test_start": test_start.isoformat(),
                 "fold_test_end": test_end.isoformat(),
                 "embargo_until": (test_end + embargo).isoformat(),
+                **({"validation_path": path_label} if path_label else {}),
             })
+        return output
+
+    for start in range(min_train, len(rows), max(1, fold_size)):
+        test = rows[start:start + max(1, fold_size)]
+        if not test:
+            continue
+        test_start = test[0]["as_of"]
+        training = [
+            row for row in rows[:start]
+            if row["outcome_available_at"] <= test_start - purge
+            and row["as_of"] + embargo <= test_start
+            and row["feature_available_at"] <= row["as_of"]
+            and row["feature_available_at"] <= test_start - purge
+        ]
+        test_end = test[-1]["as_of"]
+        fold_predictions = evaluate_rows(
+            test, training, test_start=test_start, test_end=test_end,
+            boundary_by_key={row_key(row): test_start for row in test},
+        )
+        predictions.extend(fold_predictions)
+        folds_data.append({
+            "test": test, "test_start": test_start, "test_end": test_end,
+            "predictions": fold_predictions,
+        })
 
     pairs = [(row["calibrated_probability"], row["outcome"]) for row in predictions]
     utilities = [float(row["net_utility_after_costs"]) for row in predictions]
@@ -136,29 +170,66 @@ def walk_forward(
         "oos_sample_size": len(predictions),
         "lower_confidence_net_utility_after_costs": round(lower_utility, 8) if lower_utility is not None else None,
     }
-    fold_returns = [
-        fmean(float(row["net_utility_after_costs"]) for row in predictions if row["fold_test_start"] == fold)
-        for fold in sorted({row["fold_test_start"] for row in predictions})
-    ]
-    fold_keys = sorted({row["fold_test_start"] for row in predictions})
+    path_folds = [fold for fold in folds_data if fold["predictions"]]
+    fold_returns = [fmean(float(row["net_utility_after_costs"]) for row in fold["predictions"]) for fold in path_folds]
+    fold_keys = [fold["test_start"].isoformat() for fold in path_folds]
     path_records = combinatorial_path_records(
         fold_returns, folds=min(5, len(fold_returns)), max_paths=64,
         purge=1, embargo=1,
     ) if len(fold_returns) >= 2 else []
-    validation_paths = [
-        round(fmean(fold_returns[index] for index in record["test_folds"]), 8)
-        for record in path_records
-    ]
-    validation_path_records = [
-        {
+    validation_paths: list[float] = []
+    validation_path_records: list[dict[str, Any]] = []
+    for index, record in enumerate(path_records):
+        selected_folds = [path_folds[fold] for fold in record["test_folds"]]
+        test_rows = [row for fold in selected_folds for row in fold["test"]]
+        test_start = min(fold["test_start"] for fold in selected_folds)
+        test_end = max(fold["test_end"] for fold in selected_folds)
+        selected_keys = {row_key(row) for row in test_rows}
+        training = [
+            row for row in rows
+            if row_key(row) not in selected_keys
+            and row["feature_available_at"] <= row["as_of"]
+            and row["feature_available_at"] <= test_start - purge
+            and not any(
+                (row["as_of"] <= fold["test_end"] and row["outcome_available_at"] >= fold["test_start"] - purge)
+                or (fold["test_end"] < row["as_of"] <= fold["test_end"] + embargo)
+                for fold in selected_folds
+            )
+        ]
+        boundaries = {
+            row_key(row): fold["test_start"]
+            for fold in selected_folds for row in fold["test"]
+        }
+        path_predictions = evaluate_rows(
+            test_rows, training, test_start=test_start, test_end=test_end,
+            boundary_by_key=boundaries, path_label=f"cpcv-{index}",
+        )
+        path_returns = [float(row["net_utility_after_costs"]) for row in path_predictions]
+        if not path_returns:
+            continue
+        path_return = round(fmean(path_returns), 8)
+        path_probe = multiple_testing_metrics(path_returns, trials_tested=1, path_returns=[path_return], p_values=[0.5])
+        path_p_value = max(0.0, min(1.0, 1.0 - path_probe["psr"]))
+        path_metrics = multiple_testing_metrics(
+            path_returns, trials_tested=1, path_returns=[path_return], p_values=[path_p_value],
+        )
+        validation_paths.append(path_return)
+        validation_path_records.append({
             **record,
             "test_fold_starts": [fold_keys[fold] for fold in record["test_folds"]],
             "purge_days": record["purge_folds"],
             "embargo_days": record["embargo_folds"],
-            "return": validation_paths[index],
-        }
-        for index, record in enumerate(path_records)
-    ]
+            "return": path_return,
+            "metrics": {
+                "sample_size": len(path_returns),
+                "mean_return": path_return,
+                "positive_count": sum(value > 0 for value in path_returns),
+                "psr": path_metrics["psr"],
+                "p_value": path_p_value,
+                "fit_train_count": len(training),
+                "evaluated_test_count": len(path_predictions),
+            },
+        })
     artifact = {
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,
@@ -180,6 +251,7 @@ def walk_forward(
         "predictions": [_jsonable(row) for row in predictions],
         "validation_paths": validation_paths,
         "validation_path_records": validation_path_records,
+        "pit_rejections": pit_rejections[:10_000],
     }
     forecasts = []
     for horizon in sorted({row["horizon"] for row in predictions}):
@@ -199,6 +271,56 @@ def walk_forward(
     artifact["forecast"] = next((item for item in forecasts if item["horizon"] == "TACTICAL"), forecasts[0] if forecasts else None)
     artifact["artifact_hash"] = content_hash(artifact)
     return artifact
+
+
+def build_control_results(
+    observations: Iterable[Mapping[str, Any]], *, cutoff: datetime, repeats: int = 8,
+) -> dict[str, list[float]]:
+    """Build repeated, antithetic randomized-label and white-noise controls.
+
+    The controls use the same PIT-resolved rows as the production run. Each
+    randomized draw is paired with its antithetic draw, so the aggregate has no
+    accidental directional edge while retaining the observed return and cost
+    scale. This is a bounded deterministic approximation, not a cyclic-shift
+    substitute: the seed, repeat count, source row count, and control outputs
+    are persisted with the research result.
+    """
+
+    if repeats < 2 or repeats > 32:
+        raise ValueError("control repeats must be in [2, 32]")
+    source_rows = [dict(row) for row in observations]
+    rows = []
+    for raw in source_rows:
+        try:
+            realized = float(raw.get("realized_return", 0.0))
+            cost = float(raw.get("modeled_cost", 0.0))
+            label = float(raw.get("outcome"))
+        except (TypeError, ValueError):
+            continue
+        if not all(isfinite(value) for value in (realized, cost, label)):
+            continue
+        rows.append((realized, cost, 1.0 if label > 0.5 else -1.0))
+    if not rows:
+        return {"randomized_label_returns": [], "white_noise_market_returns": []}
+    seed = content_hash({"cutoff": cutoff, "rows": source_rows, "control": "phase1-v1"})
+    generator = Random(seed)
+    randomized: list[float] = []
+    noise: list[float] = []
+    scale = stdev([row[0] for row in rows]) if len(rows) > 1 else abs(rows[0][0])
+    scale = max(scale, 1e-12)
+    labels = [row[2] for row in rows]
+    for _ in range(repeats):
+        shuffled = list(labels)
+        generator.shuffle(shuffled)
+        for (realized, cost, _), label in zip(rows, shuffled):
+            value = realized * label - cost
+            randomized.extend((value, -value - 2.0 * cost))
+            draw = generator.gauss(0.0, scale)
+            noise.extend((draw - cost, -draw - cost))
+    return {
+        "randomized_label_returns": randomized,
+        "white_noise_market_returns": noise,
+    }
 
 
 def hierarchical_calibration(

@@ -29,6 +29,20 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                VALUES (%s, 'p1-family', 'Phase 1 family', %s) RETURNING id""",
             [hypothesis, "2" * 64],
         ).fetchone()[0]
+        successful_checks = {
+            "pit": {"passed": True, "domain_valid": True},
+            "denominator": {"passed": True, "domain_valid": True},
+            "attempt_manifest": {"passed": True, "domain_valid": True},
+            "negative_controls": {"passed": True, "domain_valid": True, "controls_present": True},
+            "mechanism": {"passed": True, "domain_valid": True, "evidence_count": 1},
+            "parameter_stability": {"passed": True, "domain_valid": True, "sample_size": 3},
+            "neutralization": {"passed": True, "domain_valid": True, "result_exists": True},
+            "combinatorial_paths": {"passed": True, "domain_valid": True, "path_count": 1},
+            "robustness": {"passed": True, "domain_valid": True},
+            "multiple_testing": {"psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1, "domain_valid": True, "paths_domain_valid": True, "p_values_domain_valid": True, "trials_tested": 2},
+            "cost_capacity": {"passed": True, "domain_valid": True, "multiples": {"1x": {"net_return": 0.1}, "2x": {"net_return": 0.09}, "3x": {"net_return": 0.08}}},
+            "predictive": {"passed": True, "domain_valid": True},
+        }
         connection.execute(
             """INSERT INTO analysis.experiment_manifest
                (experiment_family_id, expected_trial_count, expected_trial_keys, manifest_hash)
@@ -80,7 +94,7 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             """INSERT INTO analysis.trial_result
                (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics, outcome)
                    VALUES (%s, 'validation', now(), now(), %s, %s, %s)""",
-            [successful_trial, "9" * 64, Jsonb({"passed": True}), Jsonb({"passed": True, "checks": {"multiple_testing": {"psr": 0.9, "dsr": 0.9, "pbo": 0.0, "data_snooping_probability": 0.1, "fdr_q_value": 0.1, "domain_valid": True, "paths_domain_valid": True, "p_values_domain_valid": True, "trials_tested": 2}, "cost_capacity": {"multiples": {"1x": {"net_return": 0.1}, "2x": {"net_return": 0.09}, "3x": {"net_return": 0.08}}}}})],
+            [successful_trial, "9" * 64, Jsonb({"passed": True, **successful_checks}), Jsonb({"passed": True, "checks": successful_checks})],
         )
         connection.execute(
             "UPDATE analysis.research_trial SET status = 'failed', failure_reason = 'future information', finished_at = now() WHERE id = %s",
@@ -129,19 +143,26 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             "SELECT id FROM analysis.trial_result WHERE research_trial_id = %s AND result_kind = 'validation'",
             [successful_trial],
         ).fetchone()[0]
+        gate_check_names = {
+            "pit_integrity": ["pit"],
+            "denominator_completeness": ["denominator", "attempt_manifest"],
+            "oos_predictive_validity": ["predictive", "multiple_testing"],
+            "falsification_and_robustness": ["mechanism", "negative_controls", "parameter_stability", "neutralization", "combinatorial_paths", "robustness"],
+            "economic_promotability": ["cost_capacity", "neutralization"],
+        }
         connection.execute("SAVEPOINT forged_gate_evidence")
         for gate in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             connection.execute(
                 "INSERT INTO analysis.validation_gate_result (dossier_id, gate_code, verdict, metrics, evidence) VALUES (%s, %s, 'pass', %s, %s)",
                 [dossier, gate, Jsonb({"passed": True}), Jsonb({"trial_result_id": "forged-result"})],
             )
-        with pytest.raises(psycopg.errors.RaiseException, match="evidence-backed"):
+        with pytest.raises(psycopg.errors.RaiseException, match="all five passing gates|evidence-backed"):
             connection.execute("UPDATE analysis.validation_dossier SET sections = %s, status = 'sealed' WHERE id = %s", [sections, dossier])
         connection.execute("ROLLBACK TO SAVEPOINT forged_gate_evidence")
         for gate in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             connection.execute(
                 "INSERT INTO analysis.validation_gate_result (dossier_id, gate_code, verdict, metrics, evidence, available_at) VALUES (%s, %s, 'pass', %s, %s, now())",
-                [dossier, gate, Jsonb({"passed": True}), Jsonb({"trial_result_id": str(validation_result)})],
+                [dossier, gate, Jsonb({"passed": True, "domain_valid": True, "checks": {name: successful_checks[name] for name in gate_check_names[gate]}}), Jsonb({"trial_result_id": str(validation_result), "checks": gate_check_names[gate]})],
             )
         connection.execute("UPDATE analysis.validation_dossier SET sections = %s, status = 'sealed' WHERE id = %s", [sections, dossier])
         evaluation = connection.execute(
@@ -149,13 +170,14 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                    (strategy_revision_id, validation_dossier_id, research_trial_id, artifact_id, artifact_hash, input_hash,
                     evaluation_type, evaluated_at, verdict, metrics, evidence)
                VALUES (%s, %s, %s, 'p1-artifact', %s, %s, 'out_of_sample', now(), 'pass', %s, %s) RETURNING id""",
-            [revision, dossier, successful_trial, "5" * 64, "7" * 64, Jsonb({"artifact_hash": "5" * 64, "input_hash": "7" * 64, "forecasts": [{"horizon": "1d", "forecast_value": 0.1, "forecast_distribution": {"positive_return_after_costs": 0.1}, "probability_semantics": None}]}), Jsonb({"paper_only": True})],
+            [revision, dossier, successful_trial, "5" * 64, "7" * 64, Jsonb({"artifact_hash": "5" * 64, "input_hash": "7" * 64, "target": "return", "forecasts": [{"horizon": "1d", "forecast_value": 0.1, "forecast_distribution": {"positive_return_after_costs": 0.1}, "probability_semantics": None}]}), Jsonb({"paper_only": True})],
         ).fetchone()[0]
+        forecast_time = datetime.now(UTC)
         forecast = build_strategy_forecast(
             ticker="P1T", opportunity_episode_id="episode:p1", strategy_revision_id=revision,
             strategy_evaluation_id=str(evaluation), target="return", horizon="1d", forecast_value=0.1,
             model_artifact_id="p1-artifact", artifact_hash="5" * 64, input_hash="7" * 64,
-            as_of=cutoff, generated_at=cutoff - timedelta(hours=1), available_at=cutoff - timedelta(hours=1),
+            as_of=cutoff, generated_at=forecast_time, available_at=forecast_time,
         )
         connection.execute(
             """INSERT INTO analysis.strategy_forecast
@@ -165,8 +187,22 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                VALUES (%s, %s, %s, (SELECT id FROM catalog.instrument WHERE symbol = 'P1T'),
                            'episode:p1', 'return', '1d', 0.1, %s, 'p1-artifact', %s, %s,
                        %s, %s, %s, %s)""",
-            [forecast.strategy_forecast_id, revision, evaluation, Jsonb({"positive_return_after_costs": 0.1}), "5" * 64, "7" * 64, cutoff, cutoff, cutoff - timedelta(hours=1), cutoff - timedelta(hours=1)],
+            [forecast.strategy_forecast_id, revision, evaluation, Jsonb({"positive_return_after_costs": 0.1}), "5" * 64, "7" * 64, cutoff, cutoff, forecast_time, forecast_time],
         )
+        connection.execute("SAVEPOINT backdated_forecast")
+        with pytest.raises(psycopg.errors.RaiseException, match="actual availability"):
+            connection.execute(
+                """INSERT INTO analysis.strategy_forecast
+                   (id, strategy_revision_id, strategy_evaluation_id, instrument_id, opportunity_episode_id,
+                    target, horizon, forecast_value, forecast_distribution, model_artifact_id, artifact_hash,
+                    input_hash, as_of, input_cutoff, generated_at, available_at)
+                   VALUES ('forecast:strategy-forecast:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', %s, %s,
+                           (SELECT id FROM catalog.instrument WHERE symbol = 'P1T'), 'episode:p1', 'return',
+                           '1d-backdated', 0.1, %s, 'p1-artifact', %s, %s, %s, %s,
+                           now() - interval '6 seconds', now() - interval '6 seconds')""",
+                [revision, evaluation, Jsonb({"positive_return_after_costs": 0.1}), "5" * 64, "7" * 64, cutoff, cutoff],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT backdated_forecast")
         connection.execute("UPDATE analysis.strategy_revision SET status = 'active' WHERE id = %s", [revision])
         assert connection.execute("SELECT status FROM analysis.validation_dossier WHERE id = %s", [dossier]).fetchone()[0] == "sealed"
         assert connection.execute("SELECT status FROM analysis.strategy_revision WHERE id = %s", [revision]).fetchone()[0] == "active"

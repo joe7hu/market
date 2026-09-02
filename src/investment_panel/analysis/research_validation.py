@@ -20,7 +20,7 @@ GATE_CODES = (
 def mechanism_and_falsification(*, mechanism_class: str, falsification_rule: str, evidence: Iterable[Any] = ()) -> dict[str, Any]:
     count = min(10_000, sum(1 for _ in evidence))
     passed = bool(mechanism_class.strip()) and bool(falsification_rule.strip()) and count > 0
-    return {"passed": passed, "mechanism_class": mechanism_class.strip(), "falsification_rule": falsification_rule.strip(), "evidence_count": count, "reason": None if passed else "mechanism_or_falsification_evidence_missing"}
+    return {"passed": passed, "domain_valid": count > 0, "mechanism_class": mechanism_class.strip(), "falsification_rule": falsification_rule.strip(), "evidence_count": count, "reason": None if passed else "mechanism_or_falsification_evidence_missing"}
 
 
 def negative_control(observed: Sequence[float], *, randomized: Sequence[float] = (), white_noise: Sequence[float] = (), tolerance: float = 0.0) -> dict[str, Any]:
@@ -43,14 +43,20 @@ def negative_control(observed: Sequence[float], *, randomized: Sequence[float] =
     return {"passed": passed, "observed_edge": average(observed), "randomized_edge": randomized_edge, "white_noise_edge": noise_edge, "tolerance": tolerance, "controls_present": controls_present, "domain_valid": controls_domain_valid, "persistent_positive_edge": any(value > tolerance for value in controls), "reason": reason}
 
 
-def future_information_trap(*, feature_available_at: Sequence[Any], cutoff: Any) -> dict[str, Any]:
+def future_information_trap(*, feature_available_at: Sequence[Any], cutoff: Any, decision_times: Sequence[Any] = ()) -> dict[str, Any]:
     values = list(feature_available_at)
+    decisions = list(decision_times)
+    if decisions and len(decisions) != len(values):
+        return {"passed": False, "domain_valid": False, "future_count": None, "observed_count": len(values), "reason": "feature_decision_domain_invalid"}
     try:
-        future_count = sum(1 for value in values if value > cutoff)
+        future_count = sum(
+            1 for index, value in enumerate(values)
+            if value is None or value > cutoff or (decisions and value > decisions[index])
+        )
     except TypeError:
-        return {"passed": False, "future_count": None, "observed_count": len(values), "reason": "feature_availability_domain_invalid"}
+        return {"passed": False, "domain_valid": False, "future_count": None, "observed_count": len(values), "reason": "feature_availability_domain_invalid"}
     passed = bool(values) and future_count == 0
-    return {"passed": passed, "future_count": future_count, "observed_count": len(values), "reason": None if passed else ("feature_availability_missing" if not values else "future_information_detected")}
+    return {"passed": passed, "domain_valid": bool(values) and len(decisions) in {0, len(values)}, "future_count": future_count, "observed_count": len(values), "reason": None if passed else ("feature_availability_missing" if not values else "future_information_detected")}
 
 
 def purged_embargoed_splits(observations: Sequence[Mapping[str, Any]], *, purge: int = 1, embargo: int = 1) -> list[dict[str, Any]]:
@@ -150,10 +156,19 @@ def multiple_testing_metrics(
     else:
         root = sqrt(2.0 * log(trials_tested))
         expected_max = root - (log(log(trials_tested)) + log(4.0 * pi)) / (2.0 * root)
-    dsr = 0.5 * (1.0 + erf((z_score - expected_max) / sqrt(2.0)))
     raw_paths = [float(value) for value in path_returns]
     clean_paths = [value for value in raw_paths if isfinite(value)]
     paths_domain_valid = bool(raw_paths) and len(clean_paths) == len(raw_paths)
+    # DSR is based on the independent path distribution when supplied.  This
+    # prevents post-hoc trade observations from masquerading as independent
+    # trials.  The fallback is retained for the small public primitive only;
+    # the production walk-forward always supplies real path returns.
+    dsr_returns = clean_paths if clean_paths else clean
+    dsr_mean = fmean(dsr_returns) if dsr_returns else 0.0
+    dsr_volatility = stdev(dsr_returns) if len(dsr_returns) > 1 else 0.0
+    dsr_se = dsr_volatility / sqrt(len(dsr_returns)) if dsr_volatility else 0.0
+    dsr_z_score = dsr_mean / dsr_se if dsr_se else (12.0 if dsr_mean > 0 else 0.0)
+    dsr = 0.5 * (1.0 + erf((dsr_z_score - expected_max) / sqrt(2.0)))
     if clean_paths:
         # The bounded input is a deterministic series of path excess returns.
         # PBO is approximated as the probability that a selected path loses
@@ -184,22 +199,33 @@ def multiple_testing_metrics(
         "pbo": pbo, "data_snooping_probability": snooping,
         "data_snooping_statistic": best_trial_false_positive,
         "fdr_q_value": fdr_q,
-        "mean_return": mean_return, "z_score": z_score, "expected_max_z": expected_max,
+        "mean_return": mean_return, "z_score": z_score, "dsr_z_score": dsr_z_score,
+        "expected_max_z": expected_max,
         "path_count": len(clean_paths), "p_value_count": len(family_p),
         "paths_domain_valid": paths_domain_valid,
         "p_values_domain_valid": p_values_domain_valid,
         "domain_valid": domain_valid,
+        "dsr_reference": "path_returns" if clean_paths else "returns",
     }
 
 
 def parameter_stability(neighborhood: Sequence[Mapping[str, Any]], *, metric: str = "return", tolerance: float = 0.25) -> dict[str, Any]:
     rows = list(neighborhood)
-    values = [float(row[metric]) for row in rows if row.get(metric) is not None and isfinite(float(row[metric]))]
-    if not values or len(values) != len(rows):
-        return {"passed": False, "sample_size": 0, "reason": "parameter_neighborhood_missing"}
+    values = []
+    for row in rows:
+        try:
+            value = float(row[metric])
+        except (KeyError, TypeError, ValueError):
+            value = None
+        if value is None or not isfinite(value):
+            return {"passed": False, "domain_valid": False, "sample_size": 0, "reason": "parameter_neighborhood_missing"}
+        values.append(value)
+    if len(values) < 3:
+        return {"passed": False, "domain_valid": False, "sample_size": len(values), "reason": "parameter_neighborhood_incomplete"}
     center = values[len(values) // 2]
     spread = max(abs(value - center) for value in values)
-    return {"passed": center > 0 and spread <= max(abs(center) * tolerance, 1e-12), "sample_size": len(values), "center": center, "max_deviation": spread, "reason": None if center > 0 and spread <= max(abs(center) * tolerance, 1e-12) else "parameter_neighborhood_unstable"}
+    passed = center > 0 and spread <= max(abs(center) * tolerance, 1e-12)
+    return {"passed": passed, "domain_valid": True, "sample_size": len(values), "center": center, "max_deviation": spread, "reason": None if passed else "parameter_neighborhood_unstable"}
 
 
 def neutralization(*, gross_returns: Sequence[float], neutralized_returns: Sequence[float]) -> dict[str, Any]:
@@ -210,19 +236,22 @@ def neutralization(*, gross_returns: Sequence[float], neutralized_returns: Seque
 
 
 def cost_capacity_stress(*, gross_return: float, base_cost: float, capacity: float = 1.0) -> dict[str, Any]:
+    values = (float(gross_return), float(base_cost), float(capacity))
+    domain_valid = all(isfinite(value) for value in values) and base_cost >= 0 and capacity > 0
     results = {f"{multiple}x": {"net_return": gross_return - base_cost * multiple, "capacity": capacity / multiple} for multiple in (1, 2, 3)}
-    passed = all(item["net_return"] > 0 for item in results.values())
-    return {"passed": passed, "explicit_3x": results["3x"], "multiples": results, "reason": None if passed else "cost_capacity_stress_failed"}
+    passed = domain_valid and all(item["net_return"] > 0 for item in results.values())
+    return {"passed": passed, "domain_valid": domain_valid, "explicit_3x": results["3x"], "multiples": results, "reason": None if passed else ("cost_capacity_domain_invalid" if not domain_valid else "cost_capacity_stress_failed")}
 
 
 def validate_trial(
     *, mechanism_class: str, falsification_rule: str, observed_returns: Sequence[float],
     randomized_returns: Sequence[float], white_noise_returns: Sequence[float], gross_return: float,
     base_cost: float, neutralized_returns: Sequence[float], parameter_neighborhood: Sequence[Mapping[str, Any]],
-    trials_tested: int, feature_available_at: Sequence[Any] = (), cutoff: Any | None = None,
+    trials_tested: int, feature_available_at: Sequence[Any] = (), decision_times: Sequence[Any] = (), cutoff: Any | None = None,
     expected_members: Sequence[Any] = (), observed_members: Sequence[Any] = (),
     expected_attempts: Sequence[Any] = (), completed_attempts: Sequence[Any] = (),
-    path_returns: Sequence[float] = (), p_values: Sequence[float] = (), policy: Mapping[str, Any] | None = None,
+    path_returns: Sequence[float] = (), path_records: Sequence[Mapping[str, Any]] = (),
+    p_values: Sequence[float] = (), policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     policy = dict(policy or {})
     controls = negative_control(
@@ -230,15 +259,30 @@ def validate_trial(
         tolerance=float(policy.get("negative_control_tolerance", 0.0)),
     )
     metrics = multiple_testing_metrics(observed_returns, trials_tested=trials_tested, observations=len(observed_returns), path_returns=path_returns, p_values=p_values)
-    pit = future_information_trap(feature_available_at=feature_available_at, cutoff=cutoff) if cutoff is not None else {"passed": False, "reason": "cutoff_missing", "future_count": None}
-    denominator = {"passed": bool(expected_members) and sorted(map(str, expected_members)) == sorted(map(str, observed_members)), "expected_count": len(expected_members), "observed_count": len(observed_members), "reason": None}
+    pit = future_information_trap(feature_available_at=feature_available_at, decision_times=decision_times, cutoff=cutoff) if cutoff is not None else {"passed": False, "domain_valid": False, "reason": "cutoff_missing", "future_count": None}
+    denominator = {"passed": bool(expected_members) and sorted(map(str, expected_members)) == sorted(map(str, observed_members)), "domain_valid": bool(expected_members), "expected_count": len(expected_members), "observed_count": len(observed_members), "reason": None}
     if not denominator["passed"]:
         denominator["reason"] = "denominator_incomplete"
-    attempts = {"passed": bool(expected_attempts) and sorted(map(str, expected_attempts)) == sorted(map(str, completed_attempts)), "expected_count": len(expected_attempts), "completed_count": len(completed_attempts), "reason": None}
+    attempts = {"passed": bool(expected_attempts) and sorted(map(str, expected_attempts)) == sorted(map(str, completed_attempts)), "domain_valid": bool(expected_attempts), "expected_count": len(expected_attempts), "completed_count": len(completed_attempts), "reason": None}
     if not attempts["passed"]:
         attempts["reason"] = "trial_manifest_incomplete"
-    predictive = {"passed": metrics["domain_valid"] and metrics["psr"] >= float(policy.get("min_psr", 0.5)) and (metrics["dsr"] >= float(policy.get("min_dsr", 0.5))), "metrics": metrics, "reason": None}
-    robustness = {"passed": controls["passed"] and parameter_stability(parameter_neighborhood)["passed"] and (metrics["pbo"] is not None and metrics["pbo"] <= float(policy.get("max_pbo", 0.5))), "negative_controls": controls, "parameter_stability": parameter_stability(parameter_neighborhood), "reason": None}
+    predictive = {"passed": metrics["domain_valid"] and metrics["psr"] >= float(policy.get("min_psr", 0.5)) and (metrics["dsr"] >= float(policy.get("min_dsr", 0.5))), "domain_valid": metrics["domain_valid"], "metrics": metrics, "reason": None}
+    stability = parameter_stability(parameter_neighborhood)
+    cpcv = {
+        "passed": bool(path_records) and all(
+            isinstance(record.get("test_folds"), list)
+            and isinstance(record.get("train_folds"), list)
+            and set(record["test_folds"]).isdisjoint(record["train_folds"])
+            and int((record.get("metrics") or {}).get("evaluated_test_count", 0)) > 0
+            and int((record.get("metrics") or {}).get("fit_train_count", 0)) > 0
+            for record in path_records
+        ),
+        "domain_valid": bool(path_records),
+        "path_count": len(path_records),
+        "reason": None if path_records else "combinatorial_path_evidence_missing",
+    }
+    robustness_passed = controls["passed"] and stability["passed"] and cpcv["passed"] and (metrics["pbo"] is not None and metrics["pbo"] <= float(policy.get("max_pbo", 0.5)))
+    robustness = {"passed": robustness_passed, "domain_valid": controls["domain_valid"] and stability["domain_valid"] and cpcv["domain_valid"], "negative_controls": controls, "parameter_stability": stability, "combinatorial_paths": cpcv, "reason": None if robustness_passed else "falsification_or_robustness_failed"}
     mechanism = mechanism_and_falsification(
         mechanism_class=mechanism_class,
         falsification_rule=falsification_rule,
@@ -248,7 +292,7 @@ def validate_trial(
     economics = cost_capacity_stress(gross_return=gross_return, base_cost=base_cost)
     economics["passed"] = economics["passed"] and neutralized["passed"]
     robustness["passed"] = robustness["passed"] and mechanism["passed"] and pit["passed"]
-    checks = {"mechanism": mechanism, "pit": pit, "denominator": denominator, "attempt_manifest": attempts, "negative_controls": controls, "multiple_testing": metrics, "parameter_stability": robustness["parameter_stability"], "neutralization": neutralized, "cost_capacity": economics, "predictive": predictive, "robustness": robustness}
+    checks = {"mechanism": mechanism, "pit": pit, "denominator": denominator, "attempt_manifest": attempts, "negative_controls": controls, "multiple_testing": metrics, "parameter_stability": stability, "neutralization": neutralized, "cost_capacity": economics, "combinatorial_paths": cpcv, "predictive": predictive, "robustness": robustness}
     gates = {
         "pit_integrity": pit["passed"], "denominator_completeness": denominator["passed"] and attempts["passed"],
         "oos_predictive_validity": predictive["passed"], "falsification_and_robustness": robustness["passed"],

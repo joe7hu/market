@@ -6,6 +6,7 @@ from investment_panel.analysis.stock_alpha import (
     COST_MODEL_VERSION,
     FEATURE_VERSION,
     MODEL_VERSION,
+    build_control_results,
     hierarchical_calibration,
     research_score,
     walk_forward,
@@ -20,7 +21,7 @@ def _row(index: int, *, cohort: str = "large-liquid") -> dict[str, object]:
         "cohort_id": cohort,
         "as_of": as_of,
         "outcome_available_at": as_of + timedelta(hours=1),
-        "feature_available_at": as_of + timedelta(minutes=30),
+        "feature_available_at": as_of - timedelta(minutes=30),
         "outcome": float(index % 2 == 0),
         "realized_return": 0.04 if index % 2 == 0 else -0.02,
         "modeled_cost": 0.002,
@@ -99,3 +100,28 @@ def test_walk_forward_excludes_feature_runs_completed_after_cutoff() -> None:
     rows[0]["feature_available_at"] = datetime(2027, 1, 1, tzinfo=UTC)
     result = walk_forward(rows, cutoff=datetime(2026, 2, 1, tzinfo=UTC), min_train=4, fold_size=2, min_cohort=4)
     assert all(row["ticker"] != "T00" for row in result["predictions"])
+
+
+def test_walk_forward_rejects_feature_available_after_row_decision_and_fold_boundary() -> None:
+    rows = [_row(index) for index in range(14)]
+    rows[5]["feature_available_at"] = rows[5]["as_of"] + timedelta(minutes=1)
+    result = walk_forward(rows, cutoff=datetime(2026, 2, 1, tzinfo=UTC), min_train=4, fold_size=2, min_cohort=4)
+    assert all(row["ticker"] != "T05" for row in result["predictions"])
+    assert any(item["ticker"] == "T05" and item["reason"] == "feature_not_available_at_decision" for item in result["pit_rejections"])
+
+    rows = [_row(index) for index in range(14)]
+    rows[5]["feature_available_at"] = rows[5]["as_of"]
+    result = walk_forward(rows, cutoff=datetime(2026, 2, 1, tzinfo=UTC), min_train=4, fold_size=2, min_cohort=4)
+    assert all(row["ticker"] != "T05" for row in result["predictions"])
+    assert any(item["ticker"] == "T05" and item["reason"] == "feature_not_available_at_fold_boundary" for item in result["pit_rejections"])
+
+
+def test_production_controls_are_repeated_nonempty_and_deterministic() -> None:
+    cutoff = datetime(2026, 2, 1, tzinfo=UTC)
+    rows = [_row(index) for index in range(12)]
+    first = build_control_results(rows, cutoff=cutoff)
+    second = build_control_results(rows, cutoff=cutoff)
+    assert first == second
+    assert len(first["randomized_label_returns"]) == len(first["white_noise_market_returns"]) >= 12 * 2 * 2
+    assert sum(first["randomized_label_returns"]) <= 0
+    assert sum(first["white_noise_market_returns"]) <= 0

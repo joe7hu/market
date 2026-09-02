@@ -115,10 +115,11 @@ def upgrade() -> None:
                   AND NOT EXISTS (
                       SELECT 1 FROM analysis.research_trial trial
                       WHERE trial.experiment_family_id = family_id
-                        AND (trial.status = 'running' OR NOT EXISTS (
+                        AND (trial.status = 'running' OR trial.finished_at IS NULL OR NOT EXISTS (
                             SELECT 1 FROM analysis.trial_result result
                             WHERE result.research_trial_id = trial.id
                               AND result.result_kind = 'validation'
+                              AND result.outcome ? 'passed'
                         ))
                   )
             );
@@ -183,6 +184,58 @@ def upgrade() -> None:
             BEFORE INSERT OR UPDATE OR DELETE ON analysis.research_trial
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_trial_terminal_immutability();
 
+        CREATE OR REPLACE FUNCTION analysis.research_validation_evidence_complete(result_uuid UUID, expected_attempt_count INTEGER)
+        RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+            SELECT EXISTS (
+                SELECT 1
+                FROM analysis.trial_result result
+                WHERE result.id = result_uuid
+                  AND result.result_kind = 'validation'
+                  AND result.outcome->>'passed' = 'true'
+                  AND (result.outcome->'checks'->'pit'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'pit'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'denominator'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'denominator'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'attempt_manifest'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'attempt_manifest'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'negative_controls'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'negative_controls'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'negative_controls'->>'controls_present') = 'true'
+                  AND (result.outcome->'checks'->'mechanism'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'mechanism'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'mechanism'->>'evidence_count')::INTEGER > 0
+                  AND (result.outcome->'checks'->'parameter_stability'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'parameter_stability'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'parameter_stability'->>'sample_size')::INTEGER >= 3
+                  AND (result.outcome->'checks'->'neutralization'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'neutralization'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'neutralization'->>'result_exists') = 'true'
+                  AND (result.outcome->'checks'->'combinatorial_paths'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'combinatorial_paths'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'combinatorial_paths'->>'path_count')::INTEGER > 0
+                  AND (result.outcome->'checks'->'robustness'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'multiple_testing'->>'domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'multiple_testing'->>'paths_domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'multiple_testing'->>'p_values_domain_valid') = 'true'
+                  AND (result.outcome->'checks'->'multiple_testing'->>'trials_tested')::INTEGER = expected_attempt_count
+                  AND jsonb_typeof(result.outcome->'checks'->'multiple_testing'->'psr') = 'number'
+                  AND jsonb_typeof(result.outcome->'checks'->'multiple_testing'->'dsr') = 'number'
+                  AND jsonb_typeof(result.outcome->'checks'->'multiple_testing'->'pbo') = 'number'
+                  AND jsonb_typeof(result.outcome->'checks'->'multiple_testing'->'data_snooping_probability') = 'number'
+                  AND jsonb_typeof(result.outcome->'checks'->'multiple_testing'->'fdr_q_value') = 'number'
+                  AND (result.outcome->'checks'->'multiple_testing'->>'psr')::DOUBLE PRECISION BETWEEN 0 AND 1
+                  AND (result.outcome->'checks'->'multiple_testing'->>'dsr')::DOUBLE PRECISION BETWEEN 0 AND 1
+                  AND (result.outcome->'checks'->'multiple_testing'->>'pbo')::DOUBLE PRECISION BETWEEN 0 AND 1
+                  AND (result.outcome->'checks'->'multiple_testing'->>'data_snooping_probability')::DOUBLE PRECISION BETWEEN 0 AND 1
+                  AND (result.outcome->'checks'->'multiple_testing'->>'fdr_q_value')::DOUBLE PRECISION BETWEEN 0 AND 1
+                  AND (result.outcome->'checks'->'cost_capacity'->>'passed') = 'true'
+                  AND (result.outcome->'checks'->'cost_capacity'->>'domain_valid') = 'true'
+                  AND jsonb_typeof(result.outcome->'checks'->'cost_capacity'->'multiples'->'1x'->'net_return') = 'number'
+                  AND jsonb_typeof(result.outcome->'checks'->'cost_capacity'->'multiples'->'2x'->'net_return') = 'number'
+                  AND jsonb_typeof(result.outcome->'checks'->'cost_capacity'->'multiples'->'3x'->'net_return') = 'number'
+            );
+        $$;
+
         CREATE OR REPLACE FUNCTION analysis.enforce_validation_dossier_seal()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE gate_count INTEGER; passing_count INTEGER; result_id UUID; actual TIMESTAMPTZ := clock_timestamp();
@@ -203,9 +256,21 @@ def upgrade() -> None:
                OR NOT (NEW.sections ?& ARRAY['hypothesis', 'mechanism', 'falsification', 'controls', 'validation', 'economics', 'lineage']) THEN
                 RAISE EXCEPTION 'validation dossier mandatory sections are incomplete';
             END IF;
-            SELECT count(*), count(*) FILTER (WHERE verdict = 'pass' AND metrics->>'passed' = 'true')
+            SELECT count(*), count(*) FILTER (WHERE verdict = 'pass' AND metrics->>'passed' = 'true'
+                                                  AND metrics->>'domain_valid' = 'true'
+                                                  AND jsonb_typeof(metrics->'checks') = 'object'
+                                                  AND metrics->'checks' <> '{}'::jsonb
+                                                  AND CASE gate_code
+                                                      WHEN 'pit_integrity' THEN metrics->'checks' ? 'pit'
+                                                      WHEN 'denominator_completeness' THEN metrics->'checks' ?& ARRAY['denominator', 'attempt_manifest']
+                                                      WHEN 'oos_predictive_validity' THEN metrics->'checks' ?& ARRAY['predictive', 'multiple_testing']
+                                                      WHEN 'falsification_and_robustness' THEN metrics->'checks' ?& ARRAY['mechanism', 'negative_controls', 'parameter_stability', 'neutralization', 'combinatorial_paths', 'robustness']
+                                                      WHEN 'economic_promotability' THEN metrics->'checks' ?& ARRAY['cost_capacity', 'neutralization']
+                                                      ELSE false
+                                                  END
+                                                  AND evidence->>'trial_result_id' IS NOT NULL)
               INTO gate_count, passing_count
-              FROM analysis.validation_gate_result WHERE dossier_id = NEW.id;
+              FROM analysis.validation_gate_result gate WHERE gate.dossier_id = NEW.id;
             IF gate_count <> 5 OR passing_count <> 5 THEN
                 RAISE EXCEPTION 'validation dossier requires all five passing gates with evidence metrics';
             END IF;
@@ -226,7 +291,13 @@ def upgrade() -> None:
               AND result.outcome->>'passed' = 'true'
               AND result.outcome ? 'checks'
             ORDER BY result.result_version DESC LIMIT 1;
-            IF result_id IS NULL OR (
+            IF result_id IS NULL OR NOT analysis.research_validation_evidence_complete(
+                result_id,
+                (SELECT expected_trial_count
+                 FROM analysis.experiment_manifest manifest
+                 JOIN analysis.research_trial trial ON trial.experiment_family_id = manifest.experiment_family_id
+                 WHERE trial.id = NEW.research_trial_id)
+            ) OR (
                 SELECT count(*) FROM analysis.validation_gate_result gate
                 WHERE gate.dossier_id = NEW.id
                   AND gate.verdict = 'pass'
@@ -351,6 +422,7 @@ def upgrade() -> None:
                           )
                             AND result.available_at <= trial.input_cutoff
                             AND result.outcome->>'passed' = 'true'
+                            AND analysis.research_validation_evidence_complete(result.id, experiment_manifest.expected_trial_count)
                             AND result.outcome->'checks' ? 'multiple_testing'
                             AND result.outcome->'checks' ? 'cost_capacity'
                             AND result.outcome->'checks'->'multiple_testing'->>'domain_valid' = 'true'
@@ -378,6 +450,17 @@ def upgrade() -> None:
                            WHERE gate.dossier_id = dossier.id
                              AND gate.verdict = 'pass'
                              AND gate.metrics->>'passed' = 'true'
+                             AND gate.metrics->>'domain_valid' = 'true'
+                             AND jsonb_typeof(gate.metrics->'checks') = 'object'
+                             AND gate.metrics->'checks' <> '{}'::jsonb
+                             AND CASE gate.gate_code
+                                 WHEN 'pit_integrity' THEN gate.metrics->'checks' ? 'pit'
+                                 WHEN 'denominator_completeness' THEN gate.metrics->'checks' ?& ARRAY['denominator', 'attempt_manifest']
+                                 WHEN 'oos_predictive_validity' THEN gate.metrics->'checks' ?& ARRAY['predictive', 'multiple_testing']
+                                 WHEN 'falsification_and_robustness' THEN gate.metrics->'checks' ?& ARRAY['mechanism', 'negative_controls', 'parameter_stability', 'neutralization', 'combinatorial_paths', 'robustness']
+                                 WHEN 'economic_promotability' THEN gate.metrics->'checks' ?& ARRAY['cost_capacity', 'neutralization']
+                                 ELSE false
+                             END
                              AND gate.available_at <= trial.input_cutoff
                              AND gate.evidence->>'trial_result_id' = (
                                  SELECT result.id::text FROM analysis.trial_result result
@@ -393,6 +476,7 @@ def upgrade() -> None:
                             AND forecast.input_cutoff = trial.input_cutoff
                             AND forecast.as_of = trial.input_cutoff
                             AND forecast.model_artifact_id = NEW.artifact_id
+                            AND forecast.target = evaluation.metrics->>'target'
                             AND forecast.artifact_hash = NEW.artifact_hash
                             AND forecast.input_hash = evaluation.input_hash
                             AND forecast.generated_at <= trial.input_cutoff
@@ -408,6 +492,37 @@ def upgrade() -> None:
                       )
                       AND jsonb_typeof(evaluation.metrics->'forecasts') = 'array'
                       AND jsonb_array_length(evaluation.metrics->'forecasts') >= 1
+                      AND (SELECT count(*)
+                           FROM analysis.strategy_forecast forecast
+                           WHERE forecast.strategy_evaluation_id = evaluation.id
+                             AND forecast.strategy_revision_id = NEW.id
+                             AND forecast.status = 'available'
+                             AND forecast.input_cutoff = trial.input_cutoff
+                             AND forecast.as_of = trial.input_cutoff
+                            AND forecast.model_artifact_id = NEW.artifact_id
+                            AND forecast.target = evaluation.metrics->>'target'
+                             AND forecast.artifact_hash = NEW.artifact_hash
+                             AND forecast.input_hash = evaluation.input_hash
+                      ) = (SELECT expected_member_count
+                           FROM analysis.trial_universe_manifest universe_manifest
+                           WHERE universe_manifest.research_trial_id = trial.id)
+                            * jsonb_array_length(evaluation.metrics->'forecasts')
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM jsonb_array_elements_text((SELECT expected_members
+                                                          FROM analysis.trial_universe_manifest universe_manifest
+                                                          WHERE universe_manifest.research_trial_id = trial.id)) expected(member)
+                          CROSS JOIN jsonb_array_elements(evaluation.metrics->'forecasts') item
+                          WHERE NOT EXISTS (
+                              SELECT 1 FROM analysis.strategy_forecast forecast
+                              WHERE forecast.strategy_evaluation_id = evaluation.id
+                                AND forecast.strategy_revision_id = NEW.id
+                                AND forecast.instrument_id::text = expected.member
+                                AND forecast.horizon = item->>'horizon'
+                                AND forecast.input_cutoff = trial.input_cutoff
+                                AND forecast.status = 'available'
+                          )
+                      )
                       AND NOT EXISTS (
                           SELECT 1 FROM jsonb_array_elements(evaluation.metrics->'forecasts') item
                           WHERE NOT EXISTS (
@@ -457,6 +572,56 @@ def upgrade() -> None:
         CREATE TRIGGER enforce_research_gate_actual_availability
             BEFORE INSERT ON analysis.validation_gate_result
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_gate_actual_availability();
+
+        CREATE OR REPLACE FUNCTION analysis.enforce_strategy_forecast_authority()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE actual TIMESTAMPTZ := clock_timestamp();
+        BEGIN
+            IF TG_OP = 'UPDATE' THEN
+                IF OLD.id IS DISTINCT FROM NEW.id
+                   OR OLD.strategy_revision_id IS DISTINCT FROM NEW.strategy_revision_id
+                   OR OLD.strategy_evaluation_id IS DISTINCT FROM NEW.strategy_evaluation_id
+                   OR OLD.instrument_id IS DISTINCT FROM NEW.instrument_id
+                   OR OLD.opportunity_episode_id IS DISTINCT FROM NEW.opportunity_episode_id
+                   OR OLD.target IS DISTINCT FROM NEW.target
+                   OR OLD.horizon IS DISTINCT FROM NEW.horizon
+                   OR OLD.forecast_value IS DISTINCT FROM NEW.forecast_value
+                   OR OLD.forecast_range IS DISTINCT FROM NEW.forecast_range
+                   OR OLD.forecast_distribution IS DISTINCT FROM NEW.forecast_distribution
+                   OR OLD.probability_semantics IS DISTINCT FROM NEW.probability_semantics
+                   OR OLD.model_artifact_id IS DISTINCT FROM NEW.model_artifact_id
+                   OR OLD.artifact_hash IS DISTINCT FROM NEW.artifact_hash
+                   OR OLD.input_hash IS DISTINCT FROM NEW.input_hash
+                   OR OLD.as_of IS DISTINCT FROM NEW.as_of
+                   OR OLD.input_cutoff IS DISTINCT FROM NEW.input_cutoff
+                   OR OLD.generated_at IS DISTINCT FROM NEW.generated_at
+                   OR OLD.available_at IS DISTINCT FROM NEW.available_at
+                THEN
+                    RAISE EXCEPTION 'strategy forecast immutable content cannot be changed';
+                END IF;
+                RETURN NEW;
+            END IF;
+            IF NEW.id !~ '^forecast:strategy-forecast:[0-9a-f]{32}$'
+               OR NEW.artifact_hash !~ '^[0-9a-fA-F]{64}$'
+               OR NEW.input_hash !~ '^[0-9a-fA-F]{64}$'
+               OR lower(NEW.artifact_hash) = repeat('0', 64)
+               OR lower(NEW.input_hash) = repeat('0', 64)
+               OR NEW.as_of <> NEW.input_cutoff
+               OR NEW.generated_at < actual - interval '5 seconds'
+               OR NEW.generated_at > actual + interval '5 seconds'
+               OR NEW.available_at < NEW.generated_at
+               OR NEW.available_at > actual + interval '5 seconds'
+               OR (NEW.forecast_value IS NULL AND NEW.forecast_range IS NULL AND NEW.forecast_distribution IS NULL)
+            THEN
+                RAISE EXCEPTION 'strategy forecast requires current immutable content, non-zero hashes, and actual availability';
+            END IF;
+            RETURN NEW;
+        END;
+        $$;
+        DROP TRIGGER IF EXISTS enforce_strategy_forecast_authority ON analysis.strategy_forecast;
+        CREATE TRIGGER enforce_strategy_forecast_authority
+            BEFORE INSERT OR UPDATE ON analysis.strategy_forecast
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_strategy_forecast_authority();
         """
     )
 

@@ -19,7 +19,7 @@ def _observations(count: int, cutoff: datetime) -> list[dict[str, object]]:
         "cohort_id": "large-liquid",
         "as_of": start + timedelta(days=index),
         "outcome_available_at": start + timedelta(days=index, hours=1),
-        "feature_available_at": start + timedelta(days=index, minutes=30),
+        "feature_available_at": start + timedelta(days=index, minutes=-30),
         "outcome": 1.0,
         "realized_return": 0.05,
         "modeled_cost": 0.001,
@@ -167,6 +167,59 @@ def test_incomplete_challenger_cannot_promote(migrated_postgres_dsn: str) -> Non
                 [result["strategy_revision_id"]],
             ).fetchone()["status"]
         assert status == "candidate"
+    finally:
+        runtime.close()
+
+
+def test_production_path_missing_controls_is_visible_and_non_promotable(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC) + timedelta(seconds=5)
+        symbols = [f"S{index:02d}" for index in range(16)]
+        _seed_universe_tape(runtime, cutoff, symbols, as_of=cutoff - timedelta(microseconds=2))
+        result = run(
+            runtime, _observations(16, cutoff), cutoff=cutoff,
+            promote=True, authorization_mode="PAPER", min_train=4, fold_size=2,
+            min_cohort=4, universe_members=symbols,
+        )
+        assert result["complete"] is False
+        assert result["promotion_evaluation_id"] is None
+        with runtime.read() as connection:
+            control = connection.execute(
+                """SELECT outcome FROM analysis.trial_result
+                   WHERE research_trial_id = (
+                       SELECT research_trial_id FROM analysis.validation_dossier
+                       WHERE strategy_revision_id = %s
+                   ) AND result_kind = 'negative_controls'""",
+                [result["strategy_revision_id"]],
+            ).fetchone()
+        assert control["outcome"]["passed"] is False
+    finally:
+        runtime.close()
+
+
+def test_exact_current_cutoff_retains_wall_clock_forecast_and_fails_closed(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        cutoff = datetime.now(UTC)
+        symbols = [f"S{index:02d}" for index in range(16)]
+        _seed_universe_tape(runtime, cutoff, symbols, as_of=cutoff - timedelta(microseconds=2))
+        result = run(
+            runtime, _observations(16, cutoff), cutoff=cutoff,
+            promote=True, authorization_mode="PAPER", min_train=4, fold_size=2,
+            min_cohort=4, universe_members=symbols, control_results=_controls(),
+        )
+        assert result["complete"] is True
+        assert result["promotion_evaluation_id"] is None
+        assert result["promotion_reason"] == "forecast_evidence_not_available_at_cutoff"
+        with runtime.read() as connection:
+            availability = connection.execute(
+                "SELECT available_at FROM analysis.strategy_forecast WHERE strategy_revision_id = %s ORDER BY id LIMIT 1",
+                [result["strategy_revision_id"]],
+            ).fetchone()["available_at"]
+        assert availability > cutoff
     finally:
         runtime.close()
 

@@ -15,6 +15,7 @@ from investment_panel.analysis.stock_alpha import (
     COST_MODEL_VERSION,
     FEATURE_VERSION,
     MODEL_VERSION,
+    build_control_results,
     content_hash,
     walk_forward,
 )
@@ -107,6 +108,7 @@ def run(
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,
         "cost_model_version": COST_MODEL_VERSION,
+        "target": artifact["target"],
         "cohort_id": "hierarchical-stock-alpha",
         "cohort_path": artifact["cohort_path"],
         "fallback_parent": artifact["fallback_parent"],
@@ -150,6 +152,7 @@ def run(
         research_ids = _ensure_research_prerequisites(
             connection, cutoff=reference, input_hash=input_hash,
             trial_runs=trial_runs, observations=source_rows, universe_members=members,
+            controls=controls,
         )
         strategy = connection.execute(
             """
@@ -311,7 +314,7 @@ def run(
 def _ensure_research_prerequisites(
     connection: Any, *, cutoff: datetime, input_hash: str,
     trial_runs: list[Mapping[str, Any]], observations: list[Mapping[str, Any]],
-    universe_members: list[str],
+    universe_members: list[str], controls: Mapping[str, Iterable[float]],
 ) -> tuple[Any, Any, Any, Any]:
     key = f"{STRATEGY_KEY}:{input_hash}"
     hypothesis = connection.execute(
@@ -403,6 +406,32 @@ def _ensure_research_prerequisites(
                  Jsonb({"source_present": eligible, "ranked_out": not eligible})],
             )
         validation = dict(item["validation"])
+        control_outcome = {
+            "passed": bool(controls.get("randomized_label_returns")) and bool(controls.get("white_noise_market_returns")),
+            "randomized_label_returns": [float(value) for value in controls.get("randomized_label_returns", ())],
+            "white_noise_market_returns": [float(value) for value in controls.get("white_noise_market_returns", ())],
+            "source": "stock_alpha_walk_forward",
+            "repeats": 8,
+        }
+        control_result = connection.execute(
+            """INSERT INTO analysis.trial_result
+               (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics, outcome)
+               VALUES (%s, 'negative_controls', clock_timestamp(), clock_timestamp(), %s, %s, %s)
+               ON CONFLICT (research_trial_id, result_kind, result_version) DO NOTHING
+               RETURNING id""",
+            [trial_id, trial_hash,
+             Jsonb({"randomized_label_count": len(control_outcome["randomized_label_returns"]), "white_noise_count": len(control_outcome["white_noise_market_returns"])}),
+             Jsonb(control_outcome)],
+        ).fetchone()
+        if control_result is None:
+            control_result = connection.execute(
+                """SELECT id, input_hash, outcome FROM analysis.trial_result
+                   WHERE research_trial_id = %s AND result_kind = 'negative_controls'
+                   ORDER BY result_version LIMIT 1""",
+                [trial_id],
+            ).fetchone()
+            if control_result is None or str(control_result["input_hash"]) != trial_hash or dict(control_result["outcome"] or {}) != control_outcome:
+                raise ValueError("immutable negative-control result conflicts with the planned trial outcome")
         result = connection.execute(
             """INSERT INTO analysis.trial_result
                (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics, outcome)
@@ -455,13 +484,26 @@ def _ensure_research_dossier(
             }), artifact["artifact_id"], artifact["artifact_hash"]],
         ).fetchone()
     if dossier["status"] == "draft":
+        checks = dict(validation.get("checks") or {})
+        check_by_gate = {
+            "pit_integrity": ("pit",),
+            "denominator_completeness": ("denominator", "attempt_manifest"),
+            "oos_predictive_validity": ("predictive", "multiple_testing"),
+            "falsification_and_robustness": (
+                "mechanism", "negative_controls", "parameter_stability", "neutralization",
+                "combinatorial_paths", "robustness",
+            ),
+            "economic_promotability": ("cost_capacity", "neutralization"),
+        }
         for code in ("pit_integrity", "denominator_completeness", "oos_predictive_validity", "falsification_and_robustness", "economic_promotability"):
             gate = dict((validation.get("gates") or {}).get(code) or {})
+            evidence_checks = {name: checks.get(name) for name in check_by_gate[code]}
+            domain_valid = all(bool((value or {}).get("domain_valid")) for value in evidence_checks.values())
             connection.execute(
                 """INSERT INTO analysis.validation_gate_result
                    (dossier_id, gate_code, verdict, metrics, evidence, evaluated_at, available_at)
                    VALUES (%s, %s, %s, %s, %s, clock_timestamp(), now()) ON CONFLICT DO NOTHING""",
-            [dossier["id"], code, "pass" if gate.get("passed") else "fail", Jsonb(gate), Jsonb({"trial_result_id": str(result_id)})],
+            [dossier["id"], code, "pass" if gate.get("passed") else "fail", Jsonb({**gate, "domain_valid": domain_valid, "checks": evidence_checks}), Jsonb({"trial_result_id": str(result_id), "checks": list(evidence_checks)})],
             )
         if seal:
             connection.execute("UPDATE analysis.validation_dossier SET status = 'sealed', sealed_at = clock_timestamp() WHERE id = %s", [dossier["id"]])
@@ -518,10 +560,16 @@ def _validate_walk_forward_artifact(
     observed = [float(row["net_utility_after_costs"]) for row in predictions if row.get("net_utility_after_costs") is not None]
     neutralized = [float(row["neutralized_return"]) for row in predictions if row.get("neutralized_return") is not None]
     paths = [float(value) for value in artifact.get("validation_paths") or []]
+    path_records = [dict(value) for value in artifact.get("validation_path_records") or [] if isinstance(value, Mapping)]
     if not paths and observed:
         # No fabricated path is permitted. This keeps the PBO gate closed until
         # the walk-forward producer emits its real purged/combinatorial paths.
         paths = []
+    path_p_values = [
+        float((record.get("metrics") or {})["p_value"])
+        for record in path_records
+        if (record.get("metrics") or {}).get("p_value") is not None
+    ]
     available = [row.get("feature_available_at") for row in source_rows]
     gross = [float(row.get("realized_return", 0.0)) for row in predictions]
     base_cost = fmean([float(row.get("modeled_cost", 0.0)) for row in predictions]) if predictions else 0.0
@@ -537,6 +585,7 @@ def _validate_walk_forward_artifact(
         parameter_neighborhood=parameter_neighborhood,
         trials_tested=len(trial_keys),
         feature_available_at=available,
+        decision_times=[row.get("as_of") for row in source_rows],
         cutoff=cutoff,
         expected_members=expected_members,
         observed_members=expected_members,
@@ -546,7 +595,12 @@ def _validate_walk_forward_artifact(
         # carry the failure evidence and prevent promotion.
         completed_attempts=trial_keys,
         path_returns=paths,
-        p_values=family_p_values,
+        path_records=path_records,
+        # Path-level p-values are produced by each independent CPCV rerun and
+        # therefore feed the FDR/data-snooping evidence. The family values
+        # remain a bounded fallback for callers supplying an artifact without
+        # path records; production artifacts always have both.
+        p_values=path_p_values or family_p_values,
         policy={"min_psr": 0.5, "min_dsr": 0.5, "max_pbo": 0.5},
     )
 
@@ -608,6 +662,26 @@ def _persist_strategy_forecasts(connection: Any, *, strategy_revision_id: int, e
                 )
                 persisted.append(model.strategy_forecast_id)
             else:
+                # A replay may discover the canonical row through the stable
+                # revision/instrument/horizon uniqueness key. Rebuild the
+                # model with that row's actual wall-clock evidence timestamps
+                # before comparing the content address; never return a
+                # different row under a caller-supplied identity.
+                if str(existing["id"]) != model.strategy_forecast_id:
+                    model = build_strategy_forecast(
+                        ticker=ticker, opportunity_episode_id=model.opportunity_episode_id,
+                        strategy_revision_id=model.strategy_revision_id,
+                        strategy_evaluation_id=model.strategy_evaluation_id,
+                        target=model.target, horizon=model.horizon,
+                        forecast_value=model.forecast_value,
+                        forecast_range=model.forecast_range,
+                        forecast_distribution=model.forecast_distribution,
+                        probability_semantics=model.probability_semantics,
+                        model_artifact_id=model.model_artifact_id,
+                        artifact_hash=model.artifact_hash, input_hash=model.input_hash,
+                        as_of=model.as_of, generated_at=existing["generated_at"],
+                        available_at=existing["available_at"],
+                    )
                 immutable = {
                     "strategy_revision_id": model.strategy_revision_id,
                     "strategy_evaluation_id": model.strategy_evaluation_id,
@@ -623,6 +697,8 @@ def _persist_strategy_forecasts(connection: Any, *, strategy_revision_id: int, e
                     "input_hash": model.input_hash,
                     "as_of": model.as_of,
                     "input_cutoff": model.input_cutoff,
+                    "generated_at": model.generated_at,
+                    "available_at": model.available_at,
                 }
                 for field, expected in immutable.items():
                     actual = existing[field]
@@ -754,13 +830,15 @@ def main() -> None:
     args = parser.parse_args()
     cutoff = _aware(args.cutoff or datetime.now(UTC))
     runtime = runtime_for_config(load_config(args.config))
+    observations = load_observations(runtime, cutoff=cutoff)
+    controls = build_control_results(observations, cutoff=cutoff)
+    if not controls["randomized_label_returns"] or not controls["white_noise_market_returns"]:
+        raise ValueError("stock-alpha production run failed closed: non-empty repeated controls unavailable")
     result = run(
-        runtime,
-        load_observations(runtime, cutoff=cutoff),
-        cutoff=cutoff,
-        promote=args.promote,
-        authorization_mode=args.authorization_mode,
+        runtime, observations, cutoff=cutoff,
+        promote=args.promote, authorization_mode=args.authorization_mode,
         universe_members=load_universe_members(runtime, cutoff=cutoff),
+        control_results=controls,
     )
     print(result)
 
