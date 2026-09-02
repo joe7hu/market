@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import os
 from typing import Any, Iterator
 
 from psycopg import Connection, IsolationLevel
@@ -136,21 +137,29 @@ def activate_application_role(connection: Connection[dict[str, Any]]) -> None:
     evaluator writer is never reached through the migration role.
     """
 
+    configured_login = os.environ.get("MARKET_APP_LOGIN_ROLE", "").strip()
+    if not configured_login:
+        raise RuntimeError("MARKET_APP_LOGIN_ROLE is required for evaluator authority")
     identity = connection.execute(
-        """SELECT session_user, current_user,
-                  rolsuper,
+        """SELECT session_user, current_user, rolcanlogin, rolsuper,
+                  rolbypassrls, rolinherit,
                   pg_has_role(session_user, %s, 'MEMBER') AS role_membership
            FROM pg_roles WHERE rolname = session_user""",
         [APPLICATION_ROLE],
     ).fetchone()
-    if identity is None or identity["session_user"] == "market_migrator":
+    if identity is None or identity["session_user"] != configured_login:
         raise RuntimeError("configured PostgreSQL connection cannot activate market_app evaluator authority")
     if (
-        identity["current_user"] != APPLICATION_ROLE
-        and not identity["rolsuper"]
-        and not identity["role_membership"]
+        not identity["rolcanlogin"]
+        or identity["rolsuper"]
+        or identity["rolbypassrls"]
+        or identity["rolinherit"]
+        or (
+            identity["current_user"] != APPLICATION_ROLE
+            and not identity["role_membership"]
+        )
     ):
-        raise RuntimeError("configured PostgreSQL login is not a member of market_app")
+        raise RuntimeError("configured PostgreSQL login has unsafe attributes or is not a member of market_app")
     try:
         if identity["current_user"] != APPLICATION_ROLE:
             connection.execute("SET LOCAL ROLE market_app")

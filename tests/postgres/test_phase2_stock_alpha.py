@@ -3,13 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import os
 
+import psycopg
 import pytest
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
+from psycopg.rows import dict_row
+from psycopg.sql import Identifier, Literal, SQL
 from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.stock_alpha import FEATURE_VERSION, research_score
 from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.runtime import DatabaseRuntime, activate_application_role
 from investment_panel.jobs.stock_alpha_walk_forward import load_observations, run
 
 
@@ -56,18 +59,28 @@ def _seed_universe_tape(runtime: DatabaseRuntime, cutoff: datetime, symbols: lis
         )
 
 
-def _configured_application_dsn(postgres_dsn: str) -> str:
-    login = os.environ["MARKET_APP_LOGIN_ROLE"]
-    password = os.environ["MARKET_APP_DATABASE_PASSWORD"]
+def _application_dsn(postgres_dsn: str, login: str, password: str) -> str:
     connection_info = conninfo_to_dict(postgres_dsn)
     connection_info.update(user=login, password=password)
     return make_conninfo(**connection_info)
 
 
+def _configured_application_dsn(postgres_dsn: str) -> str:
+    return _application_dsn(
+        postgres_dsn,
+        os.environ["MARKET_APP_LOGIN_ROLE"],
+        os.environ["MARKET_APP_DATABASE_PASSWORD"],
+    )
+
+
+def _production_runtime(postgres_dsn: str) -> DatabaseRuntime:
+    return DatabaseRuntime(_configured_application_dsn(postgres_dsn))
+
+
 def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
     migrated_postgres_dsn: str,
 ) -> None:
-    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime = _production_runtime(migrated_postgres_dsn)
     runtime.open()
     try:
         cutoff = datetime.now(UTC) + timedelta(seconds=5)
@@ -119,7 +132,7 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
         assert all(value["passed"] for value in research["gates"].values())
         assert research["dsr"] is not None
         assert research["gate_count"] == 5
-        with runtime.read() as connection:
+        with psycopg.connect(migrated_postgres_dsn) as connection:
             evidence = connection.execute(
                 """SELECT count(*) AS source_count,
                           count(*) FILTER (WHERE manifest.evaluator_output_id IS NOT NULL
@@ -131,7 +144,7 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
                    WHERE dossier.strategy_revision_id = %s""",
                 [first["strategy_revision_id"]],
             ).fetchone()
-        assert evidence == {"source_count": 6, "bound_count": 6}
+        assert evidence == (6, 6)
         with runtime.read() as connection:
             lineage = connection.execute(
                 """
@@ -219,8 +232,108 @@ def test_production_run_uses_configured_application_login_for_evaluator_writer(
         owner_runtime.close()
 
 
+def test_distinct_noinherit_login_is_the_only_runtime_activation_boundary(
+    migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    safe_login = "phase1_safe_runtime_login"
+    safe_password = "phase1-safe-runtime-password"
+    rejected_roles = {
+        "phase1_superuser_login": "SUPERUSER NOINHERIT",
+        "phase1_bypassrls_login": "NOSUPERUSER BYPASSRLS NOINHERIT",
+        "phase1_inherit_login": "NOSUPERUSER NOBYPASSRLS INHERIT",
+    }
+    owner_runtime = DatabaseRuntime(migrated_postgres_dsn)
+    owner_runtime.open()
+    try:
+        with psycopg.connect(migrated_postgres_dsn) as connection:
+            connection.execute(
+                SQL("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOBYPASSRLS NOINHERIT").format(
+                    Identifier(safe_login), Literal(safe_password)
+                ),
+            )
+            connection.execute(SQL("GRANT market_app TO {}").format(Identifier(safe_login)))
+            for role, attributes in rejected_roles.items():
+                connection.execute(
+                    SQL("CREATE ROLE {} LOGIN PASSWORD {} " + attributes).format(
+                        Identifier(role), Literal(f"{role}-password")
+                    ),
+                )
+
+        monkeypatch.setenv("MARKET_APP_LOGIN_ROLE", safe_login)
+        monkeypatch.setenv("MARKET_APP_DATABASE_PASSWORD", safe_password)
+        cutoff = datetime.now(UTC) + timedelta(seconds=5)
+        symbols = [f"S{index:02d}" for index in range(16)]
+        _seed_universe_tape(owner_runtime, cutoff, symbols, as_of=cutoff - timedelta(microseconds=2))
+        app_runtime = DatabaseRuntime(_application_dsn(migrated_postgres_dsn, safe_login, safe_password))
+        app_runtime.open()
+        try:
+            with app_runtime.read() as connection:
+                identity = connection.execute(
+                    """SELECT current_user, session_user, role.rolsuper, role.rolbypassrls, role.rolinherit
+                       FROM pg_roles role WHERE role.rolname = current_user"""
+                ).fetchone()
+            with owner_runtime.read() as connection:
+                privileges = connection.execute(
+                    """SELECT has_table_privilege(%s, 'analysis.research_evaluator_output', 'INSERT') AS output_insert,
+                              has_table_privilege(%s, 'analysis.research_evaluator_signing_secret', 'SELECT') AS key_select""",
+                    [safe_login, safe_login],
+                ).fetchone()
+            identity.update(privileges)
+            assert identity == {
+                "current_user": safe_login,
+                "session_user": safe_login,
+                "rolsuper": False,
+                "rolbypassrls": False,
+                "rolinherit": False,
+                "output_insert": False,
+                "key_select": False,
+            }
+            result = run(
+                app_runtime, _observations(16, cutoff), cutoff=cutoff,
+                promote=False, authorization_mode="PAPER", min_train=4,
+                fold_size=2, min_cohort=4, universe_members=symbols,
+                control_results=_controls(),
+            )
+            assert result["complete"] is True
+            with app_runtime.transaction() as connection:
+                activate_application_role(connection)
+                assert connection.execute("SELECT current_user").fetchone()["current_user"] == "market_app"
+                connection.execute("SELECT set_config('app.research_evaluator_signing_key', 'attacker-key', true)")
+                for statement in (
+                    "SELECT secret FROM analysis.research_evaluator_signing_secret",
+                    "INSERT INTO analysis.research_evaluator_output (research_trial_id) VALUES (gen_random_uuid())",
+                ):
+                    connection.execute("SAVEPOINT protected_role_boundary")
+                    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                        connection.execute(statement)
+                    connection.execute("ROLLBACK TO SAVEPOINT protected_role_boundary")
+        finally:
+            app_runtime.close()
+
+        monkeypatch.setenv("MARKET_APP_LOGIN_ROLE", "postgres")
+        with owner_runtime.transaction() as connection:
+            with pytest.raises(RuntimeError, match="unsafe attributes|cannot activate"):
+                activate_application_role(connection)
+        for role, attributes in rejected_roles.items():
+            monkeypatch.setenv("MARKET_APP_LOGIN_ROLE", role)
+            with psycopg.connect(
+                _application_dsn(migrated_postgres_dsn, role, f"{role}-password"),
+                row_factory=dict_row,
+            ) as connection:
+                with connection.transaction(), pytest.raises(
+                    RuntimeError, match="unsafe attributes|cannot activate"
+                ):
+                    activate_application_role(connection)
+    finally:
+        with psycopg.connect(migrated_postgres_dsn) as connection:
+            connection.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(safe_login)))
+            for role in rejected_roles:
+                connection.execute(SQL("DROP ROLE IF EXISTS {}").format(Identifier(role)))
+        owner_runtime.close()
+
+
 def test_incomplete_challenger_cannot_promote(migrated_postgres_dsn: str) -> None:
-    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime = _production_runtime(migrated_postgres_dsn)
     runtime.open()
     try:
         cutoff = datetime.now(UTC) + timedelta(seconds=5)
@@ -244,7 +357,7 @@ def test_incomplete_challenger_cannot_promote(migrated_postgres_dsn: str) -> Non
 
 
 def test_production_path_missing_controls_is_visible_and_non_promotable(migrated_postgres_dsn: str) -> None:
-    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime = _production_runtime(migrated_postgres_dsn)
     runtime.open()
     try:
         cutoff = datetime.now(UTC) + timedelta(seconds=5)
@@ -272,7 +385,7 @@ def test_production_path_missing_controls_is_visible_and_non_promotable(migrated
 
 
 def test_exact_current_cutoff_retains_wall_clock_forecast_and_fails_closed(migrated_postgres_dsn: str) -> None:
-    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime = _production_runtime(migrated_postgres_dsn)
     runtime.open()
     try:
         cutoff = datetime.now(UTC)
@@ -299,7 +412,7 @@ def test_exact_current_cutoff_retains_wall_clock_forecast_and_fails_closed(migra
 def test_historical_cutoff_keeps_actual_forecast_availability_and_blocks_promotion(
     migrated_postgres_dsn: str,
 ) -> None:
-    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime = _production_runtime(migrated_postgres_dsn)
     runtime.open()
     try:
         cutoff = datetime.now(UTC) - timedelta(days=1)
@@ -411,7 +524,7 @@ def test_canonical_pit_trend_feature_loads_for_training_and_live_inference(
 
 
 def test_latest_oos_input_hash_mismatch_fails_closed(migrated_postgres_dsn: str) -> None:
-    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime = _production_runtime(migrated_postgres_dsn)
     runtime.open()
     try:
         cutoff = datetime.now(UTC) + timedelta(seconds=5)
@@ -449,7 +562,7 @@ def test_latest_oos_input_hash_mismatch_fails_closed(migrated_postgres_dsn: str)
 def test_superseded_revision_replay_cannot_deactivate_current_champion(
     migrated_postgres_dsn: str,
 ) -> None:
-    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime = _production_runtime(migrated_postgres_dsn)
     runtime.open()
     try:
         cutoff = datetime.now(UTC) + timedelta(seconds=5)

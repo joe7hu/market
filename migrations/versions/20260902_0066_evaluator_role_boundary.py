@@ -80,13 +80,21 @@ def upgrade() -> None:
         raise RuntimeError("market_app has unsafe or inactive role attributes")
     configured_login = bind.execute(
         sa.text(
-            """SELECT rolcanlogin, rolsuper, rolbypassrls
+            """SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit
                FROM pg_roles WHERE rolname = :role"""
         ),
         {"role": app_login},
     ).mappings().one_or_none()
     if configured_login is None or not configured_login["rolcanlogin"]:
         raise RuntimeError("MARKET_APP_LOGIN_ROLE must identify an existing login role")
+    if (
+        configured_login["rolsuper"]
+        or configured_login["rolbypassrls"]
+        or configured_login["rolinherit"]
+    ):
+        raise RuntimeError(
+            "MARKET_APP_LOGIN_ROLE must identify a non-privileged NOINHERIT login"
+        )
     if app_login in {"market_research_signer", "market_migrator"}:
         raise RuntimeError("MARKET_APP_LOGIN_ROLE cannot be a protected signer or migrator role")
     if app_login != "market_app":
