@@ -136,8 +136,15 @@ class StrategyForecast(BaseModel):
             raise ValueError("strategy forecast as_of and input_cutoff must match")
         if _utc(self.available_at) > _utc(self.input_cutoff):
             raise ValueError("strategy forecast availability is outside its point-in-time cutoff")
+        if _utc(self.generated_at) > _utc(self.input_cutoff):
+            raise ValueError("strategy forecast generation is outside its point-in-time cutoff")
+        for name, value in (("artifact_hash", self.artifact_hash), ("input_hash", self.input_hash)):
+            if len(value) != 64 or value.lower() == "0" * 64 or any(char not in "0123456789abcdefABCDEF" for char in value):
+                raise ValueError(f"strategy forecast {name} must be a non-zero SHA-256")
         if self.forecast_value is None and self.forecast_range is None and self.forecast_distribution is None:
             raise ValueError("strategy forecast must contain a value, range, or distribution")
+        if self.strategy_forecast_id != strategy_forecast_id_for_payload(self.model_dump(mode="json", exclude={"strategy_forecast_id"})):
+            raise ValueError("strategy forecast identity does not match its immutable payload")
         return self
 
 
@@ -156,6 +163,7 @@ def build_strategy_forecast(
     if isinstance(range_value, Mapping):
         range_value = NumericRange.model_validate(range_value)
     payload = {
+        "contract_version": STRATEGY_FORECAST_CONTRACT_VERSION,
         "ticker": ticker.strip().upper(), "opportunity_episode_id": opportunity_episode_id,
         "strategy_revision_id": strategy_revision_id, "strategy_evaluation_id": strategy_evaluation_id,
         "target": target, "horizon": horizon, "forecast_value": forecast_value,
@@ -166,7 +174,7 @@ def build_strategy_forecast(
         "available_at": _jsonable(available_at),
     }
     return StrategyForecast(
-        strategy_forecast_id="forecast:" + _content_id("strategy-forecast", payload),
+        strategy_forecast_id=strategy_forecast_id_for_payload(payload),
         ticker=payload["ticker"], opportunity_episode_id=opportunity_episode_id,
         strategy_revision_id=strategy_revision_id, strategy_evaluation_id=strategy_evaluation_id,
         target=target, horizon=horizon, forecast_value=forecast_value, forecast_range=range_value,
@@ -264,8 +272,6 @@ class AlphaSignal(BaseModel):
                     *qualification_timestamps,
                 ) if value in {None, ""}
             ]
-            if not self.strategy_forecast_id:
-                missing_artifact.append("strategy_forecast_id")
             if missing_artifact:
                 raise ValueError("available alpha signals require qualified artifact evidence: " + ", ".join(missing_artifact))
             phase2_missing = [
@@ -317,6 +323,8 @@ class AlphaSignal(BaseModel):
                     "available alpha qualification timestamps cannot be newer than input_cutoff: "
                     + ", ".join(future_timestamps)
                 )
+            if not self.strategy_forecast_id:
+                raise ValueError("available alpha qualification timestamps require a persisted strategy forecast: strategy_forecast_id")
             if self.blockers:
                 raise ValueError("available alpha signals cannot have blockers")
         elif numerical and not self.blockers:
@@ -556,11 +564,8 @@ def build_alpha_signal(
         "input_lineage": [_jsonable(item) for item in lineage],
         "blockers": list(blockers),
     }
-    if strategy_forecast_id is None and any(
-        values.get(key) is not None for key in ("forecast_value", "forecast_range", "forecast_distribution")
-    ):
-        strategy_forecast_id = "forecast:" + _content_id("strategy-forecast", values)
-        values["strategy_forecast_id"] = strategy_forecast_id
+    # A scalar/range in an unlinked legacy payload is not a forecast authority.
+    # Callers must pass the ID of a persisted StrategyForecast.
     return AlphaSignal(
         signal_id=_content_id("alpha-signal", values),
         as_of=reference,
@@ -910,6 +915,18 @@ def _content_id(prefix: str, value: Mapping[str, Any]) -> str:
     return f"{prefix}:{hashlib.sha256(encoded.encode()).hexdigest()[:32]}"
 
 
+def strategy_forecast_id_for_payload(value: Mapping[str, Any]) -> str:
+    """Return the content address for the complete immutable forecast payload."""
+    normalized = dict(value)
+    normalized.pop("strategy_forecast_id", None)
+    normalized.setdefault("contract_version", STRATEGY_FORECAST_CONTRACT_VERSION)
+    for field in ("as_of", "input_cutoff", "generated_at", "available_at"):
+        timestamp = normalized.get(field)
+        if isinstance(timestamp, str) and timestamp.endswith("Z"):
+            normalized[field] = timestamp[:-1] + "+00:00"
+    return "forecast:" + _content_id("strategy-forecast", normalized)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
@@ -1002,6 +1019,8 @@ __all__ = [
     "TradeUtility",
     "build_alpha_signal",
     "build_instrument_state_snapshot",
+    "build_strategy_forecast",
+    "strategy_forecast_id_for_payload",
     "calculate_trade_utility",
     "rank_opportunities",
 ]

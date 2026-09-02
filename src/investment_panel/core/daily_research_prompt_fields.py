@@ -1,6 +1,17 @@
 """Field allowlists for the daily research handoff."""
 
 DAILY_RESEARCH_TABLES = (
+    "research_hypotheses",
+    "research_experiment_families",
+    "research_trials",
+    "research_experiment_manifests",
+    "research_universe_manifests",
+    "research_trial_results",
+    "research_validation_dossiers",
+    "research_validation_gates",
+    "research_strategy_forecasts",
+    "research_universe_observations",
+    "research_strategy_revisions",
     "preopen_daily_brief",
     "daily_brief",
     "portfolio",
@@ -25,6 +36,17 @@ DAILY_RESEARCH_TABLES = (
 )
 
 DAILY_RESEARCH_QUERY_LIMITS = {
+    "research_hypotheses": 100,
+    "research_experiment_families": 100,
+    "research_trials": 500,
+    "research_experiment_manifests": 100,
+    "research_universe_manifests": 500,
+    "research_trial_results": 500,
+    "research_validation_dossiers": 250,
+    "research_validation_gates": 1250,
+    "research_strategy_forecasts": 500,
+    "research_universe_observations": 500,
+    "research_strategy_revisions": 500,
     "preopen_daily_brief": 1,
     "daily_brief": 12,
     "portfolio_summary": 1,

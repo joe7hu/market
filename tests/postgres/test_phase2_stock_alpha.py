@@ -67,6 +67,43 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
                 [first["strategy_revision_id"]],
             ).fetchone()
         assert counts == {"revisions": 1, "evaluations": 2}
+        with runtime.read() as connection:
+            research = connection.execute(
+                """
+                SELECT trial.status, result.outcome->'gates' AS gates,
+                       result.metrics->'multiple_testing'->>'dsr' AS dsr,
+                       (SELECT count(*) FROM analysis.validation_gate_result gate
+                        JOIN analysis.validation_dossier dossier ON dossier.id = gate.dossier_id
+                        WHERE dossier.strategy_revision_id = trial_revision.id) AS gate_count
+                FROM analysis.research_trial trial
+                JOIN analysis.validation_dossier dossier ON dossier.research_trial_id = trial.id
+                JOIN analysis.strategy_revision trial_revision ON trial_revision.id = dossier.strategy_revision_id
+                JOIN analysis.trial_result result ON result.research_trial_id = trial.id
+                WHERE trial_revision.id = %s AND result.result_kind = 'validation'
+                """,
+                [first["strategy_revision_id"]],
+            ).fetchone()
+        assert research["status"] == "succeeded"
+        assert all(value["passed"] for value in research["gates"].values())
+        assert research["dsr"] is not None
+        assert research["gate_count"] == 5
+        with runtime.read() as connection:
+            lineage = connection.execute(
+                """
+                SELECT hypothesis_id, experiment_family_id, research_trial_id,
+                       validation_dossier_id, artifact_id, artifact_hash, input_hash
+                FROM analysis.strategy_evaluation
+                WHERE id = %s::uuid
+                """,
+                [first["strategy_evaluation_id"]],
+            ).fetchone()
+        assert lineage["hypothesis_id"] is not None
+        assert lineage["experiment_family_id"] is not None
+        assert lineage["research_trial_id"] is not None
+        assert lineage["validation_dossier_id"] is not None
+        assert lineage["artifact_id"].startswith("ticker-stock-alpha:")
+        assert len(lineage["artifact_hash"]) == 64
+        assert len(lineage["input_hash"]) == 64
 
         artifact = AnalysisRepository(runtime).qualified_stock_alpha_artifact(
             cutoff=cutoff, horizon="TACTICAL",

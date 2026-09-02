@@ -165,11 +165,9 @@ def publish(
         )
         for record in records:
             for signal in record.get("signals", ()):
-                if signal.strategy_forecast_id and any(
-                    value is not None
-                    for value in (signal.forecast_value, signal.forecast_range, signal.forecast_distribution)
-                ):
-                    analysis_repository.store_strategy_forecast(signal.model_dump(mode="json"))
+                forecast = getattr(signal, "_strategy_forecast", None)
+                if forecast is not None:
+                    analysis_repository.store_strategy_forecast(forecast)
         ranking_run_id = analysis_repository.start_run(
             RANKING_SCOPE,
             input_cutoff=reference,
@@ -550,7 +548,7 @@ def _alpha_models(
         if score is None:
             availability_status = "missing"
             blockers.append("alpha_research_features_missing_or_mismatched")
-        signals.append(build_alpha_signal(
+        signal = build_alpha_signal(
             ticker=decision.ticker,
             opportunity_episode_id=decision.opportunity_episode_id,
             decision_revision=decision.decision_revision,
@@ -593,7 +591,10 @@ def _alpha_models(
                 "lower_confidence_net_utility_after_costs"
             ),
             blockers=tuple(dict.fromkeys(blockers)),
-        ))
+        )
+        if forecast is not None:
+            signal = signal.model_copy(update={"_strategy_forecast": forecast})
+        signals.append(signal)
     return snapshot, signals
 
 

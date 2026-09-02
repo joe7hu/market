@@ -37,18 +37,42 @@ class StrategyGovernanceRepository:
             _quarantine_unverified_paper_evaluations(connection, strategy_revision_id, evaluations)
             result = promotion_readiness(evaluations, now=cutoff)
             linked = connection.execute(
-                "SELECT hypothesis_id FROM analysis.strategy_revision WHERE id = %s",
+                """SELECT hypothesis_id, experiment_family_id, artifact_id, artifact_hash,
+                          research_required
+                   FROM analysis.strategy_revision WHERE id = %s""",
                 [strategy_revision_id],
             ).fetchone()
-            if linked and linked["hypothesis_id"] is not None:
-                sealed = connection.execute(
-                    "SELECT 1 FROM analysis.validation_dossier WHERE strategy_revision_id = %s AND status = 'sealed' LIMIT 1",
+            if linked and (linked["research_required"] or linked["hypothesis_id"] is not None or linked["experiment_family_id"] is not None):
+                blockers = result.setdefault("blockers", [])
+                dossier = connection.execute(
+                    """SELECT dossier.id, dossier.status, dossier.artifact_id, dossier.artifact_hash,
+                              dossier.compiled_policy, trial.id AS trial_id, trial.status AS trial_status,
+                              analysis.research_trial_universe_complete(trial.id) AS universe_complete,
+                              analysis.research_family_complete(trial.experiment_family_id) AS family_complete,
+                              count(gate.id) AS gate_count,
+                              count(gate.id) FILTER (WHERE gate.verdict = 'pass') AS passing_gates
+                       FROM analysis.validation_dossier dossier
+                       LEFT JOIN analysis.research_trial trial ON trial.id = dossier.research_trial_id
+                       LEFT JOIN analysis.validation_gate_result gate ON gate.dossier_id = dossier.id
+                       WHERE dossier.strategy_revision_id = %s AND dossier.status = 'sealed'
+                       GROUP BY dossier.id, trial.id""",
                     [strategy_revision_id],
                 ).fetchone()
-                if sealed is None:
+                checks = {
+                    "validation_dossier_incomplete": dossier is None,
+                    "research_trial_incomplete": dossier is None or dossier["trial_status"] != "succeeded",
+                    "universe_manifest_incomplete": dossier is None or not dossier["universe_complete"],
+                    "trial_manifest_incomplete": dossier is None or not dossier["family_complete"],
+                    "five_gates_incomplete": dossier is None or dossier["gate_count"] != 5 or dossier["passing_gates"] != 5,
+                    "artifact_lineage_mismatch": dossier is None or dossier["artifact_id"] != linked["artifact_id"] or dossier["artifact_hash"] != linked["artifact_hash"],
+                    "paper_only_required": dossier is None or dict(dossier["compiled_policy"] or {}).get("paper_only") is not True,
+                }
+                for blocker, failed in checks.items():
+                    if failed and blocker not in blockers:
+                        blockers.append(blocker)
+                if blockers:
                     result["status"] = "unavailable"
                     result["promotion_eligible"] = False
-                    result.setdefault("blockers", []).append("validation_dossier_incomplete")
             return result
 
     def automatic_promote_eligible(self, *, enabled: bool = True) -> int:

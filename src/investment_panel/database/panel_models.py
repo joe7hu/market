@@ -98,6 +98,18 @@ DIRECT_QUERIES: dict[str, str] = {
         JOIN analysis.experiment_family family ON family.id = trial.experiment_family_id
         ORDER BY trial.input_cutoff DESC, trial.id DESC LIMIT 500
     """,
+    "research_experiment_manifests": """
+        SELECT experiment_family_id::text, expected_trial_count, expected_trial_keys,
+               manifest_hash, created_at, available_at
+        FROM analysis.experiment_manifest
+        ORDER BY created_at DESC, experiment_family_id LIMIT 100
+    """,
+    "research_universe_manifests": """
+        SELECT research_trial_id::text, cutoff, expected_member_count, expected_members,
+               manifest_hash, created_at, available_at
+        FROM analysis.trial_universe_manifest
+        ORDER BY cutoff DESC, research_trial_id LIMIT 500
+    """,
     "research_trial_results": """
         SELECT result.id::text AS trial_result_id, result.research_trial_id::text,
                result.result_kind, result.result_version, result.observed_at,

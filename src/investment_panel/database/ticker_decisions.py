@@ -183,6 +183,25 @@ class TickerDecisionRepository:
             ).fetchone()
             if instrument is None:
                 raise ValueError("ticker instrument is not in the catalog")
+            plan = decision.trade_plan
+            typed_signals = tuple(signal for signal in decision.alpha_signals if getattr(signal, "contract_version", None) == "alpha-signal.v1")
+            if plan is not None and typed_signals and str(getattr(plan, "eligibility", "")).upper().endswith("ACTIONABLE") and str(getattr(plan, "selected_expression_kind", "")).upper() == "STOCK":
+                forecast_ids = {
+                    str(value or "") for value in (
+                        getattr(plan, "strategy_forecast_id", None),
+                        getattr(decision.opportunity_rank, "strategy_forecast_id", None),
+                        *(getattr(signal, "strategy_forecast_id", None) for signal in decision.alpha_signals),
+                    ) if str(value or "").strip()
+                }
+                if len(forecast_ids) != 1:
+                    raise ValueError("actionable stock path requires exactly one strategy forecast")
+                persisted = connection.execute(
+                    """SELECT count(*) AS count FROM analysis.strategy_forecast
+                       WHERE id = %s AND instrument_id = %s AND status = 'available'""",
+                    [next(iter(forecast_ids)), instrument["id"]],
+                ).fetchone()["count"]
+                if persisted != 1:
+                    raise ValueError("actionable stock path requires one persisted model-owned strategy forecast")
             row = connection.execute(
                 """
                 INSERT INTO analysis.ticker_decision (

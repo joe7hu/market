@@ -175,6 +175,8 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "research_hypotheses",
         "research_experiment_families",
         "research_trials",
+        "research_experiment_manifests",
+        "research_universe_manifests",
         "research_trial_results",
         "research_validation_dossiers",
         "research_validation_gates",

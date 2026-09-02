@@ -184,6 +184,7 @@ from investment_panel.core.decision.alpha import (
     build_alpha_signal,
     build_instrument_state_snapshot,
     build_strategy_forecast,
+    strategy_forecast_id_for_payload,
     calculate_trade_utility,
     rank_opportunities,
 )
@@ -355,6 +356,7 @@ __all__ = [
     "build_alpha_signal",
     "build_instrument_state_snapshot",
     "build_strategy_forecast",
+    "strategy_forecast_id_for_payload",
     "calculate_trade_utility",
     "rank_opportunities",
 ]

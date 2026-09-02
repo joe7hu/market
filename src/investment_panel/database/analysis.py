@@ -18,6 +18,7 @@ from investment_panel.database.opportunity_episodes import (
     scorecard_truth_cohort,
 )
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.core.decision import StrategyForecast, strategy_forecast_id_for_payload
 
 
 CURRENT_OPTION_PUBLICATION_MODELS = frozenset({
@@ -357,14 +358,20 @@ class AnalysisRepository:
         status: str = "candidate",
         supersedes_id: int | None = None,
         authority_group: str | None = None,
+        hypothesis_id: UUID | None = None,
+        experiment_family_id: UUID | None = None,
+        artifact_id: str | None = None,
+        artifact_hash: str | None = None,
+        research_required: bool = False,
     ) -> int:
         with self.runtime.transaction() as connection:
             row = connection.execute(
                 f"""
                 INSERT INTO analysis.strategy_revision
                     (strategy_key, revision, name, status, parameters, supersedes_id, authority_group,
-                     promoted_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s,
+                     hypothesis_id, experiment_family_id, artifact_id, artifact_hash,
+                     research_required, promoted_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         CASE WHEN %s = 'active' THEN now() ELSE NULL END)
                 ON CONFLICT (strategy_key, revision) DO UPDATE
                 SET name = EXCLUDED.name, parameters = EXCLUDED.parameters
@@ -372,7 +379,8 @@ class AnalysisRepository:
                 """,
                 [
                     strategy_key, revision, name, status, Jsonb(dict(parameters)), supersedes_id,
-                    authority_group or strategy_key, status,
+                    authority_group or strategy_key, hypothesis_id, experiment_family_id,
+                    artifact_id, artifact_hash, research_required, status,
                 ],
             ).fetchone()
         return int(row["id"])
@@ -575,26 +583,72 @@ class AnalysisRepository:
         return dict(row) if row is not None else None
 
     def store_strategy_forecast(self, forecast: Mapping[str, Any]) -> str | None:
-        """Persist one model-owned forecast without replacing an immutable row."""
+        """Persist one content-addressed model forecast exactly once.
 
-        forecast_id = str(forecast.get("strategy_forecast_id") or "").strip()
-        ticker = str(forecast.get("ticker") or "").strip().upper()
-        if not forecast_id or not ticker:
-            return None
-        as_of = forecast.get("as_of") or forecast.get("input_cutoff")
-        input_cutoff = forecast.get("input_cutoff") or as_of
-        generated_at = forecast.get("generated_at") or forecast.get("artifact_published_at") or as_of
-        available_at = forecast.get("available_at") or forecast.get("evaluation_available_at") or as_of
-        artifact_hash = str(forecast.get("artifact_hash") or forecast.get("model_artifact_id") or ("0" * 64))
-        input_hash = str(forecast.get("input_hash") or ("0" * 64))
-        if not as_of or not input_cutoff or not generated_at or not available_at:
-            return None
+        This boundary accepts only a complete ``StrategyForecast`` payload.
+        Caller IDs, zero hashes, partial legacy signal dictionaries, and
+        conflicting duplicate identities are rejected.
+        """
+        try:
+            model = forecast if isinstance(forecast, StrategyForecast) else StrategyForecast.model_validate(forecast)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid model-owned strategy forecast: {exc}") from exc
+        payload = model.model_dump(mode="json")
+        forecast_id = model.strategy_forecast_id
+        if forecast_id != strategy_forecast_id_for_payload(payload):
+            raise ValueError("strategy forecast identity does not match its immutable payload")
+        ticker = model.ticker.strip().upper()
         with self.runtime.transaction(JOB_PROFILE) as connection:
             instrument = connection.execute(
                 "SELECT id FROM catalog.instrument WHERE symbol = %s LIMIT 1", [ticker]
             ).fetchone()
             if instrument is None:
-                return None
+                raise ValueError(f"forecast instrument is not persisted: {ticker}")
+            existing = connection.execute(
+                """
+                SELECT forecast.*, instrument.symbol AS ticker
+                FROM analysis.strategy_forecast forecast
+                JOIN catalog.instrument instrument ON instrument.id = forecast.instrument_id
+                WHERE forecast.id = %s
+                FOR KEY SHARE OF forecast
+                """,
+                [forecast_id],
+            ).fetchone()
+            if existing is not None:
+                existing_values = {
+                    "strategy_revision_id": existing["strategy_revision_id"],
+                    "strategy_evaluation_id": str(existing["strategy_evaluation_id"]) if existing["strategy_evaluation_id"] is not None else None,
+                    "ticker": existing["ticker"],
+                    "opportunity_episode_id": existing["opportunity_episode_id"],
+                    "target": existing["target"],
+                    "horizon": existing["horizon"],
+                    "forecast_value": existing["forecast_value"],
+                    "forecast_range": existing["forecast_range"],
+                    "forecast_distribution": existing["forecast_distribution"],
+                    "probability_semantics": existing["probability_semantics"],
+                    "model_artifact_id": existing["model_artifact_id"],
+                    "artifact_hash": existing["artifact_hash"],
+                    "input_hash": existing["input_hash"],
+                    "as_of": existing["as_of"],
+                    "input_cutoff": existing["input_cutoff"],
+                    "generated_at": existing["generated_at"],
+                    "available_at": existing["available_at"],
+                }
+                incoming_values = {
+                    key: payload[key]
+                    for key in existing_values
+                    if key in payload
+                }
+                for key in ("as_of", "input_cutoff", "generated_at", "available_at"):
+                    incoming_values[key] = model.model_dump()[key]
+                if any(
+                    str(existing_values[key]) != str(incoming_values[key])
+                    if key in {"strategy_evaluation_id", "as_of", "input_cutoff", "generated_at", "available_at"}
+                    else existing_values[key] != incoming_values[key]
+                    for key in existing_values
+                ):
+                    raise ValueError("strategy forecast identity conflicts with persisted immutable payload")
+                return str(existing["id"])
             connection.execute(
                 """
                 INSERT INTO analysis.strategy_forecast (
@@ -606,16 +660,16 @@ class AnalysisRepository:
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s
-                ) ON CONFLICT (id) DO NOTHING
+                )
                 """,
                 [
-                    forecast_id, forecast["strategy_revision_id"], forecast.get("strategy_evaluation_id"),
-                    instrument["id"], forecast["opportunity_episode_id"], forecast["target"], forecast["horizon"],
-                    forecast.get("forecast_value"), Jsonb(forecast.get("forecast_range") or {}) if forecast.get("forecast_range") else None,
-                    Jsonb(forecast.get("forecast_distribution") or {}) if forecast.get("forecast_distribution") else None,
-                    forecast.get("probability_semantics"), forecast["model_artifact_id"], artifact_hash,
-                    input_hash, as_of, input_cutoff, generated_at,
-                    available_at, Jsonb({"contract_version": forecast.get("contract_version", "strategy-forecast.v1")}),
+                    forecast_id, model.strategy_revision_id, model.strategy_evaluation_id,
+                    instrument["id"], model.opportunity_episode_id, model.target, model.horizon,
+                    model.forecast_value, Jsonb(model.forecast_range.model_dump(mode="json")) if model.forecast_range else None,
+                    Jsonb(model.forecast_distribution) if model.forecast_distribution else None,
+                    model.probability_semantics, model.model_artifact_id, model.artifact_hash,
+                    model.input_hash, model.as_of, model.input_cutoff, model.generated_at,
+                    model.available_at, Jsonb({"contract_version": model.contract_version}),
                 ],
             )
         return forecast_id

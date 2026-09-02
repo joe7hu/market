@@ -4,6 +4,7 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
+from investment_panel.core.decision.alpha import build_strategy_forecast
 from investment_panel.database.migrations import upgrade_database
 
 
@@ -27,27 +28,60 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                VALUES (%s, 'p1-family', 'Phase 1 family', %s) RETURNING id""",
             [hypothesis, "2" * 64],
         ).fetchone()[0]
+        connection.execute(
+            """INSERT INTO analysis.experiment_manifest
+               (experiment_family_id, expected_trial_count, expected_trial_keys, manifest_hash)
+               VALUES (%s, 2, %s, %s)""",
+            [family, Jsonb(["failed", "successful"]), "a" * 64],
+        )
         failed_trial = connection.execute(
             """INSERT INTO analysis.research_trial
                (experiment_family_id, trial_key, input_cutoff, code_version, input_hash,
-                status, failure_reason, available_at)
-               VALUES (%s, 'failed', %s, 'test', %s, 'failed', 'future information', now())
+                available_at)
+               VALUES (%s, 'failed', %s, 'test', %s, now())
                RETURNING id""",
             [family, cutoff, "3" * 64],
         ).fetchone()[0]
         successful_trial = connection.execute(
             """INSERT INTO analysis.research_trial
                (experiment_family_id, trial_key, input_cutoff, code_version, input_hash,
-                status, finished_at, outcome, available_at)
-               VALUES (%s, 'successful', %s, 'test', %s, 'succeeded', now(), %s, now())
+                available_at)
+               VALUES (%s, 'successful', %s, 'test', %s, now())
                RETURNING id""",
-            [family, cutoff, "9" * 64, Jsonb({"edge": 0.1})],
+            [family, cutoff, "9" * 64],
         ).fetchone()[0]
+        for trial_id, result_hash in ((failed_trial, "4" * 64), (successful_trial, "9" * 64)):
+            connection.execute(
+                """INSERT INTO analysis.trial_universe_manifest
+                   (research_trial_id, cutoff, expected_member_count, expected_members, manifest_hash)
+                   VALUES (%s, %s, 1, %s, %s)""",
+                [trial_id, cutoff, Jsonb([str(instrument)]), "b" * 64],
+            )
+            connection.execute(
+                """INSERT INTO analysis.universe_observation
+                   (research_trial_id, instrument_id, cutoff, eligible, rank, observed_at, available_at, input_hash)
+                   VALUES (%s, %s, %s, true, 1, now(), now(), %s)""",
+                [trial_id, instrument, cutoff, result_hash],
+            )
         connection.execute(
             """INSERT INTO analysis.trial_result
                (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics)
                VALUES (%s, 'negative-control', now(), now(), %s, %s)""",
             [failed_trial, "4" * 64, Jsonb({"passed": False})],
+        )
+        connection.execute(
+            """INSERT INTO analysis.trial_result
+               (research_trial_id, result_kind, observed_at, available_at, input_hash, metrics)
+               VALUES (%s, 'validation', now(), now(), %s, %s)""",
+            [successful_trial, "9" * 64, Jsonb({"passed": True})],
+        )
+        connection.execute(
+            "UPDATE analysis.research_trial SET status = 'failed', failure_reason = 'future information', finished_at = now() WHERE id = %s",
+            [failed_trial],
+        )
+        connection.execute(
+            "UPDATE analysis.research_trial SET status = 'succeeded', finished_at = now(), outcome = %s WHERE id = %s",
+            [Jsonb({"edge": 0.1}), successful_trial],
         )
         revision = connection.execute(
             """INSERT INTO analysis.strategy_revision
@@ -66,8 +100,10 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
             [Jsonb({"paper_only": True}), hypothesis, family],
         ).fetchone()[0]
         dossier = connection.execute(
-            "INSERT INTO analysis.validation_dossier (strategy_revision_id, sections) VALUES (%s, %s) RETURNING id",
-            [revision, Jsonb({"hypothesis": "incomplete"})],
+            """INSERT INTO analysis.validation_dossier
+               (strategy_revision_id, research_trial_id, sections, compiled_policy, artifact_id, artifact_hash)
+               VALUES (%s, %s, %s, %s, 'p1-artifact', %s) RETURNING id""",
+            [revision, successful_trial, Jsonb({"hypothesis": "incomplete"}), Jsonb({"paper_only": True}), "5" * 64],
         ).fetchone()[0]
         connection.execute("SAVEPOINT incomplete_dossier")
         with pytest.raises(psycopg.errors.RaiseException, match="mandatory sections"):
@@ -88,8 +124,12 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                 [dossier, gate],
             )
         connection.execute("UPDATE analysis.validation_dossier SET sections = %s, status = 'sealed' WHERE id = %s", [sections, dossier])
-        connection.execute("UPDATE analysis.strategy_revision SET status = 'active' WHERE id = %s", [revision])
-        forecast_id = "forecast:p1-test"
+        forecast = build_strategy_forecast(
+            ticker="P1T", opportunity_episode_id="episode:p1", strategy_revision_id=revision,
+            strategy_evaluation_id=None, target="return", horizon="1d", forecast_value=0.1,
+            model_artifact_id="p1-artifact", artifact_hash="6" * 64, input_hash="7" * 64,
+            as_of=cutoff, generated_at=cutoff - timedelta(hours=1), available_at=cutoff - timedelta(hours=1),
+        )
         connection.execute(
             """INSERT INTO analysis.strategy_forecast
                (id, strategy_revision_id, instrument_id, opportunity_episode_id, target, horizon,
@@ -97,18 +137,13 @@ def test_phase1_trial_dossier_forecast_and_universe_authority(postgres_dsn: str)
                 generated_at, available_at)
                VALUES (%s, %s, (SELECT id FROM catalog.instrument WHERE symbol = 'P1T'),
                        'episode:p1', 'return', '1d', 0.1, 'p1-artifact', %s, %s,
-                       now(), now(), now() - interval '1 hour', now())""",
-            [forecast_id, revision, "6" * 64, "7" * 64],
+                       %s, %s, %s, %s)""",
+            [forecast.strategy_forecast_id, revision, "6" * 64, "7" * 64, cutoff, cutoff, cutoff - timedelta(hours=1), cutoff - timedelta(hours=1)],
         )
-        connection.execute(
-            """INSERT INTO analysis.universe_observation
-               (research_trial_id, instrument_id, cutoff, eligible, rank, observed_at, available_at, input_hash)
-               VALUES ((SELECT id FROM analysis.research_trial WHERE trial_key = 'failed'), %s, %s, true, 1, now(), now(), %s)""",
-            [instrument, cutoff, "8" * 64],
-        )
+        connection.execute("UPDATE analysis.strategy_revision SET status = 'active' WHERE id = %s", [revision])
         assert connection.execute("SELECT status FROM analysis.validation_dossier WHERE id = %s", [dossier]).fetchone()[0] == "sealed"
         assert connection.execute("SELECT status FROM analysis.strategy_revision WHERE id = %s", [revision]).fetchone()[0] == "active"
         assert connection.execute("SELECT status FROM analysis.strategy_revision WHERE id = %s", [rejected_revision]).fetchone()[0] == "rejected"
         assert connection.execute("SELECT status FROM analysis.research_trial WHERE id = %s", [successful_trial]).fetchone()[0] == "succeeded"
-        assert connection.execute("SELECT id FROM analysis.strategy_forecast WHERE id = %s", [forecast_id]).fetchone()[0] == forecast_id
-        assert connection.execute("SELECT count(*) FROM analysis.universe_observation").fetchone()[0] == 1
+        assert connection.execute("SELECT id FROM analysis.strategy_forecast WHERE id = %s", [forecast.strategy_forecast_id]).fetchone()[0] == forecast.strategy_forecast_id
+        assert connection.execute("SELECT count(*) FROM analysis.universe_observation").fetchone()[0] == 2

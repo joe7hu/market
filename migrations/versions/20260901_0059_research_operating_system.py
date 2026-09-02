@@ -44,6 +44,17 @@ def upgrade() -> None:
         );
         CREATE INDEX ix_experiment_family_hypothesis ON analysis.experiment_family (hypothesis_id, id);
 
+        CREATE TABLE analysis.experiment_manifest (
+            experiment_family_id UUID PRIMARY KEY REFERENCES analysis.experiment_family(id),
+            expected_trial_count INTEGER NOT NULL CHECK (expected_trial_count BETWEEN 1 AND 10000),
+            expected_trial_keys JSONB NOT NULL,
+            manifest_hash CHAR(64) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CHECK (jsonb_typeof(expected_trial_keys) = 'array'),
+            CHECK (available_at <= created_at)
+        );
+
         CREATE TABLE analysis.research_trial (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             experiment_family_id UUID NOT NULL REFERENCES analysis.experiment_family(id),
@@ -77,6 +88,18 @@ def upgrade() -> None:
             input_hash CHAR(64) NOT NULL,
             UNIQUE (research_trial_id, result_kind, result_version),
             CHECK (available_at <= observed_at)
+        );
+
+        CREATE TABLE analysis.trial_universe_manifest (
+            research_trial_id UUID PRIMARY KEY REFERENCES analysis.research_trial(id),
+            cutoff TIMESTAMPTZ NOT NULL,
+            expected_member_count INTEGER NOT NULL CHECK (expected_member_count BETWEEN 0 AND 10000),
+            expected_members JSONB NOT NULL,
+            manifest_hash CHAR(64) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CHECK (jsonb_typeof(expected_members) = 'array'),
+            CHECK (available_at <= cutoff)
         );
 
         CREATE TABLE analysis.validation_dossier (
@@ -136,6 +159,7 @@ def upgrade() -> None:
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (as_of = input_cutoff),
             CHECK (available_at <= input_cutoff),
+            CHECK (generated_at <= input_cutoff),
             CHECK (forecast_value IS NOT NULL OR forecast_range IS NOT NULL OR forecast_distribution IS NOT NULL)
         );
         CREATE UNIQUE INDEX uq_strategy_forecast_content
@@ -168,7 +192,8 @@ def upgrade() -> None:
             ADD COLUMN hypothesis_id UUID REFERENCES analysis.hypothesis(id),
             ADD COLUMN experiment_family_id UUID REFERENCES analysis.experiment_family(id),
             ADD COLUMN artifact_id TEXT,
-            ADD COLUMN artifact_hash CHAR(64);
+            ADD COLUMN artifact_hash CHAR(64),
+            ADD COLUMN research_required BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE analysis.strategy_evaluation
             ADD COLUMN hypothesis_id UUID REFERENCES analysis.hypothesis(id),
             ADD COLUMN experiment_family_id UUID REFERENCES analysis.experiment_family(id),
@@ -185,12 +210,18 @@ def upgrade() -> None:
             IF TG_OP = 'DELETE' THEN
                 RAISE EXCEPTION 'terminal research trials are immutable';
             END IF;
-            IF OLD.status <> 'running' OR NEW.experiment_family_id IS DISTINCT FROM OLD.experiment_family_id
+            IF TG_OP <> 'INSERT' AND (OLD.status <> 'running' OR NEW.experiment_family_id IS DISTINCT FROM OLD.experiment_family_id
                OR NEW.trial_key IS DISTINCT FROM OLD.trial_key
                OR NEW.input_cutoff IS DISTINCT FROM OLD.input_cutoff
                OR NEW.input_hash IS DISTINCT FROM OLD.input_hash
-               OR NEW.parameters IS DISTINCT FROM OLD.parameters THEN
+               OR NEW.parameters IS DISTINCT FROM OLD.parameters) THEN
                 RAISE EXCEPTION 'research trial authority is immutable after creation';
+            END IF;
+            IF NEW.status <> 'running' AND (
+                NOT EXISTS (SELECT 1 FROM analysis.trial_result result WHERE result.research_trial_id = OLD.id)
+                OR NOT analysis.research_trial_universe_complete(OLD.id)
+            ) THEN
+                RAISE EXCEPTION 'terminal research trial requires a result and complete universe manifest';
             END IF;
             RETURN NEW;
         END;
@@ -218,6 +249,69 @@ def upgrade() -> None:
             BEFORE UPDATE OR DELETE ON analysis.universe_observation
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_rows_immutable();
 
+        CREATE OR REPLACE FUNCTION analysis.enforce_research_universe_pit()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE manifest_cutoff TIMESTAMPTZ;
+        BEGIN
+            SELECT manifest.cutoff INTO manifest_cutoff
+            FROM analysis.trial_universe_manifest manifest
+            WHERE manifest.research_trial_id = NEW.research_trial_id;
+            IF manifest_cutoff IS NULL OR NEW.cutoff <> manifest_cutoff
+               OR NEW.observed_at > manifest_cutoff OR NEW.available_at > manifest_cutoff THEN
+                RAISE EXCEPTION 'universe observation is outside its point-in-time cutoff';
+            END IF;
+            RETURN NEW;
+        END;
+        $$;
+        CREATE TRIGGER enforce_research_universe_pit
+            BEFORE INSERT ON analysis.universe_observation
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_universe_pit();
+
+        CREATE OR REPLACE FUNCTION analysis.research_trial_universe_complete(trial_id UUID)
+        RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+            SELECT EXISTS (
+                SELECT 1
+                FROM analysis.trial_universe_manifest manifest
+                WHERE manifest.research_trial_id = trial_id
+                  AND manifest.expected_member_count = (
+                      SELECT count(*) FROM analysis.universe_observation observation
+                      WHERE observation.research_trial_id = trial_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jsonb_array_elements_text(manifest.expected_members) expected(member)
+                      WHERE NOT EXISTS (
+                          SELECT 1 FROM analysis.universe_observation observation
+                          WHERE observation.research_trial_id = trial_id
+                            AND observation.instrument_id::text = expected.member
+                      )
+                  )
+            );
+        $$;
+
+        CREATE OR REPLACE FUNCTION analysis.research_family_complete(family_id UUID)
+        RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+            SELECT EXISTS (
+                SELECT 1 FROM analysis.experiment_manifest manifest
+                WHERE manifest.experiment_family_id = family_id
+                  AND manifest.expected_trial_count = (
+                      SELECT count(*) FROM analysis.research_trial trial
+                      WHERE trial.experiment_family_id = family_id
+                  )
+                  AND manifest.expected_trial_keys = COALESCE((
+                      SELECT jsonb_agg(trial.trial_key ORDER BY trial.trial_key)
+                      FROM analysis.research_trial trial
+                      WHERE trial.experiment_family_id = family_id
+                  ), '[]'::jsonb)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM analysis.research_trial trial
+                      WHERE trial.experiment_family_id = family_id
+                        AND (trial.status = 'running' OR NOT EXISTS (
+                            SELECT 1 FROM analysis.trial_result result WHERE result.research_trial_id = trial.id
+                        ))
+                  )
+            );
+        $$;
+
         CREATE OR REPLACE FUNCTION analysis.enforce_validation_dossier_seal()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE gate_count INTEGER; passing_count INTEGER;
@@ -238,30 +332,106 @@ def upgrade() -> None:
             IF gate_count <> 5 OR passing_count <> 5 THEN
                 RAISE EXCEPTION 'validation dossier requires all five passing gates';
             END IF;
+            IF NEW.research_trial_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM analysis.research_trial trial
+                WHERE trial.id = NEW.research_trial_id
+                  AND trial.status = 'succeeded'
+                  AND analysis.research_trial_universe_complete(trial.id)
+                  AND analysis.research_family_complete(trial.experiment_family_id)
+                  AND NEW.artifact_id IS NOT NULL AND NEW.artifact_hash IS NOT NULL
+            ) THEN
+                RAISE EXCEPTION 'validation dossier research trial or manifest is incomplete';
+            END IF;
             NEW.sealed_at := COALESCE(NEW.sealed_at, clock_timestamp());
+            IF NEW.research_trial_id IS NOT NULL AND NEW.sealed_at > (SELECT input_cutoff FROM analysis.research_trial WHERE id = NEW.research_trial_id) THEN
+                RAISE EXCEPTION 'validation dossier seal is newer than its point-in-time cutoff';
+            END IF;
             RETURN NEW;
         END;
         $$;
         CREATE TRIGGER enforce_validation_dossier_seal
-            BEFORE UPDATE OR DELETE ON analysis.validation_dossier
+            BEFORE INSERT OR UPDATE OR DELETE ON analysis.validation_dossier
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_validation_dossier_seal();
 
         CREATE OR REPLACE FUNCTION analysis.enforce_research_revision_promotion()
         RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
-            IF NEW.status = 'active' AND NEW.hypothesis_id IS NOT NULL
-               AND NOT EXISTS (
-                   SELECT 1 FROM analysis.validation_dossier
-                   WHERE strategy_revision_id = NEW.id AND status = 'sealed'
-               ) THEN
-                RAISE EXCEPTION 'research strategy promotion requires a sealed validation dossier';
+            IF NEW.status = 'active' AND (NEW.research_required OR NEW.hypothesis_id IS NOT NULL OR NEW.experiment_family_id IS NOT NULL) THEN
+                IF NEW.hypothesis_id IS NULL OR NEW.experiment_family_id IS NULL THEN
+                    RAISE EXCEPTION 'research strategy promotion requires hypothesis and experiment family lineage';
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM analysis.validation_dossier dossier
+                    JOIN analysis.research_trial trial ON trial.id = dossier.research_trial_id
+                    JOIN analysis.experiment_family family
+                      ON family.id = trial.experiment_family_id
+                     AND family.hypothesis_id = NEW.hypothesis_id
+                    WHERE dossier.strategy_revision_id = NEW.id AND dossier.status = 'sealed'
+                      AND trial.status = 'succeeded'
+                      AND trial.experiment_family_id = NEW.experiment_family_id
+                      AND dossier.artifact_id = NEW.artifact_id
+                      AND dossier.artifact_hash = NEW.artifact_hash
+                      AND dossier.compiled_policy->>'paper_only' = 'true'
+                      AND analysis.research_trial_universe_complete(trial.id)
+                      AND analysis.research_family_complete(trial.experiment_family_id)
+                      AND (SELECT count(*) FROM analysis.validation_gate_result gate WHERE gate.dossier_id = dossier.id AND gate.verdict = 'pass') = 5
+                ) THEN
+                    RAISE EXCEPTION 'research strategy promotion requires sealed dossier, complete manifests, five gates, matching artifact, and paper-only policy';
+                END IF;
             END IF;
             RETURN NEW;
         END;
         $$;
         CREATE TRIGGER enforce_research_revision_promotion
-            BEFORE INSERT OR UPDATE OF status ON analysis.strategy_revision
+            BEFORE INSERT OR UPDATE OF status, research_required, hypothesis_id,
+                experiment_family_id, artifact_id, artifact_hash ON analysis.strategy_revision
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_revision_promotion();
+
+        CREATE OR REPLACE FUNCTION analysis.enforce_research_result_pit()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE cutoff TIMESTAMPTZ;
+        BEGIN
+            SELECT input_cutoff INTO cutoff FROM analysis.research_trial WHERE id = NEW.research_trial_id;
+            IF cutoff IS NULL OR NEW.observed_at > cutoff OR NEW.available_at > cutoff THEN
+                RAISE EXCEPTION 'research result is not point-in-time available';
+            END IF;
+            RETURN NEW;
+        END;
+        $$;
+        CREATE TRIGGER enforce_research_result_pit
+            BEFORE INSERT ON analysis.trial_result
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_result_pit();
+
+        CREATE OR REPLACE FUNCTION analysis.enforce_research_gate_pit()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE cutoff TIMESTAMPTZ;
+        BEGIN
+            SELECT trial.input_cutoff INTO cutoff
+            FROM analysis.validation_dossier dossier
+            JOIN analysis.research_trial trial ON trial.id = dossier.research_trial_id
+            WHERE dossier.id = NEW.dossier_id;
+            IF cutoff IS NOT NULL AND (NEW.available_at > cutoff OR NEW.evaluated_at > cutoff) THEN
+                RAISE EXCEPTION 'validation gate is not point-in-time available';
+            END IF;
+            RETURN NEW;
+        END;
+        $$;
+        CREATE TRIGGER enforce_research_gate_pit
+            BEFORE INSERT ON analysis.validation_gate_result
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_gate_pit();
+
+        CREATE OR REPLACE FUNCTION analysis.enforce_research_manifest_immutable()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            RAISE EXCEPTION 'research manifests are immutable';
+        END;
+        $$;
+        CREATE TRIGGER enforce_experiment_manifest_immutable
+            BEFORE UPDATE OR DELETE ON analysis.experiment_manifest
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_manifest_immutable();
+        CREATE TRIGGER enforce_trial_universe_manifest_immutable
+            BEFORE UPDATE OR DELETE ON analysis.trial_universe_manifest
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_research_manifest_immutable();
         """
     )
 
@@ -271,15 +441,27 @@ def downgrade() -> None:
         """
         DROP TRIGGER IF EXISTS enforce_research_revision_promotion ON analysis.strategy_revision;
         DROP FUNCTION IF EXISTS analysis.enforce_research_revision_promotion();
+        DROP TRIGGER IF EXISTS enforce_trial_universe_manifest_immutable ON analysis.trial_universe_manifest;
+        DROP TRIGGER IF EXISTS enforce_experiment_manifest_immutable ON analysis.experiment_manifest;
+        DROP FUNCTION IF EXISTS analysis.enforce_research_manifest_immutable();
+        DROP TRIGGER IF EXISTS enforce_research_result_pit ON analysis.trial_result;
+        DROP FUNCTION IF EXISTS analysis.enforce_research_result_pit();
+        DROP TRIGGER IF EXISTS enforce_research_gate_pit ON analysis.validation_gate_result;
+        DROP FUNCTION IF EXISTS analysis.enforce_research_gate_pit();
         DROP TRIGGER IF EXISTS enforce_validation_dossier_seal ON analysis.validation_dossier;
         DROP FUNCTION IF EXISTS analysis.enforce_validation_dossier_seal();
         DROP TRIGGER IF EXISTS enforce_universe_observation_immutable ON analysis.universe_observation;
+        DROP TRIGGER IF EXISTS enforce_research_universe_pit ON analysis.universe_observation;
+        DROP FUNCTION IF EXISTS analysis.enforce_research_universe_pit();
         DROP TRIGGER IF EXISTS enforce_strategy_forecast_immutable ON analysis.strategy_forecast;
         DROP TRIGGER IF EXISTS enforce_validation_gate_result_immutable ON analysis.validation_gate_result;
         DROP TRIGGER IF EXISTS enforce_trial_result_immutable ON analysis.trial_result;
         DROP FUNCTION IF EXISTS analysis.enforce_research_rows_immutable();
         DROP TRIGGER IF EXISTS enforce_research_trial_terminal_immutability ON analysis.research_trial;
         DROP FUNCTION IF EXISTS analysis.enforce_research_trial_terminal_immutability();
+        DROP FUNCTION IF EXISTS analysis.research_family_complete(UUID);
+        DROP FUNCTION IF EXISTS analysis.research_trial_universe_complete(UUID);
+        ALTER TABLE analysis.strategy_revision DROP COLUMN IF EXISTS research_required;
         ALTER TABLE analysis.strategy_evaluation
             DROP COLUMN IF EXISTS lineage, DROP COLUMN IF EXISTS input_hash,
             DROP COLUMN IF EXISTS artifact_hash, DROP COLUMN IF EXISTS artifact_id,
@@ -295,11 +477,13 @@ def downgrade() -> None:
         DROP INDEX IF EXISTS analysis.ix_hypothesis_available;
         DROP INDEX IF EXISTS analysis.uq_strategy_forecast_content;
         DROP TABLE IF EXISTS analysis.universe_observation;
+        DROP TABLE IF EXISTS analysis.trial_universe_manifest;
         DROP TABLE IF EXISTS analysis.strategy_forecast;
         DROP TABLE IF EXISTS analysis.validation_gate_result;
         DROP TABLE IF EXISTS analysis.validation_dossier;
         DROP TABLE IF EXISTS analysis.trial_result;
         DROP TABLE IF EXISTS analysis.research_trial;
+        DROP TABLE IF EXISTS analysis.experiment_manifest;
         DROP TABLE IF EXISTS analysis.experiment_family;
         DROP TABLE IF EXISTS analysis.hypothesis;
         """
