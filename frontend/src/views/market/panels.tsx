@@ -42,6 +42,11 @@ export function MarketEnvironmentPanel({
   assetRows,
   snapshotRows,
   coverageRows,
+  posteriorRows = [],
+  coverageVectorRows = [],
+  scenarioRows = [],
+  optionSlaRows = [],
+  observationRows = [],
   freshness,
 }: {
   rows: RowRecord[];
@@ -49,6 +54,11 @@ export function MarketEnvironmentPanel({
   assetRows: RowRecord[];
   snapshotRows: RowRecord[];
   coverageRows: RowRecord[];
+  posteriorRows?: RowRecord[];
+  coverageVectorRows?: RowRecord[];
+  scenarioRows?: RowRecord[];
+  optionSlaRows?: RowRecord[];
+  observationRows?: RowRecord[];
   freshness?: { status: string; reason: string };
 }) {
   const score = weightedDriverScore(rows);
@@ -87,13 +97,13 @@ export function MarketEnvironmentPanel({
           <MiniMetric label="Valuation Series" value={`${referenceRows.length}`} />
           <MiniMetric label="Market Asset Rows" value={`${assetRows.length}`} />
         </div>
-        <MarketStateProjection snapshotRows={snapshotRows} coverageRows={coverageRows} />
+        <MarketStateProjection snapshotRows={snapshotRows} coverageRows={coverageRows} posteriorRows={posteriorRows} coverageVectorRows={coverageVectorRows} scenarioRows={scenarioRows} optionSlaRows={optionSlaRows} observationRows={observationRows} />
       </CardContent>
     </Card>
   );
 }
 
-export function MarketStateProjection({ snapshotRows, coverageRows }: { snapshotRows: RowRecord[]; coverageRows: RowRecord[] }) {
+export function MarketStateProjection({ snapshotRows, coverageRows, posteriorRows = [], coverageVectorRows = [], scenarioRows = [], optionSlaRows = [], observationRows = [] }: { snapshotRows: RowRecord[]; coverageRows: RowRecord[]; posteriorRows?: RowRecord[]; coverageVectorRows?: RowRecord[]; scenarioRows?: RowRecord[]; optionSlaRows?: RowRecord[]; observationRows?: RowRecord[] }) {
   const snapshot = snapshotRows[0];
   const horizons = snapshot && isRecord(snapshot.horizons) ? snapshot.horizons : {};
   const horizonEntries = Object.entries(horizons);
@@ -134,7 +144,7 @@ export function MarketStateProjection({ snapshotRows, coverageRows }: { snapshot
           const distribution = isRecord(regime.distribution) ? Object.entries(regime.distribution).map(([key, item]) => `${key} ${String(item)}`).join(" · ") : "unavailable";
           return <div key={`regime:${horizon}`} className="rounded border border-border/70 p-2 text-[11px] text-muted-foreground">
             <p className="font-semibold text-foreground">{horizon} regime evidence</p>
-            <p>{typeof regime.status === "string" ? regime.status : "advisory"} · distribution: {distribution}</p>
+            <p>{typeof regime.status === "string" ? regime.status : "unavailable"} · distribution: {distribution}</p>
             <p>method/version: {typeof regime.method === "string" ? regime.method : "unavailable"} / {typeof regime.version === "string" ? regime.version : "unavailable"} · sample: {regime.sample_count == null ? "unavailable" : String(regime.sample_count)}</p>
             <p>uncertainty: {typeof regime.uncertainty === "string" ? regime.uncertainty : "unavailable"}</p>
           </div>;
@@ -160,8 +170,31 @@ export function MarketStateProjection({ snapshotRows, coverageRows }: { snapshot
           ))}
         </div>
       </div>
+      <Phase2Evidence posteriorRows={posteriorRows} coverageVectorRows={coverageVectorRows} scenarioRows={scenarioRows} optionSlaRows={optionSlaRows} observationRows={observationRows} />
     </div>
   );
+}
+
+function Phase2Evidence({ posteriorRows, coverageVectorRows, scenarioRows, optionSlaRows, observationRows }: { posteriorRows: RowRecord[]; coverageVectorRows: RowRecord[]; scenarioRows: RowRecord[]; optionSlaRows: RowRecord[]; observationRows: RowRecord[] }) {
+  const posterior = isRecord(posteriorRows[0]?.payload) ? posteriorRows[0].payload : posteriorRows[0];
+  const status = String(posteriorRows[0]?.status ?? (isRecord(posterior) ? posterior.status : undefined) ?? "MISSING_HISTORY").toUpperCase();
+  const confidence = isRecord(posterior) ? String(posterior.overall_confidence ?? "unavailable") : "unavailable";
+  const missingness = isRecord(posterior) ? String(posterior.missingness ?? "unavailable") : "unavailable";
+  const sla = isRecord(optionSlaRows[0]?.payload) ? optionSlaRows[0].payload : optionSlaRows[0];
+  const tone = phase2StatusTone(status);
+  return <div className="space-y-2 rounded border border-border/70 bg-muted/20 p-3 text-[11px]">
+    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Phase 2 evidence</p><StatusBadge tone={tone}>{status}</StatusBadge></div>
+    <p className="text-muted-foreground">Posterior status is {status}. Observable baseline and bounded latent challenger are read-only. Advisory-only: no rank or execution authorization.</p>
+    <p>Posterior confidence: {confidence} · missingness: {missingness} · retained source facts: {observationRows.length} · reproducible scenarios: {scenarioRows.length}</p>
+    <p>Per-expression coverage rows: {coverageVectorRows.length} · option OI/volume SLA: {isRecord(sla) ? String(sla.status ?? "MISSING_HISTORY").toUpperCase() : "MISSING_HISTORY"} · positioning allowed: {isRecord(sla) ? String(sla.positioning_allowed ?? false) : "false"}</p>
+  </div>;
+}
+
+function phase2StatusTone(status: string): "good" | "warn" | "bad" | "muted" {
+  if (status === "AVAILABLE") return "good";
+  if (status === "FALLBACK" || status === "STALE") return "warn";
+  if (["MISSING_SOURCE", "MISSING_HISTORY", "UNSUPPORTED", "CONFLICTED"].includes(status)) return "bad";
+  return "muted";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

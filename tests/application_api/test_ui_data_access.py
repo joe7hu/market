@@ -316,6 +316,11 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert set(market_tables) == {
         "market_state_snapshot",
         "coverage_matrix",
+        "market_state_posterior",
+        "market_coverage_vector",
+        "market_scenario_paths",
+        "option_liquidity_sla",
+        "market_observations",
         "market_valuation_reference_charts",
         "market_environment_assets",
         "market_environment_model",

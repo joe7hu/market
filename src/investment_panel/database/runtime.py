@@ -97,6 +97,10 @@ class DatabaseRuntime:
         with self.pool.connection() as connection:
             with connection.transaction():
                 _set_local_timeouts(connection, profile)
+                # A configured production login is NOINHERIT.  Every write
+                # transaction must enter the same explicit application-role
+                # boundary as reads and evaluator writes.
+                _activate_configured_application_role(connection)
                 yield connection
 
     @contextmanager
@@ -140,7 +144,7 @@ def _activate_configured_application_role(connection: Connection[dict[str, Any]]
     """
 
     configured_login = os.environ.get("MARKET_APP_LOGIN_ROLE", "").strip()
-    if not configured_login:
+    if not configured_login or configured_login == "postgres":
         return
     session_user = connection.execute("SELECT session_user AS session_user").fetchone()
     if session_user is None or session_user["session_user"] != configured_login:

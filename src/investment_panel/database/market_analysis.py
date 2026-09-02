@@ -25,10 +25,20 @@ from investment_panel.core.decision import (
     is_us_market_day,
     market_evidence_for_decision,
 )
+from investment_panel.core.phase2 import (
+    EventObservation,
+    PITObservation,
+    Phase2Status,
+    build_coverage_vector,
+    build_market_state_posterior,
+    build_scenario_paths,
+    phase2_input_content_hash,
+)
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars, completed_trading_dates
 from investment_panel.database.fundamental_history import hydrate_history
 from investment_panel.database.portfolio_ledger import replay_portfolio_at
+from investment_panel.database.phase2 import Phase2Repository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -211,6 +221,47 @@ def refresh_market_publication(
         event_risk_evidence = _event_risk_evidence(connection, as_of)
         corporate_cycle_evidence = _corporate_cycle_evidence(connection, instrument_rows, as_of)
         crypto_volume_evidence = _crypto_volume_evidence(connection, instrument_rows, as_of)
+        phase2_rows = [dict(row) for row in connection.execute(
+            """SELECT observation.observation_id, observation.field_name, observation.dimension,
+                      observation.asset_class, observation.source_id, observation.source_version,
+                      observation.value, observation.unit, observation.ingest_run_id::text AS ingest_run_id,
+                      observation.payload_id, observation.content_hash, observation.parent_snapshot_id,
+                      observation.observed_at, observation.available_at, observation.publication_at,
+                      observation.release_at, observation.vintage_at, observation.actual,
+                      observation.consensus, observation.surprise, observation.revision,
+                      observation.status, observation.confidence, observation.metadata,
+                      lifecycle.enabled AS source_enabled, lifecycle.operational_state AS source_operational_state,
+                      ingest_run.status AS ingest_status, ingest_run.finished_at AS ingest_finished_at
+               FROM raw.market_observation observation
+               JOIN ingest.source source ON source.id = observation.source_id
+               JOIN LATERAL (
+                   SELECT history.enabled, history.operational_state
+                   FROM ingest.source_lifecycle_history history
+                   WHERE history.source_id = source.id AND history.effective_at <= %s
+                   ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
+               ) lifecycle ON lifecycle.enabled = true AND lifecycle.operational_state = 'active'
+               JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
+               WHERE observation.observed_at <= %s AND observation.available_at <= %s
+                 AND ingest_run.status IN ('succeeded', 'partial')
+                 AND ingest_run.finished_at IS NOT NULL AND ingest_run.finished_at <= %s
+               ORDER BY observation.dimension, observation.observed_at, observation.observation_id
+               LIMIT 500""",
+            [as_of, as_of, as_of, as_of],
+        ).fetchall()]
+        phase2_source_rows = [dict(row) for row in connection.execute(
+            """SELECT source.id AS source_id, lifecycle.enabled AS source_enabled,
+                      lifecycle.operational_state AS source_operational_state,
+                      source.capabilities->>'phase2_status' AS phase2_status
+               FROM ingest.source source
+               JOIN LATERAL (
+                   SELECT history.enabled, history.operational_state
+                   FROM ingest.source_lifecycle_history history
+                   WHERE history.source_id = source.id AND history.effective_at <= %s
+                   ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
+               ) lifecycle ON true
+               WHERE source.family = 'phase2' AND source.created_at <= %s""",
+            [as_of, as_of],
+        ).fetchall()]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in price_rows:
         grouped[str(row["symbol"])].append(row)
@@ -225,6 +276,36 @@ def refresh_market_publication(
         as_of, assets, drivers, input_lineage, horizon_evidence, event_risk_evidence,
         volatility_evidence, corporate_cycle_evidence, crypto_volume_evidence,
     )
+    phase2_observations = _phase2_observations(phase2_rows)
+    phase2_lifecycle = _phase2_source_lifecycle(phase2_rows, phase2_source_rows)
+    phase2_statuses = _phase2_source_statuses(phase2_rows, phase2_source_rows)
+    phase2_run_ids = tuple(sorted({row.ingest_run_id for row in phase2_observations if row.ingest_run_id}))
+    phase2_content_hash = phase2_input_content_hash(phase2_observations)
+    phase2_posterior = build_market_state_posterior(
+        phase2_observations, as_of=as_of, source_lifecycle=phase2_lifecycle,
+        source_statuses=phase2_statuses, ingest_run_ids=phase2_run_ids,
+        input_content_hash=phase2_content_hash, parent_snapshot_id=snapshot.snapshot_id,
+    )
+    phase2_coverage = build_coverage_vector(
+        as_of,
+        {
+            "stock": {"daily": ("macro.value", "rates.nominal_yield", "credit.spread"), "positioning": ("positioning.flow",)},
+            "options": {"positioning": ("option.open_interest", "option.volume")},
+            "crypto": {"venue_derivatives": ("crypto.depth",)},
+        },
+        phase2_observations,
+        source_lifecycle=phase2_lifecycle,
+        source_statuses=phase2_statuses,
+        ingest_run_ids=phase2_run_ids,
+        input_content_hash=phase2_content_hash,
+        parent_snapshot_id=snapshot.snapshot_id,
+    )
+    phase2_scenarios = build_scenario_paths(snapshot.snapshot_id, phase2_posterior)
+    snapshot = snapshot.model_copy(update={
+        "phase2_posterior": phase2_posterior.model_dump(mode="json"),
+        "phase2_coverage_vector": phase2_coverage.model_dump(mode="json"),
+        "phase2_scenario_paths": tuple(path.model_dump(mode="json") for path in phase2_scenarios),
+    })
     coverage_rows = _coverage_rows(snapshot.coverage_matrix)
     analysis = AnalysisRepository(runtime)
     volatility_inputs = {
@@ -280,6 +361,7 @@ def refresh_market_publication(
     publication = analysis.publication_by_id("market", publication_id)
     if publication is None or publication.get("published_at") is None:
         raise RuntimeError("published MarketState is not visible in PostgreSQL")
+    Phase2Repository(runtime).publish(phase2_posterior, phase2_coverage, phase2_scenarios)
     return {
         "status": "ok",
         "publication_id": str(publication_id),
@@ -2199,6 +2281,63 @@ def _coverage_rows(matrix: CoverageMatrix | None) -> list[dict[str, Any]]:
         }
         for row in matrix.rows
     ]
+
+
+def _phase2_observations(rows: list[dict[str, Any]]) -> tuple[PITObservation, ...]:
+    """Decode only persisted source facts; malformed rows remain unavailable."""
+
+    observations: list[PITObservation] = []
+    for row in rows:
+        try:
+            model = EventObservation if any(row.get(key) is not None for key in ("actual", "consensus", "surprise", "revision")) else PITObservation
+            observations.append(model.model_validate({key: value for key, value in row.items() if not key.startswith("source_") and key not in {"ingest_status", "ingest_finished_at"}}))
+        except (TypeError, ValueError):
+            continue
+    return tuple(observations)
+
+
+def _phase2_source_lifecycle(rows: list[dict[str, Any]], source_rows: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    lifecycle = {
+        str(row["source_id"]): {
+            "enabled": bool(row.get("source_enabled")),
+            "operational_state": str(row.get("source_operational_state") or "archived"),
+        }
+        for row in rows
+        if row.get("source_id")
+    }
+    lifecycle.update({
+        str(row["source_id"]): {
+            "enabled": bool(row.get("source_enabled")),
+            "operational_state": str(row.get("source_operational_state") or "archived"),
+        }
+        for row in source_rows or ()
+        if row.get("source_id")
+    })
+    return lifecycle
+
+
+def _phase2_source_statuses(rows: list[dict[str, Any]], source_rows: list[dict[str, Any]] | None = None) -> dict[str, Phase2Status]:
+    statuses: dict[str, Phase2Status] = {}
+    for row in source_rows or ():
+        value = str(row.get("phase2_status") or "")
+        try:
+            statuses[str(row["source_id"])] = Phase2Status(value)
+        except ValueError:
+            if not row.get("source_enabled") or str(row.get("source_operational_state") or "") != "active":
+                statuses[str(row["source_id"])] = Phase2Status.MISSING_SOURCE
+    for row in rows:
+        source_id = str(row.get("source_id") or "")
+        if not source_id:
+            continue
+        if not row.get("source_enabled") or str(row.get("source_operational_state") or "") != "active":
+            statuses[source_id] = Phase2Status.MISSING_SOURCE
+        elif str(row.get("ingest_status") or "") not in {"succeeded", "partial"}:
+            statuses[source_id] = Phase2Status.MISSING_HISTORY
+        elif row.get("ingest_finished_at") is None:
+            statuses[source_id] = Phase2Status.STALE
+        else:
+            statuses.setdefault(source_id, Phase2Status.AVAILABLE)
+    return statuses
 
 
 def _number(value: Any) -> float | None:

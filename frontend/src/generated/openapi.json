@@ -3877,6 +3877,25 @@
             "title": "Input Lineage",
             "type": "array"
           },
+          "phase2_coverage_vector": {
+            "additionalProperties": true,
+            "title": "Phase2 Coverage Vector",
+            "type": "object"
+          },
+          "phase2_posterior": {
+            "additionalProperties": true,
+            "title": "Phase2 Posterior",
+            "type": "object"
+          },
+          "phase2_scenario_paths": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Phase2 Scenario Paths",
+            "type": "array"
+          },
           "publication_id": {
             "anyOf": [
               {

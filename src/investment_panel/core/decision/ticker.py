@@ -536,6 +536,11 @@ class MarketStateSnapshot(BaseModel):
     baseline_challenger: dict[str, dict[str, Any]] = Field(default_factory=dict)
     source_priorities: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     selected_sources: dict[str, str | None] = Field(default_factory=dict)
+    # Additive Phase 2 artifacts. These remain advisory and do not replace
+    # this snapshot as the MarketState authority.
+    phase2_posterior: dict[str, Any] = Field(default_factory=dict)
+    phase2_coverage_vector: dict[str, Any] = Field(default_factory=dict)
+    phase2_scenario_paths: tuple[dict[str, Any], ...] = ()
 
     @model_validator(mode="before")
     @classmethod

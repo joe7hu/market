@@ -37,6 +37,16 @@ _EXACT_CONTRACTS: dict[str, SourceHealthContract] = {
     "official-event-calendar": SourceHealthContract(ACTIVE, "update_event_calendar", 86400),
     "mungermode-market-valuations": SourceHealthContract(ACTIVE, "update_market_valuations", 86400),
     "sec_companyfacts": SourceHealthContract(ACTIVE, "update_company_financials", 86400),
+    "sec_13f": SourceHealthContract(ACTIVE, "update_disclosures", 86400),
+    # Phase 2 producers stay standby until their credential/history contract
+    # is proven. The adapter reports MISSING_SOURCE or MISSING_HISTORY.
+    "fred": SourceHealthContract(STANDBY, "update_phase2_sources", 86400),
+    "treasury": SourceHealthContract(STANDBY, "update_phase2_sources", 86400),
+    "trading_economics": SourceHealthContract(STANDBY, "update_phase2_sources", 86400),
+    "alphavantage": SourceHealthContract(STANDBY, "update_phase2_sources", 86400),
+    "robinhood_history_full": SourceHealthContract(STANDBY, "update_phase2_sources", 900),
+    "ibkr_options": SourceHealthContract(STANDBY, "update_phase2_sources", 900),
+    "coinmetrics": SourceHealthContract(STANDBY, "update_phase2_sources", 3600),
 }
 
 _PREFIX_CONTRACTS: tuple[tuple[str, SourceHealthContract], ...] = (
@@ -78,6 +88,8 @@ def source_health_contract(
         state = str(requested_state).strip().lower()
         if state not in VALID_OPERATIONAL_STATES:
             raise ValueError(f"invalid source operational state: {requested_state}")
+        if state == ACTIVE and source_id in _RETIRED_IDENTITIES:
+            raise ValueError(f"retired source {source_id!r} cannot be active")
         if state == ARCHIVED:
             return SourceHealthContract(ARCHIVED, None, None)
 
@@ -109,8 +121,10 @@ def source_health_contracts() -> tuple[SourceHealthContract, ...]:
     return tuple(_EXACT_CONTRACTS.values()) + tuple(contract for _, contract in _PREFIX_CONTRACTS)
 
 
-def set_source_enabled(runtime: DatabaseRuntime, source_id: str, enabled: bool) -> None:
+def set_source_enabled(runtime: DatabaseRuntime, source_id: str, enabled: bool, *, effective_at: Any | None = None) -> None:
     with runtime.transaction() as connection:
+        if effective_at is not None:
+            connection.execute("SELECT set_config('market.phase2_effective_at', %s, true)", [effective_at.isoformat()])
         connection.execute(
             "UPDATE ingest.source SET enabled = %s, updated_at = now() WHERE id = %s",
             [enabled, source_id],
@@ -124,6 +138,7 @@ def set_source_operational_state(
     *,
     health_owner: str | None = None,
     freshness_seconds: int | None = None,
+    effective_at: Any | None = None,
 ) -> None:
     """Change a producer state only after its caller proves the transition."""
 
@@ -133,6 +148,8 @@ def set_source_operational_state(
     if operational_state == ACTIVE and (not owner or freshness is None or int(freshness) <= 0):
         raise ValueError(f"active source {source_id!r} requires an explicit health contract")
     with runtime.transaction() as connection:
+        if effective_at is not None:
+            connection.execute("SELECT set_config('market.phase2_effective_at', %s, true)", [effective_at.isoformat()])
         connection.execute(
             """
             UPDATE ingest.source

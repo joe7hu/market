@@ -16,6 +16,11 @@ export function MarketRoute() {
   const environmentRows = rows(data.marketEnvironmentModel);
   const snapshotRows = rows(data.marketStateSnapshot);
   const coverageRows = rows(data.coverageMatrix);
+  const posteriorRows = rows(data.marketStatePosterior);
+  const coverageVectorRows = rows(data.marketCoverageVector);
+  const scenarioRows = rows(data.marketScenarioPaths);
+  const optionSlaRows = rows(data.optionLiquiditySla);
+  const observationRows = rows(data.marketObservations);
   const freshness = marketFreshness(data.dashboard.status?.metadata?.market_freshness);
   const drivers = environmentRows.filter((row) => textField(row, ["category"]) !== "Overall");
   const marketDrivers = drivers.filter((row) => isMarketDriver(textField(row, ["category"])));
@@ -32,6 +37,11 @@ export function MarketRoute() {
         assetRows={assetRows}
         snapshotRows={snapshotRows}
         coverageRows={coverageRows}
+        posteriorRows={posteriorRows}
+        coverageVectorRows={coverageVectorRows}
+        scenarioRows={scenarioRows}
+        optionSlaRows={optionSlaRows}
+        observationRows={observationRows}
         freshness={freshness}
       />
 

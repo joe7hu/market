@@ -100,6 +100,7 @@ class IngestionRepository:
         operational_state: str | None = None,
         health_owner: str | None = None,
         freshness_seconds: int | None = None,
+        enabled: bool = True,
     ) -> None:
         contract = source_health_contract(
             source_id,
@@ -117,20 +118,31 @@ class IngestionRepository:
                 f"active source {source_id!r} requires an explicit health owner and positive cadence"
             )
         with self.runtime.transaction() as connection:
+            existing = connection.execute(
+                "SELECT family, kind, origin FROM ingest.source WHERE id = %s FOR UPDATE",
+                [source_id],
+            ).fetchone()
+            if existing is not None:
+                for column, requested in (("family", family), ("kind", kind), ("origin", origin)):
+                    if existing[column] != requested:
+                        raise ValueError(
+                            f"canonical source identity conflict for {source_id!r}: {column} is immutable"
+                        )
+                # Registration may refresh descriptive capabilities, but it is
+                # not lifecycle authority. Identity and lifecycle rows are
+                # changed only by the explicit source lifecycle APIs.
+                connection.execute(
+                    "UPDATE ingest.source SET name = %s, capabilities = %s, updated_at = now() WHERE id = %s",
+                    [name, Jsonb(capabilities or {}), source_id],
+                )
+                return
             connection.execute(
                 """
                 INSERT INTO ingest.source
                     (id, name, family, kind, origin, capabilities, enabled,
                      operational_state, health_owner, freshness_seconds)
-                VALUES (%s, %s, %s, %s, %s, %s, true, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE
-                SET name = EXCLUDED.name, family = EXCLUDED.family, kind = EXCLUDED.kind,
-                    origin = EXCLUDED.origin,
-                    capabilities = EXCLUDED.capabilities,
-                    operational_state = EXCLUDED.operational_state,
-                    health_owner = EXCLUDED.health_owner,
-                    freshness_seconds = EXCLUDED.freshness_seconds,
-                    updated_at = now()
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
                 """,
                 [
                     source_id,
@@ -139,6 +151,7 @@ class IngestionRepository:
                     kind,
                     origin,
                     Jsonb(capabilities or {}),
+                    enabled,
                     state,
                     owner,
                     freshness,
@@ -408,12 +421,21 @@ class IngestionRepository:
                 INSERT INTO ingest.payload
                     (run_id, archive_uri, sha256, encoding, byte_count, schema_version, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sha256) DO UPDATE
-                SET metadata = ingest.payload.metadata || EXCLUDED.metadata
+                ON CONFLICT (sha256) DO NOTHING
                 RETURNING id
                 """,
                 [run_id, archive_uri, digest, encoding, byte_count, schema_version, Jsonb(metadata or {})],
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    "SELECT id, encoding, byte_count, schema_version FROM ingest.payload WHERE sha256 = %s",
+                    [digest],
+                ).fetchone()
+                # The hash is the immutable payload identity.  A retry may
+                # arrive in another run or archive location, but divergent
+                # bytes/encoding/schema metadata must never be merged.
+                if row is None or tuple(row[key] for key in ("encoding", "byte_count", "schema_version")) != (encoding, byte_count, schema_version):
+                    raise ValueError(f"immutable payload identity conflicts: {digest}")
         return int(row["id"])
 
     def record_payload_file(

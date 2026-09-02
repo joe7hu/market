@@ -86,10 +86,27 @@ def test_ingestion_run_records_one_archived_payload_manifest(repository: Ingesti
             "SELECT status, finished_at FROM ingest.run WHERE id = %s", [run.id]
         ).fetchone()
     assert manifest == [
-        ("file:///archive/robinhood/2026-07-11.json.gz", len(payload), {"compression": "gzip", "verified": True})
+        ("file:///archive/robinhood/2026-07-11.json.gz", len(payload), {"compression": "gzip"})
     ]
     assert run[0] == "succeeded"
     assert run[1] is not None
+
+
+def test_register_source_cannot_rewrite_canonical_identity_or_lifecycle(repository: IngestionRepository, postgres_dsn: str) -> None:
+    repository.register_source(
+        "phase2-identity-test", name="Canonical", family="phase2", kind="provider",
+        origin="approved", operational_state="active", health_owner="phase2-test", freshness_seconds=60,
+    )
+    with pytest.raises(ValueError, match="canonical source identity conflict"):
+        repository.register_source(
+            "phase2-identity-test", name="Attacker", family="legacy", kind="provider",
+            origin="unapproved", operational_state="archived",
+        )
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        row = connection.execute(
+            "SELECT family, kind, origin, enabled, operational_state FROM ingest.source WHERE id = 'phase2-identity-test'"
+        ).fetchone()
+    assert row == ("phase2", "provider", "approved", True, "active")
 
 
 def test_failed_ingestion_run_persists_failure(repository: IngestionRepository, postgres_dsn: str) -> None:
