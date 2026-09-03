@@ -1011,6 +1011,72 @@ DIRECT_QUERIES: dict[str, str] = {
           AND observation.observed_at <= now()
         ORDER BY available_at DESC, observation_id LIMIT 500
     """,
+    "portfolio_allocation": """
+        SELECT allocation_id, as_of, input_cutoff, status, cash_hurdle,
+               forecast_ids, action_ids, strategy_registry_ids, input_hash,
+               available_at, metadata
+        FROM analysis.portfolio_allocation_snapshot
+        ORDER BY as_of DESC, available_at DESC, allocation_id DESC
+        LIMIT 1
+    """,
+    "portfolio_allocation_items": """
+        SELECT item.allocation_item_id, item.allocation_id, item.ticker,
+               item.strategy_forecast_id, item.action_id, item.hypothesis_id::text,
+               item.disposition, item.target_weight, item.marginal_book_utility,
+               item.trace, item.blockers, item.funding_source, item.created_at
+        FROM analysis.portfolio_allocation_item item
+        JOIN LATERAL (
+            SELECT allocation_id
+            FROM analysis.portfolio_allocation_snapshot
+            ORDER BY as_of DESC, available_at DESC, allocation_id DESC
+            LIMIT 1
+        ) latest ON latest.allocation_id = item.allocation_id
+        ORDER BY item.disposition, item.target_weight DESC, item.ticker
+        LIMIT 500
+    """,
+    "portfolio_scenario_artifact": """
+        SELECT scenario_artifact_id, allocation_id, model_version,
+               probability_semantics, scenarios, tail_dependence,
+               simultaneous_unwind, input_cutoff, input_hash, available_at
+        FROM analysis.probabilistic_portfolio_scenario_artifact
+        ORDER BY input_cutoff DESC, available_at DESC, scenario_artifact_id DESC
+        LIMIT 1
+    """,
+    "execution_model_snapshot": """
+        SELECT execution_model_snapshot_id, allocation_id, model_version,
+               calibration_status, sample_count, fill_probability, spread_bps,
+               latency_ms, impact_bps, input_cutoff, input_hash, available_at,
+               metadata
+        FROM analysis.execution_model_snapshot
+        ORDER BY input_cutoff DESC, available_at DESC, execution_model_snapshot_id DESC
+        LIMIT 1
+    """,
+    "paper_execution_observations": """
+        SELECT paper_execution_observation_id, allocation_item_id, paper_order_id::text,
+               execution_mode, paper_only, status, requested_quantity, filled_quantity,
+               requested_price, fill_price, spread_bps, latency_ms, impact_bps,
+               observed_at, available_at, metadata
+        FROM app.paper_execution_observation
+        WHERE paper_only AND execution_mode = 'paper'
+        ORDER BY observed_at DESC, paper_execution_observation_id DESC
+        LIMIT 500
+    """,
+    "book_attribution": """
+        SELECT attribution.book_attribution_id, attribution.allocation_id,
+               attribution.allocation_item_id, attribution.strategy_forecast_id,
+               attribution.hypothesis_id::text, attribution.paper_execution_observation_id,
+               attribution.pnl_status, attribution.realized_pnl, attribution.attribution,
+               attribution.input_cutoff, attribution.available_at
+        FROM analysis.book_attribution attribution
+        JOIN LATERAL (
+            SELECT allocation_id
+            FROM analysis.portfolio_allocation_snapshot
+            ORDER BY as_of DESC, available_at DESC, allocation_id DESC
+            LIMIT 1
+        ) latest ON latest.allocation_id = attribution.allocation_id
+        ORDER BY attribution.available_at DESC, attribution.book_attribution_id DESC
+        LIMIT 500
+    """,
 }
 
 

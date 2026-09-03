@@ -5,6 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 
+PHASE4_PORTFOLIO_TABLES = (
+    "portfolio_allocation",
+    "portfolio_allocation_items",
+    "portfolio_scenario_artifact",
+    "execution_model_snapshot",
+    "paper_execution_observations",
+    "book_attribution",
+)
+
+
 PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "feed": ("feed_signals",),
     # Today is the bounded action queue. Keep canonical ticker decisions first
@@ -18,7 +28,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "daily_brief",
         "portfolio_risk_cards",
         "feed_signals",
-    ),
+    ) + PHASE4_PORTFOLIO_TABLES,
     "watchlist": (
         "universe_screen",
         "manual_watchlist",
@@ -163,7 +173,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "correlation_edges",
         "portfolio_risk_cards",
         "review_actions",
-    ),
+    ) + PHASE4_PORTFOLIO_TABLES,
     "portfolio": (
         "portfolio",
         "ticker_decisions",
@@ -175,7 +185,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "exposure_clusters",
         "portfolio_risk_cards",
         "review_actions",
-    ),
+    ) + PHASE4_PORTFOLIO_TABLES,
     "research": (
         "research_hypotheses",
         "research_experiment_families",
@@ -230,7 +240,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "agent_thesis_validation",
         "agent_postmortem_request",
         "agent_postmortem",
-    ),
+    ) + PHASE4_PORTFOLIO_TABLES,
     "thesis-monitor": (
         "thesis_monitor",
         "theses",
@@ -248,7 +258,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "provider_runs",
         "broker_status",
         "option_recovery_health",
-    ),
+    ) + PHASE4_PORTFOLIO_TABLES,
     "decision-inbox": (),
     "filings": ("ownership_consensus", "disclosures"),
     "calendar": ("catalysts", "earnings"),

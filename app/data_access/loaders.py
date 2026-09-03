@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.decision import TradePlan
-from investment_panel.core.panel import tables_for_scope
+from investment_panel.core.panel import PHASE4_PORTFOLIO_TABLES, tables_for_scope
 from app.data_access.types import DataStatus, PanelData
 from investment_panel.core.panel import (
     SCOPED_TABLE_ROW_LIMITS,
@@ -306,6 +306,7 @@ def load_daily_research_panel_data(
         for name in DAILY_RESEARCH_TABLES
         if name not in seed_names and name not in {"quotes", "universe_screen"}
     )
+    remaining = tuple(dict.fromkeys((*remaining, *PHASE4_PORTFOLIO_TABLES)))
     detail = load_panel_data(
         active_config,
         table_names=remaining,
@@ -469,13 +470,14 @@ def load_opportunities_scope_data(
     active_config = config if config is not None else load_config()
     page_offset = max(0, int(offset or 0))
     page_limit = min(120, max(1, int(limit))) if limit is not None else 120
-    table_names = ("opportunities_ranked", "screener") if include_screener else ("opportunities_ranked",)
+    table_names = ("opportunities_ranked", "screener", *PHASE4_PORTFOLIO_TABLES) if include_screener else ("opportunities_ranked", *PHASE4_PORTFOLIO_TABLES)
     query_limit = page_offset + page_limit
     return load_panel_data(
         active_config,
         table_names=table_names,
         query_row_limits={
             "opportunities_ranked": query_limit,
+            **{name: 500 for name in PHASE4_PORTFOLIO_TABLES},
             **({"screener": query_limit} if include_screener else {}),
         },
     )
