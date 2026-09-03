@@ -23,9 +23,9 @@ def insert_cash_allocation(connection: psycopg.Connection) -> None:
     connection.execute(
         """INSERT INTO analysis.portfolio_allocation_item
            (allocation_item_id, allocation_id, ticker, disposition, target_weight,
-            marginal_book_utility, trace, content_hash)
-           VALUES (%s, %s, 'CASH', 'selected', 1, 0, '{}'::jsonb, %s)""",
-        ["allocation-item:" + "b" * 64, allocation_id, "c" * 64],
+            marginal_book_utility, trace, input_hash, content_hash)
+           VALUES (%s, %s, 'CASH', 'selected', 1, 0, '{}'::jsonb, %s, %s)""",
+        ["allocation-item:" + "b" * 64, allocation_id, "b" * 64, "c" * 64],
     )
     connection.commit()
 
@@ -58,20 +58,22 @@ def test_phase4_artifacts_are_immutable_and_paper_only(migrated_postgres_dsn: st
             )
         connection.rollback()
         with pytest.raises((CheckViolation, RaiseException)):
-            connection.execute(
-                """INSERT INTO app.paper_execution_observation
-                   (paper_execution_observation_id, paper_order_id, execution_mode, paper_only, status,
-                    requested_quantity, filled_quantity, observed_at)
-                   VALUES ('observation:bad', %s, 'live', false, 'submitted', 1, 0, %s)""",
-                [paper_order_id, AS_OF],
-            )
+                connection.execute(
+                    """INSERT INTO app.paper_execution_observation
+                       (paper_execution_observation_id, allocation_item_id, action_id, paper_order_id,
+                        execution_mode, paper_only, status,
+                        requested_quantity, filled_quantity, observed_at)
+                       VALUES ('observation:bad', %s, %s, %s, 'live', false, 'submitted', 1, 0, %s)""",
+                    ["allocation-item:" + "b" * 64, "action:compatibility", paper_order_id, AS_OF],
+                )
         connection.rollback()
         connection.execute(
             """INSERT INTO app.paper_execution_observation
-               (paper_execution_observation_id, paper_order_id, execution_mode, paper_only, status,
+               (paper_execution_observation_id, allocation_item_id, action_id, paper_order_id,
+                execution_mode, paper_only, status,
                 requested_quantity, filled_quantity, observed_at)
-               VALUES ('observation:good', %s, 'paper', true, 'submitted', 1, 0, %s)""",
-            [paper_order_id, AS_OF],
+               VALUES ('observation:good', %s, %s, %s, 'paper', true, 'submitted', 1, 0, %s)""",
+            ["allocation-item:" + "b" * 64, "action:compatibility", paper_order_id, AS_OF],
         )
         connection.commit()
         assert connection.execute(

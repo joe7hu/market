@@ -24,6 +24,10 @@ def candidate(candidate_id: str, **overrides: object) -> PortfolioCandidate:
         "strategy_forecast_id": f"forecast:{candidate_id}",
         "action_id": f"action:{candidate_id}",
         "rank_id": f"rank:{candidate_id}",
+        "hypothesis_id": "hypothesis:test",
+        "experiment_id": "experiment:test",
+        "trial_id": "trial:test",
+        "result_id": "result:test",
         "expected_return": 0.12,
         "uncertainty": 0.02,
         "volatility": 0.20,
@@ -143,7 +147,7 @@ def test_decay_guard_reduces_before_the_rollback_threshold() -> None:
 
 def observation(status: str, filled: float = 0, *, exit_price: float | None = None) -> PaperExecutionObservation:
     return PaperExecutionObservation(
-        paper_execution_observation_id=f"observation:{status}:{filled}", paper_order_id="00000000-0000-0000-0000-000000000001", status=status,
+        paper_execution_observation_id=f"observation:{status}:{filled}", allocation_item_id="allocation-item:test", action_id="action:test", paper_order_id="00000000-0000-0000-0000-000000000001", status=status,
         requested_quantity=10, filled_quantity=filled, requested_price=100,
         fill_price=100.5 if filled else None, spread_bps=5 if filled else None,
         exit_price=exit_price, observed_at=AS_OF, available_at=AS_OF + timedelta(seconds=1),

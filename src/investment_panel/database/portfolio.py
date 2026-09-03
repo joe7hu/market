@@ -6,12 +6,13 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import PortfolioImpact, StrategyForecast, TradePlan
+from investment_panel.core.decision import StrategyForecast, TradePlan
 from investment_panel.core.portfolio import (
     BookAttribution,
     AuthoritativePortfolioBundle,
     PortfolioBookEvidence,
     PortfolioConstraintEvidence,
+    PortfolioImpactRiskEvidence,
     PortfolioExecutionEvidence,
     PortfolioScenarioEvidence,
     ExecutionModelSnapshot,
@@ -280,10 +281,12 @@ class PortfolioLoopRepository:
                           forecast.probability_semantics, forecast.model_artifact_id,
                           forecast.artifact_hash, forecast.input_hash, forecast.as_of,
                           forecast.input_cutoff, forecast.generated_at, forecast.available_at,
+                          forecast.research_trial_id, forecast.trial_result_id,
                           forecast.status, revision.strategy_key, revision.revision,
                           revision.hypothesis_id::text AS hypothesis_id,
                           decision.input_manifest->'trade_plan' AS trade_plan,
                           decision.id AS ticker_decision_id, decision.input_hash AS decision_input_hash,
+                          decision.experiment_id AS decision_experiment_id,
                           decision.portfolio_impacts, decision.data_requests,
                           decision.selected_expression
                    FROM analysis.strategy_forecast forecast
@@ -291,7 +294,7 @@ class PortfolioLoopRepository:
                    JOIN analysis.strategy_revision revision ON revision.id = forecast.strategy_revision_id
                    LEFT JOIN LATERAL (
                        SELECT decision.input_manifest, decision.portfolio_impacts,
-                              decision.id, decision.input_hash,
+                              decision.id, decision.input_hash, decision.experiment_id,
                               decision.data_requests, decision.as_of
                        FROM analysis.ticker_decision decision
                        WHERE decision.instrument_id = forecast.instrument_id
@@ -334,29 +337,32 @@ class PortfolioLoopRepository:
                 impact_values = raw.get("portfolio_impacts") or {}
                 impact_raw = impact_values.get(plan.selected_expression_kind.value) if isinstance(impact_values, dict) else None
                 try:
-                    impact_model = PortfolioImpact.model_validate(impact_raw)
+                    if not isinstance(impact_raw, dict):
+                        raise ValueError("portfolio impact risk row is not an object")
+                    uncertainty = (
+                        abs(float(forecast.forecast_range.high) - float(forecast.forecast_range.low)) / 2
+                        if forecast.forecast_range is not None else None
+                    )
+                    risk_evidence = PortfolioImpactRiskEvidence.model_validate({
+                        "impact_id": impact_raw.get("impact_id"), "ticker": forecast.ticker,
+                        "source_decision_id": str(raw.get("ticker_decision_id") or ""),
+                        "source_input_hash": str(raw.get("decision_input_hash") or ""),
+                        "input_cutoff": forecast.input_cutoff, "expected_return": forecast.forecast_value,
+                        "uncertainty": uncertainty, "volatility": impact_raw.get("volatility"),
+                        "risk_budget": impact_raw.get("risk_budget"), "kelly_cap": impact_raw.get("kelly_cap"),
+                        "drawdown_cap": impact_raw.get("drawdown_cap"), "capacity": impact_raw.get("capacity"),
+                        "overlap_penalty": impact_raw.get("portfolio_overlap_penalty", 0),
+                        "execution_penalty": impact_raw.get("expected_transaction_costs", 0),
+                        "covariance": impact_raw.get("covariance"),
+                    })
                 except (TypeError, ValueError):
                     continue
-                if impact_model.impact_id != plan.portfolio_impact_id:
-                    continue
-                impact = impact_model.model_dump(mode="json")
-                # The persisted impact projection is the only source for risk
-                # inputs. Select and validate its canonical fields before the
-                # allocator sees them; callers cannot replace this bundle.
-                risk = {key: impact.get(key) for key in (
-                    "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity",
-                    "covariance", "portfolio_overlap_penalty", "expected_transaction_costs",
-                )}
-                if any(value is None for value in risk.values()):
+                if risk_evidence.impact_id != plan.portfolio_impact_id:
                     continue
                 position = position_by_ticker.get(forecast.ticker.upper())
                 nav = float(account["net_liquidation"]) if account and account["net_liquidation"] is not None else None
                 market_value = float(position["market_value"]) if position and position.get("market_value") is not None else 0.0
                 current_weight = min(max(abs(market_value / nav), 0.0), 1.0) if nav and nav > 0 else 0.0
-                range_value = forecast.forecast_range
-                uncertainty = None
-                if range_value is not None:
-                    uncertainty = abs(float(range_value.high) - float(range_value.low)) / 2
                 candidates.append(PortfolioCandidate(
                     candidate_id=forecast.strategy_forecast_id,
                     ticker=forecast.ticker,
@@ -364,16 +370,20 @@ class PortfolioLoopRepository:
                     action_id=plan.trade_plan_id,
                     rank_id=plan.rank_id,
                     hypothesis_id=raw.get("hypothesis_id"),
-                    portfolio_impact_id=impact_model.impact_id,
+                    portfolio_impact_id=risk_evidence.impact_id,
                     source_decision_id=str(raw.get("ticker_decision_id") or "") or None,
                     source_input_hash=str(raw.get("decision_input_hash") or "") or None,
+                    experiment_id=str(raw.get("decision_experiment_id") or "") or None,
+                    trial_id=str(raw.get("research_trial_id") or "") or None,
+                    result_id=str(raw.get("trial_result_id") or "") or None,
+                    risk_evidence=risk_evidence,
                     strategy_registry_id=f"strategy_revision:{raw.get('strategy_revision_id')}",
                     expected_return=forecast.forecast_value,
                     uncertainty=uncertainty,
-                    volatility=risk["volatility"], risk_budget=risk["risk_budget"],
-                    kelly_cap=risk["kelly_cap"], drawdown_cap=risk["drawdown_cap"],
-                    capacity=risk["capacity"], overlap_penalty=risk["portfolio_overlap_penalty"],
-                    execution_penalty=risk["expected_transaction_costs"], covariance=risk["covariance"],
+                    volatility=risk_evidence.volatility, risk_budget=risk_evidence.risk_budget,
+                    kelly_cap=risk_evidence.kelly_cap, drawdown_cap=risk_evidence.drawdown_cap,
+                    capacity=risk_evidence.capacity, overlap_penalty=risk_evidence.overlap_penalty,
+                    execution_penalty=risk_evidence.execution_penalty, covariance=risk_evidence.covariance,
                     expression=plan.selected_expression.model_dump(mode="json"),
                     invalidation=plan.invalidation.model_dump(mode="json") if plan.invalidation is not None else None,
                     missing_data=tuple(str(value) for value in (raw.get("data_requests") or []) if str(value).strip()),
@@ -430,6 +440,21 @@ class PortfolioLoopRepository:
                 "source": "app.setting:portfolio_cash_hurdle",
                 "candidate_count": len(candidates),
             }
+            authority_snapshot_id = f"broker-account:{account['id']}" if account else "missing"
+            authority_content_hash = canonical_content_hash({
+                "authority_snapshot_id": authority_snapshot_id,
+                "input_cutoff": as_of,
+                "cash_hurdle": cash_hurdle,
+                "candidate_provenance": [
+                    {
+                        "impact_id": candidate.portfolio_impact_id,
+                        "decision_id": candidate.source_decision_id,
+                        "source_input_hash": candidate.source_input_hash,
+                        "risk": candidate.risk_evidence.model_dump(mode="json") if candidate.risk_evidence else None,
+                    }
+                    for candidate in candidates
+                ],
+            })
             required_candidates = all(
                 candidate.evidence_status == "available"
                 and not candidate.blockers
@@ -471,6 +496,8 @@ class PortfolioLoopRepository:
             ),
             drift_scores=drift_by_revision,
             complete=complete,
+            authority_snapshot_id=authority_snapshot_id,
+            authority_content_hash=authority_content_hash,
         )
 
     def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
