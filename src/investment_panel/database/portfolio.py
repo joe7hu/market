@@ -196,7 +196,7 @@ class PortfolioLoopRepository:
                     key: row[key] for key in (
                         "execution_model_snapshot_id", "allocation_id", "model_version",
                         "calibration_status", "sample_count", "fill_probability",
-                        "spread_bps", "latency_ms", "impact_bps", "input_cutoff",
+                        "spread_bps", "latency_ms", "impact_bps", "input_cutoff", "metadata",
                     )
                 })
                 if str(row.get("content_hash") or "").strip() != canonical_content_hash(execution_model):
@@ -668,6 +668,12 @@ class PortfolioLoopRepository:
                 "constraint": constraint_payload,
                 "execution": dict(execution_row) if execution_row else None,
                 "scenario_rows": tape_rows,
+                "source_rows": {
+                    "account": dict(account) if account else None,
+                    "positions": [dict(position) for position in positions],
+                    "candidates": [dict(row) for row in rows],
+                    "tape": tape_rows,
+                },
                 "candidate_provenance": [
                     {
                         "impact_id": candidate.portfolio_impact_id,
@@ -691,9 +697,7 @@ class PortfolioLoopRepository:
                 and cash_hurdle is not None and cash_hurdle > 0
                 and candidates and required_candidates and tape_rows
             )
-        repository_authority = issue_postgresql_authority(
-            as_of, authority_snapshot_id, canonical_content_hash(authority_payload),
-        )
+        repository_authority = issue_postgresql_authority(authority_payload)
         return AuthoritativePortfolioBundle._from_postgresql(
             repository_authority=repository_authority,
             candidates=tuple(candidates),
@@ -772,7 +776,7 @@ class PortfolioLoopRepository:
                 """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
                           execution_mode, paper_only, status, requested_quantity, filled_quantity,
                           requested_price, fill_price, spread_bps, latency_ms, impact_bps,
-                          side, exit_price, observed_at, available_at
+                          side, exit_price, observed_at, available_at, metadata
                    FROM app.paper_execution_observation
                    WHERE paper_only AND execution_mode = 'paper'
                      AND allocation_item_id = ANY(%s)
@@ -869,8 +873,8 @@ class PortfolioLoopRepository:
                     execution_mode, paper_only, status, requested_quantity, filled_quantity,
                           requested_price, fill_price, spread_bps, latency_ms, impact_bps,
                           side, exit_price,
-                          observed_at, available_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                          observed_at, available_at, metadata)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (paper_execution_observation_id) DO NOTHING""",
                 [
                     observation.paper_execution_observation_id, observation.allocation_item_id,
@@ -879,7 +883,7 @@ class PortfolioLoopRepository:
                     observation.requested_price, observation.fill_price, observation.spread_bps,
                     observation.latency_ms, observation.impact_bps, observation.side, observation.exit_price,
                     observation.observed_at,
-                    observation.available_at,
+                    observation.available_at, Jsonb(observation.metadata),
                 ],
             )
             allocation = connection.execute(
@@ -893,7 +897,7 @@ class PortfolioLoopRepository:
                     """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
                               execution_mode, paper_only, status, requested_quantity, filled_quantity,
                               requested_price, fill_price, spread_bps, latency_ms, impact_bps,
-                              side, exit_price, observed_at, available_at
+                              side, exit_price, observed_at, available_at, metadata
                        FROM app.paper_execution_observation
                        WHERE allocation_item_id = %s ORDER BY observed_at, paper_execution_observation_id""",
                     [observation.allocation_item_id],
@@ -941,6 +945,7 @@ class PortfolioLoopRepository:
             fill_price=float(order["actual_fill_price"]) if order["actual_fill_price"] is not None else None,
             exit_price=float(order["exit_price"]) if observation_status == "exited" else None,
             side=str(order["side"] or "buy"), observed_at=observed_at, available_at=observed_at,
+            metadata={"fees": float(order["fees"] or 0), "paper_order_id": str(order["id"])},
         )
         observation_id = self.record_paper_execution(observation, connection=connection)
         if observation_status == "exited":
@@ -975,7 +980,7 @@ class PortfolioLoopRepository:
                 item_model = next(row for row in allocation_model.items if row.allocation_item_id == item["allocation_item_id"])
                 attribution = attribute_paper_pnl(allocation_model, item_model, observation=observation)
                 fees = float(order["fees"] or 0)
-                gross_pnl = float(attribution.realized_pnl or 0)
+                gross_pnl = float(attribution.attribution["pnl"]["gross"])
                 decomposition = {
                     **attribution.attribution,
                     "pnl": {**attribution.attribution["pnl"], "gross": gross_pnl, "fees": fees, "net": gross_pnl - fees},

@@ -50,12 +50,18 @@ class _PostgreSQLAuthorityToken:
         return self._source_content_hash
 
 
-def issue_postgresql_authority(
-    cutoff: datetime, snapshot_id: str, source_content_hash: str,
-) -> object:
-    """Repository facade for issuing a verified PostgreSQL authority proof."""
+def issue_postgresql_authority(source_payload: Mapping[str, Any]) -> object:
+    """Issue proof only for one complete, content-addressed DB source slice."""
 
-    return _PostgreSQLAuthorityToken._issue(cutoff, snapshot_id, source_content_hash)
+    if not isinstance(source_payload, Mapping):
+        raise TypeError("PostgreSQL authority requires one canonical source payload")
+    cutoff = source_payload.get("input_cutoff")
+    snapshot_id = source_payload.get("authority_snapshot_id")
+    if not isinstance(cutoff, datetime) or not isinstance(snapshot_id, str):
+        raise ValueError("PostgreSQL authority source payload is incomplete")
+    return _PostgreSQLAuthorityToken._issue(
+        cutoff, snapshot_id, canonical_content_hash(source_payload),
+    )
 
 
 def _json(value: Any) -> Any:
@@ -1414,6 +1420,7 @@ class PaperExecutionObservation(BaseModel):
     exit_price: float | None = None
     observed_at: datetime
     available_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def enforce_paper(self) -> "PaperExecutionObservation":
@@ -1489,7 +1496,10 @@ def build_execution_model_snapshot(
         "spread_bps": (sum(item.spread_bps for item in genuine if item.spread_bps is not None) / len([item for item in genuine if item.spread_bps is not None])) if any(item.spread_bps is not None for item in genuine) else None,
         "latency_ms": sum(latency_values) / len(latency_values) if latency_values else None,
         "impact_bps": sum(impact_values) / len(impact_values) if impact_values else None,
-        "metadata": {},
+        "metadata": {
+            "paper_observation_ids": sorted(item.paper_execution_observation_id for item in genuine),
+            "source": "paper_execution_observation",
+        },
     }
     return ExecutionModelSnapshot(
         execution_model_snapshot_id=f"execution:{_hash(payload)}", allocation_id=allocation_id,
@@ -1559,7 +1569,11 @@ def attribute_paper_pnl(
         raise ValueError("attribution requires a genuine exited paper fill")
     direction = 1 if observation.side == "buy" else -1
     status = "realized"
-    derived_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity
+    gross_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity
+    fees = observation.metadata.get("fees", 0)
+    if not isinstance(fees, (int, float)) or not isfinite(float(fees)) or float(fees) < 0:
+        raise ValueError("attribution requires a finite persisted paper fee")
+    derived_pnl = gross_pnl - float(fees)
     trace = item.trace
     lineage = {
         "experiment_id": trace.get("experiment_id"),
@@ -1578,10 +1592,11 @@ def attribute_paper_pnl(
         "rank_id": item.rank_id, "expression": trace.get("expression"),
         "invalidation": trace.get("invalidation"),
         "fill_id": observation.paper_execution_observation_id if observation else None,
-        "pnl": {"realized": derived_pnl if status == "realized" else None, "quantity": observation.filled_quantity if observation else None,
+        "pnl": {"gross": gross_pnl, "realized": derived_pnl if status == "realized" else None, "fees": float(fees), "net": derived_pnl,
+                "quantity": observation.filled_quantity if observation else None,
                 "entry_price": observation.fill_price if observation else None, "exit_price": observation.exit_price if observation else None},
         "cost_decomposition": {"spread_bps": observation.spread_bps if observation else None,
-                               "impact_bps": observation.impact_bps if observation else None, "fees": None},
+                               "impact_bps": observation.impact_bps if observation else None, "fees": float(fees)},
     }
     record_payload = {
         "allocation_id": allocation.allocation_id, "allocation_item_id": item.allocation_item_id,

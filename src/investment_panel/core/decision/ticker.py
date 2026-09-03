@@ -3090,11 +3090,12 @@ def _portfolio_impact_from_legacy(value: Any, *, ticker: str) -> PortfolioImpact
 
 
 def portfolio_impact_from_persisted(value: Any, *, ticker: str) -> Any:
-    if isinstance(value, Mapping) and (
-        value.get("ticker") is None or not str(value.get("ticker")).strip()
-    ):
-        return PortfolioImpact.from_legacy(value, ticker=ticker)
-    return value
+    if isinstance(value, PortfolioImpact):
+        return value
+    raw = value.model_dump(mode="python") if isinstance(value, BaseModel) else value
+    if isinstance(raw, Mapping) and raw.get("ticker") is not None and str(raw.get("ticker")).strip():
+        return PortfolioImpact.model_validate(raw)
+    return PortfolioImpact.from_legacy(raw, ticker=ticker)
 
 
 def portfolio_impacts_from_persisted(value: Any, *, ticker: str) -> Any:

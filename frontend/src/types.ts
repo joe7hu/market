@@ -129,7 +129,8 @@ export type PanelData = KnownPanelTables & {
   settings: SettingsPayload;
   errors: Partial<Record<PanelEndpoint, string>>;
   scopeStatus: Record<string, ScopeSnapshotStatus>;
-  [key: string]: DashboardPayload | SettingsPayload | TablePayload | Partial<Record<PanelEndpoint, string>> | Record<string, ScopeSnapshotStatus> | undefined;
+  portfolioIntegrated?: components["schemas"]["PortfolioIntegratedDTO"];
+  [key: string]: DashboardPayload | SettingsPayload | TablePayload | Partial<Record<PanelEndpoint, string>> | Record<string, ScopeSnapshotStatus> | components["schemas"]["PortfolioIntegratedDTO"] | undefined;
 };
 
 export type PanelEndpoint = keyof KnownPanelTables | "dashboard" | "settings";

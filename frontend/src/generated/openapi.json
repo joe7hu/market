@@ -9115,6 +9115,16 @@
               }
             ]
           },
+          "portfolio_integrated": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PortfolioIntegratedDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "scope": {
             "title": "Scope",
             "type": "string"
@@ -9393,6 +9403,212 @@
           "trade_plan_id"
         ],
         "title": "PaperExecutionOutcome",
+        "type": "object"
+      },
+      "PortfolioActionDTO": {
+        "additionalProperties": false,
+        "description": "Canonical action read model for every Phase 4 consumer.",
+        "properties": {
+          "action_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Id"
+          },
+          "allocation_id": {
+            "title": "Allocation Id",
+            "type": "string"
+          },
+          "allocation_item_id": {
+            "title": "Allocation Item Id",
+            "type": "string"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "current_mrc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Mrc"
+          },
+          "current_weight": {
+            "title": "Current Weight",
+            "type": "number"
+          },
+          "disposition": {
+            "title": "Disposition",
+            "type": "string"
+          },
+          "expression": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expression"
+          },
+          "funding_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funding Source"
+          },
+          "invalidation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation"
+          },
+          "marginal_book_utility": {
+            "title": "Marginal Book Utility",
+            "type": "number"
+          },
+          "missing_data": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Data",
+            "type": "array"
+          },
+          "proposed_mrc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Mrc"
+          },
+          "rank_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Id"
+          },
+          "sizing_trace": {
+            "additionalProperties": true,
+            "title": "Sizing Trace",
+            "type": "object"
+          },
+          "strategy_forecast_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Forecast Id"
+          },
+          "target_weight": {
+            "title": "Target Weight",
+            "type": "number"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "why_now": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Why Now",
+            "type": "array"
+          },
+          "why_trade": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why Trade"
+          }
+        },
+        "required": [
+          "allocation_id",
+          "allocation_item_id",
+          "ticker",
+          "disposition",
+          "target_weight",
+          "current_weight",
+          "marginal_book_utility",
+          "sizing_trace"
+        ],
+        "title": "PortfolioActionDTO",
+        "type": "object"
+      },
+      "PortfolioExecutionDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "allocation_id": {
+            "title": "Allocation Id",
+            "type": "string"
+          },
+          "calibration_status": {
+            "title": "Calibration Status",
+            "type": "string"
+          },
+          "execution_model_snapshot_id": {
+            "title": "Execution Model Snapshot Id",
+            "type": "string"
+          },
+          "sample_count": {
+            "minimum": 0.0,
+            "title": "Sample Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "execution_model_snapshot_id",
+          "allocation_id",
+          "calibration_status",
+          "sample_count"
+        ],
+        "title": "PortfolioExecutionDTO",
         "type": "object"
       },
       "PortfolioImpact": {
@@ -9827,6 +10043,136 @@
           "cutoff"
         ],
         "title": "PortfolioImpact",
+        "type": "object"
+      },
+      "PortfolioIntegratedDTO": {
+        "additionalProperties": false,
+        "description": "One typed, immutable allocation view shared by all five workspaces.",
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/PortfolioActionDTO"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "allocation_id": {
+            "title": "Allocation Id",
+            "type": "string"
+          },
+          "attribution_count": {
+            "default": 0,
+            "title": "Attribution Count",
+            "type": "integer"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PortfolioExecutionDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution_model_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Model Snapshot Id"
+          },
+          "input_cutoff": {
+            "format": "date-time",
+            "title": "Input Cutoff",
+            "type": "string"
+          },
+          "postmortem": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Postmortem",
+            "type": "array"
+          },
+          "scenario": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PortfolioScenarioDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenario_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Artifact Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "allocation_id",
+          "input_cutoff",
+          "status",
+          "actions"
+        ],
+        "title": "PortfolioIntegratedDTO",
+        "type": "object"
+      },
+      "PortfolioScenarioDTO": {
+        "additionalProperties": false,
+        "properties": {
+          "allocation_id": {
+            "title": "Allocation Id",
+            "type": "string"
+          },
+          "scenario_artifact_id": {
+            "title": "Scenario Artifact Id",
+            "type": "string"
+          },
+          "scenarios": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Scenarios",
+            "type": "array"
+          },
+          "simultaneous_unwind": {
+            "additionalProperties": true,
+            "title": "Simultaneous Unwind",
+            "type": "object"
+          },
+          "tail_dependence": {
+            "additionalProperties": true,
+            "title": "Tail Dependence",
+            "type": "object"
+          }
+        },
+        "required": [
+          "scenario_artifact_id",
+          "allocation_id",
+          "scenarios",
+          "tail_dependence",
+          "simultaneous_unwind"
+        ],
+        "title": "PortfolioScenarioDTO",
         "type": "object"
       },
       "PortfolioTransactionInput": {

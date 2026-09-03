@@ -1,4 +1,5 @@
 import type { PanelData } from "@/types";
+import type { components } from "@/generated/apiSchema";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -25,52 +26,9 @@ export type Phase4Action = {
   sizingTrace: JsonObject;
 };
 
-export type PortfolioActionDTO = {
-  allocation_id: string;
-  allocation_item_id: string;
-  ticker: string;
-  disposition: string;
-  strategy_forecast_id: string | null;
-  action_id: string | null;
-  rank_id: string | null;
-  expression: JsonObject | null;
-  invalidation: JsonObject | null;
-  why_trade: string | null;
-  why_now?: string[];
-  missing_data: string[];
-  blockers: string[];
-  target_weight: number | null;
-  current_weight: number | null;
-  marginal_book_utility: number | null;
-  current_mrc: number | null;
-  proposed_mrc: number | null;
-  funding_source: string | null;
-  sizing_trace: JsonObject;
-};
+export type PortfolioActionDTO = components["schemas"]["PortfolioActionDTO"];
 
-export type PortfolioIntegratedDTO = {
-  allocation_id: string;
-  input_cutoff: string;
-  status: string;
-  actions: PortfolioActionDTO[];
-  scenario_artifact_id: string | null;
-  execution_model_snapshot_id: string | null;
-  scenario: {
-    scenario_artifact_id: string;
-    allocation_id: string;
-    scenarios: JsonObject[];
-    tail_dependence: JsonObject;
-    simultaneous_unwind: JsonObject;
-  } | null;
-  execution: {
-    execution_model_snapshot_id: string;
-    allocation_id: string;
-    calibration_status: string;
-    sample_count: number;
-  } | null;
-  attribution_count: number;
-  postmortem?: JsonObject[];
-};
+export type PortfolioIntegratedDTO = components["schemas"]["PortfolioIntegratedDTO"];
 
 export type Phase4Scenario = {
   artifactId: string;
@@ -162,7 +120,7 @@ export function buildPortfolioPhase4Decision(data: PanelData): Phase4Decision | 
   if (!allocationRow) return null;
   const allocationId = text(allocationRow.allocation_id);
   if (!allocationId) return null;
-  const canonical = object(allocationRow.canonical_portfolio) as PortfolioIntegratedDTO | null;
+  const canonical = data.portfolioIntegrated ?? object(allocationRow.canonical_portfolio) as PortfolioIntegratedDTO | null;
   if (!canonical || canonical.allocation_id !== allocationId || !Array.isArray(canonical.actions) || !canonical.input_cutoff || !canonical.status) return null;
   const canonicalActions = canonical.actions.filter(isPortfolioActionDTO);
   if (canonicalActions.length !== canonical.actions.length) return null;

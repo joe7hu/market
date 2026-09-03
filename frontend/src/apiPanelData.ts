@@ -7,6 +7,7 @@ export type PanelSnapshotPayload = {
   status?: DashboardPayload["status"];
   dashboard?: DashboardPayload | null;
   tables?: Record<string, TablePayload>;
+  portfolio_integrated?: import("./generated/apiSchema").components["schemas"]["PortfolioIntegratedDTO"] | null;
 };
 
 const TABLE_KEY_OVERRIDES: Record<string, keyof KnownPanelTables> = {
@@ -39,6 +40,7 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
     };
   }
   const next: PanelData = { ...existing, errors: { ...existing.errors }, scopeStatus: { ...existing.scopeStatus } };
+  if (snapshot.portfolio_integrated) next.portfolioIntegrated = snapshot.portfolio_integrated;
   if (snapshot.dashboard) {
     next.dashboard = snapshot.dashboard;
   } else if (snapshot.status) {
