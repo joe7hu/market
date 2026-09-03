@@ -340,6 +340,25 @@ def upgrade() -> None:
                     END IF;
                     probability_total := probability_total + (scenario->>'probability')::DOUBLE PRECISION;
                 END LOOP;
+                IF EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(NEW.scenarios) path
+                    CROSS JOIN LATERAL jsonb_array_elements(path->'provenance') source
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM analysis.strategy_pnl_tape tape
+                        JOIN analysis.portfolio_allocation_item item
+                          ON item.allocation_id = NEW.allocation_id
+                         AND item.strategy_forecast_id = tape.strategy_forecast_id
+                         AND item.disposition = 'selected'
+                        WHERE tape.id::text = source->>'strategy_pnl_tape_id'
+                          AND tape.input_hash::text = source->>'input_hash'
+                          AND tape.input_cutoff <= NEW.input_cutoff
+                          AND tape.available_at <= NEW.input_cutoff
+                    )
+                ) THEN
+                    RAISE EXCEPTION 'Phase 4 scenario provenance is not bound to a persisted tape row';
+                END IF;
                 IF probability_total < 0.999999 OR probability_total > 1.000001 THEN
                     RAISE EXCEPTION 'Phase 4 scenario probabilities must sum to one';
                 END IF;
@@ -355,12 +374,40 @@ def upgrade() -> None:
                 IF expected_cutoff IS NULL OR NEW.input_cutoff IS DISTINCT FROM expected_cutoff THEN
                     RAISE EXCEPTION 'Phase 4 scenario input cutoff does not match allocation lineage';
                 END IF;
-            ELSIF TG_TABLE_NAME = 'execution_model_snapshot' AND NEW.allocation_id IS NOT NULL THEN
+            ELSIF TG_TABLE_NAME = 'execution_model_snapshot' THEN
+                IF NEW.allocation_id IS NULL THEN
+                    RAISE EXCEPTION 'Phase 4 execution snapshot requires allocation lineage';
+                END IF;
                 SELECT input_cutoff INTO expected_cutoff
                 FROM analysis.portfolio_allocation_snapshot
                 WHERE allocation_id = NEW.allocation_id;
                 IF expected_cutoff IS NULL OR NEW.input_cutoff IS DISTINCT FROM expected_cutoff THEN
                     RAISE EXCEPTION 'Phase 4 execution input cutoff does not match allocation lineage';
+                END IF;
+                IF NEW.sample_count > 0 AND (
+                    jsonb_typeof(NEW.metadata->'paper_observation_ids') IS DISTINCT FROM 'array'
+                    OR jsonb_array_length(NEW.metadata->'paper_observation_ids') <> NEW.sample_count
+                    OR EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements_text(NEW.metadata->'paper_observation_ids') observation_id
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM app.paper_execution_observation observation
+                            JOIN app.paper_order paper ON paper.id = observation.paper_order_id
+                            WHERE observation.paper_execution_observation_id = observation_id
+                              AND observation.allocation_item_id IN (
+                                  SELECT allocation_item_id FROM analysis.portfolio_allocation_item
+                                  WHERE allocation_id = NEW.allocation_id
+                              )
+                              AND observation.paper_only
+                              AND observation.execution_mode = 'paper'
+                              AND observation.filled_quantity > 0
+                              AND observation.fill_price IS NOT NULL
+                              AND paper.status IN ('open', 'entered', 'partial_exited', 'exited', 'closed', 'invalidated')
+                        )
+                    )
+                ) THEN
+                    RAISE EXCEPTION 'Phase 4 execution snapshot is not bound to genuine paper fills';
                 END IF;
             ELSIF TG_TABLE_NAME = 'book_attribution' THEN
                 SELECT item.allocation_id, item.strategy_forecast_id, item.hypothesis_id,
@@ -505,6 +552,42 @@ def upgrade() -> None:
             BEFORE INSERT ON app.paper_execution_observation
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_paper_execution();
 
+        CREATE OR REPLACE FUNCTION analysis.insert_phase4_scenario(
+            p_id TEXT, p_allocation_id TEXT, p_model_version TEXT,
+            p_probability_semantics TEXT, p_scenarios JSONB,
+            p_tail_dependence JSONB, p_simultaneous_unwind JSONB,
+            p_input_cutoff TIMESTAMPTZ, p_input_hash TEXT, p_content_hash TEXT
+        ) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = analysis, app, public AS $$
+        BEGIN
+            INSERT INTO analysis.probabilistic_portfolio_scenario_artifact
+                (scenario_artifact_id, allocation_id, model_version, probability_semantics,
+                 scenarios, tail_dependence, simultaneous_unwind, input_cutoff, input_hash, content_hash)
+            VALUES (p_id, p_allocation_id, p_model_version, p_probability_semantics,
+                    p_scenarios, p_tail_dependence, p_simultaneous_unwind,
+                    p_input_cutoff, p_input_hash, p_content_hash)
+            ON CONFLICT (scenario_artifact_id) DO NOTHING;
+        END;
+        $$;
+        CREATE OR REPLACE FUNCTION analysis.insert_phase4_execution(
+            p_id TEXT, p_allocation_id TEXT, p_model_version TEXT,
+            p_calibration_status TEXT, p_sample_count INTEGER,
+            p_fill_probability DOUBLE PRECISION, p_spread_bps DOUBLE PRECISION,
+            p_latency_ms DOUBLE PRECISION, p_impact_bps DOUBLE PRECISION,
+            p_input_cutoff TIMESTAMPTZ, p_input_hash TEXT, p_content_hash TEXT,
+            p_metadata JSONB
+        ) RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = analysis, app, public AS $$
+        BEGIN
+            INSERT INTO analysis.execution_model_snapshot
+                (execution_model_snapshot_id, allocation_id, model_version, calibration_status,
+                 sample_count, fill_probability, spread_bps, latency_ms, impact_bps,
+                 input_cutoff, input_hash, content_hash, metadata)
+            VALUES (p_id, p_allocation_id, p_model_version, p_calibration_status,
+                    p_sample_count, p_fill_probability, p_spread_bps, p_latency_ms, p_impact_bps,
+                    p_input_cutoff, p_input_hash, p_content_hash, p_metadata)
+            ON CONFLICT (execution_model_snapshot_id) DO NOTHING;
+        END;
+        $$;
+
         CREATE OR REPLACE FUNCTION analysis.reject_phase4_update()
         RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
@@ -535,11 +618,14 @@ def upgrade() -> None:
 
         GRANT SELECT, INSERT ON analysis.portfolio_allocation_snapshot,
             analysis.portfolio_allocation_item,
-            analysis.probabilistic_portfolio_scenario_artifact,
-            analysis.execution_model_snapshot,
             analysis.book_attribution,
             analysis.portfolio_drift_evidence TO market_app;
         GRANT SELECT, INSERT ON app.paper_execution_observation TO market_app;
+        GRANT SELECT ON analysis.probabilistic_portfolio_scenario_artifact,
+            analysis.execution_model_snapshot TO market_app;
+        GRANT EXECUTE ON FUNCTION analysis.insert_phase4_scenario(TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, JSONB, TIMESTAMPTZ, TEXT, TEXT),
+            analysis.insert_phase4_execution(TEXT, TEXT, TEXT, TEXT, INTEGER, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TIMESTAMPTZ, TEXT, TEXT, JSONB)
+            TO market_app;
         """
     )
 
@@ -554,6 +640,9 @@ def downgrade() -> None:
             analysis.book_attribution,
             analysis.portfolio_drift_evidence FROM market_app;
         REVOKE SELECT, INSERT ON app.paper_execution_observation FROM market_app;
+        REVOKE EXECUTE ON FUNCTION analysis.insert_phase4_scenario(TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, JSONB, TIMESTAMPTZ, TEXT, TEXT),
+            analysis.insert_phase4_execution(TEXT, TEXT, TEXT, TEXT, INTEGER, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TIMESTAMPTZ, TEXT, TEXT, JSONB)
+            FROM market_app;
         DROP TRIGGER IF EXISTS paper_execution_observation_immutable ON app.paper_execution_observation;
         DROP TRIGGER IF EXISTS paper_execution_lineage ON app.paper_execution_observation;
         DROP TRIGGER IF EXISTS book_attribution_lineage ON analysis.book_attribution;
@@ -571,6 +660,8 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS analysis.reject_phase4_update();
         DROP FUNCTION IF EXISTS analysis.enforce_phase4_paper_execution();
         DROP FUNCTION IF EXISTS analysis.enforce_phase4_lineage();
+        DROP FUNCTION IF EXISTS analysis.insert_phase4_scenario(TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, JSONB, TIMESTAMPTZ, TEXT, TEXT);
+        DROP FUNCTION IF EXISTS analysis.insert_phase4_execution(TEXT, TEXT, TEXT, TEXT, INTEGER, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TIMESTAMPTZ, TEXT, TEXT, JSONB);
         DROP FUNCTION IF EXISTS analysis.phase4_content_digest(JSONB);
         DROP FUNCTION IF EXISTS analysis.phase4_canonical_timestamp(TIMESTAMPTZ);
         DROP FUNCTION IF EXISTS analysis.phase4_canonical_json(JSONB);

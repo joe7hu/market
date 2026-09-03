@@ -3098,6 +3098,13 @@ def portfolio_impact_from_persisted(value: Any, *, ticker: str) -> Any:
     return PortfolioImpact.from_legacy(raw, ticker=ticker)
 
 
+def portfolio_impact_id_for_persisted(value: Any) -> str:
+    """Return the canonical identity for a PostgreSQL-hydrated impact."""
+
+    impact = value if isinstance(value, PortfolioImpact) else PortfolioImpact.model_validate(value)
+    return _portfolio_impact_id(impact)
+
+
 def portfolio_impacts_from_persisted(value: Any, *, ticker: str) -> Any:
     if not isinstance(value, Mapping):
         return value

@@ -50,20 +50,6 @@ class _PostgreSQLAuthorityToken:
         return self._source_content_hash
 
 
-def issue_postgresql_authority(source_payload: Mapping[str, Any]) -> object:
-    """Issue proof only for one complete, content-addressed DB source slice."""
-
-    if not isinstance(source_payload, Mapping):
-        raise TypeError("PostgreSQL authority requires one canonical source payload")
-    cutoff = source_payload.get("input_cutoff")
-    snapshot_id = source_payload.get("authority_snapshot_id")
-    if not isinstance(cutoff, datetime) or not isinstance(snapshot_id, str):
-        raise ValueError("PostgreSQL authority source payload is incomplete")
-    return _PostgreSQLAuthorityToken._issue(
-        cutoff, snapshot_id, canonical_content_hash(source_payload),
-    )
-
-
 def _json(value: Any) -> Any:
     if isinstance(value, datetime):
         # Match analysis.phase4_canonical_json: timestamps are stored as UTC
@@ -466,7 +452,7 @@ class AuthoritativePortfolioBundle(BaseModel):
     def _from_postgresql(
         cls,
         *,
-        repository_authority: object,
+        source_payload: Mapping[str, Any],
         candidates: tuple[PortfolioCandidate, ...],
         book: PortfolioBookEvidence,
         constraints: PortfolioConstraintEvidence,
@@ -477,8 +463,21 @@ class AuthoritativePortfolioBundle(BaseModel):
     ) -> "AuthoritativePortfolioBundle":
         """Hydrate a bundle only from the repository-issued proof and typed rows."""
 
-        if not isinstance(repository_authority, _PostgreSQLAuthorityToken):
+        if not isinstance(source_payload, Mapping):
             raise ValueError("PostgreSQL authority requires a complete verified source slice")
+        cutoff = source_payload.get("input_cutoff")
+        snapshot_id = source_payload.get("authority_snapshot_id")
+        source_rows = source_payload.get("source_rows")
+        if (
+            not isinstance(cutoff, datetime)
+            or not isinstance(snapshot_id, str)
+            or not isinstance(source_rows, Mapping)
+            or any(key not in source_rows for key in ("account", "positions", "candidates", "tape"))
+        ):
+            raise ValueError("PostgreSQL authority source slice is incomplete")
+        repository_authority = _PostgreSQLAuthorityToken._issue(
+            cutoff, snapshot_id, canonical_content_hash(source_payload),
+        )
         return cls.model_validate({
             "input_cutoff": repository_authority.cutoff,
             "candidates": candidates,
@@ -826,6 +825,10 @@ def _allocate_portfolio(
             blockers.append("volatility_invalid")
         if candidate.capacity is not None and candidate.capacity <= 0:
             blockers.append("capacity_unavailable")
+        if candidate.overlap_penalty is not None and candidate.overlap_penalty > 0:
+            blockers.append("overlap_conflict")
+        if candidate.execution_penalty is not None and candidate.execution_penalty > 0:
+            blockers.append("execution_unavailable")
         if candidate.current_weight <= 0 and (
             candidate.cash_available is None or candidate.cash_available <= 0 or not candidate.cash_source_id
         ):

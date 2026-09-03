@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from hashlib import sha256
+import json
 from math import isfinite
 from typing import Any
 
@@ -13,6 +15,7 @@ from investment_panel.core.decision import (
     StrategyForecast,
     TradePlan,
     portfolio_impact_from_persisted,
+    portfolio_impact_id_for_persisted,
 )
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 from investment_panel.core.portfolio import (
@@ -35,7 +38,6 @@ from investment_panel.core.portfolio import (
     execution_model_id_for_snapshot,
     integrated_portfolio_dto,
     attribute_paper_pnl,
-    issue_postgresql_authority,
 )
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -367,6 +369,7 @@ class PortfolioLoopRepository:
                           revision.hypothesis_id::text AS hypothesis_id,
                           decision.input_manifest->'trade_plan' AS trade_plan,
                           decision.input_manifest->'opportunity_rank' AS opportunity_rank,
+                          decision.input_manifest,
                           decision.id AS ticker_decision_id, decision.input_hash AS decision_input_hash,
                           decision.experiment_id AS decision_experiment_id,
                           decision.portfolio_impacts, decision.data_requests,
@@ -451,7 +454,8 @@ class PortfolioLoopRepository:
                     if not isinstance(persisted_impact, PortfolioImpact):
                         raise ValueError("persisted portfolio impact is not a typed PostgreSQL record")
                     if (
-                        persisted_impact.impact_id != plan.portfolio_impact_id
+                        portfolio_impact_id_for_persisted(persisted_impact) != persisted_impact.impact_id
+                        or persisted_impact.impact_id != plan.portfolio_impact_id
                         or persisted_impact.ticker != forecast.ticker
                         or persisted_impact.cutoff.astimezone(forecast.input_cutoff.tzinfo)
                         != forecast.input_cutoff
@@ -469,6 +473,20 @@ class PortfolioLoopRepository:
                         or any(char not in "0123456789abcdef" for char in decision_input_hash)
                     ):
                         raise ValueError("persisted decision input digest is invalid")
+                    manifest = raw.get("input_manifest")
+                    if not isinstance(manifest, dict) or str(manifest.get("input_hash") or "") != decision_input_hash:
+                        raise ValueError("persisted decision manifest digest is not bound to its source row")
+                    manifest_payload = {
+                        "as_of": manifest.get("as_of"), "inputs": manifest.get("inputs") or {},
+                        "source_versions": manifest.get("source_versions") or {},
+                        "code_version": manifest.get("code_version"),
+                        "experiment_id": manifest.get("experiment_id"),
+                    }
+                    expected_decision_hash = sha256(json.dumps(
+                        manifest_payload, sort_keys=True, separators=(",", ":"), default=str,
+                    ).encode()).hexdigest()
+                    if expected_decision_hash != decision_input_hash:
+                        raise ValueError("persisted decision input digest does not match canonical manifest content")
                     uncertainty = (
                         abs(float(forecast.forecast_range.high) - float(forecast.forecast_range.low)) / 2
                         if forecast.forecast_range is not None else None
@@ -697,9 +715,8 @@ class PortfolioLoopRepository:
                 and cash_hurdle is not None and cash_hurdle > 0
                 and candidates and required_candidates and tape_rows
             )
-        repository_authority = issue_postgresql_authority(authority_payload)
         return AuthoritativePortfolioBundle._from_postgresql(
-            repository_authority=repository_authority,
+            source_payload=authority_payload,
             candidates=tuple(candidates),
             book=PortfolioBookEvidence(
                 snapshot_id=(f"broker-account:{account['id']}" if account else None),
@@ -791,11 +808,8 @@ class PortfolioLoopRepository:
     @staticmethod
     def store_scenario(connection: Any, scenario: PortfolioScenarioArtifact) -> None:
         connection.execute(
-            """INSERT INTO analysis.probabilistic_portfolio_scenario_artifact
-               (scenario_artifact_id, allocation_id, model_version, probability_semantics,
-                scenarios, tail_dependence, simultaneous_unwind, input_cutoff, input_hash, content_hash)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT (scenario_artifact_id) DO NOTHING""",
+            """SELECT analysis.insert_phase4_scenario(
+                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             [
                 scenario.scenario_artifact_id, scenario.allocation_id, scenario.model_version,
                 scenario.probability_semantics, Jsonb(list(scenario.scenarios)),
@@ -815,12 +829,8 @@ class PortfolioLoopRepository:
         if execution_model_id_for_snapshot(model) != model.execution_model_snapshot_id:
             raise ValueError("execution model identity does not match PostgreSQL payload")
         connection.execute(
-            """INSERT INTO analysis.execution_model_snapshot
-               (execution_model_snapshot_id, allocation_id, model_version, calibration_status,
-                sample_count, fill_probability, spread_bps, latency_ms, impact_bps,
-                input_cutoff, input_hash, content_hash, metadata)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT (execution_model_snapshot_id) DO NOTHING""",
+            """SELECT analysis.insert_phase4_execution(
+                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             [
                 model.execution_model_snapshot_id, model.allocation_id, model.model_version,
                 model.calibration_status, model.sample_count, model.fill_probability,
