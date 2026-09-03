@@ -69,6 +69,9 @@ def _json(value: Any) -> Any:
         return _json(value.value)
     if isinstance(value, UUID):
         return str(value)
+    if isinstance(value, float) and isfinite(value) and value.is_integer():
+        # PostgreSQL jsonb emits integral doubles as JSON integers.
+        return int(value)
     if isinstance(value, BaseModel):
         return _json(value.model_dump(mode="python"))
     if isinstance(value, Mapping):

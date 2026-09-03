@@ -546,6 +546,7 @@ def downgrade() -> None:
         DROP TRIGGER IF EXISTS execution_model_lineage ON analysis.execution_model_snapshot;
         DROP TRIGGER IF EXISTS portfolio_scenario_lineage ON analysis.probabilistic_portfolio_scenario_artifact;
         DROP TRIGGER IF EXISTS portfolio_allocation_snapshot_lineage ON analysis.portfolio_allocation_snapshot;
+        DROP TRIGGER IF EXISTS portfolio_allocation_item_lineage ON analysis.portfolio_allocation_item;
         DROP TRIGGER IF EXISTS book_attribution_immutable ON analysis.book_attribution;
         DROP TRIGGER IF EXISTS execution_model_snapshot_immutable ON analysis.execution_model_snapshot;
         DROP TRIGGER IF EXISTS portfolio_scenario_artifact_immutable ON analysis.probabilistic_portfolio_scenario_artifact;

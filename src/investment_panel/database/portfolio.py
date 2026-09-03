@@ -259,7 +259,7 @@ class PortfolioLoopRepository:
                        action_id, rank_id, hypothesis_id, disposition, target_weight,
                        current_weight, marginal_book_utility, trace, blockers, funding_source,
                        funding_amount, input_hash, content_hash)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (allocation_item_id) DO NOTHING""",
                     [
                         item.allocation_item_id, allocation.allocation_id, item.candidate_id, item.ticker,
@@ -341,8 +341,7 @@ class PortfolioLoopRepository:
                           decision.input_manifest->'opportunity_rank' AS opportunity_rank,
                           decision.id AS ticker_decision_id, decision.input_hash AS decision_input_hash,
                           decision.experiment_id AS decision_experiment_id,
-                          decision.portfolio_impacts, decision.data_requests,
-                          decision.selected_expression
+                          decision.portfolio_impacts, decision.data_requests
                    FROM analysis.strategy_forecast forecast
                    JOIN catalog.instrument instrument ON instrument.id = forecast.instrument_id
                    JOIN analysis.strategy_revision revision ON revision.id = forecast.strategy_revision_id
