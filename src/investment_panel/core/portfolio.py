@@ -444,6 +444,8 @@ def allocate_portfolio(
         if cash_hurdle is None or not isfinite(cash_hurdle) or cash_hurdle < 0:
             raise ValueError("allocation cash hurdle must be explicit")
         cash_hurdle = float(cash_hurdle)
+        if any(isinstance(item, Mapping) for item in candidates):
+            raise TypeError("production allocation requires a PostgreSQL AuthoritativePortfolioBundle; mappings are not allocator authority")
         normalized = [item if isinstance(item, PortfolioCandidate) else PortfolioCandidate.model_validate(item) for item in candidates]
         allocator_metadata = {}
     if cash_hurdle is None or not isfinite(cash_hurdle) or cash_hurdle <= 0:

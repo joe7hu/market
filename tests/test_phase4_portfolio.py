@@ -81,6 +81,11 @@ def test_allocator_rejects_funding_without_postgres_cash_or_position_identity() 
     assert "cash_funding_missing" in item.blockers
 
 
+def test_allocator_rejects_free_form_mapping_authority() -> None:
+    with pytest.raises(TypeError, match="AuthoritativePortfolioBundle"):
+        allocate_portfolio([candidate("MAPPING").model_dump()], as_of=AS_OF, cash_hurdle=0.01)
+
+
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:
     left = candidate("LEFT", covariance={"LEFT": 0.04, "RIGHT": 0.02})
     right = candidate("RIGHT", covariance={"LEFT": 0.02, "RIGHT": 0.09})
