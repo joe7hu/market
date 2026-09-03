@@ -12,6 +12,8 @@ export type Phase4Action = {
   rankId: string | null;
   expression: JsonObject | null;
   invalidation: JsonObject | null;
+  why_trade: string | null;
+  why_now?: string[];
   missingData: string[];
   blockers: string[];
   targetWeight: number | null;
@@ -33,6 +35,8 @@ export type PortfolioActionDTO = {
   rank_id: string | null;
   expression: JsonObject | null;
   invalidation: JsonObject | null;
+  why_trade: string | null;
+  why_now?: string[];
   missing_data: string[];
   blockers: string[];
   target_weight: number | null;
@@ -65,6 +69,7 @@ export type PortfolioIntegratedDTO = {
     sample_count: number;
   } | null;
   attribution_count: number;
+  postmortem?: JsonObject[];
 };
 
 export type Phase4Scenario = {
@@ -82,6 +87,7 @@ export type Phase4Decision = {
   scenario: Phase4Scenario | null;
   execution: { snapshotId: string; calibrationStatus: string; sampleCount: number | null } | null;
   attributionCount: number;
+  postmortem: JsonObject[];
 };
 
 function object(value: unknown): JsonObject | null {
@@ -121,6 +127,8 @@ function actionFromRow(canonical: JsonObject): Phase4Action | null {
     rankId: text(canonical.rank_id),
     expression: object(canonical.expression),
     invalidation: object(canonical.invalidation),
+    why_trade: text(canonical.why_trade),
+    why_now: strings(canonical.why_now),
     missingData: strings(canonical.missing_data),
     blockers: strings(canonical.blockers),
     targetWeight: number(canonical.target_weight),
@@ -139,6 +147,8 @@ function isPortfolioActionDTO(value: unknown): value is PortfolioActionDTO {
     row && text(row.allocation_id) && text(row.allocation_item_id) && text(row.ticker)
     && text(row.disposition) && object(row.sizing_trace)
     && Array.isArray(row.missing_data) && Array.isArray(row.blockers)
+    && (row.why_now === undefined || Array.isArray(row.why_now))
+    && (row.why_trade === undefined || row.why_trade === null || typeof row.why_trade === "string")
     && (row.target_weight === null || number(row.target_weight) !== null)
     && (row.current_weight === null || number(row.current_weight) !== null)
     && (row.marginal_book_utility === null || number(row.marginal_book_utility) !== null)
@@ -179,5 +189,6 @@ export function buildPortfolioPhase4Decision(data: PanelData): Phase4Decision | 
     scenario,
     execution,
     attributionCount: canonical.attribution_count,
+    postmortem: canonical.postmortem ?? [],
   };
 }

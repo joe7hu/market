@@ -1,6 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from app.contracts import OptionsHistoryToggleInput
+from app.routers.portfolio import delete_watchlist_symbol_endpoint, set_watchlist_options_history_endpoint
+from investment_panel.database.options_paper_execution import OptionsPaperExecutionRepository
+from investment_panel.database.portfolio import PortfolioLoopRepository
 
 from investment_panel.core.portfolio import (
     PaperExecutionObservation,
@@ -8,6 +12,7 @@ from investment_panel.core.portfolio import (
     allocate_portfolio,
     allocate_portfolio_for_tests,
     apply_decay_guard,
+    apply_decay_to_allocation,
     attribute_paper_pnl,
     build_execution_model_snapshot,
     build_scenario_artifact,
@@ -148,6 +153,22 @@ def test_decay_guard_reduces_before_the_rollback_threshold() -> None:
     assert apply_decay_guard(allocation, {item.allocation_item_id: 1.0}, rollback_threshold=1.0)[0].action == "rollback"
 
 
+def test_decay_persists_rollback_evidence_and_releases_weight_to_cash() -> None:
+    allocation = allocate_portfolio_for_tests([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
+    item = next(item for item in allocation.items if item.ticker == "GOOD")
+    adjusted, decisions = apply_decay_to_allocation(
+        allocation, {item.allocation_item_id: 1.0}, rollback_threshold=1.0,
+    )
+    rollback = next(row for row in adjusted.items if row.ticker == "GOOD")
+    cash = next(row for row in adjusted.items if row.ticker == "CASH")
+    assert rollback.disposition == "rollback"
+    assert rollback.target_weight == 0
+    assert rollback.trace["rollback_evidence"]["released_weight"] == item.target_weight
+    assert cash.target_weight == 1
+    assert decisions[0].allocation_id == adjusted.allocation_id
+    assert decisions[0].allocation_item_id == rollback.allocation_item_id
+
+
 def observation(status: str, filled: float = 0, *, exit_price: float | None = None) -> PaperExecutionObservation:
     return PaperExecutionObservation(
         paper_execution_observation_id=f"observation:{status}:{filled}", allocation_item_id="allocation-item:test", action_id="action:test", paper_order_id="00000000-0000-0000-0000-000000000001", status=status,
@@ -182,3 +203,43 @@ def test_execution_stays_calibration_pending_until_genuine_fill_and_attribution_
 def test_paper_observation_rejects_live_mode() -> None:
     with pytest.raises(ValueError):
         PaperExecutionObservation.model_validate({**observation("submitted").model_dump(), "execution_mode": "live"})
+
+
+def test_legacy_mutation_routes_keep_their_error_contract() -> None:
+    class FailingActions:
+        @staticmethod
+        def delete_watchlist_symbol(_symbol: str) -> None:
+            raise ValueError("missing symbol")
+
+    class FailingOptions:
+        @staticmethod
+        def set_history_requested_state(_symbol: str, _payload: dict[str, object]) -> None:
+            raise RuntimeError("database unavailable")
+
+        @staticmethod
+        def is_policy_conflict(_exc: Exception) -> bool:
+            return False
+
+    with pytest.raises(Exception) as delete_error:
+        delete_watchlist_symbol_endpoint("MISSING", FailingActions())
+    assert getattr(delete_error.value, "status_code", None) == 400
+    with pytest.raises(Exception) as options_error:
+        set_watchlist_options_history_endpoint(
+            "MISSING", OptionsHistoryToggleInput(requested_state="on", lock_version=1), FailingOptions(),
+        )
+    assert getattr(options_error.value, "status_code", None) == 400
+
+
+def test_option_fill_bridge_is_active_only_for_a_real_runtime(monkeypatch) -> None:
+    repository = OptionsPaperExecutionRepository.__new__(OptionsPaperExecutionRepository)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        PortfolioLoopRepository,
+        "record_existing_paper_order_fill",
+        lambda _self, _connection, **kwargs: calls.append(kwargs),
+    )
+    repository._record_phase4_fill(None, paper_order_id="paper:1", observed_at=AS_OF, status="filled")
+    assert calls == []
+    repository.runtime = object()
+    repository._record_phase4_fill(None, paper_order_id="paper:1", observed_at=AS_OF, status="filled")
+    assert calls == [{"paper_order_id": "paper:1", "observed_at": AS_OF, "status": "filled"}]

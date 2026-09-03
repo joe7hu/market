@@ -304,6 +304,9 @@ class OptionsPaperExecutionRepository:
                     price=fill_price, key=f"generic:{paper_order_id}:entry:{now.isoformat()}",
                     details={"lane": item["lane"], "paper_order_id": paper_order_id, "slippage": slippage, "fees": fees},
                 )
+                self._record_phase4_fill(
+                    connection, paper_order_id=paper_order_id, observed_at=now, status="entered",
+                )
                 return {
                     "paper_order_id": paper_order_id, "status": "filled",
                     "event_status": "entered", "filled_quantity": fill_quantity,
@@ -407,6 +410,9 @@ class OptionsPaperExecutionRepository:
                 "net_pnl": round(net_pnl, 2), "slippage": slippage, "fees": fees,
             },
         )
+        self._record_phase4_fill(
+            connection, paper_order_id=str(order["id"]), observed_at=now, status=status,
+        )
         return {
             "paper_order_id": str(order["id"]),
             "status": "closed" if terminal else "filled",
@@ -414,6 +420,20 @@ class OptionsPaperExecutionRepository:
             "reason": reason, "exit_quantity": exit_quantity,
             "exit_price": exit_price, "net_pnl": round(net_pnl, 2),
         }
+
+    def _record_phase4_fill(
+        self, connection: Any, *, paper_order_id: str, observed_at: datetime, status: str,
+    ) -> None:
+        """Bridge genuine option fills without breaking local unit seams."""
+
+        runtime = getattr(self, "runtime", None)
+        if runtime is None:
+            return
+        from investment_panel.database.portfolio import PortfolioLoopRepository
+
+        PortfolioLoopRepository(runtime).record_existing_paper_order_fill(
+            connection, paper_order_id=paper_order_id, observed_at=observed_at, status=status,
+        )
 
     def _current_ticket(
         self,

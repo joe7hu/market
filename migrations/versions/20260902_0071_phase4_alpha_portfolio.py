@@ -212,6 +212,7 @@ def upgrade() -> None:
                 expected_action TEXT; expected_rank TEXT; expected_expression JSONB;
                 expected_experiment TEXT; expected_trial UUID; expected_result UUID;
                 scenario JSONB; probability_total DOUBLE PRECISION := 0;
+                expected_realized_pnl DOUBLE PRECISION;
         BEGIN
             IF TG_TABLE_NAME = 'portfolio_allocation_snapshot' THEN
                 NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
@@ -422,6 +423,20 @@ def upgrade() -> None:
                 WHERE allocation_id = NEW.allocation_id;
                 IF expected_cutoff IS NULL OR NEW.input_cutoff IS DISTINCT FROM expected_cutoff THEN
                     RAISE EXCEPTION 'Phase 4 attribution input cutoff does not match allocation lineage';
+                END IF;
+                IF NEW.pnl_status = 'realized' THEN
+                    SELECT CASE WHEN observation.side = 'buy' THEN 1 ELSE -1 END
+                             * (observation.exit_price - observation.fill_price)
+                             * observation.filled_quantity
+                             - coalesce(paper.fees, 0)
+                      INTO expected_realized_pnl
+                    FROM app.paper_execution_observation observation
+                    JOIN app.paper_order paper ON paper.id = observation.paper_order_id
+                    WHERE observation.paper_execution_observation_id = NEW.paper_execution_observation_id;
+                    IF expected_realized_pnl IS NULL
+                       OR abs(NEW.realized_pnl - expected_realized_pnl) > 0.000000001 THEN
+                        RAISE EXCEPTION 'Phase 4 attribution P&L does not match the persisted fill and fee lineage';
+                    END IF;
                 END IF;
             END IF;
             RETURN NEW;

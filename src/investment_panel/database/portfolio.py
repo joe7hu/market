@@ -8,7 +8,13 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import PortfolioImpact, StrategyForecast, TradePlan
+from investment_panel.core.decision import (
+    PortfolioImpact,
+    StrategyForecast,
+    TradePlan,
+    portfolio_impact_from_persisted,
+)
+from investment_panel.core.risk_policy import RiskPolicySnapshot
 from investment_panel.core.portfolio import (
     BookAttribution,
     AuthoritativePortfolioBundle,
@@ -94,6 +100,27 @@ class PortfolioLoopRepository:
             for item in items:
                 item["drift_evidence"] = drift_by_item.get(str(item["allocation_item_id"]), [])
             result["portfolio_allocation_items"] = items
+            postmortem = [dict(row) for row in connection.execute(
+                """SELECT item.allocation_item_id, item.candidate_id, item.ticker,
+                          item.disposition, item.strategy_forecast_id, item.action_id,
+                          item.rank_id, decision.id::text AS published_decision_id,
+                          outcome.id::text AS outcome_id, outcome.horizon,
+                          outcome.horizon_sessions, outcome.state,
+                          outcome.selected_expression, outcome.selected_return,
+                          outcome.cash_return, outcome.market_return,
+                          outcome.error_type, outcome.measured_through,
+                          snapshot.input_cutoff
+                   FROM analysis.portfolio_allocation_item item
+                   JOIN analysis.portfolio_allocation_snapshot snapshot USING (allocation_id)
+                   LEFT JOIN analysis.ticker_decision decision
+                     ON decision.input_manifest->'trade_plan'->>'trade_plan_id' = item.action_id
+                    AND decision.input_manifest->'trade_plan'->>'rank_id' = item.rank_id
+                    AND decision.input_manifest->'trade_plan'->>'strategy_forecast_id' = item.strategy_forecast_id
+                    AND decision.status = 'published' AND decision.published_at IS NOT NULL
+                   LEFT JOIN analysis.ticker_outcome outcome ON outcome.ticker_decision_id = decision.id
+                   WHERE item.allocation_id = %s
+                   ORDER BY item.disposition, item.ticker, outcome.horizon_sessions""", [allocation_id]
+            ).fetchall()]
             result["portfolio_scenario_artifact"] = [dict(row) for row in connection.execute(
                 """SELECT scenario_artifact_id, allocation_id, model_version,
                           probability_semantics, scenarios, tail_dependence,
@@ -205,6 +232,7 @@ class PortfolioLoopRepository:
                     if result["execution_model_snapshot"] else None
                 ),
                 attribution_count=len(result["book_attribution"]),
+                postmortem=tuple(postmortem),
             ).model_dump(mode="json")
             result["portfolio_allocation"][0]["canonical_portfolio"] = canonical
             actions = {item["allocation_item_id"]: action for item, action in zip(items, canonical["actions"])}
@@ -341,14 +369,16 @@ class PortfolioLoopRepository:
                           decision.input_manifest->'opportunity_rank' AS opportunity_rank,
                           decision.id AS ticker_decision_id, decision.input_hash AS decision_input_hash,
                           decision.experiment_id AS decision_experiment_id,
-                          decision.portfolio_impacts, decision.data_requests
+                          decision.portfolio_impacts, decision.data_requests,
+                          decision.risk_policy_snapshot
                    FROM analysis.strategy_forecast forecast
                    JOIN catalog.instrument instrument ON instrument.id = forecast.instrument_id
                    JOIN analysis.strategy_revision revision ON revision.id = forecast.strategy_revision_id
                    LEFT JOIN LATERAL (
                        SELECT decision.input_manifest, decision.portfolio_impacts,
                               decision.id, decision.input_hash, decision.experiment_id,
-                              decision.data_requests, decision.as_of
+                              decision.data_requests, decision.as_of,
+                              decision.risk_policy_snapshot
                        FROM analysis.ticker_decision decision
                        WHERE decision.instrument_id = forecast.instrument_id
                          AND decision.status = 'published'
@@ -406,15 +436,39 @@ class PortfolioLoopRepository:
                     or str(rank_raw.get("strategy_forecast_id") or "") != forecast.strategy_forecast_id
                 ):
                     continue
+                position = position_by_ticker.get(forecast.ticker.upper())
+                nav = float(account["net_liquidation"]) if account and account["net_liquidation"] is not None else None
+                market_value = float(position["market_value"]) if position and position.get("market_value") is not None else 0.0
+                current_weight = min(max(abs(market_value / nav), 0.0), 1.0) if nav and nav > 0 else 0.0
                 impact_values = raw.get("portfolio_impacts") or {}
                 impact_raw = impact_values.get(plan.selected_expression_kind.value) if isinstance(impact_values, dict) else None
                 try:
                     if not isinstance(impact_raw, dict):
                         raise ValueError("portfolio impact risk row is not an object")
-                    persisted_impact = PortfolioImpact.model_validate(impact_raw)
+                    persisted_impact = portfolio_impact_from_persisted(
+                        impact_raw, ticker=forecast.ticker,
+                    )
+                    if not isinstance(persisted_impact, PortfolioImpact):
+                        raise ValueError("persisted portfolio impact is not a typed PostgreSQL record")
+                    if (
+                        persisted_impact.impact_id != plan.portfolio_impact_id
+                        or persisted_impact.ticker != forecast.ticker
+                        or persisted_impact.cutoff.astimezone(forecast.input_cutoff.tzinfo)
+                        != forecast.input_cutoff
+                        or persisted_impact.availability != "available"
+                        or persisted_impact.blockers
+                    ):
+                        raise ValueError("persisted portfolio impact lineage is invalid")
                     impact_source_hash = canonical_content_hash(
                         persisted_impact.model_dump(mode="json"),
                     )
+                    decision_input_hash = str(raw.get("decision_input_hash") or "").strip().lower()
+                    if (
+                        len(decision_input_hash) != 64
+                        or decision_input_hash == "0" * 64
+                        or any(char not in "0123456789abcdef" for char in decision_input_hash)
+                    ):
+                        raise ValueError("persisted decision input digest is invalid")
                     uncertainty = (
                         abs(float(forecast.forecast_range.high) - float(forecast.forecast_range.low)) / 2
                         if forecast.forecast_range is not None else None
@@ -423,22 +477,70 @@ class PortfolioLoopRepository:
                         "impact_id": persisted_impact.impact_id, "ticker": forecast.ticker,
                         "source_decision_id": str(raw.get("ticker_decision_id") or ""),
                         "source_input_hash": impact_source_hash,
+                        "source_decision_input_hash": decision_input_hash,
                         "input_cutoff": forecast.input_cutoff, "expected_return": forecast.forecast_value,
-                        "uncertainty": uncertainty, "volatility": impact_raw.get("volatility"),
-                        "risk_budget": impact_raw.get("risk_budget"), "kelly_cap": impact_raw.get("kelly_cap"),
-                        "drawdown_cap": impact_raw.get("drawdown_cap"), "capacity": impact_raw.get("capacity"),
-                        "overlap_penalty": impact_raw.get("portfolio_overlap_penalty", 0),
-                        "execution_penalty": impact_raw.get("expected_transaction_costs", 0),
-                        "covariance": impact_raw.get("covariance"),
+                        "uncertainty": uncertainty, "volatility": getattr(persisted_impact, "volatility", None),
+                        "risk_budget": getattr(persisted_impact, "risk_budget", None),
+                        "kelly_cap": getattr(persisted_impact, "kelly_cap", None),
+                        "drawdown_cap": getattr(persisted_impact, "drawdown_cap", None),
+                        "capacity": getattr(persisted_impact, "capacity", None),
+                        "overlap_penalty": getattr(persisted_impact, "portfolio_overlap_penalty", 0),
+                        "execution_penalty": getattr(persisted_impact, "expected_transaction_costs", 0),
+                        "covariance": getattr(persisted_impact, "covariance", None),
                     })
                 except (TypeError, ValueError):
+                    # Keep the candidate visible as blocked evidence. A bad
+                    # persisted risk row must not disappear and become an
+                    # accidental absence of a risk gate.
+                    candidates.append(PortfolioCandidate(
+                        candidate_id=forecast.strategy_forecast_id, ticker=forecast.ticker,
+                        strategy_forecast_id=forecast.strategy_forecast_id,
+                        action_id=plan.trade_plan_id, rank_id=plan.rank_id,
+                        hypothesis_id=raw.get("hypothesis_id"),
+                        source_decision_id=str(raw.get("ticker_decision_id") or "") or None,
+                        source_decision_input_hash=str(raw.get("decision_input_hash") or "") or None,
+                        experiment_id=str(raw.get("decision_experiment_id") or "") or None,
+                        trial_id=str(raw.get("research_trial_id") or "") or None,
+                        result_id=str(raw.get("trial_result_id") or "") or None,
+                        rank_position=rank_position, rank_utility=rank_utility,
+                        expected_return=forecast.forecast_value,
+                        expression=plan.selected_expression.model_dump(mode="json"),
+                        why_trade=plan.rationale, why_now=(plan.next_action,),
+                        input_cutoff=forecast.input_cutoff, available_at=forecast.available_at,
+                        evidence_status="blocked", blockers=("risk_evidence_invalid",),
+                        current_weight=current_weight,
+                        cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
+                        cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
+                        trim_position_id=(f"broker-position:{position['id']}" if position else None),
+                        trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
+                    ))
                     continue
                 if risk_evidence.impact_id != plan.portfolio_impact_id:
+                    candidates.append(PortfolioCandidate(
+                        candidate_id=forecast.strategy_forecast_id, ticker=forecast.ticker,
+                        strategy_forecast_id=forecast.strategy_forecast_id,
+                        action_id=plan.trade_plan_id, rank_id=plan.rank_id,
+                        hypothesis_id=raw.get("hypothesis_id"),
+                        portfolio_impact_id=risk_evidence.impact_id,
+                        source_decision_id=str(raw.get("ticker_decision_id") or "") or None,
+                        source_input_hash=risk_evidence.source_input_hash,
+                        source_decision_input_hash=risk_evidence.source_decision_input_hash,
+                        experiment_id=str(raw.get("decision_experiment_id") or "") or None,
+                        trial_id=str(raw.get("research_trial_id") or "") or None,
+                        result_id=str(raw.get("trial_result_id") or "") or None,
+                        rank_position=rank_position, rank_utility=rank_utility,
+                        expected_return=forecast.forecast_value,
+                        expression=plan.selected_expression.model_dump(mode="json"),
+                        why_trade=plan.rationale, why_now=(plan.next_action,),
+                        input_cutoff=forecast.input_cutoff, available_at=forecast.available_at,
+                        evidence_status="blocked", blockers=("portfolio_impact_lineage_conflict",),
+                        current_weight=current_weight,
+                        cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
+                        cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
+                        trim_position_id=(f"broker-position:{position['id']}" if position else None),
+                        trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
+                    ))
                     continue
-                position = position_by_ticker.get(forecast.ticker.upper())
-                nav = float(account["net_liquidation"]) if account and account["net_liquidation"] is not None else None
-                market_value = float(position["market_value"]) if position and position.get("market_value") is not None else 0.0
-                current_weight = min(max(abs(market_value / nav), 0.0), 1.0) if nav and nav > 0 else 0.0
                 candidates.append(PortfolioCandidate(
                     candidate_id=forecast.strategy_forecast_id,
                     ticker=forecast.ticker,
@@ -449,6 +551,7 @@ class PortfolioLoopRepository:
                     portfolio_impact_id=risk_evidence.impact_id,
                     source_decision_id=str(raw.get("ticker_decision_id") or "") or None,
                     source_input_hash=impact_source_hash,
+                    source_decision_input_hash=risk_evidence.source_decision_input_hash,
                     experiment_id=str(raw.get("decision_experiment_id") or "") or None,
                     trial_id=str(raw.get("research_trial_id") or "") or None,
                     result_id=str(raw.get("trial_result_id") or "") or None,
@@ -462,8 +565,11 @@ class PortfolioLoopRepository:
                     kelly_cap=risk_evidence.kelly_cap, drawdown_cap=risk_evidence.drawdown_cap,
                     capacity=risk_evidence.capacity, overlap_penalty=risk_evidence.overlap_penalty,
                     execution_penalty=risk_evidence.execution_penalty, covariance=risk_evidence.covariance,
+                    days_to_exit=persisted_impact.days_to_exit,
+                    liquidity=persisted_impact.liquidity,
                     expression=plan.selected_expression.model_dump(mode="json"),
                     invalidation=plan.invalidation.model_dump(mode="json") if plan.invalidation is not None else None,
+                    why_trade=plan.rationale, why_now=(plan.next_action,),
                     missing_data=tuple(str(value) for value in (raw.get("data_requests") or []) if str(value).strip()),
                     input_cutoff=forecast.input_cutoff,
                     available_at=forecast.available_at,
@@ -501,26 +607,59 @@ class PortfolioLoopRepository:
                               if candidate.strategy_forecast_id not in tape_by_forecast else candidate for candidate in candidates]
             drift_rows = [dict(row) for row in connection.execute(
                 """SELECT revision.id AS strategy_revision_id,
-                          monitoring.metrics->>'decay_score' AS decay_score
+                          monitoring.metrics->>'decay_score' AS decay_score,
+                          monitoring.metrics->>'crowding_score' AS crowding_score,
+                          monitoring.metrics->>'capacity_score' AS capacity_score,
+                          monitoring.metrics->>'calibration_score' AS calibration_score
                    FROM analysis.strategy_monitoring_evidence monitoring
                    JOIN analysis.strategy_revision revision ON revision.id = monitoring.strategy_revision_id
                    WHERE monitoring.available_at <= %s AND monitoring.input_cutoff <= %s
                      AND monitoring.evidence_kind = 'decay'
                    ORDER BY monitoring.input_cutoff DESC, monitoring.id DESC""", [as_of, as_of]
             ).fetchall()]
-            drift_by_revision = {str(row["strategy_revision_id"]): float(row["decay_score"])
-                                 for row in drift_rows if row.get("decay_score") is not None}
+            drift_by_revision: dict[str, float] = {}
+            for row in drift_rows:
+                scores = [float(row[key]) for key in ("decay_score", "crowding_score", "capacity_score") if row.get(key) is not None]
+                if row.get("calibration_score") is not None:
+                    scores.append(1.0 - float(row["calibration_score"]))
+                if scores:
+                    drift_by_revision.setdefault(str(row["strategy_revision_id"]), max(scores))
             execution_row = connection.execute(
-                """SELECT execution_model_snapshot_id, calibration_status, sample_count
+                """SELECT execution_model_snapshot_id, allocation_id, model_version,
+                          calibration_status, sample_count, fill_probability, spread_bps,
+                          latency_ms, impact_bps, input_cutoff, input_hash, content_hash, metadata
                    FROM analysis.execution_model_snapshot
-                   WHERE input_cutoff = %s
-                   ORDER BY available_at DESC, execution_model_snapshot_id DESC LIMIT 1""", [as_of]
+                   WHERE input_cutoff <= %s AND available_at <= %s
+                   ORDER BY input_cutoff DESC, available_at DESC,
+                            execution_model_snapshot_id DESC LIMIT 1""", [as_of, as_of]
             ).fetchone()
+            if execution_row is not None:
+                try:
+                    execution_model = ExecutionModelSnapshot.model_validate(dict(execution_row))
+                    if str(execution_row["content_hash"]).strip() != canonical_content_hash(execution_model):
+                        execution_row = None
+                except (TypeError, ValueError):
+                    execution_row = None
             constraint_payload = {
                 "cash_hurdle": cash_hurdle,
                 "source": "app.setting:portfolio_cash_hurdle",
                 "candidate_count": len(candidates),
             }
+            risk_policy: RiskPolicySnapshot | None = None
+            for candidate_row in rows:
+                if candidate_row.get("risk_policy_snapshot"):
+                    try:
+                        risk_policy = RiskPolicySnapshot.model_validate(candidate_row["risk_policy_snapshot"])
+                        break
+                    except (TypeError, ValueError):
+                        risk_policy = None
+            risk_policy_hash = canonical_content_hash(risk_policy.model_dump(mode="json")) if risk_policy else None
+            constraint_payload.update({
+                "risk_policy": risk_policy.model_dump(mode="json") if risk_policy else None,
+                "risk_policy_hash": risk_policy_hash,
+                "position_limit": risk_policy.ticker_position_limit_pct if risk_policy else None,
+                "aggregate_loss_limit": risk_policy.ticker_total_open_loss_pct if risk_policy else None,
+            })
             authority_snapshot_id = f"broker-account:{account['id']}" if account else "missing"
             authority_payload = {
                 "authority_snapshot_id": authority_snapshot_id,
@@ -534,6 +673,7 @@ class PortfolioLoopRepository:
                         "impact_id": candidate.portfolio_impact_id,
                         "decision_id": candidate.source_decision_id,
                         "source_input_hash": candidate.source_input_hash,
+                        "source_decision_input_hash": candidate.source_decision_input_hash,
                         "risk": candidate.risk_evidence.model_dump(mode="json") if candidate.risk_evidence else None,
                     }
                     for candidate in candidates
@@ -549,7 +689,7 @@ class PortfolioLoopRepository:
                 account is not None and account["cash_balance"] is not None
                 and account["net_liquidation"] is not None
                 and cash_hurdle is not None and cash_hurdle > 0
-                and candidates and required_candidates and tape_rows and execution_row is not None
+                and candidates and required_candidates and tape_rows
             )
         repository_authority = issue_postgresql_authority(
             as_of, authority_snapshot_id, canonical_content_hash(authority_payload),
@@ -571,12 +711,16 @@ class PortfolioLoopRepository:
                 volatility_source="published portfolio impact",
                 capacity_source="published portfolio impact",
                 covariance_source="published portfolio impact",
+                risk_policy_hash=risk_policy_hash,
+                risk_policy_version=risk_policy.policy_version if risk_policy else None,
+                position_limit=risk_policy.ticker_position_limit_pct if risk_policy else None,
+                aggregate_loss_limit=risk_policy.ticker_total_open_loss_pct if risk_policy else None,
             ),
             execution=PortfolioExecutionEvidence(
                 snapshot_id=(str(execution_row["execution_model_snapshot_id"]) if execution_row else None),
                 calibration_status=(str(execution_row["calibration_status"]) if execution_row else "calibration_pending"),
                 sample_count=(int(execution_row["sample_count"]) if execution_row else 0),
-                input_cutoff=as_of,
+                input_cutoff=(execution_row["input_cutoff"] if execution_row else as_of),
             ),
             scenario=PortfolioScenarioEvidence(
                 artifact_id=None,
@@ -670,14 +814,15 @@ class PortfolioLoopRepository:
             """INSERT INTO analysis.execution_model_snapshot
                (execution_model_snapshot_id, allocation_id, model_version, calibration_status,
                 sample_count, fill_probability, spread_bps, latency_ms, impact_bps,
-                input_cutoff, input_hash, content_hash)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                input_cutoff, input_hash, content_hash, metadata)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (execution_model_snapshot_id) DO NOTHING""",
             [
                 model.execution_model_snapshot_id, model.allocation_id, model.model_version,
                 model.calibration_status, model.sample_count, model.fill_probability,
                 model.spread_bps, model.latency_ms, model.impact_bps,
-                model.input_cutoff, model.execution_model_snapshot_id.split(":", 1)[1], canonical_content_hash(model),
+                model.input_cutoff, model.execution_model_snapshot_id.split(":", 1)[1],
+                canonical_content_hash(model), Jsonb(model.metadata),
             ],
         )
         stored = connection.execute(
@@ -767,7 +912,8 @@ class PortfolioLoopRepository:
 
         order = connection.execute(
             """SELECT id::text, quantity, filled_quantity, limit_price, actual_fill_price,
-                      filled_at, exit_price, side, status, policy_result
+                      filled_at, exit_price, fees, entry_slippage, exit_slippage,
+                      side, status, policy_result
                FROM app.paper_order WHERE id = %s::uuid""", [paper_order_id]
         ).fetchone()
         if order is None or float(order["filled_quantity"] or 0) <= 0:
@@ -828,6 +974,19 @@ class PortfolioLoopRepository:
                 })
                 item_model = next(row for row in allocation_model.items if row.allocation_item_id == item["allocation_item_id"])
                 attribution = attribute_paper_pnl(allocation_model, item_model, observation=observation)
+                fees = float(order["fees"] or 0)
+                gross_pnl = float(attribution.realized_pnl or 0)
+                decomposition = {
+                    **attribution.attribution,
+                    "pnl": {**attribution.attribution["pnl"], "gross": gross_pnl, "fees": fees, "net": gross_pnl - fees},
+                    "cost_decomposition": {
+                        **attribution.attribution["cost_decomposition"], "fees": fees,
+                        "entry_slippage": order["entry_slippage"], "exit_slippage": order["exit_slippage"],
+                    },
+                }
+                record = {**attribution.model_dump(mode="python"), "realized_pnl": gross_pnl - fees, "attribution": decomposition}
+                record["book_attribution_id"] = attribution_id_for_record(record)
+                attribution = BookAttribution.model_validate(record)
                 self.record_attribution(attribution, connection=connection)
         return observation_id
 
@@ -845,6 +1004,7 @@ class PortfolioLoopRepository:
                               observation.execution_mode, observation.paper_only,
                               observation.status, observation.paper_order_id,
                               paper.status AS order_status, paper.exit_at, paper.filled_at,
+                              paper.fees,
                               paper.policy_result
                        FROM app.paper_execution_observation observation
                        JOIN app.paper_order paper ON paper.id = observation.paper_order_id
@@ -879,7 +1039,8 @@ class PortfolioLoopRepository:
                 if observation["filled_quantity"] <= 0 or observation["fill_price"] is None or observation["exit_price"] is None or observation["order_status"] not in {"exited", "closed"} or observation["exit_at"] is None or observation["filled_at"] is None:
                     raise ValueError("realized attribution requires entry and exit fills")
                 direction = 1 if observation["side"] == "buy" else -1
-                derived = direction * (float(observation["exit_price"]) - float(observation["fill_price"])) * float(observation["filled_quantity"])
+                gross = direction * (float(observation["exit_price"]) - float(observation["fill_price"])) * float(observation["filled_quantity"])
+                derived = gross - float(observation["fees"] or 0)
                 if abs(float(attribution.realized_pnl or 0) - derived) > 1e-9:
                     raise ValueError("realized attribution P&L does not match the paper fill lineage")
             connection.execute(
@@ -888,7 +1049,7 @@ class PortfolioLoopRepository:
                    strategy_forecast_id, hypothesis_id, action_id, rank_id, expression,
                    experiment_id, trial_id, result_id, paper_execution_observation_id,
                     pnl_status, realized_pnl, attribution, input_cutoff, input_hash, content_hash)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (book_attribution_id) DO NOTHING""",
                 [
                     attribution.book_attribution_id, attribution.allocation_id,

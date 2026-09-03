@@ -132,6 +132,7 @@ def _execution_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
         "spread_bps": value.spread_bps,
         "latency_ms": value.latency_ms,
         "impact_bps": value.impact_bps,
+        "metadata": value.metadata,
     }
 
 
@@ -255,6 +256,7 @@ class PortfolioCandidate(BaseModel):
     portfolio_impact_id: str | None = None
     source_decision_id: str | None = None
     source_input_hash: str | None = None
+    source_decision_input_hash: str | None = None
     experiment_id: str | None = None
     trial_id: str | None = None
     result_id: str | None = None
@@ -265,11 +267,15 @@ class PortfolioCandidate(BaseModel):
     kelly_cap: float | None = None
     drawdown_cap: float | None = None
     capacity: float | None = None
+    days_to_exit: float | None = None
+    liquidity: dict[str, Any] | None = None
     overlap_penalty: float | None = None
     execution_penalty: float | None = None
     covariance: dict[str, float] | None = None
     expression: dict[str, Any] | None = None
     invalidation: dict[str, Any] | None = None
+    why_trade: str | None = None
+    why_now: tuple[str, ...] = ()
     rank_position: int | None = None
     rank_utility: float | None = None
     missing_data: tuple[str, ...] = ()
@@ -321,6 +327,7 @@ class PortfolioImpactRiskEvidence(BaseModel):
     ticker: str = Field(min_length=1)
     source_decision_id: str = Field(min_length=1)
     source_input_hash: str = Field(min_length=64, max_length=64)
+    source_decision_input_hash: str = Field(min_length=64, max_length=64)
     input_cutoff: datetime
     expected_return: float
     uncertainty: float
@@ -335,8 +342,10 @@ class PortfolioImpactRiskEvidence(BaseModel):
 
     @model_validator(mode="after")
     def validate_evidence(self) -> "PortfolioImpactRiskEvidence":
-        if self.source_input_hash == "0" * 64 or any(char not in "0123456789abcdef" for char in self.source_input_hash.lower()):
-            raise ValueError("portfolio impact risk evidence requires a canonical source digest")
+        for name in ("source_input_hash", "source_decision_input_hash"):
+            value = getattr(self, name)
+            if value == "0" * 64 or any(char not in "0123456789abcdef" for char in value.lower()):
+                raise ValueError("portfolio impact risk evidence requires canonical source digests")
         if self.input_cutoff.tzinfo is None:
             raise ValueError("portfolio impact risk evidence requires a timezone-aware cutoff")
         for name in ("expected_return", "uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity", "overlap_penalty", "execution_penalty"):
@@ -383,6 +392,10 @@ class PortfolioConstraintEvidence(BaseModel):
     volatility_source: str | None = None
     capacity_source: str | None = None
     covariance_source: str | None = None
+    risk_policy_hash: str | None = None
+    risk_policy_version: str | None = None
+    position_limit: float | None = None
+    aggregate_loss_limit: float | None = None
 
     @model_validator(mode="after")
     def validate_constraint_evidence(self) -> "PortfolioConstraintEvidence":
@@ -390,6 +403,16 @@ class PortfolioConstraintEvidence(BaseModel):
             raise ValueError("portfolio constraints require a content digest")
         if self.cash_hurdle is not None and (not isfinite(self.cash_hurdle) or self.cash_hurdle <= 0):
             raise ValueError("portfolio cash hurdle must be persisted and positive")
+        for name in ("position_limit", "aggregate_loss_limit"):
+            value = getattr(self, name)
+            if value is not None and (not isfinite(value) or value <= 0):
+                raise ValueError(f"{name} must be positive")
+        if self.risk_policy_hash is not None and (
+            len(self.risk_policy_hash) != 64
+            or self.risk_policy_hash == "0" * 64
+            or any(char not in "0123456789abcdef" for char in self.risk_policy_hash.lower())
+        ):
+            raise ValueError("portfolio constraints require the persisted risk-policy digest")
         return self
 
 
@@ -475,15 +498,24 @@ class AuthoritativePortfolioBundle(BaseModel):
             raise ValueError("authoritative bundle requires a canonical source digest")
         if self.input_cutoff.tzinfo is None:
             raise ValueError("authoritative portfolio cutoff must be timezone-aware")
-        for evidence in (self.book, self.execution, self.scenario):
+        for evidence in (self.book, self.scenario):
             if evidence.input_cutoff.astimezone(UTC) != self.input_cutoff.astimezone(UTC):
-                raise ValueError("authoritative evidence clocks must match the bundle cutoff")
+                raise ValueError("authoritative book and scenario clocks must match the bundle cutoff")
+        if self.execution.input_cutoff.astimezone(UTC) > self.input_cutoff.astimezone(UTC):
+            raise ValueError("execution evidence cannot be newer than the bundle cutoff")
         if self.complete and (
             self.book.net_liquidation is None
             or self.book.cash_available is None
             or not self.book.cash_source_id
         ):
             raise ValueError("complete authoritative bundle requires PostgreSQL book and cash evidence")
+        if self.complete and (
+            not self.constraints.risk_policy_hash
+            or not self.constraints.risk_policy_version
+            or self.constraints.position_limit is None
+            or self.constraints.aggregate_loss_limit is None
+        ):
+            raise ValueError("complete authoritative bundle requires persisted PostgreSQL risk constraints")
         for candidate in self.candidates:
             if candidate.input_cutoff and candidate.input_cutoff.astimezone(UTC) > self.input_cutoff.astimezone(UTC):
                 raise ValueError("authoritative candidate is newer than the bundle cutoff")
@@ -492,6 +524,8 @@ class AuthoritativePortfolioBundle(BaseModel):
                 or not candidate.source_decision_id
                 or not candidate.source_input_hash
                 or candidate.source_input_hash == "0" * 64
+                or not candidate.source_decision_input_hash
+                or candidate.source_decision_input_hash == "0" * 64
                 or candidate.risk_evidence is None
                 or not candidate.experiment_id
                 or not candidate.trial_id
@@ -502,6 +536,10 @@ class AuthoritativePortfolioBundle(BaseModel):
                 evidence = candidate.risk_evidence
                 if evidence.impact_id != candidate.portfolio_impact_id or evidence.ticker != candidate.ticker:
                     raise ValueError("authoritative candidate risk evidence does not match its impact")
+                if evidence.source_input_hash != candidate.source_input_hash or evidence.source_decision_input_hash != candidate.source_decision_input_hash:
+                    raise ValueError("authoritative candidate risk digest lineage does not match persisted decision")
+                if candidate.covariance is None or set(candidate.covariance) != {item.ticker for item in self.candidates}:
+                    raise ValueError("authoritative candidate covariance does not cover the complete bundle")
                 for name in ("expected_return", "uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity", "overlap_penalty", "execution_penalty", "covariance"):
                     if getattr(evidence, name) != getattr(candidate, name):
                         raise ValueError("authoritative candidate risk values do not match typed PostgreSQL evidence")
@@ -597,6 +635,8 @@ class PortfolioActionDTO(BaseModel):
     rank_id: str | None = None
     expression: dict[str, Any] | None = None
     invalidation: dict[str, Any] | None = None
+    why_trade: str | None = None
+    why_now: tuple[str, ...] = ()
     missing_data: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
     target_weight: float
@@ -647,6 +687,7 @@ class PortfolioIntegratedDTO(BaseModel):
     scenario: PortfolioScenarioDTO | None = None
     execution: PortfolioExecutionDTO | None = None
     attribution_count: int = 0
+    postmortem: tuple[dict[str, Any], ...] = ()
 
 
 def integrated_portfolio_dto(
@@ -657,6 +698,7 @@ def integrated_portfolio_dto(
     scenario: Mapping[str, Any] | None = None,
     execution: Mapping[str, Any] | None = None,
     attribution_count: int = 0,
+    postmortem: tuple[Mapping[str, Any], ...] = (),
 ) -> PortfolioIntegratedDTO:
     """Project persisted allocation rows into the single canonical UI DTO."""
 
@@ -673,6 +715,8 @@ def integrated_portfolio_dto(
             rank_id=item.rank_id,
             expression=trace.get("expression") if isinstance(trace.get("expression"), dict) else None,
             invalidation=trace.get("invalidation") if isinstance(trace.get("invalidation"), dict) else None,
+            why_trade=(str(trace["why_trade"]) if trace.get("why_trade") is not None else None),
+            why_now=tuple(str(value) for value in trace.get("why_now", ()) or ()),
             missing_data=tuple(str(value) for value in trace.get("missing_data", ()) or ()),
             blockers=item.blockers,
             target_weight=item.target_weight,
@@ -693,6 +737,7 @@ def integrated_portfolio_dto(
         scenario=(PortfolioScenarioDTO.model_validate(scenario) if scenario is not None else None),
         execution=(PortfolioExecutionDTO.model_validate(execution) if execution is not None else None),
         attribution_count=attribution_count,
+        postmortem=tuple(dict(row) for row in postmortem),
     )
 
 
@@ -813,9 +858,13 @@ def _allocate_portfolio(
             "risk_budget": candidate.risk_budget,
             "kelly_cap": candidate.kelly_cap,
             "drawdown_cap": candidate.drawdown_cap,
-            "capacity": candidate.capacity,
-            "expression": candidate.expression,
-            "invalidation": candidate.invalidation,
+                "capacity": candidate.capacity,
+                "days_to_exit": candidate.days_to_exit,
+                "liquidity": candidate.liquidity,
+                "expression": candidate.expression,
+                "invalidation": candidate.invalidation,
+                "why_trade": candidate.why_trade,
+                "why_now": list(candidate.why_now),
             "missing_data": list(candidate.missing_data),
             "cash_available": candidate.cash_available,
             "cash_source_id": candidate.cash_source_id,
@@ -911,6 +960,58 @@ def _allocate_portfolio(
         )
         return max(variance, 0.0) ** 0.5
 
+    # Solve the cross-name covariance constraint after the per-name gates,
+    # then transfer any released target weight to CASH. This is one joint
+    # constrained pass; independent greedy caps are not portfolio risk.
+    joint_risk_budget: float | None = None
+    if isinstance(candidates, AuthoritativePortfolioBundle):
+        budgets = [candidate.risk_budget for candidate, _, _ in eligible if candidate.risk_budget is not None]
+        if budgets:
+            joint_risk_budget = sum(budgets)
+            if candidates.constraints.aggregate_loss_limit is not None:
+                joint_risk_budget = min(joint_risk_budget, candidates.constraints.aggregate_loss_limit)
+    proposed_volatility = portfolio_volatility(proposed_weights)
+    joint_scale = (
+        min(1.0, joint_risk_budget / proposed_volatility)
+        if joint_risk_budget is not None and proposed_volatility > joint_risk_budget and proposed_volatility > 0
+        else 1.0
+    )
+    if joint_scale < 1.0:
+        released = 0.0
+        rescaled: list[PortfolioAllocationItem] = []
+        for item in ranked:
+            if item.disposition == "selected" and item.ticker != "CASH":
+                new_weight = item.target_weight * joint_scale
+                new_delta = max(0.0, new_weight - item.current_weight)
+                new_funding = new_delta * nav if nav is not None else item.funding_amount
+                trace = {
+                    **item.trace, "joint_covariance_scale": joint_scale,
+                    "joint_risk_budget": joint_risk_budget,
+                    "joint_pre_scale_volatility": proposed_volatility,
+                    "joint_post_scale_weight": new_weight,
+                    "weight_delta": new_delta, "funding_amount": new_funding,
+                }
+                released += max(0.0, item.target_weight - new_weight)
+                rescaled.append(item.model_copy(update={
+                    "target_weight": new_weight, "funding_amount": new_funding,
+                    "allocation_item_id": f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': new_weight, 'trace': trace})}",
+                    "trace": _json(trace),
+                }))
+            elif item.ticker == "CASH":
+                trace = {**item.trace, "joint_covariance_scale": joint_scale,
+                         "joint_risk_budget": joint_risk_budget, "joint_released_to_cash": released}
+                rescaled.append(item.model_copy(update={
+                    "target_weight": min(1.0, item.target_weight + released),
+                    "allocation_item_id": f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': min(1.0, item.target_weight + released), 'trace': trace})}",
+                    "trace": _json(trace),
+                }))
+            else:
+                rescaled.append(item)
+        ranked = rescaled
+        proposed_weights = {item.ticker: item.target_weight for item in ranked if item.disposition == "selected" and item.ticker != "CASH"}
+    else:
+        ranked = [item.model_copy(update={"trace": _json({**item.trace, "joint_covariance_scale": 1.0, "joint_risk_budget": joint_risk_budget})}) if item.disposition == "selected" and item.ticker != "CASH" else item for item in ranked]
+        proposed_weights = {item.ticker: item.target_weight for item in ranked if item.disposition == "selected" and item.ticker != "CASH"}
     proposed_volatility = portfolio_volatility(proposed_weights)
     current_volatility = portfolio_volatility(current_weights)
     updated: list[PortfolioAllocationItem] = []
@@ -1013,9 +1114,22 @@ class PortfolioScenarioArtifact(BaseModel):
                 raise ValueError("scenario paths require non-empty shocks")
             if dict(returns) == dict(shocks):
                 raise ValueError("scenario shocks must be an independent persisted path")
+            if set(returns) != set(shocks):
+                raise ValueError("scenario returns and shocks must cover the same persisted names")
+            if not any(float(returns[key]) != float(shocks[key]) for key in returns):
+                raise ValueError("scenario shocks must differ from returns")
             for values in (returns, shocks):
                 if any(not isfinite(float(value)) for value in values.values()):
                     raise ValueError("scenario values must be finite")
+            if self.model_version == "strategy_pnl_tape.v1":
+                provenance = item.get("provenance")
+                if not isinstance(provenance, list) or not provenance or any(
+                    not isinstance(source, Mapping)
+                    or not source.get("strategy_pnl_tape_id")
+                    or not source.get("input_hash")
+                    for source in provenance
+                ):
+                    raise ValueError("persisted scenario paths require complete tape provenance")
         payload = {
             "allocation_id": self.allocation_id, "model_version": self.model_version,
             "probability_semantics": self.probability_semantics, "scenarios": self.scenarios,
@@ -1024,10 +1138,23 @@ class PortfolioScenarioArtifact(BaseModel):
         }
         if self.scenario_artifact_id != f"scenario:{_hash(payload)}":
             raise ValueError("scenario identity does not match its immutable payload")
-        if not (self.tail_dependence.get("negative_return_co_exceedance") or self.tail_dependence.get("co_exceedance")):
+        co_exceedance = self.tail_dependence.get("negative_return_co_exceedance") or self.tail_dependence.get("co_exceedance")
+        if not isinstance(co_exceedance, Mapping) or not co_exceedance:
             raise ValueError("scenario artifact requires tail co-exceedance results")
-        if not ("probability" in self.simultaneous_unwind and "observations" in self.simultaneous_unwind):
+        if (
+            not isfinite(float(self.simultaneous_unwind.get("probability", -1)))
+            or not 0 <= float(self.simultaneous_unwind.get("probability", -1)) <= 1
+            or not isinstance(self.simultaneous_unwind.get("observations"), int)
+            or self.simultaneous_unwind["observations"] <= 0
+        ):
             raise ValueError("scenario artifact requires simultaneous-unwind assumptions and results")
+        if self.model_version == "strategy_pnl_tape.v1" and (
+            self.tail_dependence.get("shock_threshold") is None
+            or not isinstance(self.simultaneous_unwind.get("capacity_evidence"), Mapping)
+            or not isinstance(self.simultaneous_unwind.get("execution_impact_evidence"), Mapping)
+            or not isinstance(self.simultaneous_unwind.get("exit_time_evidence"), Mapping)
+        ):
+            raise ValueError("persisted scenario artifact requires tail and unwind evidence")
         return self
 
 
@@ -1096,20 +1223,34 @@ def apply_decay_to_allocation(
     by_item = {decision.allocation_item_id: decision for decision in initial}
     updated: list[PortfolioAllocationItem] = []
     released_weight = 0.0
+    final_decisions: list[PortfolioDriftDecision] = []
     for item in allocation.items:
         decision = by_item.get(item.allocation_item_id)
         if decision is None or decision.action == "hold":
             updated.append(item)
+            if decision is not None:
+                final_decisions.append(decision)
             continue
         released_weight += max(0.0, item.target_weight - decision.proposed_weight)
         trace = {**item.trace, "drift_action": decision.action, "drift_score": decision.drift_score,
                  "pre_decay_target_weight": item.target_weight, "post_decay_target_weight": decision.proposed_weight}
+        if decision.action == "rollback":
+            trace["rollback_evidence"] = {
+                "drift_score": decision.drift_score,
+                "rollback_threshold": decision.rollback_threshold,
+                "released_weight": max(0.0, item.target_weight - decision.proposed_weight),
+            }
+        new_item_id = f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': decision.proposed_weight, 'trace': trace})}"
         updated.append(item.model_copy(update={
             "target_weight": decision.proposed_weight,
             "disposition": "selected" if decision.proposed_weight > 0 else "rollback",
             "blockers": tuple((*item.blockers, f"drift_{decision.action}")),
-            "allocation_item_id": f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': decision.proposed_weight, 'trace': trace})}",
+            "allocation_item_id": new_item_id,
             "trace": trace,
+        }))
+        final_decisions.append(decision.model_copy(update={
+            "allocation_item_id": new_item_id,
+            "decision_id": f"drift:{_hash({'allocation_id': allocation.allocation_id, 'allocation_item_id': new_item_id, 'drift_score': decision.drift_score, 'rollback_threshold': decision.rollback_threshold, 'proposed_weight': decision.proposed_weight, 'action': decision.action})}",
         }))
     if released_weight > 0:
         cash_index = next((index for index, item in enumerate(updated) if item.ticker == "CASH"), None)
@@ -1117,9 +1258,10 @@ def apply_decay_to_allocation(
             cash = updated[cash_index]
             cash_trace = {**cash.trace, "drift_released_to_cash": released_weight}
             cash_weight = min(1.0, cash.target_weight + released_weight)
+            cash_item_id = f"allocation-item:{_hash({'candidate_id': cash.candidate_id, 'ticker': cash.ticker, 'disposition': cash.disposition, 'target_weight': cash_weight, 'trace': cash_trace})}"
             updated[cash_index] = cash.model_copy(update={
                 "target_weight": cash_weight,
-                "allocation_item_id": f"allocation-item:{_hash({'candidate_id': cash.candidate_id, 'ticker': cash.ticker, 'disposition': cash.disposition, 'target_weight': cash_weight, 'trace': cash_trace})}",
+                "allocation_item_id": cash_item_id,
                 "trace": cash_trace,
             })
     selected = [item for item in updated if item.disposition == "selected" and item.ticker != "CASH" and item.target_weight > 0]
@@ -1137,26 +1279,14 @@ def apply_decay_to_allocation(
         strategy_registry_ids=allocation.strategy_registry_ids,
         metadata=allocation.metadata,
     )
-    score_by_candidate = {
-        old.candidate_id: drift_scores.get(old.allocation_item_id)
-        for old in allocation.items if old.ticker != "CASH" and old.disposition == "selected"
-    }
-    final_scores = {item.allocation_item_id: score_by_candidate.get(item.candidate_id)
-                    for item in adjusted.items if item.ticker != "CASH" and item.disposition in {"selected", "rollback"}}
-    generated = apply_decay_guard(adjusted, final_scores, rollback_threshold=rollback_threshold)
-    final_decisions: list[PortfolioDriftDecision] = []
-    for decision in generated:
-        item = next(item for item in adjusted.items if item.allocation_item_id == decision.allocation_item_id)
-        proposed_weight = item.target_weight
-        payload = {"allocation_id": adjusted.allocation_id, "allocation_item_id": item.allocation_item_id,
-                   "drift_score": decision.drift_score, "rollback_threshold": rollback_threshold,
-                   "proposed_weight": proposed_weight, "action": decision.action}
-        final_decisions.append(decision.model_copy(update={
-            "allocation_id": adjusted.allocation_id, "allocation_item_id": item.allocation_item_id,
-            "proposed_weight": proposed_weight,
-            "decision_id": f"drift:{_hash(payload)}",
-        }))
-    return adjusted, tuple(final_decisions)
+    persisted_decisions = tuple(
+        decision.model_copy(update={
+            "allocation_id": adjusted.allocation_id,
+            "decision_id": f"drift:{_hash({'allocation_id': adjusted.allocation_id, 'allocation_item_id': decision.allocation_item_id, 'drift_score': decision.drift_score, 'rollback_threshold': decision.rollback_threshold, 'proposed_weight': decision.proposed_weight, 'action': decision.action})}",
+        })
+        for decision in final_decisions
+    )
+    return adjusted, persisted_decisions
 
 
 def build_scenario_artifact(
@@ -1232,19 +1362,34 @@ def build_scenario_artifact_from_observations(
         {"name": f"observed:{index}", "probability": probability, "returns": values["returns"], "shocks": values["shocks"], "provenance": values["provenance"]}
         for index, values in enumerate(paths)
     ]
+    # Tail dependence is measured from the persisted tail-shock tape, not
+    # from ordinary negative returns. The allocation trace carries the
+    # capacity and execution evidence used by the unwind result.
     co_exceedance: dict[str, Any] = {}
+    tail_threshold = -0.10
     for left in sorted(selected):
         for right in sorted(selected):
             if left > right:
                 continue
-            count = sum(values["returns"][left] < 0 and values["returns"][right] < 0 for values in paths)
-            co_exceedance[f"{left}|{right}"] = {"count": count, "observations": len(paths), "probability": count / len(paths)}
-    simultaneous = sum(all(values["returns"][ticker] < 0 for ticker in selected) for values in paths)
+            count = sum(values["shocks"][left] <= tail_threshold and values["shocks"][right] <= tail_threshold for values in paths)
+            co_exceedance[f"{left}|{right}"] = {
+                "count": count, "observations": len(paths), "probability": count / len(paths),
+                "threshold": tail_threshold,
+            }
+    selected_items = {item.ticker: item for item in allocation.items if item.ticker in selected}
+    capacity = {ticker: selected_items[ticker].trace.get("capacity") for ticker in sorted(selected)}
+    execution_impact = {ticker: selected_items[ticker].trace.get("execution_penalty") for ticker in sorted(selected)}
+    exit_time = {ticker: selected_items[ticker].trace.get("days_to_exit") for ticker in sorted(selected)}
+    simultaneous = sum(all(values["shocks"][ticker] <= tail_threshold for ticker in selected) for values in paths)
     return build_scenario_artifact(
         allocation, scenarios, model_version="strategy_pnl_tape.v1",
         probability_semantics="equal-weight persisted P&L observations",
-        tail_dependence={"negative_return_co_exceedance": co_exceedance},
-        simultaneous_unwind={"all_selected_negative_count": simultaneous, "observations": len(paths), "probability": simultaneous / len(paths)},
+        tail_dependence={"negative_return_co_exceedance": co_exceedance, "shock_threshold": tail_threshold},
+        simultaneous_unwind={
+            "all_selected_negative_count": simultaneous, "observations": len(paths),
+            "probability": simultaneous / len(paths), "capacity_evidence": capacity,
+            "execution_impact_evidence": execution_impact, "exit_time_evidence": exit_time,
+        },
     )
 
 
@@ -1304,6 +1449,7 @@ class ExecutionModelSnapshot(BaseModel):
     latency_ms: float | None = None
     impact_bps: float | None = None
     input_cutoff: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_identity(self) -> "ExecutionModelSnapshot":
@@ -1343,12 +1489,14 @@ def build_execution_model_snapshot(
         "spread_bps": (sum(item.spread_bps for item in genuine if item.spread_bps is not None) / len([item for item in genuine if item.spread_bps is not None])) if any(item.spread_bps is not None for item in genuine) else None,
         "latency_ms": sum(latency_values) / len(latency_values) if latency_values else None,
         "impact_bps": sum(impact_values) / len(impact_values) if impact_values else None,
+        "metadata": {},
     }
     return ExecutionModelSnapshot(
         execution_model_snapshot_id=f"execution:{_hash(payload)}", allocation_id=allocation_id,
         model_version="paper-telemetry.v1", calibration_status="calibrated" if genuine else "calibration_pending",
         sample_count=len(genuine), fill_probability=payload["fill_probability"], spread_bps=payload["spread_bps"],
         latency_ms=payload["latency_ms"], impact_bps=payload["impact_bps"], input_cutoff=input_cutoff,
+        metadata=payload["metadata"],
     )
 
 
