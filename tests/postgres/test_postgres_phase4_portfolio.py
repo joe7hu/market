@@ -22,9 +22,9 @@ def insert_cash_allocation(connection: psycopg.Connection) -> None:
     )
     connection.execute(
         """INSERT INTO analysis.portfolio_allocation_item
-           (allocation_item_id, allocation_id, ticker, disposition, target_weight,
+           (allocation_item_id, allocation_id, ticker, action_id, disposition, target_weight,
             marginal_book_utility, trace, input_hash, content_hash)
-           VALUES (%s, %s, 'CASH', 'selected', 1, 0, '{}'::jsonb, %s, %s)""",
+           VALUES (%s, %s, 'CASH', 'action:compatibility', 'selected', 1, 0, '{}'::jsonb, %s, %s)""",
         ["allocation-item:" + "b" * 64, allocation_id, "b" * 64, "c" * 64],
     )
     connection.commit()
@@ -38,7 +38,9 @@ def test_phase4_artifacts_are_immutable_and_paper_only(migrated_postgres_dsn: st
         ).fetchone()[0]
         paper_order_id = uuid4()
         connection.execute(
-            "INSERT INTO app.paper_order (id, instrument_id, side, quantity, limit_price, status, created_at) VALUES (%s, %s, 'buy', 1, 100, 'staged', %s)",
+            """INSERT INTO app.paper_order
+               (id, instrument_id, side, quantity, limit_price, status, created_at, policy_result)
+               VALUES (%s, %s, 'buy', 1, 100, 'staged', %s, '{\"trade_plan_id\": \"action:compatibility\"}'::jsonb)""",
             [paper_order_id, instrument_id, AS_OF - timedelta(seconds=1)],
         )
         connection.commit()
@@ -66,6 +68,16 @@ def test_phase4_artifacts_are_immutable_and_paper_only(migrated_postgres_dsn: st
                        VALUES ('observation:bad', %s, %s, %s, 'live', false, 'submitted', 1, 0, %s)""",
                     ["allocation-item:" + "b" * 64, "action:compatibility", paper_order_id, AS_OF],
                 )
+        connection.rollback()
+        with pytest.raises(RaiseException, match="genuine paper fill"):
+            connection.execute(
+                """INSERT INTO app.paper_execution_observation
+                   (paper_execution_observation_id, allocation_item_id, action_id, paper_order_id,
+                    execution_mode, paper_only, status, requested_quantity, filled_quantity,
+                    fill_price, observed_at)
+                   VALUES ('observation:unfilled', %s, %s, %s, 'paper', true, 'filled', 1, 1, 100, %s)""",
+                ["allocation-item:" + "b" * 64, "action:compatibility", paper_order_id, AS_OF],
+            )
         connection.rollback()
         connection.execute(
             """INSERT INTO app.paper_execution_observation

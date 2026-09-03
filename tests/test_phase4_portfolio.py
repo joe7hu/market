@@ -28,6 +28,7 @@ def candidate(candidate_id: str, **overrides: object) -> PortfolioCandidate:
         "experiment_id": "experiment:test",
         "trial_id": "trial:test",
         "result_id": "result:test",
+        "expression": {"kind": "stock", "ticker": candidate_id},
         "expected_return": 0.12,
         "uncertainty": 0.02,
         "volatility": 0.20,

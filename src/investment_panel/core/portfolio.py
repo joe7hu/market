@@ -12,19 +12,32 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _PostgreSQLAuthorityToken:
-    """Repository-issued proof for one immutable database input slice."""
+    """Opaque proof issued only after the repository verifies one DB slice."""
 
-    def __init__(self, cutoff: datetime, snapshot_id: str, source_content_hash: str) -> None:
-        self.cutoff = cutoff
-        self.snapshot_id = snapshot_id
-        self.source_content_hash = source_content_hash
+    __slots__ = ("_cutoff", "_snapshot_id", "_source_content_hash")
 
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("PostgreSQL authority tokens are repository-issued")
 
-_POSTGRESQL_AUTHORITY = _PostgreSQLAuthorityToken(
-    datetime.min.replace(tzinfo=UTC),
-    "compatibility-only",
-    sha256(b"market-phase4-compatibility-authority").hexdigest(),
-)
+    @classmethod
+    def _issue(cls, cutoff: datetime, snapshot_id: str, source_content_hash: str) -> "_PostgreSQLAuthorityToken":
+        token = object.__new__(cls)
+        object.__setattr__(token, "_cutoff", cutoff)
+        object.__setattr__(token, "_snapshot_id", snapshot_id)
+        object.__setattr__(token, "_source_content_hash", source_content_hash)
+        return token
+
+    @property
+    def cutoff(self) -> datetime:
+        return self._cutoff
+
+    @property
+    def snapshot_id(self) -> str:
+        return self._snapshot_id
+
+    @property
+    def source_content_hash(self) -> str:
+        return self._source_content_hash
 
 
 def _json(value: Any) -> Any:
@@ -101,6 +114,8 @@ def _attribution_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
             "allocation_item_id": value["allocation_item_id"],
             "strategy_forecast_id": value.get("strategy_forecast_id"),
             "hypothesis_id": value.get("hypothesis_id"),
+            "action_id": value.get("action_id"), "rank_id": value.get("rank_id"),
+            "expression": value.get("expression"),
             "experiment_id": value.get("experiment_id"), "trial_id": value.get("trial_id"),
             "result_id": value.get("result_id"),
             "paper_execution_observation_id": value.get("paper_execution_observation_id"),
@@ -114,6 +129,8 @@ def _attribution_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
         "allocation_item_id": value.allocation_item_id,
         "strategy_forecast_id": value.strategy_forecast_id,
         "hypothesis_id": value.hypothesis_id,
+        "action_id": value.action_id, "rank_id": value.rank_id,
+        "expression": value.expression,
         "experiment_id": value.experiment_id,
         "trial_id": value.trial_id,
         "result_id": value.result_id,
@@ -166,7 +183,10 @@ def canonical_content_hash(value: Mapping[str, Any] | Any) -> str:
         payload = {
             "book_attribution_id": field("book_attribution_id"), "allocation_id": field("allocation_id"),
             "allocation_item_id": field("allocation_item_id"), "strategy_forecast_id": field("strategy_forecast_id"),
-            "hypothesis_id": field("hypothesis_id"), "paper_execution_observation_id": field("paper_execution_observation_id"),
+            "hypothesis_id": field("hypothesis_id"), "action_id": field("action_id"),
+            "rank_id": field("rank_id"), "expression": field("expression"),
+            "experiment_id": field("experiment_id"), "trial_id": field("trial_id"),
+            "result_id": field("result_id"), "paper_execution_observation_id": field("paper_execution_observation_id"),
             "pnl_status": field("pnl_status"), "realized_pnl": field("realized_pnl"),
             "attribution": field("attribution"), "input_cutoff": field("input_cutoff"),
         }
@@ -362,11 +382,41 @@ class AuthoritativePortfolioBundle(BaseModel):
     repository_authority: object = Field(exclude=True, repr=False)
 
     @classmethod
-    def _from_postgresql(cls, **values: Any) -> "AuthoritativePortfolioBundle":
-        values["repository_authority"] = _PostgreSQLAuthorityToken(
-            values["input_cutoff"], values["authority_snapshot_id"], values["authority_content_hash"],
-        )
-        return cls.model_validate(values)
+    def _from_postgresql(
+        cls,
+        *,
+        cutoff: datetime,
+        snapshot_id: str,
+        source_payload: Mapping[str, Any],
+        candidates: tuple[PortfolioCandidate, ...],
+        book: PortfolioBookEvidence,
+        constraints: PortfolioConstraintEvidence,
+        execution: PortfolioExecutionEvidence,
+        scenario: PortfolioScenarioEvidence,
+        drift_scores: Mapping[str, float] | None = None,
+        complete: bool = True,
+    ) -> "AuthoritativePortfolioBundle":
+        """Hydrate a bundle only from the repository-issued proof and typed rows."""
+
+        if cutoff.tzinfo is None or not snapshot_id.strip() or not source_payload:
+            raise ValueError("PostgreSQL authority requires a complete verified source slice")
+        source_content_hash = _hash(source_payload)
+        if source_content_hash == "0" * 64:
+            raise ValueError("PostgreSQL authority requires a canonical source digest")
+        repository_authority = _PostgreSQLAuthorityToken._issue(cutoff, snapshot_id, source_content_hash)
+        return cls.model_validate({
+            "input_cutoff": repository_authority.cutoff,
+            "candidates": candidates,
+            "book": book,
+            "constraints": constraints,
+            "execution": execution,
+            "scenario": scenario,
+            "drift_scores": dict(drift_scores or {}),
+            "complete": complete,
+            "authority_snapshot_id": repository_authority.snapshot_id,
+            "authority_content_hash": repository_authority.source_content_hash,
+            "repository_authority": repository_authority,
+        })
 
     @model_validator(mode="after")
     def validate_bundle(self) -> "AuthoritativePortfolioBundle":
@@ -498,6 +548,8 @@ class PortfolioActionDTO(BaseModel):
     target_weight: float
     current_weight: float
     marginal_book_utility: float
+    current_mrc: float | None = None
+    proposed_mrc: float | None = None
     funding_source: str | None = None
     sizing_trace: dict[str, Any]
 
@@ -506,6 +558,25 @@ class PortfolioActionDTO(BaseModel):
         if self.disposition == "selected" and self.ticker != "CASH" and not self.funding_source:
             raise ValueError("canonical funded action requires funding")
         return self
+
+
+class PortfolioScenarioDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scenario_artifact_id: str
+    allocation_id: str
+    scenarios: tuple[dict[str, Any], ...]
+    tail_dependence: dict[str, Any]
+    simultaneous_unwind: dict[str, Any]
+
+
+class PortfolioExecutionDTO(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    execution_model_snapshot_id: str
+    allocation_id: str
+    calibration_status: str
+    sample_count: int = Field(ge=0)
 
 
 class PortfolioIntegratedDTO(BaseModel):
@@ -519,6 +590,8 @@ class PortfolioIntegratedDTO(BaseModel):
     actions: tuple[PortfolioActionDTO, ...]
     scenario_artifact_id: str | None = None
     execution_model_snapshot_id: str | None = None
+    scenario: PortfolioScenarioDTO | None = None
+    execution: PortfolioExecutionDTO | None = None
     attribution_count: int = 0
 
 
@@ -527,6 +600,8 @@ def integrated_portfolio_dto(
     *,
     scenario_artifact_id: str | None = None,
     execution_model_snapshot_id: str | None = None,
+    scenario: Mapping[str, Any] | None = None,
+    execution: Mapping[str, Any] | None = None,
     attribution_count: int = 0,
 ) -> PortfolioIntegratedDTO:
     """Project persisted allocation rows into the single canonical UI DTO."""
@@ -549,6 +624,8 @@ def integrated_portfolio_dto(
             target_weight=item.target_weight,
             current_weight=item.current_weight,
             marginal_book_utility=item.marginal_book_utility,
+            current_mrc=(trace.get("current_marginal_risk_contribution") if isinstance(trace.get("current_marginal_risk_contribution"), (int, float)) else None),
+            proposed_mrc=(trace.get("proposed_marginal_risk_contribution") if isinstance(trace.get("proposed_marginal_risk_contribution"), (int, float)) else None),
             funding_source=item.funding_source,
             sizing_trace=trace,
         ))
@@ -559,6 +636,8 @@ def integrated_portfolio_dto(
         actions=tuple(actions),
         scenario_artifact_id=scenario_artifact_id,
         execution_model_snapshot_id=execution_model_snapshot_id,
+        scenario=(PortfolioScenarioDTO.model_validate(scenario) if scenario is not None else None),
+        execution=(PortfolioExecutionDTO.model_validate(execution) if execution is not None else None),
         attribution_count=attribution_count,
     )
 
@@ -871,7 +950,16 @@ def apply_decay_guard(
         raise ValueError("rollback threshold must be positive")
     decisions: list[PortfolioDriftDecision] = []
     for item in allocation.items:
-        if item.ticker == "CASH" or item.disposition != "selected":
+        if item.ticker == "CASH" or item.disposition not in {"selected", "rollback"}:
+            continue
+        if item.disposition == "rollback":
+            score = drift_scores.get(item.allocation_item_id, rollback_threshold)
+            payload = {"allocation_id": allocation.allocation_id, "allocation_item_id": item.allocation_item_id, "drift_score": score, "rollback_threshold": rollback_threshold, "proposed_weight": 0.0, "action": "rollback"}
+            decisions.append(PortfolioDriftDecision(
+                decision_id=f"drift:{_hash(payload)}", allocation_id=allocation.allocation_id,
+                allocation_item_id=item.allocation_item_id, drift_score=score,
+                rollback_threshold=rollback_threshold, proposed_weight=0.0, action="rollback",
+            ))
             continue
         score = drift_scores.get(item.allocation_item_id)
         if score is None or not isfinite(score) or score < 0:
@@ -949,7 +1037,7 @@ def apply_decay_to_allocation(
         for old in allocation.items if old.ticker != "CASH" and old.disposition == "selected"
     }
     final_scores = {item.allocation_item_id: score_by_candidate.get(item.candidate_id)
-                    for item in adjusted.items if item.ticker != "CASH" and item.disposition == "selected"}
+                    for item in adjusted.items if item.ticker != "CASH" and item.disposition in {"selected", "rollback"}}
     generated = apply_decay_guard(adjusted, final_scores, rollback_threshold=rollback_threshold)
     final_decisions: list[PortfolioDriftDecision] = []
     for decision in generated:
@@ -1154,6 +1242,9 @@ class BookAttribution(BaseModel):
     allocation_item_id: str
     strategy_forecast_id: str = Field(min_length=1)
     hypothesis_id: str = Field(min_length=1)
+    action_id: str = Field(min_length=1)
+    rank_id: str = Field(min_length=1)
+    expression: dict[str, Any]
     experiment_id: str = Field(min_length=1)
     trial_id: str = Field(min_length=1)
     result_id: str = Field(min_length=1)
@@ -1172,6 +1263,8 @@ class BookAttribution(BaseModel):
         _finite(self.realized_pnl, "realized_pnl")
         if not all((self.hypothesis_id, self.experiment_id, self.trial_id, self.result_id, self.paper_execution_observation_id)):
             raise ValueError("book attribution requires complete hypothesis experiment trial result lineage")
+        if not self.expression:
+            raise ValueError("book attribution requires the persisted expression lineage")
         if self.pnl_status == "realized":
             required = {"hypothesis_id", "experiment_id", "trial_id", "result_id", "forecast_id", "action_id", "rank_id", "expression", "fill_id", "pnl", "cost_decomposition"}
             if not required.issubset(self.attribution):
@@ -1209,6 +1302,9 @@ def attribute_paper_pnl(
     }
     if not item.hypothesis_id or any(not lineage[key] for key in lineage):
         raise ValueError("attribution requires persisted hypothesis, experiment, trial, and result lineage")
+    expression = trace.get("expression")
+    if not item.action_id or not item.rank_id or not isinstance(expression, dict) or not expression:
+        raise ValueError("attribution requires persisted action, rank, and expression lineage")
     attribution = {
         "source": "paper_execution_observation", "derived": True,
         "hypothesis_id": item.hypothesis_id, **lineage,
@@ -1224,6 +1320,7 @@ def attribute_paper_pnl(
     record_payload = {
         "allocation_id": allocation.allocation_id, "allocation_item_id": item.allocation_item_id,
         "strategy_forecast_id": item.strategy_forecast_id, "hypothesis_id": item.hypothesis_id,
+        "action_id": item.action_id, "rank_id": item.rank_id, "expression": expression,
         **lineage,
         "paper_execution_observation_id": observation.paper_execution_observation_id if observation else None,
         "pnl_status": status, "realized_pnl": derived_pnl,
@@ -1232,7 +1329,8 @@ def attribute_paper_pnl(
     return BookAttribution(
         book_attribution_id=attribution_id_for_record(record_payload), allocation_id=allocation.allocation_id,
         allocation_item_id=item.allocation_item_id, strategy_forecast_id=item.strategy_forecast_id,
-        hypothesis_id=item.hypothesis_id, experiment_id=lineage["experiment_id"],
+        hypothesis_id=item.hypothesis_id, action_id=item.action_id, rank_id=item.rank_id,
+        expression=expression, experiment_id=lineage["experiment_id"],
         trial_id=lineage["trial_id"], result_id=lineage["result_id"],
         paper_execution_observation_id=observation.paper_execution_observation_id,
         pnl_status=status, realized_pnl=derived_pnl,

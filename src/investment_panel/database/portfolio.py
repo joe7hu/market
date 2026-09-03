@@ -6,7 +6,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import StrategyForecast, TradePlan
+from investment_panel.core.decision import PortfolioImpact, StrategyForecast, TradePlan
 from investment_panel.core.portfolio import (
     BookAttribution,
     AuthoritativePortfolioBundle,
@@ -106,7 +106,7 @@ class PortfolioLoopRepository:
                    ORDER BY available_at DESC, execution_model_snapshot_id DESC LIMIT 1""", [allocation_id]
             ).fetchall()]
             result["paper_execution_observations"] = [dict(row) for row in connection.execute(
-                """SELECT paper_execution_observation_id, allocation_item_id, paper_order_id::text,
+                """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
                           execution_mode, paper_only, status, requested_quantity, filled_quantity,
                           requested_price, fill_price, spread_bps, latency_ms, impact_bps,
                           side, exit_price, observed_at, available_at, metadata
@@ -119,7 +119,8 @@ class PortfolioLoopRepository:
             ).fetchall()]
             result["book_attribution"] = [dict(row) for row in connection.execute(
                 """SELECT book_attribution_id, allocation_id, allocation_item_id,
-                          strategy_forecast_id, hypothesis_id::text, paper_execution_observation_id,
+                          strategy_forecast_id, hypothesis_id::text, action_id, rank_id, expression,
+                          experiment_id, trial_id::text, result_id::text, paper_execution_observation_id,
                           pnl_status, realized_pnl, attribution, input_cutoff, content_hash, available_at
                    FROM analysis.book_attribution
                    WHERE allocation_id = %s
@@ -154,6 +155,18 @@ class PortfolioLoopRepository:
                 allocation_model,
                 scenario_artifact_id=scenario_id,
                 execution_model_snapshot_id=execution_id,
+                scenario=(
+                    {key: result["portfolio_scenario_artifact"][0][key] for key in (
+                        "scenario_artifact_id", "allocation_id", "scenarios", "tail_dependence", "simultaneous_unwind",
+                    )}
+                    if result["portfolio_scenario_artifact"] else None
+                ),
+                execution=(
+                    {key: result["execution_model_snapshot"][0][key] for key in (
+                        "execution_model_snapshot_id", "allocation_id", "calibration_status", "sample_count",
+                    )}
+                    if result["execution_model_snapshot"] else None
+                ),
                 attribution_count=len(result["book_attribution"]),
             ).model_dump(mode="json")
             result["portfolio_allocation"][0]["canonical_portfolio"] = canonical
@@ -339,14 +352,18 @@ class PortfolioLoopRepository:
                 try:
                     if not isinstance(impact_raw, dict):
                         raise ValueError("portfolio impact risk row is not an object")
+                    persisted_impact = PortfolioImpact.model_validate(impact_raw)
+                    impact_source_hash = canonical_content_hash(
+                        persisted_impact.model_dump(mode="json"),
+                    )
                     uncertainty = (
                         abs(float(forecast.forecast_range.high) - float(forecast.forecast_range.low)) / 2
                         if forecast.forecast_range is not None else None
                     )
                     risk_evidence = PortfolioImpactRiskEvidence.model_validate({
-                        "impact_id": impact_raw.get("impact_id"), "ticker": forecast.ticker,
+                        "impact_id": persisted_impact.impact_id, "ticker": forecast.ticker,
                         "source_decision_id": str(raw.get("ticker_decision_id") or ""),
-                        "source_input_hash": str(raw.get("decision_input_hash") or ""),
+                        "source_input_hash": impact_source_hash,
                         "input_cutoff": forecast.input_cutoff, "expected_return": forecast.forecast_value,
                         "uncertainty": uncertainty, "volatility": impact_raw.get("volatility"),
                         "risk_budget": impact_raw.get("risk_budget"), "kelly_cap": impact_raw.get("kelly_cap"),
@@ -441,10 +458,13 @@ class PortfolioLoopRepository:
                 "candidate_count": len(candidates),
             }
             authority_snapshot_id = f"broker-account:{account['id']}" if account else "missing"
-            authority_content_hash = canonical_content_hash({
+            authority_payload = {
                 "authority_snapshot_id": authority_snapshot_id,
                 "input_cutoff": as_of,
                 "cash_hurdle": cash_hurdle,
+                "constraint": constraint_payload,
+                "execution": dict(execution_row) if execution_row else None,
+                "scenario_rows": tape_rows,
                 "candidate_provenance": [
                     {
                         "impact_id": candidate.portfolio_impact_id,
@@ -454,7 +474,7 @@ class PortfolioLoopRepository:
                     }
                     for candidate in candidates
                 ],
-            })
+            }
             required_candidates = all(
                 candidate.evidence_status == "available"
                 and not candidate.blockers
@@ -467,7 +487,9 @@ class PortfolioLoopRepository:
                 and candidates and required_candidates and tape_rows and execution_row is not None
             )
         return AuthoritativePortfolioBundle._from_postgresql(
-            input_cutoff=as_of,
+            cutoff=as_of,
+            snapshot_id=authority_snapshot_id,
+            source_payload=authority_payload,
             candidates=tuple(candidates),
             book=PortfolioBookEvidence(
                 snapshot_id=(f"broker-account:{account['id']}" if account else None),
@@ -496,8 +518,6 @@ class PortfolioLoopRepository:
             ),
             drift_scores=drift_by_revision,
             complete=complete,
-            authority_snapshot_id=authority_snapshot_id,
-            authority_content_hash=authority_content_hash,
         )
 
     def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
@@ -538,7 +558,7 @@ class PortfolioLoopRepository:
         with self.runtime.snapshot() as connection:
             item_ids = [item.allocation_item_id for item in allocation.items if item.ticker != "CASH"]
             observations = [PaperExecutionObservation.model_validate(dict(row)) for row in connection.execute(
-                """SELECT paper_execution_observation_id, allocation_item_id, paper_order_id::text,
+                """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
                           execution_mode, paper_only, status, requested_quantity, filled_quantity,
                           requested_price, fill_price, spread_bps, latency_ms, impact_bps,
                           side, exit_price, observed_at, available_at
@@ -604,6 +624,8 @@ class PortfolioLoopRepository:
         from investment_panel.core.portfolio import build_execution_model_snapshot
 
         with self.runtime.transaction() as connection:
+            if not observation.allocation_item_id or not observation.action_id:
+                raise ValueError("paper execution requires allocation and action lineage")
             order = connection.execute(
                 """SELECT id, created_at, status, filled_quantity, actual_fill_price, filled_at, exit_at,
                           policy_result
@@ -611,25 +633,35 @@ class PortfolioLoopRepository:
             ).fetchone()
             if order is None:
                 raise ValueError("paper execution requires an existing paper order")
-            if observation.allocation_item_id:
-                item = connection.execute(
-                    """SELECT action_id FROM analysis.portfolio_allocation_item
+            item = connection.execute(
+                    """SELECT allocation_id, action_id FROM analysis.portfolio_allocation_item
                        WHERE allocation_item_id = %s""", [observation.allocation_item_id]
-                ).fetchone()
-                if item is None or str((order["policy_result"] or {}).get("trade_plan_id") or "") != str(item["action_id"] or ""):
-                    raise ValueError("paper execution order does not match allocation action lineage")
+            ).fetchone()
+            if item is None or str(item["action_id"] or "") != observation.action_id:
+                raise ValueError("paper execution action does not match allocation lineage")
+            if str((order["policy_result"] or {}).get("trade_plan_id") or "") != observation.action_id:
+                raise ValueError("paper execution order does not match allocation action lineage")
+            if observation.filled_quantity > 0 and (
+                order["status"] not in {"entered", "partial_exited", "exited", "closed", "invalidated"}
+                or order["filled_quantity"] is None
+                or float(order["filled_quantity"]) < observation.filled_quantity
+                or order["actual_fill_price"] is None
+                or order["filled_at"] is None
+                or observation.observed_at < order["filled_at"]
+            ):
+                raise ValueError("paper execution requires a genuine existing fill")
             connection.execute(
                 """INSERT INTO app.paper_execution_observation
-                   (paper_execution_observation_id, allocation_item_id, paper_order_id,
+                   (paper_execution_observation_id, allocation_item_id, action_id, paper_order_id,
                     execution_mode, paper_only, status, requested_quantity, filled_quantity,
                           requested_price, fill_price, spread_bps, latency_ms, impact_bps,
                           side, exit_price,
                           observed_at, available_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (paper_execution_observation_id) DO NOTHING""",
                 [
                     observation.paper_execution_observation_id, observation.allocation_item_id,
-                    observation.paper_order_id, observation.execution_mode, observation.paper_only,
+                    observation.action_id, observation.paper_order_id, observation.execution_mode, observation.paper_only,
                     observation.status, observation.requested_quantity, observation.filled_quantity,
                     observation.requested_price, observation.fill_price, observation.spread_bps,
                     observation.latency_ms, observation.impact_bps, observation.side, observation.exit_price,
@@ -637,28 +669,27 @@ class PortfolioLoopRepository:
                     observation.available_at,
                 ],
             )
-            if observation.allocation_item_id:
-                allocation = connection.execute(
+            allocation = connection.execute(
                     """SELECT allocation_id, input_cutoff FROM analysis.portfolio_allocation_item item
                        JOIN analysis.portfolio_allocation_snapshot snapshot USING (allocation_id)
                        WHERE item.allocation_item_id = %s""", [observation.allocation_item_id]
-                ).fetchone()
-                if allocation is None:
-                    raise ValueError("paper execution allocation lineage is unavailable")
-                rows = connection.execute(
-                    """SELECT paper_execution_observation_id, allocation_item_id, paper_order_id::text,
+            ).fetchone()
+            if allocation is None:
+                raise ValueError("paper execution allocation lineage is unavailable")
+            rows = connection.execute(
+                    """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
                               execution_mode, paper_only, status, requested_quantity, filled_quantity,
                               requested_price, fill_price, spread_bps, latency_ms, impact_bps,
                               side, exit_price, observed_at, available_at
                        FROM app.paper_execution_observation
                        WHERE allocation_item_id = %s ORDER BY observed_at, paper_execution_observation_id""",
                     [observation.allocation_item_id],
-                ).fetchall()
-                model = build_execution_model_snapshot(
+            ).fetchall()
+            model = build_execution_model_snapshot(
                     allocation["allocation_id"], allocation["input_cutoff"],
                     [PaperExecutionObservation.model_validate(dict(row)) for row in rows],
-                )
-                self.store_execution_model(connection, model)
+            )
+            self.store_execution_model(connection, model)
         return observation.paper_execution_observation_id
 
     def record_attribution(self, attribution: BookAttribution) -> str:
@@ -683,8 +714,10 @@ class PortfolioLoopRepository:
                 if observation is None or observation["allocation_item_id"] != attribution.allocation_item_id or not observation["paper_only"] or observation["execution_mode"] != "paper":
                     raise ValueError("realized attribution requires a genuine paper observation")
                 item = connection.execute(
-                    """SELECT item.allocation_id, item.action_id, item.strategy_forecast_id, item.hypothesis_id,
-                              forecast.input_cutoff, decision.id AS published_decision_id
+                    """SELECT item.allocation_id, item.action_id, item.rank_id, item.strategy_forecast_id, item.hypothesis_id,
+                              item.trace->'expression' AS expression,
+                              forecast.input_cutoff, forecast.research_trial_id, forecast.trial_result_id,
+                              decision.id AS published_decision_id, decision.experiment_id
                        FROM analysis.portfolio_allocation_item item
                        JOIN analysis.strategy_forecast forecast ON forecast.id = item.strategy_forecast_id
                        JOIN analysis.ticker_decision decision
@@ -696,8 +729,10 @@ class PortfolioLoopRepository:
                        ORDER BY decision.published_at DESC, decision.id DESC LIMIT 1""",
                     [attribution.allocation_item_id],
                 ).fetchone()
-                if item is None or item["allocation_id"] != attribution.allocation_id or item["strategy_forecast_id"] != attribution.strategy_forecast_id or item["hypothesis_id"] != attribution.hypothesis_id or str((observation["policy_result"] or {}).get("trade_plan_id") or "") != str(item["action_id"] or ""):
+                if item is None or item["allocation_id"] != attribution.allocation_id or item["strategy_forecast_id"] != attribution.strategy_forecast_id or item["hypothesis_id"] != attribution.hypothesis_id or item["action_id"] != attribution.action_id or item["rank_id"] != attribution.rank_id or item["experiment_id"] != attribution.experiment_id or str(item["research_trial_id"]) != attribution.trial_id or str(item["trial_result_id"]) != attribution.result_id or str((observation["policy_result"] or {}).get("trade_plan_id") or "") != str(item["action_id"] or ""):
                     raise ValueError("realized attribution order does not match action lineage")
+                if item["input_cutoff"] != attribution.input_cutoff or attribution.expression != (item["expression"] or attribution.expression):
+                    raise ValueError("realized attribution expression or cutoff lineage is invalid")
                 required = {"hypothesis_id", "experiment_id", "trial_id", "result_id", "forecast_id", "action_id", "rank_id", "expression", "fill_id", "pnl", "cost_decomposition"}
                 if not required.issubset(attribution.attribution):
                     raise ValueError("realized attribution is missing canonical decomposition")
@@ -710,14 +745,17 @@ class PortfolioLoopRepository:
             connection.execute(
                 """INSERT INTO analysis.book_attribution
                    (book_attribution_id, allocation_id, allocation_item_id,
-                   strategy_forecast_id, hypothesis_id, paper_execution_observation_id,
+                   strategy_forecast_id, hypothesis_id, action_id, rank_id, expression,
+                   experiment_id, trial_id, result_id, paper_execution_observation_id,
                     pnl_status, realized_pnl, attribution, input_cutoff, input_hash, content_hash)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (book_attribution_id) DO NOTHING""",
                 [
                     attribution.book_attribution_id, attribution.allocation_id,
                     attribution.allocation_item_id, attribution.strategy_forecast_id,
-                    attribution.hypothesis_id, attribution.paper_execution_observation_id,
+                    attribution.hypothesis_id, attribution.action_id, attribution.rank_id,
+                    Jsonb(attribution.expression), attribution.experiment_id, attribution.trial_id,
+                    attribution.result_id, attribution.paper_execution_observation_id,
                     attribution.pnl_status, attribution.realized_pnl,
                     Jsonb(attribution.attribution), attribution.input_cutoff,
                     attribution.book_attribution_id.split(":", 1)[1], canonical_content_hash(attribution),

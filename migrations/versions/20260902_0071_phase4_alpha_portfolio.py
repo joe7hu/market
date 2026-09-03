@@ -138,6 +138,9 @@ def upgrade() -> None:
             allocation_item_id TEXT NOT NULL REFERENCES analysis.portfolio_allocation_item(allocation_item_id),
             strategy_forecast_id TEXT NOT NULL REFERENCES analysis.strategy_forecast(id),
             hypothesis_id UUID NOT NULL REFERENCES analysis.hypothesis(id),
+            action_id TEXT NOT NULL,
+            rank_id TEXT NOT NULL,
+            expression JSONB NOT NULL,
             experiment_id TEXT NOT NULL,
             trial_id UUID NOT NULL REFERENCES analysis.research_trial(id),
             result_id UUID NOT NULL REFERENCES analysis.trial_result(id),
@@ -149,7 +152,7 @@ def upgrade() -> None:
             input_hash CHAR(64) NOT NULL,
             content_hash CHAR(64) NOT NULL,
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-            CHECK (jsonb_typeof(attribution) = 'object'),
+            CHECK (jsonb_typeof(attribution) = 'object' AND jsonb_typeof(expression) = 'object' AND expression <> '{}'::jsonb),
             CHECK (pnl_status <> 'realized' OR realized_pnl IS NOT NULL)
             ,CHECK (input_hash ~ '^[0-9a-f]{64}$' AND input_hash <> repeat('0', 64) AND book_attribution_id = 'attribution:' || input_hash::text)
             ,CHECK (content_hash ~ '^[0-9a-f]{64}$' AND content_hash <> repeat('0', 64))
@@ -183,6 +186,8 @@ def upgrade() -> None:
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE expected_cutoff TIMESTAMPTZ; expected_allocation TEXT;
                 expected_forecast TEXT; expected_hypothesis UUID;
+                expected_action TEXT; expected_rank TEXT; expected_expression JSONB;
+                expected_experiment TEXT; expected_trial UUID; expected_result UUID;
                 scenario JSONB; probability_total DOUBLE PRECISION := 0;
         BEGIN
             IF TG_TABLE_NAME = 'portfolio_allocation_snapshot' THEN
@@ -223,7 +228,10 @@ def upgrade() -> None:
                 NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
                     'book_attribution_id', NEW.book_attribution_id, 'allocation_id', NEW.allocation_id,
                     'allocation_item_id', NEW.allocation_item_id, 'strategy_forecast_id', NEW.strategy_forecast_id,
-                    'hypothesis_id', NEW.hypothesis_id, 'paper_execution_observation_id', NEW.paper_execution_observation_id,
+                    'hypothesis_id', NEW.hypothesis_id, 'action_id', NEW.action_id, 'rank_id', NEW.rank_id,
+                    'expression', NEW.expression, 'experiment_id', NEW.experiment_id,
+                    'trial_id', NEW.trial_id, 'result_id', NEW.result_id,
+                    'paper_execution_observation_id', NEW.paper_execution_observation_id,
                     'pnl_status', NEW.pnl_status, 'realized_pnl', NEW.realized_pnl,
                     'attribution', NEW.attribution, 'input_cutoff', NEW.input_cutoff
                 ));
@@ -319,10 +327,15 @@ def upgrade() -> None:
                     RAISE EXCEPTION 'Phase 4 execution input cutoff does not match allocation lineage';
                 END IF;
             ELSIF TG_TABLE_NAME = 'book_attribution' THEN
-                SELECT allocation_id, strategy_forecast_id, hypothesis_id INTO expected_allocation,
-                    expected_forecast, expected_hypothesis
-                FROM analysis.portfolio_allocation_item
-                WHERE allocation_item_id = NEW.allocation_item_id;
+                SELECT item.allocation_id, item.strategy_forecast_id, item.hypothesis_id,
+                       item.action_id, item.rank_id, item.trace->'expression',
+                       forecast.research_trial_id, forecast.trial_result_id
+                  INTO expected_allocation, expected_forecast, expected_hypothesis,
+                       expected_action, expected_rank, expected_expression,
+                       expected_trial, expected_result
+                FROM analysis.portfolio_allocation_item item
+                JOIN analysis.strategy_forecast forecast ON forecast.id = item.strategy_forecast_id
+                WHERE item.allocation_item_id = NEW.allocation_item_id;
                 IF expected_allocation IS NULL OR NEW.allocation_id IS DISTINCT FROM expected_allocation THEN
                     RAISE EXCEPTION 'Phase 4 attribution item does not match allocation lineage';
                 END IF;
@@ -338,8 +351,13 @@ def upgrade() -> None:
                     RAISE EXCEPTION 'Phase 4 realized attribution requires a genuine linked paper fill';
                 END IF;
                 IF NEW.strategy_forecast_id IS DISTINCT FROM expected_forecast
-                   OR NEW.hypothesis_id IS DISTINCT FROM expected_hypothesis THEN
-                    RAISE EXCEPTION 'Phase 4 attribution forecast or hypothesis does not match item lineage';
+                   OR NEW.hypothesis_id IS DISTINCT FROM expected_hypothesis
+                   OR NEW.action_id IS DISTINCT FROM expected_action
+                   OR NEW.rank_id IS DISTINCT FROM expected_rank
+                   OR NEW.expression IS DISTINCT FROM expected_expression
+                   OR NEW.trial_id IS DISTINCT FROM expected_trial
+                   OR NEW.result_id IS DISTINCT FROM expected_result THEN
+                    RAISE EXCEPTION 'Phase 4 attribution does not match allocation lineage';
                 END IF;
                 IF NOT EXISTS (
                     SELECT 1 FROM analysis.ticker_decision decision
@@ -353,6 +371,16 @@ def upgrade() -> None:
                       AND decision.status = 'published' AND decision.published_at IS NOT NULL
                 ) THEN
                     RAISE EXCEPTION 'Phase 4 attribution requires a published action and rank lineage';
+                END IF;
+                SELECT decision.experiment_id INTO expected_experiment
+                FROM analysis.ticker_decision decision
+                WHERE decision.input_manifest->'trade_plan'->>'trade_plan_id' = NEW.action_id
+                  AND decision.input_manifest->'trade_plan'->>'rank_id' = NEW.rank_id
+                  AND decision.input_manifest->'trade_plan'->>'strategy_forecast_id' = NEW.strategy_forecast_id
+                  AND decision.status = 'published' AND decision.published_at IS NOT NULL
+                ORDER BY decision.published_at DESC, decision.id DESC LIMIT 1;
+                IF expected_experiment IS NULL OR NEW.experiment_id IS DISTINCT FROM expected_experiment THEN
+                    RAISE EXCEPTION 'Phase 4 attribution experiment lineage is invalid';
                 END IF;
                 SELECT input_cutoff INTO expected_cutoff
                 FROM analysis.portfolio_allocation_snapshot
@@ -390,14 +418,15 @@ def upgrade() -> None:
             IF NEW.status = 'exited' AND (order_exit_at IS NULL OR NEW.observed_at < order_exit_at) THEN
                 RAISE EXCEPTION 'Phase 4 exit observation requires an exited paper order';
             END IF;
-            IF NEW.allocation_item_id IS NOT NULL AND NOT EXISTS (
+            IF NEW.allocation_item_id IS NULL OR NEW.action_id IS NULL OR NOT EXISTS (
                 SELECT 1 FROM analysis.portfolio_allocation_item item
                 WHERE item.allocation_item_id = NEW.allocation_item_id
-                  AND (item.action_id IS NULL OR EXISTS (
+                  AND item.action_id = NEW.action_id
+                  AND EXISTS (
                       SELECT 1 FROM app.paper_order paper
                       WHERE paper.id = NEW.paper_order_id
-                        AND paper.policy_result->>'trade_plan_id' = item.action_id
-                  ))
+                        AND paper.policy_result->>'trade_plan_id' = NEW.action_id
+                  )
             ) THEN
                 RAISE EXCEPTION 'Phase 4 paper observation action lineage is invalid';
             END IF;
