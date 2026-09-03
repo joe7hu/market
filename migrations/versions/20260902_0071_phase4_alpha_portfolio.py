@@ -41,6 +41,7 @@ def upgrade() -> None:
             hypothesis_id UUID REFERENCES analysis.hypothesis(id),
             disposition TEXT NOT NULL CHECK (disposition IN ('selected', 'ranked_out', 'rejected')),
             target_weight DOUBLE PRECISION NOT NULL CHECK (target_weight < 'Infinity'::double precision AND target_weight > '-Infinity'::double precision AND target_weight >= 0 AND target_weight <= 1),
+            current_weight DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (current_weight < 'Infinity'::double precision AND current_weight > '-Infinity'::double precision AND current_weight >= 0 AND current_weight <= 1),
             marginal_book_utility DOUBLE PRECISION NOT NULL CHECK (marginal_book_utility < 'Infinity'::double precision AND marginal_book_utility > '-Infinity'::double precision),
             trace JSONB NOT NULL,
             blockers JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -50,6 +51,7 @@ def upgrade() -> None:
             CHECK (jsonb_typeof(blockers) = 'array'),
             CHECK (disposition <> 'selected' OR (ticker = 'CASH' AND target_weight > 0 AND marginal_book_utility >= 0) OR (target_weight > 0 AND marginal_book_utility > 0)),
             CHECK (ticker <> '')
+            ,CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (funding_source IS NOT NULL AND (funding_source = 'CASH' OR funding_source LIKE 'TRIM:%')))
         );
         CREATE INDEX ix_portfolio_allocation_item_snapshot
             ON analysis.portfolio_allocation_item (allocation_id, disposition, target_weight DESC);
@@ -66,8 +68,8 @@ def upgrade() -> None:
             input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (jsonb_typeof(scenarios) = 'array' AND jsonb_array_length(scenarios) > 0),
-            CHECK (jsonb_typeof(tail_dependence) = 'object'),
-            CHECK (jsonb_typeof(simultaneous_unwind) = 'object')
+            CHECK (jsonb_typeof(tail_dependence) = 'object' AND tail_dependence <> '{}'::jsonb),
+            CHECK (jsonb_typeof(simultaneous_unwind) = 'object' AND simultaneous_unwind <> '{}'::jsonb)
         );
 
         CREATE TABLE analysis.execution_model_snapshot (
@@ -90,7 +92,7 @@ def upgrade() -> None:
         CREATE TABLE app.paper_execution_observation (
             paper_execution_observation_id TEXT PRIMARY KEY,
             allocation_item_id TEXT REFERENCES analysis.portfolio_allocation_item(allocation_item_id),
-            paper_order_id UUID REFERENCES app.paper_order(id),
+            paper_order_id UUID NOT NULL REFERENCES app.paper_order(id),
             execution_mode TEXT NOT NULL DEFAULT 'paper' CHECK (execution_mode = 'paper'),
             paper_only BOOLEAN NOT NULL DEFAULT true CHECK (paper_only),
             status TEXT NOT NULL CHECK (status IN ('planned', 'submitted', 'partial', 'filled', 'exited', 'cancelled', 'unavailable')),
@@ -101,11 +103,14 @@ def upgrade() -> None:
             spread_bps DOUBLE PRECISION CHECK (spread_bps IS NULL OR (spread_bps < 'Infinity'::double precision AND spread_bps > '-Infinity'::double precision AND spread_bps >= 0)),
             latency_ms DOUBLE PRECISION CHECK (latency_ms IS NULL OR (latency_ms < 'Infinity'::double precision AND latency_ms > '-Infinity'::double precision AND latency_ms >= 0)),
             impact_bps DOUBLE PRECISION CHECK (impact_bps IS NULL OR (impact_bps < 'Infinity'::double precision AND impact_bps > '-Infinity'::double precision AND impact_bps >= 0)),
+            side TEXT NOT NULL DEFAULT 'buy' CHECK (side IN ('buy', 'sell')),
+            exit_price DOUBLE PRECISION CHECK (exit_price IS NULL OR (exit_price < 'Infinity'::double precision AND exit_price > 0)),
             observed_at TIMESTAMPTZ NOT NULL,
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (status NOT IN ('filled', 'exited') OR filled_quantity > 0),
-            CHECK (fill_price IS NOT NULL OR filled_quantity = 0)
+            CHECK (fill_price IS NOT NULL OR filled_quantity = 0),
+            CHECK (available_at >= observed_at)
         );
 
         CREATE TABLE analysis.book_attribution (
@@ -124,12 +129,46 @@ def upgrade() -> None:
             CHECK (pnl_status <> 'realized' OR realized_pnl IS NOT NULL)
         );
 
+        CREATE TABLE analysis.portfolio_drift_evidence (
+            decision_id TEXT PRIMARY KEY,
+            allocation_id TEXT NOT NULL REFERENCES analysis.portfolio_allocation_snapshot(allocation_id),
+            allocation_item_id TEXT NOT NULL REFERENCES analysis.portfolio_allocation_item(allocation_item_id),
+            drift_score DOUBLE PRECISION NOT NULL CHECK (drift_score < 'Infinity'::double precision AND drift_score > '-Infinity'::double precision AND drift_score >= 0),
+            rollback_threshold DOUBLE PRECISION NOT NULL CHECK (rollback_threshold < 'Infinity'::double precision AND rollback_threshold > 0),
+            proposed_weight DOUBLE PRECISION NOT NULL CHECK (proposed_weight < 'Infinity'::double precision AND proposed_weight >= 0 AND proposed_weight <= 1),
+            action TEXT NOT NULL CHECK (action IN ('hold', 'reduce', 'rollback', 'unavailable')),
+            input_cutoff TIMESTAMPTZ NOT NULL,
+            input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            CHECK (action <> 'reduce' OR (drift_score < rollback_threshold AND drift_score >= rollback_threshold / 2)),
+            CHECK (action <> 'rollback' OR drift_score >= rollback_threshold),
+            CHECK (action <> 'hold' OR drift_score < rollback_threshold / 2),
+            CHECK (jsonb_typeof(metadata) = 'object')
+        );
+
         CREATE OR REPLACE FUNCTION analysis.enforce_phase4_lineage()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE expected_cutoff TIMESTAMPTZ; expected_allocation TEXT;
                 expected_forecast TEXT; expected_hypothesis UUID;
+                scenario JSONB; probability_total DOUBLE PRECISION := 0;
         BEGIN
             IF TG_TABLE_NAME = 'probabilistic_portfolio_scenario_artifact' THEN
+                IF jsonb_array_length(NEW.scenarios) = 0 OR jsonb_array_length(NEW.scenarios) > 64 THEN
+                    RAISE EXCEPTION 'Phase 4 scenario paths must be bounded and non-empty';
+                END IF;
+                FOR scenario IN SELECT value FROM jsonb_array_elements(NEW.scenarios) LOOP
+                    IF jsonb_typeof(scenario->'probability') IS DISTINCT FROM 'number'
+                       OR jsonb_typeof(scenario->'returns') IS DISTINCT FROM 'object'
+                       OR scenario->'returns' = '{}'::jsonb
+                       OR jsonb_typeof(scenario->'shocks') IS DISTINCT FROM 'object'
+                       OR scenario->'shocks' = '{}'::jsonb THEN
+                        RAISE EXCEPTION 'Phase 4 scenario path requires probability, returns, and shocks';
+                    END IF;
+                    probability_total := probability_total + (scenario->>'probability')::DOUBLE PRECISION;
+                END LOOP;
+                IF probability_total < 0.999999 OR probability_total > 1.000001 THEN
+                    RAISE EXCEPTION 'Phase 4 scenario probabilities must sum to one';
+                END IF;
                 SELECT input_cutoff INTO expected_cutoff
                 FROM analysis.portfolio_allocation_snapshot
                 WHERE allocation_id = NEW.allocation_id;
@@ -165,6 +204,35 @@ def upgrade() -> None:
             RETURN NEW;
         END;
         $$;
+        CREATE OR REPLACE FUNCTION analysis.enforce_phase4_paper_execution()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE order_created_at TIMESTAMPTZ; order_status TEXT;
+                order_filled_quantity DOUBLE PRECISION; order_fill_price DOUBLE PRECISION;
+                order_filled_at TIMESTAMPTZ; order_exit_at TIMESTAMPTZ;
+        BEGIN
+            SELECT created_at, status, coalesce(filled_quantity, 0)::DOUBLE PRECISION,
+                   actual_fill_price::DOUBLE PRECISION, filled_at, exit_at
+              INTO order_created_at, order_status, order_filled_quantity,
+                   order_fill_price, order_filled_at, order_exit_at
+            FROM app.paper_order WHERE id = NEW.paper_order_id;
+            IF order_created_at IS NULL
+               OR NEW.observed_at < order_created_at
+               OR NEW.available_at < NEW.observed_at THEN
+                RAISE EXCEPTION 'Phase 4 paper observation has invalid order clock lineage';
+            END IF;
+            IF NEW.filled_quantity > 0
+               AND (order_status NOT IN ('entered', 'partial_exited', 'exited', 'invalidated', 'closed')
+                    OR order_filled_quantity < NEW.filled_quantity
+                    OR order_fill_price IS NULL OR order_filled_at IS NULL
+                    OR NEW.observed_at < order_filled_at) THEN
+                RAISE EXCEPTION 'Phase 4 paper observation requires a genuine paper fill';
+            END IF;
+            IF NEW.status = 'exited' AND (order_exit_at IS NULL OR NEW.observed_at < order_exit_at) THEN
+                RAISE EXCEPTION 'Phase 4 exit observation requires an exited paper order';
+            END IF;
+            RETURN NEW;
+        END;
+        $$;
         CREATE TRIGGER portfolio_scenario_lineage
             BEFORE INSERT ON analysis.probabilistic_portfolio_scenario_artifact
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
@@ -174,6 +242,9 @@ def upgrade() -> None:
         CREATE TRIGGER book_attribution_lineage
             BEFORE INSERT ON analysis.book_attribution
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
+        CREATE TRIGGER paper_execution_lineage
+            BEFORE INSERT ON app.paper_execution_observation
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_paper_execution();
 
         CREATE OR REPLACE FUNCTION analysis.reject_phase4_update()
         RETURNS trigger LANGUAGE plpgsql AS $$
@@ -199,12 +270,16 @@ def upgrade() -> None:
         CREATE TRIGGER paper_execution_observation_immutable
             BEFORE UPDATE OR DELETE ON app.paper_execution_observation
             FOR EACH ROW EXECUTE FUNCTION analysis.reject_phase4_update();
+        CREATE TRIGGER portfolio_drift_evidence_immutable
+            BEFORE UPDATE OR DELETE ON analysis.portfolio_drift_evidence
+            FOR EACH ROW EXECUTE FUNCTION analysis.reject_phase4_update();
 
         GRANT SELECT, INSERT ON analysis.portfolio_allocation_snapshot,
             analysis.portfolio_allocation_item,
             analysis.probabilistic_portfolio_scenario_artifact,
             analysis.execution_model_snapshot,
-            analysis.book_attribution TO market_app;
+            analysis.book_attribution,
+            analysis.portfolio_drift_evidence TO market_app;
         GRANT SELECT, INSERT ON app.paper_execution_observation TO market_app;
         """
     )
@@ -217,9 +292,11 @@ def downgrade() -> None:
             analysis.portfolio_allocation_item,
             analysis.probabilistic_portfolio_scenario_artifact,
             analysis.execution_model_snapshot,
-            analysis.book_attribution FROM market_app;
+            analysis.book_attribution,
+            analysis.portfolio_drift_evidence FROM market_app;
         REVOKE SELECT, INSERT ON app.paper_execution_observation FROM market_app;
         DROP TRIGGER IF EXISTS paper_execution_observation_immutable ON app.paper_execution_observation;
+        DROP TRIGGER IF EXISTS paper_execution_lineage ON app.paper_execution_observation;
         DROP TRIGGER IF EXISTS book_attribution_lineage ON analysis.book_attribution;
         DROP TRIGGER IF EXISTS execution_model_lineage ON analysis.execution_model_snapshot;
         DROP TRIGGER IF EXISTS portfolio_scenario_lineage ON analysis.probabilistic_portfolio_scenario_artifact;
@@ -228,9 +305,12 @@ def downgrade() -> None:
         DROP TRIGGER IF EXISTS portfolio_scenario_artifact_immutable ON analysis.probabilistic_portfolio_scenario_artifact;
         DROP TRIGGER IF EXISTS portfolio_allocation_item_immutable ON analysis.portfolio_allocation_item;
         DROP TRIGGER IF EXISTS portfolio_allocation_snapshot_immutable ON analysis.portfolio_allocation_snapshot;
+        DROP TRIGGER IF EXISTS portfolio_drift_evidence_immutable ON analysis.portfolio_drift_evidence;
         DROP FUNCTION IF EXISTS analysis.reject_phase4_update();
+        DROP FUNCTION IF EXISTS analysis.enforce_phase4_paper_execution();
         DROP FUNCTION IF EXISTS analysis.enforce_phase4_lineage();
         DROP TABLE IF EXISTS analysis.book_attribution;
+        DROP TABLE IF EXISTS analysis.portfolio_drift_evidence;
         DROP TABLE IF EXISTS app.paper_execution_observation;
         DROP TABLE IF EXISTS analysis.execution_model_snapshot;
         DROP TABLE IF EXISTS analysis.probabilistic_portfolio_scenario_artifact;

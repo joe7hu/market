@@ -29,6 +29,7 @@ def candidate(candidate_id: str, **overrides: object) -> PortfolioCandidate:
         "kelly_cap": 0.20,
         "drawdown_cap": 0.20,
         "capacity": 0.20,
+        "covariance": {candidate_id: 0.04},
         "input_cutoff": AS_OF - timedelta(minutes=1),
         "available_at": AS_OF - timedelta(minutes=2),
     }
@@ -74,7 +75,7 @@ def test_scenario_artifact_is_bounded_and_contains_tail_and_unwind_evidence() ->
     allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF)
     artifact = build_scenario_artifact(
         allocation,
-        [{"name": "base", "probability": 0.7, "returns": {"GOOD": 0.05}}, {"name": "tail", "probability": 0.3, "returns": {"GOOD": -0.2}}],
+        [{"name": "base", "probability": 0.7, "returns": {"GOOD": 0.05}, "shocks": {"GOOD": 0.01}}, {"name": "tail", "probability": 0.3, "returns": {"GOOD": -0.2}, "shocks": {"GOOD": -0.3}}],
         model_version="scenario.v1",
         probability_semantics="normalized states",
         tail_dependence={"GOOD": {"GOOD": 1.0}},
@@ -96,12 +97,12 @@ def test_decay_guard_reduces_before_the_rollback_threshold() -> None:
     assert apply_decay_guard(allocation, {item.allocation_item_id: 1.0}, rollback_threshold=1.0)[0].action == "rollback"
 
 
-def observation(status: str, filled: float = 0) -> PaperExecutionObservation:
+def observation(status: str, filled: float = 0, *, exit_price: float | None = None) -> PaperExecutionObservation:
     return PaperExecutionObservation(
-        paper_execution_observation_id=f"observation:{status}:{filled}", status=status,
+        paper_execution_observation_id=f"observation:{status}:{filled}", paper_order_id="00000000-0000-0000-0000-000000000001", status=status,
         requested_quantity=10, filled_quantity=filled, requested_price=100,
         fill_price=100.5 if filled else None, spread_bps=5 if filled else None,
-        observed_at=AS_OF, available_at=AS_OF + timedelta(seconds=1),
+        exit_price=exit_price, observed_at=AS_OF, available_at=AS_OF + timedelta(seconds=1),
     )
 
 
@@ -116,9 +117,9 @@ def test_execution_stays_calibration_pending_until_genuine_fill_and_attribution_
     allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF)
     item = next(item for item in allocation.items if item.ticker == "GOOD")
     assert attribute_paper_pnl(allocation, item, observation=pending_observation).pnl_status == "pending_fill"
-    realized = attribute_paper_pnl(allocation, item, observation=filled_observation, realized_pnl=12.5)
+    realized = attribute_paper_pnl(allocation, item, observation=observation("exited", 10, exit_price=102))
     assert realized.pnl_status == "realized"
-    assert realized.realized_pnl == 12.5
+    assert realized.realized_pnl == 15
 
 
 def test_paper_observation_rejects_live_mode() -> None:

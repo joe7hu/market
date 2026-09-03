@@ -11,6 +11,7 @@ from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.today_analysis import refresh_today_publication
 from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.database.outcomes import OutcomeRepository
+from investment_panel.database.portfolio import PortfolioLoopRepository
 from investment_panel.jobs import (
     refresh_options_radar,
     run_option_agents,
@@ -41,6 +42,7 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
     )
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(runtime, now=decision_cutoff)
+    allocation = PortfolioLoopRepository(runtime).refresh_authoritative_allocation(as_of=decision_cutoff)
     status = "ok" if all(
         str(row.get("status")) == "ok"
         for row in (tickers, today, market)
@@ -52,6 +54,7 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
         "ticker_decisions": tickers,
         "outcomes": outcomes,
         "today": today,
+        "portfolio_allocation": {"allocation_id": allocation.allocation_id, "status": allocation.status},
         "market": market,
     }
 

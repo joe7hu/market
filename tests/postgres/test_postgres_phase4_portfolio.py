@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -32,6 +33,15 @@ def insert_cash_allocation(connection: psycopg.Connection) -> None:
 def test_phase4_artifacts_are_immutable_and_paper_only(migrated_postgres_dsn: str) -> None:
     with closing(psycopg.connect(migrated_postgres_dsn)) as connection:
         insert_cash_allocation(connection)
+        instrument_id = connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('P4TEST', 'P4TEST', 'equity') RETURNING id"
+        ).fetchone()[0]
+        paper_order_id = uuid4()
+        connection.execute(
+            "INSERT INTO app.paper_order (id, instrument_id, side, quantity, limit_price, status, created_at) VALUES (%s, %s, 'buy', 1, 100, 'staged', %s)",
+            [paper_order_id, instrument_id, AS_OF - timedelta(seconds=1)],
+        )
+        connection.commit()
         with pytest.raises(RaiseException):
             connection.execute("UPDATE analysis.portfolio_allocation_snapshot SET status = 'unavailable'")
         connection.rollback()
@@ -50,18 +60,18 @@ def test_phase4_artifacts_are_immutable_and_paper_only(migrated_postgres_dsn: st
         with pytest.raises(CheckViolation):
             connection.execute(
                 """INSERT INTO app.paper_execution_observation
-                   (paper_execution_observation_id, execution_mode, paper_only, status,
+                   (paper_execution_observation_id, paper_order_id, execution_mode, paper_only, status,
                     requested_quantity, filled_quantity, observed_at)
-                   VALUES ('observation:bad', 'live', false, 'submitted', 1, 0, %s)""",
-                [AS_OF],
+                   VALUES ('observation:bad', %s, 'live', false, 'submitted', 1, 0, %s)""",
+                [paper_order_id, AS_OF],
             )
         connection.rollback()
         connection.execute(
             """INSERT INTO app.paper_execution_observation
-               (paper_execution_observation_id, execution_mode, paper_only, status,
+               (paper_execution_observation_id, paper_order_id, execution_mode, paper_only, status,
                 requested_quantity, filled_quantity, observed_at)
-               VALUES ('observation:good', 'paper', true, 'submitted', 1, 0, %s)""",
-            [AS_OF],
+               VALUES ('observation:good', %s, 'paper', true, 'submitted', 1, 0, %s)""",
+            [paper_order_id, AS_OF],
         )
         connection.commit()
         assert connection.execute(

@@ -1833,6 +1833,18 @@ def load_postgres_tables(
         publication_options["symbols"] = query_symbol_filter
     publication_requested = tuple(name for name in requested if name in PUBLICATION_MODELS)
     tables = _published_tables(runtime, publication_requested, **publication_options)
+    # All five primary workspaces consume one repeatable-read Phase 4 bundle.
+    # The bundle is loaded by the concrete PostgreSQL owner, not by a caller
+    # supplying candidate IDs or independently selecting latest rows.
+    phase4_names = {
+        "portfolio_allocation", "portfolio_allocation_items", "portfolio_scenario_artifact",
+        "execution_model_snapshot", "paper_execution_observations", "book_attribution",
+    }
+    scope_bundle = bool({"portfolio", "ticker_decisions", "opportunities_ranked", "research_hypotheses", "source_catalog"}.intersection(requested))
+    if phase4_names.intersection(requested) or scope_bundle:
+        from investment_panel.database.portfolio import PortfolioLoopRepository
+
+        tables.update(PortfolioLoopRepository(runtime).read_shared_panel_models())
     if {"option_radar_opportunity", "option_radar_summary"}.intersection(tables):
         from investment_panel.database.option_ticket_read import reconcile_loaded_radar_tables
 

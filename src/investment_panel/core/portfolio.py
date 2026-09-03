@@ -33,6 +33,79 @@ def _finite(value: float | None, name: str) -> float | None:
     return value
 
 
+def _allocation_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return {
+            "as_of": value["as_of"],
+            "cash_hurdle": value["cash_hurdle"],
+            "items": value["items"],
+            "forecast_ids": value["forecast_ids"],
+            "action_ids": value["action_ids"],
+            "strategy_registry_ids": value["strategy_registry_ids"],
+        }
+    return {
+        "as_of": value.as_of,
+        "cash_hurdle": value.cash_hurdle,
+        "items": value.items,
+        "forecast_ids": value.forecast_ids,
+        "action_ids": value.action_ids,
+        "strategy_registry_ids": value.strategy_registry_ids,
+    }
+
+
+def allocation_id_for_snapshot(value: Mapping[str, Any] | Any) -> str:
+    """Return the content address for one complete allocation snapshot."""
+    return f"allocation:{_hash(_allocation_payload(value))}"
+
+
+def _execution_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
+    return {
+        "allocation_id": value.allocation_id,
+        "input_cutoff": value.input_cutoff,
+        "model_version": value.model_version,
+        "calibration_status": value.calibration_status,
+        "sample_count": value.sample_count,
+        "fill_probability": value.fill_probability,
+        "spread_bps": value.spread_bps,
+        "latency_ms": value.latency_ms,
+        "impact_bps": value.impact_bps,
+    }
+
+
+def execution_model_id_for_snapshot(value: Mapping[str, Any] | Any) -> str:
+    return f"execution:{_hash(_execution_payload(value))}"
+
+
+def _attribution_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return {
+            "allocation_id": value["allocation_id"],
+            "allocation_item_id": value["allocation_item_id"],
+            "strategy_forecast_id": value.get("strategy_forecast_id"),
+            "hypothesis_id": value.get("hypothesis_id"),
+            "paper_execution_observation_id": value.get("paper_execution_observation_id"),
+            "pnl_status": value["pnl_status"],
+            "realized_pnl": value.get("realized_pnl"),
+            "attribution": value["attribution"],
+            "input_cutoff": value["input_cutoff"],
+        }
+    return {
+        "allocation_id": value.allocation_id,
+        "allocation_item_id": value.allocation_item_id,
+        "strategy_forecast_id": value.strategy_forecast_id,
+        "hypothesis_id": value.hypothesis_id,
+        "paper_execution_observation_id": value.paper_execution_observation_id,
+        "pnl_status": value.pnl_status,
+        "realized_pnl": value.realized_pnl,
+        "attribution": value.attribution,
+        "input_cutoff": value.input_cutoff,
+    }
+
+
+def attribution_id_for_record(value: Mapping[str, Any] | Any) -> str:
+    return f"attribution:{_hash(_attribution_payload(value))}"
+
+
 class PortfolioCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -51,6 +124,9 @@ class PortfolioCandidate(BaseModel):
     capacity: float | None = None
     overlap_penalty: float | None = None
     execution_penalty: float | None = None
+    covariance: dict[str, float] | None = None
+    expression: dict[str, Any] | None = None
+    missing_data: tuple[str, ...] = ()
     current_weight: float = Field(default=0, ge=0, le=1)
     input_cutoff: datetime | None = None
     available_at: datetime | None = None
@@ -72,6 +148,9 @@ class PortfolioCandidate(BaseModel):
             raise ValueError("input_cutoff must be timezone-aware")
         if self.available_at and self.available_at.tzinfo is None:
             raise ValueError("available_at must be timezone-aware")
+        if self.covariance is not None:
+            if not self.covariance or any(not isfinite(float(value)) for value in self.covariance.values()):
+                raise ValueError("covariance must contain finite values")
         return self
 
 
@@ -102,6 +181,8 @@ class PortfolioAllocationItem(BaseModel):
             self.target_weight <= 0 or self.marginal_book_utility <= 0
         ):
             raise ValueError("funded allocation requires positive marginal book utility")
+        if self.disposition == "selected" and self.ticker != "CASH" and not self.funding_source:
+            raise ValueError("funded allocation requires a funding source")
         return self
 
 
@@ -117,6 +198,16 @@ class PortfolioAllocationSnapshot(BaseModel):
     forecast_ids: tuple[str, ...] = ()
     action_ids: tuple[str, ...] = ()
     strategy_registry_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "PortfolioAllocationSnapshot":
+        if self.as_of.tzinfo is None or self.input_cutoff.tzinfo is None:
+            raise ValueError("allocation clocks must be timezone-aware")
+        if self.as_of.astimezone(UTC) != self.input_cutoff.astimezone(UTC):
+            raise ValueError("allocation as_of and input_cutoff must match")
+        if self.allocation_id != allocation_id_for_snapshot(self):
+            raise ValueError("allocation identity does not match its immutable payload")
+        return self
 
 
 def _rejection(candidate: PortfolioCandidate, blockers: tuple[str, ...]) -> PortfolioAllocationItem:
@@ -140,6 +231,7 @@ def allocate_portfolio(
 
     if as_of.tzinfo is None or not isfinite(cash_hurdle) or cash_hurdle < 0:
         raise ValueError("allocation clock and cash hurdle must be valid")
+    cash_hurdle = float(cash_hurdle)
     normalized = [item if isinstance(item, PortfolioCandidate) else PortfolioCandidate.model_validate(item) for item in candidates]
     if len({item.candidate_id for item in normalized}) != len(normalized):
         raise ValueError("allocation candidates must have unique IDs")
@@ -149,8 +241,9 @@ def allocate_portfolio(
         blockers = list(candidate.blockers)
         if candidate.evidence_status != "available":
             blockers.append(f"evidence_{candidate.evidence_status}")
-        missing = [name for name in ("strategy_forecast_id", "action_id", "expected_return", "uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity") if getattr(candidate, name) is None]
+        missing = [name for name in ("strategy_forecast_id", "action_id", "expected_return", "uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity", "covariance") if getattr(candidate, name) is None]
         blockers.extend(f"{name}_missing" for name in missing)
+        blockers.extend(candidate.missing_data)
         if candidate.input_cutoff is None or candidate.available_at is None:
             blockers.append("pit_lineage_missing")
         elif candidate.available_at.astimezone(UTC) > candidate.input_cutoff.astimezone(UTC):
@@ -180,7 +273,8 @@ def allocate_portfolio(
             "kelly_cap": candidate.kelly_cap,
             "drawdown_cap": candidate.drawdown_cap,
             "capacity": candidate.capacity,
-            "current_risk_contribution": candidate.current_weight * candidate.volatility,
+            "expression": candidate.expression,
+            "missing_data": list(candidate.missing_data),
         }
         eligible.append((candidate, utility, trace))
     eligible.sort(key=lambda item: (-item[1], item[0].candidate_id))
@@ -193,26 +287,27 @@ def allocate_portfolio(
                 ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
                 action_id=candidate.action_id, hypothesis_id=candidate.hypothesis_id, disposition="ranked_out",
                 target_weight=0, current_weight=candidate.current_weight, marginal_book_utility=utility,
-                blockers=("below_cash_hurdle",), trace=trace,
+                blockers=("below_cash_hurdle",), trace=_json(trace),
             ))
             continue
         cap = min(candidate.risk_budget, candidate.kelly_cap, candidate.drawdown_cap, candidate.capacity, remaining)
-        target = max(0.0, cap / candidate.volatility)
+        uncertainty_haircut = max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12)))
+        target = max(0.0, cap / candidate.volatility * uncertainty_haircut)
         if target <= 0:
             ranked.append(_rejection(candidate, ("capacity_or_risk_cap_zero",)))
             continue
         target = min(target, remaining)
         trace["uncertainty_scale"] = (candidate.expected_return - candidate.uncertainty) / candidate.expected_return if candidate.expected_return else 0
+        trace["uncertainty_haircut"] = uncertainty_haircut
         trace["uncertainty_scaled_weight"] = target
         trace["constraint_weight"] = cap
-        trace["proposed_risk_contribution"] = target * candidate.volatility
         payload = {"candidate_id": candidate.candidate_id, "ticker": candidate.ticker, "disposition": "selected", "target_weight": target, "trace": trace}
         ranked.append(PortfolioAllocationItem(
             allocation_item_id=f"allocation-item:{_hash(payload)}", candidate_id=candidate.candidate_id,
             ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
             action_id=candidate.action_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
-            funding_source="CASH" if candidate.current_weight == 0 else f"TRIM:{candidate.ticker}", trace=trace,
+            funding_source="CASH" if candidate.current_weight == 0 else f"TRIM:{candidate.ticker}", trace=_json(trace),
         ))
         remaining -= target
     cash_payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected", "target_weight": remaining}
@@ -221,6 +316,45 @@ def allocate_portfolio(
         disposition="selected", target_weight=remaining, current_weight=0, marginal_book_utility=0,
         funding_source="CASH", trace={"cash_hurdle": cash_hurdle},
     ))
+    candidates_by_ticker = {candidate.ticker: candidate for candidate in normalized}
+    proposed_weights = {item.ticker: item.target_weight for item in ranked if item.disposition == "selected" and item.ticker != "CASH"}
+    current_weights = {candidate.ticker: candidate.current_weight for candidate in normalized}
+    covariance = {ticker: candidate.covariance or {} for ticker, candidate in candidates_by_ticker.items()}
+
+    def portfolio_volatility(weights: dict[str, float]) -> float:
+        variance = sum(
+            weight_i * weight_j * float(covariance.get(ticker_i, {}).get(ticker_j, 0.0))
+            for ticker_i, weight_i in weights.items()
+            for ticker_j, weight_j in weights.items()
+        )
+        return max(variance, 0.0) ** 0.5
+
+    proposed_volatility = portfolio_volatility(proposed_weights)
+    current_volatility = portfolio_volatility(current_weights)
+    updated: list[PortfolioAllocationItem] = []
+    for item in ranked:
+        candidate = candidates_by_ticker.get(item.ticker)
+        if candidate is None or item.ticker == "CASH":
+            updated.append(item)
+            continue
+        proposed_mrc = (
+            sum(weight * float(covariance[item.ticker].get(ticker, 0.0)) for ticker, weight in proposed_weights.items()) / proposed_volatility
+            if proposed_volatility > 0 else None
+        )
+        current_mrc = (
+            sum(weight * float(covariance[item.ticker].get(ticker, 0.0)) for ticker, weight in current_weights.items()) / current_volatility
+            if current_volatility > 0 else None
+        )
+        trace = {
+            **item.trace,
+            "proposed_portfolio_volatility": proposed_volatility,
+            "current_portfolio_volatility": current_volatility,
+            "proposed_marginal_risk_contribution": proposed_mrc,
+            "current_marginal_risk_contribution": current_mrc,
+        }
+        item_id = f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': item.target_weight, 'trace': trace})}"
+        updated.append(item.model_copy(update={"allocation_item_id": item_id, "trace": trace}))
+    ranked = updated
     ranked.sort(key=lambda item: (0 if item.ticker == "CASH" else 1, item.disposition, item.candidate_id))
     selected = [item for item in ranked if item.disposition == "selected" and item.ticker != "CASH"]
     forecast_ids = tuple(sorted(item.strategy_forecast_id for item in selected if item.strategy_forecast_id))
@@ -245,6 +379,34 @@ class PortfolioScenarioArtifact(BaseModel):
     tail_dependence: dict[str, Any]
     simultaneous_unwind: dict[str, Any]
     input_cutoff: datetime
+
+    @model_validator(mode="after")
+    def validate_artifact(self) -> "PortfolioScenarioArtifact":
+        if self.input_cutoff.tzinfo is None or not self.scenarios:
+            raise ValueError("scenario artifact requires a bounded input clock and paths")
+        probabilities = [float(item.get("probability", -1)) for item in self.scenarios]
+        if any(not isfinite(value) or value < 0 or value > 1 for value in probabilities):
+            raise ValueError("scenario probabilities must be bounded")
+        if abs(sum(probabilities) - 1.0) > 1e-9:
+            raise ValueError("scenario probabilities must sum to one")
+        for item in self.scenarios:
+            returns = item.get("returns")
+            shocks = item.get("shocks")
+            if not isinstance(returns, Mapping) or not returns:
+                raise ValueError("scenario paths require non-empty returns")
+            if not isinstance(shocks, Mapping) or not shocks:
+                raise ValueError("scenario paths require non-empty shocks")
+            for values in (returns, shocks):
+                if any(not isfinite(float(value)) for value in values.values()):
+                    raise ValueError("scenario values must be finite")
+        payload = {
+            "allocation_id": self.allocation_id, "model_version": self.model_version,
+            "probability_semantics": self.probability_semantics, "scenarios": self.scenarios,
+            "tail_dependence": self.tail_dependence, "simultaneous_unwind": self.simultaneous_unwind,
+        }
+        if self.scenario_artifact_id != f"scenario:{_hash(payload)}":
+            raise ValueError("scenario identity does not match its immutable payload")
+        return self
 
 
 class PortfolioDriftDecision(BaseModel):
@@ -309,8 +471,10 @@ def build_scenario_artifact(
     if abs(probability_total - 1) > 1e-9 or len(scenarios) > 64:
         raise ValueError("scenario probabilities must sum to one within a bounded path set")
     for item in scenarios:
-        if not isinstance(item.get("returns"), Mapping):
-            raise ValueError("scenario path requires explicit returns")
+        if not isinstance(item.get("returns"), Mapping) or not item.get("returns"):
+            raise ValueError("scenario path requires non-empty returns")
+        if not isinstance(item.get("shocks"), Mapping) or not item.get("shocks"):
+            raise ValueError("scenario path requires non-empty shocks")
     payload = {"allocation_id": allocation.allocation_id, "model_version": model_version, "probability_semantics": probability_semantics, "scenarios": scenarios, "tail_dependence": tail_dependence, "simultaneous_unwind": simultaneous_unwind}
     return PortfolioScenarioArtifact(
         scenario_artifact_id=f"scenario:{_hash(payload)}", allocation_id=allocation.allocation_id,
@@ -325,7 +489,7 @@ class PaperExecutionObservation(BaseModel):
 
     paper_execution_observation_id: str
     allocation_item_id: str | None = None
-    paper_order_id: str | None = None
+    paper_order_id: str = Field(min_length=1)
     execution_mode: str = "paper"
     paper_only: bool = True
     status: str
@@ -336,6 +500,8 @@ class PaperExecutionObservation(BaseModel):
     spread_bps: float | None = None
     latency_ms: float | None = None
     impact_bps: float | None = None
+    side: str = "buy"
+    exit_price: float | None = None
     observed_at: datetime
     available_at: datetime
 
@@ -343,12 +509,18 @@ class PaperExecutionObservation(BaseModel):
     def enforce_paper(self) -> "PaperExecutionObservation":
         if self.execution_mode != "paper" or not self.paper_only or self.status not in {"planned", "submitted", "partial", "filled", "exited", "cancelled", "unavailable"}:
             raise ValueError("execution telemetry is paper-only")
-        for name in ("requested_quantity", "filled_quantity", "requested_price", "fill_price", "spread_bps", "latency_ms", "impact_bps"):
+        if self.side not in {"buy", "sell"}:
+            raise ValueError("execution side is invalid")
+        for name in ("requested_quantity", "filled_quantity", "requested_price", "fill_price", "spread_bps", "latency_ms", "impact_bps", "exit_price"):
             _finite(getattr(self, name), name)
         if self.filled_quantity > self.requested_quantity or (self.filled_quantity and self.fill_price is None):
             raise ValueError("filled execution requires bounded quantity and fill price")
+        if self.status == "exited" and (self.filled_quantity <= 0 or self.exit_price is None):
+            raise ValueError("exited execution requires a genuine fill and exit price")
         if self.observed_at.tzinfo is None or self.available_at.tzinfo is None:
             raise ValueError("execution observation clocks must be timezone-aware")
+        if self.available_at.astimezone(UTC) < self.observed_at.astimezone(UTC):
+            raise ValueError("execution observation availability cannot precede observation")
         return self
 
 
@@ -365,6 +537,12 @@ class ExecutionModelSnapshot(BaseModel):
     latency_ms: float | None = None
     impact_bps: float | None = None
     input_cutoff: datetime
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ExecutionModelSnapshot":
+        if self.execution_model_snapshot_id != execution_model_id_for_snapshot(self):
+            raise ValueError("execution model identity does not match its immutable payload")
+        return self
 
     @model_validator(mode="after")
     def validate_calibration(self) -> "ExecutionModelSnapshot":
@@ -384,9 +562,11 @@ def build_execution_model_snapshot(
 ) -> ExecutionModelSnapshot:
     genuine = [item for item in observations if item.filled_quantity > 0 and item.fill_price is not None]
     payload = {
-        "allocation_id": allocation_id, "input_cutoff": input_cutoff, "sample_count": len(genuine),
+        "allocation_id": allocation_id, "input_cutoff": input_cutoff, "model_version": "paper-telemetry.v1",
+        "calibration_status": "calibrated" if genuine else "calibration_pending", "sample_count": len(genuine),
         "fill_probability": (sum(item.filled_quantity > 0 for item in observations) / len(observations)) if observations else None,
         "spread_bps": (sum(item.spread_bps for item in genuine if item.spread_bps is not None) / len([item for item in genuine if item.spread_bps is not None])) if any(item.spread_bps is not None for item in genuine) else None,
+        "latency_ms": None, "impact_bps": None,
     }
     return ExecutionModelSnapshot(
         execution_model_snapshot_id=f"execution:{_hash(payload)}", allocation_id=allocation_id,
@@ -417,6 +597,10 @@ class BookAttribution(BaseModel):
         if self.pnl_status == "realized" and self.realized_pnl is None:
             raise ValueError("realized attribution requires realized P&L")
         _finite(self.realized_pnl, "realized_pnl")
+        if self.pnl_status == "realized" and not self.paper_execution_observation_id:
+            raise ValueError("realized attribution requires an execution observation")
+        if self.book_attribution_id != attribution_id_for_record(self):
+            raise ValueError("attribution identity does not match its immutable payload")
         return self
 
 
@@ -429,12 +613,30 @@ def attribute_paper_pnl(
 ) -> BookAttribution:
     if item.allocation_item_id not in {candidate.allocation_item_id for candidate in allocation.items}:
         raise ValueError("allocation item does not belong to allocation")
-    status = "realized" if observation and observation.filled_quantity > 0 and realized_pnl is not None else "pending_fill"
-    payload = {"allocation_id": allocation.allocation_id, "allocation_item_id": item.allocation_item_id, "observation": observation, "realized_pnl": realized_pnl, "status": status}
+    if realized_pnl is not None:
+        raise ValueError("realized P&L must be derived from the genuine paper observation")
+    if observation is None:
+        status, derived_pnl = "pending_fill", None
+    elif observation.allocation_item_id not in {None, item.allocation_item_id}:
+        raise ValueError("execution observation does not belong to allocation item")
+    elif observation.filled_quantity <= 0 or observation.fill_price is None or observation.exit_price is None:
+        status, derived_pnl = "pending_fill", None
+    else:
+        direction = 1 if observation.side == "buy" else -1
+        status = "realized"
+        derived_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity
+    attribution = {"source": "paper_execution_observation", "hypothesis_id": item.hypothesis_id, "derived": True}
+    record_payload = {
+        "allocation_id": allocation.allocation_id, "allocation_item_id": item.allocation_item_id,
+        "strategy_forecast_id": item.strategy_forecast_id, "hypothesis_id": item.hypothesis_id,
+        "paper_execution_observation_id": observation.paper_execution_observation_id if observation else None,
+        "pnl_status": status, "realized_pnl": derived_pnl if status == "realized" else None,
+        "attribution": attribution, "input_cutoff": allocation.input_cutoff,
+    }
     return BookAttribution(
-        book_attribution_id=f"attribution:{_hash(payload)}", allocation_id=allocation.allocation_id,
+        book_attribution_id=attribution_id_for_record(record_payload), allocation_id=allocation.allocation_id,
         allocation_item_id=item.allocation_item_id, strategy_forecast_id=item.strategy_forecast_id,
         hypothesis_id=item.hypothesis_id, paper_execution_observation_id=observation.paper_execution_observation_id if observation else None,
-        pnl_status=status, realized_pnl=realized_pnl if status == "realized" else None,
-        attribution={"source": "paper_execution_observation", "hypothesis_id": item.hypothesis_id}, input_cutoff=allocation.input_cutoff,
+        pnl_status=status, realized_pnl=derived_pnl if status == "realized" else None,
+        attribution=attribution, input_cutoff=allocation.input_cutoff,
     )

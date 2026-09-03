@@ -28,7 +28,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "daily_brief",
         "portfolio_risk_cards",
         "feed_signals",
-    ) + PHASE4_PORTFOLIO_TABLES,
+    ),
     "watchlist": (
         "universe_screen",
         "manual_watchlist",
@@ -173,7 +173,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "correlation_edges",
         "portfolio_risk_cards",
         "review_actions",
-    ) + PHASE4_PORTFOLIO_TABLES,
+    ),
     "portfolio": (
         "portfolio",
         "ticker_decisions",
@@ -185,7 +185,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "exposure_clusters",
         "portfolio_risk_cards",
         "review_actions",
-    ) + PHASE4_PORTFOLIO_TABLES,
+    ),
     "research": (
         "research_hypotheses",
         "research_experiment_families",
@@ -240,7 +240,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "agent_thesis_validation",
         "agent_postmortem_request",
         "agent_postmortem",
-    ) + PHASE4_PORTFOLIO_TABLES,
+    ),
     "thesis-monitor": (
         "thesis_monitor",
         "theses",
@@ -258,7 +258,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "provider_runs",
         "broker_status",
         "option_recovery_health",
-    ) + PHASE4_PORTFOLIO_TABLES,
+    ),
     "decision-inbox": (),
     "filings": ("ownership_consensus", "disclosures"),
     "calendar": ("catalysts", "earnings"),
@@ -451,6 +451,7 @@ def panel_snapshot_table_names() -> frozenset[str]:
         if scope != "settings":
             names.update(tables)
     names.update(WATCHLIST_SECTION_OUTPUT_TABLES)
+    names.update(PHASE4_PORTFOLIO_TABLES)
     return frozenset(names)
 
 
