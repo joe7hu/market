@@ -7,6 +7,10 @@ from uuid import uuid4
 import psycopg
 import pytest
 from psycopg.errors import CheckViolation, RaiseException
+from psycopg.rows import dict_row
+
+from investment_panel.core.portfolio import build_execution_model_snapshot, canonical_content_hash
+from investment_panel.database.portfolio import PortfolioLoopRepository
 
 
 AS_OF = datetime(2026, 9, 2, 15, tzinfo=UTC)
@@ -103,6 +107,7 @@ def test_phase4_database_requires_pit_equal_cutoff_and_positive_funded_utility(m
                 [AS_OF, AS_OF.replace(hour=14), "c" * 64, "d" * 64],
             )
         connection.rollback()
+
         insert_cash_allocation(connection)
         with pytest.raises((CheckViolation, RaiseException)):
             connection.execute(
@@ -113,3 +118,19 @@ def test_phase4_database_requires_pit_equal_cutoff_and_positive_funded_utility(m
                 ["allocation:" + "a" * 64],
             )
         connection.rollback()
+
+
+def test_execution_model_store_matches_postgresql_canonical_digest(migrated_postgres_dsn: str) -> None:
+    with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
+        insert_cash_allocation(connection)
+        model = build_execution_model_snapshot(
+            "allocation:" + "a" * 64, AS_OF, [],
+        )
+        PortfolioLoopRepository.store_execution_model(connection, model)
+        stored = connection.execute(
+            "SELECT content_hash FROM analysis.execution_model_snapshot "
+            "WHERE execution_model_snapshot_id = %s",
+            [model.execution_model_snapshot_id],
+        ).fetchone()
+        assert stored is not None
+        assert str(stored["content_hash"]).strip() == canonical_content_hash(model)
