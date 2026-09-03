@@ -62,11 +62,11 @@ function strings(value: unknown): string[] {
 }
 
 function actionFromRow(row: JsonObject, allocationId: string): Phase4Action | null {
-  const canonical = object(row.canonical_action) ?? row;
-  const itemId = text(canonical.allocation_item_id) ?? text(row.allocation_item_id);
-  const ticker = text(canonical.ticker) ?? text(row.ticker);
-  if (!itemId || !ticker) return null;
-  const trace = object(canonical.sizing_trace) ?? object(row.trace) ?? {};
+  const canonical = row;
+  const itemId = text(canonical.allocation_item_id);
+  const ticker = text(canonical.ticker);
+  const trace = object(canonical.sizing_trace);
+  if (!itemId || !ticker || !trace) return null;
   return {
     allocationId: text(canonical.allocation_id) ?? allocationId,
     allocationItemId: itemId,
@@ -74,17 +74,17 @@ function actionFromRow(row: JsonObject, allocationId: string): Phase4Action | nu
     disposition: text(canonical.disposition) ?? text(row.disposition) ?? "rejected",
     forecastId: text(canonical.strategy_forecast_id) ?? text(row.strategy_forecast_id),
     actionId: text(canonical.action_id) ?? text(row.action_id),
-    rankId: text(canonical.rank_id) ?? text(trace.rank_id) ?? text(row.rank_id),
-    expression: object(canonical.expression) ?? object(trace.expression),
-    invalidation: object(canonical.invalidation) ?? object(trace.invalidation),
-    missingData: strings(canonical.missing_data ?? trace.missing_data),
-    blockers: strings(canonical.blockers ?? row.blockers),
-    targetWeight: number(canonical.target_weight ?? row.target_weight),
-    currentWeight: number(canonical.current_weight ?? row.current_weight),
-    marginalBookUtility: number(canonical.marginal_book_utility ?? row.marginal_book_utility),
+    rankId: text(canonical.rank_id),
+    expression: object(canonical.expression),
+    invalidation: object(canonical.invalidation),
+    missingData: strings(canonical.missing_data),
+    blockers: strings(canonical.blockers),
+    targetWeight: number(canonical.target_weight),
+    currentWeight: number(canonical.current_weight),
+    marginalBookUtility: number(canonical.marginal_book_utility),
     currentMrc: number(trace.current_marginal_risk_contribution),
     proposedMrc: number(trace.proposed_marginal_risk_contribution),
-    fundingSource: text(canonical.funding_source) ?? text(row.funding_source),
+    fundingSource: text(canonical.funding_source),
     sizingTrace: trace,
   };
 }
@@ -95,9 +95,12 @@ export function buildPortfolioPhase4Decision(data: PanelData): Phase4Decision | 
   const allocationId = text(allocationRow.allocation_id);
   if (!allocationId) return null;
   const canonical = object(allocationRow.canonical_portfolio);
-  const canonicalActions = Array.isArray(canonical?.actions) ? canonical.actions : rows(data.portfolioAllocationItems);
+  if (!canonical || canonical.allocation_id !== allocationId || !Array.isArray(canonical.actions)) return null;
+  const canonicalActions = canonical.actions;
   const actions = canonicalActions.map((row) => actionFromRow(object(row) ?? {}, allocationId)).filter((row): row is Phase4Action => row !== null);
+  if (actions.length !== canonicalActions.length || actions.some((action) => action.allocationId !== allocationId)) return null;
   const scenarioRow = object(rows(data.portfolioScenarioArtifact)[0]);
+  if (scenarioRow && text(scenarioRow.allocation_id) !== allocationId) return null;
   const scenario = scenarioRow && text(scenarioRow.scenario_artifact_id) ? {
     artifactId: text(scenarioRow.scenario_artifact_id) as string,
     scenarios: Array.isArray(scenarioRow.scenarios) ? scenarioRow.scenarios.map((row) => object(row)).filter((row): row is JsonObject => row !== null) : [],
@@ -105,6 +108,7 @@ export function buildPortfolioPhase4Decision(data: PanelData): Phase4Decision | 
     simultaneousUnwind: object(scenarioRow.simultaneous_unwind) ?? {},
   } : null;
   const executionRow = object(rows(data.executionModelSnapshot)[0]);
+  if (executionRow && text(executionRow.allocation_id) !== allocationId) return null;
   const execution = executionRow && text(executionRow.execution_model_snapshot_id) ? {
     snapshotId: text(executionRow.execution_model_snapshot_id) as string,
     calibrationStatus: text(executionRow.calibration_status) ?? "unavailable",

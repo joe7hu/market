@@ -302,7 +302,7 @@ class PortfolioAllocationSnapshot(BaseModel):
     allocation_id: str
     as_of: datetime
     input_cutoff: datetime
-    cash_hurdle: float = Field(ge=0)
+    cash_hurdle: float | None = Field(default=None, ge=0)
     status: str
     items: tuple[PortfolioAllocationItem, ...]
     forecast_ids: tuple[str, ...] = ()
@@ -316,6 +316,8 @@ class PortfolioAllocationSnapshot(BaseModel):
             raise ValueError("allocation clocks must be timezone-aware")
         if self.as_of.astimezone(UTC) != self.input_cutoff.astimezone(UTC):
             raise ValueError("allocation as_of and input_cutoff must match")
+        if self.status == "available" and (self.cash_hurdle is None or self.cash_hurdle <= 0):
+            raise ValueError("available allocation requires a positive persisted cash hurdle")
         if self.allocation_id != allocation_id_for_snapshot(self):
             raise ValueError("allocation identity does not match its immutable payload")
         return self
@@ -417,12 +419,24 @@ def _rejection(candidate: PortfolioCandidate, blockers: tuple[str, ...]) -> Port
 
 
 def allocate_portfolio(
+    bundle: AuthoritativePortfolioBundle,
+    *,
+    as_of: datetime,
+) -> PortfolioAllocationSnapshot:
+    """Allocate only a repository-validated PostgreSQL authority bundle."""
+
+    if not isinstance(bundle, AuthoritativePortfolioBundle):
+        raise TypeError("production allocation requires AuthoritativePortfolioBundle")
+    return _allocate_portfolio(bundle, as_of=as_of)
+
+
+def allocate_portfolio_for_tests(
     candidates: AuthoritativePortfolioBundle | list[PortfolioCandidate | Mapping[str, Any]],
     *,
     as_of: datetime,
-    cash_hurdle: float | None = 0,
+    cash_hurdle: float | None = None,
 ) -> PortfolioAllocationSnapshot:
-    """Allocate only complete, PIT, positive-marginal-utility candidates."""
+    """Non-authoritative core helper kept explicit for deterministic unit tests."""
 
     if as_of.tzinfo is None:
         raise ValueError("allocation clock and cash hurdle must be valid")
@@ -616,7 +630,7 @@ def cash_only_allocation(as_of: datetime, cash_hurdle: float | None, reason: str
                           "metadata": metadata}
     return PortfolioAllocationSnapshot(
         allocation_id=f"allocation:{_hash(allocation_payload)}", as_of=as_of, input_cutoff=as_of,
-        cash_hurdle=cash_hurdle if cash_hurdle is not None else 0, status="unavailable" if cash_hurdle is None else "cash_only",
+        cash_hurdle=cash_hurdle, status="unavailable" if cash_hurdle is None else "cash_only",
         items=(item,), metadata=metadata,
     )
 
@@ -635,7 +649,7 @@ class PortfolioScenarioArtifact(BaseModel):
 
     @model_validator(mode="after")
     def validate_artifact(self) -> "PortfolioScenarioArtifact":
-        if self.input_cutoff.tzinfo is None or not self.scenarios:
+        if self.input_cutoff.tzinfo is None or not self.scenarios or not self.model_version.strip() or not self.probability_semantics.strip():
             raise ValueError("scenario artifact requires a bounded input clock and paths")
         probabilities = [float(item.get("probability", -1)) for item in self.scenarios]
         if any(not isfinite(value) or value < 0 or value > 1 for value in probabilities):
@@ -658,6 +672,7 @@ class PortfolioScenarioArtifact(BaseModel):
             "allocation_id": self.allocation_id, "model_version": self.model_version,
             "probability_semantics": self.probability_semantics, "scenarios": self.scenarios,
             "tail_dependence": self.tail_dependence, "simultaneous_unwind": self.simultaneous_unwind,
+            "input_cutoff": self.input_cutoff,
         }
         if self.scenario_artifact_id != f"scenario:{_hash(payload)}":
             raise ValueError("scenario identity does not match its immutable payload")
@@ -811,7 +826,7 @@ def build_scenario_artifact(
             raise ValueError("scenario path requires non-empty shocks")
         if dict(item["returns"]) == dict(item["shocks"]):
             raise ValueError("scenario shocks must be an independent persisted path")
-    payload = {"allocation_id": allocation.allocation_id, "model_version": model_version, "probability_semantics": probability_semantics, "scenarios": scenarios, "tail_dependence": tail_dependence, "simultaneous_unwind": simultaneous_unwind}
+    payload = {"allocation_id": allocation.allocation_id, "model_version": model_version, "probability_semantics": probability_semantics, "scenarios": scenarios, "tail_dependence": tail_dependence, "simultaneous_unwind": simultaneous_unwind, "input_cutoff": allocation.input_cutoff}
     return PortfolioScenarioArtifact(
         scenario_artifact_id=f"scenario:{_hash(payload)}", allocation_id=allocation.allocation_id,
         model_version=model_version, probability_semantics=probability_semantics,
@@ -940,18 +955,27 @@ def build_execution_model_snapshot(
     observations: list[PaperExecutionObservation],
 ) -> ExecutionModelSnapshot:
     genuine = [item for item in observations if item.filled_quantity > 0 and item.fill_price is not None]
+    latency_values = [
+        (item.available_at.astimezone(UTC) - item.observed_at.astimezone(UTC)).total_seconds() * 1000
+        for item in genuine
+    ]
+    impact_values = [
+        abs(item.fill_price - item.requested_price) / item.requested_price * 10_000
+        for item in genuine if item.fill_price is not None and item.requested_price not in (None, 0)
+    ]
     payload = {
         "allocation_id": allocation_id, "input_cutoff": input_cutoff, "model_version": "paper-telemetry.v1",
         "calibration_status": "calibrated" if genuine else "calibration_pending", "sample_count": len(genuine),
         "fill_probability": (sum(item.filled_quantity > 0 for item in observations) / len(observations)) if observations else None,
         "spread_bps": (sum(item.spread_bps for item in genuine if item.spread_bps is not None) / len([item for item in genuine if item.spread_bps is not None])) if any(item.spread_bps is not None for item in genuine) else None,
-        "latency_ms": None, "impact_bps": None,
+        "latency_ms": sum(latency_values) / len(latency_values) if latency_values else None,
+        "impact_bps": sum(impact_values) / len(impact_values) if impact_values else None,
     }
     return ExecutionModelSnapshot(
         execution_model_snapshot_id=f"execution:{_hash(payload)}", allocation_id=allocation_id,
         model_version="paper-telemetry.v1", calibration_status="calibrated" if genuine else "calibration_pending",
         sample_count=len(genuine), fill_probability=payload["fill_probability"], spread_bps=payload["spread_bps"],
-        latency_ms=None, impact_bps=None, input_cutoff=input_cutoff,
+        latency_ms=payload["latency_ms"], impact_bps=payload["impact_bps"], input_cutoff=input_cutoff,
     )
 
 
@@ -978,6 +1002,10 @@ class BookAttribution(BaseModel):
         _finite(self.realized_pnl, "realized_pnl")
         if self.pnl_status == "realized" and not self.paper_execution_observation_id:
             raise ValueError("realized attribution requires an execution observation")
+        if self.pnl_status == "realized":
+            required = {"hypothesis_id", "experiment_id", "trial_id", "result_id", "forecast_id", "action_id", "rank_id", "expression", "fill_id", "pnl", "cost_decomposition"}
+            if not required.issubset(self.attribution):
+                raise ValueError("realized attribution requires the canonical lineage and cost decomposition")
         if self.book_attribution_id != attribution_id_for_record(self):
             raise ValueError("attribution identity does not match its immutable payload")
         return self
@@ -995,22 +1023,21 @@ def attribute_paper_pnl(
     if realized_pnl is not None:
         raise ValueError("realized P&L must be derived from the genuine paper observation")
     if observation is None:
-        status, derived_pnl = "pending_fill", None
-    elif observation.allocation_item_id not in {None, item.allocation_item_id}:
+        raise ValueError("attribution requires a genuine linked paper fill")
+    if observation.allocation_item_id != item.allocation_item_id:
         raise ValueError("execution observation does not belong to allocation item")
-    elif observation.filled_quantity <= 0 or observation.fill_price is None or observation.exit_price is None:
-        status, derived_pnl = "pending_fill", None
-    else:
-        direction = 1 if observation.side == "buy" else -1
-        status = "realized"
-        derived_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity
+    if observation.status != "exited" or observation.filled_quantity <= 0 or observation.fill_price is None or observation.exit_price is None:
+        raise ValueError("attribution requires a genuine exited paper fill")
+    direction = 1 if observation.side == "buy" else -1
+    status = "realized"
+    derived_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity
     trace = item.trace
     attribution = {
         "source": "paper_execution_observation", "derived": True,
         "hypothesis_id": item.hypothesis_id, "experiment_id": trace.get("experiment_id"),
         "trial_id": trace.get("trial_id"), "result_id": trace.get("result_id"),
         "forecast_id": item.strategy_forecast_id, "action_id": item.action_id,
-        "rank_id": trace.get("rank_id"), "expression": trace.get("expression"),
+        "rank_id": item.rank_id, "expression": trace.get("expression"),
         "invalidation": trace.get("invalidation"),
         "fill_id": observation.paper_execution_observation_id if observation else None,
         "pnl": {"realized": derived_pnl if status == "realized" else None, "quantity": observation.filled_quantity if observation else None,
@@ -1022,13 +1049,13 @@ def attribute_paper_pnl(
         "allocation_id": allocation.allocation_id, "allocation_item_id": item.allocation_item_id,
         "strategy_forecast_id": item.strategy_forecast_id, "hypothesis_id": item.hypothesis_id,
         "paper_execution_observation_id": observation.paper_execution_observation_id if observation else None,
-        "pnl_status": status, "realized_pnl": derived_pnl if status == "realized" else None,
+        "pnl_status": status, "realized_pnl": derived_pnl,
         "attribution": attribution, "input_cutoff": allocation.input_cutoff,
     }
     return BookAttribution(
         book_attribution_id=attribution_id_for_record(record_payload), allocation_id=allocation.allocation_id,
         allocation_item_id=item.allocation_item_id, strategy_forecast_id=item.strategy_forecast_id,
         hypothesis_id=item.hypothesis_id, paper_execution_observation_id=observation.paper_execution_observation_id if observation else None,
-        pnl_status=status, realized_pnl=derived_pnl if status == "realized" else None,
+        pnl_status=status, realized_pnl=derived_pnl,
         attribution=attribution, input_cutoff=allocation.input_cutoff,
     )

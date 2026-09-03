@@ -57,7 +57,7 @@ def test_phase4_artifacts_are_immutable_and_paper_only(migrated_postgres_dsn: st
                 ["allocation:" + "a" * 64, AS_OF.replace(hour=14), "d" * 64],
             )
         connection.rollback()
-        with pytest.raises(CheckViolation):
+        with pytest.raises((CheckViolation, RaiseException)):
             connection.execute(
                 """INSERT INTO app.paper_execution_observation
                    (paper_execution_observation_id, paper_order_id, execution_mode, paper_only, status,
@@ -90,7 +90,7 @@ def test_phase4_database_requires_pit_equal_cutoff_and_positive_funded_utility(m
             )
         connection.rollback()
         insert_cash_allocation(connection)
-        with pytest.raises(CheckViolation):
+        with pytest.raises((CheckViolation, RaiseException)):
             connection.execute(
                 """INSERT INTO analysis.portfolio_allocation_item
                    (allocation_item_id, allocation_id, ticker, disposition, target_weight,

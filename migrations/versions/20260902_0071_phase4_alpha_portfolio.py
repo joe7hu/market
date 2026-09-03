@@ -90,7 +90,7 @@ def upgrade() -> None:
 
         CREATE TABLE analysis.execution_model_snapshot (
             execution_model_snapshot_id TEXT PRIMARY KEY,
-            allocation_id TEXT REFERENCES analysis.portfolio_allocation_snapshot(allocation_id),
+            allocation_id TEXT NOT NULL REFERENCES analysis.portfolio_allocation_snapshot(allocation_id),
             model_version TEXT NOT NULL,
             calibration_status TEXT NOT NULL CHECK (calibration_status IN ('calibrated', 'calibration_pending', 'unavailable')),
             sample_count INTEGER NOT NULL CHECK (sample_count >= 0),
@@ -161,6 +161,7 @@ def upgrade() -> None:
             action TEXT NOT NULL CHECK (action IN ('hold', 'reduce', 'rollback', 'unavailable')),
             input_cutoff TIMESTAMPTZ NOT NULL,
             input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
+            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (action <> 'reduce' OR (drift_score < rollback_threshold AND drift_score >= rollback_threshold / 2)),
             CHECK (action <> 'rollback' OR drift_score >= rollback_threshold),
@@ -169,23 +170,83 @@ def upgrade() -> None:
             ,CHECK (decision_id = 'drift:' || input_hash::text)
         );
 
+        CREATE OR REPLACE FUNCTION analysis.phase4_content_digest(payload JSONB)
+        RETURNS TEXT LANGUAGE SQL IMMUTABLE STRICT AS $$
+            SELECT encode(public.digest(convert_to(payload::text, 'UTF8'), 'sha256'), 'hex')
+        $$;
+
         CREATE OR REPLACE FUNCTION analysis.enforce_phase4_lineage()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE expected_cutoff TIMESTAMPTZ; expected_allocation TEXT;
                 expected_forecast TEXT; expected_hypothesis UUID;
                 scenario JSONB; probability_total DOUBLE PRECISION := 0;
         BEGIN
+            IF TG_TABLE_NAME = 'portfolio_allocation_snapshot' THEN
+                NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
+                    'allocation_id', NEW.allocation_id, 'as_of', NEW.as_of,
+                    'input_cutoff', NEW.input_cutoff, 'status', NEW.status,
+                    'cash_hurdle', NEW.cash_hurdle, 'forecast_ids', NEW.forecast_ids,
+                    'action_ids', NEW.action_ids, 'strategy_registry_ids', NEW.strategy_registry_ids,
+                    'metadata', NEW.metadata
+                ));
+            ELSIF TG_TABLE_NAME = 'portfolio_allocation_item' THEN
+                NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
+                    'allocation_item_id', NEW.allocation_item_id, 'allocation_id', NEW.allocation_id,
+                    'candidate_id', NEW.candidate_id, 'ticker', NEW.ticker,
+                    'strategy_forecast_id', NEW.strategy_forecast_id, 'action_id', NEW.action_id,
+                    'rank_id', NEW.rank_id, 'hypothesis_id', NEW.hypothesis_id,
+                    'disposition', NEW.disposition, 'target_weight', NEW.target_weight,
+                    'current_weight', NEW.current_weight, 'marginal_book_utility', NEW.marginal_book_utility,
+                    'trace', NEW.trace, 'blockers', NEW.blockers, 'funding_source', NEW.funding_source,
+                    'funding_amount', NEW.funding_amount
+                ));
+            ELSIF TG_TABLE_NAME = 'probabilistic_portfolio_scenario_artifact' THEN
+                NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
+                    'scenario_artifact_id', NEW.scenario_artifact_id, 'allocation_id', NEW.allocation_id,
+                    'model_version', NEW.model_version, 'probability_semantics', NEW.probability_semantics,
+                    'scenarios', NEW.scenarios, 'tail_dependence', NEW.tail_dependence,
+                    'simultaneous_unwind', NEW.simultaneous_unwind, 'input_cutoff', NEW.input_cutoff
+                ));
+            ELSIF TG_TABLE_NAME = 'execution_model_snapshot' THEN
+                NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
+                    'execution_model_snapshot_id', NEW.execution_model_snapshot_id, 'allocation_id', NEW.allocation_id,
+                    'model_version', NEW.model_version, 'calibration_status', NEW.calibration_status,
+                    'sample_count', NEW.sample_count, 'fill_probability', NEW.fill_probability,
+                    'spread_bps', NEW.spread_bps, 'latency_ms', NEW.latency_ms, 'impact_bps', NEW.impact_bps,
+                    'input_cutoff', NEW.input_cutoff, 'metadata', NEW.metadata
+                ));
+            ELSIF TG_TABLE_NAME = 'book_attribution' THEN
+                NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
+                    'book_attribution_id', NEW.book_attribution_id, 'allocation_id', NEW.allocation_id,
+                    'allocation_item_id', NEW.allocation_item_id, 'strategy_forecast_id', NEW.strategy_forecast_id,
+                    'hypothesis_id', NEW.hypothesis_id, 'paper_execution_observation_id', NEW.paper_execution_observation_id,
+                    'pnl_status', NEW.pnl_status, 'realized_pnl', NEW.realized_pnl,
+                    'attribution', NEW.attribution, 'input_cutoff', NEW.input_cutoff
+                ));
+            ELSIF TG_TABLE_NAME = 'portfolio_drift_evidence' THEN
+                NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
+                    'decision_id', NEW.decision_id, 'allocation_id', NEW.allocation_id,
+                    'allocation_item_id', NEW.allocation_item_id, 'drift_score', NEW.drift_score,
+                    'rollback_threshold', NEW.rollback_threshold, 'proposed_weight', NEW.proposed_weight,
+                    'action', NEW.action, 'input_cutoff', NEW.input_cutoff, 'metadata', NEW.metadata
+                ));
+            END IF;
             IF TG_TABLE_NAME = 'portfolio_allocation_item' THEN
                 IF NEW.disposition = 'selected' AND NEW.ticker <> 'CASH' THEN
-                    IF NEW.funding_source LIKE 'CASH:broker-account:%' AND NOT EXISTS (
+                    IF NEW.funding_amount IS NULL OR NEW.funding_amount <= 0 THEN
+                        RAISE EXCEPTION 'Phase 4 funded item requires a positive funding amount';
+                    ELSIF NEW.funding_source LIKE 'CASH:broker-account:%' AND NOT EXISTS (
                         SELECT 1 FROM raw.broker_account_snapshot account
                         WHERE account.id = split_part(NEW.funding_source, ':', 4)::BIGINT
+                          AND account.cash_balance >= NEW.funding_amount
+                          AND account.observed_at <= (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id)
                     ) THEN
                         RAISE EXCEPTION 'Phase 4 cash funding source is not an actual PostgreSQL account snapshot';
                     ELSIF NEW.funding_source LIKE 'TRIM:broker-position:%' AND NOT EXISTS (
                         SELECT 1 FROM raw.broker_position_snapshot position
                         WHERE position.id = split_part(NEW.funding_source, ':', 3)::BIGINT
                           AND position.quantity > 0
+                          AND abs(coalesce(position.market_value, 0)) >= NEW.funding_amount
                     ) THEN
                         RAISE EXCEPTION 'Phase 4 trim funding source is not an actual PostgreSQL position';
                     ELSIF NEW.funding_source NOT LIKE 'CASH:broker-account:%'
@@ -208,7 +269,10 @@ def upgrade() -> None:
                         WHERE decision.input_manifest->'trade_plan'->>'trade_plan_id' = NEW.action_id
                           AND decision.input_manifest->'trade_plan'->>'rank_id' = NEW.rank_id
                           AND decision.input_manifest->'trade_plan'->>'strategy_forecast_id' = NEW.strategy_forecast_id
+                          AND decision.status = 'published'
+                          AND decision.published_at IS NOT NULL
                           AND decision.as_of <= (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id)
+                          AND decision.published_at <= (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id)
                     ) THEN
                         RAISE EXCEPTION 'Phase 4 allocation action or rank lineage is invalid';
                     END IF;
@@ -222,13 +286,20 @@ def upgrade() -> None:
                        OR jsonb_typeof(scenario->'returns') IS DISTINCT FROM 'object'
                        OR scenario->'returns' = '{}'::jsonb
                        OR jsonb_typeof(scenario->'shocks') IS DISTINCT FROM 'object'
-                       OR scenario->'shocks' = '{}'::jsonb THEN
+                       OR scenario->'shocks' = '{}'::jsonb
+                       OR scenario->'returns' = scenario->'shocks' THEN
                         RAISE EXCEPTION 'Phase 4 scenario path requires probability, returns, and shocks';
                     END IF;
                     probability_total := probability_total + (scenario->>'probability')::DOUBLE PRECISION;
                 END LOOP;
                 IF probability_total < 0.999999 OR probability_total > 1.000001 THEN
                     RAISE EXCEPTION 'Phase 4 scenario probabilities must sum to one';
+                END IF;
+                IF NOT (NEW.tail_dependence ? 'negative_return_co_exceedance' OR NEW.tail_dependence ? 'co_exceedance') THEN
+                    RAISE EXCEPTION 'Phase 4 scenario artifact requires persisted tail co-exceedance results';
+                END IF;
+                IF NOT (NEW.simultaneous_unwind ? 'probability' AND NEW.simultaneous_unwind ? 'observations') THEN
+                    RAISE EXCEPTION 'Phase 4 scenario artifact requires simultaneous-unwind results';
                 END IF;
                 SELECT input_cutoff INTO expected_cutoff
                 FROM analysis.portfolio_allocation_snapshot
@@ -251,9 +322,33 @@ def upgrade() -> None:
                 IF expected_allocation IS NULL OR NEW.allocation_id IS DISTINCT FROM expected_allocation THEN
                     RAISE EXCEPTION 'Phase 4 attribution item does not match allocation lineage';
                 END IF;
+                IF NEW.pnl_status = 'realized' AND (NEW.paper_execution_observation_id IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM app.paper_execution_observation observation
+                    JOIN app.paper_order paper ON paper.id = observation.paper_order_id
+                    WHERE observation.paper_execution_observation_id = NEW.paper_execution_observation_id
+                      AND observation.allocation_item_id = NEW.allocation_item_id
+                      AND observation.paper_only AND observation.execution_mode = 'paper'
+                      AND observation.filled_quantity > 0 AND observation.fill_price IS NOT NULL
+                      AND observation.exit_price IS NOT NULL AND paper.status IN ('exited', 'closed')
+                )) THEN
+                    RAISE EXCEPTION 'Phase 4 realized attribution requires a genuine linked paper fill';
+                END IF;
                 IF NEW.strategy_forecast_id IS DISTINCT FROM expected_forecast
                    OR NEW.hypothesis_id IS DISTINCT FROM expected_hypothesis THEN
                     RAISE EXCEPTION 'Phase 4 attribution forecast or hypothesis does not match item lineage';
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM analysis.ticker_decision decision
+                    WHERE decision.input_manifest->'trade_plan'->>'trade_plan_id' = (
+                              SELECT action_id FROM analysis.portfolio_allocation_item
+                              WHERE allocation_item_id = NEW.allocation_item_id)
+                      AND decision.input_manifest->'trade_plan'->>'rank_id' = (
+                              SELECT rank_id FROM analysis.portfolio_allocation_item
+                              WHERE allocation_item_id = NEW.allocation_item_id)
+                      AND decision.input_manifest->'trade_plan'->>'strategy_forecast_id' = NEW.strategy_forecast_id
+                      AND decision.status = 'published' AND decision.published_at IS NOT NULL
+                ) THEN
+                    RAISE EXCEPTION 'Phase 4 attribution requires a published action and rank lineage';
                 END IF;
                 SELECT input_cutoff INTO expected_cutoff
                 FROM analysis.portfolio_allocation_snapshot
@@ -291,11 +386,25 @@ def upgrade() -> None:
             IF NEW.status = 'exited' AND (order_exit_at IS NULL OR NEW.observed_at < order_exit_at) THEN
                 RAISE EXCEPTION 'Phase 4 exit observation requires an exited paper order';
             END IF;
+            IF NEW.allocation_item_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM analysis.portfolio_allocation_item item
+                WHERE item.allocation_item_id = NEW.allocation_item_id
+                  AND (item.action_id IS NULL OR EXISTS (
+                      SELECT 1 FROM app.paper_order paper
+                      WHERE paper.id = NEW.paper_order_id
+                        AND paper.policy_result->>'trade_plan_id' = item.action_id
+                  ))
+            ) THEN
+                RAISE EXCEPTION 'Phase 4 paper observation action lineage is invalid';
+            END IF;
             RETURN NEW;
         END;
         $$;
         CREATE TRIGGER portfolio_scenario_lineage
             BEFORE INSERT ON analysis.probabilistic_portfolio_scenario_artifact
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
+        CREATE TRIGGER portfolio_allocation_snapshot_lineage
+            BEFORE INSERT ON analysis.portfolio_allocation_snapshot
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
         CREATE TRIGGER portfolio_allocation_item_lineage
             BEFORE INSERT ON analysis.portfolio_allocation_item
@@ -305,6 +414,9 @@ def upgrade() -> None:
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
         CREATE TRIGGER book_attribution_lineage
             BEFORE INSERT ON analysis.book_attribution
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
+        CREATE TRIGGER portfolio_drift_lineage
+            BEFORE INSERT ON analysis.portfolio_drift_evidence
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
         CREATE TRIGGER paper_execution_lineage
             BEFORE INSERT ON app.paper_execution_observation
@@ -362,8 +474,10 @@ def downgrade() -> None:
         DROP TRIGGER IF EXISTS paper_execution_observation_immutable ON app.paper_execution_observation;
         DROP TRIGGER IF EXISTS paper_execution_lineage ON app.paper_execution_observation;
         DROP TRIGGER IF EXISTS book_attribution_lineage ON analysis.book_attribution;
+        DROP TRIGGER IF EXISTS portfolio_drift_lineage ON analysis.portfolio_drift_evidence;
         DROP TRIGGER IF EXISTS execution_model_lineage ON analysis.execution_model_snapshot;
         DROP TRIGGER IF EXISTS portfolio_scenario_lineage ON analysis.probabilistic_portfolio_scenario_artifact;
+        DROP TRIGGER IF EXISTS portfolio_allocation_snapshot_lineage ON analysis.portfolio_allocation_snapshot;
         DROP TRIGGER IF EXISTS book_attribution_immutable ON analysis.book_attribution;
         DROP TRIGGER IF EXISTS execution_model_snapshot_immutable ON analysis.execution_model_snapshot;
         DROP TRIGGER IF EXISTS portfolio_scenario_artifact_immutable ON analysis.probabilistic_portfolio_scenario_artifact;
@@ -373,6 +487,7 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS analysis.reject_phase4_update();
         DROP FUNCTION IF EXISTS analysis.enforce_phase4_paper_execution();
         DROP FUNCTION IF EXISTS analysis.enforce_phase4_lineage();
+        DROP FUNCTION IF EXISTS analysis.phase4_content_digest(JSONB);
         DROP TABLE IF EXISTS analysis.book_attribution;
         DROP TABLE IF EXISTS analysis.portfolio_drift_evidence;
         DROP TABLE IF EXISTS app.paper_execution_observation;
