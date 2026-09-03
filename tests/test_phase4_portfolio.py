@@ -43,6 +43,8 @@ def candidate(candidate_id: str, **overrides: object) -> PortfolioCandidate:
         "available_at": AS_OF - timedelta(minutes=2),
     }
     values.update(overrides)
+    values.setdefault("rank_position", 1)
+    values.setdefault("rank_utility", float(values["expected_return"]) - float(values["uncertainty"]))
     return PortfolioCandidate.model_validate(values)
 
 
@@ -94,7 +96,7 @@ def test_allocator_rejects_free_form_mapping_authority() -> None:
 
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:
     left = candidate("LEFT", covariance={"LEFT": 0.04, "RIGHT": 0.02})
-    right = candidate("RIGHT", covariance={"LEFT": 0.02, "RIGHT": 0.09})
+    right = candidate("RIGHT", covariance={"LEFT": 0.02, "RIGHT": 0.09}, cash_source_id="acct:test:cash:right")
     allocation = allocate_portfolio_for_tests([left, right], as_of=AS_OF, cash_hurdle=0.01)
     item = next(item for item in allocation.items if item.ticker == "RIGHT")
     assert item.trace["proposed_marginal_risk_contribution"] is not None

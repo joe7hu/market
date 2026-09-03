@@ -1,6 +1,6 @@
 import type { PanelData } from "@/types";
 
-type JsonObject = Record<string, unknown>;
+export type JsonObject = Record<string, unknown>;
 
 export type Phase4Action = {
   allocationId: string;
@@ -23,11 +23,32 @@ export type Phase4Action = {
   sizingTrace: JsonObject;
 };
 
+export type PortfolioActionDTO = {
+  allocation_id: string;
+  allocation_item_id: string;
+  ticker: string;
+  disposition: string;
+  strategy_forecast_id: string | null;
+  action_id: string | null;
+  rank_id: string | null;
+  expression: JsonObject | null;
+  invalidation: JsonObject | null;
+  missing_data: string[];
+  blockers: string[];
+  target_weight: number | null;
+  current_weight: number | null;
+  marginal_book_utility: number | null;
+  current_mrc: number | null;
+  proposed_mrc: number | null;
+  funding_source: string | null;
+  sizing_trace: JsonObject;
+};
+
 export type PortfolioIntegratedDTO = {
   allocation_id: string;
   input_cutoff: string;
   status: string;
-  actions: JsonObject[];
+  actions: PortfolioActionDTO[];
   scenario_artifact_id: string | null;
   execution_model_snapshot_id: string | null;
   scenario: {
@@ -112,15 +133,30 @@ function actionFromRow(canonical: JsonObject): Phase4Action | null {
   };
 }
 
+function isPortfolioActionDTO(value: unknown): value is PortfolioActionDTO {
+  const row = object(value);
+  return Boolean(
+    row && text(row.allocation_id) && text(row.allocation_item_id) && text(row.ticker)
+    && text(row.disposition) && object(row.sizing_trace)
+    && Array.isArray(row.missing_data) && Array.isArray(row.blockers)
+    && (row.target_weight === null || number(row.target_weight) !== null)
+    && (row.current_weight === null || number(row.current_weight) !== null)
+    && (row.marginal_book_utility === null || number(row.marginal_book_utility) !== null)
+    && (row.current_mrc === null || number(row.current_mrc) !== null)
+    && (row.proposed_mrc === null || number(row.proposed_mrc) !== null)
+  );
+}
+
 export function buildPortfolioPhase4Decision(data: PanelData): Phase4Decision | null {
   const allocationRow = object(rows(data.portfolioAllocation)[0]);
   if (!allocationRow) return null;
   const allocationId = text(allocationRow.allocation_id);
   if (!allocationId) return null;
   const canonical = object(allocationRow.canonical_portfolio) as PortfolioIntegratedDTO | null;
-  if (!canonical || canonical.allocation_id !== allocationId || !Array.isArray(canonical.actions)) return null;
-  const canonicalActions = canonical.actions;
-  const actions = canonicalActions.map((row) => actionFromRow(object(row) ?? {})).filter((row): row is Phase4Action => row !== null);
+  if (!canonical || canonical.allocation_id !== allocationId || !Array.isArray(canonical.actions) || !canonical.input_cutoff || !canonical.status) return null;
+  const canonicalActions = canonical.actions.filter(isPortfolioActionDTO);
+  if (canonicalActions.length !== canonical.actions.length) return null;
+  const actions = canonicalActions.map((row) => actionFromRow(row)).filter((row): row is Phase4Action => row !== null);
   if (actions.length !== canonicalActions.length || actions.some((action) => action.allocationId !== allocationId)) return null;
   if (canonical.scenario && canonical.scenario.allocation_id !== allocationId) return null;
   const scenario = canonical.scenario && text(canonical.scenario.scenario_artifact_id) ? {

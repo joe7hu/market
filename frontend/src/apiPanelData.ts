@@ -30,6 +30,14 @@ export function emptyPanelData(): PanelData {
 }
 
 export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload, options: { append?: boolean } = {}): PanelData {
+  const incomingPhase4 = phase4Identity(snapshot.tables);
+  const existingPhase4 = phase4IdentityFromPanel(existing);
+  if (incomingPhase4 && existingPhase4 && incomingPhase4 !== existingPhase4) {
+    return {
+      ...existing,
+      errors: { ...existing.errors, portfolio: "Phase 4 snapshot identity diverged; retained the prior immutable view." },
+    };
+  }
   const next: PanelData = { ...existing, errors: { ...existing.errors }, scopeStatus: { ...existing.scopeStatus } };
   if (snapshot.dashboard) {
     next.dashboard = snapshot.dashboard;
@@ -54,6 +62,35 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
     };
   }
   return next;
+}
+
+function phase4Identity(tables: Record<string, TablePayload> | undefined): string | null {
+  const allocation = tables?.portfolio_allocation?.rows?.[0];
+  if (!allocation) return null;
+  const allocationId = typeof allocation.allocation_id === "string" ? allocation.allocation_id : null;
+  const canonical = allocation.canonical_portfolio && typeof allocation.canonical_portfolio === "object" && !Array.isArray(allocation.canonical_portfolio)
+    ? allocation.canonical_portfolio as Record<string, unknown>
+    : null;
+  if (canonical && canonical.allocation_id !== allocationId) return null;
+  const scenario = tables?.portfolio_scenario_artifact?.rows?.[0];
+  const execution = tables?.execution_model_snapshot?.rows?.[0];
+  const scenarioId = typeof scenario?.scenario_artifact_id === "string" ? scenario.scenario_artifact_id : "";
+  const executionId = typeof execution?.execution_model_snapshot_id === "string" ? execution.execution_model_snapshot_id : "";
+  const canonicalScenario = canonical?.scenario && typeof canonical.scenario === "object" && !Array.isArray(canonical.scenario)
+    ? canonical.scenario as Record<string, unknown> : null;
+  const canonicalExecution = canonical?.execution && typeof canonical.execution === "object" && !Array.isArray(canonical.execution)
+    ? canonical.execution as Record<string, unknown> : null;
+  if (canonicalScenario && (canonicalScenario.allocation_id !== allocationId || (scenarioId && canonicalScenario.scenario_artifact_id !== scenarioId))) return null;
+  if (canonicalExecution && (canonicalExecution.allocation_id !== allocationId || (executionId && canonicalExecution.execution_model_snapshot_id !== executionId))) return null;
+  return allocationId ? `${allocationId}|${scenarioId}|${executionId}` : null;
+}
+
+function phase4IdentityFromPanel(data: PanelData): string | null {
+  return phase4Identity({
+    portfolio_allocation: data.portfolioAllocation,
+    portfolio_scenario_artifact: data.portfolioScenarioArtifact,
+    execution_model_snapshot: data.executionModelSnapshot,
+  });
 }
 
 export function mergePanelData(existing: PanelData, incoming: PanelData, options: { append?: boolean } = {}): PanelData {

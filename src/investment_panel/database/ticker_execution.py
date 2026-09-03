@@ -725,6 +725,12 @@ class TickerPaperExecutionRepository:
                 complete, "partial_fill", Jsonb(policy), now, order["id"],
             ],
         )
+        from investment_panel.database.portfolio import PortfolioLoopRepository
+
+        PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
+            connection, paper_order_id=str(order["id"]), observed_at=now,
+            status="entered" if complete else "open",
+        )
         return {
             "paper_order_id": str(order["id"]),
             "status": "filled" if complete else "partial",
@@ -933,6 +939,12 @@ class TickerPaperExecutionRepository:
             """,
             ["exited" if terminal else "partial_exited", new_exited, exit_price, now, fees, slippage, Jsonb(policy), now, order["id"]],
         )
+        from investment_panel.database.portfolio import PortfolioLoopRepository
+
+        PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
+            connection, paper_order_id=str(order["id"]), observed_at=now,
+            status="exited" if terminal else "partial_exited",
+        )
         return {
             "paper_order_id": str(order["id"]),
             "status": "closed" if terminal else "partial",
@@ -983,6 +995,11 @@ class TickerPaperExecutionRepository:
             WHERE id = %s::uuid
             """,
             [new_exited, price, now, fees, now, Jsonb(policy), order["id"]],
+        )
+        from investment_panel.database.portfolio import PortfolioLoopRepository
+
+        PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
+            connection, paper_order_id=str(order["id"]), observed_at=now, status="exited",
         )
         return {
             "paper_order_id": str(order["id"]),

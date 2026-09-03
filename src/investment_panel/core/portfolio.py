@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from enum import Enum
 from hashlib import sha256
 import json
 from math import isfinite
 from typing import Any, Mapping
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -21,6 +23,14 @@ class _PostgreSQLAuthorityToken:
 
     @classmethod
     def _issue(cls, cutoff: datetime, snapshot_id: str, source_content_hash: str) -> "_PostgreSQLAuthorityToken":
+        if (
+            cutoff.tzinfo is None
+            or not snapshot_id.strip()
+            or len(source_content_hash) != 64
+            or source_content_hash == "0" * 64
+            or any(char not in "0123456789abcdef" for char in source_content_hash.lower())
+        ):
+            raise ValueError("PostgreSQL authority requires a verified canonical source digest")
         token = object.__new__(cls)
         object.__setattr__(token, "_cutoff", cutoff)
         object.__setattr__(token, "_snapshot_id", snapshot_id)
@@ -40,20 +50,39 @@ class _PostgreSQLAuthorityToken:
         return self._source_content_hash
 
 
+def issue_postgresql_authority(
+    cutoff: datetime, snapshot_id: str, source_content_hash: str,
+) -> object:
+    """Repository facade for issuing a verified PostgreSQL authority proof."""
+
+    return _PostgreSQLAuthorityToken._issue(cutoff, snapshot_id, source_content_hash)
+
+
 def _json(value: Any) -> Any:
     if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat()
+        # Match analysis.phase4_canonical_json: timestamps are stored as UTC
+        # timestamp-without-time-zone values in the canonical JSON payload.
+        return value.astimezone(UTC).isoformat().removesuffix("+00:00")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Enum):
+        return _json(value.value)
+    if isinstance(value, UUID):
+        return str(value)
     if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
+        return _json(value.model_dump(mode="python"))
     if isinstance(value, Mapping):
-        return {str(key): _json(item) for key, item in value.items()}
+        return {
+            str(key): _json(value[key])
+            for key in sorted(value, key=lambda key: (len(str(key)), str(key)))
+        }
     if isinstance(value, (tuple, list)):
         return [_json(item) for item in value]
     return value
 
 
 def _hash(value: Any) -> str:
-    return sha256(json.dumps(_json(value), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return sha256(json.dumps(_json(value), ensure_ascii=False, separators=(", ", ": ")).encode()).hexdigest()
 
 
 def _finite(value: float | None, name: str) -> float | None:
@@ -238,6 +267,8 @@ class PortfolioCandidate(BaseModel):
     covariance: dict[str, float] | None = None
     expression: dict[str, Any] | None = None
     invalidation: dict[str, Any] | None = None
+    rank_position: int | None = None
+    rank_utility: float | None = None
     missing_data: tuple[str, ...] = ()
     current_weight: float = Field(default=0, ge=0, le=1)
     cash_available: float | None = None
@@ -272,6 +303,9 @@ class PortfolioCandidate(BaseModel):
         if self.covariance is not None:
             if not self.covariance or any(not isfinite(float(value)) for value in self.covariance.values()):
                 raise ValueError("covariance must contain finite values")
+        if self.rank_position is not None and self.rank_position < 1:
+            raise ValueError("rank position must be positive")
+        _finite(self.rank_utility, "rank_utility")
         return self
 
 
@@ -317,10 +351,25 @@ class PortfolioBookEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     snapshot_id: str | None = None
+    net_liquidation: float | None = None
     cash_available: float | None = None
     cash_source_id: str | None = None
     positions: dict[str, str] = Field(default_factory=dict)
     input_cutoff: datetime
+
+    @model_validator(mode="after")
+    def validate_book(self) -> "PortfolioBookEvidence":
+        for name in ("net_liquidation", "cash_available"):
+            _finite(getattr(self, name), name)
+        if self.net_liquidation is not None and self.net_liquidation <= 0:
+            raise ValueError("portfolio book requires positive net liquidation")
+        if self.cash_available is not None and self.cash_available < 0:
+            raise ValueError("portfolio book cash cannot be negative")
+        if self.cash_available is not None and not self.cash_source_id:
+            raise ValueError("portfolio book cash requires a persisted source identity")
+        if self.input_cutoff.tzinfo is None:
+            raise ValueError("portfolio book requires a timezone-aware cutoff")
+        return self
 
 
 class PortfolioConstraintEvidence(BaseModel):
@@ -385,9 +434,7 @@ class AuthoritativePortfolioBundle(BaseModel):
     def _from_postgresql(
         cls,
         *,
-        cutoff: datetime,
-        snapshot_id: str,
-        source_payload: Mapping[str, Any],
+        repository_authority: object,
         candidates: tuple[PortfolioCandidate, ...],
         book: PortfolioBookEvidence,
         constraints: PortfolioConstraintEvidence,
@@ -398,12 +445,8 @@ class AuthoritativePortfolioBundle(BaseModel):
     ) -> "AuthoritativePortfolioBundle":
         """Hydrate a bundle only from the repository-issued proof and typed rows."""
 
-        if cutoff.tzinfo is None or not snapshot_id.strip() or not source_payload:
+        if not isinstance(repository_authority, _PostgreSQLAuthorityToken):
             raise ValueError("PostgreSQL authority requires a complete verified source slice")
-        source_content_hash = _hash(source_payload)
-        if source_content_hash == "0" * 64:
-            raise ValueError("PostgreSQL authority requires a canonical source digest")
-        repository_authority = _PostgreSQLAuthorityToken._issue(cutoff, snapshot_id, source_content_hash)
         return cls.model_validate({
             "input_cutoff": repository_authority.cutoff,
             "candidates": candidates,
@@ -432,6 +475,12 @@ class AuthoritativePortfolioBundle(BaseModel):
         for evidence in (self.book, self.execution, self.scenario):
             if evidence.input_cutoff.astimezone(UTC) != self.input_cutoff.astimezone(UTC):
                 raise ValueError("authoritative evidence clocks must match the bundle cutoff")
+        if self.complete and (
+            self.book.net_liquidation is None
+            or self.book.cash_available is None
+            or not self.book.cash_source_id
+        ):
+            raise ValueError("complete authoritative bundle requires PostgreSQL book and cash evidence")
         for candidate in self.candidates:
             if candidate.input_cutoff and candidate.input_cutoff.astimezone(UTC) > self.input_cutoff.astimezone(UTC):
                 raise ValueError("authoritative candidate is newer than the bundle cutoff")
@@ -453,6 +502,8 @@ class AuthoritativePortfolioBundle(BaseModel):
                 for name in ("expected_return", "uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity", "overlap_penalty", "execution_penalty", "covariance"):
                     if getattr(evidence, name) != getattr(candidate, name):
                         raise ValueError("authoritative candidate risk values do not match typed PostgreSQL evidence")
+            if self.complete and (candidate.rank_position is None or candidate.rank_utility is None):
+                raise ValueError("authoritative candidate is missing the persisted opportunity rank")
         return self
 
     @property
@@ -667,7 +718,7 @@ def allocate_portfolio(
     return _allocate_portfolio(bundle, as_of=as_of)
 
 
-def allocate_portfolio_for_tests(
+def _allocate_portfolio(
     candidates: AuthoritativePortfolioBundle | list[PortfolioCandidate | Mapping[str, Any]],
     *,
     as_of: datetime,
@@ -730,7 +781,10 @@ def allocate_portfolio_for_tests(
         if blockers:
             ranked.append(_rejection(candidate, tuple(dict.fromkeys(blockers))))
             continue
-        utility = candidate.expected_return - candidate.uncertainty - (candidate.overlap_penalty or 0) - (candidate.execution_penalty or 0)
+        utility = candidate.rank_utility
+        if utility is None or not isfinite(utility):
+            ranked.append(_rejection(candidate, ("rank_utility_missing",)))
+            continue
         trace = {
             "input_cutoff": candidate.input_cutoff,
             "available_at": candidate.available_at,
@@ -750,6 +804,8 @@ def allocate_portfolio_for_tests(
             "overlap_penalty": candidate.overlap_penalty or 0,
             "execution_penalty": candidate.execution_penalty or 0,
             "marginal_book_utility": utility,
+            "rank_position": candidate.rank_position,
+            "rank_utility": utility,
             "volatility": candidate.volatility,
             "risk_budget": candidate.risk_budget,
             "kelly_cap": candidate.kelly_cap,
@@ -764,8 +820,22 @@ def allocate_portfolio_for_tests(
             "trim_available": candidate.trim_available,
         }
         eligible.append((candidate, utility, trace))
-    eligible.sort(key=lambda item: (-item[1], item[0].candidate_id))
+    eligible.sort(key=lambda item: (item[0].rank_position or 2**31, item[0].candidate_id))
     remaining = 1.0
+    cash_remaining_by_source: dict[str, float] = {}
+    if isinstance(candidates, AuthoritativePortfolioBundle):
+        if candidates.book.cash_available is not None and candidates.book.cash_source_id:
+            cash_remaining_by_source[candidates.book.cash_source_id] = candidates.book.cash_available
+    else:
+        for candidate in normalized:
+            if candidate.cash_source_id and candidate.cash_available is not None:
+                cash_remaining_by_source.setdefault(candidate.cash_source_id, candidate.cash_available)
+    trim_remaining = {
+        candidate.trim_position_id: candidate.trim_available
+        for candidate, _, _ in eligible
+        if candidate.trim_position_id and candidate.trim_available is not None
+    }
+    nav = candidates.book.net_liquidation if isinstance(candidates, AuthoritativePortfolioBundle) else None
     for candidate, utility, trace in eligible:
         if utility <= cash_hurdle:
             payload = {"candidate_id": candidate.candidate_id, "ticker": candidate.ticker, "disposition": "ranked_out", "trace": trace}
@@ -784,10 +854,31 @@ def allocate_portfolio_for_tests(
             ranked.append(_rejection(candidate, ("capacity_or_risk_cap_zero",)))
             continue
         target = min(target, remaining)
+        weight_delta = max(0.0, target - candidate.current_weight)
+        funding_amount = weight_delta * nav if nav is not None else None
+        funding_key = candidate.cash_source_id if candidate.current_weight <= 0 else candidate.trim_position_id
+        source_remaining = (
+            cash_remaining_by_source.get(funding_key)
+            if candidate.current_weight <= 0
+            else trim_remaining.get(funding_key)
+        )
+        if funding_amount is None:
+            funding_amount = source_remaining
+        if funding_amount is None or funding_amount <= 0 or source_remaining is None or funding_amount > source_remaining:
+            ranked.append(_rejection(candidate, ("aggregate_funding_capacity_unavailable",)))
+            continue
+        if candidate.current_weight <= 0:
+            cash_remaining_by_source[funding_key] = source_remaining - funding_amount
+        elif funding_key:
+            trim_remaining[funding_key] = source_remaining - funding_amount
         trace["uncertainty_scale"] = (candidate.expected_return - candidate.uncertainty) / candidate.expected_return if candidate.expected_return else 0
         trace["uncertainty_haircut"] = uncertainty_haircut
         trace["uncertainty_scaled_weight"] = target
         trace["constraint_weight"] = cap
+        trace["portfolio_nav"] = nav
+        trace["weight_delta"] = weight_delta
+        trace["funding_amount"] = funding_amount
+        trace["funding_source_capacity_remaining"] = source_remaining
         payload = {"candidate_id": candidate.candidate_id, "ticker": candidate.ticker, "disposition": "selected", "target_weight": target, "trace": trace}
         ranked.append(PortfolioAllocationItem(
             allocation_item_id=f"allocation-item:{_hash(payload)}", candidate_id=candidate.candidate_id,
@@ -795,7 +886,7 @@ def allocate_portfolio_for_tests(
             action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
             funding_source=(f"CASH:{candidate.cash_source_id}" if candidate.current_weight == 0 else f"TRIM:{candidate.trim_position_id}"),
-            funding_amount=(candidate.cash_available if candidate.current_weight == 0 else candidate.trim_available), trace=_json(trace),
+            funding_amount=funding_amount, trace=_json(trace),
         ))
         remaining -= target
     cash_payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected", "target_weight": remaining}
@@ -855,6 +946,17 @@ def allocate_portfolio_for_tests(
         forecast_ids=forecast_ids, action_ids=action_ids, strategy_registry_ids=registry_ids,
         metadata=allocator_metadata,
     )
+
+
+def allocate_portfolio_for_tests(
+    candidates: list[PortfolioCandidate | Mapping[str, Any]],
+    *,
+    as_of: datetime,
+    cash_hurdle: float | None = None,
+) -> PortfolioAllocationSnapshot:
+    """Explicit non-authoritative adapter for deterministic core tests."""
+
+    return _allocate_portfolio(candidates, as_of=as_of, cash_hurdle=cash_hurdle)
 
 
 def cash_only_allocation(as_of: datetime, cash_hurdle: float | None, reason: str) -> PortfolioAllocationSnapshot:
@@ -1094,24 +1196,37 @@ def build_scenario_artifact_from_observations(
     """Build portfolio paths only from persisted, point-in-time return rows."""
 
     selected = {item.ticker for item in allocation.items if item.disposition == "selected" and item.ticker != "CASH"}
-    grouped: dict[str, dict[str, dict[str, float]]] = {}
+    grouped: dict[str, dict[str, Any]] = {}
     for row in observations[:64]:
-        date_key = str(row.get("pnl_date") or row.get("observed_at") or "").strip()
+        outcome = row.get("outcome") if isinstance(row.get("outcome"), Mapping) else {}
+        date_key = str(row.get("pnl_date") or row.get("date") or outcome.get("pnl_date") or row.get("observed_at") or "").strip()
         ticker = str(row.get("ticker") or "").upper()
-        value = row.get("net_return")
-        shock = row.get("tail_return")
+        value = row.get("net_return", outcome.get("net_return"))
+        shock = row.get("tail_return", outcome.get("tail_return"))
         if (not date_key or ticker not in selected or value is None or shock is None
                 or not isfinite(float(value)) or not isfinite(float(shock))):
             continue
-        grouped.setdefault(date_key, {"returns": {}, "shocks": {}})["returns"][ticker] = float(value)
+        grouped.setdefault(date_key, {"returns": {}, "shocks": {}, "provenance": []})["returns"][ticker] = float(value)
         grouped[date_key]["shocks"][ticker] = float(shock)
+        grouped[date_key]["provenance"].append({
+            "strategy_pnl_tape_id": row.get("strategy_pnl_tape_id") or row.get("id"),
+            "strategy_forecast_id": row.get("strategy_forecast_id"),
+            "pnl_date": row.get("pnl_date") or row.get("date"),
+            "input_cutoff": row.get("input_cutoff"),
+            "available_at": row.get("available_at"),
+            "observed_at": row.get("observed_at"),
+            "input_hash": row.get("input_hash"),
+            "result_hash": row.get("result_hash"),
+            "universe_manifest_hash": row.get("universe_manifest_hash"),
+        })
     paths = [values for _, values in sorted(grouped.items())
-             if selected <= values["returns"].keys() and selected <= values["shocks"].keys()]
+             if selected <= values["returns"].keys() and selected <= values["shocks"].keys()
+             and values["provenance"]]
     if not paths:
         raise ValueError("portfolio scenario requires persisted returns for every selected item")
     probability = 1.0 / len(paths)
     scenarios = [
-        {"name": f"observed:{index}", "probability": probability, "returns": values["returns"], "shocks": values["shocks"]}
+        {"name": f"observed:{index}", "probability": probability, "returns": values["returns"], "shocks": values["shocks"], "provenance": values["provenance"]}
         for index, values in enumerate(paths)
     ]
     co_exceedance: dict[str, Any] = {}
@@ -1119,9 +1234,9 @@ def build_scenario_artifact_from_observations(
         for right in sorted(selected):
             if left > right:
                 continue
-            count = sum(values[left] < 0 and values[right] < 0 for values in paths)
+            count = sum(values["returns"][left] < 0 and values["returns"][right] < 0 for values in paths)
             co_exceedance[f"{left}|{right}"] = {"count": count, "observations": len(paths), "probability": count / len(paths)}
-    simultaneous = sum(all(values[ticker] < 0 for ticker in selected) for values in paths)
+    simultaneous = sum(all(values["returns"][ticker] < 0 for ticker in selected) for values in paths)
     return build_scenario_artifact(
         allocation, scenarios, model_version="strategy_pnl_tape.v1",
         probability_semantics="equal-weight persisted P&L observations",

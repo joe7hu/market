@@ -23,8 +23,8 @@ def upgrade() -> None:
             forecast_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
             action_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
             strategy_registry_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-            input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
-            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+            input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$' AND input_hash <> repeat('0', 64)),
+            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$' AND content_hash <> repeat('0', 64)),
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (as_of = input_cutoff),
@@ -79,8 +79,8 @@ def upgrade() -> None:
             tail_dependence JSONB NOT NULL,
             simultaneous_unwind JSONB NOT NULL,
             input_cutoff TIMESTAMPTZ NOT NULL,
-            input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
-            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+            input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$' AND input_hash <> repeat('0', 64)),
+            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$' AND content_hash <> repeat('0', 64)),
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (jsonb_typeof(scenarios) = 'array' AND jsonb_array_length(scenarios) > 0),
             CHECK (jsonb_typeof(tail_dependence) = 'object' AND tail_dependence <> '{}'::jsonb),
@@ -99,8 +99,8 @@ def upgrade() -> None:
             latency_ms DOUBLE PRECISION CHECK (latency_ms IS NULL OR (latency_ms < 'Infinity'::double precision AND latency_ms > '-Infinity'::double precision AND latency_ms >= 0)),
             impact_bps DOUBLE PRECISION CHECK (impact_bps IS NULL OR (impact_bps < 'Infinity'::double precision AND impact_bps > '-Infinity'::double precision AND impact_bps >= 0)),
             input_cutoff TIMESTAMPTZ NOT NULL,
-            input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
-            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+            input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$' AND input_hash <> repeat('0', 64)),
+            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$' AND content_hash <> repeat('0', 64)),
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (calibration_status <> 'calibrated' OR sample_count > 0)
@@ -177,9 +177,32 @@ def upgrade() -> None:
             ,CHECK (decision_id = 'drift:' || input_hash::text)
         );
 
+        CREATE OR REPLACE FUNCTION analysis.phase4_canonical_json(payload JSONB)
+        RETURNS TEXT LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+        DECLARE kind TEXT; result TEXT;
+        BEGIN
+            kind := jsonb_typeof(payload);
+            IF kind = 'object' THEN
+                SELECT COALESCE('{' || string_agg(to_json(key)::text || ': ' || analysis.phase4_canonical_json(value), ', ' ORDER BY length(key), key) || '}', '{}')
+                  INTO result FROM jsonb_each(payload);
+            ELSIF kind = 'array' THEN
+                SELECT COALESCE('[' || string_agg(analysis.phase4_canonical_json(value), ', ' ORDER BY ordinality) || ']', '[]')
+                  INTO result FROM jsonb_array_elements(payload) WITH ORDINALITY;
+            ELSE
+                result := payload::text;
+            END IF;
+            RETURN result;
+        END;
+        $$;
+
+        CREATE OR REPLACE FUNCTION analysis.phase4_canonical_timestamp(value TIMESTAMPTZ)
+        RETURNS JSONB LANGUAGE SQL IMMUTABLE STRICT AS $$
+            SELECT to_jsonb(value AT TIME ZONE 'UTC')
+        $$;
+
         CREATE OR REPLACE FUNCTION analysis.phase4_content_digest(payload JSONB)
         RETURNS TEXT LANGUAGE SQL IMMUTABLE STRICT AS $$
-            SELECT encode(public.digest(convert_to(payload::text, 'UTF8'), 'sha256'), 'hex')
+            SELECT encode(public.digest(convert_to(analysis.phase4_canonical_json(payload), 'UTF8'), 'sha256'), 'hex')
         $$;
 
         CREATE OR REPLACE FUNCTION analysis.enforce_phase4_lineage()
@@ -192,8 +215,8 @@ def upgrade() -> None:
         BEGIN
             IF TG_TABLE_NAME = 'portfolio_allocation_snapshot' THEN
                 NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
-                    'allocation_id', NEW.allocation_id, 'as_of', NEW.as_of,
-                    'input_cutoff', NEW.input_cutoff, 'status', NEW.status,
+                    'allocation_id', NEW.allocation_id, 'as_of', analysis.phase4_canonical_timestamp(NEW.as_of),
+                    'input_cutoff', analysis.phase4_canonical_timestamp(NEW.input_cutoff), 'status', NEW.status,
                     'cash_hurdle', NEW.cash_hurdle, 'forecast_ids', NEW.forecast_ids,
                     'action_ids', NEW.action_ids, 'strategy_registry_ids', NEW.strategy_registry_ids,
                     'metadata', NEW.metadata
@@ -214,7 +237,7 @@ def upgrade() -> None:
                     'scenario_artifact_id', NEW.scenario_artifact_id, 'allocation_id', NEW.allocation_id,
                     'model_version', NEW.model_version, 'probability_semantics', NEW.probability_semantics,
                     'scenarios', NEW.scenarios, 'tail_dependence', NEW.tail_dependence,
-                    'simultaneous_unwind', NEW.simultaneous_unwind, 'input_cutoff', NEW.input_cutoff
+                    'simultaneous_unwind', NEW.simultaneous_unwind, 'input_cutoff', analysis.phase4_canonical_timestamp(NEW.input_cutoff)
                 ));
             ELSIF TG_TABLE_NAME = 'execution_model_snapshot' THEN
                 NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
@@ -222,7 +245,7 @@ def upgrade() -> None:
                     'model_version', NEW.model_version, 'calibration_status', NEW.calibration_status,
                     'sample_count', NEW.sample_count, 'fill_probability', NEW.fill_probability,
                     'spread_bps', NEW.spread_bps, 'latency_ms', NEW.latency_ms, 'impact_bps', NEW.impact_bps,
-                    'input_cutoff', NEW.input_cutoff, 'metadata', NEW.metadata
+                    'input_cutoff', analysis.phase4_canonical_timestamp(NEW.input_cutoff), 'metadata', NEW.metadata
                 ));
             ELSIF TG_TABLE_NAME = 'book_attribution' THEN
                 NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
@@ -233,14 +256,14 @@ def upgrade() -> None:
                     'trial_id', NEW.trial_id, 'result_id', NEW.result_id,
                     'paper_execution_observation_id', NEW.paper_execution_observation_id,
                     'pnl_status', NEW.pnl_status, 'realized_pnl', NEW.realized_pnl,
-                    'attribution', NEW.attribution, 'input_cutoff', NEW.input_cutoff
+                    'attribution', NEW.attribution, 'input_cutoff', analysis.phase4_canonical_timestamp(NEW.input_cutoff)
                 ));
             ELSIF TG_TABLE_NAME = 'portfolio_drift_evidence' THEN
                 NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
                     'decision_id', NEW.decision_id, 'allocation_id', NEW.allocation_id,
                     'allocation_item_id', NEW.allocation_item_id, 'drift_score', NEW.drift_score,
                     'rollback_threshold', NEW.rollback_threshold, 'proposed_weight', NEW.proposed_weight,
-                    'action', NEW.action, 'input_cutoff', NEW.input_cutoff, 'metadata', NEW.metadata
+                    'action', NEW.action, 'input_cutoff', analysis.phase4_canonical_timestamp(NEW.input_cutoff), 'metadata', NEW.metadata
                 ));
             END IF;
             IF TG_TABLE_NAME = 'portfolio_allocation_item' THEN
@@ -301,6 +324,18 @@ def upgrade() -> None:
                        OR scenario->'shocks' = '{}'::jsonb
                        OR scenario->'returns' = scenario->'shocks' THEN
                         RAISE EXCEPTION 'Phase 4 scenario path requires probability, returns, and shocks';
+                    END IF;
+                    IF jsonb_typeof(scenario->'provenance') IS DISTINCT FROM 'array'
+                       OR jsonb_array_length(scenario->'provenance') = 0
+                       OR EXISTS (
+                           SELECT 1 FROM jsonb_array_elements(scenario->'provenance') source
+                           WHERE jsonb_typeof(source->'strategy_pnl_tape_id') IS DISTINCT FROM 'string'
+                              OR jsonb_typeof(source->'pnl_date') IS DISTINCT FROM 'string'
+                              OR jsonb_typeof(source->'input_cutoff') IS DISTINCT FROM 'string'
+                              OR jsonb_typeof(source->'available_at') IS DISTINCT FROM 'string'
+                              OR jsonb_typeof(source->'input_hash') IS DISTINCT FROM 'string'
+                       ) THEN
+                        RAISE EXCEPTION 'Phase 4 scenario path requires complete persisted tape provenance';
                     END IF;
                     probability_total := probability_total + (scenario->>'probability')::DOUBLE PRECISION;
                 END LOOP;
@@ -409,7 +444,7 @@ def upgrade() -> None:
                 RAISE EXCEPTION 'Phase 4 paper observation has invalid order clock lineage';
             END IF;
             IF NEW.filled_quantity > 0
-               AND (order_status NOT IN ('entered', 'partial_exited', 'exited', 'invalidated', 'closed')
+               AND (order_status NOT IN ('open', 'entered', 'partial_exited', 'exited', 'invalidated', 'closed')
                     OR order_filled_quantity < NEW.filled_quantity
                     OR order_fill_price IS NULL OR order_filled_at IS NULL
                     OR NEW.observed_at < order_filled_at) THEN
@@ -521,6 +556,8 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS analysis.enforce_phase4_paper_execution();
         DROP FUNCTION IF EXISTS analysis.enforce_phase4_lineage();
         DROP FUNCTION IF EXISTS analysis.phase4_content_digest(JSONB);
+        DROP FUNCTION IF EXISTS analysis.phase4_canonical_timestamp(TIMESTAMPTZ);
+        DROP FUNCTION IF EXISTS analysis.phase4_canonical_json(JSONB);
         DROP TABLE IF EXISTS analysis.book_attribution;
         DROP TABLE IF EXISTS analysis.portfolio_drift_evidence;
         DROP TABLE IF EXISTS app.paper_execution_observation;
