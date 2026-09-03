@@ -19,14 +19,16 @@ def upgrade() -> None:
             as_of TIMESTAMPTZ NOT NULL,
             input_cutoff TIMESTAMPTZ NOT NULL,
             status TEXT NOT NULL CHECK (status IN ('available', 'cash_only', 'unavailable')),
-            cash_hurdle DOUBLE PRECISION NOT NULL CHECK (cash_hurdle < 'Infinity'::double precision AND cash_hurdle > '-Infinity'::double precision AND cash_hurdle >= 0),
+            cash_hurdle DOUBLE PRECISION CHECK (cash_hurdle IS NULL OR (cash_hurdle < 'Infinity'::double precision AND cash_hurdle > '-Infinity'::double precision AND cash_hurdle >= 0)),
             forecast_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
             action_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
             strategy_registry_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
             input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
+            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (as_of = input_cutoff),
+            CHECK (status <> 'available' OR cash_hurdle > 0),
             CHECK (allocation_id = 'allocation:' || input_hash::text),
             CHECK (jsonb_typeof(forecast_ids) = 'array'),
             CHECK (jsonb_typeof(action_ids) = 'array'),
@@ -49,17 +51,21 @@ def upgrade() -> None:
             trace JSONB NOT NULL,
             blockers JSONB NOT NULL DEFAULT '[]'::jsonb,
             funding_source TEXT,
+            funding_amount DOUBLE PRECISION,
             input_hash CHAR(64) NOT NULL DEFAULT '',
+            content_hash CHAR(64) NOT NULL DEFAULT repeat('0', 64),
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (jsonb_typeof(trace) = 'object'),
             CHECK (jsonb_typeof(blockers) = 'array'),
             CHECK (ticker = 'CASH' OR candidate_id <> ''),
             CHECK (input_hash = '' OR (input_hash ~ '^[0-9a-f]{64}$' AND allocation_item_id = 'allocation-item:' || input_hash::text)),
+            CHECK (content_hash ~ '^[0-9a-f]{64}$' AND content_hash <> repeat('0', 64)),
             CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (strategy_forecast_id IS NOT NULL AND action_id IS NOT NULL)),
             CHECK (ticker = 'CASH' OR disposition <> 'selected' OR rank_id IS NOT NULL),
             CHECK (disposition <> 'selected' OR (ticker = 'CASH' AND target_weight > 0 AND marginal_book_utility >= 0) OR (target_weight > 0 AND marginal_book_utility > 0)),
             CHECK (ticker <> '')
             ,CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (funding_source IS NOT NULL AND (funding_source LIKE 'CASH:%' OR funding_source LIKE 'TRIM:%')))
+            ,CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (funding_amount IS NOT NULL AND funding_amount > 0))
         );
         CREATE INDEX ix_portfolio_allocation_item_snapshot
             ON analysis.portfolio_allocation_item (allocation_id, disposition, target_weight DESC);
@@ -74,6 +80,7 @@ def upgrade() -> None:
             simultaneous_unwind JSONB NOT NULL,
             input_cutoff TIMESTAMPTZ NOT NULL,
             input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
+            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (jsonb_typeof(scenarios) = 'array' AND jsonb_array_length(scenarios) > 0),
             CHECK (jsonb_typeof(tail_dependence) = 'object' AND tail_dependence <> '{}'::jsonb),
@@ -93,6 +100,7 @@ def upgrade() -> None:
             impact_bps DOUBLE PRECISION CHECK (impact_bps IS NULL OR (impact_bps < 'Infinity'::double precision AND impact_bps > '-Infinity'::double precision AND impact_bps >= 0)),
             input_cutoff TIMESTAMPTZ NOT NULL,
             input_hash CHAR(64) NOT NULL CHECK (input_hash ~ '^[0-9a-f]{64}$'),
+            content_hash CHAR(64) NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (calibration_status <> 'calibrated' OR sample_count > 0)
@@ -135,10 +143,12 @@ def upgrade() -> None:
             attribution JSONB NOT NULL,
             input_cutoff TIMESTAMPTZ NOT NULL,
             input_hash CHAR(64) NOT NULL DEFAULT '',
+            content_hash CHAR(64) NOT NULL DEFAULT repeat('0', 64),
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (jsonb_typeof(attribution) = 'object'),
             CHECK (pnl_status <> 'realized' OR realized_pnl IS NOT NULL)
             ,CHECK (input_hash = '' OR (input_hash ~ '^[0-9a-f]{64}$' AND book_attribution_id = 'attribution:' || input_hash::text))
+            ,CHECK (content_hash ~ '^[0-9a-f]{64}$' AND content_hash <> repeat('0', 64))
         );
 
         CREATE TABLE analysis.portfolio_drift_evidence (

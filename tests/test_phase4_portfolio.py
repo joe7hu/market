@@ -75,7 +75,7 @@ def test_allocator_selects_positive_marginal_utility_and_keeps_cash_above_hurdle
 
 
 def test_allocator_rejects_funding_without_postgres_cash_or_position_identity() -> None:
-    allocation = allocate_portfolio([candidate("NO_FUNDING", cash_available=None, cash_source_id=None)], as_of=AS_OF)
+    allocation = allocate_portfolio([candidate("NO_FUNDING", cash_available=None, cash_source_id=None)], as_of=AS_OF, cash_hurdle=0.01)
     item = next(item for item in allocation.items if item.ticker == "NO_FUNDING")
     assert item.disposition == "rejected"
     assert "cash_funding_missing" in item.blockers
@@ -84,7 +84,7 @@ def test_allocator_rejects_funding_without_postgres_cash_or_position_identity() 
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:
     left = candidate("LEFT", covariance={"LEFT": 0.04, "RIGHT": 0.02})
     right = candidate("RIGHT", covariance={"LEFT": 0.02, "RIGHT": 0.09})
-    allocation = allocate_portfolio([left, right], as_of=AS_OF)
+    allocation = allocate_portfolio([left, right], as_of=AS_OF, cash_hurdle=0.01)
     item = next(item for item in allocation.items if item.ticker == "RIGHT")
     assert item.trace["proposed_marginal_risk_contribution"] is not None
     assert item.trace["proposed_marginal_risk_contribution"] != item.target_weight * right.volatility
@@ -92,7 +92,7 @@ def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility
 
 
 def test_scenario_artifact_is_bounded_and_contains_tail_and_unwind_evidence() -> None:
-    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF)
+    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
     artifact = build_scenario_artifact(
         allocation,
         [{"name": "base", "probability": 0.7, "returns": {"GOOD": 0.05}, "shocks": {"GOOD": 0.01}}, {"name": "tail", "probability": 0.3, "returns": {"GOOD": -0.2}, "shocks": {"GOOD": -0.3}}],
@@ -109,7 +109,7 @@ def test_scenario_artifact_is_bounded_and_contains_tail_and_unwind_evidence() ->
 
 
 def test_scenario_artifact_rejects_mutated_content_and_empty_tail_or_unwind() -> None:
-    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF)
+    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
     kwargs = {
         "allocation": allocation,
         "scenarios": [{"probability": 1, "returns": {"GOOD": 0.1}, "shocks": {"GOOD": 0.2}}],
@@ -127,7 +127,7 @@ def test_scenario_artifact_rejects_mutated_content_and_empty_tail_or_unwind() ->
 
 
 def test_decay_guard_reduces_before_the_rollback_threshold() -> None:
-    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF)
+    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
     item = next(item for item in allocation.items if item.ticker == "GOOD")
     decisions = apply_decay_guard(allocation, {item.allocation_item_id: 0.6}, rollback_threshold=1.0)
     assert decisions[0].action == "reduce"
@@ -152,7 +152,7 @@ def test_execution_stays_calibration_pending_until_genuine_fill_and_attribution_
     filled_observation = observation("filled", 10)
     calibrated_model = build_execution_model_snapshot("allocation:x", AS_OF, [filled_observation])
     assert calibrated_model.calibration_status == "calibrated"
-    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF)
+    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
     item = next(item for item in allocation.items if item.ticker == "GOOD")
     assert attribute_paper_pnl(allocation, item, observation=pending_observation).pnl_status == "pending_fill"
     realized = attribute_paper_pnl(allocation, item, observation=observation("exited", 10, exit_price=102))

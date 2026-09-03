@@ -16,16 +16,16 @@ def insert_cash_allocation(connection: psycopg.Connection) -> None:
     allocation_id = "allocation:" + "a" * 64
     connection.execute(
         """INSERT INTO analysis.portfolio_allocation_snapshot
-           (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash)
-           VALUES (%s, %s, %s, 'cash_only', 0, %s)""",
-        [allocation_id, AS_OF, AS_OF, "a" * 64],
+           (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash, content_hash)
+           VALUES (%s, %s, %s, 'cash_only', 0, %s, %s)""",
+        [allocation_id, AS_OF, AS_OF, "a" * 64, "b" * 64],
     )
     connection.execute(
         """INSERT INTO analysis.portfolio_allocation_item
            (allocation_item_id, allocation_id, ticker, disposition, target_weight,
-            marginal_book_utility, trace)
-           VALUES (%s, %s, 'CASH', 'selected', 1, 0, '{}'::jsonb)""",
-        ["allocation-item:" + "b" * 64, allocation_id],
+            marginal_book_utility, trace, content_hash)
+           VALUES (%s, %s, 'CASH', 'selected', 1, 0, '{}'::jsonb, %s)""",
+        ["allocation-item:" + "b" * 64, allocation_id, "c" * 64],
     )
     connection.commit()
 
@@ -84,9 +84,9 @@ def test_phase4_database_requires_pit_equal_cutoff_and_positive_funded_utility(m
         with pytest.raises(CheckViolation):
             connection.execute(
                 """INSERT INTO analysis.portfolio_allocation_snapshot
-                   (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash)
-                   VALUES ('allocation:bad', %s, %s, 'available', 0, %s)""",
-                [AS_OF, AS_OF.replace(hour=14), "c" * 64],
+                       (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash, content_hash)
+                       VALUES ('allocation:bad', %s, %s, 'available', 0, %s, %s)""",
+                [AS_OF, AS_OF.replace(hour=14), "c" * 64, "d" * 64],
             )
         connection.rollback()
         insert_cash_allocation(connection)

@@ -10,6 +10,10 @@ from investment_panel.core.decision import StrategyForecast, TradePlan
 from investment_panel.core.portfolio import (
     BookAttribution,
     AuthoritativePortfolioBundle,
+    PortfolioBookEvidence,
+    PortfolioConstraintEvidence,
+    PortfolioExecutionEvidence,
+    PortfolioScenarioEvidence,
     ExecutionModelSnapshot,
     PaperExecutionObservation,
     PortfolioDriftDecision,
@@ -17,6 +21,7 @@ from investment_panel.core.portfolio import (
     PortfolioScenarioArtifact,
     allocation_id_for_snapshot,
     attribution_id_for_record,
+    canonical_content_hash,
     execution_model_id_for_snapshot,
     integrated_portfolio_dto,
 )
@@ -47,6 +52,7 @@ class PortfolioLoopRepository:
             allocation = connection.execute(
                 """SELECT allocation_id, as_of, input_cutoff, status, cash_hurdle,
                           forecast_ids, action_ids, strategy_registry_ids, input_hash,
+                          content_hash,
                           available_at, metadata
                    FROM analysis.portfolio_allocation_snapshot
                    ORDER BY as_of DESC, available_at DESC, allocation_id DESC
@@ -62,7 +68,8 @@ class PortfolioLoopRepository:
                           strategy_forecast_id, action_id, hypothesis_id::text,
                           rank_id,
                           disposition, target_weight, current_weight,
-                          marginal_book_utility, trace, blockers, funding_source, created_at
+                          marginal_book_utility, trace, blockers, funding_source, funding_amount,
+                          content_hash, created_at
                    FROM analysis.portfolio_allocation_item
                    WHERE allocation_id = %s
                    ORDER BY disposition, target_weight DESC, ticker""", [allocation_id]
@@ -84,7 +91,7 @@ class PortfolioLoopRepository:
             result["portfolio_scenario_artifact"] = [dict(row) for row in connection.execute(
                 """SELECT scenario_artifact_id, allocation_id, model_version,
                           probability_semantics, scenarios, tail_dependence,
-                          simultaneous_unwind, input_cutoff, input_hash, available_at
+                          simultaneous_unwind, input_cutoff, input_hash, content_hash, available_at
                    FROM analysis.probabilistic_portfolio_scenario_artifact
                    WHERE allocation_id = %s
                    ORDER BY available_at DESC, scenario_artifact_id DESC LIMIT 1""", [allocation_id]
@@ -92,7 +99,7 @@ class PortfolioLoopRepository:
             result["execution_model_snapshot"] = [dict(row) for row in connection.execute(
                 """SELECT execution_model_snapshot_id, allocation_id, model_version,
                           calibration_status, sample_count, fill_probability, spread_bps,
-                          latency_ms, impact_bps, input_cutoff, input_hash, available_at, metadata
+                          latency_ms, impact_bps, input_cutoff, input_hash, content_hash, available_at, metadata
                    FROM analysis.execution_model_snapshot
                    WHERE allocation_id = %s
                    ORDER BY available_at DESC, execution_model_snapshot_id DESC LIMIT 1""", [allocation_id]
@@ -112,7 +119,7 @@ class PortfolioLoopRepository:
             result["book_attribution"] = [dict(row) for row in connection.execute(
                 """SELECT book_attribution_id, allocation_id, allocation_item_id,
                           strategy_forecast_id, hypothesis_id::text, paper_execution_observation_id,
-                          pnl_status, realized_pnl, attribution, input_cutoff, available_at
+                          pnl_status, realized_pnl, attribution, input_cutoff, content_hash, available_at
                    FROM analysis.book_attribution
                    WHERE allocation_id = %s
                    ORDER BY available_at DESC, book_attribution_id DESC LIMIT 500""", [allocation_id]
@@ -126,13 +133,19 @@ class PortfolioLoopRepository:
                 "input_cutoff": allocation["input_cutoff"],
                 "status": allocation["status"],
                 "cash_hurdle": allocation["cash_hurdle"],
-                "items": tuple({key: value for key, value in item.items() if key not in {"allocation_id", "created_at", "drift_evidence"}}
+                "items": tuple({key: value for key, value in item.items() if key not in {"allocation_id", "created_at", "drift_evidence", "content_hash"}}
                                 | {"candidate_id": item.get("candidate_id") or item["ticker"]}
                                 for item in items),
                 "forecast_ids": tuple(allocation.get("forecast_ids") or ()),
                 "action_ids": tuple(allocation.get("action_ids") or ()),
                 "strategy_registry_ids": tuple(allocation.get("strategy_registry_ids") or ()),
+                "metadata": allocation.get("metadata") or {},
             })
+            if str(allocation.get("content_hash") or "").strip() != canonical_content_hash(allocation_model):
+                raise ValueError("stored allocation content digest does not match canonical allocation")
+            for item, row in zip(allocation_model.items, items):
+                if str(row.get("content_hash") or "").strip() != canonical_content_hash(item):
+                    raise ValueError("stored allocation item content digest does not match canonical item")
             scenario_id = result["portfolio_scenario_artifact"][0]["scenario_artifact_id"] if result["portfolio_scenario_artifact"] else None
             execution_id = result["execution_model_snapshot"][0]["execution_model_snapshot_id"] if result["execution_model_snapshot"] else None
             canonical = integrated_portfolio_dto(
@@ -164,23 +177,23 @@ class PortfolioLoopRepository:
             connection.execute(
                 """INSERT INTO analysis.portfolio_allocation_snapshot
                     (allocation_id, as_of, input_cutoff, status, cash_hurdle,
-                    forecast_ids, action_ids, strategy_registry_ids, input_hash)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    forecast_ids, action_ids, strategy_registry_ids, input_hash, content_hash, metadata)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (allocation_id) DO NOTHING""",
                 [
                     allocation.allocation_id, allocation.as_of, allocation.input_cutoff,
                     allocation.status, allocation.cash_hurdle, Jsonb(list(allocation.forecast_ids)),
                     Jsonb(list(allocation.action_ids)), Jsonb(list(allocation.strategy_registry_ids)),
-                    allocation.allocation_id.split(":", 1)[1],
+                    allocation.allocation_id.split(":", 1)[1], canonical_content_hash(allocation), Jsonb(allocation.metadata),
                 ],
             )
             stored = connection.execute(
-                """SELECT input_hash, as_of, input_cutoff, status, cash_hurdle,
-                          forecast_ids, action_ids, strategy_registry_ids
+                """SELECT input_hash, content_hash, as_of, input_cutoff, status, cash_hurdle,
+                          forecast_ids, action_ids, strategy_registry_ids, metadata
                    FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = %s""",
                 [allocation.allocation_id],
             ).fetchone()
-            if stored is None or str(stored["input_hash"]).strip() != allocation.allocation_id.split(":", 1)[1]:
+            if stored is None or str(stored["input_hash"]).strip() != allocation.allocation_id.split(":", 1)[1] or str(stored["content_hash"]).strip() != canonical_content_hash(allocation):
                 raise ValueError("stored allocation content digest does not match canonical allocation")
             if any(stored[key] != value for key, value in {
                 "as_of": allocation.as_of, "input_cutoff": allocation.input_cutoff,
@@ -192,25 +205,27 @@ class PortfolioLoopRepository:
                     """INSERT INTO analysis.portfolio_allocation_item
                        (allocation_item_id, allocation_id, candidate_id, ticker, strategy_forecast_id,
                        action_id, rank_id, hypothesis_id, disposition, target_weight,
-                       current_weight, marginal_book_utility, trace, blockers, funding_source, input_hash)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       current_weight, marginal_book_utility, trace, blockers, funding_source,
+                       funding_amount, input_hash, content_hash)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (allocation_item_id) DO NOTHING""",
                     [
                         item.allocation_item_id, allocation.allocation_id, item.candidate_id, item.ticker,
                         item.strategy_forecast_id, item.action_id, item.rank_id, item.hypothesis_id,
                         item.disposition, item.target_weight, item.current_weight, item.marginal_book_utility,
-                        Jsonb(item.trace), Jsonb(list(item.blockers)), item.funding_source,
-                        item.allocation_item_id.split(":", 1)[1],
+                        Jsonb(item.trace), Jsonb(list(item.blockers)), item.funding_source, item.funding_amount,
+                        item.allocation_item_id.split(":", 1)[1], canonical_content_hash(item),
                     ],
                 )
                 stored_item = connection.execute(
                     """SELECT allocation_id, candidate_id, ticker, strategy_forecast_id,
                               action_id, rank_id, hypothesis_id, disposition, target_weight,
-                              current_weight, marginal_book_utility, trace, blockers, funding_source, input_hash
+                              current_weight, marginal_book_utility, trace, blockers, funding_source,
+                              funding_amount, input_hash, content_hash
                        FROM analysis.portfolio_allocation_item WHERE allocation_item_id = %s""",
                     [item.allocation_item_id],
                 ).fetchone()
-                if stored_item is None or str(stored_item["input_hash"]).strip() != item.allocation_item_id.split(":", 1)[1] or stored_item["allocation_id"] != allocation.allocation_id:
+                if stored_item is None or str(stored_item["input_hash"]).strip() != item.allocation_item_id.split(":", 1)[1] or str(stored_item["content_hash"]).strip() != canonical_content_hash(item) or stored_item["allocation_id"] != allocation.allocation_id:
                     raise ValueError("immutable allocation item replay diverges from PostgreSQL content")
             if scenario is not None:
                 self.store_scenario(connection, scenario)
@@ -313,7 +328,17 @@ class PortfolioLoopRepository:
                     continue
                 impact_values = raw.get("portfolio_impacts") or {}
                 impact = impact_values.get(plan.selected_expression_kind.value) if isinstance(impact_values, dict) else None
-                impact = impact if isinstance(impact, dict) else {}
+                if not isinstance(impact, dict):
+                    continue
+                # The persisted impact projection is the only source for risk
+                # inputs. Select and validate its canonical fields before the
+                # allocator sees them; callers cannot replace this bundle.
+                risk = {key: impact.get(key) for key in (
+                    "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity",
+                    "covariance", "portfolio_overlap_penalty", "expected_transaction_costs",
+                )}
+                if any(value is None for value in risk.values()):
+                    continue
                 position = position_by_ticker.get(forecast.ticker.upper())
                 nav = float(account["net_liquidation"]) if account and account["net_liquidation"] is not None else None
                 market_value = float(position["market_value"]) if position and position.get("market_value") is not None else 0.0
@@ -332,14 +357,10 @@ class PortfolioLoopRepository:
                     strategy_registry_id=f"strategy_revision:{raw.get('strategy_revision_id')}",
                     expected_return=forecast.forecast_value,
                     uncertainty=uncertainty,
-                    volatility=impact.get("volatility"),
-                    risk_budget=impact.get("risk_budget"),
-                    kelly_cap=impact.get("kelly_cap"),
-                    drawdown_cap=impact.get("drawdown_cap"),
-                    capacity=impact.get("capacity"),
-                    overlap_penalty=impact.get("portfolio_overlap_penalty"),
-                    execution_penalty=impact.get("expected_transaction_costs"),
-                    covariance=impact.get("covariance"),
+                    volatility=risk["volatility"], risk_budget=risk["risk_budget"],
+                    kelly_cap=risk["kelly_cap"], drawdown_cap=risk["drawdown_cap"],
+                    capacity=risk["capacity"], overlap_penalty=risk["portfolio_overlap_penalty"],
+                    execution_penalty=risk["expected_transaction_costs"], covariance=risk["covariance"],
                     expression=plan.selected_expression.model_dump(mode="json"),
                     invalidation=plan.invalidation.model_dump(mode="json") if plan.invalidation is not None else None,
                     missing_data=tuple(str(value) for value in (raw.get("data_requests") or []) if str(value).strip()),
@@ -351,6 +372,7 @@ class PortfolioLoopRepository:
                     cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
                     cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
                     trim_position_id=(f"broker-position:{position['id']}" if position else None),
+                    trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
                 ))
             forecast_keys = [candidate.strategy_forecast_id for candidate in candidates if candidate.strategy_forecast_id]
             tape_rows = [dict(row) for row in connection.execute(
@@ -384,12 +406,58 @@ class PortfolioLoopRepository:
             ).fetchall()]
             drift_by_revision = {str(row["strategy_revision_id"]): float(row["decay_score"])
                                  for row in drift_rows if row.get("decay_score") is not None}
+            execution_row = connection.execute(
+                """SELECT execution_model_snapshot_id, calibration_status, sample_count
+                   FROM analysis.execution_model_snapshot
+                   WHERE input_cutoff = %s
+                   ORDER BY available_at DESC, execution_model_snapshot_id DESC LIMIT 1""", [as_of]
+            ).fetchone()
+            constraint_payload = {
+                "cash_hurdle": cash_hurdle,
+                "source": "app.setting:portfolio_cash_hurdle",
+                "candidate_count": len(candidates),
+            }
+            required_candidates = all(
+                candidate.evidence_status == "available"
+                and not candidate.blockers
+                and candidate.strategy_forecast_id in tape_by_forecast
+                for candidate in candidates
+            )
+            complete = bool(
+                account is not None and account["cash_balance"] is not None
+                and cash_hurdle is not None and cash_hurdle > 0
+                and candidates and required_candidates and tape_rows and execution_row is not None
+            )
         return AuthoritativePortfolioBundle(
             input_cutoff=as_of,
             candidates=tuple(candidates),
-            scenario_observations=tuple(tape_rows),
+            book=PortfolioBookEvidence(
+                snapshot_id=(f"broker-account:{account['id']}" if account else None),
+                cash_available=(float(account["cash_balance"]) if account and account["cash_balance"] is not None else None),
+                cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
+                positions={ticker: f"broker-position:{row['id']}" for ticker, row in position_by_ticker.items()},
+                input_cutoff=as_of,
+            ),
+            constraints=PortfolioConstraintEvidence(
+                cash_hurdle=cash_hurdle,
+                constraint_hash=canonical_content_hash(constraint_payload),
+                volatility_source="published portfolio impact",
+                capacity_source="published portfolio impact",
+                covariance_source="published portfolio impact",
+            ),
+            execution=PortfolioExecutionEvidence(
+                snapshot_id=(str(execution_row["execution_model_snapshot_id"]) if execution_row else None),
+                calibration_status=(str(execution_row["calibration_status"]) if execution_row else "calibration_pending"),
+                sample_count=(int(execution_row["sample_count"]) if execution_row else 0),
+                input_cutoff=as_of,
+            ),
+            scenario=PortfolioScenarioEvidence(
+                artifact_id=None,
+                observations=tuple(tape_rows),
+                input_cutoff=as_of,
+            ),
             drift_scores=drift_by_revision,
-            cash_hurdle=cash_hurdle,
+            complete=complete,
         )
 
     def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
@@ -403,10 +471,7 @@ class PortfolioLoopRepository:
         bundle = self.read_authoritative_candidate_bundle(as_of=as_of)
         # A missing persisted hurdle is a hard fail-closed condition. The
         # empty allocator result records CASH without inventing a policy value.
-        allocation = allocate_portfolio(
-            list(bundle.candidates), as_of=as_of,
-            cash_hurdle=bundle.cash_hurdle if bundle.cash_hurdle is not None else 0,
-        )
+        allocation = allocate_portfolio(bundle, as_of=as_of)
         drift_scores = {
             item.allocation_item_id: bundle.drift_scores.get(str(next(
                 (candidate.strategy_registry_id or "").split(":")[-1]
@@ -425,14 +490,13 @@ class PortfolioLoopRepository:
                 # Missing cross-sectional shock coverage is a data failure,
                 # not permission to persist a partial or synthetic scenario.
                 safe_candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_cross_section_missing"))}) for candidate in bundle.candidates]
-                allocation = allocate_portfolio(
-                    safe_candidates, as_of=as_of,
-                    cash_hurdle=bundle.cash_hurdle if bundle.cash_hurdle is not None else 0,
-                )
+                safe_bundle = bundle.model_copy(update={"candidates": tuple(safe_candidates), "complete": False})
+                allocation = allocate_portfolio(safe_bundle, as_of=as_of)
                 allocation, drift_decisions = apply_decay_to_allocation(
                     allocation, {}, rollback_threshold=1.0,
                 )
         with self.runtime.snapshot() as connection:
+            item_ids = [item.allocation_item_id for item in allocation.items if item.ticker != "CASH"]
             observations = [PaperExecutionObservation.model_validate(dict(row)) for row in connection.execute(
                 """SELECT paper_execution_observation_id, allocation_item_id, paper_order_id::text,
                           execution_mode, paper_only, status, requested_quantity, filled_quantity,
@@ -440,8 +504,10 @@ class PortfolioLoopRepository:
                           side, exit_price, observed_at, available_at
                    FROM app.paper_execution_observation
                    WHERE paper_only AND execution_mode = 'paper'
-                   ORDER BY observed_at DESC LIMIT 500"""
-            ).fetchall()]
+                     AND allocation_item_id = ANY(%s)
+                     AND filled_quantity >= 0
+                   ORDER BY observed_at DESC LIMIT 500""", [item_ids]
+            ).fetchall()] if item_ids else []
         execution = build_execution_model_snapshot(allocation.allocation_id, allocation.input_cutoff, observations)
         self.store_allocation(allocation, scenario=scenario, execution_model=execution)
         self.store_drift_decisions(drift_decisions)

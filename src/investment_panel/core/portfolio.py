@@ -42,6 +42,7 @@ def _allocation_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
             "forecast_ids": value["forecast_ids"],
             "action_ids": value["action_ids"],
             "strategy_registry_ids": value["strategy_registry_ids"],
+            "metadata": value.get("metadata", {}),
         }
     return {
         "as_of": value.as_of,
@@ -50,6 +51,7 @@ def _allocation_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
         "forecast_ids": value.forecast_ids,
         "action_ids": value.action_ids,
         "strategy_registry_ids": value.strategy_registry_ids,
+        "metadata": value.metadata,
     }
 
 
@@ -106,6 +108,12 @@ def attribution_id_for_record(value: Mapping[str, Any] | Any) -> str:
     return f"attribution:{_hash(_attribution_payload(value))}"
 
 
+def canonical_content_hash(value: Mapping[str, Any] | Any) -> str:
+    """Hash the canonical serialized row content, including its inputs."""
+
+    return _hash(value)
+
+
 class PortfolioCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -133,6 +141,7 @@ class PortfolioCandidate(BaseModel):
     cash_available: float | None = None
     cash_source_id: str | None = None
     trim_position_id: str | None = None
+    trim_available: float | None = None
     input_cutoff: datetime | None = None
     available_at: datetime | None = None
     evidence_status: str = "available"
@@ -151,6 +160,8 @@ class PortfolioCandidate(BaseModel):
                 raise ValueError(f"{name} must be non-negative")
         if self.cash_available is not None and (not isfinite(self.cash_available) or self.cash_available < 0):
             raise ValueError("cash_available must be finite and non-negative")
+        if self.trim_available is not None and (not isfinite(self.trim_available) or self.trim_available < 0):
+            raise ValueError("trim_available must be finite and non-negative")
         if self.input_cutoff and self.input_cutoff.tzinfo is None:
             raise ValueError("input_cutoff must be timezone-aware")
         if self.available_at and self.available_at.tzinfo is None:
@@ -161,6 +172,57 @@ class PortfolioCandidate(BaseModel):
         return self
 
 
+class PortfolioBookEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    snapshot_id: str | None = None
+    cash_available: float | None = None
+    cash_source_id: str | None = None
+    positions: dict[str, str] = Field(default_factory=dict)
+    input_cutoff: datetime
+
+
+class PortfolioConstraintEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    cash_hurdle: float | None = None
+    constraint_hash: str
+    volatility_source: str | None = None
+    capacity_source: str | None = None
+    covariance_source: str | None = None
+
+    @model_validator(mode="after")
+    def validate_constraint_evidence(self) -> "PortfolioConstraintEvidence":
+        if not self.constraint_hash.strip():
+            raise ValueError("portfolio constraints require a content digest")
+        if self.cash_hurdle is not None and (not isfinite(self.cash_hurdle) or self.cash_hurdle <= 0):
+            raise ValueError("portfolio cash hurdle must be persisted and positive")
+        return self
+
+
+class PortfolioExecutionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    snapshot_id: str | None = None
+    calibration_status: str
+    sample_count: int = Field(ge=0)
+    input_cutoff: datetime
+
+
+class PortfolioScenarioEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    artifact_id: str | None = None
+    observations: tuple[dict[str, Any], ...]
+    input_cutoff: datetime
+
+    @model_validator(mode="after")
+    def validate_scenario_evidence(self) -> "PortfolioScenarioEvidence":
+        if self.artifact_id is not None and not self.artifact_id.strip():
+            raise ValueError("scenario artifact identity cannot be empty")
+        return self
+
+
 class AuthoritativePortfolioBundle(BaseModel):
     """PostgreSQL-owned inputs consumed by the allocator as one unit."""
 
@@ -168,20 +230,32 @@ class AuthoritativePortfolioBundle(BaseModel):
 
     input_cutoff: datetime
     candidates: tuple[PortfolioCandidate, ...]
-    scenario_observations: tuple[dict[str, Any], ...] = ()
+    book: PortfolioBookEvidence
+    constraints: PortfolioConstraintEvidence
+    execution: PortfolioExecutionEvidence
+    scenario: PortfolioScenarioEvidence
     drift_scores: dict[str, float] = Field(default_factory=dict)
-    cash_hurdle: float | None = None
+    complete: bool = True
 
     @model_validator(mode="after")
     def validate_bundle(self) -> "AuthoritativePortfolioBundle":
         if self.input_cutoff.tzinfo is None:
             raise ValueError("authoritative portfolio cutoff must be timezone-aware")
-        if self.cash_hurdle is not None and (not isfinite(self.cash_hurdle) or self.cash_hurdle <= 0):
-            raise ValueError("authoritative portfolio cash hurdle must be persisted and positive")
+        for evidence in (self.book, self.execution, self.scenario):
+            if evidence.input_cutoff.astimezone(UTC) != self.input_cutoff.astimezone(UTC):
+                raise ValueError("authoritative evidence clocks must match the bundle cutoff")
         for candidate in self.candidates:
             if candidate.input_cutoff and candidate.input_cutoff.astimezone(UTC) > self.input_cutoff.astimezone(UTC):
                 raise ValueError("authoritative candidate is newer than the bundle cutoff")
         return self
+
+    @property
+    def cash_hurdle(self) -> float | None:
+        return self.constraints.cash_hurdle
+
+    @property
+    def scenario_observations(self) -> tuple[dict[str, Any], ...]:
+        return self.scenario.observations
 
 
 class PortfolioAllocationItem(BaseModel):
@@ -199,6 +273,7 @@ class PortfolioAllocationItem(BaseModel):
     current_weight: float = Field(ge=0, le=1)
     marginal_book_utility: float
     funding_source: str | None = None
+    funding_amount: float | None = None
     blockers: tuple[str, ...] = ()
     trace: dict[str, Any] = Field(default_factory=dict)
 
@@ -214,6 +289,10 @@ class PortfolioAllocationItem(BaseModel):
             raise ValueError("funded allocation requires positive marginal book utility")
         if self.disposition == "selected" and self.ticker != "CASH" and not self.funding_source:
             raise ValueError("funded allocation requires a funding source")
+        if self.disposition == "selected" and self.ticker != "CASH" and (
+            self.funding_amount is None or not isfinite(self.funding_amount) or self.funding_amount <= 0
+        ):
+            raise ValueError("funded allocation requires a positive funding amount")
         return self
 
 
@@ -229,6 +308,7 @@ class PortfolioAllocationSnapshot(BaseModel):
     forecast_ids: tuple[str, ...] = ()
     action_ids: tuple[str, ...] = ()
     strategy_registry_ids: tuple[str, ...] = ()
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_identity(self) -> "PortfolioAllocationSnapshot":
@@ -303,7 +383,7 @@ def integrated_portfolio_dto(
             disposition=item.disposition,
             strategy_forecast_id=item.strategy_forecast_id,
             action_id=item.action_id,
-            rank_id=trace.get("rank_id") if isinstance(trace.get("rank_id"), str) else None,
+            rank_id=item.rank_id,
             expression=trace.get("expression") if isinstance(trace.get("expression"), dict) else None,
             invalidation=trace.get("invalidation") if isinstance(trace.get("invalidation"), dict) else None,
             missing_data=tuple(str(value) for value in trace.get("missing_data", ()) or ()),
@@ -337,17 +417,38 @@ def _rejection(candidate: PortfolioCandidate, blockers: tuple[str, ...]) -> Port
 
 
 def allocate_portfolio(
-    candidates: list[PortfolioCandidate | Mapping[str, Any]],
+    candidates: AuthoritativePortfolioBundle | list[PortfolioCandidate | Mapping[str, Any]],
     *,
     as_of: datetime,
-    cash_hurdle: float = 0,
+    cash_hurdle: float | None = 0,
 ) -> PortfolioAllocationSnapshot:
     """Allocate only complete, PIT, positive-marginal-utility candidates."""
 
-    if as_of.tzinfo is None or not isfinite(cash_hurdle) or cash_hurdle < 0:
+    if as_of.tzinfo is None:
         raise ValueError("allocation clock and cash hurdle must be valid")
+    if isinstance(candidates, AuthoritativePortfolioBundle):
+        if not candidates.complete or candidates.input_cutoff.astimezone(UTC) != as_of.astimezone(UTC):
+            return cash_only_allocation(as_of, None, "authoritative_bundle_incomplete")
+        if cash_hurdle is not None:
+            raise ValueError("allocator cash hurdle must come from the authoritative bundle")
+        cash_hurdle = candidates.cash_hurdle
+        normalized = list(candidates.candidates)
+        allocator_metadata = {
+            "authority": "postgresql",
+            "bundle_cutoff": candidates.input_cutoff,
+            "constraint_hash": candidates.constraints.constraint_hash,
+            "execution_status": candidates.execution.calibration_status,
+            "scenario_artifact_id": candidates.scenario.artifact_id,
+        }
+    else:
+        if cash_hurdle is None or not isfinite(cash_hurdle) or cash_hurdle < 0:
+            raise ValueError("allocation cash hurdle must be explicit")
+        cash_hurdle = float(cash_hurdle)
+        normalized = [item if isinstance(item, PortfolioCandidate) else PortfolioCandidate.model_validate(item) for item in candidates]
+        allocator_metadata = {}
+    if cash_hurdle is None or not isfinite(cash_hurdle) or cash_hurdle <= 0:
+        return cash_only_allocation(as_of, cash_hurdle, "cash_hurdle_missing")
     cash_hurdle = float(cash_hurdle)
-    normalized = [item if isinstance(item, PortfolioCandidate) else PortfolioCandidate.model_validate(item) for item in candidates]
     if len({item.candidate_id for item in normalized}) != len(normalized):
         raise ValueError("allocation candidates must have unique IDs")
     ranked: list[PortfolioAllocationItem] = []
@@ -371,7 +472,7 @@ def allocate_portfolio(
             candidate.cash_available is None or candidate.cash_available <= 0 or not candidate.cash_source_id
         ):
             blockers.append("cash_funding_missing")
-        if candidate.current_weight > 0 and not candidate.trim_position_id:
+        if candidate.current_weight > 0 and (not candidate.trim_position_id or not candidate.trim_available or candidate.trim_available <= 0):
             blockers.append("trim_position_missing")
         if blockers:
             ranked.append(_rejection(candidate, tuple(dict.fromkeys(blockers))))
@@ -401,6 +502,7 @@ def allocate_portfolio(
             "cash_available": candidate.cash_available,
             "cash_source_id": candidate.cash_source_id,
             "trim_position_id": candidate.trim_position_id,
+            "trim_available": candidate.trim_available,
         }
         eligible.append((candidate, utility, trace))
     eligible.sort(key=lambda item: (-item[1], item[0].candidate_id))
@@ -433,7 +535,8 @@ def allocate_portfolio(
             ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
             action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
-            funding_source=(f"CASH:{candidate.cash_source_id}" if candidate.current_weight == 0 else f"TRIM:{candidate.trim_position_id}"), trace=_json(trace),
+            funding_source=(f"CASH:{candidate.cash_source_id}" if candidate.current_weight == 0 else f"TRIM:{candidate.trim_position_id}"),
+            funding_amount=(candidate.cash_available if candidate.current_weight == 0 else candidate.trim_available), trace=_json(trace),
         ))
         remaining -= target
     cash_payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected", "target_weight": remaining}
@@ -486,11 +589,33 @@ def allocate_portfolio(
     forecast_ids = tuple(sorted(item.strategy_forecast_id for item in selected if item.strategy_forecast_id))
     action_ids = tuple(sorted(item.action_id for item in selected if item.action_id))
     registry_ids = tuple(sorted(candidate.strategy_registry_id for candidate, _, _ in eligible if candidate.strategy_registry_id))
-    allocation_payload = {"as_of": as_of, "cash_hurdle": cash_hurdle, "items": ranked, "forecast_ids": forecast_ids, "action_ids": action_ids, "strategy_registry_ids": registry_ids}
+    allocation_payload = {"as_of": as_of, "cash_hurdle": cash_hurdle, "items": ranked, "forecast_ids": forecast_ids, "action_ids": action_ids, "strategy_registry_ids": registry_ids, "metadata": allocator_metadata}
     return PortfolioAllocationSnapshot(
         allocation_id=f"allocation:{_hash(allocation_payload)}", as_of=as_of, input_cutoff=as_of,
         cash_hurdle=cash_hurdle, status="available" if selected else "cash_only", items=tuple(ranked),
         forecast_ids=forecast_ids, action_ids=action_ids, strategy_registry_ids=registry_ids,
+        metadata=allocator_metadata,
+    )
+
+
+def cash_only_allocation(as_of: datetime, cash_hurdle: float | None, reason: str) -> PortfolioAllocationSnapshot:
+    """Return a typed safe state when PostgreSQL evidence cannot fund a trade."""
+
+    payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected",
+               "target_weight": 1.0, "trace": {"gate": "fail_closed", "reason": reason}}
+    item = PortfolioAllocationItem(
+        allocation_item_id=f"allocation-item:{_hash(payload)}", candidate_id="CASH", ticker="CASH",
+        disposition="selected", target_weight=1, current_weight=0, marginal_book_utility=0,
+        funding_source="CASH", trace=payload["trace"],
+    )
+    metadata = {"authority": "postgresql", "safe_state_reason": reason}
+    allocation_payload = {"as_of": as_of, "cash_hurdle": cash_hurdle, "items": (item,),
+                          "forecast_ids": (), "action_ids": (), "strategy_registry_ids": (),
+                          "metadata": metadata}
+    return PortfolioAllocationSnapshot(
+        allocation_id=f"allocation:{_hash(allocation_payload)}", as_of=as_of, input_cutoff=as_of,
+        cash_hurdle=cash_hurdle if cash_hurdle is not None else 0, status="unavailable" if cash_hurdle is None else "cash_only",
+        items=(item,), metadata=metadata,
     )
 
 
@@ -596,11 +721,13 @@ def apply_decay_to_allocation(
     initial = apply_decay_guard(allocation, drift_scores, rollback_threshold=rollback_threshold)
     by_item = {decision.allocation_item_id: decision for decision in initial}
     updated: list[PortfolioAllocationItem] = []
+    released_weight = 0.0
     for item in allocation.items:
         decision = by_item.get(item.allocation_item_id)
         if decision is None or decision.action == "hold":
             updated.append(item)
             continue
+        released_weight += max(0.0, item.target_weight - decision.proposed_weight)
         trace = {**item.trace, "drift_action": decision.action, "drift_score": decision.drift_score,
                  "pre_decay_target_weight": item.target_weight, "post_decay_target_weight": decision.proposed_weight}
         updated.append(item.model_copy(update={
@@ -610,11 +737,23 @@ def apply_decay_to_allocation(
             "allocation_item_id": f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': decision.proposed_weight, 'trace': trace})}",
             "trace": trace,
         }))
+    if released_weight > 0:
+        cash_index = next((index for index, item in enumerate(updated) if item.ticker == "CASH"), None)
+        if cash_index is not None:
+            cash = updated[cash_index]
+            cash_trace = {**cash.trace, "drift_released_to_cash": released_weight}
+            cash_weight = min(1.0, cash.target_weight + released_weight)
+            updated[cash_index] = cash.model_copy(update={
+                "target_weight": cash_weight,
+                "allocation_item_id": f"allocation-item:{_hash({'candidate_id': cash.candidate_id, 'ticker': cash.ticker, 'disposition': cash.disposition, 'target_weight': cash_weight, 'trace': cash_trace})}",
+                "trace": cash_trace,
+            })
     selected = [item for item in updated if item.disposition == "selected" and item.ticker != "CASH" and item.target_weight > 0]
     payload = {
         "as_of": allocation.as_of, "cash_hurdle": allocation.cash_hurdle, "items": updated,
         "forecast_ids": allocation.forecast_ids, "action_ids": allocation.action_ids,
         "strategy_registry_ids": allocation.strategy_registry_ids,
+        "metadata": allocation.metadata,
     }
     adjusted = PortfolioAllocationSnapshot(
         allocation_id=f"allocation:{_hash(payload)}", as_of=allocation.as_of,
@@ -622,6 +761,7 @@ def apply_decay_to_allocation(
         status="available" if selected else "cash_only", items=tuple(updated),
         forecast_ids=allocation.forecast_ids, action_ids=allocation.action_ids,
         strategy_registry_ids=allocation.strategy_registry_ids,
+        metadata=allocation.metadata,
     )
     score_by_candidate = {
         old.candidate_id: drift_scores.get(old.allocation_item_id)
