@@ -11,6 +11,13 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class _PostgreSQLAuthorityToken:
+    """Unforgeable-in-practice marker held only by the repository boundary."""
+
+
+_POSTGRESQL_AUTHORITY = _PostgreSQLAuthorityToken()
+
+
 def _json(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
@@ -109,9 +116,62 @@ def attribution_id_for_record(value: Mapping[str, Any] | Any) -> str:
 
 
 def canonical_content_hash(value: Mapping[str, Any] | Any) -> str:
-    """Hash the canonical serialized row content, including its inputs."""
+    """Hash the exact canonical payload used by the PostgreSQL row trigger."""
 
-    return _hash(value)
+    def field(name: str) -> Any:
+        return value.get(name) if isinstance(value, Mapping) else getattr(value, name, None)
+
+    if field("candidate_id") is not None and field("allocation_item_id") is not None:
+        payload = {
+            "allocation_item_id": field("allocation_item_id"), "allocation_id": field("allocation_id"),
+            "candidate_id": field("candidate_id"), "ticker": field("ticker"),
+            "strategy_forecast_id": field("strategy_forecast_id"), "action_id": field("action_id"),
+            "rank_id": field("rank_id"), "hypothesis_id": field("hypothesis_id"),
+            "disposition": field("disposition"), "target_weight": field("target_weight"),
+            "current_weight": field("current_weight"), "marginal_book_utility": field("marginal_book_utility"),
+            "trace": field("trace"), "blockers": field("blockers"),
+            "funding_source": field("funding_source"), "funding_amount": field("funding_amount"),
+        }
+    elif field("scenario_artifact_id") is not None:
+        payload = {
+            "scenario_artifact_id": field("scenario_artifact_id"), "allocation_id": field("allocation_id"),
+            "model_version": field("model_version"), "probability_semantics": field("probability_semantics"),
+            "scenarios": field("scenarios"), "tail_dependence": field("tail_dependence"),
+            "simultaneous_unwind": field("simultaneous_unwind"), "input_cutoff": field("input_cutoff"),
+        }
+    elif field("execution_model_snapshot_id") is not None:
+        payload = {
+            "execution_model_snapshot_id": field("execution_model_snapshot_id"), "allocation_id": field("allocation_id"),
+            "model_version": field("model_version"), "calibration_status": field("calibration_status"),
+            "sample_count": field("sample_count"), "fill_probability": field("fill_probability"),
+            "spread_bps": field("spread_bps"), "latency_ms": field("latency_ms"),
+            "impact_bps": field("impact_bps"), "input_cutoff": field("input_cutoff"),
+            "metadata": field("metadata") or {},
+        }
+    elif field("book_attribution_id") is not None:
+        payload = {
+            "book_attribution_id": field("book_attribution_id"), "allocation_id": field("allocation_id"),
+            "allocation_item_id": field("allocation_item_id"), "strategy_forecast_id": field("strategy_forecast_id"),
+            "hypothesis_id": field("hypothesis_id"), "paper_execution_observation_id": field("paper_execution_observation_id"),
+            "pnl_status": field("pnl_status"), "realized_pnl": field("realized_pnl"),
+            "attribution": field("attribution"), "input_cutoff": field("input_cutoff"),
+        }
+    elif field("decision_id") is not None:
+        payload = {
+            "decision_id": field("decision_id"), "allocation_id": field("allocation_id"),
+            "allocation_item_id": field("allocation_item_id"), "drift_score": field("drift_score"),
+            "rollback_threshold": field("rollback_threshold"), "proposed_weight": field("proposed_weight"),
+            "action": field("action"), "input_cutoff": field("input_cutoff"), "metadata": field("metadata") or {},
+        }
+    else:
+        payload = {
+            "allocation_id": field("allocation_id"), "as_of": field("as_of"),
+            "input_cutoff": field("input_cutoff"), "status": field("status"),
+            "cash_hurdle": field("cash_hurdle"), "forecast_ids": field("forecast_ids") or [],
+            "action_ids": field("action_ids") or [], "strategy_registry_ids": field("strategy_registry_ids") or [],
+            "metadata": field("metadata") or {},
+        }
+    return _hash(payload)
 
 
 class PortfolioCandidate(BaseModel):
@@ -124,6 +184,9 @@ class PortfolioCandidate(BaseModel):
     rank_id: str | None = None
     hypothesis_id: str | None = None
     strategy_registry_id: str | None = None
+    portfolio_impact_id: str | None = None
+    source_decision_id: str | None = None
+    source_input_hash: str | None = None
     expected_return: float | None = None
     uncertainty: float | None = None
     volatility: float | None = None
@@ -224,7 +287,7 @@ class PortfolioScenarioEvidence(BaseModel):
 
 
 class AuthoritativePortfolioBundle(BaseModel):
-    """PostgreSQL-owned inputs consumed by the allocator as one unit."""
+    """Repository-issued PostgreSQL inputs consumed by the allocator as one unit."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -236,9 +299,17 @@ class AuthoritativePortfolioBundle(BaseModel):
     scenario: PortfolioScenarioEvidence
     drift_scores: dict[str, float] = Field(default_factory=dict)
     complete: bool = True
+    repository_authority: object = Field(exclude=True, repr=False)
+
+    @classmethod
+    def _from_postgresql(cls, **values: Any) -> "AuthoritativePortfolioBundle":
+        values["repository_authority"] = _POSTGRESQL_AUTHORITY
+        return cls.model_validate(values)
 
     @model_validator(mode="after")
     def validate_bundle(self) -> "AuthoritativePortfolioBundle":
+        if self.repository_authority is not _POSTGRESQL_AUTHORITY:
+            raise ValueError("authoritative bundle must be issued by the PostgreSQL repository")
         if self.input_cutoff.tzinfo is None:
             raise ValueError("authoritative portfolio cutoff must be timezone-aware")
         for evidence in (self.book, self.execution, self.scenario):
@@ -247,6 +318,13 @@ class AuthoritativePortfolioBundle(BaseModel):
         for candidate in self.candidates:
             if candidate.input_cutoff and candidate.input_cutoff.astimezone(UTC) > self.input_cutoff.astimezone(UTC):
                 raise ValueError("authoritative candidate is newer than the bundle cutoff")
+            if self.complete and (
+                not candidate.portfolio_impact_id
+                or not candidate.source_decision_id
+                or not candidate.source_input_hash
+                or candidate.source_input_hash == "0" * 64
+            ):
+                raise ValueError("authoritative candidate is missing PostgreSQL decision provenance")
         return self
 
     @property
@@ -427,6 +505,8 @@ def allocate_portfolio(
 
     if not isinstance(bundle, AuthoritativePortfolioBundle):
         raise TypeError("production allocation requires AuthoritativePortfolioBundle")
+    if bundle.repository_authority is not _POSTGRESQL_AUTHORITY:
+        raise TypeError("production allocation requires a repository-issued PostgreSQL bundle")
     return _allocate_portfolio(bundle, as_of=as_of)
 
 
@@ -500,6 +580,9 @@ def allocate_portfolio_for_tests(
             "strategy_forecast_id": candidate.strategy_forecast_id,
             "action_id": candidate.action_id,
             "rank_id": candidate.rank_id,
+            "portfolio_impact_id": candidate.portfolio_impact_id,
+            "source_decision_id": candidate.source_decision_id,
+            "source_input_hash": candidate.source_input_hash,
             "current_weight": candidate.current_weight,
             "expected_return": candidate.expected_return,
             "uncertainty": candidate.uncertainty,

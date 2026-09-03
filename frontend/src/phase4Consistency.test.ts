@@ -22,8 +22,8 @@ describe("Phase 4 workspace consistency", () => {
     const data = mergeSnapshot(emptyPanelData(), {
       scope: "portfolio",
       tables: {
-        portfolio_allocation: { rows: [{ allocation_id: "allocation:abc", status: "available", input_cutoff: "2026-09-02T15:00:00Z", canonical_portfolio: { actions: [{ allocation_id: "allocation:abc", allocation_item_id: "item:x", ticker: "ABC", disposition: "selected", strategy_forecast_id: "forecast:x", action_id: "action:x", expression: { kind: "STOCK" }, invalidation: { reason: "stop" }, missing_data: [], blockers: [], target_weight: 0.2, current_weight: 0.1, marginal_book_utility: 0.3, funding_source: "CASH:acct:1", sizing_trace: { current_marginal_risk_contribution: 0.12, proposed_marginal_risk_contribution: 0.23 } }] } }] },
-        portfolio_scenario_artifact: { rows: [{ scenario_artifact_id: "scenario:x", scenarios: [{ probability: 1, returns: { ABC: 0.1 }, shocks: { ABC: -0.2 } }], tail_dependence: { "ABC|ABC": { probability: 1 } }, simultaneous_unwind: { probability: 0 } }] },
+        portfolio_allocation: { rows: [{ allocation_id: "allocation:abc", status: "available", input_cutoff: "2026-09-02T15:00:00Z", canonical_portfolio: { allocation_id: "allocation:abc", actions: [{ allocation_id: "allocation:abc", allocation_item_id: "item:x", ticker: "ABC", disposition: "selected", strategy_forecast_id: "forecast:x", action_id: "action:x", expression: { kind: "STOCK" }, invalidation: { reason: "stop" }, missing_data: [], blockers: [], target_weight: 0.2, current_weight: 0.1, marginal_book_utility: 0.3, funding_source: "CASH:acct:1", sizing_trace: { current_marginal_risk_contribution: 0.12, proposed_marginal_risk_contribution: 0.23 } }] } }] },
+        portfolio_scenario_artifact: { rows: [{ scenario_artifact_id: "scenario:x", allocation_id: "allocation:abc", scenarios: [{ probability: 1, returns: { ABC: 0.1 }, shocks: { ABC: -0.2 } }], tail_dependence: { "ABC|ABC": { probability: 1 } }, simultaneous_unwind: { probability: 0 } }] },
       },
     });
     const decision = buildPortfolioPhase4Decision(data as PanelData);

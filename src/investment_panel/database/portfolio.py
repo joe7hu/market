@@ -6,7 +6,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import StrategyForecast, TradePlan
+from investment_panel.core.decision import PortfolioImpact, StrategyForecast, TradePlan
 from investment_panel.core.portfolio import (
     BookAttribution,
     AuthoritativePortfolioBundle,
@@ -141,11 +141,12 @@ class PortfolioLoopRepository:
                 "strategy_registry_ids": tuple(allocation.get("strategy_registry_ids") or ()),
                 "metadata": allocation.get("metadata") or {},
             })
-            if not str(allocation.get("content_hash") or "").strip() or str(allocation.get("content_hash")).strip() == "0" * 64:
-                raise ValueError("stored allocation content digest is unavailable")
+            if str(allocation.get("content_hash") or "").strip() != canonical_content_hash(allocation_model):
+                raise ValueError("stored allocation content digest does not match canonical payload")
             for item, row in zip(allocation_model.items, items):
-                if not str(row.get("content_hash") or "").strip() or str(row.get("content_hash")).strip() == "0" * 64:
-                    raise ValueError("stored allocation item content digest is unavailable")
+                expected_item_hash = canonical_content_hash(item.model_dump(mode="json") | {"allocation_id": allocation_id})
+                if str(row.get("content_hash") or "").strip() != expected_item_hash:
+                    raise ValueError("stored allocation item content digest does not match canonical payload")
             scenario_id = result["portfolio_scenario_artifact"][0]["scenario_artifact_id"] if result["portfolio_scenario_artifact"] else None
             execution_id = result["execution_model_snapshot"][0]["execution_model_snapshot_id"] if result["execution_model_snapshot"] else None
             canonical = integrated_portfolio_dto(
@@ -214,7 +215,8 @@ class PortfolioLoopRepository:
                         item.strategy_forecast_id, item.action_id, item.rank_id, item.hypothesis_id,
                         item.disposition, item.target_weight, item.current_weight, item.marginal_book_utility,
                         Jsonb(item.trace), Jsonb(list(item.blockers)), item.funding_source, item.funding_amount,
-                        item.allocation_item_id.split(":", 1)[1], canonical_content_hash(item),
+                        item.allocation_item_id.split(":", 1)[1],
+                        canonical_content_hash(item.model_dump(mode="json") | {"allocation_id": allocation.allocation_id}),
                     ],
                 )
                 stored_item = connection.execute(
@@ -225,7 +227,8 @@ class PortfolioLoopRepository:
                        FROM analysis.portfolio_allocation_item WHERE allocation_item_id = %s""",
                     [item.allocation_item_id],
                 ).fetchone()
-                if stored_item is None or str(stored_item["input_hash"]).strip() != item.allocation_item_id.split(":", 1)[1] or not str(stored_item["content_hash"]).strip() or str(stored_item["content_hash"]).strip() == "0" * 64 or stored_item["allocation_id"] != allocation.allocation_id:
+                expected_item_hash = canonical_content_hash(item.model_dump(mode="json") | {"allocation_id": allocation.allocation_id})
+                if stored_item is None or str(stored_item["input_hash"]).strip() != item.allocation_item_id.split(":", 1)[1] or str(stored_item["content_hash"]).strip() != expected_item_hash or stored_item["allocation_id"] != allocation.allocation_id:
                     raise ValueError("immutable allocation item replay diverges from PostgreSQL content")
             if scenario is not None:
                 self.store_scenario(connection, scenario)
@@ -280,6 +283,7 @@ class PortfolioLoopRepository:
                           forecast.status, revision.strategy_key, revision.revision,
                           revision.hypothesis_id::text AS hypothesis_id,
                           decision.input_manifest->'trade_plan' AS trade_plan,
+                          decision.id AS ticker_decision_id, decision.input_hash AS decision_input_hash,
                           decision.portfolio_impacts, decision.data_requests,
                           decision.selected_expression
                    FROM analysis.strategy_forecast forecast
@@ -287,6 +291,7 @@ class PortfolioLoopRepository:
                    JOIN analysis.strategy_revision revision ON revision.id = forecast.strategy_revision_id
                    LEFT JOIN LATERAL (
                        SELECT decision.input_manifest, decision.portfolio_impacts,
+                              decision.id, decision.input_hash,
                               decision.data_requests, decision.as_of
                        FROM analysis.ticker_decision decision
                        WHERE decision.instrument_id = forecast.instrument_id
@@ -327,9 +332,14 @@ class PortfolioLoopRepository:
                 if plan.ticker != forecast.ticker or plan.strategy_forecast_id != forecast.strategy_forecast_id:
                     continue
                 impact_values = raw.get("portfolio_impacts") or {}
-                impact = impact_values.get(plan.selected_expression_kind.value) if isinstance(impact_values, dict) else None
-                if not isinstance(impact, dict):
+                impact_raw = impact_values.get(plan.selected_expression_kind.value) if isinstance(impact_values, dict) else None
+                try:
+                    impact_model = PortfolioImpact.model_validate(impact_raw)
+                except (TypeError, ValueError):
                     continue
+                if impact_model.impact_id != plan.portfolio_impact_id:
+                    continue
+                impact = impact_model.model_dump(mode="json")
                 # The persisted impact projection is the only source for risk
                 # inputs. Select and validate its canonical fields before the
                 # allocator sees them; callers cannot replace this bundle.
@@ -354,6 +364,9 @@ class PortfolioLoopRepository:
                     action_id=plan.trade_plan_id,
                     rank_id=plan.rank_id,
                     hypothesis_id=raw.get("hypothesis_id"),
+                    portfolio_impact_id=impact_model.impact_id,
+                    source_decision_id=str(raw.get("ticker_decision_id") or "") or None,
+                    source_input_hash=str(raw.get("decision_input_hash") or "") or None,
                     strategy_registry_id=f"strategy_revision:{raw.get('strategy_revision_id')}",
                     expected_return=forecast.forecast_value,
                     uncertainty=uncertainty,
@@ -428,7 +441,7 @@ class PortfolioLoopRepository:
                 and cash_hurdle is not None and cash_hurdle > 0
                 and candidates and required_candidates and tape_rows and execution_row is not None
             )
-        return AuthoritativePortfolioBundle(
+        return AuthoritativePortfolioBundle._from_postgresql(
             input_cutoff=as_of,
             candidates=tuple(candidates),
             book=PortfolioBookEvidence(
@@ -532,8 +545,8 @@ class PortfolioLoopRepository:
             "SELECT content_hash FROM analysis.probabilistic_portfolio_scenario_artifact WHERE scenario_artifact_id = %s",
             [scenario.scenario_artifact_id],
         ).fetchone()
-        if stored is None or not str(stored["content_hash"]).strip() or str(stored["content_hash"]).strip() == "0" * 64:
-            raise ValueError("stored scenario content digest is unavailable")
+        if stored is None or str(stored["content_hash"]).strip() != canonical_content_hash(scenario):
+            raise ValueError("stored scenario content digest does not match canonical payload")
 
     @staticmethod
     def store_execution_model(connection: Any, model: ExecutionModelSnapshot) -> None:
@@ -557,8 +570,8 @@ class PortfolioLoopRepository:
             "SELECT content_hash FROM analysis.execution_model_snapshot WHERE execution_model_snapshot_id = %s",
             [model.execution_model_snapshot_id],
         ).fetchone()
-        if stored is None or not str(stored["content_hash"]).strip() or str(stored["content_hash"]).strip() == "0" * 64:
-            raise ValueError("stored execution content digest is unavailable")
+        if stored is None or str(stored["content_hash"]).strip() != canonical_content_hash(model):
+            raise ValueError("stored execution content digest does not match canonical payload")
 
     def record_paper_execution(self, observation: PaperExecutionObservation) -> str:
         from investment_panel.core.portfolio import build_execution_model_snapshot
