@@ -17,6 +17,7 @@ from investment_panel.core.portfolio import (
     allocation_id_for_snapshot,
     attribution_id_for_record,
     execution_model_id_for_snapshot,
+    integrated_portfolio_dto,
 )
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -56,7 +57,7 @@ class PortfolioLoopRepository:
             result = {name: [] for name in PHASE4_PANEL_TABLES}
             result["portfolio_allocation"] = [dict(allocation)]
             items = [dict(row) for row in connection.execute(
-                """SELECT allocation_item_id, allocation_id, ticker,
+                """SELECT allocation_item_id, allocation_id, candidate_id, ticker,
                           strategy_forecast_id, action_id, hypothesis_id::text,
                           disposition, target_weight, current_weight,
                           marginal_book_utility, trace, blockers, funding_source, created_at
@@ -114,6 +115,34 @@ class PortfolioLoopRepository:
                    WHERE allocation_id = %s
                    ORDER BY available_at DESC, book_attribution_id DESC LIMIT 500""", [allocation_id]
             ).fetchall()]
+            # Re-hydrate the complete immutable model before publishing the
+            # read model. This catches tampered or incomplete rows at the
+            # PostgreSQL boundary instead of allowing a UI to invent values.
+            allocation_model = PortfolioAllocationSnapshot.model_validate({
+                "allocation_id": allocation_id,
+                "as_of": allocation["as_of"],
+                "input_cutoff": allocation["input_cutoff"],
+                "status": allocation["status"],
+                "cash_hurdle": allocation["cash_hurdle"],
+                "items": tuple({key: value for key, value in item.items() if key not in {"allocation_id", "created_at", "drift_evidence"}}
+                                | {"candidate_id": item.get("candidate_id") or item["ticker"]}
+                                for item in items),
+                "forecast_ids": tuple(allocation.get("forecast_ids") or ()),
+                "action_ids": tuple(allocation.get("action_ids") or ()),
+                "strategy_registry_ids": tuple(allocation.get("strategy_registry_ids") or ()),
+            })
+            scenario_id = result["portfolio_scenario_artifact"][0]["scenario_artifact_id"] if result["portfolio_scenario_artifact"] else None
+            execution_id = result["execution_model_snapshot"][0]["execution_model_snapshot_id"] if result["execution_model_snapshot"] else None
+            canonical = integrated_portfolio_dto(
+                allocation_model,
+                scenario_artifact_id=scenario_id,
+                execution_model_snapshot_id=execution_id,
+                attribution_count=len(result["book_attribution"]),
+            ).model_dump(mode="json")
+            result["portfolio_allocation"][0]["canonical_portfolio"] = canonical
+            actions = {item["allocation_item_id"]: action for item, action in zip(items, canonical["actions"])}
+            for item in result["portfolio_allocation_items"]:
+                item["canonical_action"] = actions.get(item["allocation_item_id"])
             return result
 
     def store_allocation(
@@ -132,7 +161,7 @@ class PortfolioLoopRepository:
         with self.runtime.transaction() as connection:
             connection.execute(
                 """INSERT INTO analysis.portfolio_allocation_snapshot
-                   (allocation_id, as_of, input_cutoff, status, cash_hurdle,
+                    (allocation_id, as_of, input_cutoff, status, cash_hurdle,
                     forecast_ids, action_ids, strategy_registry_ids, input_hash)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (allocation_id) DO NOTHING""",
@@ -146,13 +175,13 @@ class PortfolioLoopRepository:
             for item in allocation.items:
                 connection.execute(
                     """INSERT INTO analysis.portfolio_allocation_item
-                       (allocation_item_id, allocation_id, ticker, strategy_forecast_id,
+                       (allocation_item_id, allocation_id, candidate_id, ticker, strategy_forecast_id,
                        action_id, hypothesis_id, disposition, target_weight,
                         current_weight, marginal_book_utility, trace, blockers, funding_source)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (allocation_item_id) DO NOTHING""",
                     [
-                        item.allocation_item_id, allocation.allocation_id, item.ticker,
+                        item.allocation_item_id, allocation.allocation_id, item.candidate_id, item.ticker,
                         item.strategy_forecast_id, item.action_id, item.hypothesis_id,
                         item.disposition, item.target_weight, item.current_weight, item.marginal_book_utility,
                         Jsonb(item.trace), Jsonb(list(item.blockers)), item.funding_source,
@@ -167,10 +196,33 @@ class PortfolioLoopRepository:
     def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
         """Build and persist one allocation from PostgreSQL-owned forecast/action rows."""
 
-        from investment_panel.core.portfolio import PortfolioCandidate, allocate_portfolio, build_execution_model_snapshot
+        from investment_panel.core.portfolio import (
+            PortfolioCandidate, allocate_portfolio, apply_decay_guard,
+            build_execution_model_snapshot, build_scenario_artifact_from_observations,
+        )
 
         candidates: list[PortfolioCandidate] = []
         with self.runtime.snapshot() as connection:
+            account = connection.execute(
+                """SELECT id, source_id, account_key, net_liquidation, cash_balance, observed_at
+                   FROM raw.broker_account_snapshot
+                   WHERE observed_at <= %s
+                   ORDER BY observed_at DESC, id DESC LIMIT 1""", [as_of]
+            ).fetchone()
+            positions = connection.execute(
+                """SELECT position.instrument_id, position.id, position.market_value,
+                          position.quantity, instrument.symbol
+                   FROM raw.broker_position_snapshot position
+                   JOIN raw.broker_account_snapshot account
+                     ON account.id = position.account_snapshot_id
+                   JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
+                   WHERE account.observed_at <= %s
+                     AND account.id = (
+                         SELECT id FROM raw.broker_account_snapshot
+                         WHERE observed_at <= %s ORDER BY observed_at DESC, id DESC LIMIT 1
+                     )""", [as_of, as_of]
+            ).fetchall()
+            position_by_ticker = {str(row["symbol"]).upper(): dict(row) for row in positions}
             rows = connection.execute(
                 """SELECT forecast.id AS strategy_forecast_id, forecast.strategy_revision_id,
                           forecast.strategy_evaluation_id::text, instrument.symbol AS ticker,
@@ -182,7 +234,8 @@ class PortfolioLoopRepository:
                           forecast.status, revision.strategy_key, revision.revision,
                           revision.hypothesis_id::text AS hypothesis_id,
                           decision.input_manifest->'trade_plan' AS trade_plan,
-                          decision.portfolio_impacts, decision.data_requests
+                          decision.portfolio_impacts, decision.data_requests,
+                          decision.selected_expression
                    FROM analysis.strategy_forecast forecast
                    JOIN catalog.instrument instrument ON instrument.id = forecast.instrument_id
                    JOIN analysis.strategy_revision revision ON revision.id = forecast.strategy_revision_id
@@ -230,6 +283,10 @@ class PortfolioLoopRepository:
                 impact_values = raw.get("portfolio_impacts") or {}
                 impact = impact_values.get(plan.selected_expression_kind.value) if isinstance(impact_values, dict) else None
                 impact = impact if isinstance(impact, dict) else {}
+                position = position_by_ticker.get(forecast.ticker.upper())
+                nav = float(account["net_liquidation"]) if account and account["net_liquidation"] is not None else None
+                market_value = float(position["market_value"]) if position and position.get("market_value") is not None else 0.0
+                current_weight = min(max(abs(market_value / nav), 0.0), 1.0) if nav and nav > 0 else 0.0
                 range_value = forecast.forecast_range
                 uncertainty = None
                 if range_value is not None:
@@ -239,8 +296,9 @@ class PortfolioLoopRepository:
                     ticker=forecast.ticker,
                     strategy_forecast_id=forecast.strategy_forecast_id,
                     action_id=plan.trade_plan_id,
+                    rank_id=plan.rank_id,
                     hypothesis_id=raw.get("hypothesis_id"),
-                    strategy_registry_id=f"{raw.get('strategy_key')}:{raw.get('revision')}",
+                    strategy_registry_id=f"strategy_revision:{raw.get('strategy_revision_id')}",
                     expected_return=forecast.forecast_value,
                     uncertainty=uncertainty,
                     volatility=impact.get("volatility"),
@@ -252,13 +310,48 @@ class PortfolioLoopRepository:
                     execution_penalty=impact.get("expected_transaction_costs"),
                     covariance=impact.get("covariance"),
                     expression=plan.selected_expression.model_dump(mode="json"),
+                    invalidation=plan.invalidation.model_dump(mode="json") if plan.invalidation is not None else None,
                     missing_data=tuple(str(value) for value in (raw.get("data_requests") or []) if str(value).strip()),
                     input_cutoff=forecast.input_cutoff,
                     available_at=forecast.available_at,
                     evidence_status="available" if plan.eligibility == "ACTIONABLE" else "blocked",
                     blockers=tuple(plan.blockers),
+                    current_weight=current_weight,
+                    cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
+                    cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
+                    trim_position_id=(f"broker-position:{position['id']}" if position else None),
                 ))
+            forecast_keys = [candidate.strategy_forecast_id for candidate in candidates if candidate.strategy_forecast_id]
+            tape_rows = [dict(row) for row in connection.execute(
+                """SELECT tape.pnl_date, tape.strategy_forecast_id, instrument.symbol AS ticker,
+                          tape.net_return, tape.tail_return, tape.input_cutoff, tape.available_at
+                   FROM analysis.strategy_pnl_tape tape
+                   JOIN catalog.instrument instrument ON instrument.id = tape.instrument_id
+                   WHERE tape.strategy_forecast_id = ANY(%s)
+                     AND tape.available_at <= %s AND tape.input_cutoff <= %s
+                   ORDER BY tape.pnl_date, tape.id LIMIT 64""", [forecast_keys, as_of, as_of]
+            ).fetchall()] if forecast_keys else []
+            tape_by_forecast = {str(row["strategy_forecast_id"]) for row in tape_rows}
+            if not tape_rows:
+                candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_evidence_missing"))}) for candidate in candidates]
+            else:
+                candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_evidence_missing"))})
+                              if candidate.strategy_forecast_id not in tape_by_forecast else candidate for candidate in candidates]
+            drift_rows = [dict(row) for row in connection.execute(
+                """SELECT revision.id AS strategy_revision_id,
+                          monitoring.metrics->>'decay_score' AS decay_score
+                   FROM analysis.strategy_monitoring_evidence monitoring
+                   JOIN analysis.strategy_revision revision ON revision.id = monitoring.strategy_revision_id
+                   WHERE monitoring.available_at <= %s AND monitoring.input_cutoff <= %s
+                     AND monitoring.evidence_kind = 'decay'
+                   ORDER BY monitoring.input_cutoff DESC, monitoring.id DESC""", [as_of, as_of]
+            ).fetchall()]
+            drift_by_revision = {str(row["strategy_revision_id"]): float(row["decay_score"])
+                                 for row in drift_rows if row.get("decay_score") is not None}
         allocation = allocate_portfolio(candidates, as_of=as_of, cash_hurdle=0)
+        scenario = None
+        if any(item.disposition == "selected" and item.ticker != "CASH" for item in allocation.items):
+            scenario = build_scenario_artifact_from_observations(allocation, tape_rows)
         with self.runtime.snapshot() as connection:
             observations = [PaperExecutionObservation.model_validate(dict(row)) for row in connection.execute(
                 """SELECT paper_execution_observation_id, allocation_item_id, paper_order_id::text,
@@ -270,7 +363,14 @@ class PortfolioLoopRepository:
                    ORDER BY observed_at DESC LIMIT 500"""
             ).fetchall()]
         execution = build_execution_model_snapshot(allocation.allocation_id, allocation.input_cutoff, observations)
-        self.store_allocation(allocation, execution_model=execution)
+        self.store_allocation(allocation, scenario=scenario, execution_model=execution)
+        selected_revisions = {
+            item.allocation_item_id: drift_by_revision.get(str(next(
+                (candidate.strategy_registry_id or "").split(":")[-1]
+                for candidate in candidates if candidate.candidate_id == item.candidate_id
+            ))) for item in allocation.items if item.disposition == "selected" and item.ticker != "CASH"
+        }
+        self.store_drift_decisions(apply_decay_guard(allocation, selected_revisions, rollback_threshold=1.0))
         return allocation
 
     @staticmethod
@@ -309,7 +409,23 @@ class PortfolioLoopRepository:
         )
 
     def record_paper_execution(self, observation: PaperExecutionObservation) -> str:
+        from investment_panel.core.portfolio import build_execution_model_snapshot
+
         with self.runtime.transaction() as connection:
+            order = connection.execute(
+                """SELECT id, created_at, status, filled_quantity, actual_fill_price, filled_at, exit_at,
+                          policy_result
+                   FROM app.paper_order WHERE id = %s""", [observation.paper_order_id]
+            ).fetchone()
+            if order is None:
+                raise ValueError("paper execution requires an existing paper order")
+            if observation.allocation_item_id:
+                item = connection.execute(
+                    """SELECT action_id FROM analysis.portfolio_allocation_item
+                       WHERE allocation_item_id = %s""", [observation.allocation_item_id]
+                ).fetchone()
+                if item is None or str((order["policy_result"] or {}).get("trade_plan_id") or "") != str(item["action_id"] or ""):
+                    raise ValueError("paper execution order does not match allocation action lineage")
             connection.execute(
                 """INSERT INTO app.paper_execution_observation
                    (paper_execution_observation_id, allocation_item_id, paper_order_id,
@@ -329,6 +445,28 @@ class PortfolioLoopRepository:
                     observation.available_at,
                 ],
             )
+            if observation.allocation_item_id:
+                allocation = connection.execute(
+                    """SELECT allocation_id, input_cutoff FROM analysis.portfolio_allocation_item item
+                       JOIN analysis.portfolio_allocation_snapshot snapshot USING (allocation_id)
+                       WHERE item.allocation_item_id = %s""", [observation.allocation_item_id]
+                ).fetchone()
+                if allocation is None:
+                    raise ValueError("paper execution allocation lineage is unavailable")
+                rows = connection.execute(
+                    """SELECT paper_execution_observation_id, allocation_item_id, paper_order_id::text,
+                              execution_mode, paper_only, status, requested_quantity, filled_quantity,
+                              requested_price, fill_price, spread_bps, latency_ms, impact_bps,
+                              side, exit_price, observed_at, available_at
+                       FROM app.paper_execution_observation
+                       WHERE allocation_item_id = %s ORDER BY observed_at, paper_execution_observation_id""",
+                    [observation.allocation_item_id],
+                ).fetchall()
+                model = build_execution_model_snapshot(
+                    allocation["allocation_id"], allocation["input_cutoff"],
+                    [PaperExecutionObservation.model_validate(dict(row)) for row in rows],
+                )
+                self.store_execution_model(connection, model)
         return observation.paper_execution_observation_id
 
     def record_attribution(self, attribution: BookAttribution) -> str:
@@ -337,17 +475,27 @@ class PortfolioLoopRepository:
                 raise ValueError("attribution identity does not match PostgreSQL payload")
             if attribution.pnl_status == "realized":
                 observation = connection.execute(
-                    """SELECT observation.filled_quantity, observation.fill_price,
+                    """SELECT observation.allocation_item_id, observation.filled_quantity, observation.fill_price,
                               observation.exit_price, observation.side,
                               observation.execution_mode, observation.paper_only,
-                              observation.status, observation.paper_order_id
+                              observation.status, observation.paper_order_id,
+                              paper.status AS order_status, paper.exit_at, paper.filled_at,
+                              paper.policy_result
                        FROM app.paper_execution_observation observation
+                       JOIN app.paper_order paper ON paper.id = observation.paper_order_id
                        WHERE observation.paper_execution_observation_id = %s""",
                     [attribution.paper_execution_observation_id],
                 ).fetchone()
-                if observation is None or not observation["paper_only"] or observation["execution_mode"] != "paper":
+                if observation is None or observation["allocation_item_id"] != attribution.allocation_item_id or not observation["paper_only"] or observation["execution_mode"] != "paper":
                     raise ValueError("realized attribution requires a genuine paper observation")
-                if observation["filled_quantity"] <= 0 or observation["fill_price"] is None or observation["exit_price"] is None:
+                item = connection.execute(
+                    """SELECT action_id, strategy_forecast_id, hypothesis_id
+                       FROM analysis.portfolio_allocation_item WHERE allocation_item_id = %s""",
+                    [attribution.allocation_item_id],
+                ).fetchone()
+                if item is None or str((observation["policy_result"] or {}).get("trade_plan_id") or "") != str(item["action_id"] or ""):
+                    raise ValueError("realized attribution order does not match action lineage")
+                if observation["filled_quantity"] <= 0 or observation["fill_price"] is None or observation["exit_price"] is None or observation["order_status"] not in {"exited", "closed"} or observation["exit_at"] is None or observation["filled_at"] is None:
                     raise ValueError("realized attribution requires entry and exit fills")
                 direction = 1 if observation["side"] == "buy" else -1
                 derived = direction * (float(observation["exit_price"]) - float(observation["fill_price"])) * float(observation["filled_quantity"])

@@ -1845,6 +1845,10 @@ def load_postgres_tables(
         from investment_panel.database.portfolio import PortfolioLoopRepository
 
         tables.update(PortfolioLoopRepository(runtime).read_shared_panel_models())
+    phase4_allocation_id = next(
+        (row.get("allocation_id") for row in tables.get("portfolio_allocation", []) if row.get("allocation_id")),
+        None,
+    )
     if {"option_radar_opportunity", "option_radar_summary"}.intersection(tables):
         from investment_panel.database.option_ticket_read import reconcile_loaded_radar_tables
 
@@ -2084,6 +2088,8 @@ def load_postgres_tables(
         "retired_models": [],
         "available_model_count": len(requested) - len(unavailable),
         "table_counts": table_counts,
+        "phase4_shared_allocation_id": phase4_allocation_id,
+        "phase4_authority": "postgresql" if phase4_allocation_id else "unavailable",
     }
     return tables, metadata
 

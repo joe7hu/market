@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import type { AppModel } from "@/model";
 import type { PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildPortfolioViewModel, performanceRangeRows, type PerformanceRange } from "@/viewModels/portfolio";
+import { buildPortfolioPhase4Decision, type Phase4Decision } from "@/viewModels/portfolioPhase4";
 import { booleanField, displayField, formatMoney, formatPct, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
 import { PortfolioPerformanceChart } from "./portfolio/performanceChart";
 import { PortfolioImpactCard } from "./TradePlanCard";
@@ -29,6 +30,7 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
   const [correlationWindow, setCorrelationWindow] = useState(60);
   const [announcement, setAnnouncement] = useState("");
   const viewModel = buildPortfolioViewModel(data, model, correlationWindow);
+  const phase4Decision = useMemo(() => buildPortfolioPhase4Decision(data), [data]);
   const performanceRows = useMemo(() => performanceRangeRows(viewModel.performanceRows, range), [range, viewModel.performanceRows]);
   const { summary } = viewModel;
   const asOf = formatDateTime(summary.asOf);
@@ -53,7 +55,7 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
       {announcement ? <div role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{announcement}</div> : null}
       {!model.holdings.length ? <EmptyPortfolio onAddTrade={() => setTradeOpen(true)} /> : null}
 
-      <PortfolioDecisionPanels data={data} />
+      <PortfolioDecisionPanels decision={phase4Decision} />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <PerformancePanel rows={performanceRows} range={range} onRangeChange={setRange} method={summary.performanceMethod} />
@@ -85,7 +87,23 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
   );
 }
 
-function PortfolioDecisionPanels({ data }: { data: PanelData }) {
+function PortfolioDecisionPanels({ decision }: { decision: Phase4Decision | null }) {
+  if (!decision) {
+    return <Card aria-label="Portfolio decision context"><CardContent className="pt-6 text-sm text-muted-foreground">No immutable PostgreSQL allocation snapshot is available. The portfolio remains CASH / NO_TRADE.</CardContent></Card>;
+  }
+  const displayNumber = (value: number | null, multiplier = 1) => value === null ? "Unavailable" : formatPct(value * multiplier);
+  return <section className="grid gap-4 xl:grid-cols-2" aria-label="Portfolio decision context">
+    <Card className="xl:col-span-2"><CardHeader><CardTitle>Canonical alpha portfolio</CardTitle><CardDescription>All five workspaces consume this PostgreSQL allocation and action snapshot.</CardDescription></CardHeader><CardContent className="space-y-3">
+      <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm"><span>Status: <strong>{titleLabel(decision.status)}</strong></span><span>Allocation: <code className="text-xs">{decision.allocationId}</code></span><span>Cutoff: {formatDateTime(decision.inputCutoff ?? "")}</span></div>
+      <div className="overflow-x-auto"><table className="w-full min-w-[1100px] text-sm"><thead className="border-b border-border text-left text-xs text-muted-foreground"><tr><th className="py-2 pr-3">Ticker</th><th className="py-2 pr-3">Disposition</th><th className="py-2 pr-3">Current / proposed</th><th className="py-2 pr-3">Current / proposed MRC</th><th className="py-2 pr-3">Utility</th><th className="py-2 pr-3">Funding</th><th className="py-2 pr-3">Lineage</th><th className="py-2">Evidence</th></tr></thead><tbody>{decision.actions.slice(0, 32).map((action) => <tr key={action.allocationItemId} className="border-b border-border align-top"><td className="py-2 pr-3 font-medium">{action.ticker}</td><td className="py-2 pr-3">{titleLabel(action.disposition)}</td><td className="py-2 pr-3 tabular-nums">{displayNumber(action.currentWeight, 100)} / {displayNumber(action.targetWeight, 100)}</td><td className="py-2 pr-3 tabular-nums">{displayNumber(action.currentMrc, 100)} / {displayNumber(action.proposedMrc, 100)}</td><td className="py-2 pr-3 tabular-nums">{action.marginalBookUtility === null ? "Unavailable" : action.marginalBookUtility.toFixed(4)}</td><td className="py-2 pr-3 text-muted-foreground">{action.fundingSource ?? "Unavailable"}</td><td className="py-2 pr-3 text-xs">forecast {action.forecastId ?? "Unavailable"}<br />action {action.actionId ?? "Unavailable"}<br />item {action.allocationItemId}</td><td className="max-w-[300px] py-2 text-xs text-muted-foreground">{action.blockers.length ? `Blockers: ${action.blockers.join(", ")}` : null}{action.missingData.length ? <><br />Missing: {action.missingData.join(", ")}</> : null}<br />Expression: {action.expression ? JSON.stringify(action.expression) : "Unavailable"}<br />Invalidation: {action.invalidation ? JSON.stringify(action.invalidation) : "Unavailable"}<br />Sizing: {JSON.stringify(action.sizingTrace)}</td></tr>)}</tbody></table></div>
+    </CardContent></Card>
+    <Card><CardHeader><CardTitle>Persisted scenarios and telemetry</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div>Scenario artifact: {decision.scenario?.artifactId ?? "Unavailable"}</div><div>Tail dependence: {decision.scenario ? JSON.stringify(decision.scenario.tailDependence) : "Unavailable"}</div><div>Simultaneous unwind: {decision.scenario ? JSON.stringify(decision.scenario.simultaneousUnwind) : "Unavailable"}</div>{decision.scenario?.scenarios.map((path, index) => <div key={index} className="rounded border border-border p-2 text-xs">Path {index + 1}: probability {textValue(path.probability)} · returns {JSON.stringify(path.returns)} · shocks {JSON.stringify(path.shocks)}</div>)}<div>Execution calibration: {decision.execution?.calibrationStatus ?? "Unavailable"} ({decision.execution?.sampleCount ?? "Unavailable"} genuine fills)</div><div>Book attribution rows: {decision.attributionCount}</div></CardContent></Card>
+  </section>;
+}
+
+function textValue(value: unknown): string { return typeof value === "string" || typeof value === "number" ? String(value) : "Unavailable"; }
+
+function LegacyPortfolioDecisionPanels({ data }: { data: PanelData }) {
   const risks = data.portfolioRiskCards?.rows ?? [];
   const reviews = data.reviewActions?.rows ?? [];
   const allocation = data.portfolioAllocation?.rows?.[0];

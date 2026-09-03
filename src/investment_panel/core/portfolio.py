@@ -113,6 +113,7 @@ class PortfolioCandidate(BaseModel):
     ticker: str = Field(min_length=1)
     strategy_forecast_id: str | None = None
     action_id: str | None = None
+    rank_id: str | None = None
     hypothesis_id: str | None = None
     strategy_registry_id: str | None = None
     expected_return: float | None = None
@@ -126,8 +127,12 @@ class PortfolioCandidate(BaseModel):
     execution_penalty: float | None = None
     covariance: dict[str, float] | None = None
     expression: dict[str, Any] | None = None
+    invalidation: dict[str, Any] | None = None
     missing_data: tuple[str, ...] = ()
     current_weight: float = Field(default=0, ge=0, le=1)
+    cash_available: float | None = None
+    cash_source_id: str | None = None
+    trim_position_id: str | None = None
     input_cutoff: datetime | None = None
     available_at: datetime | None = None
     evidence_status: str = "available"
@@ -144,6 +149,8 @@ class PortfolioCandidate(BaseModel):
             value = getattr(self, name)
             if value is not None and value < 0:
                 raise ValueError(f"{name} must be non-negative")
+        if self.cash_available is not None and (not isfinite(self.cash_available) or self.cash_available < 0):
+            raise ValueError("cash_available must be finite and non-negative")
         if self.input_cutoff and self.input_cutoff.tzinfo is None:
             raise ValueError("input_cutoff must be timezone-aware")
         if self.available_at and self.available_at.tzinfo is None:
@@ -210,6 +217,88 @@ class PortfolioAllocationSnapshot(BaseModel):
         return self
 
 
+class PortfolioActionDTO(BaseModel):
+    """Canonical action read model for every Phase 4 consumer."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    allocation_id: str
+    allocation_item_id: str
+    ticker: str
+    disposition: str
+    strategy_forecast_id: str | None = None
+    action_id: str | None = None
+    expression: dict[str, Any] | None = None
+    invalidation: dict[str, Any] | None = None
+    missing_data: tuple[str, ...] = ()
+    blockers: tuple[str, ...] = ()
+    target_weight: float
+    current_weight: float
+    marginal_book_utility: float
+    funding_source: str | None = None
+    sizing_trace: dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_funding(self) -> "PortfolioActionDTO":
+        if self.disposition == "selected" and self.ticker != "CASH" and not self.funding_source:
+            raise ValueError("canonical funded action requires funding")
+        return self
+
+
+class PortfolioIntegratedDTO(BaseModel):
+    """One typed, immutable allocation view shared by all five workspaces."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    allocation_id: str
+    input_cutoff: datetime
+    status: str
+    actions: tuple[PortfolioActionDTO, ...]
+    scenario_artifact_id: str | None = None
+    execution_model_snapshot_id: str | None = None
+    attribution_count: int = 0
+
+
+def integrated_portfolio_dto(
+    allocation: PortfolioAllocationSnapshot,
+    *,
+    scenario_artifact_id: str | None = None,
+    execution_model_snapshot_id: str | None = None,
+    attribution_count: int = 0,
+) -> PortfolioIntegratedDTO:
+    """Project persisted allocation rows into the single canonical UI DTO."""
+
+    actions: list[PortfolioActionDTO] = []
+    for item in allocation.items:
+        trace = dict(item.trace)
+        actions.append(PortfolioActionDTO(
+            allocation_id=allocation.allocation_id,
+            allocation_item_id=item.allocation_item_id,
+            ticker=item.ticker,
+            disposition=item.disposition,
+            strategy_forecast_id=item.strategy_forecast_id,
+            action_id=item.action_id,
+            expression=trace.get("expression") if isinstance(trace.get("expression"), dict) else None,
+            invalidation=trace.get("invalidation") if isinstance(trace.get("invalidation"), dict) else None,
+            missing_data=tuple(str(value) for value in trace.get("missing_data", ()) or ()),
+            blockers=item.blockers,
+            target_weight=item.target_weight,
+            current_weight=item.current_weight,
+            marginal_book_utility=item.marginal_book_utility,
+            funding_source=item.funding_source,
+            sizing_trace=trace,
+        ))
+    return PortfolioIntegratedDTO(
+        allocation_id=allocation.allocation_id,
+        input_cutoff=allocation.input_cutoff,
+        status=allocation.status,
+        actions=tuple(actions),
+        scenario_artifact_id=scenario_artifact_id,
+        execution_model_snapshot_id=execution_model_snapshot_id,
+        attribution_count=attribution_count,
+    )
+
+
 def _rejection(candidate: PortfolioCandidate, blockers: tuple[str, ...]) -> PortfolioAllocationItem:
     payload = {"candidate_id": candidate.candidate_id, "ticker": candidate.ticker, "disposition": "rejected", "blockers": blockers}
     return PortfolioAllocationItem(
@@ -241,7 +330,7 @@ def allocate_portfolio(
         blockers = list(candidate.blockers)
         if candidate.evidence_status != "available":
             blockers.append(f"evidence_{candidate.evidence_status}")
-        missing = [name for name in ("strategy_forecast_id", "action_id", "expected_return", "uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity", "covariance") if getattr(candidate, name) is None]
+        missing = [name for name in ("strategy_forecast_id", "action_id", "rank_id", "expected_return", "uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity", "covariance") if getattr(candidate, name) is None]
         blockers.extend(f"{name}_missing" for name in missing)
         blockers.extend(candidate.missing_data)
         if candidate.input_cutoff is None or candidate.available_at is None:
@@ -252,6 +341,12 @@ def allocate_portfolio(
             blockers.append("volatility_invalid")
         if candidate.capacity is not None and candidate.capacity <= 0:
             blockers.append("capacity_unavailable")
+        if candidate.current_weight <= 0 and (
+            candidate.cash_available is None or candidate.cash_available <= 0 or not candidate.cash_source_id
+        ):
+            blockers.append("cash_funding_missing")
+        if candidate.current_weight > 0 and not candidate.trim_position_id:
+            blockers.append("trim_position_missing")
         if blockers:
             ranked.append(_rejection(candidate, tuple(dict.fromkeys(blockers))))
             continue
@@ -261,6 +356,7 @@ def allocate_portfolio(
             "available_at": candidate.available_at,
             "strategy_forecast_id": candidate.strategy_forecast_id,
             "action_id": candidate.action_id,
+            "rank_id": candidate.rank_id,
             "current_weight": candidate.current_weight,
             "expected_return": candidate.expected_return,
             "uncertainty": candidate.uncertainty,
@@ -274,7 +370,11 @@ def allocate_portfolio(
             "drawdown_cap": candidate.drawdown_cap,
             "capacity": candidate.capacity,
             "expression": candidate.expression,
+            "invalidation": candidate.invalidation,
             "missing_data": list(candidate.missing_data),
+            "cash_available": candidate.cash_available,
+            "cash_source_id": candidate.cash_source_id,
+            "trim_position_id": candidate.trim_position_id,
         }
         eligible.append((candidate, utility, trace))
     eligible.sort(key=lambda item: (-item[1], item[0].candidate_id))
@@ -307,7 +407,7 @@ def allocate_portfolio(
             ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
             action_id=candidate.action_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
-            funding_source="CASH" if candidate.current_weight == 0 else f"TRIM:{candidate.ticker}", trace=_json(trace),
+            funding_source=(f"CASH:{candidate.cash_source_id}" if candidate.current_weight == 0 else f"TRIM:{candidate.trim_position_id}"), trace=_json(trace),
         ))
         remaining -= target
     cash_payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected", "target_weight": remaining}
@@ -481,6 +581,45 @@ def build_scenario_artifact(
         model_version=model_version, probability_semantics=probability_semantics,
         scenarios=tuple(dict(item) for item in scenarios),
         tail_dependence=dict(tail_dependence), simultaneous_unwind=dict(simultaneous_unwind), input_cutoff=allocation.input_cutoff,
+    )
+
+
+def build_scenario_artifact_from_observations(
+    allocation: PortfolioAllocationSnapshot,
+    observations: list[Mapping[str, Any]],
+) -> PortfolioScenarioArtifact:
+    """Build portfolio paths only from persisted, point-in-time return rows."""
+
+    selected = {item.ticker for item in allocation.items if item.disposition == "selected" and item.ticker != "CASH"}
+    grouped: dict[str, dict[str, float]] = {}
+    for row in observations[:64]:
+        date_key = str(row.get("pnl_date") or row.get("observed_at") or "").strip()
+        ticker = str(row.get("ticker") or "").upper()
+        value = row.get("net_return")
+        if not date_key or ticker not in selected or value is None or not isfinite(float(value)):
+            continue
+        grouped.setdefault(date_key, {})[ticker] = float(value)
+    paths = [returns for _, returns in sorted(grouped.items()) if selected <= returns.keys()]
+    if not paths:
+        raise ValueError("portfolio scenario requires persisted returns for every selected item")
+    probability = 1.0 / len(paths)
+    scenarios = [
+        {"name": f"observed:{index}", "probability": probability, "returns": values, "shocks": dict(values)}
+        for index, values in enumerate(paths)
+    ]
+    co_exceedance: dict[str, Any] = {}
+    for left in sorted(selected):
+        for right in sorted(selected):
+            if left > right:
+                continue
+            count = sum(values[left] < 0 and values[right] < 0 for values in paths)
+            co_exceedance[f"{left}|{right}"] = {"count": count, "observations": len(paths), "probability": count / len(paths)}
+    simultaneous = sum(all(values[ticker] < 0 for ticker in selected) for values in paths)
+    return build_scenario_artifact(
+        allocation, scenarios, model_version="strategy_pnl_tape.v1",
+        probability_semantics="equal-weight persisted P&L observations",
+        tail_dependence={"negative_return_co_exceedance": co_exceedance},
+        simultaneous_unwind={"all_selected_negative_count": simultaneous, "observations": len(paths), "probability": simultaneous / len(paths)},
     )
 
 

@@ -22,6 +22,7 @@ def candidate(candidate_id: str, **overrides: object) -> PortfolioCandidate:
         "ticker": candidate_id,
         "strategy_forecast_id": f"forecast:{candidate_id}",
         "action_id": f"action:{candidate_id}",
+        "rank_id": f"rank:{candidate_id}",
         "expected_return": 0.12,
         "uncertainty": 0.02,
         "volatility": 0.20,
@@ -30,6 +31,8 @@ def candidate(candidate_id: str, **overrides: object) -> PortfolioCandidate:
         "drawdown_cap": 0.20,
         "capacity": 0.20,
         "covariance": {candidate_id: 0.04},
+        "cash_available": 1000,
+        "cash_source_id": "acct:test:cash",
         "input_cutoff": AS_OF - timedelta(minutes=1),
         "available_at": AS_OF - timedelta(minutes=2),
     }
@@ -67,8 +70,25 @@ def test_allocator_selects_positive_marginal_utility_and_keeps_cash_above_hurdle
     assert good.marginal_book_utility > 0.02
     assert below.disposition == "ranked_out"
     assert cash.target_weight > 0
-    assert good.funding_source == "CASH"
+    assert good.funding_source == "CASH:acct:test:cash"
     assert {"uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity"} <= set(good.trace)
+
+
+def test_allocator_rejects_funding_without_postgres_cash_or_position_identity() -> None:
+    allocation = allocate_portfolio([candidate("NO_FUNDING", cash_available=None, cash_source_id=None)], as_of=AS_OF)
+    item = next(item for item in allocation.items if item.ticker == "NO_FUNDING")
+    assert item.disposition == "rejected"
+    assert "cash_funding_missing" in item.blockers
+
+
+def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:
+    left = candidate("LEFT", covariance={"LEFT": 0.04, "RIGHT": 0.02})
+    right = candidate("RIGHT", covariance={"LEFT": 0.02, "RIGHT": 0.09})
+    allocation = allocate_portfolio([left, right], as_of=AS_OF)
+    item = next(item for item in allocation.items if item.ticker == "RIGHT")
+    assert item.trace["proposed_marginal_risk_contribution"] is not None
+    assert item.trace["proposed_marginal_risk_contribution"] != item.target_weight * right.volatility
+    assert "uncertainty_haircut" in item.trace
 
 
 def test_scenario_artifact_is_bounded_and_contains_tail_and_unwind_evidence() -> None:
@@ -86,6 +106,21 @@ def test_scenario_artifact_is_bounded_and_contains_tail_and_unwind_evidence() ->
     assert artifact.simultaneous_unwind["trigger"] == "tail"
     with pytest.raises(ValueError):
         build_scenario_artifact(allocation, [{"probability": 1, "returns": {}}] * 65, model_version="v", probability_semantics="p", tail_dependence={"x": 1}, simultaneous_unwind={"x": 1})
+
+
+def test_scenario_artifact_rejects_mutated_content_and_empty_tail_or_unwind() -> None:
+    allocation = allocate_portfolio([candidate("GOOD")], as_of=AS_OF)
+    kwargs = {
+        "allocation": allocation,
+        "scenarios": [{"probability": 1, "returns": {"GOOD": 0.1}, "shocks": {"GOOD": 0.2}}],
+        "model_version": "scenario.v1", "probability_semantics": "observed",
+        "tail_dependence": {"co": 1}, "simultaneous_unwind": {"probability": 0},
+    }
+    artifact = build_scenario_artifact(**kwargs)
+    with pytest.raises(ValueError):
+        type(artifact).model_validate({**artifact.model_dump(), "scenarios": ({"probability": 1, "returns": {"GOOD": 0.2}, "shocks": {"GOOD": 0.2}},)})
+    with pytest.raises(ValueError):
+        build_scenario_artifact(**{**kwargs, "tail_dependence": {}})
 
 
 def test_decay_guard_reduces_before_the_rollback_threshold() -> None:

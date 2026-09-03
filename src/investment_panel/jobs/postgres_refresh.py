@@ -134,6 +134,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         agent_model=config.agents.thesis_monitor.model,
         reasoning_effort=config.agents.thesis_monitor.reasoning_effort,
     )
+    allocation = PortfolioLoopRepository(runtime).refresh_authoritative_allocation(as_of=decision_cutoff)
     option_ready = any(str(result.get("status") or "").lower() == "ok" for result in (before_agents, after_agents))
     thesis_status = str(thesis_monitor.get("status") or "failed").lower()
     publication_ready = all(str(result.get("status") or "").lower() == "ok" for result in (tickers, today, market))
@@ -150,6 +151,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         "ticker_decisions": tickers,
         "outcomes": outcomes,
         "today": today,
+        "portfolio_allocation": {"allocation_id": allocation.allocation_id, "status": allocation.status},
         "market": market,
     }
 
@@ -231,6 +233,12 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("today_publication", True, lambda: refresh_today_publication(
             runtime_for_config(config), now=market_state_visible_at or bounded_cutoff()
         )),
+        ("portfolio_allocation", True, lambda: {
+            "status": "ok",
+            "allocation": PortfolioLoopRepository(runtime_for_config(config)).refresh_authoritative_allocation(
+                as_of=market_state_visible_at or bounded_cutoff()
+            ).model_dump(mode="json"),
+        }),
         ("retention", True, lambda: RetentionRepository(runtime_for_config(config)).prune()),
         ("database_snapshot", False, lambda: snapshot_database.run(config_path)),
     ]

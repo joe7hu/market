@@ -27,6 +27,7 @@ def upgrade() -> None:
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (as_of = input_cutoff),
+            CHECK (allocation_id = 'allocation:' || input_hash::text),
             CHECK (jsonb_typeof(forecast_ids) = 'array'),
             CHECK (jsonb_typeof(action_ids) = 'array'),
             CHECK (jsonb_typeof(strategy_registry_ids) = 'array')
@@ -35,6 +36,7 @@ def upgrade() -> None:
         CREATE TABLE analysis.portfolio_allocation_item (
             allocation_item_id TEXT PRIMARY KEY,
             allocation_id TEXT NOT NULL REFERENCES analysis.portfolio_allocation_snapshot(allocation_id),
+            candidate_id TEXT NOT NULL DEFAULT '',
             ticker TEXT NOT NULL,
             strategy_forecast_id TEXT REFERENCES analysis.strategy_forecast(id),
             action_id TEXT,
@@ -49,9 +51,11 @@ def upgrade() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (jsonb_typeof(trace) = 'object'),
             CHECK (jsonb_typeof(blockers) = 'array'),
+            CHECK (ticker = 'CASH' OR candidate_id <> ''),
+            CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (strategy_forecast_id IS NOT NULL AND action_id IS NOT NULL)),
             CHECK (disposition <> 'selected' OR (ticker = 'CASH' AND target_weight > 0 AND marginal_book_utility >= 0) OR (target_weight > 0 AND marginal_book_utility > 0)),
             CHECK (ticker <> '')
-            ,CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (funding_source IS NOT NULL AND (funding_source = 'CASH' OR funding_source LIKE 'TRIM:%')))
+            ,CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (funding_source IS NOT NULL AND (funding_source LIKE 'CASH:%' OR funding_source LIKE 'TRIM:%')))
         );
         CREATE INDEX ix_portfolio_allocation_item_snapshot
             ON analysis.portfolio_allocation_item (allocation_id, disposition, target_weight DESC);
@@ -70,6 +74,7 @@ def upgrade() -> None:
             CHECK (jsonb_typeof(scenarios) = 'array' AND jsonb_array_length(scenarios) > 0),
             CHECK (jsonb_typeof(tail_dependence) = 'object' AND tail_dependence <> '{}'::jsonb),
             CHECK (jsonb_typeof(simultaneous_unwind) = 'object' AND simultaneous_unwind <> '{}'::jsonb)
+            ,CHECK (scenario_artifact_id = 'scenario:' || input_hash::text)
         );
 
         CREATE TABLE analysis.execution_model_snapshot (
@@ -87,6 +92,7 @@ def upgrade() -> None:
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
             CHECK (calibration_status <> 'calibrated' OR sample_count > 0)
+            ,CHECK (execution_model_snapshot_id = 'execution:' || input_hash::text)
         );
 
         CREATE TABLE app.paper_execution_observation (
@@ -144,6 +150,7 @@ def upgrade() -> None:
             CHECK (action <> 'rollback' OR drift_score >= rollback_threshold),
             CHECK (action <> 'hold' OR drift_score < rollback_threshold / 2),
             CHECK (jsonb_typeof(metadata) = 'object')
+            ,CHECK (decision_id = 'drift:' || input_hash::text)
         );
 
         CREATE OR REPLACE FUNCTION analysis.enforce_phase4_lineage()
@@ -152,7 +159,19 @@ def upgrade() -> None:
                 expected_forecast TEXT; expected_hypothesis UUID;
                 scenario JSONB; probability_total DOUBLE PRECISION := 0;
         BEGIN
-            IF TG_TABLE_NAME = 'probabilistic_portfolio_scenario_artifact' THEN
+            IF TG_TABLE_NAME = 'portfolio_allocation_item' THEN
+                IF NEW.strategy_forecast_id IS NOT NULL THEN
+                    SELECT forecast.input_cutoff, forecast.id, revision.hypothesis_id
+                      INTO expected_cutoff, expected_forecast, expected_hypothesis
+                    FROM analysis.strategy_forecast forecast
+                    JOIN analysis.strategy_revision revision ON revision.id = forecast.strategy_revision_id
+                    WHERE forecast.id = NEW.strategy_forecast_id;
+                    IF expected_forecast IS NULL OR expected_cutoff > (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id)
+                       OR NEW.hypothesis_id IS DISTINCT FROM expected_hypothesis THEN
+                        RAISE EXCEPTION 'Phase 4 allocation forecast or PIT lineage is invalid';
+                    END IF;
+                END IF;
+            ELSIF TG_TABLE_NAME = 'probabilistic_portfolio_scenario_artifact' THEN
                 IF jsonb_array_length(NEW.scenarios) = 0 OR jsonb_array_length(NEW.scenarios) > 64 THEN
                     RAISE EXCEPTION 'Phase 4 scenario paths must be bounded and non-empty';
                 END IF;
@@ -235,6 +254,9 @@ def upgrade() -> None:
         $$;
         CREATE TRIGGER portfolio_scenario_lineage
             BEFORE INSERT ON analysis.probabilistic_portfolio_scenario_artifact
+            FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
+        CREATE TRIGGER portfolio_allocation_item_lineage
+            BEFORE INSERT ON analysis.portfolio_allocation_item
             FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_lineage();
         CREATE TRIGGER execution_model_lineage
             BEFORE INSERT ON analysis.execution_model_snapshot

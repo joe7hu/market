@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { emptyPanelData, mergeSnapshot } from "./apiPanelData";
+import { buildPortfolioPhase4Decision } from "./viewModels/portfolioPhase4";
+import type { PanelData } from "./types";
 
 describe("Phase 4 workspace consistency", () => {
   it("keeps immutable allocation, action, and forecast IDs across all five scopes", () => {
@@ -14,5 +16,21 @@ describe("Phase 4 workspace consistency", () => {
     expect(data.portfolioAllocation.rows?.[0].allocation_id).toBe("allocation:abc");
     expect(data.portfolioAllocationItems.rows?.[0].action_id).toBe("action:x");
     expect(data.portfolioAllocationItems.rows?.[0].strategy_forecast_id).toBe("forecast:x");
+  });
+
+  it("reads canonical persisted sizing and scenario keys without zero fallbacks", () => {
+    const data = mergeSnapshot(emptyPanelData(), {
+      scope: "portfolio",
+      tables: {
+        portfolio_allocation: { rows: [{ allocation_id: "allocation:abc", status: "available", input_cutoff: "2026-09-02T15:00:00Z", canonical_portfolio: { actions: [{ allocation_id: "allocation:abc", allocation_item_id: "item:x", ticker: "ABC", disposition: "selected", strategy_forecast_id: "forecast:x", action_id: "action:x", expression: { kind: "STOCK" }, invalidation: { reason: "stop" }, missing_data: [], blockers: [], target_weight: 0.2, current_weight: 0.1, marginal_book_utility: 0.3, funding_source: "CASH:acct:1", sizing_trace: { current_marginal_risk_contribution: 0.12, proposed_marginal_risk_contribution: 0.23 } }] } }] },
+        portfolio_scenario_artifact: { rows: [{ scenario_artifact_id: "scenario:x", scenarios: [{ probability: 1, returns: { ABC: 0.1 }, shocks: { ABC: -0.2 } }], tail_dependence: { "ABC|ABC": { probability: 1 } }, simultaneous_unwind: { probability: 0 } }] },
+      },
+    });
+    const decision = buildPortfolioPhase4Decision(data as PanelData);
+    expect(decision?.actions[0].currentMrc).toBe(0.12);
+    expect(decision?.actions[0].proposedMrc).toBe(0.23);
+    expect(decision?.actions[0].expression?.kind).toBe("STOCK");
+    expect(decision?.actions[0].fundingSource).toBe("CASH:acct:1");
+    expect(decision?.scenario?.scenarios[0].shocks).toEqual({ ABC: -0.2 });
   });
 });
