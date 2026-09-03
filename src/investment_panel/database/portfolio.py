@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.core.decision import StrategyForecast, TradePlan
 from investment_panel.core.portfolio import (
     BookAttribution,
+    AuthoritativePortfolioBundle,
     ExecutionModelSnapshot,
     PaperExecutionObservation,
     PortfolioDriftDecision,
@@ -59,6 +60,7 @@ class PortfolioLoopRepository:
             items = [dict(row) for row in connection.execute(
                 """SELECT allocation_item_id, allocation_id, candidate_id, ticker,
                           strategy_forecast_id, action_id, hypothesis_id::text,
+                          rank_id,
                           disposition, target_weight, current_weight,
                           marginal_book_utility, trace, blockers, funding_source, created_at
                    FROM analysis.portfolio_allocation_item
@@ -172,37 +174,66 @@ class PortfolioLoopRepository:
                     allocation.allocation_id.split(":", 1)[1],
                 ],
             )
+            stored = connection.execute(
+                """SELECT input_hash, as_of, input_cutoff, status, cash_hurdle,
+                          forecast_ids, action_ids, strategy_registry_ids
+                   FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = %s""",
+                [allocation.allocation_id],
+            ).fetchone()
+            if stored is None or str(stored["input_hash"]).strip() != allocation.allocation_id.split(":", 1)[1]:
+                raise ValueError("stored allocation content digest does not match canonical allocation")
+            if any(stored[key] != value for key, value in {
+                "as_of": allocation.as_of, "input_cutoff": allocation.input_cutoff,
+                "status": allocation.status, "cash_hurdle": allocation.cash_hurdle,
+            }.items()):
+                raise ValueError("immutable allocation replay diverges from PostgreSQL content")
             for item in allocation.items:
                 connection.execute(
                     """INSERT INTO analysis.portfolio_allocation_item
                        (allocation_item_id, allocation_id, candidate_id, ticker, strategy_forecast_id,
-                       action_id, hypothesis_id, disposition, target_weight,
-                        current_weight, marginal_book_utility, trace, blockers, funding_source)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       action_id, rank_id, hypothesis_id, disposition, target_weight,
+                       current_weight, marginal_book_utility, trace, blockers, funding_source, input_hash)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                        ON CONFLICT (allocation_item_id) DO NOTHING""",
                     [
                         item.allocation_item_id, allocation.allocation_id, item.candidate_id, item.ticker,
-                        item.strategy_forecast_id, item.action_id, item.hypothesis_id,
+                        item.strategy_forecast_id, item.action_id, item.rank_id, item.hypothesis_id,
                         item.disposition, item.target_weight, item.current_weight, item.marginal_book_utility,
                         Jsonb(item.trace), Jsonb(list(item.blockers)), item.funding_source,
+                        item.allocation_item_id.split(":", 1)[1],
                     ],
                 )
+                stored_item = connection.execute(
+                    """SELECT allocation_id, candidate_id, ticker, strategy_forecast_id,
+                              action_id, rank_id, hypothesis_id, disposition, target_weight,
+                              current_weight, marginal_book_utility, trace, blockers, funding_source, input_hash
+                       FROM analysis.portfolio_allocation_item WHERE allocation_item_id = %s""",
+                    [item.allocation_item_id],
+                ).fetchone()
+                if stored_item is None or str(stored_item["input_hash"]).strip() != item.allocation_item_id.split(":", 1)[1] or stored_item["allocation_id"] != allocation.allocation_id:
+                    raise ValueError("immutable allocation item replay diverges from PostgreSQL content")
             if scenario is not None:
                 self.store_scenario(connection, scenario)
             if execution_model is not None:
                 self.store_execution_model(connection, execution_model)
         return allocation.allocation_id
 
-    def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
-        """Build and persist one allocation from PostgreSQL-owned forecast/action rows."""
+    def read_authoritative_candidate_bundle(self, *, as_of: Any) -> AuthoritativePortfolioBundle:
+        """Read one validated PostgreSQL-owned candidate bundle at one cutoff."""
 
         from investment_panel.core.portfolio import (
-            PortfolioCandidate, allocate_portfolio, apply_decay_guard,
-            build_execution_model_snapshot, build_scenario_artifact_from_observations,
+            PortfolioCandidate,
         )
 
         candidates: list[PortfolioCandidate] = []
         with self.runtime.snapshot() as connection:
+            hurdle_row = connection.execute(
+                "SELECT value FROM app.setting WHERE key = 'portfolio_cash_hurdle'"
+            ).fetchone()
+            hurdle_value = hurdle_row["value"] if hurdle_row else None
+            if isinstance(hurdle_value, dict):
+                hurdle_value = hurdle_value.get("value") or hurdle_value.get("cash_hurdle")
+            cash_hurdle = float(hurdle_value) if hurdle_value is not None else None
             account = connection.execute(
                 """SELECT id, source_id, account_key, net_liquidation, cash_balance, observed_at
                    FROM raw.broker_account_snapshot
@@ -331,7 +362,12 @@ class PortfolioLoopRepository:
                      AND tape.available_at <= %s AND tape.input_cutoff <= %s
                    ORDER BY tape.pnl_date, tape.id LIMIT 64""", [forecast_keys, as_of, as_of]
             ).fetchall()] if forecast_keys else []
-            tape_by_forecast = {str(row["strategy_forecast_id"]) for row in tape_rows}
+            tape_by_forecast = {
+                str(row["strategy_forecast_id"]) for row in tape_rows
+                if row.get("net_return") is not None and row.get("tail_return") is not None
+            }
+            if cash_hurdle is None or cash_hurdle <= 0:
+                candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "cash_hurdle_missing"))}) for candidate in candidates]
             if not tape_rows:
                 candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_evidence_missing"))}) for candidate in candidates]
             else:
@@ -348,10 +384,54 @@ class PortfolioLoopRepository:
             ).fetchall()]
             drift_by_revision = {str(row["strategy_revision_id"]): float(row["decay_score"])
                                  for row in drift_rows if row.get("decay_score") is not None}
-        allocation = allocate_portfolio(candidates, as_of=as_of, cash_hurdle=0)
+        return AuthoritativePortfolioBundle(
+            input_cutoff=as_of,
+            candidates=tuple(candidates),
+            scenario_observations=tuple(tape_rows),
+            drift_scores=drift_by_revision,
+            cash_hurdle=cash_hurdle,
+        )
+
+    def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
+        """Persist one allocation from the validated PostgreSQL candidate bundle."""
+
+        from investment_panel.core.portfolio import (
+            allocate_portfolio, apply_decay_to_allocation,
+            build_execution_model_snapshot, build_scenario_artifact_from_observations,
+        )
+
+        bundle = self.read_authoritative_candidate_bundle(as_of=as_of)
+        # A missing persisted hurdle is a hard fail-closed condition. The
+        # empty allocator result records CASH without inventing a policy value.
+        allocation = allocate_portfolio(
+            list(bundle.candidates), as_of=as_of,
+            cash_hurdle=bundle.cash_hurdle if bundle.cash_hurdle is not None else 0,
+        )
+        drift_scores = {
+            item.allocation_item_id: bundle.drift_scores.get(str(next(
+                (candidate.strategy_registry_id or "").split(":")[-1]
+                for candidate in bundle.candidates if candidate.candidate_id == item.candidate_id
+            )))
+            for item in allocation.items if item.disposition == "selected" and item.ticker != "CASH"
+        }
+        allocation, drift_decisions = apply_decay_to_allocation(
+            allocation, drift_scores, rollback_threshold=1.0,
+        )
         scenario = None
         if any(item.disposition == "selected" and item.ticker != "CASH" for item in allocation.items):
-            scenario = build_scenario_artifact_from_observations(allocation, tape_rows)
+            try:
+                scenario = build_scenario_artifact_from_observations(allocation, list(bundle.scenario_observations))
+            except ValueError:
+                # Missing cross-sectional shock coverage is a data failure,
+                # not permission to persist a partial or synthetic scenario.
+                safe_candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_cross_section_missing"))}) for candidate in bundle.candidates]
+                allocation = allocate_portfolio(
+                    safe_candidates, as_of=as_of,
+                    cash_hurdle=bundle.cash_hurdle if bundle.cash_hurdle is not None else 0,
+                )
+                allocation, drift_decisions = apply_decay_to_allocation(
+                    allocation, {}, rollback_threshold=1.0,
+                )
         with self.runtime.snapshot() as connection:
             observations = [PaperExecutionObservation.model_validate(dict(row)) for row in connection.execute(
                 """SELECT paper_execution_observation_id, allocation_item_id, paper_order_id::text,
@@ -364,13 +444,7 @@ class PortfolioLoopRepository:
             ).fetchall()]
         execution = build_execution_model_snapshot(allocation.allocation_id, allocation.input_cutoff, observations)
         self.store_allocation(allocation, scenario=scenario, execution_model=execution)
-        selected_revisions = {
-            item.allocation_item_id: drift_by_revision.get(str(next(
-                (candidate.strategy_registry_id or "").split(":")[-1]
-                for candidate in candidates if candidate.candidate_id == item.candidate_id
-            ))) for item in allocation.items if item.disposition == "selected" and item.ticker != "CASH"
-        }
-        self.store_drift_decisions(apply_decay_guard(allocation, selected_revisions, rollback_threshold=1.0))
+        self.store_drift_decisions(drift_decisions)
         return allocation
 
     @staticmethod
@@ -504,9 +578,9 @@ class PortfolioLoopRepository:
             connection.execute(
                 """INSERT INTO analysis.book_attribution
                    (book_attribution_id, allocation_id, allocation_item_id,
-                    strategy_forecast_id, hypothesis_id, paper_execution_observation_id,
-                    pnl_status, realized_pnl, attribution, input_cutoff)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   strategy_forecast_id, hypothesis_id, paper_execution_observation_id,
+                    pnl_status, realized_pnl, attribution, input_cutoff, input_hash)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (book_attribution_id) DO NOTHING""",
                 [
                     attribution.book_attribution_id, attribution.allocation_id,
@@ -514,6 +588,7 @@ class PortfolioLoopRepository:
                     attribution.hypothesis_id, attribution.paper_execution_observation_id,
                     attribution.pnl_status, attribution.realized_pnl,
                     Jsonb(attribution.attribution), attribution.input_cutoff,
+                    attribution.book_attribution_id.split(":", 1)[1],
                 ],
             )
         return attribution.book_attribution_id

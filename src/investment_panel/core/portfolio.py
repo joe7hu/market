@@ -161,6 +161,29 @@ class PortfolioCandidate(BaseModel):
         return self
 
 
+class AuthoritativePortfolioBundle(BaseModel):
+    """PostgreSQL-owned inputs consumed by the allocator as one unit."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    input_cutoff: datetime
+    candidates: tuple[PortfolioCandidate, ...]
+    scenario_observations: tuple[dict[str, Any], ...] = ()
+    drift_scores: dict[str, float] = Field(default_factory=dict)
+    cash_hurdle: float | None = None
+
+    @model_validator(mode="after")
+    def validate_bundle(self) -> "AuthoritativePortfolioBundle":
+        if self.input_cutoff.tzinfo is None:
+            raise ValueError("authoritative portfolio cutoff must be timezone-aware")
+        if self.cash_hurdle is not None and (not isfinite(self.cash_hurdle) or self.cash_hurdle <= 0):
+            raise ValueError("authoritative portfolio cash hurdle must be persisted and positive")
+        for candidate in self.candidates:
+            if candidate.input_cutoff and candidate.input_cutoff.astimezone(UTC) > self.input_cutoff.astimezone(UTC):
+                raise ValueError("authoritative candidate is newer than the bundle cutoff")
+        return self
+
+
 class PortfolioAllocationItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -169,6 +192,7 @@ class PortfolioAllocationItem(BaseModel):
     ticker: str
     strategy_forecast_id: str | None = None
     action_id: str | None = None
+    rank_id: str | None = None
     hypothesis_id: str | None = None
     disposition: str
     target_weight: float = Field(ge=0, le=1)
@@ -228,6 +252,7 @@ class PortfolioActionDTO(BaseModel):
     disposition: str
     strategy_forecast_id: str | None = None
     action_id: str | None = None
+    rank_id: str | None = None
     expression: dict[str, Any] | None = None
     invalidation: dict[str, Any] | None = None
     missing_data: tuple[str, ...] = ()
@@ -278,6 +303,7 @@ def integrated_portfolio_dto(
             disposition=item.disposition,
             strategy_forecast_id=item.strategy_forecast_id,
             action_id=item.action_id,
+            rank_id=trace.get("rank_id") if isinstance(trace.get("rank_id"), str) else None,
             expression=trace.get("expression") if isinstance(trace.get("expression"), dict) else None,
             invalidation=trace.get("invalidation") if isinstance(trace.get("invalidation"), dict) else None,
             missing_data=tuple(str(value) for value in trace.get("missing_data", ()) or ()),
@@ -304,7 +330,7 @@ def _rejection(candidate: PortfolioCandidate, blockers: tuple[str, ...]) -> Port
     return PortfolioAllocationItem(
         allocation_item_id=f"allocation-item:{_hash(payload)}", candidate_id=candidate.candidate_id,
         ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
-        action_id=candidate.action_id, hypothesis_id=candidate.hypothesis_id, disposition="rejected",
+        action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="rejected",
         target_weight=0, current_weight=candidate.current_weight, marginal_book_utility=0,
         blockers=blockers, trace={"gate": "fail_closed"},
     )
@@ -385,7 +411,7 @@ def allocate_portfolio(
             ranked.append(PortfolioAllocationItem(
                 allocation_item_id=f"allocation-item:{_hash(payload)}", candidate_id=candidate.candidate_id,
                 ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
-                action_id=candidate.action_id, hypothesis_id=candidate.hypothesis_id, disposition="ranked_out",
+                action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="ranked_out",
                 target_weight=0, current_weight=candidate.current_weight, marginal_book_utility=utility,
                 blockers=("below_cash_hurdle",), trace=_json(trace),
             ))
@@ -405,7 +431,7 @@ def allocate_portfolio(
         ranked.append(PortfolioAllocationItem(
             allocation_item_id=f"allocation-item:{_hash(payload)}", candidate_id=candidate.candidate_id,
             ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
-            action_id=candidate.action_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
+            action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
             funding_source=(f"CASH:{candidate.cash_source_id}" if candidate.current_weight == 0 else f"TRIM:{candidate.trim_position_id}"), trace=_json(trace),
         ))
@@ -496,6 +522,8 @@ class PortfolioScenarioArtifact(BaseModel):
                 raise ValueError("scenario paths require non-empty returns")
             if not isinstance(shocks, Mapping) or not shocks:
                 raise ValueError("scenario paths require non-empty shocks")
+            if dict(returns) == dict(shocks):
+                raise ValueError("scenario shocks must be an independent persisted path")
             for values in (returns, shocks):
                 if any(not isfinite(float(value)) for value in values.values()):
                     raise ValueError("scenario values must be finite")
@@ -506,6 +534,10 @@ class PortfolioScenarioArtifact(BaseModel):
         }
         if self.scenario_artifact_id != f"scenario:{_hash(payload)}":
             raise ValueError("scenario identity does not match its immutable payload")
+        if not (self.tail_dependence.get("negative_return_co_exceedance") or self.tail_dependence.get("co_exceedance")):
+            raise ValueError("scenario artifact requires tail co-exceedance results")
+        if not ("probability" in self.simultaneous_unwind and "observations" in self.simultaneous_unwind):
+            raise ValueError("scenario artifact requires simultaneous-unwind assumptions and results")
         return self
 
 
@@ -553,6 +585,66 @@ def apply_decay_guard(
     return tuple(decisions)
 
 
+def apply_decay_to_allocation(
+    allocation: PortfolioAllocationSnapshot,
+    drift_scores: Mapping[str, float],
+    *,
+    rollback_threshold: float,
+) -> tuple[PortfolioAllocationSnapshot, tuple[PortfolioDriftDecision, ...]]:
+    """Apply decay reductions before the final immutable allocation is stored."""
+
+    initial = apply_decay_guard(allocation, drift_scores, rollback_threshold=rollback_threshold)
+    by_item = {decision.allocation_item_id: decision for decision in initial}
+    updated: list[PortfolioAllocationItem] = []
+    for item in allocation.items:
+        decision = by_item.get(item.allocation_item_id)
+        if decision is None or decision.action == "hold":
+            updated.append(item)
+            continue
+        trace = {**item.trace, "drift_action": decision.action, "drift_score": decision.drift_score,
+                 "pre_decay_target_weight": item.target_weight, "post_decay_target_weight": decision.proposed_weight}
+        updated.append(item.model_copy(update={
+            "target_weight": decision.proposed_weight,
+            "disposition": "selected" if decision.proposed_weight > 0 else "rejected",
+            "blockers": tuple((*item.blockers, f"drift_{decision.action}")),
+            "allocation_item_id": f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': decision.proposed_weight, 'trace': trace})}",
+            "trace": trace,
+        }))
+    selected = [item for item in updated if item.disposition == "selected" and item.ticker != "CASH" and item.target_weight > 0]
+    payload = {
+        "as_of": allocation.as_of, "cash_hurdle": allocation.cash_hurdle, "items": updated,
+        "forecast_ids": allocation.forecast_ids, "action_ids": allocation.action_ids,
+        "strategy_registry_ids": allocation.strategy_registry_ids,
+    }
+    adjusted = PortfolioAllocationSnapshot(
+        allocation_id=f"allocation:{_hash(payload)}", as_of=allocation.as_of,
+        input_cutoff=allocation.input_cutoff, cash_hurdle=allocation.cash_hurdle,
+        status="available" if selected else "cash_only", items=tuple(updated),
+        forecast_ids=allocation.forecast_ids, action_ids=allocation.action_ids,
+        strategy_registry_ids=allocation.strategy_registry_ids,
+    )
+    score_by_candidate = {
+        old.candidate_id: drift_scores.get(old.allocation_item_id)
+        for old in allocation.items if old.ticker != "CASH" and old.disposition == "selected"
+    }
+    final_scores = {item.allocation_item_id: score_by_candidate.get(item.candidate_id)
+                    for item in adjusted.items if item.ticker != "CASH" and item.disposition == "selected"}
+    generated = apply_decay_guard(adjusted, final_scores, rollback_threshold=rollback_threshold)
+    final_decisions: list[PortfolioDriftDecision] = []
+    for decision in generated:
+        item = next(item for item in adjusted.items if item.allocation_item_id == decision.allocation_item_id)
+        proposed_weight = item.target_weight
+        payload = {"allocation_id": adjusted.allocation_id, "allocation_item_id": item.allocation_item_id,
+                   "drift_score": decision.drift_score, "rollback_threshold": rollback_threshold,
+                   "proposed_weight": proposed_weight, "action": decision.action}
+        final_decisions.append(decision.model_copy(update={
+            "allocation_id": adjusted.allocation_id, "allocation_item_id": item.allocation_item_id,
+            "proposed_weight": proposed_weight,
+            "decision_id": f"drift:{_hash(payload)}",
+        }))
+    return adjusted, tuple(final_decisions)
+
+
 def build_scenario_artifact(
     allocation: PortfolioAllocationSnapshot,
     scenarios: list[Mapping[str, Any]],
@@ -575,6 +667,8 @@ def build_scenario_artifact(
             raise ValueError("scenario path requires non-empty returns")
         if not isinstance(item.get("shocks"), Mapping) or not item.get("shocks"):
             raise ValueError("scenario path requires non-empty shocks")
+        if dict(item["returns"]) == dict(item["shocks"]):
+            raise ValueError("scenario shocks must be an independent persisted path")
     payload = {"allocation_id": allocation.allocation_id, "model_version": model_version, "probability_semantics": probability_semantics, "scenarios": scenarios, "tail_dependence": tail_dependence, "simultaneous_unwind": simultaneous_unwind}
     return PortfolioScenarioArtifact(
         scenario_artifact_id=f"scenario:{_hash(payload)}", allocation_id=allocation.allocation_id,
@@ -591,20 +685,24 @@ def build_scenario_artifact_from_observations(
     """Build portfolio paths only from persisted, point-in-time return rows."""
 
     selected = {item.ticker for item in allocation.items if item.disposition == "selected" and item.ticker != "CASH"}
-    grouped: dict[str, dict[str, float]] = {}
+    grouped: dict[str, dict[str, dict[str, float]]] = {}
     for row in observations[:64]:
         date_key = str(row.get("pnl_date") or row.get("observed_at") or "").strip()
         ticker = str(row.get("ticker") or "").upper()
         value = row.get("net_return")
-        if not date_key or ticker not in selected or value is None or not isfinite(float(value)):
+        shock = row.get("tail_return")
+        if (not date_key or ticker not in selected or value is None or shock is None
+                or not isfinite(float(value)) or not isfinite(float(shock))):
             continue
-        grouped.setdefault(date_key, {})[ticker] = float(value)
-    paths = [returns for _, returns in sorted(grouped.items()) if selected <= returns.keys()]
+        grouped.setdefault(date_key, {"returns": {}, "shocks": {}})["returns"][ticker] = float(value)
+        grouped[date_key]["shocks"][ticker] = float(shock)
+    paths = [values for _, values in sorted(grouped.items())
+             if selected <= values["returns"].keys() and selected <= values["shocks"].keys()]
     if not paths:
         raise ValueError("portfolio scenario requires persisted returns for every selected item")
     probability = 1.0 / len(paths)
     scenarios = [
-        {"name": f"observed:{index}", "probability": probability, "returns": values, "shocks": dict(values)}
+        {"name": f"observed:{index}", "probability": probability, "returns": values["returns"], "shocks": values["shocks"]}
         for index, values in enumerate(paths)
     ]
     co_exceedance: dict[str, Any] = {}
@@ -764,7 +862,20 @@ def attribute_paper_pnl(
         direction = 1 if observation.side == "buy" else -1
         status = "realized"
         derived_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity
-    attribution = {"source": "paper_execution_observation", "hypothesis_id": item.hypothesis_id, "derived": True}
+    trace = item.trace
+    attribution = {
+        "source": "paper_execution_observation", "derived": True,
+        "hypothesis_id": item.hypothesis_id, "experiment_id": trace.get("experiment_id"),
+        "trial_id": trace.get("trial_id"), "result_id": trace.get("result_id"),
+        "forecast_id": item.strategy_forecast_id, "action_id": item.action_id,
+        "rank_id": trace.get("rank_id"), "expression": trace.get("expression"),
+        "invalidation": trace.get("invalidation"),
+        "fill_id": observation.paper_execution_observation_id if observation else None,
+        "pnl": {"realized": derived_pnl if status == "realized" else None, "quantity": observation.filled_quantity if observation else None,
+                "entry_price": observation.fill_price if observation else None, "exit_price": observation.exit_price if observation else None},
+        "cost_decomposition": {"spread_bps": observation.spread_bps if observation else None,
+                               "impact_bps": observation.impact_bps if observation else None, "fees": None},
+    }
     record_payload = {
         "allocation_id": allocation.allocation_id, "allocation_item_id": item.allocation_item_id,
         "strategy_forecast_id": item.strategy_forecast_id, "hypothesis_id": item.hypothesis_id,

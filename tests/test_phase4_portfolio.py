@@ -98,12 +98,12 @@ def test_scenario_artifact_is_bounded_and_contains_tail_and_unwind_evidence() ->
         [{"name": "base", "probability": 0.7, "returns": {"GOOD": 0.05}, "shocks": {"GOOD": 0.01}}, {"name": "tail", "probability": 0.3, "returns": {"GOOD": -0.2}, "shocks": {"GOOD": -0.3}}],
         model_version="scenario.v1",
         probability_semantics="normalized states",
-        tail_dependence={"GOOD": {"GOOD": 1.0}},
-        simultaneous_unwind={"trigger": "tail", "loss_fraction": 0.2},
+        tail_dependence={"negative_return_co_exceedance": {"GOOD|GOOD": {"probability": 0.3}}},
+        simultaneous_unwind={"trigger": "tail", "probability": 0.3, "observations": 2},
     )
     assert artifact.scenario_artifact_id.startswith("scenario:")
-    assert artifact.tail_dependence["GOOD"]
-    assert artifact.simultaneous_unwind["trigger"] == "tail"
+    assert artifact.tail_dependence["negative_return_co_exceedance"]
+    assert artifact.simultaneous_unwind["observations"] == 2
     with pytest.raises(ValueError):
         build_scenario_artifact(allocation, [{"probability": 1, "returns": {}}] * 65, model_version="v", probability_semantics="p", tail_dependence={"x": 1}, simultaneous_unwind={"x": 1})
 
@@ -114,13 +114,16 @@ def test_scenario_artifact_rejects_mutated_content_and_empty_tail_or_unwind() ->
         "allocation": allocation,
         "scenarios": [{"probability": 1, "returns": {"GOOD": 0.1}, "shocks": {"GOOD": 0.2}}],
         "model_version": "scenario.v1", "probability_semantics": "observed",
-        "tail_dependence": {"co": 1}, "simultaneous_unwind": {"probability": 0},
+        "tail_dependence": {"negative_return_co_exceedance": {"GOOD|GOOD": {"probability": 0}}},
+        "simultaneous_unwind": {"probability": 0, "observations": 1},
     }
     artifact = build_scenario_artifact(**kwargs)
     with pytest.raises(ValueError):
         type(artifact).model_validate({**artifact.model_dump(), "scenarios": ({"probability": 1, "returns": {"GOOD": 0.2}, "shocks": {"GOOD": 0.2}},)})
     with pytest.raises(ValueError):
         build_scenario_artifact(**{**kwargs, "tail_dependence": {}})
+    with pytest.raises(ValueError):
+        build_scenario_artifact(**{**kwargs, "scenarios": [{"probability": 1, "returns": {"GOOD": 0.1}, "shocks": {"GOOD": 0.1}}]})
 
 
 def test_decay_guard_reduces_before_the_rollback_threshold() -> None:

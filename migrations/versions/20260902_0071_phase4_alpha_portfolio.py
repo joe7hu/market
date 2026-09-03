@@ -40,6 +40,7 @@ def upgrade() -> None:
             ticker TEXT NOT NULL,
             strategy_forecast_id TEXT REFERENCES analysis.strategy_forecast(id),
             action_id TEXT,
+            rank_id TEXT,
             hypothesis_id UUID REFERENCES analysis.hypothesis(id),
             disposition TEXT NOT NULL CHECK (disposition IN ('selected', 'ranked_out', 'rejected')),
             target_weight DOUBLE PRECISION NOT NULL CHECK (target_weight < 'Infinity'::double precision AND target_weight > '-Infinity'::double precision AND target_weight >= 0 AND target_weight <= 1),
@@ -48,11 +49,14 @@ def upgrade() -> None:
             trace JSONB NOT NULL,
             blockers JSONB NOT NULL DEFAULT '[]'::jsonb,
             funding_source TEXT,
+            input_hash CHAR(64) NOT NULL DEFAULT '',
             created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (jsonb_typeof(trace) = 'object'),
             CHECK (jsonb_typeof(blockers) = 'array'),
             CHECK (ticker = 'CASH' OR candidate_id <> ''),
+            CHECK (input_hash = '' OR (input_hash ~ '^[0-9a-f]{64}$' AND allocation_item_id = 'allocation-item:' || input_hash::text)),
             CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (strategy_forecast_id IS NOT NULL AND action_id IS NOT NULL)),
+            CHECK (ticker = 'CASH' OR disposition <> 'selected' OR rank_id IS NOT NULL),
             CHECK (disposition <> 'selected' OR (ticker = 'CASH' AND target_weight > 0 AND marginal_book_utility >= 0) OR (target_weight > 0 AND marginal_book_utility > 0)),
             CHECK (ticker <> '')
             ,CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (funding_source IS NOT NULL AND (funding_source LIKE 'CASH:%' OR funding_source LIKE 'TRIM:%')))
@@ -130,9 +134,11 @@ def upgrade() -> None:
             realized_pnl DOUBLE PRECISION CHECK (realized_pnl IS NULL OR (realized_pnl < 'Infinity'::double precision AND realized_pnl > '-Infinity'::double precision)),
             attribution JSONB NOT NULL,
             input_cutoff TIMESTAMPTZ NOT NULL,
+            input_hash CHAR(64) NOT NULL DEFAULT '',
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             CHECK (jsonb_typeof(attribution) = 'object'),
             CHECK (pnl_status <> 'realized' OR realized_pnl IS NOT NULL)
+            ,CHECK (input_hash = '' OR (input_hash ~ '^[0-9a-f]{64}$' AND book_attribution_id = 'attribution:' || input_hash::text))
         );
 
         CREATE TABLE analysis.portfolio_drift_evidence (
@@ -160,6 +166,23 @@ def upgrade() -> None:
                 scenario JSONB; probability_total DOUBLE PRECISION := 0;
         BEGIN
             IF TG_TABLE_NAME = 'portfolio_allocation_item' THEN
+                IF NEW.disposition = 'selected' AND NEW.ticker <> 'CASH' THEN
+                    IF NEW.funding_source LIKE 'CASH:broker-account:%' AND NOT EXISTS (
+                        SELECT 1 FROM raw.broker_account_snapshot account
+                        WHERE account.id = split_part(NEW.funding_source, ':', 4)::BIGINT
+                    ) THEN
+                        RAISE EXCEPTION 'Phase 4 cash funding source is not an actual PostgreSQL account snapshot';
+                    ELSIF NEW.funding_source LIKE 'TRIM:broker-position:%' AND NOT EXISTS (
+                        SELECT 1 FROM raw.broker_position_snapshot position
+                        WHERE position.id = split_part(NEW.funding_source, ':', 3)::BIGINT
+                          AND position.quantity > 0
+                    ) THEN
+                        RAISE EXCEPTION 'Phase 4 trim funding source is not an actual PostgreSQL position';
+                    ELSIF NEW.funding_source NOT LIKE 'CASH:broker-account:%'
+                          AND NEW.funding_source NOT LIKE 'TRIM:broker-position:%' THEN
+                        RAISE EXCEPTION 'Phase 4 funded item has no authoritative funding source';
+                    END IF;
+                END IF;
                 IF NEW.strategy_forecast_id IS NOT NULL THEN
                     SELECT forecast.input_cutoff, forecast.id, revision.hypothesis_id
                       INTO expected_cutoff, expected_forecast, expected_hypothesis
@@ -169,6 +192,15 @@ def upgrade() -> None:
                     IF expected_forecast IS NULL OR expected_cutoff > (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id)
                        OR NEW.hypothesis_id IS DISTINCT FROM expected_hypothesis THEN
                         RAISE EXCEPTION 'Phase 4 allocation forecast or PIT lineage is invalid';
+                    END IF;
+                    IF NEW.action_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM analysis.ticker_decision decision
+                        WHERE decision.input_manifest->'trade_plan'->>'trade_plan_id' = NEW.action_id
+                          AND decision.input_manifest->'trade_plan'->>'rank_id' = NEW.rank_id
+                          AND decision.input_manifest->'trade_plan'->>'strategy_forecast_id' = NEW.strategy_forecast_id
+                          AND decision.as_of <= (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id)
+                    ) THEN
+                        RAISE EXCEPTION 'Phase 4 allocation action or rank lineage is invalid';
                     END IF;
                 END IF;
             ELSIF TG_TABLE_NAME = 'probabilistic_portfolio_scenario_artifact' THEN

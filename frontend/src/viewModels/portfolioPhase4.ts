@@ -9,6 +9,7 @@ export type Phase4Action = {
   disposition: string;
   forecastId: string | null;
   actionId: string | null;
+  rankId: string | null;
   expression: JsonObject | null;
   invalidation: JsonObject | null;
   missingData: string[];
@@ -73,6 +74,7 @@ function actionFromRow(row: JsonObject, allocationId: string): Phase4Action | nu
     disposition: text(canonical.disposition) ?? text(row.disposition) ?? "rejected",
     forecastId: text(canonical.strategy_forecast_id) ?? text(row.strategy_forecast_id),
     actionId: text(canonical.action_id) ?? text(row.action_id),
+    rankId: text(canonical.rank_id) ?? text(trace.rank_id) ?? text(row.rank_id),
     expression: object(canonical.expression) ?? object(trace.expression),
     invalidation: object(canonical.invalidation) ?? object(trace.invalidation),
     missingData: strings(canonical.missing_data ?? trace.missing_data),
