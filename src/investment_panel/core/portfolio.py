@@ -332,6 +332,7 @@ class PortfolioBookEvidence(BaseModel):
     cash_source_id: str | None = None
     positions: dict[str, str] = Field(default_factory=dict)
     position_weights: dict[str, float] = Field(default_factory=dict)
+    position_exposures: dict[str, dict[str, Any]] = Field(default_factory=dict)
     input_cutoff: datetime
 
     @model_validator(mode="after")
@@ -348,6 +349,8 @@ class PortfolioBookEvidence(BaseModel):
             raise ValueError("portfolio book requires a timezone-aware cutoff")
         if set(self.position_weights) - set(self.positions):
             raise ValueError("portfolio position weights require persisted position identities")
+        if set(self.position_exposures) - set(self.positions):
+            raise ValueError("portfolio position exposures require persisted position identities")
         if any(not isfinite(value) or value < 0 or value > 1 for value in self.position_weights.values()):
             raise ValueError("portfolio position weights must be finite portfolio weights")
         return self
@@ -528,9 +531,9 @@ class PortfolioAllocationItem(BaseModel):
             self.target_weight <= 0 or self.marginal_book_utility <= 0
         ):
             raise ValueError("funded allocation requires positive marginal book utility")
-        if self.disposition == "selected" and self.ticker != "CASH" and self.target_weight > self.current_weight and not self.funding_source:
+        if self.disposition == "selected" and self.ticker != "CASH" and self.target_weight != self.current_weight and not self.funding_source:
             raise ValueError("funded allocation requires a funding source")
-        if self.disposition == "selected" and self.ticker != "CASH" and self.target_weight > self.current_weight and (
+        if self.disposition == "selected" and self.ticker != "CASH" and self.target_weight != self.current_weight and (
             self.funding_amount is None or not isfinite(self.funding_amount) or self.funding_amount <= 0
         ):
             raise ValueError("funded allocation requires a positive funding amount")
@@ -711,20 +714,6 @@ def allocate_portfolio(
     raise TypeError("production allocation is repository and PostgreSQL bound")
 
 
-def compute_portfolio_allocation(
-    bundle: AuthoritativePortfolioBundle,
-    *,
-    as_of: datetime,
-) -> PortfolioAllocationSnapshot:
-    """Compute a bundle already issued by the repository boundary.
-
-    This function has no authority side effect.  Only the database repository
-    reads, validates, and persists the PostgreSQL authority slice.
-    """
-
-    return _allocate_portfolio(bundle, as_of=as_of)
-
-
 def _allocate_portfolio(
     candidates: AuthoritativePortfolioBundle | list[PortfolioCandidate | Mapping[str, Any]],
     *,
@@ -801,7 +790,7 @@ def _allocate_portfolio(
             candidate.cash_available is None or candidate.cash_available <= 0 or not candidate.cash_source_id
         ):
             blockers.append("cash_funding_missing")
-        if candidate.current_weight > 0 and not candidate.trim_position_id:
+        if candidate.current_weight > 0 and (not candidate.trim_position_id or candidate.trim_available is None or candidate.trim_available <= 0):
             blockers.append("trim_position_missing")
         if blockers:
             ranked.append(_rejection(candidate, tuple(dict.fromkeys(blockers))))
@@ -885,15 +874,20 @@ def _allocate_portfolio(
     # joint policy.  This prevents an optimizer from treating unknown holdings
     # as cash.
     existing_weight = 0.0
+    existing_exposures: list[tuple[str, float, dict[str, Any]]] = []
     if isinstance(candidates, AuthoritativePortfolioBundle):
         candidate_tickers = {candidate.ticker.upper() for candidate, _, _ in eligible}
         non_candidate = set(candidates.book.position_weights) - candidate_tickers
         existing_weight = sum(candidates.book.position_weights[ticker] for ticker in non_candidate)
-        if non_candidate and any((
-            candidates.constraints.sector_limits, candidates.constraints.asset_class_limits,
-            candidates.constraints.factor_limits, candidates.constraints.greek_limits,
-        )):
-            return cash_only_allocation(as_of, cash_hurdle, "existing_holding_joint_evidence_missing")
+        existing_exposures = [
+            (ticker, candidates.book.position_weights[ticker], candidates.book.position_exposures.get(ticker, {}))
+            for ticker in non_candidate
+        ]
+        policy = candidates.constraints
+        for limits_map, key in ((policy.sector_limits, "sector"), (policy.asset_class_limits, "asset_class"),
+                                (policy.factor_limits, "factor_exposure"), (policy.greek_limits, "greeks")):
+            if limits_map and any(key not in exposure for _, _, exposure in existing_exposures):
+                return cash_only_allocation(as_of, cash_hurdle, "existing_holding_joint_evidence_missing")
     caps = [min(candidate.risk_budget, candidate.kelly_cap, candidate.drawdown_cap, candidate.capacity, position_limit) / candidate.volatility * max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))) for candidate, _, _ in fundable]
     # A candidate is never allowed to fund its own increase by naming its held
     # position as a trim source.  Held names can hold or reduce only.
@@ -915,10 +909,10 @@ def _allocate_portfolio(
         policy = candidates.constraints
         for label, limits_map, attribute in (("sector", policy.sector_limits, "sector"), ("asset_class", policy.asset_class_limits, "asset_class")):
             for key, limit in limits_map.items():
-                constraints.append({"type": "ineq", "fun": lambda weights, key=key, limit=limit, attribute=attribute: limit - sum(float(weight) for weight, (candidate, _, _) in zip(weights, fundable) if getattr(candidate, attribute) == key)})
+                constraints.append({"type": "ineq", "fun": lambda weights, key=key, limit=limit, attribute=attribute: limit - sum(weight for _, weight, exposure in existing_exposures if exposure.get(attribute) == key) - sum(float(weight) for weight, (candidate, _, _) in zip(weights, fundable) if getattr(candidate, attribute) == key)})
         for limits_map, attribute in ((policy.factor_limits, "factor_exposure"), (policy.greek_limits, "greeks")):
             for key, limit in limits_map.items():
-                constraints.append({"type": "ineq", "fun": lambda weights, key=key, limit=limit, attribute=attribute: limit - sum(abs(float(weight) * float((getattr(candidate, attribute) or {}).get(key, 0))) for weight, (candidate, _, _) in zip(weights, fundable))})
+                constraints.append({"type": "ineq", "fun": lambda weights, key=key, limit=limit, attribute=attribute: limit - sum(abs(float(weight) * float(exposure.get(attribute, {}).get(key, 0))) for _, weight, exposure in existing_exposures) - sum(abs(float(weight) * float((getattr(candidate, attribute) or {}).get(key, 0))) for weight, (candidate, _, _) in zip(weights, fundable))})
         risk_limit = min(sum(candidate.risk_budget for candidate, _, _ in fundable), policy.aggregate_loss_limit or float("inf"))
         constraints.append({"type": "ineq", "fun": lambda weights: risk_limit - sum(float(left) * float(right) * float((candidate.covariance or {}).get(other.ticker, 0)) for left, (candidate, _, _), right, (other, _, _) in ((left, first, right, second) for left, first in zip(weights, fundable) for right, second in zip(weights, fundable))) ** 0.5})
     result = minimize(lambda weights: -sum(float(weight) * utility for weight, (_, utility, _) in zip(weights, fundable)), [lower for lower, _ in limits], bounds=limits, constraints=constraints, method="SLSQP") if fundable else None
@@ -928,15 +922,17 @@ def _allocate_portfolio(
         if target <= 1e-8:
             ranked.append(_rejection(candidate, ("joint_optimizer_ranked_out",)))
             continue
-        key = candidate.cash_source_id if candidate.current_weight <= 0 else None
-        funding_amount = max(0.0, target - candidate.current_weight) * (nav if nav is not None else 1.0)
-        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": max(0.0, target - candidate.current_weight), "funding_amount": funding_amount}
+        increased = target > candidate.current_weight + 1e-8
+        decreased = target < candidate.current_weight - 1e-8
+        key = candidate.cash_source_id if increased else candidate.trim_position_id if decreased else None
+        funding_amount = abs(target - candidate.current_weight) * (nav if nav is not None else 1.0)
+        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": target - candidate.current_weight, "funding_amount": funding_amount}
         ranked.append(PortfolioAllocationItem(
             allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'target_weight': target, 'trace': trace})}",
             candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
             action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
-            funding_source=(f"CASH:{key}" if candidate.current_weight == 0 else None), funding_amount=(funding_amount if target > candidate.current_weight else None), trace=_json(trace),
+            funding_source=(f"CASH:{key}" if increased else f"TRIM:{key}" if decreased else None), funding_amount=(funding_amount if increased or decreased else None), trace=_json(trace),
         ))
     remaining = max(0.0, 1.0 - existing_weight - sum(item.target_weight for item in ranked if item.disposition == "selected"))
     cash_payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected", "target_weight": remaining}

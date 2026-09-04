@@ -45,7 +45,14 @@ def upgrade() -> None:
 
         CREATE OR REPLACE FUNCTION analysis.enforce_phase4_execution_snapshot_evidence()
         RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE expected_cutoff TIMESTAMPTZ;
         BEGIN
+            SELECT input_cutoff INTO expected_cutoff
+            FROM analysis.portfolio_allocation_snapshot
+            WHERE allocation_id = NEW.allocation_id;
+            IF expected_cutoff IS NULL OR NEW.input_cutoff IS DISTINCT FROM expected_cutoff THEN
+                RAISE EXCEPTION 'Phase 4 calibrated snapshot cutoff is not bound to its allocation';
+            END IF;
             IF NEW.calibration_status = 'calibrated' AND (
                 NEW.sample_count <= 0
                 OR jsonb_typeof(NEW.metadata->'paper_observation_ids') IS DISTINCT FROM 'array'
@@ -53,12 +60,17 @@ def upgrade() -> None:
                 OR EXISTS (
                     SELECT 1 FROM jsonb_array_elements_text(NEW.metadata->'paper_observation_ids') id
                     JOIN app.paper_execution_observation observation ON observation.paper_execution_observation_id = id
+                    JOIN analysis.portfolio_allocation_item item ON item.allocation_item_id = observation.allocation_item_id
                     JOIN app.paper_order paper ON paper.id = observation.paper_order_id
-                    WHERE observation.available_at > NEW.input_cutoff
+                    WHERE item.allocation_id <> NEW.allocation_id
+                       OR observation.available_at > NEW.input_cutoff
+                       OR observation.filled_quantity <= 0
+                       OR observation.fill_price IS NULL
                        OR observation.observed_at IS DISTINCT FROM paper.filled_at
                        OR observation.available_at IS DISTINCT FROM paper.fill_evidence_at
                        OR paper.execution_quote IS NULL OR paper.fees IS NULL
                        OR paper.entry_slippage IS NULL OR paper.contract_multiplier IS NULL
+                       OR paper.status NOT IN ('open', 'entered', 'partial_exited', 'exited', 'closed', 'invalidated')
                 )
             ) THEN RAISE EXCEPTION 'Phase 4 calibrated snapshot requires matching persisted fill evidence'; END IF;
             RETURN NEW;

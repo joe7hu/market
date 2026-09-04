@@ -289,15 +289,20 @@ class OptionsPaperExecutionRepository:
                     return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "limit_not_reached"}
                 fees = _fees(len(quoted), fill_quantity)
                 slippage = _entry_slippage(quoted, fill_price, credit)
+                multiplier = _number(quoted[0].get("multiplier")) if quoted else None
+                if multiplier is None or multiplier <= 0:
+                    return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "contract_multiplier_missing"}
                 connection.execute(
                     """
                     UPDATE app.paper_order
                     SET status = 'entered', actual_fill_price = %s, filled_at = %s,
-                        filled_quantity = %s, fees = coalesce(fees, 0) + %s,
+                        fill_evidence_at = clock_timestamp(), execution_quote = %s,
+                        contract_multiplier = %s, filled_quantity = %s,
+                        fees = coalesce(fees, 0) + %s, entry_fees = coalesce(entry_fees, 0) + %s,
                         entry_slippage = %s, updated_at = %s, unfilled_reason = NULL
                     WHERE id = %s::uuid
                     """,
-                    [fill_price, now, fill_quantity, fees, slippage, now, paper_order_id],
+                    [fill_price, now, Jsonb({"mid": _midpoint_package(quoted), "legs": quoted}), multiplier, fill_quantity, fees, fees, slippage, now, paper_order_id],
                 )
                 _journal(
                     connection, item, action="paper_entry", quantity=fill_quantity,
@@ -396,11 +401,11 @@ class OptionsPaperExecutionRepository:
             """
             UPDATE app.paper_order
             SET status = %s, exited_quantity = %s, exit_price = %s, exit_at = %s,
-                fees = coalesce(fees, 0) + %s, exit_slippage = %s,
+                fees = coalesce(fees, 0) + %s, exit_fees = coalesce(exit_fees, 0) + %s, exit_slippage = %s,
                 updated_at = %s, unfilled_reason = NULL
             WHERE id = %s::uuid
             """,
-            [status, new_exited, exit_price, now, fees, slippage, now, order["id"]],
+            [status, new_exited, exit_price, now, fees, fees, slippage, now, order["id"]],
         )
         _journal(
             connection, order, action=f"paper_exit:{reason}", quantity=exit_quantity,

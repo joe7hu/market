@@ -344,7 +344,8 @@ class PortfolioLoopRepository:
             ).fetchone()
             positions = connection.execute(
                 """SELECT position.instrument_id, position.id, position.market_value,
-                          position.quantity, instrument.symbol
+                          position.quantity, instrument.symbol, instrument.sector,
+                          instrument.asset_class
                    FROM raw.broker_position_snapshot position
                    JOIN raw.broker_account_snapshot account
                      ON account.id = position.account_snapshot_id
@@ -760,6 +761,10 @@ class PortfolioLoopRepository:
                     for ticker, row in position_by_ticker.items()
                     if account and account["net_liquidation"] not in (None, 0)
                 },
+                position_exposures={
+                    ticker: {key: value for key, value in (("sector", row.get("sector")), ("asset_class", row.get("asset_class"))) if value}
+                    for ticker, row in position_by_ticker.items()
+                },
                 input_cutoff=as_of,
             ),
             constraints=PortfolioConstraintEvidence(
@@ -803,15 +808,16 @@ class PortfolioLoopRepository:
     def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
         """Persist one allocation from the validated PostgreSQL candidate bundle."""
 
+        from investment_panel.core import portfolio as portfolio_core
         from investment_panel.core.portfolio import (
-            compute_portfolio_allocation, apply_decay_to_allocation,
+            apply_decay_to_allocation,
             build_scenario_artifact_from_observations,
         )
 
         bundle = self.read_authoritative_candidate_bundle(as_of=as_of)
         # A missing persisted hurdle is a hard fail-closed condition. The
         # empty allocator result records CASH without inventing a policy value.
-        allocation = compute_portfolio_allocation(bundle, as_of=as_of)
+        allocation = portfolio_core._allocate_portfolio(bundle, as_of=as_of)
         drift_scores = {
             item.allocation_item_id: bundle.drift_scores.get(str(next(
                 (candidate.strategy_registry_id or "").split(":")[-1]
@@ -831,7 +837,7 @@ class PortfolioLoopRepository:
                 # not permission to persist a partial or synthetic scenario.
                 safe_candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_cross_section_missing"))}) for candidate in bundle.candidates]
                 safe_bundle = bundle.model_copy(update={"candidates": tuple(safe_candidates), "complete": False})
-                allocation = compute_portfolio_allocation(safe_bundle, as_of=as_of)
+                allocation = portfolio_core._allocate_portfolio(safe_bundle, as_of=as_of)
                 allocation, drift_decisions = apply_decay_to_allocation(
                     allocation, {}, rollback_threshold=1.0,
                 )
@@ -888,13 +894,28 @@ class PortfolioLoopRepository:
             if not observation.allocation_item_id or not observation.action_id:
                 raise ValueError("paper execution requires allocation and action lineage")
             order = connection.execute(
-                """SELECT id, created_at, status, filled_quantity, actual_fill_price, submitted_at, filled_at,
+                """SELECT id, created_at, status, side, filled_quantity, actual_fill_price, exit_price, submitted_at, filled_at,
                           fill_evidence_at, execution_quote, fees, entry_slippage, exit_slippage,
                           contract_multiplier, exit_at, policy_result
                    FROM app.paper_order WHERE id = %s""", [observation.paper_order_id]
             ).fetchone()
             if order is None:
                 raise ValueError("paper execution requires an existing paper order")
+            if str(order["id"]) != observation.paper_order_id:
+                raise ValueError("paper execution order identity is invalid")
+            if observation.filled_quantity > 0:
+                if (
+                    str(order["side"] or "buy") != observation.side
+                    or float(order["filled_quantity"] or 0) != observation.filled_quantity
+                    or float(order["actual_fill_price"] or 0) != float(observation.fill_price or 0)
+                    or order["filled_at"] != observation.observed_at
+                    or order["fill_evidence_at"] != observation.available_at
+                    or order["contract_multiplier"] is None
+                    or float(order["contract_multiplier"]) != float(observation.metadata.get("contract_multiplier") or 0)
+                    or float(order["fees"] or 0) != float(observation.metadata.get("fees") or 0)
+                    or (order["execution_quote"] or {}) != (observation.metadata.get("quote") or {})
+                ):
+                    raise ValueError("paper execution must use matching persisted fill evidence")
             item = connection.execute(
                     """SELECT allocation_id, action_id FROM analysis.portfolio_allocation_item
                        WHERE allocation_item_id = %s""", [observation.allocation_item_id]
@@ -1087,7 +1108,7 @@ class PortfolioLoopRepository:
                               observation.execution_mode, observation.paper_only,
                               observation.status, observation.paper_order_id,
                               paper.status AS order_status, paper.exit_at, paper.filled_at,
-                              paper.fees,
+                              paper.fees, paper.contract_multiplier,
                               paper.policy_result
                        FROM app.paper_execution_observation observation
                        JOIN app.paper_order paper ON paper.id = observation.paper_order_id
@@ -1122,8 +1143,7 @@ class PortfolioLoopRepository:
                 if observation["filled_quantity"] <= 0 or observation["fill_price"] is None or observation["exit_price"] is None or observation["order_status"] not in {"exited", "closed"} or observation["exit_at"] is None or observation["filled_at"] is None:
                     raise ValueError("realized attribution requires entry and exit fills")
                 direction = 1 if observation["side"] == "buy" else -1
-                assignment = (observation["policy_result"] or {}).get("assignment")
-                multiplier = assignment.get("multiplier", 1) if isinstance(assignment, dict) else 1
+                multiplier = observation["contract_multiplier"]
                 if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or float(multiplier) <= 0:
                     raise ValueError("realized attribution requires a valid persisted contract multiplier")
                 gross = direction * (float(observation["exit_price"]) - float(observation["fill_price"])) * float(observation["filled_quantity"]) * float(multiplier)
