@@ -229,6 +229,8 @@ def test_record_paper_execution_rebuilds_observation_from_persisted_fill(monkeyp
                 return Result(order)
             if "SELECT allocation_id, action_id" in statement:
                 return Result({"allocation_id": "allocation:test", "action_id": "action:test"})
+            if "phase4_telemetry_authorization_payload" in statement:
+                return Result({"payload": "test-payload"})
             if "SELECT paper_execution_observation_id" in statement:
                 return Result(many=[observation.model_copy(update={"spread_bps": 200, "latency_ms": 60_000, "impact_bps": 100}).model_dump()])
             if "SELECT allocation_id, input_cutoff" in statement:
@@ -517,13 +519,17 @@ def test_execution_snapshot_persistence_rechecks_canonical_digest() -> None:
 
     class Connection:
         def __init__(self): self.calls = 0
-        def execute(self, *_args):
+        def execute(self, statement, *_args):
             self.calls += 1
+            if "phase4_telemetry_authorization_payload" in statement:
+                class Payload:
+                    def fetchone(self): return {"payload": "test-payload"}
+                return Payload()
             return Result()
 
     connection = Connection()
     PortfolioLoopRepository.store_execution_model(connection, model)
-    assert connection.calls == 2
+    assert connection.calls == 3
 
 
 def test_paper_observation_rejects_live_mode() -> None:

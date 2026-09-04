@@ -60,6 +60,17 @@ class PortfolioLoopRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
+    @staticmethod
+    def _telemetry_signature(connection: Any, contract: str, payload: dict[str, Any]) -> str:
+        row = connection.execute(
+            "SELECT analysis.phase4_telemetry_authorization_payload(%s, %s) AS payload",
+            [contract, Jsonb(payload)],
+        ).fetchone()
+        key = os.environ.get("MARKET_PHASE4_ALLOCATION_SIGNING_KEY", "").strip()
+        if row is None or len(key) < 16:
+            raise ValueError("Phase 4 telemetry writer authorization is unavailable")
+        return hmac.new(key.encode("utf-8"), str(row["payload"]).encode("utf-8"), "sha256").hexdigest()
+
     def read_shared_panel_models(self) -> dict[str, list[dict[str, Any]]]:
         """Read one immutable allocation bundle from one PostgreSQL snapshot."""
 
@@ -84,7 +95,7 @@ class PortfolioLoopRepository:
                           strategy_forecast_id, action_id, hypothesis_id::text,
                           rank_id,
                           disposition, target_weight, current_weight,
-                          marginal_book_utility, trace, blockers, funding_source, funding_amount,
+                          marginal_book_utility, trace, blockers, funding_source, funding_amount, funding_sources,
                           content_hash, created_at
                    FROM analysis.portfolio_allocation_item
                    WHERE allocation_id = %s
@@ -1020,17 +1031,13 @@ class PortfolioLoopRepository:
     def store_execution_model(connection: Any, model: ExecutionModelSnapshot) -> None:
         if execution_model_id_for_snapshot(model) != model.execution_model_snapshot_id:
             raise ValueError("execution model identity does not match PostgreSQL payload")
-        connection.execute(
-            """SELECT analysis.insert_phase4_execution(
-                 %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            [
-                model.execution_model_snapshot_id, model.allocation_id, model.model_version,
-                model.calibration_status, model.sample_count, model.fill_probability,
-                model.spread_bps, model.latency_ms, model.impact_bps,
-                model.input_cutoff, model.execution_model_snapshot_id.split(":", 1)[1],
-                canonical_content_hash(model), Jsonb(model.metadata),
-            ],
-        )
+        payload = model.model_dump(mode="json") | {
+            "input_hash": model.execution_model_snapshot_id.split(":", 1)[1],
+            "content_hash": canonical_content_hash(model),
+        }
+        connection.execute("SELECT analysis.write_phase4_execution(%s, %s)", [
+            Jsonb(payload), PortfolioLoopRepository._telemetry_signature(connection, "phase4-execution.v1", payload),
+        ])
         stored = connection.execute(
             "SELECT content_hash FROM analysis.execution_model_snapshot WHERE execution_model_snapshot_id = %s",
             [model.execution_model_snapshot_id],
@@ -1149,10 +1156,10 @@ class PortfolioLoopRepository:
                     "available_at": max(order["fill_evidence_at"], order["exit_at"]) if exit_observation else order["fill_evidence_at"],
                     "metadata": persisted_metadata,
                 })
-            connection.execute(
-                "SELECT analysis.insert_phase4_paper_execution_observation(%s)",
-                [Jsonb(observation.model_dump(mode="json"))],
-            )
+            payload = observation.model_dump(mode="json")
+            connection.execute("SELECT analysis.write_phase4_paper_execution(%s, %s)", [
+                Jsonb(payload), self._telemetry_signature(connection, "phase4-paper-execution.v1", payload),
+            ])
             allocation = connection.execute(
                     """SELECT allocation_id, input_cutoff FROM analysis.portfolio_allocation_item item
                        JOIN analysis.portfolio_allocation_snapshot snapshot USING (allocation_id)
@@ -1293,7 +1300,7 @@ class PortfolioLoopRepository:
                         key: row[key] for key in (
                             "allocation_item_id", "candidate_id", "ticker", "strategy_forecast_id",
                             "action_id", "rank_id", "hypothesis_id", "disposition", "target_weight",
-                            "current_weight", "marginal_book_utility", "funding_source", "funding_amount",
+                            "current_weight", "marginal_book_utility", "funding_source", "funding_amount", "funding_sources",
                             "blockers", "trace",
                         )
                     }) for row in allocation_rows),
@@ -1379,13 +1386,13 @@ class PortfolioLoopRepository:
                 derived = gross - sum(float(row["event_fee"]) for row in events)
                 if abs(float(attribution.realized_pnl or 0) - derived) > 1e-9:
                     raise ValueError("realized attribution P&L does not match the paper fill lineage")
-            connection.execute(
-                "SELECT analysis.insert_phase4_book_attribution(%s)",
-                [Jsonb(attribution.model_dump(mode="json") | {
-                    "input_hash": attribution.book_attribution_id.split(":", 1)[1],
-                    "content_hash": canonical_content_hash(attribution),
-                })],
-            )
+            payload = attribution.model_dump(mode="json") | {
+                "input_hash": attribution.book_attribution_id.split(":", 1)[1],
+                "content_hash": canonical_content_hash(attribution),
+            }
+            connection.execute("SELECT analysis.write_phase4_book_attribution(%s, %s)", [
+                Jsonb(payload), self._telemetry_signature(connection, "phase4-book-attribution.v1", payload),
+            ])
         return attribution.book_attribution_id
 
     def store_drift_decisions(self, decisions: tuple[PortfolioDriftDecision, ...]) -> int:

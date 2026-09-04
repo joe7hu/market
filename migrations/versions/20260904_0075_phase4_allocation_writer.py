@@ -229,9 +229,14 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("""
+        DROP TRIGGER IF EXISTS zzz_phase4_funding_content ON analysis.portfolio_allocation_item;
+        DROP FUNCTION IF EXISTS analysis.enforce_phase4_funding_content();
         DROP FUNCTION IF EXISTS analysis.write_phase4_allocation(JSONB, JSONB, TEXT);
         DROP FUNCTION IF EXISTS analysis.phase4_allocation_authorization_payload(JSONB, JSONB);
         DROP FUNCTION IF EXISTS analysis.phase4_allocation_signing_key();
         DROP TABLE IF EXISTS analysis.phase4_allocation_signing_secret;
         ALTER TABLE analysis.portfolio_allocation_item DROP COLUMN IF EXISTS funding_sources;
+        GRANT EXECUTE ON FUNCTION analysis.insert_phase4_allocation_snapshot(JSONB),
+          analysis.insert_phase4_allocation_item(JSONB), analysis.insert_phase4_paper_execution_observation(JSONB),
+          analysis.insert_phase4_book_attribution(JSONB) TO market_app;
     """)
