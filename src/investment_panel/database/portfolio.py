@@ -1027,7 +1027,7 @@ class PortfolioLoopRepository:
         midpoint = float(quote["mid"]) if quote and quote.get("mid") is not None else None
         if midpoint is None and quote and quote.get("bid") is not None and quote.get("ask") is not None:
             midpoint = (float(quote["bid"]) + float(quote["ask"])) / 2
-        spread_bps = ((float(quote["ask"]) - float(quote["bid"])) / midpoint * 10_000) if quote and midpoint and quote.get("bid") is not None and quote.get("ask") is not None else None
+        spread_bps = (float(quote["spread"]) / midpoint * 10_000) if quote and midpoint and quote.get("spread") is not None else ((float(quote["ask"]) - float(quote["bid"])) / midpoint * 10_000) if quote and midpoint and quote.get("bid") is not None and quote.get("ask") is not None else None
         latency_ms = (filled_at - submitted_at).total_seconds() * 1000
         impact_bps = abs(float(order["entry_slippage"]) / midpoint * 10_000) if midpoint else None
         observation = PaperExecutionObservation(

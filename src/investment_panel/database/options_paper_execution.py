@@ -292,6 +292,11 @@ class OptionsPaperExecutionRepository:
                 multiplier = _number(quoted[0].get("multiplier")) if quoted else None
                 if multiplier is None or multiplier <= 0:
                     return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "contract_multiplier_missing"}
+                quote_payload = {
+                    "mid": _midpoint_package(quoted),
+                    "spread": sum(float(leg["ask"]) - float(leg["bid"]) for leg in quoted),
+                    "leg_count": len(quoted),
+                }
                 connection.execute(
                     """
                     UPDATE app.paper_order
@@ -302,7 +307,7 @@ class OptionsPaperExecutionRepository:
                         entry_slippage = %s, updated_at = %s, unfilled_reason = NULL
                     WHERE id = %s::uuid
                     """,
-                    [fill_price, now, Jsonb({"mid": _midpoint_package(quoted), "legs": quoted}), multiplier, fill_quantity, fees, fees, slippage, now, paper_order_id],
+                    [fill_price, now, Jsonb(quote_payload), multiplier, fill_quantity, fees, fees, slippage, now, paper_order_id],
                 )
                 _journal(
                     connection, item, action="paper_entry", quantity=fill_quantity,
