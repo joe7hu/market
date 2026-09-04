@@ -895,11 +895,12 @@ class TickerPaperExecutionRepository:
                     multiplier = int(legs[0].get("multiplier") or 0)
                     if multiplier <= 0:
                         return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "assignment_multiplier_missing"}
-                    assignment_fee = FEE_PER_CONTRACT_LEG * len(legs)
-                    settlement_value = (strike - underlying_price) * multiplier * _quantity(order.get("quantity"))
+                    contract_count = _quantity(order.get("quantity"))
+                    assignment_fee = FEE_PER_CONTRACT_LEG * len(legs) * contract_count
+                    settlement_value = (strike - underlying_price) * multiplier * contract_count
                     policy["assignment"] = {
                         "status": "assigned", "strike": strike, "underlying_price": underlying_price,
-                        "multiplier": multiplier, "settlement_value": settlement_value,
+                        "multiplier": multiplier, "contract_count": contract_count, "settlement_value": settlement_value,
                         "settled_at": now, "assignment_fee": assignment_fee,
                     }
                     policy["exit_fill_count"] = int(_number(policy.get("exit_fill_count")) or 0) + 1

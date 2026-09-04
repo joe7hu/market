@@ -666,6 +666,19 @@ class PortfolioLoopRepository:
                     execution_model = ExecutionModelSnapshot.model_validate(dict(execution_row))
                     if str(execution_row["content_hash"]).strip() != canonical_content_hash(execution_model):
                         execution_row = None
+                    else:
+                        genuine_count = connection.execute(
+                            """SELECT count(*) AS count FROM app.paper_execution_observation observation
+                               JOIN app.paper_order paper ON paper.id = observation.paper_order_id
+                               WHERE observation.paper_execution_observation_id = ANY(%s)
+                                 AND observation.execution_mode = 'paper' AND observation.paper_only
+                                 AND observation.filled_quantity > 0 AND observation.fill_price IS NOT NULL
+                                 AND observation.available_at <= %s
+                                 AND paper.filled_at IS NOT NULL AND paper.actual_fill_price IS NOT NULL""",
+                            [execution_model.metadata.get("paper_observation_ids") if isinstance(execution_model.metadata.get("paper_observation_ids"), list) else [], as_of],
+                        ).fetchone()
+                        if not execution_model.metadata.get("paper_observation_ids") or int(genuine_count["count"] if genuine_count else 0) != execution_model.sample_count:
+                            execution_row = None
                 except (TypeError, ValueError):
                     execution_row = None
             constraint_payload = {
@@ -734,11 +747,8 @@ class PortfolioLoopRepository:
                 and candidates and required_candidates and tape_rows
                 and all(joint_limits.values()) and min_liquidity is not None and bool(allowed_venues)
             )
-        authority = portfolio_core._PostgreSQLAuthorityToken._issue(
-            as_of, authority_snapshot_id, canonical_content_hash(authority_payload), portfolio_core._POSTGRESQL_AUTHORITY_SEAL,
-        )
-        return AuthoritativePortfolioBundle._from_postgresql(
-            source_payload=authority_payload,
+        bundle = AuthoritativePortfolioBundle(
+            input_cutoff=as_of,
             candidates=tuple(candidates),
             book=PortfolioBookEvidence(
                 snapshot_id=(f"broker-account:{account['id']}" if account else None),
@@ -776,15 +786,17 @@ class PortfolioLoopRepository:
             ),
             drift_scores=drift_by_revision,
             complete=complete,
-            authority=authority,
+            authority_snapshot_id=authority_snapshot_id,
+            authority_content_hash=canonical_content_hash(authority_payload),
         )
+        return portfolio_core.bind_postgresql_bundle(bundle, authority_payload)
 
     def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
         """Persist one allocation from the validated PostgreSQL candidate bundle."""
 
         from investment_panel.core.portfolio import (
             allocate_portfolio, apply_decay_to_allocation,
-            build_execution_model_snapshot, build_scenario_artifact_from_observations,
+            build_scenario_artifact_from_observations,
         )
 
         bundle = self.read_authoritative_candidate_bundle(as_of=as_of)
@@ -814,21 +826,7 @@ class PortfolioLoopRepository:
                 allocation, drift_decisions = apply_decay_to_allocation(
                     allocation, {}, rollback_threshold=1.0,
                 )
-        with self.runtime.snapshot() as connection:
-            item_ids = [item.allocation_item_id for item in allocation.items if item.ticker != "CASH"]
-            observations = [PaperExecutionObservation.model_validate(dict(row)) for row in connection.execute(
-                """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
-                          execution_mode, paper_only, status, requested_quantity, filled_quantity,
-                          requested_price, fill_price, spread_bps, latency_ms, impact_bps,
-                          side, exit_price, observed_at, available_at, metadata
-                   FROM app.paper_execution_observation
-                   WHERE paper_only AND execution_mode = 'paper'
-                     AND allocation_item_id = ANY(%s)
-                     AND filled_quantity >= 0
-                   ORDER BY observed_at DESC LIMIT 500""", [item_ids]
-            ).fetchall()] if item_ids else []
-        execution = build_execution_model_snapshot(allocation.allocation_id, allocation.input_cutoff, observations)
-        self.store_allocation(allocation, scenario=scenario, execution_model=execution)
+        self.store_allocation(allocation, scenario=scenario)
         self.store_drift_decisions(drift_decisions)
         return allocation
 
@@ -983,6 +981,10 @@ class PortfolioLoopRepository:
         if event_available_at <= event_observed_at:
             return None
         policy = order["policy_result"] or {}
+        assignment = policy.get("assignment") if isinstance(policy.get("assignment"), dict) else {}
+        contract_multiplier = assignment.get("multiplier", 1)
+        if not isinstance(contract_multiplier, (int, float)) or isinstance(contract_multiplier, bool) or float(contract_multiplier) <= 0:
+            return None
         quote = policy.get("entry_quote") or policy.get("quote") or policy.get("execution_quote")
         quote = quote if isinstance(quote, dict) else None
         midpoint = float(quote["mid"]) if quote and quote.get("mid") is not None else None
@@ -1003,6 +1005,7 @@ class PortfolioLoopRepository:
             exit_price=float(order["exit_price"]) if observation_status == "exited" else None,
             side=str(order["side"] or "buy"), observed_at=event_observed_at, available_at=event_available_at,
             metadata={"fees": float(order["fees"]) if order["fees"] is not None else None, "paper_order_id": str(order["id"]),
+                      "contract_multiplier": float(contract_multiplier),
                       "submitted_at": submitted_at, "filled_at": filled_at, "entry_slippage": order["entry_slippage"],
                       "exit_slippage": order["exit_slippage"], "quote": quote},
         )
@@ -1103,7 +1106,11 @@ class PortfolioLoopRepository:
                 if observation["filled_quantity"] <= 0 or observation["fill_price"] is None or observation["exit_price"] is None or observation["order_status"] not in {"exited", "closed"} or observation["exit_at"] is None or observation["filled_at"] is None:
                     raise ValueError("realized attribution requires entry and exit fills")
                 direction = 1 if observation["side"] == "buy" else -1
-                gross = direction * (float(observation["exit_price"]) - float(observation["fill_price"])) * float(observation["filled_quantity"])
+                assignment = (observation["policy_result"] or {}).get("assignment")
+                multiplier = assignment.get("multiplier", 1) if isinstance(assignment, dict) else 1
+                if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or float(multiplier) <= 0:
+                    raise ValueError("realized attribution requires a valid persisted contract multiplier")
+                gross = direction * (float(observation["exit_price"]) - float(observation["fill_price"])) * float(observation["filled_quantity"]) * float(multiplier)
                 derived = gross - float(observation["fees"] or 0)
                 if abs(float(attribution.realized_pnl or 0) - derived) > 1e-9:
                     raise ValueError("realized attribution P&L does not match the paper fill lineage")

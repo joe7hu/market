@@ -10,50 +10,8 @@ from math import isfinite
 from typing import Any, Mapping
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-
-class _PostgreSQLAuthorityToken:
-    """Opaque proof issued only after the repository verifies one DB slice."""
-
-    __slots__ = ("_cutoff", "_snapshot_id", "_source_content_hash")
-
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        raise TypeError("PostgreSQL authority tokens are repository-issued")
-
-    @classmethod
-    def _issue(
-        cls, cutoff: datetime, snapshot_id: str, source_content_hash: str, seal: object,
-    ) -> "_PostgreSQLAuthorityToken":
-        if (
-            seal is not _POSTGRESQL_AUTHORITY_SEAL
-            or cutoff.tzinfo is None
-            or not snapshot_id.strip()
-            or len(source_content_hash) != 64
-            or source_content_hash == "0" * 64
-            or any(char not in "0123456789abcdef" for char in source_content_hash.lower())
-        ):
-            raise ValueError("PostgreSQL authority requires a verified canonical source digest")
-        token = object.__new__(cls)
-        object.__setattr__(token, "_cutoff", cutoff)
-        object.__setattr__(token, "_snapshot_id", snapshot_id)
-        object.__setattr__(token, "_source_content_hash", source_content_hash)
-        return token
-
-    @property
-    def cutoff(self) -> datetime:
-        return self._cutoff
-
-    @property
-    def snapshot_id(self) -> str:
-        return self._snapshot_id
-
-    @property
-    def source_content_hash(self) -> str:
-        return self._source_content_hash
-
-
-_POSTGRESQL_AUTHORITY_SEAL = object()
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from scipy.optimize import minimize
 
 def _json(value: Any) -> Any:
     if isinstance(value, datetime):
@@ -471,73 +429,10 @@ class AuthoritativePortfolioBundle(BaseModel):
     complete: bool = True
     authority_snapshot_id: str = Field(min_length=1)
     authority_content_hash: str = Field(min_length=64, max_length=64)
-    repository_authority: object = Field(exclude=True, repr=False)
-
-    @classmethod
-    def _from_postgresql(
-        cls,
-        *,
-        source_payload: Mapping[str, Any],
-        candidates: tuple[PortfolioCandidate, ...],
-        book: PortfolioBookEvidence,
-        constraints: PortfolioConstraintEvidence,
-        execution: PortfolioExecutionEvidence,
-        scenario: PortfolioScenarioEvidence,
-        drift_scores: Mapping[str, float] | None = None,
-        complete: bool = True,
-        authority: _PostgreSQLAuthorityToken | None = None,
-    ) -> "AuthoritativePortfolioBundle":
-        """Hydrate a bundle only from the repository-issued proof and typed rows."""
-
-        if not isinstance(source_payload, Mapping):
-            raise ValueError("PostgreSQL authority requires a complete verified source slice")
-        cutoff = source_payload.get("input_cutoff")
-        snapshot_id = source_payload.get("authority_snapshot_id")
-        source_rows = source_payload.get("source_rows")
-        if (
-            not isinstance(cutoff, datetime)
-            or not isinstance(snapshot_id, str)
-            or not isinstance(source_rows, Mapping)
-            or any(key not in source_rows for key in ("account", "positions", "candidates", "tape"))
-        ):
-            raise ValueError("PostgreSQL authority source slice is incomplete")
-        if not isinstance(authority, _PostgreSQLAuthorityToken):
-            raise ValueError("PostgreSQL authority must be issued by the repository")
-        if authority.cutoff != cutoff or authority.snapshot_id != snapshot_id:
-            raise ValueError("PostgreSQL authority token does not match its source slice")
-        if authority.source_content_hash != canonical_content_hash(source_payload):
-            raise ValueError("PostgreSQL authority source digest does not match its persisted source")
-        provenance = source_payload.get("candidate_provenance")
-        if not isinstance(provenance, list) or len(provenance) != len(candidates):
-            raise ValueError("PostgreSQL authority candidate provenance is incomplete")
-        for candidate, proof in zip(candidates, provenance):
-            if not isinstance(proof, Mapping) or proof.get("impact_id") != candidate.portfolio_impact_id:
-                raise ValueError("PostgreSQL authority candidate impact proof is invalid")
-            if proof.get("decision_id") != candidate.source_decision_id:
-                raise ValueError("PostgreSQL authority candidate decision proof is invalid")
-            if proof.get("source_decision_input_hash") != candidate.source_decision_input_hash:
-                raise ValueError("PostgreSQL authority decision digest is not persisted")
-        return cls.model_validate({
-            "input_cutoff": authority.cutoff,
-            "candidates": candidates,
-            "book": book,
-            "constraints": constraints,
-            "execution": execution,
-            "scenario": scenario,
-            "drift_scores": dict(drift_scores or {}),
-            "complete": complete,
-            "authority_snapshot_id": authority.snapshot_id,
-            "authority_content_hash": authority.source_content_hash,
-            "repository_authority": authority,
-        })
+    _repository_proof: object | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def validate_bundle(self) -> "AuthoritativePortfolioBundle":
-        token = self.repository_authority
-        if not isinstance(token, _PostgreSQLAuthorityToken) or token.cutoff != self.input_cutoff:
-            raise ValueError("authoritative bundle must be issued by the PostgreSQL repository")
-        if token.snapshot_id != self.authority_snapshot_id or token.source_content_hash != self.authority_content_hash:
-            raise ValueError("authoritative bundle proof does not match its database source")
         if self.authority_content_hash == "0" * 64 or any(char not in "0123456789abcdef" for char in self.authority_content_hash.lower()):
             raise ValueError("authoritative bundle requires a canonical source digest")
         if self.input_cutoff.tzinfo is None:
@@ -598,6 +493,39 @@ class AuthoritativePortfolioBundle(BaseModel):
     @property
     def scenario_observations(self) -> tuple[dict[str, Any], ...]:
         return self.scenario.observations
+
+
+_REPOSITORY_PROOF = object()
+
+
+def bind_postgresql_bundle(
+    bundle: AuthoritativePortfolioBundle, source_payload: Mapping[str, Any],
+) -> AuthoritativePortfolioBundle:
+    """Bind a fully checked PostgreSQL slice; production allocation rejects all others."""
+
+    source_rows = source_payload.get("source_rows") if isinstance(source_payload, Mapping) else None
+    provenance = source_payload.get("candidate_provenance") if isinstance(source_payload, Mapping) else None
+    if (
+        not isinstance(source_rows, Mapping)
+        or any(key not in source_rows for key in ("account", "positions", "candidates", "tape"))
+        or source_payload.get("input_cutoff") != bundle.input_cutoff
+        or source_payload.get("authority_snapshot_id") != bundle.authority_snapshot_id
+        or canonical_content_hash(source_payload) != bundle.authority_content_hash
+        or not isinstance(provenance, list)
+        or len(provenance) != len(bundle.candidates)
+    ):
+        raise ValueError("PostgreSQL authority source slice is incomplete or changed")
+    for candidate, proof in zip(bundle.candidates, provenance):
+        if not isinstance(proof, Mapping) or (
+            proof.get("impact_id"), proof.get("decision_id"), proof.get("source_input_hash"),
+            proof.get("source_decision_input_hash"),
+        ) != (
+            candidate.portfolio_impact_id, candidate.source_decision_id, candidate.source_input_hash,
+            candidate.source_decision_input_hash,
+        ):
+            raise ValueError("PostgreSQL authority candidate provenance is invalid")
+    bundle._repository_proof = _REPOSITORY_PROOF
+    return bundle
 
 
 class PortfolioAllocationItem(BaseModel):
@@ -805,7 +733,7 @@ def allocate_portfolio(
 
     if not isinstance(bundle, AuthoritativePortfolioBundle):
         raise TypeError("production allocation requires AuthoritativePortfolioBundle")
-    if not isinstance(bundle.repository_authority, _PostgreSQLAuthorityToken):
+    if bundle._repository_proof is not _REPOSITORY_PROOF:
         raise TypeError("production allocation requires a repository-issued PostgreSQL bundle")
     return _allocate_portfolio(bundle, as_of=as_of)
 
@@ -940,74 +868,73 @@ def _allocate_portfolio(
         }
         eligible.append((candidate, utility, trace))
     eligible.sort(key=lambda item: (item[0].rank_position or 2**31, item[0].candidate_id))
-    remaining = 1.0
-    cash_remaining_by_source: dict[str, float] = {}
-    if isinstance(candidates, AuthoritativePortfolioBundle):
-        if candidates.book.cash_available is not None and candidates.book.cash_source_id:
-            cash_remaining_by_source[candidates.book.cash_source_id] = candidates.book.cash_available
-    else:
-        for candidate in normalized:
-            if candidate.cash_source_id and candidate.cash_available is not None:
-                cash_remaining_by_source.setdefault(candidate.cash_source_id, candidate.cash_available)
-    trim_remaining = {
-        candidate.trim_position_id: candidate.trim_available
-        for candidate, _, _ in eligible
-        if candidate.trim_position_id and candidate.trim_available is not None
-    }
     nav = candidates.book.net_liquidation if isinstance(candidates, AuthoritativePortfolioBundle) else None
+    fundable = [(candidate, utility, trace) for candidate, utility, trace in eligible if utility > cash_hurdle]
     for candidate, utility, trace in eligible:
         if utility <= cash_hurdle:
-            payload = {"candidate_id": candidate.candidate_id, "ticker": candidate.ticker, "disposition": "ranked_out", "trace": trace}
             ranked.append(PortfolioAllocationItem(
-                allocation_item_id=f"allocation-item:{_hash(payload)}", candidate_id=candidate.candidate_id,
-                ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
+                allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'blockers': ('below_cash_hurdle',)})}",
+                candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
                 action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="ranked_out",
                 target_weight=0, current_weight=candidate.current_weight, marginal_book_utility=utility,
                 blockers=("below_cash_hurdle",), trace=_json(trace),
             ))
+    if isinstance(candidates, AuthoritativePortfolioBundle):
+        policy = candidates.constraints
+        admissible: list[tuple[PortfolioCandidate, float, dict[str, Any]]] = []
+        for candidate, utility, trace in fundable:
+            liquidity = (candidate.liquidity or {}).get("score", (candidate.liquidity or {}).get("available_notional"))
+            blockers = ([] if policy.min_liquidity is None or (liquidity is not None and float(liquidity) >= policy.min_liquidity) else ["liquidity_limit"])
+            if policy.allowed_venues and candidate.venue not in policy.allowed_venues:
+                blockers.append("venue_not_allowed")
+            if blockers:
+                ranked.append(_rejection(candidate, tuple(blockers)))
+            else:
+                admissible.append((candidate, utility, trace))
+        fundable = admissible
+    position_limit = candidates.constraints.position_limit if isinstance(candidates, AuthoritativePortfolioBundle) else 1.0
+    caps = [min(candidate.risk_budget, candidate.kelly_cap, candidate.drawdown_cap, candidate.capacity, position_limit) / candidate.volatility * max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))) for candidate, _, _ in fundable]
+    limits = [(candidate.current_weight, min(1.0, cap)) for candidate, cap in zip((row[0] for row in fundable), caps)]
+    source_limits: dict[str, float] = {}
+    for candidate, _, _ in fundable:
+        key = candidate.cash_source_id if candidate.current_weight <= 0 else candidate.trim_position_id
+        amount = candidate.cash_available if candidate.current_weight <= 0 else candidate.trim_available
+        if key and amount is not None:
+            source_limits.setdefault(key, amount)
+    def _funding(weights: Any, key: str) -> float:
+        return sum(max(0.0, float(weight) - candidate.current_weight) * (nav if nav is not None else 1.0)
+                   for weight, (candidate, _, _) in zip(weights, fundable)
+                   if (candidate.cash_source_id if candidate.current_weight <= 0 else candidate.trim_position_id) == key)
+    constraints = [{"type": "ineq", "fun": lambda weights: 1.0 - sum(weights)}]
+    constraints.extend({"type": "ineq", "fun": lambda weights, key=key, amount=amount: amount - _funding(weights, key)} for key, amount in source_limits.items())
+    if isinstance(candidates, AuthoritativePortfolioBundle):
+        policy = candidates.constraints
+        for label, limits_map, attribute in (("sector", policy.sector_limits, "sector"), ("asset_class", policy.asset_class_limits, "asset_class")):
+            for key, limit in limits_map.items():
+                constraints.append({"type": "ineq", "fun": lambda weights, key=key, limit=limit, attribute=attribute: limit - sum(float(weight) for weight, (candidate, _, _) in zip(weights, fundable) if getattr(candidate, attribute) == key)})
+        for limits_map, attribute in ((policy.factor_limits, "factor_exposure"), (policy.greek_limits, "greeks")):
+            for key, limit in limits_map.items():
+                constraints.append({"type": "ineq", "fun": lambda weights, key=key, limit=limit, attribute=attribute: limit - sum(abs(float(weight) * float((getattr(candidate, attribute) or {}).get(key, 0))) for weight, (candidate, _, _) in zip(weights, fundable))})
+        risk_limit = min(sum(candidate.risk_budget for candidate, _, _ in fundable), policy.aggregate_loss_limit or float("inf"))
+        constraints.append({"type": "ineq", "fun": lambda weights: risk_limit - sum(float(left) * float(right) * float((candidate.covariance or {}).get(other.ticker, 0)) for left, (candidate, _, _), right, (other, _, _) in ((left, first, right, second) for left, first in zip(weights, fundable) for right, second in zip(weights, fundable))) ** 0.5})
+    result = minimize(lambda weights: -sum(float(weight) * utility for weight, (_, utility, _) in zip(weights, fundable)), [lower for lower, _ in limits], bounds=limits, constraints=constraints, method="SLSQP") if fundable else None
+    weights = list(result.x) if result is not None and result.success else [0.0] * len(fundable)
+    for weight, (candidate, utility, trace) in zip(weights, fundable):
+        target = max(0.0, float(weight))
+        if target <= 1e-8:
+            ranked.append(_rejection(candidate, ("joint_optimizer_ranked_out",)))
             continue
-        cap = min(candidate.risk_budget, candidate.kelly_cap, candidate.drawdown_cap, candidate.capacity, remaining)
-        uncertainty_haircut = max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12)))
-        target = max(0.0, cap / candidate.volatility * uncertainty_haircut)
-        if target <= 0:
-            ranked.append(_rejection(candidate, ("capacity_or_risk_cap_zero",)))
-            continue
-        target = min(target, remaining)
-        weight_delta = max(0.0, target - candidate.current_weight)
-        funding_amount = weight_delta * nav if nav is not None else None
-        funding_key = candidate.cash_source_id if candidate.current_weight <= 0 else candidate.trim_position_id
-        source_remaining = (
-            cash_remaining_by_source.get(funding_key)
-            if candidate.current_weight <= 0
-            else trim_remaining.get(funding_key)
-        )
-        if funding_amount is None:
-            funding_amount = source_remaining
-        if funding_amount is None or funding_amount <= 0 or source_remaining is None or funding_amount > source_remaining:
-            ranked.append(_rejection(candidate, ("aggregate_funding_capacity_unavailable",)))
-            continue
-        if candidate.current_weight <= 0:
-            cash_remaining_by_source[funding_key] = source_remaining - funding_amount
-        elif funding_key:
-            trim_remaining[funding_key] = source_remaining - funding_amount
-        trace["uncertainty_scale"] = (candidate.expected_return - candidate.uncertainty) / candidate.expected_return if candidate.expected_return else 0
-        trace["uncertainty_haircut"] = uncertainty_haircut
-        trace["uncertainty_scaled_weight"] = target
-        trace["constraint_weight"] = cap
-        trace["portfolio_nav"] = nav
-        trace["weight_delta"] = weight_delta
-        trace["funding_amount"] = funding_amount
-        trace["funding_source_capacity_remaining"] = source_remaining
-        payload = {"candidate_id": candidate.candidate_id, "ticker": candidate.ticker, "disposition": "selected", "target_weight": target, "trace": trace}
+        key = candidate.cash_source_id if candidate.current_weight <= 0 else candidate.trim_position_id
+        funding_amount = max(0.0, target - candidate.current_weight) * (nav if nav is not None else 1.0)
+        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": max(0.0, target - candidate.current_weight), "funding_amount": funding_amount}
         ranked.append(PortfolioAllocationItem(
-            allocation_item_id=f"allocation-item:{_hash(payload)}", candidate_id=candidate.candidate_id,
-            ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
+            allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'target_weight': target, 'trace': trace})}",
+            candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
             action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
-            funding_source=(f"CASH:{candidate.cash_source_id}" if candidate.current_weight == 0 else f"TRIM:{candidate.trim_position_id}"),
-            funding_amount=funding_amount, trace=_json(trace),
+            funding_source=(f"CASH:{key}" if candidate.current_weight == 0 else f"TRIM:{key}"), funding_amount=funding_amount, trace=_json(trace),
         ))
-        remaining -= target
+    remaining = max(0.0, 1.0 - sum(item.target_weight for item in ranked if item.disposition == "selected"))
     cash_payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected", "target_weight": remaining}
     ranked.append(PortfolioAllocationItem(
         allocation_item_id=f"allocation-item:{_hash(cash_payload)}", candidate_id="CASH", ticker="CASH",
@@ -1562,8 +1489,13 @@ class ExecutionModelSnapshot(BaseModel):
     def validate_calibration(self) -> "ExecutionModelSnapshot":
         if self.calibration_status not in {"calibrated", "calibration_pending", "unavailable"}:
             raise ValueError("invalid execution calibration status")
-        if self.calibration_status == "calibrated" and self.sample_count == 0:
-            raise ValueError("calibrated execution telemetry requires genuine fills")
+        if self.calibration_status == "calibrated" and (
+            self.sample_count == 0
+            or self.metadata.get("source") != "paper_execution_observation"
+            or self.metadata.get("genuine_fill_count") != self.sample_count
+            or len(self.metadata.get("paper_observation_ids") or ()) != self.sample_count
+        ):
+            raise ValueError("calibrated execution telemetry requires persisted genuine paper fills")
         for name in ("fill_probability", "spread_bps", "latency_ms", "impact_bps"):
             _finite(getattr(self, name), name)
         return self
@@ -1574,7 +1506,13 @@ def build_execution_model_snapshot(
     input_cutoff: datetime,
     observations: list[PaperExecutionObservation],
 ) -> ExecutionModelSnapshot:
-    genuine = [item for item in observations if item.filled_quantity > 0 and item.fill_price is not None]
+    genuine = [
+        item for item in observations
+        if item.filled_quantity > 0 and item.fill_price is not None
+        and item.available_at.astimezone(UTC) <= input_cutoff.astimezone(UTC)
+        and item.observed_at.astimezone(UTC) < item.available_at.astimezone(UTC)
+        and isinstance(item.metadata.get("paper_order_id"), str)
+    ]
     latency_values = [
         (item.available_at.astimezone(UTC) - item.observed_at.astimezone(UTC)).total_seconds() * 1000
         for item in genuine
@@ -1592,6 +1530,7 @@ def build_execution_model_snapshot(
         "impact_bps": sum(impact_values) / len(impact_values) if impact_values else None,
         "metadata": {
             "paper_observation_ids": sorted(item.paper_execution_observation_id for item in genuine),
+            "genuine_fill_count": len(genuine),
             "source": "paper_execution_observation",
         },
     }
@@ -1663,7 +1602,10 @@ def attribute_paper_pnl(
         raise ValueError("attribution requires a genuine exited paper fill")
     direction = 1 if observation.side == "buy" else -1
     status = "realized"
-    gross_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity
+    multiplier = observation.metadata.get("contract_multiplier", 1)
+    if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or not isfinite(float(multiplier)) or float(multiplier) <= 0:
+        raise ValueError("attribution requires a finite persisted contract multiplier")
+    gross_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity * float(multiplier)
     fees = observation.metadata.get("fees", 0)
     if not isinstance(fees, (int, float)) or not isfinite(float(fees)) or float(fees) < 0:
         raise ValueError("attribution requires a finite persisted paper fee")
@@ -1688,6 +1630,7 @@ def attribute_paper_pnl(
         "fill_id": observation.paper_execution_observation_id if observation else None,
         "pnl": {"gross": gross_pnl, "realized": derived_pnl if status == "realized" else None, "fees": float(fees), "net": derived_pnl,
                 "quantity": observation.filled_quantity if observation else None,
+                "contract_multiplier": float(multiplier),
                 "entry_price": observation.fill_price if observation else None, "exit_price": observation.exit_price if observation else None},
         "cost_decomposition": {"spread_bps": observation.spread_bps if observation else None,
                                "impact_bps": observation.impact_bps if observation else None, "fees": float(fees)},

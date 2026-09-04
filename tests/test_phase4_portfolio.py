@@ -5,6 +5,7 @@ from app.contracts import OptionsHistoryToggleInput
 from app.routers.portfolio import delete_watchlist_symbol_endpoint, set_watchlist_options_history_endpoint
 from investment_panel.database.options_paper_execution import OptionsPaperExecutionRepository
 from investment_panel.database.portfolio import PortfolioLoopRepository
+from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
 from investment_panel.core import portfolio as portfolio_core
 
 from investment_panel.core.portfolio import (
@@ -106,36 +107,23 @@ def test_allocator_rejects_free_form_mapping_authority() -> None:
         allocate_portfolio([candidate("MAPPING").model_dump()], as_of=AS_OF)
 
 
-def test_postgresql_bundle_hydration_rejects_caller_forged_authority() -> None:
-    with pytest.raises(ValueError, match="issued by the repository"):
-        AuthoritativePortfolioBundle._from_postgresql(
-            source_payload={
-                "input_cutoff": AS_OF, "authority_snapshot_id": "account:1",
-                "source_rows": {"account": {}, "positions": [], "candidates": [], "tape": []},
-                "candidate_provenance": [],
-            },
-            candidates=(), book=None, constraints=None, execution=None, scenario=None,
-        )
+def test_postgresql_authority_has_no_importable_issuer_or_caller_hydrator() -> None:
+    assert not hasattr(portfolio_core, "_POSTGRESQL_AUTHORITY_SEAL")
+    assert not hasattr(portfolio_core, "_PostgreSQLAuthorityToken")
+    assert not hasattr(AuthoritativePortfolioBundle, "_from_postgresql")
 
 
-def test_postgresql_authority_token_is_sealed_and_matches_persisted_digest() -> None:
-    source = {
-        "input_cutoff": AS_OF, "authority_snapshot_id": "account:1",
-        "source_rows": {"account": {}, "positions": [], "candidates": [], "tape": []},
-        "candidate_provenance": [],
-    }
-    with pytest.raises(ValueError, match="verified canonical source digest"):
-        portfolio_core._PostgreSQLAuthorityToken._issue(AS_OF, "account:1", "a" * 64, object())
-    token = portfolio_core._PostgreSQLAuthorityToken._issue(
-        AS_OF, "account:1", portfolio_core.canonical_content_hash(source), portfolio_core._POSTGRESQL_AUTHORITY_SEAL,
+def test_production_allocator_rejects_a_caller_constructed_bundle() -> None:
+    bundle = AuthoritativePortfolioBundle.model_construct(
+        input_cutoff=AS_OF, candidates=(), complete=False,
+        book=PortfolioBookEvidence.model_construct(input_cutoff=AS_OF),
+        constraints=PortfolioConstraintEvidence.model_construct(constraint_hash="x"),
+        execution=PortfolioExecutionEvidence.model_construct(input_cutoff=AS_OF),
+        scenario=PortfolioScenarioEvidence.model_construct(input_cutoff=AS_OF),
+        authority_snapshot_id="account:1", authority_content_hash="a" * 64,
     )
-    assert token.cutoff == AS_OF
-    assert token.snapshot_id == "account:1"
-    with pytest.raises(ValueError, match="source digest"):
-        AuthoritativePortfolioBundle._from_postgresql(
-            source_payload=source, candidates=(), book=None, constraints=None, execution=None, scenario=None,
-            authority=portfolio_core._PostgreSQLAuthorityToken._issue(AS_OF, "account:1", "b" * 64, portfolio_core._POSTGRESQL_AUTHORITY_SEAL),
-        )
+    with pytest.raises(TypeError, match="repository-issued"):
+        allocate_portfolio(bundle, as_of=AS_OF)
 
 
 @pytest.mark.parametrize("field", ["factor_exposure", "greeks"])
@@ -241,8 +229,10 @@ def test_allocator_rejects_duplicate_tickers_and_joint_constraints_fail_closed()
         authority_snapshot_id="account:1", authority_content_hash="b" * 64, repository_authority=object(),
     )
     allocation = portfolio_core._allocate_portfolio(constrained, as_of=AS_OF)
-    assert allocation.status == "cash_only"
-    assert allocation.metadata["safe_state_reason"].startswith("joint_constraints_failed:")
+    selected = [item for item in allocation.items if item.disposition == "selected" and item.ticker != "CASH"]
+    assert allocation.status == "available"
+    assert sum(item.target_weight for item in selected) <= 0.01 + 1e-9
+    assert all(item.trace["optimizer"] == "SLSQP" for item in selected)
 
 
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:
@@ -321,6 +311,7 @@ def observation(status: str, filled: float = 0, *, exit_price: float | None = No
         requested_quantity=10, filled_quantity=filled, requested_price=100,
         fill_price=100.5 if filled else None, spread_bps=5 if filled else None,
         exit_price=exit_price, observed_at=AS_OF, available_at=AS_OF + timedelta(seconds=1),
+        metadata={"paper_order_id": "00000000-0000-0000-0000-000000000001"},
     )
 
 
@@ -330,7 +321,7 @@ def test_execution_stays_calibration_pending_until_genuine_fill_and_attribution_
     assert pending_model.calibration_status == "calibration_pending"
     assert pending_model.sample_count == 0
     filled_observation = observation("filled", 10)
-    calibrated_model = build_execution_model_snapshot("allocation:x", AS_OF, [filled_observation])
+    calibrated_model = build_execution_model_snapshot("allocation:x", AS_OF + timedelta(seconds=2), [filled_observation])
     assert calibrated_model.calibration_status == "calibrated"
     allocation = allocate_portfolio_for_tests([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
     item = next(item for item in allocation.items if item.ticker == "GOOD")
@@ -344,6 +335,64 @@ def test_execution_stays_calibration_pending_until_genuine_fill_and_attribution_
     )
     assert realized.pnl_status == "realized"
     assert realized.realized_pnl == 15
+
+
+def test_assignment_attribution_uses_persisted_multiplier_and_total_fees() -> None:
+    allocation = allocate_portfolio_for_tests([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
+    item = next(item for item in allocation.items if item.ticker == "GOOD")
+    assigned = observation("exited", 2, exit_price=102).model_copy(update={
+        "allocation_item_id": item.allocation_item_id,
+        "metadata": {"paper_order_id": "00000000-0000-0000-0000-000000000001", "contract_multiplier": 100, "fees": 2.60},
+    })
+    realized = attribute_paper_pnl(allocation, item, observation=assigned)
+    assert realized.attribution["pnl"]["gross"] == 300
+    assert realized.realized_pnl == 297.4
+
+
+def test_csp_assignment_charges_each_contract_and_persists_multiplier(monkeypatch) -> None:
+    class Result:
+        def __init__(self, row): self.row = row
+        def fetchone(self): return self.row
+
+    class Connection:
+        def __init__(self): self.params = None
+        def execute(self, _query, params):
+            self.params = params
+            return Result({"price": 90})
+
+    repository = TickerPaperExecutionRepository.__new__(TickerPaperExecutionRepository)
+    repository.runtime = object()
+    monkeypatch.setattr(repository, "_stored_option_legs", lambda *_args: [{"strike": 100, "multiplier": 100, "expiration": AS_OF.date()}])
+    seen = []
+    monkeypatch.setattr(PortfolioLoopRepository, "record_existing_paper_order_fill", lambda *_args, **kwargs: seen.append(kwargs))
+    order = {
+        "id": "00000000-0000-0000-0000-000000000001", "instrument_id": 1,
+        "expression_kind": "CASH_SECURED_PUT", "structure": "cash_secured_put", "quantity": 2,
+        "filled_quantity": 2, "exited_quantity": 0, "policy_result": {}, "side": "sell",
+        "expires_at": AS_OF.date(),
+    }
+    result = repository._manage_option_open(Connection(), order, AS_OF, 2)
+    assert result["reason"] == "assignment"
+    assert result["assigned_strike"] == 100
+    assert seen == [{"paper_order_id": order["id"], "observed_at": AS_OF, "status": "exited"}]
+
+
+def test_execution_snapshot_persistence_rechecks_canonical_digest() -> None:
+    model = build_execution_model_snapshot("allocation:test", AS_OF, [])
+
+    class Result:
+        def fetchone(self):
+            return {"content_hash": portfolio_core.canonical_content_hash(model)}
+
+    class Connection:
+        def __init__(self): self.calls = 0
+        def execute(self, *_args):
+            self.calls += 1
+            return Result()
+
+    connection = Connection()
+    PortfolioLoopRepository.store_execution_model(connection, model)
+    assert connection.calls == 2
 
 
 def test_paper_observation_rejects_live_mode() -> None:
