@@ -291,7 +291,7 @@ def test_allocator_resolves_distinct_candidates_with_one_ticker_and_joint_constr
             asset_class_limits={"equity": 0.01}, greek_limits={"delta": 0.01},
             min_liquidity=0.5, allowed_venues=("NYSE",),
     )
-    allocation = portfolio_core._allocate_portfolio(
+    allocation = portfolio_core._compute_portfolio_allocation(
         constrained_candidates, as_of=AS_OF, cash_hurdle=0.01,
         book=PortfolioBookEvidence.model_construct(net_liquidation=100_000, cash_available=100_000, cash_source_id="acct:test:cash", input_cutoff=AS_OF),
         constraints=constraint_evidence,
@@ -306,7 +306,7 @@ def test_allocator_resolves_distinct_candidates_with_one_ticker_and_joint_constr
 def test_joint_optimizer_handles_required_trim_and_existing_holding_without_self_funding() -> None:
     held = candidate("HELD", current_weight=.40, trim_position_id="broker-position:held", trim_available=.40, capacity=.01)
     fresh = candidate("FRESH", cash_available=20_000, cash_source_id="cash:1")
-    allocation = portfolio_core._allocate_portfolio(
+    allocation = portfolio_core._compute_portfolio_allocation(
         [held, fresh], as_of=AS_OF, cash_hurdle=.01,
         book=PortfolioBookEvidence.model_construct(net_liquidation=100_000, cash_available=20_000, cash_source_id="cash:1", positions={"HELD": "broker-position:held", "LEGACY": "broker-position:legacy"}, position_weights={"HELD": .4, "LEGACY": .4}, input_cutoff=AS_OF),
         constraints=PortfolioConstraintEvidence.model_construct(cash_hurdle=.01, constraint_hash="constraints:test", risk_policy_hash="a" * 64, risk_policy_version="v1", position_limit=1, aggregate_loss_limit=1),

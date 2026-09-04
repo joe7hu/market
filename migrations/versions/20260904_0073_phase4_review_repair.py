@@ -86,12 +86,14 @@ def upgrade() -> None:
         CREATE TRIGGER phase4_review_snapshot_guard BEFORE INSERT ON analysis.portfolio_allocation_snapshot FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_review_snapshot_guard();
         CREATE TRIGGER phase4_review_item_guard BEFORE INSERT ON analysis.portfolio_allocation_item FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_review_item_guard();
 
+        DROP TRIGGER IF EXISTS execution_model_snapshot_evidence ON analysis.execution_model_snapshot;
+        DROP TRIGGER IF EXISTS paper_execution_observation_evidence ON app.paper_execution_observation;
         CREATE OR REPLACE FUNCTION analysis.enforce_phase4_execution_snapshot_guard()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE expected_cutoff TIMESTAMPTZ;
         BEGIN
             SELECT input_cutoff INTO expected_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id;
-            IF expected_cutoff IS NULL OR NEW.input_cutoff > expected_cutoff THEN
+            IF expected_cutoff IS NULL OR NEW.input_cutoff < expected_cutoff THEN
                 RAISE EXCEPTION 'Phase 4 execution snapshot cutoff is not bounded by allocation';
             END IF;
             IF NEW.calibration_status = 'calibrated' AND (
@@ -102,7 +104,9 @@ def upgrade() -> None:
                     JOIN app.paper_execution_observation observation ON observation.paper_execution_observation_id = id
                     JOIN analysis.portfolio_allocation_item item ON item.allocation_item_id = observation.allocation_item_id
                     JOIN app.paper_order paper ON paper.id = observation.paper_order_id
-                    WHERE item.allocation_id <> NEW.allocation_id OR observation.available_at > NEW.input_cutoff
+                    WHERE (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot prior
+                           WHERE prior.allocation_id = item.allocation_id) > observation.available_at
+                       OR observation.available_at > NEW.input_cutoff
                        OR observation.observed_at IS DISTINCT FROM paper.filled_at OR observation.available_at IS DISTINCT FROM paper.fill_evidence_at
                        OR observation.filled_quantity <= 0 OR observation.fill_price IS NULL OR paper.submitted_at IS NULL
                        OR paper.filled_at IS NULL OR paper.fill_evidence_at IS NULL OR paper.execution_quote IS NULL
@@ -124,8 +128,12 @@ def upgrade() -> None:
                OR paper.filled_at IS NULL OR paper.fill_evidence_at IS NULL OR paper.execution_quote IS NULL
                OR paper.fees IS NULL OR paper.entry_fees IS NULL OR paper.entry_slippage IS NULL
                OR paper.contract_multiplier IS NULL OR paper.filled_quantity <= 0 OR paper.actual_fill_price IS NULL
-               OR paper.fill_evidence_at <= paper.filled_at OR NEW.observed_at IS DISTINCT FROM paper.filled_at
-               OR NEW.available_at IS DISTINCT FROM paper.fill_evidence_at OR NEW.fill_price IS DISTINCT FROM paper.actual_fill_price
+               OR paper.fill_evidence_at <= paper.filled_at
+               OR (NEW.status <> 'exited' AND NEW.observed_at IS DISTINCT FROM paper.filled_at)
+               OR (NEW.status = 'exited' AND (paper.exit_at IS NULL OR NEW.observed_at IS DISTINCT FROM paper.exit_at))
+               OR (NEW.status <> 'exited' AND NEW.available_at IS DISTINCT FROM paper.fill_evidence_at)
+               OR (NEW.status = 'exited' AND NEW.available_at < NEW.observed_at)
+               OR NEW.fill_price IS DISTINCT FROM paper.actual_fill_price
                OR NEW.filled_quantity > paper.filled_quantity) THEN
                 RAISE EXCEPTION 'Phase 4 observation requires persisted paper fill evidence';
             END IF;
@@ -134,10 +142,20 @@ def upgrade() -> None:
         $$;
         CREATE TRIGGER phase4_paper_execution_guard BEFORE INSERT ON app.paper_execution_observation FOR EACH ROW EXECUTE FUNCTION analysis.enforce_phase4_paper_execution_guard();
 
+        DROP TRIGGER IF EXISTS book_attribution_lineage ON analysis.book_attribution;
         CREATE OR REPLACE FUNCTION analysis.enforce_phase4_attribution_multiplier_guard()
         RETURNS trigger LANGUAGE plpgsql AS $$
         DECLARE expected_realized_pnl DOUBLE PRECISION;
         BEGIN
+            NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
+                'book_attribution_id', NEW.book_attribution_id, 'allocation_id', NEW.allocation_id,
+                'allocation_item_id', NEW.allocation_item_id, 'strategy_forecast_id', NEW.strategy_forecast_id,
+                'hypothesis_id', NEW.hypothesis_id, 'action_id', NEW.action_id, 'rank_id', NEW.rank_id,
+                'expression', NEW.expression, 'experiment_id', NEW.experiment_id, 'trial_id', NEW.trial_id,
+                'result_id', NEW.result_id, 'paper_execution_observation_id', NEW.paper_execution_observation_id,
+                'pnl_status', NEW.pnl_status, 'realized_pnl', NEW.realized_pnl, 'attribution', NEW.attribution,
+                'input_cutoff', analysis.phase4_canonical_timestamp(NEW.input_cutoff)
+            ));
             IF NEW.pnl_status = 'realized' THEN
                 SELECT CASE WHEN observation.side = 'buy' THEN 1 ELSE -1 END * (observation.exit_price - observation.fill_price)
                          * observation.filled_quantity * paper.contract_multiplier - coalesce(paper.fees, 0)
@@ -157,6 +175,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("""
+        DROP TRIGGER IF EXISTS execution_model_snapshot_evidence ON analysis.execution_model_snapshot;
+        DROP TRIGGER IF EXISTS book_attribution_lineage ON analysis.book_attribution;
         DROP TRIGGER IF EXISTS phase4_attribution_multiplier_guard ON analysis.book_attribution;
         DROP FUNCTION IF EXISTS analysis.enforce_phase4_attribution_multiplier_guard();
         DROP TRIGGER IF EXISTS phase4_review_snapshot_guard ON analysis.portfolio_allocation_snapshot;

@@ -9502,6 +9502,17 @@
             "title": "Missing Data",
             "type": "array"
           },
+          "next_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Action"
+          },
           "proposed_mrc": {
             "anyOf": [
               {

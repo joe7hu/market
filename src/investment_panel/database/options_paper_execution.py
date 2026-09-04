@@ -275,8 +275,9 @@ class OptionsPaperExecutionRepository:
                         [now, now, paper_order_id],
                     )
                     return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "fresh_quote_not_fillable", "blockers": current_execution["blockers"]}
-                fill_quantity = _available_quantity(quoted, phase="entry", requested=_quantity(item["quantity"]))
+                fill_quantity = _available_quantity(quoted, phase="entry", requested=max(0.0, _quantity(item["quantity"]) - _quantity(item.get("filled_quantity"))))
                 fill_price = package_price(quoted, phase="entry")
+                new_filled = _quantity(item.get("filled_quantity")) + fill_quantity
                 credit = is_credit_structure(str(item.get("structure") or ticket.get("structure") or ""))
                 limit_price = _number(item.get("limit_price"))
                 can_fill = bool(
@@ -302,14 +303,14 @@ class OptionsPaperExecutionRepository:
                 connection.execute(
                     """
                     UPDATE app.paper_order
-                    SET status = 'entered', actual_fill_price = %s, filled_at = %s,
+                    SET status = %s, actual_fill_price = coalesce(actual_fill_price, %s), filled_at = coalesce(filled_at, %s),
                         fill_evidence_at = clock_timestamp(), execution_quote = %s,
-                        contract_multiplier = %s, filled_quantity = %s,
+                        contract_multiplier = %s, filled_quantity = coalesce(filled_quantity, 0) + %s,
                         fees = coalesce(fees, 0) + %s, entry_fees = coalesce(entry_fees, 0) + %s,
                         entry_slippage = %s, updated_at = %s, unfilled_reason = NULL
                     WHERE id = %s::uuid
                     """,
-                    [fill_price, now, Jsonb(quote_payload), multiplier, fill_quantity, fees, fees, slippage, now, paper_order_id],
+                    ["entered" if new_filled >= _quantity(item["quantity"]) else "open", fill_price, now, Jsonb(quote_payload), multiplier, fill_quantity, fees, fees, slippage, now, paper_order_id],
                 )
                 _journal(
                     connection, item, action="paper_entry", quantity=fill_quantity,
@@ -317,11 +318,11 @@ class OptionsPaperExecutionRepository:
                     details={"lane": item["lane"], "paper_order_id": paper_order_id, "slippage": slippage, "fees": fees},
                 )
                 self._record_phase4_fill(
-                    connection, paper_order_id=paper_order_id, observed_at=now, status="entered",
+                    connection, paper_order_id=paper_order_id, observed_at=now, status="entered" if new_filled >= _quantity(item["quantity"]) else "partial",
                 )
                 return {
                     "paper_order_id": paper_order_id, "status": "filled",
-                    "event_status": "entered", "filled_quantity": fill_quantity,
+                    "event_status": "entered" if new_filled >= _quantity(item["quantity"]) else None, "filled_quantity": new_filled,
                     "fill_price": fill_price, "fees": fees,
                 }
             # A filled position must retain a safe exit path even after its

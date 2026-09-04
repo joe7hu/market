@@ -4540,6 +4540,8 @@ export interface components {
              * @default []
              */
             missing_data: string[];
+            /** Next Action */
+            next_action?: string | null;
             /** Proposed Mrc */
             proposed_mrc?: number | null;
             /** Rank Id */

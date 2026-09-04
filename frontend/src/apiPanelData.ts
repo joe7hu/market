@@ -174,7 +174,7 @@ export function mergePanelData(existing: PanelData, incoming: PanelData, options
       scopeStatus: { ...existing.scopeStatus, ...(phase4Scope ? { [phase4Scope]: { state: "failed", error: message } } : {}) },
     };
   }
-  if (existingPhase4.state === "valid" && incomingPhase4.state === "valid" && existingPhase4.value !== incomingPhase4.value) {
+  if (existingPhase4.state === "valid" && incomingPhase4.state === "valid" && existingPhase4.value !== incomingPhase4.value && !phase4Scope) {
     return { ...existing, errors: { ...existing.errors, portfolio: "Phase 4 snapshot identity diverged; retained the prior immutable view." } };
   }
   const next: PanelData = {

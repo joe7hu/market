@@ -595,7 +595,7 @@ class PortfolioLoopRepository:
                         evidence_status="blocked", blockers=("risk_evidence_invalid",),
                         current_weight=current_weight,
                         cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
-                        cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
+                        cash_source_id=(f"broker-account:{account['id']}" if account else None),
                         trim_position_id=(f"broker-position:{position['id']}" if position else None),
                         trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
                     ))
@@ -621,7 +621,7 @@ class PortfolioLoopRepository:
                         evidence_status="blocked", blockers=("portfolio_impact_lineage_conflict",),
                         current_weight=current_weight,
                         cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
-                        cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
+                        cash_source_id=(f"broker-account:{account['id']}" if account else None),
                         trim_position_id=(f"broker-position:{position['id']}" if position else None),
                         trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
                     ))
@@ -671,7 +671,7 @@ class PortfolioLoopRepository:
                     blockers=tuple(plan.blockers),
                     current_weight=current_weight,
                     cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
-                    cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
+                    cash_source_id=(f"broker-account:{account['id']}" if account else None),
                     trim_position_id=(f"broker-position:{position['id']}" if position else None),
                     trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
                 ))
@@ -822,7 +822,7 @@ class PortfolioLoopRepository:
                 snapshot_id=(f"broker-account:{account['id']}" if account else None),
                 net_liquidation=(float(account["net_liquidation"]) if account and account["net_liquidation"] is not None else None),
                 cash_available=(float(account["cash_balance"]) if account and account["cash_balance"] is not None else None),
-                cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
+                cash_source_id=(f"broker-account:{account['id']}" if account else None),
                 positions={ticker: f"broker-position:{row['id']}" for ticker, row in position_by_ticker.items()},
                 position_weights={
                     ticker: max(0.0, float(row["market_value"] or 0) / float(account["net_liquidation"]))
@@ -884,9 +884,15 @@ class PortfolioLoopRepository:
         )
 
         bundle = self.read_authoritative_candidate_bundle(as_of=as_of)
+        if not bundle.complete:
+            bundle = bundle.model_copy(update={
+                "candidates": tuple(candidate.model_copy(update={
+                    "blockers": (*candidate.blockers, "postgresql_authority_bundle_incomplete"),
+                }) for candidate in bundle.candidates),
+            })
         # A missing persisted hurdle is a hard fail-closed condition. The
         # empty allocator result records CASH without inventing a policy value.
-        allocation = portfolio_core._allocate_portfolio(
+        allocation = portfolio_core._compute_portfolio_allocation(
             list(bundle.candidates), as_of=as_of, cash_hurdle=bundle.cash_hurdle,
             book=bundle.book, constraints=bundle.constraints, execution=bundle.execution,
         )
@@ -908,7 +914,7 @@ class PortfolioLoopRepository:
                 # Missing cross-sectional shock coverage is a data failure,
                 # not permission to persist a partial or synthetic scenario.
                 safe_candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_cross_section_missing"))}) for candidate in bundle.candidates]
-                allocation = portfolio_core._allocate_portfolio(
+                allocation = portfolio_core._compute_portfolio_allocation(
                     safe_candidates, as_of=as_of, cash_hurdle=bundle.cash_hurdle,
                     book=bundle.book, constraints=bundle.constraints,
                     execution=PortfolioExecutionEvidence(
@@ -1137,9 +1143,10 @@ class PortfolioLoopRepository:
                        WHERE allocation_item_id = %s ORDER BY observed_at, paper_execution_observation_id""",
                     [observation.allocation_item_id],
             ).fetchall()
-            if observation.available_at <= allocation["input_cutoff"]:
+            if rows:
+                calibration_cutoff = max(PaperExecutionObservation.model_validate(dict(row)).available_at for row in rows)
                 model = build_execution_model_snapshot(
-                        allocation["allocation_id"], allocation["input_cutoff"],
+                        allocation["allocation_id"], calibration_cutoff,
                         [PaperExecutionObservation.model_validate(dict(row)) for row in rows],
                 )
                 self.store_execution_model(connection, model)
@@ -1183,8 +1190,8 @@ class PortfolioLoopRepository:
         # only at the persisted database evidence clock.  Exit state does not
         # rewrite entry calibration clocks.
         observation_status = "exited" if status in {"exited", "closed"} and order["exit_price"] is not None and exit_at is not None else "filled"
-        event_observed_at = filled_at
-        event_available_at = evidence_at
+        event_observed_at = exit_at if observation_status == "exited" else filled_at
+        event_available_at = max(evidence_at, event_observed_at) if observation_status == "exited" else evidence_at
         if event_available_at <= event_observed_at:
             return None
         contract_multiplier = order["contract_multiplier"]

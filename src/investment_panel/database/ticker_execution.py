@@ -714,8 +714,9 @@ class TickerPaperExecutionRepository:
         connection.execute(
             """
             UPDATE app.paper_order
-            SET status = %s, actual_fill_price = coalesce(actual_fill_price, %s),
-                filled_at = coalesce(filled_at, %s), submitted_at = coalesce(submitted_at, %s),
+            SET status = %s, actual_fill_price = CASE WHEN coalesce(filled_quantity, 0) = 0 THEN %s
+                    ELSE ((actual_fill_price * filled_quantity) + (%s * %s)) / (%s) END,
+                filled_at = %s, submitted_at = coalesce(submitted_at, %s),
                 fill_evidence_at = clock_timestamp(), execution_quote = %s, contract_multiplier = 1,
                 filled_quantity = %s, fees = coalesce(fees, 0) + %s, entry_fees = coalesce(entry_fees, 0) + %s,
                 entry_slippage = %s, unfilled_reason = CASE WHEN %s THEN NULL ELSE %s END,
@@ -723,7 +724,7 @@ class TickerPaperExecutionRepository:
             WHERE id = %s::uuid
             """,
             [
-                new_status, market_price, now, now, Jsonb({"mid": market_price}), new_filled, fees, fees, slippage,
+                new_status, market_price, market_price, fill_quantity, new_filled, now, now, Jsonb({"mid": market_price}), new_filled, fees, fees, slippage,
                 complete, "partial_fill", Jsonb(policy), now, order["id"],
             ],
         )
