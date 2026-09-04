@@ -1031,26 +1031,40 @@ class PortfolioLoopRepository:
             order = connection.execute(
                 """SELECT id, created_at, status, side, quantity, filled_quantity, actual_fill_price, exit_price,
                           limit_price, intended_limit_price, submitted_at, filled_at,
-                          fill_evidence_at, execution_quote, fees, entry_slippage, exit_slippage,
-                          contract_multiplier, exit_at, policy_result
+                          fill_evidence_at, execution_quote, fees, entry_fees, entry_slippage, exit_slippage,
+                          contract_multiplier, exit_at, exited_quantity, exit_fees, policy_result
                    FROM app.paper_order WHERE id = %s""", [observation.paper_order_id]
             ).fetchone()
             if order is None:
                 raise ValueError("paper execution requires an existing paper order")
             if str(order["id"]) != observation.paper_order_id:
                 raise ValueError("paper execution order identity is invalid")
+            exit_observation = observation.status in {"exited", "partial_exited"} and order["exit_at"] is not None and order["exit_price"] is not None
+            prior_event_fees = 0.0
+            if exit_observation:
+                prior = connection.execute(
+                    """SELECT coalesce(sum((metadata->>'fees')::DOUBLE PRECISION), 0) AS fees
+                       FROM app.paper_execution_observation
+                       WHERE paper_order_id = %s AND status IN ('exited', 'partial_exited')""",
+                    [observation.paper_order_id],
+                ).fetchone()
+                prior_event_fees = float(prior["fees"] or 0) if prior else 0.0
+            persisted_event_fees = float(
+                (order["exit_fees"] if exit_observation else order.get("entry_fees", order["fees"])) or 0
+            ) - prior_event_fees
             if observation.filled_quantity > 0:
                 if (
                     str(order["side"] or "buy") != observation.side
-                    or float(order["filled_quantity"] or 0) != observation.filled_quantity
+                    or (not exit_observation and float(order["filled_quantity"] or 0) != observation.filled_quantity)
+                    or (exit_observation and float(order["filled_quantity"] or 0) < observation.filled_quantity)
                     or float(order["actual_fill_price"] or 0) != float(observation.fill_price or 0)
-                    or (observation.status != "exited" and order["filled_at"] != observation.observed_at)
-                    or (observation.status == "exited" and (order["exit_at"] is None or order["exit_at"] != observation.observed_at))
-                    or (observation.status != "exited" and order["fill_evidence_at"] != observation.available_at)
-                    or (observation.status == "exited" and observation.available_at < observation.observed_at)
+                    or (not exit_observation and order["filled_at"] != observation.observed_at)
+                    or (exit_observation and order["exit_at"] != observation.observed_at)
+                    or (not exit_observation and order["fill_evidence_at"] != observation.available_at)
+                    or (exit_observation and observation.available_at < observation.observed_at)
                     or order["contract_multiplier"] is None
                     or float(order["contract_multiplier"]) != float(observation.metadata.get("contract_multiplier") or 0)
-                    or float(order["fees"] or 0) != float(observation.metadata.get("fees") or 0)
+                    or abs(persisted_event_fees - float(observation.metadata.get("fees") or 0)) > 1e-9
                     or (order["execution_quote"] or {}) != (observation.metadata.get("quote") or {})
                 ):
                     raise ValueError("paper execution must use matching persisted fill evidence")
@@ -1070,10 +1084,10 @@ class PortfolioLoopRepository:
                 or order["submitted_at"] is None or order["fill_evidence_at"] is None
                 or order["execution_quote"] is None or order["fees"] is None
                 or order["entry_slippage"] is None or order["contract_multiplier"] is None
-                or (observation.status != "exited" and observation.observed_at != order["filled_at"])
-                or (observation.status == "exited" and (order["exit_at"] is None or observation.observed_at != order["exit_at"]))
-                or (observation.status != "exited" and observation.available_at != order["fill_evidence_at"])
-                or (observation.status == "exited" and observation.available_at < observation.observed_at)
+                or (not exit_observation and observation.observed_at != order["filled_at"])
+                or (exit_observation and observation.observed_at != order["exit_at"])
+                or (not exit_observation and observation.available_at != order["fill_evidence_at"])
+                or (exit_observation and observation.available_at < observation.observed_at)
             ):
                 raise ValueError("paper execution requires a genuine existing fill")
             if observation.filled_quantity > 0:
@@ -1091,11 +1105,10 @@ class PortfolioLoopRepository:
                     if midpoint and order["entry_slippage"] is not None else None
                 )
                 persisted_status = (
-                    "exited" if str(order["status"]) in {"exited", "closed"}
-                    and order["exit_price"] is not None and order["exit_at"] is not None else "filled"
-                )
+                    "exited" if str(order["status"]) in {"exited", "closed"} else "partial_exited"
+                ) if exit_observation else "filled"
                 persisted_metadata = {
-                    "fees": float(order["fees"]), "paper_order_id": str(order["id"]),
+                    "fees": persisted_event_fees, "paper_order_id": str(order["id"]),
                     "contract_multiplier": float(order["contract_multiplier"]),
                     "submitted_at": order["submitted_at"], "filled_at": order["filled_at"],
                     "entry_slippage": order["entry_slippage"], "exit_slippage": order["exit_slippage"],
@@ -1104,7 +1117,7 @@ class PortfolioLoopRepository:
                 observation = observation.model_copy(update={
                     "execution_mode": "paper", "paper_only": True, "status": persisted_status,
                     "requested_quantity": float(order["quantity"] or 0),
-                    "filled_quantity": float(order["filled_quantity"]),
+                    "filled_quantity": float(order["filled_quantity"]) if not exit_observation else observation.filled_quantity,
                     "requested_price": float(order["intended_limit_price"] or order["limit_price"])
                     if (order["intended_limit_price"] or order["limit_price"]) is not None else None,
                     "fill_price": float(order["actual_fill_price"]),
@@ -1113,7 +1126,8 @@ class PortfolioLoopRepository:
                     "impact_bps": persisted_impact,
                     "side": str(order["side"] or "buy"),
                     "exit_price": float(order["exit_price"]) if persisted_status == "exited" else None,
-                    "observed_at": order["filled_at"], "available_at": order["fill_evidence_at"],
+                    "observed_at": order["exit_at"] if exit_observation else order["filled_at"],
+                    "available_at": max(order["fill_evidence_at"], order["exit_at"]) if exit_observation else order["fill_evidence_at"],
                     "metadata": persisted_metadata,
                 })
             connection.execute(
@@ -1169,7 +1183,7 @@ class PortfolioLoopRepository:
             """SELECT id::text, quantity, filled_quantity, limit_price, intended_limit_price,
                       actual_fill_price, submitted_at, filled_at, exit_at, exit_price,
                       fill_evidence_at, execution_quote, contract_multiplier,
-                      fees, entry_slippage, exit_slippage, side, status, policy_result
+                      fees, entry_fees, exit_fees, exited_quantity, entry_slippage, exit_slippage, side, status, policy_result
                FROM app.paper_order WHERE id = %s::uuid""", [paper_order_id]
         ).fetchone()
         if order is None or float(order["filled_quantity"] or 0) <= 0:
@@ -1197,11 +1211,24 @@ class PortfolioLoopRepository:
         # A fill becomes observable at the persisted fill clock and available
         # only at the persisted database evidence clock.  Exit state does not
         # rewrite entry calibration clocks.
-        observation_status = "exited" if status in {"exited", "closed"} and order["exit_price"] is not None and exit_at is not None else "filled"
-        event_observed_at = exit_at if observation_status == "exited" else filled_at
-        event_available_at = max(evidence_at, event_observed_at) if observation_status == "exited" else evidence_at
-        if event_available_at <= event_observed_at:
+        observation_status = status if status in {"exited", "closed", "partial_exited"} and order["exit_price"] is not None and exit_at is not None else "filled"
+        observation_status = "exited" if observation_status == "closed" else observation_status
+        event_observed_at = exit_at if observation_status in {"exited", "partial_exited"} else filled_at
+        event_available_at = max(evidence_at, event_observed_at) if observation_status in {"exited", "partial_exited"} else evidence_at
+        if observation_status == "filled" and event_available_at <= event_observed_at:
             return None
+        exit_quantity = float(order.get("exited_quantity", 0) or 0)
+        if observation_status in {"exited", "partial_exited"}:
+            prior_exit = connection.execute(
+                """SELECT coalesce(sum(filled_quantity), 0) AS quantity,
+                          coalesce(sum((metadata->>'fees')::DOUBLE PRECISION), 0) AS fees
+                   FROM app.paper_execution_observation
+                   WHERE paper_order_id = %s AND status IN ('exited', 'partial_exited')""",
+                [paper_order_id],
+            ).fetchone()
+            exit_quantity = max(0.0, exit_quantity - float(prior_exit["quantity"] or 0) if prior_exit else exit_quantity)
+            if exit_quantity <= 0:
+                return None
         contract_multiplier = order["contract_multiplier"]
         if not isinstance(contract_multiplier, (int, float)) or isinstance(contract_multiplier, bool) or float(contract_multiplier) <= 0:
             return None
@@ -1212,18 +1239,26 @@ class PortfolioLoopRepository:
         spread_bps = (float(quote["spread"]) / midpoint * 10_000) if quote and midpoint and quote.get("spread") is not None else ((float(quote["ask"]) - float(quote["bid"])) / midpoint * 10_000) if quote and midpoint and quote.get("bid") is not None and quote.get("ask") is not None else None
         latency_ms = (filled_at - submitted_at).total_seconds() * 1000
         impact_bps = abs(float(order["entry_slippage"]) / midpoint * 10_000) if midpoint else None
+        event_fees = float(order.get("entry_fees", order["fees"]) or 0)
+        if observation_status in {"exited", "partial_exited"}:
+            event_fees = float(order.get("exit_fees", 0) or 0) - float(prior_exit["fees"] or 0 if prior_exit else 0)
+        observation_id = (
+            f"paper-observation:{order['id']}:{order['filled_quantity']}:{order.get('exited_quantity', 0) or 0}:{order['exit_price'] or ''}"
+            if observation_status in {"exited", "partial_exited"}
+            else f"paper-observation:{order['id']}:{order['filled_quantity']}:{order['exit_price'] or ''}"
+        )
         observation = PaperExecutionObservation(
-            paper_execution_observation_id=f"paper-observation:{order['id']}:{order['filled_quantity']}:{order['exit_price'] or ''}",
+            paper_execution_observation_id=observation_id,
             allocation_item_id=str(item["allocation_item_id"]), action_id=action_id,
             paper_order_id=str(order["id"]), status=observation_status,
-            requested_quantity=float(order["quantity"] or 0), filled_quantity=float(order["filled_quantity"] or 0),
+            requested_quantity=float(order["quantity"] or 0), filled_quantity=exit_quantity if observation_status in {"exited", "partial_exited"} else float(order["filled_quantity"] or 0),
             requested_price=float(order["intended_limit_price"] or order["limit_price"]) if (order["intended_limit_price"] or order["limit_price"]) is not None else None,
             fill_price=float(order["actual_fill_price"]) if order["actual_fill_price"] is not None else None,
             spread_bps=spread_bps, latency_ms=latency_ms,
             impact_bps=impact_bps,
-            exit_price=float(order["exit_price"]) if observation_status == "exited" else None,
+            exit_price=float(order["exit_price"]) if observation_status in {"exited", "partial_exited"} else None,
             side=str(order["side"] or "buy"), observed_at=event_observed_at, available_at=event_available_at,
-            metadata={"fees": float(order["fees"]) if order["fees"] is not None else None, "paper_order_id": str(order["id"]),
+            metadata={"fees": event_fees, "paper_order_id": str(order["id"]),
                       "contract_multiplier": float(contract_multiplier),
                       "submitted_at": submitted_at, "filled_at": filled_at, "entry_slippage": order["entry_slippage"],
                       "exit_slippage": order["exit_slippage"], "quote": quote, "fill_evidence_at": evidence_at},

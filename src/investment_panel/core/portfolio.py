@@ -51,10 +51,12 @@ def _finite(value: float | None, name: str) -> float | None:
 
 def _allocation_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
+        items = value["items"]
+        items = tuple(sorted(items, key=lambda item: str(item.get("allocation_item_id") if isinstance(item, Mapping) else item.allocation_item_id)))
         return {
             "as_of": value["as_of"],
             "cash_hurdle": value["cash_hurdle"],
-            "items": value["items"],
+            "items": items,
             "forecast_ids": value["forecast_ids"],
             "action_ids": value["action_ids"],
             "strategy_registry_ids": value["strategy_registry_ids"],
@@ -63,7 +65,7 @@ def _allocation_payload(value: Mapping[str, Any] | Any) -> dict[str, Any]:
     return {
         "as_of": value.as_of,
         "cash_hurdle": value.cash_hurdle,
-        "items": value.items,
+        "items": tuple(sorted(value.items, key=lambda item: item.allocation_item_id)),
         "forecast_ids": value.forecast_ids,
         "action_ids": value.action_ids,
         "strategy_registry_ids": value.strategy_registry_ids,
@@ -940,6 +942,11 @@ def _compute_portfolio_allocation(
     source_limits: dict[str, float] = {}
     released_trim_sources = [candidate.trim_position_id for candidate, utility, _ in eligible if candidate.current_weight > 0 and utility <= cash_hurdle and candidate.trim_position_id]
     released_trim_funding = sum(candidate.trim_available or 0.0 for candidate, utility, _ in eligible if candidate.current_weight > 0 and utility <= cash_hurdle)
+    trim_limits = {
+        candidate.trim_position_id: float(candidate.trim_available or 0.0)
+        for candidate, utility, _ in eligible
+        if utility <= cash_hurdle and candidate.current_weight > 0 and candidate.trim_position_id and (candidate.trim_available or 0) > 0
+    }
     for candidate, _, _ in fundable:
         key = candidate.cash_source_id if candidate.current_weight <= 0 else None
         amount = candidate.cash_available if candidate.current_weight <= 0 else None
@@ -953,9 +960,15 @@ def _compute_portfolio_allocation(
     def _net_funding(weights: Any) -> float:
         scale = nav if nav is not None else 1.0
         return sum((float(weight) - candidate.current_weight) * scale for weight, (candidate, _, _) in zip(weights, fundable))
+    def _trim_funding(weights: Any, key: str) -> float:
+        scale = nav if nav is not None else 1.0
+        return sum(max(0.0, float(weight) - candidate.current_weight) * scale
+                   for weight, (candidate, _, _) in zip(weights, fundable)
+                   if candidate.trim_position_id == key)
     constraints = [{"type": "ineq", "fun": lambda weights: 1.0 - existing_weight - sum(weights)}]
     constraints.append({"type": "ineq", "fun": lambda weights: (book.cash_available if authoritative and book.cash_available is not None else 0.0) + released_trim_funding - _net_funding(weights)}) if authoritative else None
     constraints.extend({"type": "ineq", "fun": lambda weights, key=key, amount=amount: amount - _funding(weights, key)} for key, amount in source_limits.items())
+    constraints.extend({"type": "ineq", "fun": lambda weights, key=key, amount=amount: amount - _trim_funding(weights, key)} for key, amount in trim_limits.items())
     if authoritative:
         covariance_values = [float((candidate.covariance or {}).get(candidate.ticker, 0.0)) for candidate, _, _ in fundable]
         if any(not isfinite(value) or value < 0 for value in covariance_values):
@@ -977,6 +990,7 @@ def _compute_portfolio_allocation(
         constraints.append({"type": "ineq", "fun": lambda weights: risk_limit - sum(float(left) * float(right) * float((candidate.covariance or {}).get(other.ticker, 0)) for left, (candidate, _, _), right, (other, _, _) in ((left, first, right, second) for left, first in zip(weights, fundable) for right, second in zip(weights, fundable))) ** 0.5})
     result = minimize(lambda weights: -sum(float(weight) * (utility if utility > cash_hurdle else -abs(utility)) for weight, (_, utility, _) in zip(weights, fundable)), [lower for lower, _ in limits], bounds=limits, constraints=constraints, method="SLSQP") if fundable else None
     weights = list(result.x) if result is not None and result.success else [0.0] * len(fundable)
+    trim_remaining = dict(trim_limits)
     for weight, (candidate, utility, trace) in zip(weights, fundable):
         target = max(0.0, float(weight))
         if target <= 1e-8:
@@ -984,15 +998,29 @@ def _compute_portfolio_allocation(
             continue
         increased = target > candidate.current_weight + 1e-8
         decreased = target < candidate.current_weight - 1e-8
-        key = candidate.cash_source_id if increased and not released_trim_sources else released_trim_sources[0] if increased else candidate.trim_position_id if decreased else None
         funding_amount = abs(target - candidate.current_weight) * (nav if nav is not None else 1.0)
+        funding_source = None
+        if increased:
+            if candidate.cash_source_id and candidate.cash_available is not None and candidate.cash_available >= funding_amount:
+                funding_source = f"CASH:{candidate.cash_source_id}"
+            else:
+                for trim_source, available in trim_remaining.items():
+                    if available + 1e-9 >= funding_amount:
+                        funding_source = f"TRIM:{trim_source}"
+                        trim_remaining[trim_source] = available - funding_amount
+                        break
+                if funding_source is None:
+                    ranked.append(_rejection(candidate, ("funding_source_conservation_failed",)))
+                    continue
+        elif decreased:
+            funding_source = f"TRIM:{candidate.trim_position_id}" if candidate.trim_position_id else "TRIM:book"
         trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": target - candidate.current_weight, "funding_amount": funding_amount, "released_trim_funding": funding_amount if decreased else 0.0}
         ranked.append(PortfolioAllocationItem(
             allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'target_weight': target, 'trace': trace})}",
             candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
             action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
-            funding_source=(f"TRIM:{key}" if increased and released_trim_sources else f"CASH:{key}" if increased else f"TRIM:{key}" if key else "TRIM:book"),
+            funding_source=funding_source,
             funding_amount=(funding_amount if increased else max(funding_amount, candidate.trim_available or 0.0)), trace=_json(trace),
         ))
     remaining = max(0.0, 1.0 - existing_weight - sum(item.target_weight for item in ranked if item.disposition == "selected"))
@@ -1045,7 +1073,10 @@ def _compute_portfolio_allocation(
         }
         item_id = f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': item.target_weight, 'trace': trace})}"
         updated.append(item.model_copy(update={"allocation_item_id": item_id, "trace": trace}))
-    ranked = updated
+    allocation_seed = _hash({"as_of": as_of, "cash_hurdle": cash_hurdle, "candidate_ids": sorted(candidate.candidate_id for candidate in normalized)})
+    ranked = [item.model_copy(update={
+        "allocation_item_id": f"allocation-item:{_hash({'allocation_seed': allocation_seed, 'item': item.model_dump(mode='json')})}"
+    }) for item in updated]
     ranked.sort(key=lambda item: (0 if item.ticker == "CASH" else 1, item.disposition, item.candidate_id))
     selected = [item for item in ranked if item.disposition == "selected" and item.ticker != "CASH"]
     forecast_ids = tuple(sorted(item.strategy_forecast_id for item in selected if item.strategy_forecast_id))
@@ -1053,7 +1084,7 @@ def _compute_portfolio_allocation(
     registry_ids = tuple(sorted(candidate.strategy_registry_id for candidate, _, _ in eligible if candidate.strategy_registry_id))
     allocation_payload = {"as_of": as_of, "cash_hurdle": cash_hurdle, "items": ranked, "forecast_ids": forecast_ids, "action_ids": action_ids, "strategy_registry_ids": registry_ids, "metadata": allocator_metadata}
     return PortfolioAllocationSnapshot(
-        allocation_id=f"allocation:{_hash(allocation_payload)}", as_of=as_of, input_cutoff=as_of,
+        allocation_id=allocation_id_for_snapshot(allocation_payload), as_of=as_of, input_cutoff=as_of,
         cash_hurdle=cash_hurdle, status="available" if selected else "cash_only", items=tuple(ranked),
         forecast_ids=forecast_ids, action_ids=action_ids, strategy_registry_ids=registry_ids,
         metadata=allocator_metadata,

@@ -67,6 +67,15 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
     };
   }
   const next: PanelData = { ...existing, errors: { ...existing.errors }, scopeStatus: { ...existing.scopeStatus } };
+  const validScopedRollover = Boolean(snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope)
+    && existingPhase4.state === "valid" && incomingPhase4.state === "valid"
+    && existingPhase4.value !== incomingPhase4.value);
+  if (validScopedRollover) {
+    const reset = next as Record<string, unknown>;
+    delete reset.portfolioScenarioArtifact;
+    delete reset.executionModelSnapshot;
+    delete reset.portfolioIntegrated;
+  }
   if (snapshot.portfolio_integrated) next.portfolioIntegrated = snapshot.portfolio_integrated;
   if (snapshot.dashboard) {
     next.dashboard = snapshot.dashboard;

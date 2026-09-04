@@ -140,10 +140,10 @@ def upgrade() -> None:
                OR paper.fees IS NULL OR paper.entry_fees IS NULL OR paper.entry_slippage IS NULL
                OR paper.contract_multiplier IS NULL OR paper.filled_quantity <= 0 OR paper.actual_fill_price IS NULL
                OR paper.fill_evidence_at <= paper.filled_at
-               OR (NEW.status <> 'exited' AND NEW.observed_at IS DISTINCT FROM paper.filled_at)
-               OR (NEW.status = 'exited' AND (paper.exit_at IS NULL OR NEW.observed_at IS DISTINCT FROM paper.exit_at))
-               OR (NEW.status <> 'exited' AND NEW.available_at IS DISTINCT FROM paper.fill_evidence_at)
-               OR (NEW.status = 'exited' AND NEW.available_at < NEW.observed_at)
+               OR (NEW.status NOT IN ('exited', 'partial_exited') AND NEW.observed_at IS DISTINCT FROM paper.filled_at)
+               OR (NEW.status IN ('exited', 'partial_exited') AND (paper.exit_at IS NULL OR NEW.observed_at IS DISTINCT FROM paper.exit_at))
+               OR (NEW.status NOT IN ('exited', 'partial_exited') AND NEW.available_at IS DISTINCT FROM paper.fill_evidence_at)
+               OR (NEW.status IN ('exited', 'partial_exited') AND NEW.available_at < NEW.observed_at)
                OR NEW.fill_price IS DISTINCT FROM paper.actual_fill_price
                OR NEW.filled_quantity > paper.filled_quantity) THEN
                 RAISE EXCEPTION 'Phase 4 observation requires persisted paper fill evidence';
@@ -173,7 +173,8 @@ def upgrade() -> None:
             ));
             IF NEW.pnl_status = 'realized' THEN
                 SELECT CASE WHEN observation.side = 'buy' THEN 1 ELSE -1 END * (observation.exit_price - observation.fill_price)
-                         * observation.filled_quantity * paper.contract_multiplier - coalesce(paper.fees, 0)
+                         * observation.filled_quantity * paper.contract_multiplier
+                         - coalesce((observation.metadata->>'fees')::DOUBLE PRECISION, paper.fees, 0)
                   INTO expected_realized_pnl
                 FROM app.paper_execution_observation observation JOIN app.paper_order paper ON paper.id = observation.paper_order_id
                 WHERE observation.paper_execution_observation_id = NEW.paper_execution_observation_id;
