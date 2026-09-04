@@ -31,9 +31,19 @@ export function emptyPanelData(): PanelData {
 }
 
 export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload, options: { append?: boolean } = {}): PanelData {
-  const incomingPhase4 = phase4Identity(snapshot.tables);
+  const incomingTables = phase4Identity(snapshot.tables);
+  const incomingIntegrated = phase4IdentityFromIntegrated(snapshot.portfolio_integrated);
+  const incomingHasPhase4 = incomingTables.state !== "absent" || incomingIntegrated.state !== "absent";
+  if (incomingHasPhase4 && (incomingTables.state === "invalid" || incomingIntegrated.state === "invalid" ||
+      (incomingTables.state === "valid" && incomingIntegrated.state === "valid" && incomingTables.value !== incomingIntegrated.value))) {
+    return {
+      ...existing,
+      errors: { ...existing.errors, portfolio: "Invalid or missing Phase 4 snapshot identity." },
+    };
+  }
+  const incomingPhase4 = incomingTables.state === "valid" ? incomingTables : incomingIntegrated;
   const existingPhase4 = phase4IdentityFromPanel(existing);
-  if (incomingPhase4 && existingPhase4 && incomingPhase4 !== existingPhase4) {
+  if (incomingPhase4.state === "valid" && existingPhase4.state === "valid" && incomingPhase4.value !== existingPhase4.value) {
     return {
       ...existing,
       errors: { ...existing.errors, portfolio: "Phase 4 snapshot identity diverged; retained the prior immutable view." },
@@ -66,33 +76,73 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
   return next;
 }
 
-function phase4Identity(tables: Record<string, TablePayload> | undefined): string | null {
+type Phase4Identity = { state: "absent" | "valid" | "invalid"; value: string | null };
+
+function phase4Identity(tables: Record<string, TablePayload> | undefined): Phase4Identity {
   const allocation = tables?.portfolio_allocation?.rows?.[0];
-  if (!allocation) return null;
-  const allocationId = typeof allocation.allocation_id === "string" ? allocation.allocation_id : null;
+  const scenario = tables?.portfolio_scenario_artifact?.rows?.[0];
+  const execution = tables?.execution_model_snapshot?.rows?.[0];
+  if (!allocation && !scenario && !execution) return { state: "absent", value: null };
+  if (!allocation || (scenario && (typeof scenario.scenario_artifact_id !== "string" || !scenario.scenario_artifact_id.trim())) ||
+      (execution && (typeof execution.execution_model_snapshot_id !== "string" || !execution.execution_model_snapshot_id.trim()))) {
+    return { state: "invalid", value: null };
+  }
+  const allocationId = typeof allocation.allocation_id === "string" && allocation.allocation_id.trim() ? allocation.allocation_id : null;
+  if (!allocationId) return { state: "invalid", value: null };
   const canonical = allocation.canonical_portfolio && typeof allocation.canonical_portfolio === "object" && !Array.isArray(allocation.canonical_portfolio)
     ? allocation.canonical_portfolio as Record<string, unknown>
     : null;
-  if (canonical && canonical.allocation_id !== allocationId) return null;
-  const scenario = tables?.portfolio_scenario_artifact?.rows?.[0];
-  const execution = tables?.execution_model_snapshot?.rows?.[0];
-  const scenarioId = typeof scenario?.scenario_artifact_id === "string" ? scenario.scenario_artifact_id : "";
-  const executionId = typeof execution?.execution_model_snapshot_id === "string" ? execution.execution_model_snapshot_id : "";
+  if (allocation.canonical_portfolio !== undefined && canonical === null) return { state: "invalid", value: null };
+  if (canonical && canonical.allocation_id !== allocationId) return { state: "invalid", value: null };
+  if (scenario?.allocation_id !== undefined && scenario.allocation_id !== allocationId) return { state: "invalid", value: null };
+  if (execution?.allocation_id !== undefined && execution.allocation_id !== allocationId) return { state: "invalid", value: null };
+  const scenarioId = typeof scenario?.scenario_artifact_id === "string" ? scenario.scenario_artifact_id :
+    (canonical?.scenario_artifact_id as string | undefined) ?? "";
+  const executionId = typeof execution?.execution_model_snapshot_id === "string" ? execution.execution_model_snapshot_id :
+    (canonical?.execution_model_snapshot_id as string | undefined) ?? "";
   const canonicalScenario = canonical?.scenario && typeof canonical.scenario === "object" && !Array.isArray(canonical.scenario)
     ? canonical.scenario as Record<string, unknown> : null;
   const canonicalExecution = canonical?.execution && typeof canonical.execution === "object" && !Array.isArray(canonical.execution)
     ? canonical.execution as Record<string, unknown> : null;
-  if (canonicalScenario && (canonicalScenario.allocation_id !== allocationId || (scenarioId && canonicalScenario.scenario_artifact_id !== scenarioId))) return null;
-  if (canonicalExecution && (canonicalExecution.allocation_id !== allocationId || (executionId && canonicalExecution.execution_model_snapshot_id !== executionId))) return null;
-  return allocationId ? `${allocationId}|${scenarioId}|${executionId}` : null;
+  if ((canonical?.scenario !== undefined && canonical?.scenario !== null && canonicalScenario === null) ||
+      (canonical?.execution !== undefined && canonical?.execution !== null && canonicalExecution === null)) {
+    return { state: "invalid", value: null };
+  }
+  if (canonicalScenario && (typeof canonicalScenario.scenario_artifact_id !== "string" || !canonicalScenario.scenario_artifact_id.trim()) ||
+      canonicalExecution && (typeof canonicalExecution.execution_model_snapshot_id !== "string" || !canonicalExecution.execution_model_snapshot_id.trim())) {
+    return { state: "invalid", value: null };
+  }
+  if (canonicalScenario && (canonicalScenario.allocation_id !== allocationId || (scenarioId && canonicalScenario.scenario_artifact_id !== scenarioId))) return { state: "invalid", value: null };
+  if (canonicalExecution && (canonicalExecution.allocation_id !== allocationId || (executionId && canonicalExecution.execution_model_snapshot_id !== executionId))) return { state: "invalid", value: null };
+  return { state: "valid", value: `${allocationId}|${scenarioId}|${executionId}` };
 }
 
-function phase4IdentityFromPanel(data: PanelData): string | null {
-  return phase4Identity({
+function phase4IdentityFromIntegrated(integrated: PanelSnapshotPayload["portfolio_integrated"]): Phase4Identity {
+  if (!integrated) return { state: "absent", value: null };
+  if (typeof integrated.allocation_id !== "string" || !integrated.allocation_id.trim()) return { state: "invalid", value: null };
+  if (integrated.scenario && integrated.scenario.allocation_id !== integrated.allocation_id) return { state: "invalid", value: null };
+  if (integrated.execution && integrated.execution.allocation_id !== integrated.allocation_id) return { state: "invalid", value: null };
+  if (integrated.scenario_artifact_id !== null && (typeof integrated.scenario_artifact_id !== "string" || !integrated.scenario_artifact_id.trim()) ||
+      integrated.execution_model_snapshot_id !== null && (typeof integrated.execution_model_snapshot_id !== "string" || !integrated.execution_model_snapshot_id.trim())) {
+    return { state: "invalid", value: null };
+  }
+  const scenarioId = typeof integrated.scenario_artifact_id === "string" ? integrated.scenario_artifact_id : "";
+  const executionId = typeof integrated.execution_model_snapshot_id === "string" ? integrated.execution_model_snapshot_id : "";
+  if (integrated.scenario && integrated.scenario.scenario_artifact_id !== scenarioId) return { state: "invalid", value: null };
+  if (integrated.execution && integrated.execution.execution_model_snapshot_id !== executionId) return { state: "invalid", value: null };
+  return { state: "valid", value: `${integrated.allocation_id}|${scenarioId}|${executionId}` };
+}
+
+function phase4IdentityFromPanel(data: PanelData): Phase4Identity {
+  const tables = phase4Identity({
     portfolio_allocation: data.portfolioAllocation,
     portfolio_scenario_artifact: data.portfolioScenarioArtifact,
     execution_model_snapshot: data.executionModelSnapshot,
   });
+  const integrated = phase4IdentityFromIntegrated(data.portfolioIntegrated);
+  if (tables.state === "invalid" || integrated.state === "invalid") return { state: "invalid", value: null };
+  if (tables.state === "valid" && integrated.state === "valid" && tables.value !== integrated.value) return { state: "invalid", value: null };
+  return tables.state === "valid" ? tables : integrated;
 }
 
 export function mergePanelData(existing: PanelData, incoming: PanelData, options: { append?: boolean } = {}): PanelData {

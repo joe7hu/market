@@ -9627,6 +9627,17 @@
             ],
             "title": "Adv Participation"
           },
+          "asset_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Class"
+          },
           "availability": {
             "default": "unavailable",
             "title": "Availability",
@@ -9655,6 +9666,18 @@
             "title": "Blockers",
             "type": "array"
           },
+          "capacity": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
           "cash_comparator": {
             "anyOf": [
               {
@@ -9682,6 +9705,20 @@
               }
             ],
             "title": "Correlation Cluster Delta"
+          },
+          "covariance": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Covariance"
           },
           "cutoff": {
             "format": "date-time",
@@ -9715,6 +9752,18 @@
               }
             ],
             "title": "Diversification Benefit"
+          },
+          "drawdown_cap": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drawdown Cap"
           },
           "execution_evidence": {
             "additionalProperties": true,
@@ -9810,6 +9859,18 @@
             },
             "title": "Input Lineage",
             "type": "array"
+          },
+          "kelly_cap": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kelly Cap"
           },
           "liquidity": {
             "anyOf": [
@@ -9952,6 +10013,18 @@
             "title": "Positions Most Correlated",
             "type": "array"
           },
+          "risk_budget": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Budget"
+          },
           "risk_budget_consumed": {
             "anyOf": [
               {
@@ -9979,6 +10052,17 @@
               }
             ],
             "title": "Scenario Pnl"
+          },
+          "sector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sector"
           },
           "sector_concentration_delta": {
             "anyOf": [
@@ -10029,6 +10113,18 @@
               }
             ],
             "title": "Top Alternative"
+          },
+          "volatility": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Volatility"
           }
         },
         "required": [

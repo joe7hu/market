@@ -806,6 +806,16 @@ class PortfolioImpact(BaseModel):
     top_alternative: str | None = None
     funding_source_or_position_to_trim: str | None = None
     execution_evidence: dict[str, Any] = Field(default_factory=dict)
+    sector: str | None = None
+    asset_class: str | None = None
+    # Explicit risk producers. Missing values stay unavailable to the
+    # PostgreSQL portfolio allocator; they are not supplied as extras.
+    volatility: float | None = Field(default=None, ge=0)
+    risk_budget: float | None = Field(default=None, ge=0)
+    kelly_cap: float | None = Field(default=None, ge=0)
+    drawdown_cap: float | None = Field(default=None, ge=0)
+    capacity: float | None = Field(default=None, ge=0)
+    covariance: dict[str, float] | None = None
     availability: str = "unavailable"
     availability_status: AvailabilityStatus = AvailabilityStatus.MISSING
     blockers: tuple[str, ...] = ()
@@ -3059,6 +3069,12 @@ def _portfolio_impact_id(impact: PortfolioImpact) -> str:
             "position_to_trim_or_replace": impact.position_to_trim_or_replace,
             "funding_source_or_position_to_trim": impact.funding_source_or_position_to_trim,
             "execution_evidence": impact.execution_evidence,
+            "volatility": impact.volatility,
+            "risk_budget": impact.risk_budget,
+            "kelly_cap": impact.kelly_cap,
+            "drawdown_cap": impact.drawdown_cap,
+            "capacity": impact.capacity,
+            "covariance": impact.covariance,
         },
     }
     return f"portfolio-impact:{hashlib.sha256(json.dumps(_jsonable(payload), sort_keys=True, separators=(',', ':')).encode()).hexdigest()}"
@@ -3887,6 +3903,15 @@ def _stock_impact_values(
         "position_to_trim_or_replace": trim,
         "funding_source_or_position_to_trim": funding,
         "impact_method": "stock_portfolio_impact.v1:first_order",
+        "volatility": _number(_pick(evidence, "volatility", "historical_volatility", "realized_volatility")),
+        "risk_budget": budget_available,
+        "kelly_cap": _number(_pick(evidence, "kelly_cap", "kelly_limit")),
+        "drawdown_cap": _number(_pick(evidence, "drawdown_cap", "drawdown_limit")),
+        "capacity": _number(_pick(liquidity_evidence, "capacity", "capacity_limit", "max_dollar_value")),
+        "covariance": dict(evidence["covariance"]) if isinstance(evidence.get("covariance"), Mapping) else None,
+        "sector": sector,
+        "asset_class": _pick(evidence, "asset_class"),
+        "factor_exposure": evidence.get("factor_exposure"),
     }
     return before, after, values, list(dict.fromkeys(blockers))
 
@@ -4184,10 +4209,17 @@ def _crypto_impact_values(
         "expected_transaction_costs": _number(_pick(evidence, "expected_transaction_costs", "transaction_costs", "fees")),
         "scenario_pnl": _pick(evidence, "scenario_pnl", "stress_scenarios"),
         "liquidity": {"status": "available", "source": _pick(evidence, "source_id", "source", "provider")},
-        "factor_exposure": {"asset_class": "crypto"},
+        "factor_exposure": evidence.get("factor_exposure"),
+        "asset_class": _pick(evidence, "asset_class"),
         "greeks": None,
         "crypto_impact": True,
         "execution_evidence": execution_evidence,
+        "volatility": _number(_pick(evidence, "volatility", "historical_volatility", "realized_volatility")),
+        "risk_budget": available_budget,
+        "kelly_cap": _number(_pick(evidence, "kelly_cap", "kelly_limit")),
+        "drawdown_cap": _number(_pick(evidence, "drawdown_cap", "drawdown_limit")),
+        "capacity": _number(_pick(evidence, "capacity", "capacity_limit", "max_quantity")),
+        "covariance": dict(evidence["covariance"]) if isinstance(evidence.get("covariance"), Mapping) else None,
     }
     return before, after, values, list(dict.fromkeys(blockers))
 
@@ -4257,11 +4289,20 @@ def _option_impact_values(
         "risk_budget_consumed": consumed,
         "expected_transaction_costs": expression.expected_transaction_costs,
         "greeks": {key: evidence.get(key) for key in ("delta", "gamma", "vega", "theta")},
+        "factor_exposure": evidence.get("factor_exposure"),
+        "sector": _pick(evidence, "sector"),
+        "asset_class": _pick(evidence, "asset_class"),
         "scenario_pnl": evidence.get("event_gap_scenarios"),
         "liquidity": evidence.get("multi_leg_liquidity"),
         "days_to_exit": evidence.get("days_to_exit"),
         "execution_evidence": dict(evidence),
         "impact_method": "option_execution_grade.v1:first_order",
+        "volatility": _number(_pick(evidence, "volatility", "historical_volatility", "realized_volatility")),
+        "risk_budget": available,
+        "kelly_cap": _number(_pick(evidence, "kelly_cap", "kelly_limit")),
+        "drawdown_cap": _number(_pick(evidence, "drawdown_cap", "drawdown_limit")),
+        "capacity": _number(_pick(evidence, "capacity", "capacity_limit", "max_quantity")),
+        "covariance": dict(evidence["covariance"]) if isinstance(evidence.get("covariance"), Mapping) else None,
     }
     return before, after, values, list(dict.fromkeys(blockers))
 

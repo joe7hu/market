@@ -22,9 +22,12 @@ class _PostgreSQLAuthorityToken:
         raise TypeError("PostgreSQL authority tokens are repository-issued")
 
     @classmethod
-    def _issue(cls, cutoff: datetime, snapshot_id: str, source_content_hash: str) -> "_PostgreSQLAuthorityToken":
+    def _issue(
+        cls, cutoff: datetime, snapshot_id: str, source_content_hash: str, seal: object,
+    ) -> "_PostgreSQLAuthorityToken":
         if (
-            cutoff.tzinfo is None
+            seal is not _POSTGRESQL_AUTHORITY_SEAL
+            or cutoff.tzinfo is None
             or not snapshot_id.strip()
             or len(source_content_hash) != 64
             or source_content_hash == "0" * 64
@@ -49,6 +52,8 @@ class _PostgreSQLAuthorityToken:
     def source_content_hash(self) -> str:
         return self._source_content_hash
 
+
+_POSTGRESQL_AUTHORITY_SEAL = object()
 
 def _json(value: Any) -> Any:
     if isinstance(value, datetime):
@@ -264,6 +269,11 @@ class PortfolioCandidate(BaseModel):
     overlap_penalty: float | None = None
     execution_penalty: float | None = None
     covariance: dict[str, float] | None = None
+    factor_exposure: dict[str, float] | None = None
+    sector: str | None = None
+    asset_class: str | None = None
+    greeks: dict[str, float] | None = None
+    venue: str | None = None
     expression: dict[str, Any] | None = None
     invalidation: dict[str, Any] | None = None
     why_trade: str | None = None
@@ -304,6 +314,10 @@ class PortfolioCandidate(BaseModel):
         if self.covariance is not None:
             if not self.covariance or any(not isfinite(float(value)) for value in self.covariance.values()):
                 raise ValueError("covariance must contain finite values")
+        for name in ("factor_exposure", "greeks"):
+            values = getattr(self, name)
+            if values is not None and any(not isfinite(float(value)) for value in values.values()):
+                raise ValueError(f"{name} must contain finite values")
         if self.rank_position is not None and self.rank_position < 1:
             raise ValueError("rank position must be positive")
         _finite(self.rank_utility, "rank_utility")
@@ -388,6 +402,12 @@ class PortfolioConstraintEvidence(BaseModel):
     risk_policy_version: str | None = None
     position_limit: float | None = None
     aggregate_loss_limit: float | None = None
+    sector_limits: dict[str, float] = Field(default_factory=dict)
+    asset_class_limits: dict[str, float] = Field(default_factory=dict)
+    factor_limits: dict[str, float] = Field(default_factory=dict)
+    greek_limits: dict[str, float] = Field(default_factory=dict)
+    min_liquidity: float | None = None
+    allowed_venues: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def validate_constraint_evidence(self) -> "PortfolioConstraintEvidence":
@@ -399,6 +419,11 @@ class PortfolioConstraintEvidence(BaseModel):
             value = getattr(self, name)
             if value is not None and (not isfinite(value) or value <= 0):
                 raise ValueError(f"{name} must be positive")
+        for limits in (self.sector_limits, self.asset_class_limits, self.factor_limits, self.greek_limits):
+            if any(not isfinite(float(value)) or value <= 0 for value in limits.values()):
+                raise ValueError("portfolio constraint limits must be positive finite values")
+        if self.min_liquidity is not None and (not isfinite(self.min_liquidity) or self.min_liquidity < 0):
+            raise ValueError("portfolio minimum liquidity must be non-negative")
         if self.risk_policy_hash is not None and (
             len(self.risk_policy_hash) != 64
             or self.risk_policy_hash == "0" * 64
@@ -460,6 +485,7 @@ class AuthoritativePortfolioBundle(BaseModel):
         scenario: PortfolioScenarioEvidence,
         drift_scores: Mapping[str, float] | None = None,
         complete: bool = True,
+        authority: _PostgreSQLAuthorityToken | None = None,
     ) -> "AuthoritativePortfolioBundle":
         """Hydrate a bundle only from the repository-issued proof and typed rows."""
 
@@ -475,11 +501,24 @@ class AuthoritativePortfolioBundle(BaseModel):
             or any(key not in source_rows for key in ("account", "positions", "candidates", "tape"))
         ):
             raise ValueError("PostgreSQL authority source slice is incomplete")
-        repository_authority = _PostgreSQLAuthorityToken._issue(
-            cutoff, snapshot_id, canonical_content_hash(source_payload),
-        )
+        if not isinstance(authority, _PostgreSQLAuthorityToken):
+            raise ValueError("PostgreSQL authority must be issued by the repository")
+        if authority.cutoff != cutoff or authority.snapshot_id != snapshot_id:
+            raise ValueError("PostgreSQL authority token does not match its source slice")
+        if authority.source_content_hash != canonical_content_hash(source_payload):
+            raise ValueError("PostgreSQL authority source digest does not match its persisted source")
+        provenance = source_payload.get("candidate_provenance")
+        if not isinstance(provenance, list) or len(provenance) != len(candidates):
+            raise ValueError("PostgreSQL authority candidate provenance is incomplete")
+        for candidate, proof in zip(candidates, provenance):
+            if not isinstance(proof, Mapping) or proof.get("impact_id") != candidate.portfolio_impact_id:
+                raise ValueError("PostgreSQL authority candidate impact proof is invalid")
+            if proof.get("decision_id") != candidate.source_decision_id:
+                raise ValueError("PostgreSQL authority candidate decision proof is invalid")
+            if proof.get("source_decision_input_hash") != candidate.source_decision_input_hash:
+                raise ValueError("PostgreSQL authority decision digest is not persisted")
         return cls.model_validate({
-            "input_cutoff": repository_authority.cutoff,
+            "input_cutoff": authority.cutoff,
             "candidates": candidates,
             "book": book,
             "constraints": constraints,
@@ -487,9 +526,9 @@ class AuthoritativePortfolioBundle(BaseModel):
             "scenario": scenario,
             "drift_scores": dict(drift_scores or {}),
             "complete": complete,
-            "authority_snapshot_id": repository_authority.snapshot_id,
-            "authority_content_hash": repository_authority.source_content_hash,
-            "repository_authority": repository_authority,
+            "authority_snapshot_id": authority.snapshot_id,
+            "authority_content_hash": authority.source_content_hash,
+            "repository_authority": authority,
         })
 
     @model_validator(mode="after")
@@ -784,6 +823,13 @@ def _allocate_portfolio(
     if isinstance(candidates, AuthoritativePortfolioBundle):
         if not candidates.complete or candidates.input_cutoff.astimezone(UTC) != as_of.astimezone(UTC):
             return cash_only_allocation(as_of, None, "authoritative_bundle_incomplete")
+        if (
+            candidates.execution.calibration_status != "calibrated"
+            or not candidates.execution.snapshot_id
+            or candidates.execution.sample_count <= 0
+            or candidates.execution.input_cutoff.astimezone(UTC) != candidates.input_cutoff.astimezone(UTC)
+        ):
+            return cash_only_allocation(as_of, candidates.cash_hurdle, "execution_calibration_pending")
         if cash_hurdle is not None:
             raise ValueError("allocator cash hurdle must come from the authoritative bundle")
         cash_hurdle = candidates.cash_hurdle
@@ -808,10 +854,17 @@ def _allocate_portfolio(
     cash_hurdle = float(cash_hurdle)
     if len({item.candidate_id for item in normalized}) != len(normalized):
         raise ValueError("allocation candidates must have unique IDs")
+    tickers = [item.ticker.upper() for item in normalized if item.ticker.upper() != "CASH"]
+    if len(set(tickers)) != len(tickers):
+        raise ValueError("duplicate ticker candidates are unsafe")
     ranked: list[PortfolioAllocationItem] = []
     eligible: list[tuple[PortfolioCandidate, float, dict[str, Any]]] = []
     for candidate in normalized:
         blockers = list(candidate.blockers)
+        if isinstance(candidates, AuthoritativePortfolioBundle) and candidates.complete:
+            for name in ("factor_exposure", "sector", "asset_class", "greeks", "liquidity", "venue"):
+                if getattr(candidate, name) is None:
+                    blockers.append(f"{name}_evidence_missing")
         if candidate.evidence_status != "available":
             blockers.append(f"evidence_{candidate.evidence_status}")
         missing = [name for name in ("strategy_forecast_id", "action_id", "rank_id", "expected_return", "uncertainty", "volatility", "risk_budget", "kelly_cap", "drawdown_cap", "capacity", "covariance") if getattr(candidate, name) is None]
@@ -879,6 +932,11 @@ def _allocate_portfolio(
             "cash_source_id": candidate.cash_source_id,
             "trim_position_id": candidate.trim_position_id,
             "trim_available": candidate.trim_available,
+            "factor_exposure": candidate.factor_exposure,
+            "sector": candidate.sector,
+            "asset_class": candidate.asset_class,
+            "greeks": candidate.greeks,
+            "venue": candidate.venue,
         }
         eligible.append((candidate, utility, trace))
     eligible.sort(key=lambda item: (item[0].rank_position or 2**31, item[0].candidate_id))
@@ -1021,6 +1079,39 @@ def _allocate_portfolio(
     else:
         ranked = [item.model_copy(update={"trace": _json({**item.trace, "joint_covariance_scale": 1.0, "joint_risk_budget": joint_risk_budget})}) if item.disposition == "selected" and item.ticker != "CASH" else item for item in ranked]
         proposed_weights = {item.ticker: item.target_weight for item in ranked if item.disposition == "selected" and item.ticker != "CASH"}
+    if isinstance(candidates, AuthoritativePortfolioBundle):
+        constraint = candidates.constraints
+        violations: list[str] = []
+        for label, limits, attribute in (
+            ("sector", constraint.sector_limits, "sector"),
+            ("asset_class", constraint.asset_class_limits, "asset_class"),
+        ):
+            totals: dict[str, float] = {}
+            for ticker, weight in proposed_weights.items():
+                value = getattr(candidates_by_ticker[ticker], attribute)
+                if value is not None:
+                    totals[value] = totals.get(value, 0.0) + weight
+            violations.extend(f"{label}_joint_limit:{key}" for key, value in totals.items() if key in limits and value > limits[key] + 1e-9)
+        for label, limits, attribute in (("factor", constraint.factor_limits, "factor_exposure"), ("greek", constraint.greek_limits, "greeks")):
+            totals: dict[str, float] = {}
+            for ticker, weight in proposed_weights.items():
+                values = getattr(candidates_by_ticker[ticker], attribute) or {}
+                for key, value in values.items():
+                    totals[key] = totals.get(key, 0.0) + abs(weight * float(value))
+            violations.extend(f"{label}_joint_limit:{key}" for key, value in totals.items() if key in limits and value > limits[key] + 1e-9)
+        if constraint.min_liquidity is not None:
+            for ticker in proposed_weights:
+                liquidity = candidates_by_ticker[ticker].liquidity or {}
+                score = liquidity.get("score", liquidity.get("available_notional"))
+                if score is None or float(score) < constraint.min_liquidity:
+                    violations.append(f"liquidity_limit:{ticker}")
+        if constraint.allowed_venues:
+            violations.extend(
+                f"venue_not_allowed:{ticker}" for ticker in proposed_weights
+                if candidates_by_ticker[ticker].venue not in constraint.allowed_venues
+            )
+        if violations:
+            return cash_only_allocation(as_of, cash_hurdle, "joint_constraints_failed:" + ",".join(sorted(violations)))
     proposed_volatility = portfolio_volatility(proposed_weights)
     current_volatility = portfolio_volatility(current_weights)
     updated: list[PortfolioAllocationItem] = []

@@ -17,6 +17,7 @@ from investment_panel.core.decision import (
     portfolio_impact_from_persisted,
     portfolio_impact_id_for_persisted,
 )
+from investment_panel.core import portfolio as portfolio_core
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 from investment_panel.core.portfolio import (
     BookAttribution,
@@ -583,6 +584,15 @@ class PortfolioLoopRepository:
                     kelly_cap=risk_evidence.kelly_cap, drawdown_cap=risk_evidence.drawdown_cap,
                     capacity=risk_evidence.capacity, overlap_penalty=risk_evidence.overlap_penalty,
                     execution_penalty=risk_evidence.execution_penalty, covariance=risk_evidence.covariance,
+                    factor_exposure=({str(key): float(value) for key, value in persisted_impact.factor_exposure.items()
+                                      if isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(float(value))}
+                                     if isinstance(persisted_impact.factor_exposure, dict) else None),
+                    sector=(persisted_impact.sector or str((persisted_impact.portfolio_before.get("stock_evidence") or {}).get("sector"))
+                            if isinstance(persisted_impact.portfolio_before.get("stock_evidence"), dict)
+                            and (persisted_impact.portfolio_before.get("stock_evidence") or {}).get("sector") else persisted_impact.sector),
+                    asset_class=persisted_impact.asset_class,
+                    greeks=(dict(persisted_impact.greeks) if isinstance(persisted_impact.greeks, dict) else None),
+                    venue=(str((persisted_impact.execution_evidence or {}).get("venue")) if (persisted_impact.execution_evidence or {}).get("venue") else None),
                     days_to_exit=persisted_impact.days_to_exit,
                     liquidity=persisted_impact.liquidity,
                     expression=plan.selected_expression.model_dump(mode="json"),
@@ -647,7 +657,7 @@ class PortfolioLoopRepository:
                           calibration_status, sample_count, fill_probability, spread_bps,
                           latency_ms, impact_bps, input_cutoff, input_hash, content_hash, metadata
                    FROM analysis.execution_model_snapshot
-                   WHERE input_cutoff <= %s AND available_at <= %s
+                   WHERE input_cutoff = %s AND available_at <= %s
                    ORDER BY input_cutoff DESC, available_at DESC,
                             execution_model_snapshot_id DESC LIMIT 1""", [as_of, as_of]
             ).fetchone()
@@ -672,11 +682,19 @@ class PortfolioLoopRepository:
                     except (TypeError, ValueError):
                         risk_policy = None
             risk_policy_hash = canonical_content_hash(risk_policy.model_dump(mode="json")) if risk_policy else None
+            policy_extra = risk_policy.model_extra or {} if risk_policy else {}
+            joint_limits = {
+                name: dict(policy_extra[name]) if isinstance(policy_extra.get(name), dict) else {}
+                for name in ("sector_limits", "asset_class_limits", "factor_limits", "greek_limits")
+            }
+            min_liquidity = policy_extra.get("min_liquidity")
+            allowed_venues = tuple(str(value) for value in policy_extra.get("allowed_venues", ()) if str(value).strip())
             constraint_payload.update({
                 "risk_policy": risk_policy.model_dump(mode="json") if risk_policy else None,
                 "risk_policy_hash": risk_policy_hash,
                 "position_limit": risk_policy.ticker_position_limit_pct if risk_policy else None,
                 "aggregate_loss_limit": risk_policy.ticker_total_open_loss_pct if risk_policy else None,
+                **joint_limits, "min_liquidity": min_liquidity, "allowed_venues": allowed_venues,
             })
             authority_snapshot_id = f"broker-account:{account['id']}" if account else "missing"
             authority_payload = {
@@ -714,7 +732,11 @@ class PortfolioLoopRepository:
                 and account["net_liquidation"] is not None
                 and cash_hurdle is not None and cash_hurdle > 0
                 and candidates and required_candidates and tape_rows
+                and all(joint_limits.values()) and min_liquidity is not None and bool(allowed_venues)
             )
+        authority = portfolio_core._PostgreSQLAuthorityToken._issue(
+            as_of, authority_snapshot_id, canonical_content_hash(authority_payload), portfolio_core._POSTGRESQL_AUTHORITY_SEAL,
+        )
         return AuthoritativePortfolioBundle._from_postgresql(
             source_payload=authority_payload,
             candidates=tuple(candidates),
@@ -736,6 +758,10 @@ class PortfolioLoopRepository:
                 risk_policy_version=risk_policy.policy_version if risk_policy else None,
                 position_limit=risk_policy.ticker_position_limit_pct if risk_policy else None,
                 aggregate_loss_limit=risk_policy.ticker_total_open_loss_pct if risk_policy else None,
+                sector_limits=joint_limits["sector_limits"], asset_class_limits=joint_limits["asset_class_limits"],
+                factor_limits=joint_limits["factor_limits"], greek_limits=joint_limits["greek_limits"],
+                min_liquidity=(float(min_liquidity) if isinstance(min_liquidity, (int, float)) else None),
+                allowed_venues=allowed_venues,
             ),
             execution=PortfolioExecutionEvidence(
                 snapshot_id=(str(execution_row["execution_model_snapshot_id"]) if execution_row else None),
@@ -750,6 +776,7 @@ class PortfolioLoopRepository:
             ),
             drift_scores=drift_by_revision,
             complete=complete,
+            authority=authority,
         )
 
     def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
@@ -925,9 +952,9 @@ class PortfolioLoopRepository:
         """Bridge a genuine existing paper-order fill into Phase 4 telemetry."""
 
         order = connection.execute(
-            """SELECT id::text, quantity, filled_quantity, limit_price, actual_fill_price,
-                      filled_at, exit_price, fees, entry_slippage, exit_slippage,
-                      side, status, policy_result
+            """SELECT id::text, quantity, filled_quantity, limit_price, intended_limit_price,
+                      actual_fill_price, submitted_at, filled_at, exit_at, exit_price,
+                      fees, entry_slippage, exit_slippage, side, status, policy_result
                FROM app.paper_order WHERE id = %s::uuid""", [paper_order_id]
         ).fetchone()
         if order is None or float(order["filled_quantity"] or 0) <= 0:
@@ -945,17 +972,39 @@ class PortfolioLoopRepository:
         ).fetchone()
         if item is None:
             return None
-        observation_status = "exited" if status in {"exited", "closed"} and order["exit_price"] is not None else "filled"
+        submitted_at = order["submitted_at"]
+        filled_at = order["filled_at"]
+        exit_at = order["exit_at"]
+        if submitted_at is None or filled_at is None:
+            return None
+        observation_status = "exited" if status in {"exited", "closed"} and order["exit_price"] is not None and exit_at is not None else "filled"
+        event_observed_at = filled_at if observation_status == "exited" else submitted_at
+        event_available_at = exit_at if observation_status == "exited" else filled_at
+        if event_available_at <= event_observed_at:
+            return None
+        policy = order["policy_result"] or {}
+        quote = policy.get("entry_quote") or policy.get("quote") or policy.get("execution_quote")
+        quote = quote if isinstance(quote, dict) else None
+        midpoint = float(quote["mid"]) if quote and quote.get("mid") is not None else None
+        if midpoint is None and quote and quote.get("bid") is not None and quote.get("ask") is not None:
+            midpoint = (float(quote["bid"]) + float(quote["ask"])) / 2
+        spread_bps = ((float(quote["ask"]) - float(quote["bid"])) / midpoint * 10_000) if quote and midpoint and quote.get("bid") is not None and quote.get("ask") is not None else None
+        latency_ms = (filled_at - submitted_at).total_seconds() * 1000
+        impact_bps = policy.get("impact_bps")
         observation = PaperExecutionObservation(
             paper_execution_observation_id=f"paper-observation:{order['id']}:{order['filled_quantity']}:{order['exit_price'] or ''}",
             allocation_item_id=str(item["allocation_item_id"]), action_id=action_id,
             paper_order_id=str(order["id"]), status=observation_status,
             requested_quantity=float(order["quantity"] or 0), filled_quantity=float(order["filled_quantity"] or 0),
-            requested_price=float(order["limit_price"]) if order["limit_price"] is not None else None,
+            requested_price=float(order["intended_limit_price"] or order["limit_price"]) if (order["intended_limit_price"] or order["limit_price"]) is not None else None,
             fill_price=float(order["actual_fill_price"]) if order["actual_fill_price"] is not None else None,
+            spread_bps=spread_bps, latency_ms=latency_ms,
+            impact_bps=float(impact_bps) if impact_bps is not None else None,
             exit_price=float(order["exit_price"]) if observation_status == "exited" else None,
-            side=str(order["side"] or "buy"), observed_at=observed_at, available_at=observed_at,
-            metadata={"fees": float(order["fees"] or 0), "paper_order_id": str(order["id"])},
+            side=str(order["side"] or "buy"), observed_at=event_observed_at, available_at=event_available_at,
+            metadata={"fees": float(order["fees"]) if order["fees"] is not None else None, "paper_order_id": str(order["id"]),
+                      "submitted_at": submitted_at, "filled_at": filled_at, "entry_slippage": order["entry_slippage"],
+                      "exit_slippage": order["exit_slippage"], "quote": quote},
         )
         observation_id = self.record_paper_execution(observation, connection=connection)
         if observation_status == "exited":

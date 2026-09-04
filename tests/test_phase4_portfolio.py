@@ -5,10 +5,17 @@ from app.contracts import OptionsHistoryToggleInput
 from app.routers.portfolio import delete_watchlist_symbol_endpoint, set_watchlist_options_history_endpoint
 from investment_panel.database.options_paper_execution import OptionsPaperExecutionRepository
 from investment_panel.database.portfolio import PortfolioLoopRepository
+from investment_panel.core import portfolio as portfolio_core
 
 from investment_panel.core.portfolio import (
+    AuthoritativePortfolioBundle,
     PaperExecutionObservation,
     PortfolioCandidate,
+    PortfolioBookEvidence,
+    PortfolioConstraintEvidence,
+    PortfolioExecutionEvidence,
+    PortfolioImpactRiskEvidence,
+    PortfolioScenarioEvidence,
     allocate_portfolio,
     allocate_portfolio_for_tests,
     apply_decay_guard,
@@ -97,6 +104,145 @@ def test_allocator_rejects_funding_without_postgres_cash_or_position_identity() 
 def test_allocator_rejects_free_form_mapping_authority() -> None:
     with pytest.raises(TypeError, match="AuthoritativePortfolioBundle"):
         allocate_portfolio([candidate("MAPPING").model_dump()], as_of=AS_OF)
+
+
+def test_postgresql_bundle_hydration_rejects_caller_forged_authority() -> None:
+    with pytest.raises(ValueError, match="issued by the repository"):
+        AuthoritativePortfolioBundle._from_postgresql(
+            source_payload={
+                "input_cutoff": AS_OF, "authority_snapshot_id": "account:1",
+                "source_rows": {"account": {}, "positions": [], "candidates": [], "tape": []},
+                "candidate_provenance": [],
+            },
+            candidates=(), book=None, constraints=None, execution=None, scenario=None,
+        )
+
+
+def test_postgresql_authority_token_is_sealed_and_matches_persisted_digest() -> None:
+    source = {
+        "input_cutoff": AS_OF, "authority_snapshot_id": "account:1",
+        "source_rows": {"account": {}, "positions": [], "candidates": [], "tape": []},
+        "candidate_provenance": [],
+    }
+    with pytest.raises(ValueError, match="verified canonical source digest"):
+        portfolio_core._PostgreSQLAuthorityToken._issue(AS_OF, "account:1", "a" * 64, object())
+    token = portfolio_core._PostgreSQLAuthorityToken._issue(
+        AS_OF, "account:1", portfolio_core.canonical_content_hash(source), portfolio_core._POSTGRESQL_AUTHORITY_SEAL,
+    )
+    assert token.cutoff == AS_OF
+    assert token.snapshot_id == "account:1"
+    with pytest.raises(ValueError, match="source digest"):
+        AuthoritativePortfolioBundle._from_postgresql(
+            source_payload=source, candidates=(), book=None, constraints=None, execution=None, scenario=None,
+            authority=portfolio_core._PostgreSQLAuthorityToken._issue(AS_OF, "account:1", "b" * 64, portfolio_core._POSTGRESQL_AUTHORITY_SEAL),
+        )
+
+
+@pytest.mark.parametrize("field", ["factor_exposure", "greeks"])
+def test_candidate_risk_dimensions_reject_non_finite_values(field: str) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        candidate("BAD", **{field: {"market": float("nan")}})
+
+
+def test_constraint_dimensions_reject_invalid_limits() -> None:
+    with pytest.raises(ValueError, match="positive finite"):
+        PortfolioConstraintEvidence.model_validate({"constraint_hash": "x", "factor_limits": {"market": 0}})
+    with pytest.raises(ValueError, match="non-negative"):
+        PortfolioConstraintEvidence.model_validate({"constraint_hash": "x", "min_liquidity": -1})
+
+
+def test_existing_paper_fill_uses_persisted_quote_and_distinct_execution_clocks(monkeypatch) -> None:
+    order = {
+        "id": "00000000-0000-0000-0000-000000000001", "quantity": 10, "filled_quantity": 10,
+        "limit_price": 100, "intended_limit_price": 99.5, "actual_fill_price": 100.5,
+        "submitted_at": AS_OF - timedelta(minutes=2), "filled_at": AS_OF - timedelta(minutes=1),
+        "exit_at": None, "exit_price": None, "fees": 1.25, "entry_slippage": 1.0,
+        "exit_slippage": None, "side": "buy", "status": "entered",
+        "policy_result": {"trade_plan_id": "action:test", "entry_quote": {"bid": 99, "ask": 101}, "impact_bps": 3.0},
+    }
+
+    class Result:
+        def __init__(self, row): self.row = row
+        def fetchone(self): return self.row
+
+    class Connection:
+        def __init__(self): self.calls = 0
+        def execute(self, *_args):
+            self.calls += 1
+            return Result(order if self.calls == 1 else {"allocation_item_id": "allocation-item:test", "action_id": "action:test"})
+
+    repository = PortfolioLoopRepository.__new__(PortfolioLoopRepository)
+    seen = []
+    monkeypatch.setattr(repository, "record_paper_execution", lambda observation, **_kwargs: (seen.append(observation), observation.paper_execution_observation_id)[1])
+    connection = Connection()
+    observation_id = repository.record_existing_paper_order_fill(
+        connection, paper_order_id=order["id"], observed_at=AS_OF, status="filled",
+    )
+    assert observation_id == "paper-observation:00000000-0000-0000-0000-000000000001:10:"
+    assert seen[0].observed_at == order["submitted_at"]
+    assert seen[0].available_at == order["filled_at"]
+    assert seen[0].latency_ms == 60_000
+    assert seen[0].spread_bps == pytest.approx(200)
+    assert connection.calls == 2
+
+
+def test_calibration_pending_authority_can_only_return_cash() -> None:
+    bundle = AuthoritativePortfolioBundle.model_construct(
+        input_cutoff=AS_OF, candidates=(candidate("GOOD"),), complete=True,
+        cash_hurdle=0.01,
+        book=PortfolioBookEvidence.model_construct(
+            net_liquidation=100_000, cash_available=100_000, cash_source_id="acct:test:cash", input_cutoff=AS_OF,
+        ),
+        constraints=PortfolioConstraintEvidence.model_construct(
+            cash_hurdle=0.01, constraint_hash="constraints:test", risk_policy_hash="a" * 64,
+            risk_policy_version="v1", position_limit=1, aggregate_loss_limit=1,
+        ),
+        execution=PortfolioExecutionEvidence.model_construct(
+            snapshot_id="execution:pending", calibration_status="calibration_pending", sample_count=0, input_cutoff=AS_OF,
+        ),
+        scenario=PortfolioScenarioEvidence.model_construct(artifact_id="scenario:test", observations=(), input_cutoff=AS_OF),
+        authority_snapshot_id="account:1", authority_content_hash="b" * 64, repository_authority=object(),
+    )
+    allocation = portfolio_core._allocate_portfolio(bundle, as_of=AS_OF)
+    assert allocation.status == "cash_only"
+    assert allocation.metadata["safe_state_reason"] == "execution_calibration_pending"
+    assert all(item.ticker == "CASH" or item.disposition != "selected" for item in allocation.items)
+
+
+def test_risk_evidence_requires_all_six_persisted_inputs() -> None:
+    with pytest.raises(ValueError):
+        PortfolioImpactRiskEvidence.model_validate({
+            "impact_id": "impact:test", "ticker": "ABC", "source_decision_id": "decision:test",
+            "source_input_hash": "a" * 64, "source_decision_input_hash": "b" * 64,
+            "input_cutoff": AS_OF, "expected_return": 0.1, "uncertainty": 0.01,
+            "risk_budget": 0.1, "kelly_cap": 0.1, "drawdown_cap": 0.1, "capacity": 100,
+            "covariance": {"ABC": 0.04},
+        })
+
+
+def test_allocator_rejects_duplicate_tickers_and_joint_constraints_fail_closed() -> None:
+    with pytest.raises(ValueError, match="duplicate ticker"):
+        allocate_portfolio_for_tests([candidate("A", ticker="ABC"), candidate("B", ticker="ABC")], as_of=AS_OF, cash_hurdle=0.01)
+    constrained = AuthoritativePortfolioBundle.model_construct(
+        input_cutoff=AS_OF, candidates=(
+            candidate("A", factor_exposure={"market": 1.0}, sector="technology", asset_class="equity", greeks={"delta": 1.0}, liquidity={"score": 1.0}, venue="NYSE"),
+            candidate("B", factor_exposure={"market": 1.0}, sector="technology", asset_class="equity", greeks={"delta": 1.0}, liquidity={"score": 1.0}, venue="NYSE"),
+        ), complete=True, cash_hurdle=0.01,
+        book=PortfolioBookEvidence.model_construct(net_liquidation=100_000, cash_available=100_000, cash_source_id="acct:test:cash", input_cutoff=AS_OF),
+        constraints=PortfolioConstraintEvidence.model_construct(
+            cash_hurdle=0.01, constraint_hash="constraints:test", risk_policy_hash="a" * 64,
+            risk_policy_version="v1", position_limit=1, aggregate_loss_limit=1,
+            factor_limits={"market": 0.01}, sector_limits={"technology": 0.01},
+            asset_class_limits={"equity": 0.01}, greek_limits={"delta": 0.01},
+            min_liquidity=0.5, allowed_venues=("NYSE",),
+        ),
+        execution=PortfolioExecutionEvidence.model_construct(snapshot_id="execution:ready", calibration_status="calibrated", sample_count=1, input_cutoff=AS_OF),
+        scenario=PortfolioScenarioEvidence.model_construct(artifact_id="scenario:test", observations=(), input_cutoff=AS_OF),
+        authority_snapshot_id="account:1", authority_content_hash="b" * 64, repository_authority=object(),
+    )
+    allocation = portfolio_core._allocate_portfolio(constrained, as_of=AS_OF)
+    assert allocation.status == "cash_only"
+    assert allocation.metadata["safe_state_reason"].startswith("joint_constraints_failed:")
 
 
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:

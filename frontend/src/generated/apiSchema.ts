@@ -4580,6 +4580,8 @@ export interface components {
         PortfolioImpact: {
             /** Adv Participation */
             adv_participation?: number | null;
+            /** Asset Class */
+            asset_class?: string | null;
             /**
              * Availability
              * @default unavailable
@@ -4594,6 +4596,8 @@ export interface components {
              * @default []
              */
             blockers: string[];
+            /** Capacity */
+            capacity?: number | null;
             /** Cash Comparator */
             cash_comparator?: {
                 [key: string]: unknown;
@@ -4605,6 +4609,10 @@ export interface components {
             contract_version: string;
             /** Correlation Cluster Delta */
             correlation_cluster_delta?: number | null;
+            /** Covariance */
+            covariance?: {
+                [key: string]: number;
+            } | null;
             /**
              * Cutoff
              * Format: date-time
@@ -4616,6 +4624,8 @@ export interface components {
             decision_revision: string;
             /** Diversification Benefit */
             diversification_benefit?: number | null;
+            /** Drawdown Cap */
+            drawdown_cap?: number | null;
             /** Execution Evidence */
             execution_evidence?: {
                 [key: string]: unknown;
@@ -4646,6 +4656,8 @@ export interface components {
              * @default []
              */
             input_lineage: components["schemas"]["InputLineage"][];
+            /** Kelly Cap */
+            kelly_cap?: number | null;
             /** Liquidity */
             liquidity?: {
                 [key: string]: unknown;
@@ -4685,6 +4697,8 @@ export interface components {
              * @default []
              */
             positions_most_correlated: string[];
+            /** Risk Budget */
+            risk_budget?: number | null;
             /** Risk Budget Consumed */
             risk_budget_consumed?: number | null;
             /** Risk Policy Version */
@@ -4693,6 +4707,8 @@ export interface components {
             scenario_pnl?: {
                 [key: string]: unknown;
             } | null;
+            /** Sector */
+            sector?: string | null;
             /** Sector Concentration Delta */
             sector_concentration_delta?: number | null;
             /** Symbol Concentration Delta */
@@ -4703,6 +4719,8 @@ export interface components {
             ticker: string;
             /** Top Alternative */
             top_alternative?: string | null;
+            /** Volatility */
+            volatility?: number | null;
         } & {
             [key: string]: unknown;
         };

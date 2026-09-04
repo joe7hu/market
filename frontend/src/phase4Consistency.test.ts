@@ -38,4 +38,22 @@ describe("Phase 4 workspace consistency", () => {
     expect(decision?.actions[0].fundingSource).toBe("CASH:acct:1");
     expect(decision?.scenario?.scenarios[0].shocks).toEqual({ ABC: -0.2 });
   });
+
+  it("rejects malformed or incomplete Phase 4 table identity", () => {
+    const malformed = mergeSnapshot(emptyPanelData(), {
+      tables: { portfolio_allocation: { rows: [{ allocation_id: 42 }] } },
+    });
+    const missingAllocation = mergeSnapshot(emptyPanelData(), {
+      tables: { execution_model_snapshot: { rows: [{ execution_model_snapshot_id: "execution:x" }] } },
+    });
+    expect(malformed.errors.portfolio).toContain("Invalid or missing Phase 4 snapshot identity");
+    expect(missingAllocation.errors.portfolio).toContain("Invalid or missing Phase 4 snapshot identity");
+  });
+
+  it("rejects malformed integrated identity instead of funding an ambiguous view", () => {
+    const data = mergeSnapshot(emptyPanelData(), {
+      portfolio_integrated: { allocation_id: "", input_cutoff: "2026-09-02T15:00:00Z", status: "cash_only", actions: [] },
+    } as any);
+    expect(data.errors.portfolio).toContain("Invalid or missing Phase 4 snapshot identity");
+  });
 });

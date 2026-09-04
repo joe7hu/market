@@ -892,16 +892,32 @@ class TickerPaperExecutionRepository:
                 strike = _number(legs[0].get("strike"))
                 if strike is not None and underlying_price <= strike:
                     policy = dict(order.get("policy_result") or {})
-                    policy["assignment"] = {"status": "assigned", "strike": strike, "underlying_price": underlying_price}
+                    multiplier = int(legs[0].get("multiplier") or 0)
+                    if multiplier <= 0:
+                        return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "assignment_multiplier_missing"}
+                    assignment_fee = FEE_PER_CONTRACT_LEG * len(legs)
+                    settlement_value = (strike - underlying_price) * multiplier * _quantity(order.get("quantity"))
+                    policy["assignment"] = {
+                        "status": "assigned", "strike": strike, "underlying_price": underlying_price,
+                        "multiplier": multiplier, "settlement_value": settlement_value,
+                        "settled_at": now, "assignment_fee": assignment_fee,
+                    }
                     policy["exit_fill_count"] = int(_number(policy.get("exit_fill_count")) or 0) + 1
                     connection.execute(
                         """
                         UPDATE app.paper_order
-                        SET status = 'exited', exited_quantity = %s, exit_at = %s,
-                            policy_result = %s, unfilled_reason = %s, updated_at = %s
+                        SET status = 'exited', exited_quantity = %s, exit_price = %s, exit_at = %s,
+                            fees = coalesce(fees, 0) + %s, policy_result = %s,
+                            unfilled_reason = %s, updated_at = %s
                         WHERE id = %s::uuid
                         """,
-                        [order["quantity"], now, Jsonb(policy), "assigned_at_expiration", now, order["id"]],
+                        [order["quantity"], max(strike - underlying_price, 0.0), now,
+                         assignment_fee, Jsonb(policy), "assigned_at_expiration", now, order["id"]],
+                    )
+                    from investment_panel.database.portfolio import PortfolioLoopRepository
+
+                    PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
+                        connection, paper_order_id=str(order["id"]), observed_at=now, status="exited",
                     )
                     return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
             reason = reason or "expiration"
@@ -961,7 +977,7 @@ class TickerPaperExecutionRepository:
             """
             SELECT leg.contract_id, leg.option_type, leg.side, leg.strike, leg.bid, leg.ask,
                    leg.bid_size, leg.ask_size, leg.quote_time, leg.open_interest, leg.volume,
-                   contract.expiration
+                   contract.expiration, contract.multiplier
             FROM app.paper_order_leg leg
             JOIN catalog.option_contract contract ON contract.id = leg.contract_id
             WHERE leg.paper_order_id = %s::uuid

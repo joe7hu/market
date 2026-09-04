@@ -123,7 +123,7 @@ def upgrade() -> None:
             latency_ms DOUBLE PRECISION CHECK (latency_ms IS NULL OR (latency_ms < 'Infinity'::double precision AND latency_ms > '-Infinity'::double precision AND latency_ms >= 0)),
             impact_bps DOUBLE PRECISION CHECK (impact_bps IS NULL OR (impact_bps < 'Infinity'::double precision AND impact_bps > '-Infinity'::double precision AND impact_bps >= 0)),
             side TEXT NOT NULL DEFAULT 'buy' CHECK (side IN ('buy', 'sell')),
-            exit_price DOUBLE PRECISION CHECK (exit_price IS NULL OR (exit_price < 'Infinity'::double precision AND exit_price > 0)),
+            exit_price DOUBLE PRECISION CHECK (exit_price IS NULL OR (exit_price < 'Infinity'::double precision AND exit_price >= 0)),
             observed_at TIMESTAMPTZ NOT NULL,
             available_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -271,6 +271,10 @@ def upgrade() -> None:
                 IF NEW.disposition = 'selected' AND NEW.ticker <> 'CASH' THEN
                     IF NEW.funding_amount IS NULL OR NEW.funding_amount <= 0 THEN
                         RAISE EXCEPTION 'Phase 4 funded item requires a positive funding amount';
+                    ELSIF coalesce((SELECT metadata->>'execution_status'
+                                    FROM analysis.portfolio_allocation_snapshot
+                                    WHERE allocation_id = NEW.allocation_id), '') <> 'calibrated' THEN
+                        RAISE EXCEPTION 'Phase 4 funded item requires a fresh calibrated execution snapshot';
                     ELSIF NEW.funding_source LIKE 'CASH:broker-account:%' AND NOT EXISTS (
                         SELECT 1 FROM raw.broker_account_snapshot account
                         WHERE account.id = split_part(NEW.funding_source, ':', 4)::BIGINT
