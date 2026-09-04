@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -9,7 +9,12 @@ import pytest
 from psycopg.errors import CheckViolation, RaiseException
 from psycopg.rows import dict_row
 
-from investment_panel.core.portfolio import build_execution_model_snapshot, canonical_content_hash
+from investment_panel.core.portfolio import (
+    allocation_id_for_snapshot,
+    build_execution_model_snapshot,
+    canonical_content_hash,
+    cash_only_allocation,
+)
 from investment_panel.database.portfolio import PortfolioLoopRepository
 
 
@@ -135,3 +140,44 @@ def test_execution_model_store_matches_postgresql_canonical_digest(migrated_post
         ).fetchone()
         assert stored is not None
         assert str(stored["content_hash"]).strip() == canonical_content_hash(model)
+
+
+def test_phase4_application_role_cannot_directly_write_forged_authority(migrated_postgres_dsn: str) -> None:
+    with closing(psycopg.connect(migrated_postgres_dsn)) as connection:
+        assert connection.execute(
+            "SELECT has_table_privilege('market_app', 'analysis.portfolio_allocation_snapshot', 'INSERT')"
+        ).fetchone()[0] is False
+        assert connection.execute(
+            "SELECT has_function_privilege('market_app', 'analysis.insert_phase4_allocation_snapshot(jsonb)', 'EXECUTE')"
+        ).fetchone()[0] is True
+        with pytest.raises(RaiseException, match="authority"):
+            connection.execute(
+                """INSERT INTO analysis.portfolio_allocation_snapshot
+                   (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash, content_hash, metadata)
+                   VALUES (%s, %s, %s, 'available', .01, %s, %s,
+                           '{"authority":"postgresql","authority_snapshot_id":"broker-account:999999","source_hashes":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}'::jsonb)""",
+                ["allocation:" + "c" * 64, AS_OF, AS_OF, "c" * 64, "d" * 64],
+            )
+        connection.rollback()
+
+
+def test_repository_persists_and_replays_a_postgresql_owned_cash_allocation(migrated_postgres_dsn: str) -> None:
+    with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
+        allocation = cash_only_allocation(AS_OF, 0.01, "test")
+        allocation = allocation.model_copy(update={"metadata": {
+            "authority": "postgresql", "authority_snapshot_id": "test-cash",
+            "source_hashes": ["a" * 64],
+        }})
+        allocation = allocation.model_copy(update={"allocation_id": allocation_id_for_snapshot(allocation)})
+
+        class Runtime:
+            def transaction(self): return nullcontext(connection)
+
+        repository = PortfolioLoopRepository(Runtime())
+        assert repository.store_allocation(allocation) == allocation.allocation_id
+        assert repository.store_allocation(allocation) == allocation.allocation_id
+        connection.commit()
+        assert connection.execute(
+            "SELECT count(*) AS count FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = %s",
+            [allocation.allocation_id],
+        ).fetchone()["count"] == 1

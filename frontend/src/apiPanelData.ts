@@ -187,6 +187,8 @@ export function mergePanelData(existing: PanelData, incoming: PanelData, options
   if (existingPhase4.state === "valid" && incomingPhase4.state === "valid" && existingPhase4.value !== incomingPhase4.value && !phase4Scope) {
     return { ...existing, errors: { ...existing.errors, portfolio: "Phase 4 snapshot identity diverged; retained the prior immutable view." } };
   }
+  const validScopedRollover = Boolean(phase4Scope && existingPhase4.state === "valid" && incomingPhase4.state === "valid"
+    && existingPhase4.value !== incomingPhase4.value);
   const next: PanelData = {
     ...existing,
     dashboard: { ...existing.dashboard, ...incoming.dashboard },
@@ -194,6 +196,11 @@ export function mergePanelData(existing: PanelData, incoming: PanelData, options
     errors: { ...existing.errors, ...incoming.errors },
     scopeStatus: { ...existing.scopeStatus, ...incoming.scopeStatus },
   };
+  if (validScopedRollover) {
+    for (const key of ["portfolioAllocation", "portfolioAllocationItems", "portfolioScenarioArtifact", "executionModelSnapshot", "paperExecutionObservations", "bookAttribution", "portfolioIntegrated"]) {
+      delete (next as Record<string, unknown>)[key];
+    }
+  }
   for (const [key, value] of Object.entries(incoming)) {
     if (RESERVED_PANEL_KEYS.has(key) || key === "scopeStatus" || value === undefined) continue;
     const existingTable = next[key] as TablePayload | undefined;

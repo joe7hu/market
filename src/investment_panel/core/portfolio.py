@@ -940,7 +940,6 @@ def _compute_portfolio_allocation(
     caps = [min(cap, candidate.current_weight) if candidate.current_weight > 0 else cap for cap, (candidate, _, _) in zip(caps, fundable)]
     limits = [(0.0, max(0.0, min(1.0, cap))) for cap in caps]
     source_limits: dict[str, float] = {}
-    released_trim_sources = [candidate.trim_position_id for candidate, utility, _ in eligible if candidate.current_weight > 0 and utility <= cash_hurdle and candidate.trim_position_id]
     released_trim_funding = sum(candidate.trim_available or 0.0 for candidate, utility, _ in eligible if candidate.current_weight > 0 and utility <= cash_hurdle)
     trim_limits = {
         candidate.trim_position_id: float(candidate.trim_available or 0.0)
@@ -953,22 +952,11 @@ def _compute_portfolio_allocation(
         if key and amount is not None:
             source_limits.setdefault(key, amount)
     policy = constraints if authoritative else None
-    def _funding(weights: Any, key: str) -> float:
-        return sum(max(0.0, float(weight) - candidate.current_weight) * (nav if nav is not None else 1.0)
-                   for weight, (candidate, _, _) in zip(weights, fundable)
-                   if candidate.cash_source_id == key)
     def _net_funding(weights: Any) -> float:
         scale = nav if nav is not None else 1.0
         return sum((float(weight) - candidate.current_weight) * scale for weight, (candidate, _, _) in zip(weights, fundable))
-    def _trim_funding(weights: Any, key: str) -> float:
-        scale = nav if nav is not None else 1.0
-        return sum(max(0.0, float(weight) - candidate.current_weight) * scale
-                   for weight, (candidate, _, _) in zip(weights, fundable)
-                   if candidate.trim_position_id == key)
     constraints = [{"type": "ineq", "fun": lambda weights: 1.0 - existing_weight - sum(weights)}]
     constraints.append({"type": "ineq", "fun": lambda weights: (book.cash_available if authoritative and book.cash_available is not None else 0.0) + released_trim_funding - _net_funding(weights)}) if authoritative else None
-    constraints.extend({"type": "ineq", "fun": lambda weights, key=key, amount=amount: amount - _funding(weights, key)} for key, amount in source_limits.items())
-    constraints.extend({"type": "ineq", "fun": lambda weights, key=key, amount=amount: amount - _trim_funding(weights, key)} for key, amount in trim_limits.items())
     if authoritative:
         covariance_values = [float((candidate.covariance or {}).get(candidate.ticker, 0.0)) for candidate, _, _ in fundable]
         if any(not isfinite(value) or value < 0 for value in covariance_values):
@@ -990,7 +978,12 @@ def _compute_portfolio_allocation(
         constraints.append({"type": "ineq", "fun": lambda weights: risk_limit - sum(float(left) * float(right) * float((candidate.covariance or {}).get(other.ticker, 0)) for left, (candidate, _, _), right, (other, _, _) in ((left, first, right, second) for left, first in zip(weights, fundable) for right, second in zip(weights, fundable))) ** 0.5})
     result = minimize(lambda weights: -sum(float(weight) * (utility if utility > cash_hurdle else -abs(utility)) for weight, (_, utility, _) in zip(weights, fundable)), [lower for lower, _ in limits], bounds=limits, constraints=constraints, method="SLSQP") if fundable else None
     weights = list(result.x) if result is not None and result.success else [0.0] * len(fundable)
-    trim_remaining = dict(trim_limits)
+    # Funding is a conserved joint resource.  The optimizer limits the total;
+    # this deterministic projection records every source used by every increase.
+    funding_remaining = {
+        **{f"CASH:{key}": float(value) for key, value in source_limits.items()},
+        **{f"TRIM:{key}": float(value) for key, value in trim_limits.items()},
+    }
     for weight, (candidate, utility, trace) in zip(weights, fundable):
         target = max(0.0, float(weight))
         if target <= 1e-8:
@@ -1000,21 +993,26 @@ def _compute_portfolio_allocation(
         decreased = target < candidate.current_weight - 1e-8
         funding_amount = abs(target - candidate.current_weight) * (nav if nav is not None else 1.0)
         funding_source = None
+        funding_sources: dict[str, float] = {}
         if increased:
-            if candidate.cash_source_id and candidate.cash_available is not None and candidate.cash_available >= funding_amount:
-                funding_source = f"CASH:{candidate.cash_source_id}"
-            else:
-                for trim_source, available in trim_remaining.items():
-                    if available + 1e-9 >= funding_amount:
-                        funding_source = f"TRIM:{trim_source}"
-                        trim_remaining[trim_source] = available - funding_amount
-                        break
-                if funding_source is None:
-                    ranked.append(_rejection(candidate, ("funding_source_conservation_failed",)))
+            remaining_funding = funding_amount
+            for source, available in funding_remaining.items():
+                used = min(available, remaining_funding)
+                if used <= 1e-9:
                     continue
+                funding_sources[source] = used
+                funding_remaining[source] = available - used
+                remaining_funding -= used
+                if remaining_funding <= 1e-9:
+                    break
+            if remaining_funding > 1e-9:
+                ranked.append(_rejection(candidate, ("funding_source_conservation_failed",)))
+                continue
+            funding_source = next(iter(funding_sources))
         elif decreased:
             funding_source = f"TRIM:{candidate.trim_position_id}" if candidate.trim_position_id else "TRIM:book"
-        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": target - candidate.current_weight, "funding_amount": funding_amount, "released_trim_funding": funding_amount if decreased else 0.0}
+            funding_sources = {funding_source: funding_amount}
+        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": target - candidate.current_weight, "funding_amount": funding_amount, "funding_sources": funding_sources, "released_trim_funding": funding_amount if decreased else 0.0}
         ranked.append(PortfolioAllocationItem(
             allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'target_weight': target, 'trace': trace})}",
             candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
@@ -1492,23 +1490,25 @@ class PaperExecutionObservation(BaseModel):
     impact_bps: float | None = None
     side: str = "buy"
     exit_price: float | None = None
+    event_fee: float | None = None
+    contract_multiplier: float | None = None
     observed_at: datetime
     available_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def enforce_paper(self) -> "PaperExecutionObservation":
-        if self.execution_mode != "paper" or not self.paper_only or self.status not in {"planned", "submitted", "partial", "filled", "exited", "cancelled", "unavailable"}:
+        if self.execution_mode != "paper" or not self.paper_only or self.status not in {"planned", "submitted", "partial", "filled", "partial_exited", "exited", "cancelled", "unavailable"}:
             raise ValueError("execution telemetry is paper-only")
         if self.side not in {"buy", "sell"}:
             raise ValueError("execution side is invalid")
         if not self.allocation_item_id or not self.action_id:
             raise ValueError("paper execution requires allocation and action lineage")
-        for name in ("requested_quantity", "filled_quantity", "requested_price", "fill_price", "spread_bps", "latency_ms", "impact_bps", "exit_price"):
+        for name in ("requested_quantity", "filled_quantity", "requested_price", "fill_price", "spread_bps", "latency_ms", "impact_bps", "exit_price", "event_fee", "contract_multiplier"):
             _finite(getattr(self, name), name)
         if self.filled_quantity > self.requested_quantity or (self.filled_quantity and self.fill_price is None):
             raise ValueError("filled execution requires bounded quantity and fill price")
-        if self.status == "exited" and (self.filled_quantity <= 0 or self.exit_price is None):
+        if self.status in {"partial_exited", "exited"} and (self.filled_quantity <= 0 or self.exit_price is None):
             raise ValueError("exited execution requires a genuine fill and exit price")
         if self.observed_at.tzinfo is None or self.available_at.tzinfo is None:
             raise ValueError("execution observation clocks must be timezone-aware")
@@ -1643,6 +1643,7 @@ def attribute_paper_pnl(
     item: PortfolioAllocationItem,
     *,
     observation: PaperExecutionObservation | None = None,
+    observations: list[PaperExecutionObservation] | None = None,
     realized_pnl: float | None = None,
 ) -> BookAttribution:
     if item.allocation_item_id not in {candidate.allocation_item_id for candidate in allocation.items}:
@@ -1655,15 +1656,21 @@ def attribute_paper_pnl(
         raise ValueError("execution observation does not belong to allocation item")
     if observation.status != "exited" or observation.filled_quantity <= 0 or observation.fill_price is None or observation.exit_price is None:
         raise ValueError("attribution requires a genuine exited paper fill")
-    direction = 1 if observation.side == "buy" else -1
+    events = observations or [observation]
+    if any(event.allocation_item_id != item.allocation_item_id or event.paper_order_id != observation.paper_order_id
+           or event.status not in {"partial_exited", "exited"} or event.filled_quantity <= 0
+           or event.fill_price is None or event.exit_price is None for event in events):
+        raise ValueError("attribution requires complete partial-exit telemetry")
     status = "realized"
-    multiplier = observation.metadata.get("contract_multiplier", 1)
-    if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or not isfinite(float(multiplier)) or float(multiplier) <= 0:
+    multipliers = [event.contract_multiplier if event.contract_multiplier is not None else event.metadata.get("contract_multiplier") for event in events]
+    fees_by_event = [event.event_fee if event.event_fee is not None else event.metadata.get("fees") for event in events]
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not isfinite(float(value)) or float(value) <= 0 for value in multipliers):
         raise ValueError("attribution requires a finite persisted contract multiplier")
-    gross_pnl = direction * (observation.exit_price - observation.fill_price) * observation.filled_quantity * float(multiplier)
-    fees = observation.metadata.get("fees", 0)
-    if not isinstance(fees, (int, float)) or not isfinite(float(fees)) or float(fees) < 0:
-        raise ValueError("attribution requires a finite persisted paper fee")
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not isfinite(float(value)) or float(value) < 0 for value in fees_by_event):
+        raise ValueError("attribution requires finite persisted paper fees")
+    gross_pnl = sum((1 if event.side == "buy" else -1) * (event.exit_price - event.fill_price) * event.filled_quantity * float(multiplier)
+                    for event, multiplier in zip(events, multipliers))
+    fees = sum(float(value) for value in fees_by_event)
     derived_pnl = gross_pnl - float(fees)
     trace = item.trace
     lineage = {
@@ -1684,8 +1691,8 @@ def attribute_paper_pnl(
         "invalidation": trace.get("invalidation"),
         "fill_id": observation.paper_execution_observation_id if observation else None,
         "pnl": {"gross": gross_pnl, "realized": derived_pnl if status == "realized" else None, "fees": float(fees), "net": derived_pnl,
-                "quantity": observation.filled_quantity if observation else None,
-                "contract_multiplier": float(multiplier),
+                "quantity": sum(event.filled_quantity for event in events) if observation else None,
+                "contract_multiplier": float(multipliers[-1]),
                 "entry_price": observation.fill_price if observation else None, "exit_price": observation.exit_price if observation else None},
         "cost_decomposition": {"spread_bps": observation.spread_bps if observation else None,
                                "impact_bps": observation.impact_bps if observation else None, "fees": float(fees)},

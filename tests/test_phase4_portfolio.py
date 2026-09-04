@@ -318,6 +318,34 @@ def test_joint_optimizer_handles_required_trim_and_existing_holding_without_self
     assert sum(item.target_weight for item in allocation.items if item.ticker == "CASH") <= .2 + 1e-9
 
 
+def test_joint_optimizer_conserves_multiple_trim_sources_for_one_increase() -> None:
+    evidence = {"factor_exposure": {"market": 0}, "sector": "technology", "asset_class": "equity",
+                "greeks": {"delta": 0}, "liquidity": {"score": 1}, "venue": "NYSE"}
+    trim_a = candidate("TRIM_A", current_weight=.1, expected_return=.01, uncertainty=.01,
+                       trim_position_id="broker-position:a", trim_available=.1, **evidence)
+    trim_b = candidate("TRIM_B", current_weight=.1, expected_return=.01, uncertainty=.01,
+                       trim_position_id="broker-position:b", trim_available=.1, **evidence)
+    fresh = candidate("FRESH", capacity=.15, risk_budget=.15, kelly_cap=.15, drawdown_cap=.15,
+                      cash_available=.001, cash_source_id="cash:1", **evidence)
+    allocation = allocate_portfolio_for_tests(
+        [trim_a, trim_b, fresh], as_of=AS_OF, cash_hurdle=.01,
+        book=PortfolioBookEvidence.model_construct(
+            net_liquidation=1, cash_available=.001, cash_source_id="cash:1",
+            positions={"TRIM_A": "broker-position:a", "TRIM_B": "broker-position:b"},
+            position_weights={"TRIM_A": .1, "TRIM_B": .1}, input_cutoff=AS_OF,
+        ),
+        constraints=PortfolioConstraintEvidence.model_construct(
+            cash_hurdle=.01, constraint_hash="constraints:test", risk_policy_hash="a" * 64,
+            risk_policy_version="v1", position_limit=1, aggregate_loss_limit=1,
+        ),
+        execution=PortfolioExecutionEvidence.model_construct(snapshot_id="execution:ready", calibration_status="calibrated", sample_count=1, input_cutoff=AS_OF),
+    )
+    funded = next(item for item in allocation.items if item.ticker == "FRESH")
+    assert funded.disposition == "selected"
+    assert sum(funded.trace["funding_sources"].values()) == pytest.approx(funded.funding_amount)
+    assert set(funded.trace["funding_sources"]) == {"CASH:cash:1", "TRIM:broker-position:a", "TRIM:broker-position:b"}
+
+
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:
     left = candidate("LEFT", covariance={"LEFT": 0.04, "RIGHT": 0.02})
     right = candidate("RIGHT", covariance={"LEFT": 0.02, "RIGHT": 0.09}, cash_source_id="acct:test:cash:right")
@@ -394,7 +422,7 @@ def observation(status: str, filled: float = 0, *, exit_price: float | None = No
         requested_quantity=10, filled_quantity=filled, requested_price=100,
         fill_price=100.5 if filled else None, spread_bps=5 if filled else None,
         exit_price=exit_price, observed_at=AS_OF, available_at=AS_OF + timedelta(seconds=1),
-        metadata={"paper_order_id": "00000000-0000-0000-0000-000000000001", "submitted_at": AS_OF - timedelta(seconds=1), "filled_at": AS_OF},
+        metadata={"paper_order_id": "00000000-0000-0000-0000-000000000001", "submitted_at": AS_OF - timedelta(seconds=1), "filled_at": AS_OF, "contract_multiplier": 1, "fees": 0},
     )
 
 
@@ -430,6 +458,24 @@ def test_assignment_attribution_uses_persisted_multiplier_and_total_fees() -> No
     realized = attribute_paper_pnl(allocation, item, observation=assigned)
     assert realized.attribution["pnl"]["gross"] == 300
     assert realized.realized_pnl == 297.4
+
+
+def test_attribution_aggregates_each_persisted_partial_exit_and_fee() -> None:
+    allocation = allocate_portfolio_for_tests([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
+    item = next(item for item in allocation.items if item.ticker == "GOOD")
+    partial = observation("partial_exited", 1, exit_price=101).model_copy(update={
+        "allocation_item_id": item.allocation_item_id,
+        "metadata": {"paper_order_id": "00000000-0000-0000-0000-000000000001", "contract_multiplier": 100, "fees": 1.25},
+    })
+    final = observation("exited", 1, exit_price=103).model_copy(update={
+        "allocation_item_id": item.allocation_item_id,
+        "paper_execution_observation_id": "observation:final",
+        "metadata": {"paper_order_id": "00000000-0000-0000-0000-000000000001", "contract_multiplier": 100, "fees": 1.75},
+    })
+    realized = attribute_paper_pnl(allocation, item, observation=final, observations=[partial, final])
+    assert realized.attribution["pnl"]["gross"] == 300
+    assert realized.realized_pnl == 297
+    assert realized.attribution["pnl"]["quantity"] == 2
 
 
 def test_csp_assignment_charges_each_contract_and_persists_multiplier(monkeypatch) -> None:

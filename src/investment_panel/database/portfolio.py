@@ -143,7 +143,7 @@ class PortfolioLoopRepository:
                 """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
                           execution_mode, paper_only, status, requested_quantity, filled_quantity,
                           requested_price, fill_price, spread_bps, latency_ms, impact_bps,
-                          side, exit_price, observed_at, available_at, metadata
+                          side, exit_price, event_fee, contract_multiplier, observed_at, available_at, metadata
                    FROM app.paper_execution_observation
                    WHERE paper_only AND execution_mode = 'paper'
                      AND allocation_item_id IN (
@@ -263,6 +263,11 @@ class PortfolioLoopRepository:
             not isinstance(value, str) or len(value) != 64 or value == "0" * 64 for value in source_hashes
         ):
             raise ValueError("allocation persistence requires canonical source hashes")
+        expected_source_hashes = sorted({str(item.trace.get("source_decision_input_hash") or "")
+                                         for item in allocation.items
+                                         if item.disposition == "selected" and item.ticker != "CASH"})
+        if expected_source_hashes and sorted(source_hashes) != expected_source_hashes:
+            raise ValueError("allocation authority hashes must be issued from its selected PostgreSQL decisions")
         with self.runtime.transaction() as connection:
             account = None
             if allocation.status != "cash_only":
@@ -280,22 +285,26 @@ class PortfolioLoopRepository:
                 if item.ticker == "CASH" or item.disposition not in {"selected", "rollback"}:
                     continue
                 decision_hash = item.trace.get("source_decision_input_hash")
+                decision_id = item.trace.get("source_decision_id")
                 if not isinstance(decision_hash, str) or not connection.execute(
-                    "SELECT 1 FROM analysis.ticker_decision WHERE input_hash = %s LIMIT 1", [decision_hash]
+                    """SELECT 1 FROM analysis.ticker_decision
+                       WHERE id::text = %s AND input_hash = %s AND status = 'published'
+                         AND input_manifest->'trade_plan'->>'trade_plan_id' = %s
+                         AND input_manifest->'trade_plan'->>'rank_id' = %s
+                         AND input_manifest->'trade_plan'->>'strategy_forecast_id' = %s LIMIT 1""",
+                    [decision_id, decision_hash, item.action_id, item.rank_id, item.strategy_forecast_id],
                 ).fetchone():
                     raise ValueError("allocation item source digest is not a persisted PostgreSQL decision")
             connection.execute(
-                """INSERT INTO analysis.portfolio_allocation_snapshot
-                    (allocation_id, as_of, input_cutoff, status, cash_hurdle,
-                    forecast_ids, action_ids, strategy_registry_ids, input_hash, content_hash, metadata)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT (allocation_id) DO NOTHING""",
-                [
-                    allocation.allocation_id, allocation.as_of, allocation.input_cutoff,
-                    allocation.status, allocation.cash_hurdle, Jsonb(list(allocation.forecast_ids)),
-                    Jsonb(list(allocation.action_ids)), Jsonb(list(allocation.strategy_registry_ids)),
-                    allocation.allocation_id.split(":", 1)[1], canonical_content_hash(allocation), Jsonb(allocation.metadata),
-                ],
+                "SELECT analysis.insert_phase4_allocation_snapshot(%s)",
+                [Jsonb({
+                    "allocation_id": allocation.allocation_id, "as_of": allocation.as_of.isoformat(),
+                    "input_cutoff": allocation.input_cutoff.isoformat(), "status": allocation.status,
+                    "cash_hurdle": allocation.cash_hurdle, "forecast_ids": list(allocation.forecast_ids),
+                    "action_ids": list(allocation.action_ids), "strategy_registry_ids": list(allocation.strategy_registry_ids),
+                    "input_hash": allocation.allocation_id.split(":", 1)[1],
+                    "content_hash": canonical_content_hash(allocation), "metadata": allocation.metadata,
+                })],
             )
             stored = connection.execute(
                 """SELECT input_hash, content_hash, as_of, input_cutoff, status, cash_hurdle,
@@ -312,21 +321,12 @@ class PortfolioLoopRepository:
                 raise ValueError("immutable allocation replay diverges from PostgreSQL content")
             for item in allocation.items:
                 connection.execute(
-                    """INSERT INTO analysis.portfolio_allocation_item
-                       (allocation_item_id, allocation_id, candidate_id, ticker, strategy_forecast_id,
-                       action_id, rank_id, hypothesis_id, disposition, target_weight,
-                       current_weight, marginal_book_utility, trace, blockers, funding_source,
-                       funding_amount, input_hash, content_hash)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (allocation_item_id) DO NOTHING""",
-                    [
-                        item.allocation_item_id, allocation.allocation_id, item.candidate_id, item.ticker,
-                        item.strategy_forecast_id, item.action_id, item.rank_id, item.hypothesis_id,
-                        item.disposition, item.target_weight, item.current_weight, item.marginal_book_utility,
-                        Jsonb(item.trace), Jsonb(list(item.blockers)), item.funding_source, item.funding_amount,
-                        item.allocation_item_id.split(":", 1)[1],
-                        canonical_content_hash(item.model_dump(mode="json") | {"allocation_id": allocation.allocation_id}),
-                    ],
+                    "SELECT analysis.insert_phase4_allocation_item(%s)",
+                    [Jsonb(item.model_dump(mode="json") | {
+                        "allocation_id": allocation.allocation_id,
+                        "input_hash": item.allocation_item_id.split(":", 1)[1],
+                        "content_hash": canonical_content_hash(item.model_dump(mode="json") | {"allocation_id": allocation.allocation_id}),
+                    })],
                 )
                 stored_item = connection.execute(
                     """SELECT allocation_id, candidate_id, ticker, strategy_forecast_id,
@@ -719,13 +719,16 @@ class PortfolioLoopRepository:
                 if scores:
                     drift_by_revision.setdefault(str(row["strategy_revision_id"]), max(scores))
             execution_row = connection.execute(
-                """SELECT execution_model_snapshot_id, allocation_id, model_version,
-                          calibration_status, sample_count, fill_probability, spread_bps,
-                          latency_ms, impact_bps, input_cutoff, input_hash, content_hash, metadata
-                   FROM analysis.execution_model_snapshot
-                   WHERE input_cutoff <= %s AND available_at <= %s
-                   ORDER BY input_cutoff DESC, available_at DESC,
-                            execution_model_snapshot_id DESC LIMIT 1""", [as_of, as_of]
+                """SELECT execution.execution_model_snapshot_id, execution.allocation_id, execution.model_version,
+                          execution.calibration_status, execution.sample_count, execution.fill_probability, execution.spread_bps,
+                          execution.latency_ms, execution.impact_bps, execution.input_cutoff, execution.input_hash, execution.content_hash, execution.metadata
+                   FROM analysis.execution_model_snapshot execution
+                   JOIN analysis.portfolio_allocation_snapshot allocation
+                     ON allocation.allocation_id = execution.allocation_id
+                   WHERE execution.input_cutoff = %s AND execution.available_at <= %s
+                     AND allocation.input_cutoff = %s
+                   ORDER BY execution.input_cutoff DESC, execution.available_at DESC,
+                            execution.execution_model_snapshot_id DESC LIMIT 1""", [as_of, as_of, as_of]
             ).fetchone()
             if execution_row is not None:
                 try:
@@ -936,11 +939,8 @@ class PortfolioLoopRepository:
             "constraint_hash": bundle.constraints.constraint_hash,
             "execution_status": bundle.execution.calibration_status,
             "execution_model_snapshot_id": bundle.execution.snapshot_id,
-            "source_hashes": sorted({
-                value for candidate in bundle.candidates
-                for value in (candidate.source_input_hash, candidate.source_decision_input_hash)
-                if value
-            } or {bundle.authority_content_hash}),
+            "source_hashes": sorted({candidate.source_decision_input_hash for candidate in bundle.candidates
+                                     if candidate.source_decision_input_hash} or {bundle.authority_content_hash}),
         }
         allocation = allocation.model_copy(update={"metadata": authority_metadata})
         allocation = allocation.model_copy(update={"allocation_id": allocation_id_for_snapshot(allocation)})
@@ -959,20 +959,22 @@ class PortfolioLoopRepository:
                           observation.requested_price, observation.fill_price,
                           observation.spread_bps, observation.latency_ms,
                           observation.impact_bps, observation.side, observation.exit_price,
+                          observation.event_fee, observation.contract_multiplier,
                           observation.observed_at, observation.available_at, observation.metadata
                    FROM app.paper_execution_observation observation
                    JOIN app.paper_order paper ON paper.id = observation.paper_order_id
-                   WHERE observation.execution_mode = 'paper' AND observation.paper_only
+                   JOIN analysis.portfolio_allocation_item item ON item.allocation_item_id = observation.allocation_item_id
+                   WHERE item.allocation_id = %s AND observation.execution_mode = 'paper' AND observation.paper_only
                      AND observation.filled_quantity > 0 AND observation.fill_price IS NOT NULL
                      AND observation.available_at <= %s AND paper.filled_at IS NOT NULL
                      AND paper.fill_evidence_at IS NOT NULL AND paper.execution_quote IS NOT NULL
                      AND paper.contract_multiplier IS NOT NULL
                    ORDER BY observation.observed_at, observation.paper_execution_observation_id""",
-                [as_of],
+                [allocation.allocation_id, as_of],
             ).fetchall()]
             if observations:
                 model = build_execution_model_snapshot(
-                    allocation.allocation_id, as_of,
+                    allocation.allocation_id, allocation.input_cutoff,
                     [PaperExecutionObservation.model_validate(row) for row in observations],
                 )
                 if model.calibration_status == "calibrated":
@@ -1125,29 +1127,16 @@ class PortfolioLoopRepository:
                     "latency_ms": (order["filled_at"] - order["submitted_at"]).total_seconds() * 1000,
                     "impact_bps": persisted_impact,
                     "side": str(order["side"] or "buy"),
-                    "exit_price": float(order["exit_price"]) if persisted_status == "exited" else None,
+                    "exit_price": float(order["exit_price"]) if exit_observation else None,
+                    "event_fee": persisted_event_fees,
+                    "contract_multiplier": float(order["contract_multiplier"]),
                     "observed_at": order["exit_at"] if exit_observation else order["filled_at"],
                     "available_at": max(order["fill_evidence_at"], order["exit_at"]) if exit_observation else order["fill_evidence_at"],
                     "metadata": persisted_metadata,
                 })
             connection.execute(
-                """INSERT INTO app.paper_execution_observation
-                   (paper_execution_observation_id, allocation_item_id, action_id, paper_order_id,
-                    execution_mode, paper_only, status, requested_quantity, filled_quantity,
-                          requested_price, fill_price, spread_bps, latency_ms, impact_bps,
-                          side, exit_price,
-                          observed_at, available_at, metadata)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT (paper_execution_observation_id) DO NOTHING""",
-                [
-                    observation.paper_execution_observation_id, observation.allocation_item_id,
-                    observation.action_id, observation.paper_order_id, observation.execution_mode, observation.paper_only,
-                    observation.status, observation.requested_quantity, observation.filled_quantity,
-                    observation.requested_price, observation.fill_price, observation.spread_bps,
-                    observation.latency_ms, observation.impact_bps, observation.side, observation.exit_price,
-                    observation.observed_at,
-                    observation.available_at, Jsonb(observation.metadata),
-                ],
+                "SELECT analysis.insert_phase4_paper_execution_observation(%s)",
+                [Jsonb(observation.model_dump(mode="json"))],
             )
             allocation = connection.execute(
                     """SELECT allocation_id, input_cutoff FROM analysis.portfolio_allocation_item item
@@ -1160,7 +1149,7 @@ class PortfolioLoopRepository:
                     """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
                               execution_mode, paper_only, status, requested_quantity, filled_quantity,
                               requested_price, fill_price, spread_bps, latency_ms, impact_bps,
-                              side, exit_price, observed_at, available_at, metadata
+                              side, exit_price, event_fee, contract_multiplier, observed_at, available_at, metadata
                        FROM app.paper_execution_observation
                        WHERE allocation_item_id = %s ORDER BY observed_at, paper_execution_observation_id""",
                     [observation.allocation_item_id],
@@ -1168,7 +1157,7 @@ class PortfolioLoopRepository:
             if rows:
                 calibration_cutoff = max(PaperExecutionObservation.model_validate(dict(row)).available_at for row in rows)
                 model = build_execution_model_snapshot(
-                        allocation["allocation_id"], calibration_cutoff,
+                        allocation["allocation_id"], allocation["input_cutoff"],
                         [PaperExecutionObservation.model_validate(dict(row)) for row in rows],
                 )
                 self.store_execution_model(connection, model)
@@ -1257,7 +1246,8 @@ class PortfolioLoopRepository:
             spread_bps=spread_bps, latency_ms=latency_ms,
             impact_bps=impact_bps,
             exit_price=float(order["exit_price"]) if observation_status in {"exited", "partial_exited"} else None,
-            side=str(order["side"] or "buy"), observed_at=event_observed_at, available_at=event_available_at,
+            side=str(order["side"] or "buy"), event_fee=event_fees, contract_multiplier=float(contract_multiplier),
+            observed_at=event_observed_at, available_at=event_available_at,
             metadata={"fees": event_fees, "paper_order_id": str(order["id"]),
                       "contract_multiplier": float(contract_multiplier),
                       "submitted_at": submitted_at, "filled_at": filled_at, "entry_slippage": order["entry_slippage"],
@@ -1294,20 +1284,20 @@ class PortfolioLoopRepository:
                     }) for row in allocation_rows),
                 })
                 item_model = next(row for row in allocation_model.items if row.allocation_item_id == item["allocation_item_id"])
-                attribution = attribute_paper_pnl(allocation_model, item_model, observation=observation)
-                fees = float(order["fees"] or 0)
-                gross_pnl = float(attribution.attribution["pnl"]["gross"])
-                decomposition = {
-                    **attribution.attribution,
-                    "pnl": {**attribution.attribution["pnl"], "gross": gross_pnl, "fees": fees, "net": gross_pnl - fees},
-                    "cost_decomposition": {
-                        **attribution.attribution["cost_decomposition"], "fees": fees,
-                        "entry_slippage": order["entry_slippage"], "exit_slippage": order["exit_slippage"],
-                    },
-                }
-                record = {**attribution.model_dump(mode="python"), "realized_pnl": gross_pnl - fees, "attribution": decomposition}
-                record["book_attribution_id"] = attribution_id_for_record(record)
-                attribution = BookAttribution.model_validate(record)
+                exit_events = [PaperExecutionObservation.model_validate(dict(row)) for row in connection.execute(
+                    """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
+                              execution_mode, paper_only, status, requested_quantity, filled_quantity,
+                              requested_price, fill_price, spread_bps, latency_ms, impact_bps, side, exit_price,
+                              event_fee, contract_multiplier, observed_at, available_at, metadata
+                       FROM app.paper_execution_observation
+                       WHERE allocation_item_id = %s AND paper_order_id = %s
+                         AND status IN ('partial_exited', 'exited')
+                       ORDER BY observed_at, paper_execution_observation_id""",
+                    [item["allocation_item_id"], observation.paper_order_id],
+                ).fetchall()]
+                attribution = attribute_paper_pnl(
+                    allocation_model, item_model, observation=observation, observations=exit_events,
+                )
                 self.record_attribution(attribution, connection=connection)
         return observation_id
 
@@ -1325,6 +1315,7 @@ class PortfolioLoopRepository:
                               observation.execution_mode, observation.paper_only,
                               observation.status, observation.paper_order_id,
                               paper.status AS order_status, paper.exit_at, paper.filled_at,
+                              observation.event_fee, observation.contract_multiplier AS event_multiplier,
                               paper.fees, paper.contract_multiplier,
                               paper.policy_result
                        FROM app.paper_execution_observation observation
@@ -1359,32 +1350,26 @@ class PortfolioLoopRepository:
                     raise ValueError("realized attribution is missing canonical decomposition")
                 if observation["filled_quantity"] <= 0 or observation["fill_price"] is None or observation["exit_price"] is None or observation["order_status"] not in {"exited", "closed"} or observation["exit_at"] is None or observation["filled_at"] is None:
                     raise ValueError("realized attribution requires entry and exit fills")
-                direction = 1 if observation["side"] == "buy" else -1
-                multiplier = observation["contract_multiplier"]
-                if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or float(multiplier) <= 0:
-                    raise ValueError("realized attribution requires a valid persisted contract multiplier")
-                gross = direction * (float(observation["exit_price"]) - float(observation["fill_price"])) * float(observation["filled_quantity"]) * float(multiplier)
-                derived = gross - float(observation["fees"] or 0)
+                events = connection.execute(
+                    """SELECT side, filled_quantity, fill_price, exit_price, event_fee, contract_multiplier
+                       FROM app.paper_execution_observation
+                       WHERE allocation_item_id = %s AND paper_order_id = %s
+                         AND status IN ('partial_exited', 'exited')""",
+                    [attribution.allocation_item_id, observation["paper_order_id"]],
+                ).fetchall()
+                if not events or any(row["exit_price"] is None or row["event_fee"] is None or row["contract_multiplier"] is None for row in events):
+                    raise ValueError("realized attribution requires complete persisted exit events")
+                gross = sum((1 if row["side"] == "buy" else -1) * (float(row["exit_price"]) - float(row["fill_price"]))
+                            * float(row["filled_quantity"]) * float(row["contract_multiplier"]) for row in events)
+                derived = gross - sum(float(row["event_fee"]) for row in events)
                 if abs(float(attribution.realized_pnl or 0) - derived) > 1e-9:
                     raise ValueError("realized attribution P&L does not match the paper fill lineage")
             connection.execute(
-                """INSERT INTO analysis.book_attribution
-                   (book_attribution_id, allocation_id, allocation_item_id,
-                   strategy_forecast_id, hypothesis_id, action_id, rank_id, expression,
-                   experiment_id, trial_id, result_id, paper_execution_observation_id,
-                    pnl_status, realized_pnl, attribution, input_cutoff, input_hash, content_hash)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT (book_attribution_id) DO NOTHING""",
-                [
-                    attribution.book_attribution_id, attribution.allocation_id,
-                    attribution.allocation_item_id, attribution.strategy_forecast_id,
-                    attribution.hypothesis_id, attribution.action_id, attribution.rank_id,
-                    Jsonb(attribution.expression), attribution.experiment_id, attribution.trial_id,
-                    attribution.result_id, attribution.paper_execution_observation_id,
-                    attribution.pnl_status, attribution.realized_pnl,
-                    Jsonb(attribution.attribution), attribution.input_cutoff,
-                    attribution.book_attribution_id.split(":", 1)[1], canonical_content_hash(attribution),
-                ],
+                "SELECT analysis.insert_phase4_book_attribution(%s)",
+                [Jsonb(attribution.model_dump(mode="json") | {
+                    "input_hash": attribution.book_attribution_id.split(":", 1)[1],
+                    "content_hash": canonical_content_hash(attribution),
+                })],
             )
         return attribution.book_attribution_id
 
