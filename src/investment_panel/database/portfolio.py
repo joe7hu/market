@@ -892,10 +892,12 @@ class PortfolioLoopRepository:
             })
         # A missing persisted hurdle is a hard fail-closed condition. The
         # empty allocator result records CASH without inventing a policy value.
-        allocation = portfolio_core._compute_portfolio_allocation(
-            list(bundle.candidates), as_of=as_of, cash_hurdle=bundle.cash_hurdle,
-            book=bundle.book, constraints=bundle.constraints, execution=bundle.execution,
-        )
+        with self.runtime.snapshot() as authority_connection:
+            allocation = portfolio_core._compute_portfolio_allocation(
+                list(bundle.candidates), as_of=as_of, cash_hurdle=bundle.cash_hurdle,
+                book=bundle.book, constraints=bundle.constraints, execution=bundle.execution,
+                connection=authority_connection,
+            )
         drift_scores = {
             item.allocation_item_id: bundle.drift_scores.get(str(next(
                 (candidate.strategy_registry_id or "").split(":")[-1]
@@ -914,14 +916,16 @@ class PortfolioLoopRepository:
                 # Missing cross-sectional shock coverage is a data failure,
                 # not permission to persist a partial or synthetic scenario.
                 safe_candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_cross_section_missing"))}) for candidate in bundle.candidates]
-                allocation = portfolio_core._compute_portfolio_allocation(
-                    safe_candidates, as_of=as_of, cash_hurdle=bundle.cash_hurdle,
-                    book=bundle.book, constraints=bundle.constraints,
-                    execution=PortfolioExecutionEvidence(
-                        snapshot_id=None, calibration_status="calibration_pending", sample_count=0,
-                        input_cutoff=as_of,
-                    ),
-                )
+                with self.runtime.snapshot() as authority_connection:
+                    allocation = portfolio_core._compute_portfolio_allocation(
+                        safe_candidates, as_of=as_of, cash_hurdle=bundle.cash_hurdle,
+                        book=bundle.book, constraints=bundle.constraints,
+                        execution=PortfolioExecutionEvidence(
+                            snapshot_id=None, calibration_status="calibration_pending", sample_count=0,
+                            input_cutoff=as_of,
+                        ),
+                        connection=authority_connection,
+                    )
                 allocation, drift_decisions = apply_decay_to_allocation(
                     allocation, {}, rollback_threshold=1.0,
                 )
@@ -1040,8 +1044,10 @@ class PortfolioLoopRepository:
                     str(order["side"] or "buy") != observation.side
                     or float(order["filled_quantity"] or 0) != observation.filled_quantity
                     or float(order["actual_fill_price"] or 0) != float(observation.fill_price or 0)
-                    or order["filled_at"] != observation.observed_at
-                    or order["fill_evidence_at"] != observation.available_at
+                    or (observation.status != "exited" and order["filled_at"] != observation.observed_at)
+                    or (observation.status == "exited" and (order["exit_at"] is None or order["exit_at"] != observation.observed_at))
+                    or (observation.status != "exited" and order["fill_evidence_at"] != observation.available_at)
+                    or (observation.status == "exited" and observation.available_at < observation.observed_at)
                     or order["contract_multiplier"] is None
                     or float(order["contract_multiplier"]) != float(observation.metadata.get("contract_multiplier") or 0)
                     or float(order["fees"] or 0) != float(observation.metadata.get("fees") or 0)
@@ -1064,8 +1070,10 @@ class PortfolioLoopRepository:
                 or order["submitted_at"] is None or order["fill_evidence_at"] is None
                 or order["execution_quote"] is None or order["fees"] is None
                 or order["entry_slippage"] is None or order["contract_multiplier"] is None
-                or observation.observed_at != order["filled_at"]
-                or observation.available_at != order["fill_evidence_at"]
+                or (observation.status != "exited" and observation.observed_at != order["filled_at"])
+                or (observation.status == "exited" and (order["exit_at"] is None or observation.observed_at != order["exit_at"]))
+                or (observation.status != "exited" and observation.available_at != order["fill_evidence_at"])
+                or (observation.status == "exited" and observation.available_at < observation.observed_at)
             ):
                 raise ValueError("paper execution requires a genuine existing fill")
             if observation.filled_quantity > 0:

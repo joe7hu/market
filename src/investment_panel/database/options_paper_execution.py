@@ -249,7 +249,7 @@ class OptionsPaperExecutionRepository:
             if not legs:
                 return self._terminal(connection, item, status="rejected", reason="immutable_ticket_legs_missing", now=now)
             status = str(item["status"])
-            if status == "staged":
+            if status in {"staged", "open"} and _quantity(item.get("filled_quantity")) < _quantity(item.get("quantity")):
                 current, reason = self._current_ticket(connection, item, ticket, as_of=now)
                 if current is None:
                     return self._terminal(connection, item, status="rejected", reason=reason, now=now)

@@ -786,7 +786,8 @@ class TickerPaperExecutionRepository:
         connection.execute(
             """
             UPDATE app.paper_order
-            SET status = %s, actual_fill_price = coalesce(actual_fill_price, %s),
+            SET status = %s, actual_fill_price = CASE WHEN coalesce(filled_quantity, 0) = 0 THEN %s
+                    ELSE ((actual_fill_price * filled_quantity) + (%s * %s)) / (%s) END,
                 filled_at = coalesce(filled_at, %s), submitted_at = coalesce(submitted_at, %s),
                 fill_evidence_at = clock_timestamp(), execution_quote = %s, contract_multiplier = %s,
                 filled_quantity = %s, fees = coalesce(fees, 0) + %s, entry_fees = coalesce(entry_fees, 0) + %s,
@@ -794,8 +795,14 @@ class TickerPaperExecutionRepository:
                 policy_result = %s, updated_at = %s
             WHERE id = %s::uuid
             """,
-            ["entered" if complete else "open", market_price, now, now, Jsonb({"mid": midpoint, "entry_price": market_price}), multiplier, new_filled, fees, fees, slippage,
+            ["entered" if complete else "open", market_price, market_price, fill_quantity, new_filled, now, now, Jsonb({"mid": midpoint, "entry_price": market_price}), multiplier, new_filled, fees, fees, slippage,
              complete, "partial_fill", Jsonb(policy), now, order["id"]],
+        )
+        from investment_panel.database.portfolio import PortfolioLoopRepository
+
+        PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
+            connection, paper_order_id=str(order["id"]), observed_at=now,
+            status="entered" if complete else "open",
         )
         return {
             "paper_order_id": str(order["id"]),

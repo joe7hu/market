@@ -59,7 +59,8 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
       scopeStatus: { ...existing.scopeStatus, [snapshot.scope]: { state: "failed", error: "Phase 4 identity is missing from this workspace response." } },
     };
   }
-  if (incomingPhase4.state === "valid" && existingPhase4.state === "valid" && incomingPhase4.value !== existingPhase4.value) {
+  if (incomingPhase4.state === "valid" && existingPhase4.state === "valid" && incomingPhase4.value !== existingPhase4.value
+      && !(snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope))) {
     return {
       ...existing,
       errors: { ...existing.errors, portfolio: "Phase 4 snapshot identity diverged; retained the prior immutable view." },

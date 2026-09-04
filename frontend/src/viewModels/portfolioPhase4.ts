@@ -23,6 +23,7 @@ export type Phase4Action = {
   currentMrc: number | null;
   proposedMrc: number | null;
   fundingSource: string | null;
+  nextAction: string | null;
   sizingTrace: JsonObject;
 };
 
@@ -95,6 +96,7 @@ function actionFromRow(canonical: JsonObject): Phase4Action | null {
     currentMrc: number(canonical.current_mrc),
     proposedMrc: number(canonical.proposed_mrc),
     fundingSource: text(canonical.funding_source),
+    nextAction: text(canonical.next_action),
     sizingTrace: trace,
   };
 }

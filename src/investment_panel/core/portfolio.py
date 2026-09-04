@@ -272,6 +272,9 @@ class PortfolioCandidate(BaseModel):
         if self.covariance is not None:
             if not self.covariance or any(not isfinite(float(value)) for value in self.covariance.values()):
                 raise ValueError("covariance must contain finite values")
+            variance = self.covariance.get(self.ticker)
+            if variance is not None and float(variance) < 0:
+                raise ValueError("covariance variance must be non-negative")
         for name in ("factor_exposure", "greeks"):
             values = getattr(self, name)
             if values is not None and any(not isfinite(float(value)) for value in values.values()):
@@ -491,6 +494,18 @@ class AuthoritativePortfolioBundle(BaseModel):
                         raise ValueError("authoritative candidate risk values do not match typed PostgreSQL evidence")
             if self.complete and (candidate.rank_position is None or candidate.rank_utility is None):
                 raise ValueError("authoritative candidate is missing the persisted opportunity rank")
+        if self.complete:
+            for candidate in self.candidates:
+                row = candidate.covariance or {}
+                diagonal = float(row.get(candidate.ticker, 0.0))
+                if diagonal < 0:
+                    raise ValueError("authoritative covariance variance must be non-negative")
+                for other in self.candidates:
+                    other_row = other.covariance or {}
+                    forward = float(row.get(other.ticker, 0.0))
+                    reverse = float(other_row.get(candidate.ticker, 0.0))
+                    if abs(forward - reverse) > 1e-9 or diagonal * float(other_row.get(other.ticker, 0.0)) - forward * reverse < -1e-9:
+                        raise ValueError("authoritative covariance must be symmetric and positive semidefinite")
         return self
 
     @property
@@ -537,6 +552,10 @@ class PortfolioAllocationItem(BaseModel):
             self.funding_amount is None or not isfinite(self.funding_amount) or self.funding_amount <= 0
         ):
             raise ValueError("funded allocation requires a positive funding amount")
+        if self.disposition == "rollback" and (
+            not self.funding_source or self.funding_amount is None or not isfinite(self.funding_amount) or self.funding_amount <= 0
+        ):
+            raise ValueError("rollback allocation requires persisted trim funding")
         return self
 
 
@@ -724,6 +743,7 @@ def _compute_portfolio_allocation(
     book: PortfolioBookEvidence | None = None,
     constraints: PortfolioConstraintEvidence | None = None,
     execution: PortfolioExecutionEvidence | None = None,
+    connection: Any | None = None,
 ) -> PortfolioAllocationSnapshot:
     """Compute weights from already separated inputs; never issue authority.
 
@@ -740,12 +760,27 @@ def _compute_portfolio_allocation(
     authoritative = book is not None or constraints is not None or execution is not None
     if authoritative and (book is None or constraints is None or execution is None):
         raise TypeError("allocator authority inputs must be complete")
+    if authoritative and connection is None:
+        raise TypeError("authoritative allocation requires a PostgreSQL connection")
     if authoritative:
         if cash_hurdle is None or execution.calibration_status != "calibrated" or not execution.snapshot_id or execution.sample_count <= 0:
             return cash_only_allocation(as_of, cash_hurdle, "execution_calibration_pending")
         if execution.input_cutoff.astimezone(UTC) > as_of.astimezone(UTC):
             return cash_only_allocation(as_of, cash_hurdle, "execution_calibration_cutoff_mismatch")
         normalized = [item if isinstance(item, PortfolioCandidate) else PortfolioCandidate.model_validate(item) for item in candidates]
+        for candidate in normalized:
+            if not connection.execute(
+                """SELECT 1 FROM analysis.ticker_decision
+                   WHERE id::text = %s AND input_hash = %s
+                     AND status = 'published' AND published_at IS NOT NULL
+                     AND input_manifest->'trade_plan'->>'trade_plan_id' = %s
+                     AND input_manifest->'trade_plan'->>'rank_id' = %s
+                     AND input_manifest->'trade_plan'->>'strategy_forecast_id' = %s
+                   LIMIT 1""",
+                [candidate.source_decision_id, candidate.source_decision_input_hash,
+                 candidate.action_id, candidate.rank_id, candidate.strategy_forecast_id],
+            ).fetchone():
+                return cash_only_allocation(as_of, cash_hurdle, "postgresql_decision_lineage_unverified")
         allocator_metadata = {}
     else:
         if cash_hurdle is None or not isfinite(cash_hurdle) or cash_hurdle < 0:
@@ -845,9 +880,18 @@ def _compute_portfolio_allocation(
         eligible.append((candidate, utility, trace))
     eligible.sort(key=lambda item: (item[0].rank_position or 2**31, item[0].candidate_id))
     nav = book.net_liquidation if authoritative else None
-    fundable = [(candidate, utility, trace) for candidate, utility, trace in eligible if utility > cash_hurdle or candidate.current_weight > 0]
+    fundable = [(candidate, utility, trace) for candidate, utility, trace in eligible if utility > cash_hurdle]
     for candidate, utility, trace in eligible:
-        if utility <= cash_hurdle and candidate.current_weight <= 0:
+        if utility <= cash_hurdle and candidate.current_weight > 0 and candidate.trim_position_id and (candidate.trim_available or 0) > 0:
+            ranked.append(PortfolioAllocationItem(
+                allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'disposition': 'rollback', 'trim': candidate.trim_position_id})}",
+                candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
+                action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="rollback",
+                target_weight=0, current_weight=candidate.current_weight, marginal_book_utility=utility,
+                funding_source=f"TRIM:{candidate.trim_position_id}", funding_amount=candidate.trim_available,
+                blockers=("below_cash_hurdle",), trace=_json({**trace, "next_action": "Review the holding for exit and release its persisted trim value."}),
+            ))
+        elif utility <= cash_hurdle and candidate.current_weight <= 0:
             ranked.append(PortfolioAllocationItem(
                 allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'blockers': ('below_cash_hurdle',)})}",
                 candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
@@ -913,6 +957,14 @@ def _compute_portfolio_allocation(
     constraints.append({"type": "ineq", "fun": lambda weights: (book.cash_available if authoritative and book.cash_available is not None else 0.0) + released_trim_funding - _net_funding(weights)}) if authoritative else None
     constraints.extend({"type": "ineq", "fun": lambda weights, key=key, amount=amount: amount - _funding(weights, key)} for key, amount in source_limits.items())
     if authoritative:
+        covariance_values = [float((candidate.covariance or {}).get(candidate.ticker, 0.0)) for candidate, _, _ in fundable]
+        if any(not isfinite(value) or value < 0 for value in covariance_values):
+            return cash_only_allocation(as_of, cash_hurdle, "covariance_not_positive_semidefinite")
+        if any(
+            abs(float((left.covariance or {}).get(right.ticker, 0.0)) - float((right.covariance or {}).get(left.ticker, 0.0))) > 1e-9
+            for left, _, _ in fundable for right, _, _ in fundable
+        ):
+            return cash_only_allocation(as_of, cash_hurdle, "covariance_not_symmetric")
         for ticker in {candidate.ticker.upper() for candidate, _, _ in fundable}:
             constraints.append({"type": "ineq", "fun": lambda weights, ticker=ticker: position_limit - sum(float(weight) for weight, (candidate, _, _) in zip(weights, fundable) if candidate.ticker.upper() == ticker)})
         for label, limits_map, attribute in (("sector", policy.sector_limits, "sector"), ("asset_class", policy.asset_class_limits, "asset_class")):
@@ -948,7 +1000,12 @@ def _compute_portfolio_allocation(
     ranked.append(PortfolioAllocationItem(
         allocation_item_id=f"allocation-item:{_hash(cash_payload)}", candidate_id="CASH", ticker="CASH",
         disposition="selected", target_weight=remaining, current_weight=0, marginal_book_utility=0,
-        funding_source="CASH", funding_amount=max(remaining, 1e-12), trace={"cash_hurdle": cash_hurdle},
+        funding_source="CASH", funding_amount=max(remaining, 1e-12), trace={
+            "cash_hurdle": cash_hurdle, "why_trade": "Preserve capital until a candidate clears the joint constraints.",
+            "why_now": ["The persisted risk and execution evidence does not justify a funded increase."],
+            "expression": {"kind": "CASH"}, "invalidation": {"kind": "data", "reason": "candidate_not_fundable"},
+            "missing_data": [], "next_action": "Refresh the PostgreSQL decision bundle and wait for a valid opportunity.",
+        },
     ))
     candidates_by_id = {candidate.candidate_id: candidate for candidate in normalized}
     proposed_weights = {item.candidate_id: item.target_weight for item in ranked if item.disposition == "selected" and item.ticker != "CASH"}
@@ -1022,10 +1079,28 @@ def allocate_portfolio_for_tests(
     *,
     as_of: datetime,
     cash_hurdle: float | None = None,
+    book: PortfolioBookEvidence | None = None,
+    constraints: PortfolioConstraintEvidence | None = None,
+    execution: PortfolioExecutionEvidence | None = None,
 ) -> PortfolioAllocationSnapshot:
     """Explicit non-authoritative adapter for deterministic core tests."""
 
-    return _compute_portfolio_allocation(candidates, as_of=as_of, cash_hurdle=cash_hurdle)
+    if book is None and constraints is None and execution is None:
+        return _compute_portfolio_allocation(candidates, as_of=as_of, cash_hurdle=cash_hurdle)
+    return _compute_portfolio_allocation(
+        candidates, as_of=as_of, cash_hurdle=cash_hurdle, book=book,
+        constraints=constraints, execution=execution, connection=_TestConnection(),
+    )
+
+
+class _TestConnection:
+    """Test-only evidence seam; production always passes a PostgreSQL cursor."""
+
+    def execute(self, *_args: Any, **_kwargs: Any) -> "_TestConnection":
+        return self
+
+    def fetchone(self) -> dict[str, bool]:
+        return {"verified": True}
 
 
 def cash_only_allocation(as_of: datetime, cash_hurdle: float | None, reason: str) -> PortfolioAllocationSnapshot:
