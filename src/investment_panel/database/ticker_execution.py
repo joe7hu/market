@@ -901,7 +901,11 @@ class TickerPaperExecutionRepository:
                     multiplier = int(legs[0].get("multiplier") or 0)
                     if multiplier <= 0:
                         return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "assignment_multiplier_missing"}
-                    contract_count = _quantity(order.get("quantity"))
+                    # Assignment settles only the still-open contracts.  The
+                    # requested order quantity is not fill evidence and may
+                    # exceed a partial paper fill.
+                    contract_count = _quantity(remaining)
+                    exited_quantity = _quantity(order.get("exited_quantity"))
                     assignment_fee = FEE_PER_CONTRACT_LEG * len(legs) * contract_count
                     settlement_value = (strike - underlying_price) * multiplier * contract_count
                     policy["assignment"] = {
@@ -919,7 +923,7 @@ class TickerPaperExecutionRepository:
                             unfilled_reason = %s, updated_at = %s
                         WHERE id = %s::uuid
                         """,
-                        [order["quantity"], max(strike - underlying_price, 0.0), now, multiplier,
+                        [exited_quantity + contract_count, max(strike - underlying_price, 0.0), now, multiplier,
                          assignment_fee, assignment_fee, Jsonb(policy), "assigned_at_expiration", now, order["id"]],
                     )
                     from investment_panel.database.portfolio import PortfolioLoopRepository

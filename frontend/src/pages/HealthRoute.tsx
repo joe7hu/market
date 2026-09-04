@@ -21,6 +21,7 @@ import { loadDecisionFunnel, type DecisionFunnel } from "@/api/panel";
 import { numberFromRecord, recordField } from "@/views/optionsRadarData";
 import { DecisionFunnelPanel } from "@/views/health/decisionFunnel";
 import { displayField } from "@/views/rowFormat";
+import { Phase4SharedDecision } from "@/components/market/phase4SharedDecision";
 
 export function HealthRoute() {
   const { data, loadScope, scopeStatus } = useMarketData();
@@ -104,6 +105,7 @@ export function HealthRoute() {
         </Button>
       }
     >
+      <Phase4SharedDecision data={data} scope="health" status={scopeStatus?.health} onRetry={() => void loadScope("health", { force: true })} />
       {scopeStatus.health?.state === "loading" && sourceRows.length === 0 ? (
         <div role="status" className="rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
           Loading source health…

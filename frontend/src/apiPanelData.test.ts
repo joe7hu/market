@@ -8,12 +8,14 @@ describe("mergePanelData", () => {
     const merged = mergePanelData(first, {
       ...emptyPanelData(),
       quotes: { rows: [{ ticker: "AAA" }], count: 1 },
+      portfolioAllocation: { rows: [{ allocation_id: "allocation:shared" }] },
       scopeStatus: { today: { state: "ready" } },
     });
     const final = mergePanelData(merged, {
       ...emptyPanelData(),
       opportunitiesRanked: { rows: [{ ticker: "BBB" }], count: 1 },
       quotes: { rows: [{ ticker: "CCC" }], count: 2 },
+      portfolioAllocation: { rows: [{ allocation_id: "allocation:shared" }] },
       scopeStatus: { opportunities: { state: "ready" } },
     }, { append: true });
 

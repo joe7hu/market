@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { emptyPanelData, loadEventScoutSnapshot, loadPanelScope, type PanelScopeOptions } from "./api/panel";
-import { mergeSnapshot, withScopeStatus } from "./apiPanelData";
+import { mergePanelData, mergeSnapshot, withScopeStatus } from "./apiPanelData";
 import { buildModel, type AppModel } from "./model";
 import type { PanelData, ScopeSnapshotStatus } from "./types";
 
@@ -52,7 +52,9 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
             // its existing last-good snapshot when the event endpoint is down.
           }
         }
-        let nextData = loaded;
+        // Revalidate the provider merge as well as the request merge. This is
+        // the production boundary that combines independently loaded scopes.
+        let nextData = mergePanelData(dataRef.current, loaded);
         if (supplemental) nextData = mergeSnapshot(nextData, supplemental);
         dataRef.current = nextData;
         setData(nextData);

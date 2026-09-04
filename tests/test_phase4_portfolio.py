@@ -195,7 +195,57 @@ def test_existing_paper_fill_never_uses_policy_metadata_for_calibration(monkeypa
     assert repository.record_existing_paper_order_fill(Connection(), paper_order_id=order["id"], observed_at=AS_OF, status="filled") is None
 
 
-def test_calibration_pending_authority_can_only_return_cash() -> None:
+def test_record_paper_execution_rebuilds_observation_from_persisted_fill(monkeypatch) -> None:
+    order_id = "00000000-0000-0000-0000-000000000001"
+    submitted = AS_OF - timedelta(minutes=2)
+    filled = AS_OF - timedelta(minutes=1)
+    evidence = AS_OF - timedelta(seconds=30)
+    order = {
+        "id": order_id, "created_at": AS_OF - timedelta(minutes=3), "status": "entered", "side": "buy",
+        "quantity": 10, "filled_quantity": 10, "actual_fill_price": 100.5, "exit_price": None,
+        "limit_price": 100, "intended_limit_price": 99.5, "submitted_at": submitted, "filled_at": filled,
+        "fill_evidence_at": evidence, "execution_quote": {"bid": 99, "ask": 101}, "fees": 1.25,
+        "entry_slippage": 1.0, "exit_slippage": None, "contract_multiplier": 100, "exit_at": None,
+        "policy_result": {"trade_plan_id": "action:test"},
+    }
+    observation = PaperExecutionObservation(
+        paper_execution_observation_id="paper-observation:test", allocation_item_id="allocation-item:test",
+        action_id="action:test", paper_order_id=order_id, status="filled", requested_quantity=10,
+        filled_quantity=10, requested_price=99.5, fill_price=100.5, spread_bps=999, latency_ms=999,
+        impact_bps=999, observed_at=filled, available_at=evidence,
+        metadata={"fees": 1.25, "paper_order_id": order_id, "contract_multiplier": 100, "quote": {"bid": 99, "ask": 101}, "submitted_at": submitted, "filled_at": filled},
+    )
+
+    class Result:
+        def __init__(self, one=None, many=None): self.one, self.many = one, many
+        def fetchone(self): return self.one
+        def fetchall(self): return self.many or []
+
+    class Connection:
+        def __init__(self): self.calls = 0
+        def execute(self, statement, _parameters=None):
+            self.calls += 1
+            if "SELECT id, created_at" in statement:
+                return Result(order)
+            if "SELECT allocation_id, action_id" in statement:
+                return Result({"allocation_id": "allocation:test", "action_id": "action:test"})
+            if "SELECT paper_execution_observation_id" in statement:
+                return Result(many=[observation.model_copy(update={"spread_bps": 200, "latency_ms": 60_000, "impact_bps": 100}).model_dump()])
+            if "SELECT allocation_id, input_cutoff" in statement:
+                return Result({"allocation_id": "allocation:test", "input_cutoff": AS_OF})
+            return Result()
+
+    repository = PortfolioLoopRepository.__new__(PortfolioLoopRepository)
+    stored = []
+    monkeypatch.setattr(repository, "store_execution_model", lambda _connection, model: stored.append(model))
+    connection = Connection()
+    result = repository.record_paper_execution(observation, connection=connection)
+    assert result == observation.paper_execution_observation_id
+    assert stored and stored[0].latency_ms == 60_000
+    assert stored[0].spread_bps == pytest.approx(200)
+
+
+def test_imported_allocator_cannot_consume_a_caller_bundle() -> None:
     bundle = AuthoritativePortfolioBundle.model_construct(
         input_cutoff=AS_OF, candidates=(candidate("GOOD"),), complete=True,
         cash_hurdle=0.01,
@@ -212,10 +262,8 @@ def test_calibration_pending_authority_can_only_return_cash() -> None:
         scenario=PortfolioScenarioEvidence.model_construct(artifact_id="scenario:test", observations=(), input_cutoff=AS_OF),
         authority_snapshot_id="account:1", authority_content_hash="b" * 64, repository_authority=object(),
     )
-    allocation = portfolio_core._allocate_portfolio(bundle, as_of=AS_OF)
-    assert allocation.status == "cash_only"
-    assert allocation.metadata["safe_state_reason"] == "execution_calibration_pending"
-    assert all(item.ticker == "CASH" or item.disposition != "selected" for item in allocation.items)
+    with pytest.raises(TypeError, match="PostgreSQL repository"):
+        portfolio_core._allocate_portfolio(bundle, as_of=AS_OF)
 
 
 def test_risk_evidence_requires_all_six_persisted_inputs() -> None:
@@ -229,27 +277,26 @@ def test_risk_evidence_requires_all_six_persisted_inputs() -> None:
         })
 
 
-def test_allocator_rejects_duplicate_tickers_and_joint_constraints_fail_closed() -> None:
-    with pytest.raises(ValueError, match="duplicate ticker"):
-        allocate_portfolio_for_tests([candidate("A", ticker="ABC"), candidate("B", ticker="ABC")], as_of=AS_OF, cash_hurdle=0.01)
-    constrained = AuthoritativePortfolioBundle.model_construct(
-        input_cutoff=AS_OF, candidates=(
+def test_allocator_resolves_distinct_candidates_with_one_ticker_and_joint_constraints() -> None:
+    duplicate_ticker = allocate_portfolio_for_tests([candidate("A", ticker="ABC"), candidate("B", ticker="ABC")], as_of=AS_OF, cash_hurdle=0.01)
+    assert {item.candidate_id for item in duplicate_ticker.items if item.ticker == "ABC"} == {"A", "B"}
+    constrained_candidates = [
             candidate("A", factor_exposure={"market": 1.0}, sector="technology", asset_class="equity", greeks={"delta": 1.0}, liquidity={"score": 1.0}, venue="NYSE"),
             candidate("B", factor_exposure={"market": 1.0}, sector="technology", asset_class="equity", greeks={"delta": 1.0}, liquidity={"score": 1.0}, venue="NYSE"),
-        ), complete=True, cash_hurdle=0.01,
-        book=PortfolioBookEvidence.model_construct(net_liquidation=100_000, cash_available=100_000, cash_source_id="acct:test:cash", input_cutoff=AS_OF),
-        constraints=PortfolioConstraintEvidence.model_construct(
+        ]
+    constraint_evidence = PortfolioConstraintEvidence.model_construct(
             cash_hurdle=0.01, constraint_hash="constraints:test", risk_policy_hash="a" * 64,
             risk_policy_version="v1", position_limit=1, aggregate_loss_limit=1,
             factor_limits={"market": 0.01}, sector_limits={"technology": 0.01},
             asset_class_limits={"equity": 0.01}, greek_limits={"delta": 0.01},
             min_liquidity=0.5, allowed_venues=("NYSE",),
-        ),
-        execution=PortfolioExecutionEvidence.model_construct(snapshot_id="execution:ready", calibration_status="calibrated", sample_count=1, input_cutoff=AS_OF),
-        scenario=PortfolioScenarioEvidence.model_construct(artifact_id="scenario:test", observations=(), input_cutoff=AS_OF),
-        authority_snapshot_id="account:1", authority_content_hash="b" * 64, repository_authority=object(),
     )
-    allocation = portfolio_core._allocate_portfolio(constrained, as_of=AS_OF)
+    allocation = portfolio_core._allocate_portfolio(
+        constrained_candidates, as_of=AS_OF, cash_hurdle=0.01,
+        book=PortfolioBookEvidence.model_construct(net_liquidation=100_000, cash_available=100_000, cash_source_id="acct:test:cash", input_cutoff=AS_OF),
+        constraints=constraint_evidence,
+        execution=PortfolioExecutionEvidence.model_construct(snapshot_id="execution:ready", calibration_status="calibrated", sample_count=1, input_cutoff=AS_OF),
+    )
     selected = [item for item in allocation.items if item.disposition == "selected" and item.ticker != "CASH"]
     assert allocation.status == "available"
     assert sum(item.target_weight for item in selected) <= 0.01 + 1e-9
@@ -259,14 +306,12 @@ def test_allocator_rejects_duplicate_tickers_and_joint_constraints_fail_closed()
 def test_joint_optimizer_handles_required_trim_and_existing_holding_without_self_funding() -> None:
     held = candidate("HELD", current_weight=.40, trim_position_id="broker-position:held", trim_available=.40, capacity=.01)
     fresh = candidate("FRESH", cash_available=20_000, cash_source_id="cash:1")
-    bundle = AuthoritativePortfolioBundle.model_construct(
-        input_cutoff=AS_OF, candidates=(held, fresh), complete=True, cash_hurdle=.01,
+    allocation = portfolio_core._allocate_portfolio(
+        [held, fresh], as_of=AS_OF, cash_hurdle=.01,
         book=PortfolioBookEvidence.model_construct(net_liquidation=100_000, cash_available=20_000, cash_source_id="cash:1", positions={"HELD": "broker-position:held", "LEGACY": "broker-position:legacy"}, position_weights={"HELD": .4, "LEGACY": .4}, input_cutoff=AS_OF),
         constraints=PortfolioConstraintEvidence.model_construct(cash_hurdle=.01, constraint_hash="constraints:test", risk_policy_hash="a" * 64, risk_policy_version="v1", position_limit=1, aggregate_loss_limit=1),
         execution=PortfolioExecutionEvidence.model_construct(snapshot_id="execution:ready", calibration_status="calibrated", sample_count=1, input_cutoff=AS_OF),
-        scenario=PortfolioScenarioEvidence.model_construct(artifact_id="scenario:test", observations=(), input_cutoff=AS_OF), authority_snapshot_id="account:1", authority_content_hash="b" * 64,
     )
-    allocation = portfolio_core._allocate_portfolio(bundle, as_of=AS_OF)
     held_item = next(item for item in allocation.items if item.ticker == "HELD")
     assert held_item.target_weight <= .01 + 1e-9
     assert held_item.funding_source is None
@@ -349,7 +394,7 @@ def observation(status: str, filled: float = 0, *, exit_price: float | None = No
         requested_quantity=10, filled_quantity=filled, requested_price=100,
         fill_price=100.5 if filled else None, spread_bps=5 if filled else None,
         exit_price=exit_price, observed_at=AS_OF, available_at=AS_OF + timedelta(seconds=1),
-        metadata={"paper_order_id": "00000000-0000-0000-0000-000000000001"},
+        metadata={"paper_order_id": "00000000-0000-0000-0000-000000000001", "submitted_at": AS_OF - timedelta(seconds=1), "filled_at": AS_OF},
     )
 
 

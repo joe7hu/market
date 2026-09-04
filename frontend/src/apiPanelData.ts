@@ -44,6 +44,14 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
   }
   const incomingPhase4 = incomingTables.state === "valid" ? incomingTables : incomingIntegrated;
   const existingPhase4 = phase4IdentityFromPanel(existing);
+  if (snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope) && incomingPhase4.state === "absent") {
+    const message = "Phase 4 identity is missing from this workspace response.";
+    return {
+      ...existing,
+      errors: { ...existing.errors, portfolio: message },
+      scopeStatus: { ...existing.scopeStatus, [snapshot.scope]: { state: "failed", error: message } },
+    };
+  }
   if (snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope) && existingPhase4.state === "valid" && incomingPhase4.state === "absent") {
     return {
       ...existing,
@@ -155,6 +163,20 @@ function phase4IdentityFromPanel(data: PanelData): Phase4Identity {
 }
 
 export function mergePanelData(existing: PanelData, incoming: PanelData, options: { append?: boolean } = {}): PanelData {
+  const existingPhase4 = phase4IdentityFromPanel(existing);
+  const incomingPhase4 = phase4IdentityFromPanel(incoming);
+  const phase4Scope = Object.keys(incoming.scopeStatus ?? {}).find((scope) => PHASE4_WORKSPACES.has(scope));
+  if (incomingPhase4.state === "invalid" || (phase4Scope && incomingPhase4.state === "absent")) {
+    const message = "Invalid or missing Phase 4 snapshot identity.";
+    return {
+      ...existing,
+      errors: { ...existing.errors, portfolio: message },
+      scopeStatus: { ...existing.scopeStatus, ...(phase4Scope ? { [phase4Scope]: { state: "failed", error: message } } : {}) },
+    };
+  }
+  if (existingPhase4.state === "valid" && incomingPhase4.state === "valid" && existingPhase4.value !== incomingPhase4.value) {
+    return { ...existing, errors: { ...existing.errors, portfolio: "Phase 4 snapshot identity diverged; retained the prior immutable view." } };
+  }
   const next: PanelData = {
     ...existing,
     dashboard: { ...existing.dashboard, ...incoming.dashboard },

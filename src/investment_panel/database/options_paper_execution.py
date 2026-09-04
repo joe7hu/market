@@ -218,6 +218,7 @@ class OptionsPaperExecutionRepository:
                        paper.lane, paper.status, paper.quantity, paper.limit_price,
                        paper.actual_fill_price, paper.filled_at, paper.submitted_at,
                        paper.filled_quantity, paper.exited_quantity, paper.fees,
+                       paper.fill_evidence_at, paper.execution_quote, paper.contract_multiplier,
                        paper.ticket_version, paper.ticket_snapshot, paper.structure,
                        paper.created_at, instrument.symbol
                 FROM app.paper_order paper
@@ -237,8 +238,9 @@ class OptionsPaperExecutionRepository:
                 """
                 SELECT leg.contract_id, leg.option_type, leg.side, leg.strike::double precision AS strike,
                        leg.bid, leg.ask, leg.bid_size, leg.ask_size, leg.quote_time,
-                       leg.open_interest, leg.volume
+                       leg.open_interest, leg.volume, contract.multiplier, contract.expiration
                 FROM app.paper_order_leg leg
+                JOIN catalog.option_contract contract ON contract.id = leg.contract_id
                 WHERE leg.paper_order_id = %s::uuid
                 ORDER BY leg.leg_index
                 """,
@@ -347,8 +349,43 @@ class OptionsPaperExecutionRepository:
         remaining = max(0, filled_quantity - exited_quantity)
         if remaining <= 0:
             return self._terminal(connection, order, status="exited", reason="no_remaining_quantity", now=now)
-        quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now)
         structure = str(order.get("structure") or ticket.get("structure") or "")
+        if structure == "cash_secured_put" and legs and any(
+            leg.get("expiration") is not None and leg["expiration"] <= now.date() for leg in legs
+        ):
+            underlying = connection.execute(
+                """SELECT price FROM raw.confirmed_quote
+                   WHERE instrument_id = %s AND observed_at <= %s AND available_at <= %s
+                   ORDER BY observed_at DESC, available_at DESC LIMIT 1""",
+                [order["instrument_id"], now, now],
+            ).fetchone()
+            underlying_price = _number(underlying["price"]) if underlying else None
+            strike = _number(legs[0].get("strike"))
+            multiplier = _number(legs[0].get("multiplier"))
+            if underlying_price is not None and strike is not None and underlying_price <= strike:
+                if multiplier is None or multiplier <= 0:
+                    return {"paper_order_id": str(order["id"]), "status": "filled", "reason": "assignment_multiplier_missing"}
+                assignment_fee = _fees(len(legs), remaining)
+                policy = dict(order.get("policy_result") or {})
+                policy["assignment"] = {
+                    "status": "assigned", "strike": strike, "underlying_price": underlying_price,
+                    "multiplier": multiplier, "contract_count": remaining,
+                    "settlement_value": (strike - underlying_price) * multiplier * remaining,
+                    "settled_at": now, "assignment_fee": assignment_fee,
+                }
+                connection.execute(
+                    """UPDATE app.paper_order
+                       SET status = 'exited', exited_quantity = %s, exit_price = %s, exit_at = %s,
+                           contract_multiplier = %s, fees = coalesce(fees, 0) + %s,
+                           exit_fees = coalesce(exit_fees, 0) + %s, policy_result = %s,
+                           unfilled_reason = 'assigned_at_expiration', updated_at = %s
+                       WHERE id = %s::uuid""",
+                    [exited_quantity + remaining, max(strike - underlying_price, 0.0), now,
+                     multiplier, assignment_fee, assignment_fee, Jsonb(policy), now, order["id"]],
+                )
+                self._record_phase4_fill(connection, paper_order_id=str(order["id"]), observed_at=now, status="exited")
+                return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
+        quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now)
         execution = execution_policy(
             quoted,
             structure=structure,

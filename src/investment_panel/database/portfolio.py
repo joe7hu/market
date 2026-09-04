@@ -255,7 +255,35 @@ class PortfolioLoopRepository:
             raise ValueError("scenario allocation lineage does not match snapshot")
         if execution_model is not None and execution_model.allocation_id != allocation.allocation_id:
             raise ValueError("execution model allocation lineage does not match snapshot")
+        metadata = allocation.metadata
+        if metadata.get("authority") != "postgresql" or not metadata.get("authority_snapshot_id"):
+            raise ValueError("allocation persistence requires a PostgreSQL authority context")
+        source_hashes = metadata.get("source_hashes")
+        if not isinstance(source_hashes, list) or not source_hashes or any(
+            not isinstance(value, str) or len(value) != 64 or value == "0" * 64 for value in source_hashes
+        ):
+            raise ValueError("allocation persistence requires canonical source hashes")
         with self.runtime.transaction() as connection:
+            account = None
+            if allocation.status != "cash_only":
+                account_id = str(metadata["authority_snapshot_id"]).removeprefix("broker-account:")
+                try:
+                    account = connection.execute(
+                        "SELECT id FROM raw.broker_account_snapshot WHERE id = %s::bigint",
+                        [account_id],
+                    ).fetchone()
+                except (TypeError, ValueError):
+                    account = None
+                if account is None:
+                    raise ValueError("allocation authority snapshot is not a persisted PostgreSQL account")
+            for item in allocation.items:
+                if item.ticker == "CASH" or item.disposition not in {"selected", "rollback"}:
+                    continue
+                decision_hash = item.trace.get("source_decision_input_hash")
+                if not isinstance(decision_hash, str) or not connection.execute(
+                    "SELECT 1 FROM analysis.ticker_decision WHERE input_hash = %s LIMIT 1", [decision_hash]
+                ).fetchone():
+                    raise ValueError("allocation item source digest is not a persisted PostgreSQL decision")
             connection.execute(
                 """INSERT INTO analysis.portfolio_allocation_snapshot
                     (allocation_id, as_of, input_cutoff, status, cash_hurdle,
@@ -357,6 +385,44 @@ class PortfolioLoopRepository:
                      )""", [as_of, as_of]
             ).fetchall()
             position_by_ticker = {str(row["symbol"]).upper(): dict(row) for row in positions}
+            position_exposures: dict[str, dict[str, Any]] = {}
+            for position in positions:
+                ticker = str(position["symbol"]).upper()
+                exposure: dict[str, Any] = {
+                    key: position[key] for key in ("sector", "asset_class") if position.get(key)
+                }
+                decision = connection.execute(
+                    """SELECT portfolio_impacts
+                       FROM analysis.ticker_decision
+                       WHERE instrument_id = %s AND status = 'published'
+                         AND published_at IS NOT NULL AND as_of <= %s
+                       ORDER BY as_of DESC, published_at DESC, id DESC LIMIT 1""",
+                    [position["instrument_id"], as_of],
+                ).fetchone()
+                impacts = decision.get("portfolio_impacts") if decision else None
+                if isinstance(impacts, dict):
+                    for raw_impact in impacts.values():
+                        if not isinstance(raw_impact, dict):
+                            continue
+                        try:
+                            impact = portfolio_impact_from_persisted(raw_impact, ticker=ticker)
+                        except (TypeError, ValueError):
+                            continue
+                        if isinstance(impact, PortfolioImpact):
+                            if isinstance(impact.factor_exposure, dict):
+                                exposure["factor_exposure"] = {
+                                    str(key): float(value) for key, value in impact.factor_exposure.items()
+                                    if isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(float(value))
+                                }
+                            if isinstance(impact.greeks, dict):
+                                exposure["greeks"] = dict(impact.greeks)
+                            if isinstance(impact.liquidity, dict):
+                                exposure["liquidity"] = dict(impact.liquidity)
+                            venue = (impact.execution_evidence or {}).get("venue")
+                            if venue:
+                                exposure["venue"] = str(venue)
+                            break
+                position_exposures[ticker] = exposure
             rows = connection.execute(
                 """SELECT forecast.id AS strategy_forecast_id, forecast.strategy_revision_id,
                           forecast.strategy_evaluation_id::text, instrument.symbol AS ticker,
@@ -657,7 +723,7 @@ class PortfolioLoopRepository:
                           calibration_status, sample_count, fill_probability, spread_bps,
                           latency_ms, impact_bps, input_cutoff, input_hash, content_hash, metadata
                    FROM analysis.execution_model_snapshot
-                   WHERE input_cutoff = %s AND available_at <= %s
+                   WHERE input_cutoff <= %s AND available_at <= %s
                    ORDER BY input_cutoff DESC, available_at DESC,
                             execution_model_snapshot_id DESC LIMIT 1""", [as_of, as_of]
             ).fetchone()
@@ -746,6 +812,8 @@ class PortfolioLoopRepository:
                 and cash_hurdle is not None and cash_hurdle > 0
                 and candidates and required_candidates and tape_rows
                 and all(joint_limits.values()) and min_liquidity is not None and bool(allowed_venues)
+                and all(set(("factor_exposure", "sector", "asset_class", "greeks", "liquidity", "venue")) <= set(exposure)
+                        for exposure in position_exposures.values())
             )
         bundle = AuthoritativePortfolioBundle(
             input_cutoff=as_of,
@@ -762,8 +830,8 @@ class PortfolioLoopRepository:
                     if account and account["net_liquidation"] not in (None, 0)
                 },
                 position_exposures={
-                    ticker: {key: value for key, value in (("sector", row.get("sector")), ("asset_class", row.get("asset_class"))) if value}
-                    for ticker, row in position_by_ticker.items()
+                    ticker: position_exposures.get(ticker, {})
+                    for ticker in position_by_ticker
                 },
                 input_cutoff=as_of,
             ),
@@ -812,12 +880,16 @@ class PortfolioLoopRepository:
         from investment_panel.core.portfolio import (
             apply_decay_to_allocation,
             build_scenario_artifact_from_observations,
+            build_execution_model_snapshot,
         )
 
         bundle = self.read_authoritative_candidate_bundle(as_of=as_of)
         # A missing persisted hurdle is a hard fail-closed condition. The
         # empty allocator result records CASH without inventing a policy value.
-        allocation = portfolio_core._allocate_portfolio(bundle, as_of=as_of)
+        allocation = portfolio_core._allocate_portfolio(
+            list(bundle.candidates), as_of=as_of, cash_hurdle=bundle.cash_hurdle,
+            book=bundle.book, constraints=bundle.constraints, execution=bundle.execution,
+        )
         drift_scores = {
             item.allocation_item_id: bundle.drift_scores.get(str(next(
                 (candidate.strategy_registry_id or "").split(":")[-1]
@@ -836,12 +908,65 @@ class PortfolioLoopRepository:
                 # Missing cross-sectional shock coverage is a data failure,
                 # not permission to persist a partial or synthetic scenario.
                 safe_candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_cross_section_missing"))}) for candidate in bundle.candidates]
-                safe_bundle = bundle.model_copy(update={"candidates": tuple(safe_candidates), "complete": False})
-                allocation = portfolio_core._allocate_portfolio(safe_bundle, as_of=as_of)
+                allocation = portfolio_core._allocate_portfolio(
+                    safe_candidates, as_of=as_of, cash_hurdle=bundle.cash_hurdle,
+                    book=bundle.book, constraints=bundle.constraints,
+                    execution=PortfolioExecutionEvidence(
+                        snapshot_id=None, calibration_status="calibration_pending", sample_count=0,
+                        input_cutoff=as_of,
+                    ),
+                )
                 allocation, drift_decisions = apply_decay_to_allocation(
                     allocation, {}, rollback_threshold=1.0,
                 )
+        authority_metadata = {
+            "authority": "postgresql",
+            "authority_snapshot_id": bundle.authority_snapshot_id,
+            "authority_content_hash": bundle.authority_content_hash,
+            "constraint_hash": bundle.constraints.constraint_hash,
+            "execution_status": bundle.execution.calibration_status,
+            "execution_model_snapshot_id": bundle.execution.snapshot_id,
+            "source_hashes": sorted({
+                value for candidate in bundle.candidates
+                for value in (candidate.source_input_hash, candidate.source_decision_input_hash)
+                if value
+            } or {bundle.authority_content_hash}),
+        }
+        allocation = allocation.model_copy(update={"metadata": authority_metadata})
+        allocation = allocation.model_copy(update={"allocation_id": allocation_id_for_snapshot(allocation)})
         self.store_allocation(allocation, scenario=scenario)
+        # Calibrate only from fills that were persisted before this refresh.
+        # This creates a snapshot for the next allocation; it cannot fund the
+        # allocation that made the paper order, which removes the circular
+        # first-allocation dependency.
+        with self.runtime.transaction() as connection:
+            observations = [dict(row) for row in connection.execute(
+                """SELECT observation.paper_execution_observation_id,
+                          observation.allocation_item_id, observation.action_id,
+                          observation.paper_order_id::text, observation.execution_mode,
+                          observation.paper_only, observation.status,
+                          observation.requested_quantity, observation.filled_quantity,
+                          observation.requested_price, observation.fill_price,
+                          observation.spread_bps, observation.latency_ms,
+                          observation.impact_bps, observation.side, observation.exit_price,
+                          observation.observed_at, observation.available_at, observation.metadata
+                   FROM app.paper_execution_observation observation
+                   JOIN app.paper_order paper ON paper.id = observation.paper_order_id
+                   WHERE observation.execution_mode = 'paper' AND observation.paper_only
+                     AND observation.filled_quantity > 0 AND observation.fill_price IS NOT NULL
+                     AND observation.available_at <= %s AND paper.filled_at IS NOT NULL
+                     AND paper.fill_evidence_at IS NOT NULL AND paper.execution_quote IS NOT NULL
+                     AND paper.contract_multiplier IS NOT NULL
+                   ORDER BY observation.observed_at, observation.paper_execution_observation_id""",
+                [as_of],
+            ).fetchall()]
+            if observations:
+                model = build_execution_model_snapshot(
+                    allocation.allocation_id, as_of,
+                    [PaperExecutionObservation.model_validate(row) for row in observations],
+                )
+                if model.calibration_status == "calibrated":
+                    self.store_execution_model(connection, model)
         self.store_drift_decisions(drift_decisions)
         return allocation
 
@@ -894,7 +1019,8 @@ class PortfolioLoopRepository:
             if not observation.allocation_item_id or not observation.action_id:
                 raise ValueError("paper execution requires allocation and action lineage")
             order = connection.execute(
-                """SELECT id, created_at, status, side, filled_quantity, actual_fill_price, exit_price, submitted_at, filled_at,
+                """SELECT id, created_at, status, side, quantity, filled_quantity, actual_fill_price, exit_price,
+                          limit_price, intended_limit_price, submitted_at, filled_at,
                           fill_evidence_at, execution_quote, fees, entry_slippage, exit_slippage,
                           contract_multiplier, exit_at, policy_result
                    FROM app.paper_order WHERE id = %s""", [observation.paper_order_id]
@@ -936,6 +1062,46 @@ class PortfolioLoopRepository:
                 or observation.available_at != order["fill_evidence_at"]
             ):
                 raise ValueError("paper execution requires a genuine existing fill")
+            if observation.filled_quantity > 0:
+                persisted_quote = order["execution_quote"] if isinstance(order["execution_quote"], dict) else None
+                midpoint = float(persisted_quote["mid"]) if persisted_quote and persisted_quote.get("mid") is not None else None
+                if midpoint is None and persisted_quote and persisted_quote.get("bid") is not None and persisted_quote.get("ask") is not None:
+                    midpoint = (float(persisted_quote["bid"]) + float(persisted_quote["ask"])) / 2
+                persisted_spread = (
+                    float(persisted_quote["spread"]) / midpoint * 10_000
+                    if persisted_quote and midpoint and persisted_quote.get("spread") is not None
+                    else None
+                )
+                persisted_impact = (
+                    abs(float(order["entry_slippage"]) / midpoint * 10_000)
+                    if midpoint and order["entry_slippage"] is not None else None
+                )
+                persisted_status = (
+                    "exited" if str(order["status"]) in {"exited", "closed"}
+                    and order["exit_price"] is not None and order["exit_at"] is not None else "filled"
+                )
+                persisted_metadata = {
+                    "fees": float(order["fees"]), "paper_order_id": str(order["id"]),
+                    "contract_multiplier": float(order["contract_multiplier"]),
+                    "submitted_at": order["submitted_at"], "filled_at": order["filled_at"],
+                    "entry_slippage": order["entry_slippage"], "exit_slippage": order["exit_slippage"],
+                    "quote": persisted_quote, "fill_evidence_at": order["fill_evidence_at"],
+                }
+                observation = observation.model_copy(update={
+                    "execution_mode": "paper", "paper_only": True, "status": persisted_status,
+                    "requested_quantity": float(order["quantity"] or 0),
+                    "filled_quantity": float(order["filled_quantity"]),
+                    "requested_price": float(order["intended_limit_price"] or order["limit_price"])
+                    if (order["intended_limit_price"] or order["limit_price"]) is not None else None,
+                    "fill_price": float(order["actual_fill_price"]),
+                    "spread_bps": persisted_spread,
+                    "latency_ms": (order["filled_at"] - order["submitted_at"]).total_seconds() * 1000,
+                    "impact_bps": persisted_impact,
+                    "side": str(order["side"] or "buy"),
+                    "exit_price": float(order["exit_price"]) if persisted_status == "exited" else None,
+                    "observed_at": order["filled_at"], "available_at": order["fill_evidence_at"],
+                    "metadata": persisted_metadata,
+                })
             connection.execute(
                 """INSERT INTO app.paper_execution_observation
                    (paper_execution_observation_id, allocation_item_id, action_id, paper_order_id,
@@ -971,11 +1137,12 @@ class PortfolioLoopRepository:
                        WHERE allocation_item_id = %s ORDER BY observed_at, paper_execution_observation_id""",
                     [observation.allocation_item_id],
             ).fetchall()
-            model = build_execution_model_snapshot(
-                    allocation["allocation_id"], allocation["input_cutoff"],
-                    [PaperExecutionObservation.model_validate(dict(row)) for row in rows],
-            )
-            self.store_execution_model(connection, model)
+            if observation.available_at <= allocation["input_cutoff"]:
+                model = build_execution_model_snapshot(
+                        allocation["allocation_id"], allocation["input_cutoff"],
+                        [PaperExecutionObservation.model_validate(dict(row)) for row in rows],
+                )
+                self.store_execution_model(connection, model)
         return observation.paper_execution_observation_id
 
     def record_existing_paper_order_fill(
@@ -1000,8 +1167,8 @@ class PortfolioLoopRepository:
                FROM analysis.portfolio_allocation_item item
                JOIN analysis.portfolio_allocation_snapshot snapshot USING (allocation_id)
                WHERE item.action_id = %s AND item.disposition IN ('selected', 'rollback')
-                 AND snapshot.input_cutoff >= %s
-               ORDER BY snapshot.input_cutoff, item.allocation_item_id LIMIT 1""",
+                 AND snapshot.input_cutoff <= %s
+               ORDER BY snapshot.input_cutoff DESC, item.allocation_item_id DESC LIMIT 1""",
             [action_id, order["fill_evidence_at"]],
         ).fetchone()
         if item is None:

@@ -20,8 +20,9 @@ def insert_cash_allocation(connection: psycopg.Connection) -> None:
     allocation_id = "allocation:" + "a" * 64
     connection.execute(
         """INSERT INTO analysis.portfolio_allocation_snapshot
-           (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash, content_hash)
-           VALUES (%s, %s, %s, 'cash_only', 0, %s, %s)""",
+           (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash, content_hash, metadata)
+           VALUES (%s, %s, %s, 'cash_only', 0, %s, %s,
+                   '{"authority":"postgresql","authority_snapshot_id":"test-cash","source_hashes":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}'::jsonb)""",
         [allocation_id, AS_OF, AS_OF, "a" * 64, "b" * 64],
     )
     connection.execute(
@@ -99,7 +100,7 @@ def test_phase4_artifacts_are_immutable_and_paper_only(migrated_postgres_dsn: st
 
 def test_phase4_database_requires_pit_equal_cutoff_and_positive_funded_utility(migrated_postgres_dsn: str) -> None:
     with closing(psycopg.connect(migrated_postgres_dsn)) as connection:
-        with pytest.raises(CheckViolation):
+        with pytest.raises((CheckViolation, RaiseException)):
             connection.execute(
                 """INSERT INTO analysis.portfolio_allocation_snapshot
                        (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash, content_hash)
