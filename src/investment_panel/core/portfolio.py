@@ -10,7 +10,7 @@ from math import isfinite
 from typing import Any, Mapping
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from scipy.optimize import minimize
 
 def _json(value: Any) -> Any:
@@ -331,6 +331,7 @@ class PortfolioBookEvidence(BaseModel):
     cash_available: float | None = None
     cash_source_id: str | None = None
     positions: dict[str, str] = Field(default_factory=dict)
+    position_weights: dict[str, float] = Field(default_factory=dict)
     input_cutoff: datetime
 
     @model_validator(mode="after")
@@ -345,6 +346,10 @@ class PortfolioBookEvidence(BaseModel):
             raise ValueError("portfolio book cash requires a persisted source identity")
         if self.input_cutoff.tzinfo is None:
             raise ValueError("portfolio book requires a timezone-aware cutoff")
+        if set(self.position_weights) - set(self.positions):
+            raise ValueError("portfolio position weights require persisted position identities")
+        if any(not isfinite(value) or value < 0 or value > 1 for value in self.position_weights.values()):
+            raise ValueError("portfolio position weights must be finite portfolio weights")
         return self
 
 
@@ -429,7 +434,6 @@ class AuthoritativePortfolioBundle(BaseModel):
     complete: bool = True
     authority_snapshot_id: str = Field(min_length=1)
     authority_content_hash: str = Field(min_length=64, max_length=64)
-    _repository_proof: object | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def validate_bundle(self) -> "AuthoritativePortfolioBundle":
@@ -495,39 +499,6 @@ class AuthoritativePortfolioBundle(BaseModel):
         return self.scenario.observations
 
 
-_REPOSITORY_PROOF = object()
-
-
-def bind_postgresql_bundle(
-    bundle: AuthoritativePortfolioBundle, source_payload: Mapping[str, Any],
-) -> AuthoritativePortfolioBundle:
-    """Bind a fully checked PostgreSQL slice; production allocation rejects all others."""
-
-    source_rows = source_payload.get("source_rows") if isinstance(source_payload, Mapping) else None
-    provenance = source_payload.get("candidate_provenance") if isinstance(source_payload, Mapping) else None
-    if (
-        not isinstance(source_rows, Mapping)
-        or any(key not in source_rows for key in ("account", "positions", "candidates", "tape"))
-        or source_payload.get("input_cutoff") != bundle.input_cutoff
-        or source_payload.get("authority_snapshot_id") != bundle.authority_snapshot_id
-        or canonical_content_hash(source_payload) != bundle.authority_content_hash
-        or not isinstance(provenance, list)
-        or len(provenance) != len(bundle.candidates)
-    ):
-        raise ValueError("PostgreSQL authority source slice is incomplete or changed")
-    for candidate, proof in zip(bundle.candidates, provenance):
-        if not isinstance(proof, Mapping) or (
-            proof.get("impact_id"), proof.get("decision_id"), proof.get("source_input_hash"),
-            proof.get("source_decision_input_hash"),
-        ) != (
-            candidate.portfolio_impact_id, candidate.source_decision_id, candidate.source_input_hash,
-            candidate.source_decision_input_hash,
-        ):
-            raise ValueError("PostgreSQL authority candidate provenance is invalid")
-    bundle._repository_proof = _REPOSITORY_PROOF
-    return bundle
-
-
 class PortfolioAllocationItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -557,9 +528,9 @@ class PortfolioAllocationItem(BaseModel):
             self.target_weight <= 0 or self.marginal_book_utility <= 0
         ):
             raise ValueError("funded allocation requires positive marginal book utility")
-        if self.disposition == "selected" and self.ticker != "CASH" and not self.funding_source:
+        if self.disposition == "selected" and self.ticker != "CASH" and self.target_weight > self.current_weight and not self.funding_source:
             raise ValueError("funded allocation requires a funding source")
-        if self.disposition == "selected" and self.ticker != "CASH" and (
+        if self.disposition == "selected" and self.ticker != "CASH" and self.target_weight > self.current_weight and (
             self.funding_amount is None or not isfinite(self.funding_amount) or self.funding_amount <= 0
         ):
             raise ValueError("funded allocation requires a positive funding amount")
@@ -621,7 +592,7 @@ class PortfolioActionDTO(BaseModel):
 
     @model_validator(mode="after")
     def validate_funding(self) -> "PortfolioActionDTO":
-        if self.disposition == "selected" and self.ticker != "CASH" and not self.funding_source:
+        if self.disposition == "selected" and self.ticker != "CASH" and self.target_weight > self.current_weight and not self.funding_source:
             raise ValueError("canonical funded action requires funding")
         return self
 
@@ -729,12 +700,28 @@ def allocate_portfolio(
     *,
     as_of: datetime,
 ) -> PortfolioAllocationSnapshot:
-    """Allocate only a repository-validated PostgreSQL authority bundle."""
+    """Production allocation is issued only by PortfolioLoopRepository.
 
-    if not isinstance(bundle, AuthoritativePortfolioBundle):
-        raise TypeError("production allocation requires AuthoritativePortfolioBundle")
-    if bundle._repository_proof is not _REPOSITORY_PROOF:
-        raise TypeError("production allocation requires a repository-issued PostgreSQL bundle")
+    A Python object cannot be a repository authority.  Keeping this public
+    compatibility entry point fail-closed prevents callers from minting an
+    authoritative allocation with imported module state.
+    """
+
+    del bundle, as_of
+    raise TypeError("production allocation is repository and PostgreSQL bound")
+
+
+def compute_portfolio_allocation(
+    bundle: AuthoritativePortfolioBundle,
+    *,
+    as_of: datetime,
+) -> PortfolioAllocationSnapshot:
+    """Compute a bundle already issued by the repository boundary.
+
+    This function has no authority side effect.  Only the database repository
+    reads, validates, and persists the PostgreSQL authority slice.
+    """
+
     return _allocate_portfolio(bundle, as_of=as_of)
 
 
@@ -814,7 +801,7 @@ def _allocate_portfolio(
             candidate.cash_available is None or candidate.cash_available <= 0 or not candidate.cash_source_id
         ):
             blockers.append("cash_funding_missing")
-        if candidate.current_weight > 0 and (not candidate.trim_position_id or not candidate.trim_available or candidate.trim_available <= 0):
+        if candidate.current_weight > 0 and not candidate.trim_position_id:
             blockers.append("trim_position_missing")
         if blockers:
             ranked.append(_rejection(candidate, tuple(dict.fromkeys(blockers))))
@@ -893,19 +880,36 @@ def _allocate_portfolio(
                 admissible.append((candidate, utility, trace))
         fundable = admissible
     position_limit = candidates.constraints.position_limit if isinstance(candidates, AuthoritativePortfolioBundle) else 1.0
+    # Existing holdings are fixed book exposure.  If the repository cannot
+    # supply their factor/sector/Greek evidence, it must not add risk under a
+    # joint policy.  This prevents an optimizer from treating unknown holdings
+    # as cash.
+    existing_weight = 0.0
+    if isinstance(candidates, AuthoritativePortfolioBundle):
+        candidate_tickers = {candidate.ticker.upper() for candidate, _, _ in eligible}
+        non_candidate = set(candidates.book.position_weights) - candidate_tickers
+        existing_weight = sum(candidates.book.position_weights[ticker] for ticker in non_candidate)
+        if non_candidate and any((
+            candidates.constraints.sector_limits, candidates.constraints.asset_class_limits,
+            candidates.constraints.factor_limits, candidates.constraints.greek_limits,
+        )):
+            return cash_only_allocation(as_of, cash_hurdle, "existing_holding_joint_evidence_missing")
     caps = [min(candidate.risk_budget, candidate.kelly_cap, candidate.drawdown_cap, candidate.capacity, position_limit) / candidate.volatility * max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))) for candidate, _, _ in fundable]
-    limits = [(candidate.current_weight, min(1.0, cap)) for candidate, cap in zip((row[0] for row in fundable), caps)]
+    # A candidate is never allowed to fund its own increase by naming its held
+    # position as a trim source.  Held names can hold or reduce only.
+    caps = [min(cap, candidate.current_weight) if candidate.current_weight > 0 else cap for cap, (candidate, _, _) in zip(caps, fundable)]
+    limits = [(0.0, max(0.0, min(1.0, cap))) for cap in caps]
     source_limits: dict[str, float] = {}
     for candidate, _, _ in fundable:
-        key = candidate.cash_source_id if candidate.current_weight <= 0 else candidate.trim_position_id
-        amount = candidate.cash_available if candidate.current_weight <= 0 else candidate.trim_available
+        key = candidate.cash_source_id if candidate.current_weight <= 0 else None
+        amount = candidate.cash_available if candidate.current_weight <= 0 else None
         if key and amount is not None:
             source_limits.setdefault(key, amount)
     def _funding(weights: Any, key: str) -> float:
         return sum(max(0.0, float(weight) - candidate.current_weight) * (nav if nav is not None else 1.0)
                    for weight, (candidate, _, _) in zip(weights, fundable)
-                   if (candidate.cash_source_id if candidate.current_weight <= 0 else candidate.trim_position_id) == key)
-    constraints = [{"type": "ineq", "fun": lambda weights: 1.0 - sum(weights)}]
+                   if candidate.cash_source_id == key)
+    constraints = [{"type": "ineq", "fun": lambda weights: 1.0 - existing_weight - sum(weights)}]
     constraints.extend({"type": "ineq", "fun": lambda weights, key=key, amount=amount: amount - _funding(weights, key)} for key, amount in source_limits.items())
     if isinstance(candidates, AuthoritativePortfolioBundle):
         policy = candidates.constraints
@@ -924,7 +928,7 @@ def _allocate_portfolio(
         if target <= 1e-8:
             ranked.append(_rejection(candidate, ("joint_optimizer_ranked_out",)))
             continue
-        key = candidate.cash_source_id if candidate.current_weight <= 0 else candidate.trim_position_id
+        key = candidate.cash_source_id if candidate.current_weight <= 0 else None
         funding_amount = max(0.0, target - candidate.current_weight) * (nav if nav is not None else 1.0)
         trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": max(0.0, target - candidate.current_weight), "funding_amount": funding_amount}
         ranked.append(PortfolioAllocationItem(
@@ -932,9 +936,9 @@ def _allocate_portfolio(
             candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
             action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
-            funding_source=(f"CASH:{key}" if candidate.current_weight == 0 else f"TRIM:{key}"), funding_amount=funding_amount, trace=_json(trace),
+            funding_source=(f"CASH:{key}" if candidate.current_weight == 0 else None), funding_amount=(funding_amount if target > candidate.current_weight else None), trace=_json(trace),
         ))
-    remaining = max(0.0, 1.0 - sum(item.target_weight for item in ranked if item.disposition == "selected"))
+    remaining = max(0.0, 1.0 - existing_weight - sum(item.target_weight for item in ranked if item.disposition == "selected"))
     cash_payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected", "target_weight": remaining}
     ranked.append(PortfolioAllocationItem(
         allocation_item_id=f"allocation-item:{_hash(cash_payload)}", candidate_id="CASH", ticker="CASH",
@@ -954,91 +958,6 @@ def _allocate_portfolio(
         )
         return max(variance, 0.0) ** 0.5
 
-    # Solve the cross-name covariance constraint after the per-name gates,
-    # then transfer any released target weight to CASH. This is one joint
-    # constrained pass; independent greedy caps are not portfolio risk.
-    joint_risk_budget: float | None = None
-    if isinstance(candidates, AuthoritativePortfolioBundle):
-        budgets = [candidate.risk_budget for candidate, _, _ in eligible if candidate.risk_budget is not None]
-        if budgets:
-            joint_risk_budget = sum(budgets)
-            if candidates.constraints.aggregate_loss_limit is not None:
-                joint_risk_budget = min(joint_risk_budget, candidates.constraints.aggregate_loss_limit)
-    proposed_volatility = portfolio_volatility(proposed_weights)
-    joint_scale = (
-        min(1.0, joint_risk_budget / proposed_volatility)
-        if joint_risk_budget is not None and proposed_volatility > joint_risk_budget and proposed_volatility > 0
-        else 1.0
-    )
-    if joint_scale < 1.0:
-        released = 0.0
-        rescaled: list[PortfolioAllocationItem] = []
-        for item in ranked:
-            if item.disposition == "selected" and item.ticker != "CASH":
-                new_weight = item.target_weight * joint_scale
-                new_delta = max(0.0, new_weight - item.current_weight)
-                new_funding = new_delta * nav if nav is not None else item.funding_amount
-                trace = {
-                    **item.trace, "joint_covariance_scale": joint_scale,
-                    "joint_risk_budget": joint_risk_budget,
-                    "joint_pre_scale_volatility": proposed_volatility,
-                    "joint_post_scale_weight": new_weight,
-                    "weight_delta": new_delta, "funding_amount": new_funding,
-                }
-                released += max(0.0, item.target_weight - new_weight)
-                rescaled.append(item.model_copy(update={
-                    "target_weight": new_weight, "funding_amount": new_funding,
-                    "allocation_item_id": f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': new_weight, 'trace': trace})}",
-                    "trace": _json(trace),
-                }))
-            elif item.ticker == "CASH":
-                trace = {**item.trace, "joint_covariance_scale": joint_scale,
-                         "joint_risk_budget": joint_risk_budget, "joint_released_to_cash": released}
-                rescaled.append(item.model_copy(update={
-                    "target_weight": min(1.0, item.target_weight + released),
-                    "allocation_item_id": f"allocation-item:{_hash({'candidate_id': item.candidate_id, 'ticker': item.ticker, 'disposition': item.disposition, 'target_weight': min(1.0, item.target_weight + released), 'trace': trace})}",
-                    "trace": _json(trace),
-                }))
-            else:
-                rescaled.append(item)
-        ranked = rescaled
-        proposed_weights = {item.ticker: item.target_weight for item in ranked if item.disposition == "selected" and item.ticker != "CASH"}
-    else:
-        ranked = [item.model_copy(update={"trace": _json({**item.trace, "joint_covariance_scale": 1.0, "joint_risk_budget": joint_risk_budget})}) if item.disposition == "selected" and item.ticker != "CASH" else item for item in ranked]
-        proposed_weights = {item.ticker: item.target_weight for item in ranked if item.disposition == "selected" and item.ticker != "CASH"}
-    if isinstance(candidates, AuthoritativePortfolioBundle):
-        constraint = candidates.constraints
-        violations: list[str] = []
-        for label, limits, attribute in (
-            ("sector", constraint.sector_limits, "sector"),
-            ("asset_class", constraint.asset_class_limits, "asset_class"),
-        ):
-            totals: dict[str, float] = {}
-            for ticker, weight in proposed_weights.items():
-                value = getattr(candidates_by_ticker[ticker], attribute)
-                if value is not None:
-                    totals[value] = totals.get(value, 0.0) + weight
-            violations.extend(f"{label}_joint_limit:{key}" for key, value in totals.items() if key in limits and value > limits[key] + 1e-9)
-        for label, limits, attribute in (("factor", constraint.factor_limits, "factor_exposure"), ("greek", constraint.greek_limits, "greeks")):
-            totals: dict[str, float] = {}
-            for ticker, weight in proposed_weights.items():
-                values = getattr(candidates_by_ticker[ticker], attribute) or {}
-                for key, value in values.items():
-                    totals[key] = totals.get(key, 0.0) + abs(weight * float(value))
-            violations.extend(f"{label}_joint_limit:{key}" for key, value in totals.items() if key in limits and value > limits[key] + 1e-9)
-        if constraint.min_liquidity is not None:
-            for ticker in proposed_weights:
-                liquidity = candidates_by_ticker[ticker].liquidity or {}
-                score = liquidity.get("score", liquidity.get("available_notional"))
-                if score is None or float(score) < constraint.min_liquidity:
-                    violations.append(f"liquidity_limit:{ticker}")
-        if constraint.allowed_venues:
-            violations.extend(
-                f"venue_not_allowed:{ticker}" for ticker in proposed_weights
-                if candidates_by_ticker[ticker].venue not in constraint.allowed_venues
-            )
-        if violations:
-            return cash_only_allocation(as_of, cash_hurdle, "joint_constraints_failed:" + ",".join(sorted(violations)))
     proposed_volatility = portfolio_volatility(proposed_weights)
     current_volatility = portfolio_volatility(current_weights)
     updated: list[PortfolioAllocationItem] = []

@@ -581,7 +581,8 @@ class TickerPaperExecutionRepository:
                 SELECT paper.id::text, paper.instrument_id, paper.status, paper.side,
                        paper.quantity, paper.limit_price, paper.actual_fill_price,
                        paper.filled_at, paper.submitted_at, paper.filled_quantity,
-                       paper.exited_quantity, paper.fees, paper.expires_at,
+                       paper.exited_quantity, paper.fees, paper.expires_at, paper.execution_quote,
+                       paper.fill_evidence_at, paper.contract_multiplier,
                        paper.expression_kind, paper.structure, paper.policy_result, paper.thesis_snapshot,
                        instrument.symbol
                 FROM app.paper_order paper
@@ -715,13 +716,14 @@ class TickerPaperExecutionRepository:
             UPDATE app.paper_order
             SET status = %s, actual_fill_price = coalesce(actual_fill_price, %s),
                 filled_at = coalesce(filled_at, %s), submitted_at = coalesce(submitted_at, %s),
-                filled_quantity = %s, fees = coalesce(fees, 0) + %s,
+                fill_evidence_at = clock_timestamp(), execution_quote = %s, contract_multiplier = 1,
+                filled_quantity = %s, fees = coalesce(fees, 0) + %s, entry_fees = coalesce(entry_fees, 0) + %s,
                 entry_slippage = %s, unfilled_reason = CASE WHEN %s THEN NULL ELSE %s END,
                 policy_result = %s, updated_at = %s
             WHERE id = %s::uuid
             """,
             [
-                new_status, market_price, now, now, new_filled, fees, slippage,
+                new_status, market_price, now, now, Jsonb({"mid": market_price}), new_filled, fees, fees, slippage,
                 complete, "partial_fill", Jsonb(policy), now, order["id"],
             ],
         )
@@ -772,6 +774,9 @@ class TickerPaperExecutionRepository:
         prior_filled = _quantity(order.get("filled_quantity"))
         new_filled = prior_filled + fill_quantity
         complete = new_filled >= _quantity(order.get("quantity"))
+        multiplier = _number(legs[0].get("multiplier")) if legs else None
+        if multiplier is None or multiplier <= 0:
+            return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "contract_multiplier_missing"}
         fees = FEE_PER_CONTRACT_LEG * len(quoted) * fill_quantity
         midpoint = _option_midpoint(quoted)
         slippage = abs(market_price - midpoint) if midpoint is not None else None
@@ -782,12 +787,13 @@ class TickerPaperExecutionRepository:
             UPDATE app.paper_order
             SET status = %s, actual_fill_price = coalesce(actual_fill_price, %s),
                 filled_at = coalesce(filled_at, %s), submitted_at = coalesce(submitted_at, %s),
-                filled_quantity = %s, fees = coalesce(fees, 0) + %s,
+                fill_evidence_at = clock_timestamp(), execution_quote = %s, contract_multiplier = %s,
+                filled_quantity = %s, fees = coalesce(fees, 0) + %s, entry_fees = coalesce(entry_fees, 0) + %s,
                 entry_slippage = %s, unfilled_reason = CASE WHEN %s THEN NULL ELSE %s END,
                 policy_result = %s, updated_at = %s
             WHERE id = %s::uuid
             """,
-            ["entered" if complete else "open", market_price, now, now, new_filled, fees, slippage,
+            ["entered" if complete else "open", market_price, now, now, Jsonb({"mid": midpoint, "entry_price": market_price}), multiplier, new_filled, fees, fees, slippage,
              complete, "partial_fill", Jsonb(policy), now, order["id"]],
         )
         return {
@@ -908,12 +914,13 @@ class TickerPaperExecutionRepository:
                         """
                         UPDATE app.paper_order
                         SET status = 'exited', exited_quantity = %s, exit_price = %s, exit_at = %s,
-                            fees = coalesce(fees, 0) + %s, policy_result = %s,
+                            contract_multiplier = %s, fees = coalesce(fees, 0) + %s,
+                            exit_fees = coalesce(exit_fees, 0) + %s, policy_result = %s,
                             unfilled_reason = %s, updated_at = %s
                         WHERE id = %s::uuid
                         """,
-                        [order["quantity"], max(strike - underlying_price, 0.0), now,
-                         assignment_fee, Jsonb(policy), "assigned_at_expiration", now, order["id"]],
+                        [order["quantity"], max(strike - underlying_price, 0.0), now, multiplier,
+                         assignment_fee, assignment_fee, Jsonb(policy), "assigned_at_expiration", now, order["id"]],
                     )
                     from investment_panel.database.portfolio import PortfolioLoopRepository
 
@@ -950,11 +957,11 @@ class TickerPaperExecutionRepository:
             """
             UPDATE app.paper_order
             SET status = %s, exited_quantity = %s, exit_price = %s, exit_at = %s,
-                fees = coalesce(fees, 0) + %s, exit_slippage = %s,
+                fees = coalesce(fees, 0) + %s, exit_fees = coalesce(exit_fees, 0) + %s, exit_slippage = %s,
                 unfilled_reason = NULL, policy_result = %s, updated_at = %s
             WHERE id = %s::uuid
             """,
-            ["exited" if terminal else "partial_exited", new_exited, exit_price, now, fees, slippage, Jsonb(policy), now, order["id"]],
+            ["exited" if terminal else "partial_exited", new_exited, exit_price, now, fees, fees, slippage, Jsonb(policy), now, order["id"]],
         )
         from investment_panel.database.portfolio import PortfolioLoopRepository
 
@@ -1007,11 +1014,11 @@ class TickerPaperExecutionRepository:
             """
             UPDATE app.paper_order
             SET status = 'exited', exited_quantity = %s, exit_price = %s,
-                exit_at = %s, fees = coalesce(fees, 0) + %s,
+                exit_at = %s, fees = coalesce(fees, 0) + %s, exit_fees = coalesce(exit_fees, 0) + %s,
                 updated_at = %s, unfilled_reason = NULL, policy_result = %s
             WHERE id = %s::uuid
             """,
-            [new_exited, price, now, fees, now, Jsonb(policy), order["id"]],
+            [new_exited, price, now, fees, fees, now, Jsonb(policy), order["id"]],
         )
         from investment_panel.database.portfolio import PortfolioLoopRepository
 

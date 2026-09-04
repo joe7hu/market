@@ -10,6 +10,7 @@ import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { rows, tickerSymbol } from "@/utils";
 import { displayField, numberField, textField, titleLabel, toneFromText } from "@/views/rowFormat";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
+import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 
 type SourceFamily = "all" | "filing" | "transcript" | "podcast" | "blog" | "private_graph" | "market_data" | "other";
 type RankingMode = "discussed" | "bullish" | "bearish" | "conviction";
@@ -32,7 +33,7 @@ const RANKING_MODES: Array<{ id: RankingMode; label: string; icon: typeof Trendi
 ];
 
 export function SourcesRoute() {
-  const { data, openTicker } = useMarketData();
+  const { data, openTicker, loadScope, scopeStatus } = useMarketData();
   const [rankingMode, setRankingMode] = useState<RankingMode>("discussed");
   const [family, setFamily] = useState<SourceFamily>("all");
   const [query, setQuery] = useState("");
@@ -64,6 +65,7 @@ export function SourcesRoute() {
         </div>
       }
     >
+      <ScopeStatusNotice status={scopeStatus?.research} onRetry={() => void loadScope("research", { force: true })} />
       <div className="flex gap-2 overflow-x-auto pb-1">
         {RANKING_MODES.map((item) => {
           const Icon = item.icon;

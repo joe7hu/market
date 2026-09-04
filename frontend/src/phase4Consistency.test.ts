@@ -56,4 +56,16 @@ describe("Phase 4 workspace consistency", () => {
     } as any);
     expect(data.errors.portfolio).toContain("Invalid or missing Phase 4 snapshot identity");
   });
+
+  it("fails a Phase 4 workspace that omits the already-established identity", () => {
+    const initial = mergeSnapshot(emptyPanelData(), {
+      scope: "portfolio",
+      tables: { portfolio_allocation: { rows: [{ allocation_id: "allocation:abc" }] },
+        execution_model_snapshot: { rows: [{ allocation_id: "allocation:abc", execution_model_snapshot_id: "execution:abc" }] } },
+    });
+    const next = mergeSnapshot(initial, { scope: "research", status: { metadata: { snapshot_error: "database timeout" } } } as any);
+    expect(next.scopeStatus.research.state).toBe("failed");
+    expect(next.scopeStatus.research.error).toContain("Phase 4 identity is missing");
+    expect(next.errors.portfolio).toContain("Phase 4 identity is missing");
+  });
 });

@@ -103,7 +103,7 @@ def test_allocator_rejects_funding_without_postgres_cash_or_position_identity() 
 
 
 def test_allocator_rejects_free_form_mapping_authority() -> None:
-    with pytest.raises(TypeError, match="AuthoritativePortfolioBundle"):
+    with pytest.raises(TypeError, match="repository and PostgreSQL bound"):
         allocate_portfolio([candidate("MAPPING").model_dump()], as_of=AS_OF)
 
 
@@ -122,7 +122,7 @@ def test_production_allocator_rejects_a_caller_constructed_bundle() -> None:
         scenario=PortfolioScenarioEvidence.model_construct(input_cutoff=AS_OF),
         authority_snapshot_id="account:1", authority_content_hash="a" * 64,
     )
-    with pytest.raises(TypeError, match="repository-issued"):
+    with pytest.raises(TypeError, match="repository and PostgreSQL bound"):
         allocate_portfolio(bundle, as_of=AS_OF)
 
 
@@ -146,7 +146,9 @@ def test_existing_paper_fill_uses_persisted_quote_and_distinct_execution_clocks(
         "submitted_at": AS_OF - timedelta(minutes=2), "filled_at": AS_OF - timedelta(minutes=1),
         "exit_at": None, "exit_price": None, "fees": 1.25, "entry_slippage": 1.0,
         "exit_slippage": None, "side": "buy", "status": "entered",
-        "policy_result": {"trade_plan_id": "action:test", "entry_quote": {"bid": 99, "ask": 101}, "impact_bps": 3.0},
+        "fill_evidence_at": AS_OF - timedelta(seconds=30),
+        "execution_quote": {"bid": 99, "ask": 101}, "contract_multiplier": 100,
+        "policy_result": {"trade_plan_id": "action:test"},
     }
 
     class Result:
@@ -167,11 +169,30 @@ def test_existing_paper_fill_uses_persisted_quote_and_distinct_execution_clocks(
         connection, paper_order_id=order["id"], observed_at=AS_OF, status="filled",
     )
     assert observation_id == "paper-observation:00000000-0000-0000-0000-000000000001:10:"
-    assert seen[0].observed_at == order["submitted_at"]
-    assert seen[0].available_at == order["filled_at"]
+    assert seen[0].observed_at == order["filled_at"]
+    assert seen[0].available_at == order["fill_evidence_at"]
     assert seen[0].latency_ms == 60_000
     assert seen[0].spread_bps == pytest.approx(200)
     assert connection.calls == 2
+
+
+def test_existing_paper_fill_never_uses_policy_metadata_for_calibration(monkeypatch) -> None:
+    order = {
+        "id": "00000000-0000-0000-0000-000000000001", "quantity": 1, "filled_quantity": 1,
+        "limit_price": 100, "intended_limit_price": 100, "actual_fill_price": 100,
+        "submitted_at": AS_OF - timedelta(minutes=2), "filled_at": AS_OF - timedelta(minutes=1),
+        "fill_evidence_at": AS_OF - timedelta(seconds=30), "execution_quote": None,
+        "contract_multiplier": None, "fees": 0, "entry_slippage": 0, "exit_slippage": None,
+        "exit_at": None, "exit_price": None, "side": "buy", "status": "entered",
+        "policy_result": {"trade_plan_id": "action:test", "entry_quote": {"bid": 1, "ask": 2}, "assignment": {"multiplier": 100}},
+    }
+    class Result:
+        def fetchone(self): return order
+    class Connection:
+        def execute(self, *_args): return Result()
+    repository = PortfolioLoopRepository.__new__(PortfolioLoopRepository)
+    monkeypatch.setattr(repository, "record_paper_execution", lambda *_args, **_kwargs: pytest.fail("caller policy must not calibrate"))
+    assert repository.record_existing_paper_order_fill(Connection(), paper_order_id=order["id"], observed_at=AS_OF, status="filled") is None
 
 
 def test_calibration_pending_authority_can_only_return_cash() -> None:
@@ -233,6 +254,23 @@ def test_allocator_rejects_duplicate_tickers_and_joint_constraints_fail_closed()
     assert allocation.status == "available"
     assert sum(item.target_weight for item in selected) <= 0.01 + 1e-9
     assert all(item.trace["optimizer"] == "SLSQP" for item in selected)
+
+
+def test_joint_optimizer_handles_required_trim_and_existing_holding_without_self_funding() -> None:
+    held = candidate("HELD", current_weight=.40, trim_position_id="broker-position:held", trim_available=.40, capacity=.01)
+    fresh = candidate("FRESH", cash_available=20_000, cash_source_id="cash:1")
+    bundle = AuthoritativePortfolioBundle.model_construct(
+        input_cutoff=AS_OF, candidates=(held, fresh), complete=True, cash_hurdle=.01,
+        book=PortfolioBookEvidence.model_construct(net_liquidation=100_000, cash_available=20_000, cash_source_id="cash:1", positions={"HELD": "broker-position:held", "LEGACY": "broker-position:legacy"}, position_weights={"HELD": .4, "LEGACY": .4}, input_cutoff=AS_OF),
+        constraints=PortfolioConstraintEvidence.model_construct(cash_hurdle=.01, constraint_hash="constraints:test", risk_policy_hash="a" * 64, risk_policy_version="v1", position_limit=1, aggregate_loss_limit=1),
+        execution=PortfolioExecutionEvidence.model_construct(snapshot_id="execution:ready", calibration_status="calibrated", sample_count=1, input_cutoff=AS_OF),
+        scenario=PortfolioScenarioEvidence.model_construct(artifact_id="scenario:test", observations=(), input_cutoff=AS_OF), authority_snapshot_id="account:1", authority_content_hash="b" * 64,
+    )
+    allocation = portfolio_core._allocate_portfolio(bundle, as_of=AS_OF)
+    held_item = next(item for item in allocation.items if item.ticker == "HELD")
+    assert held_item.target_weight <= .01 + 1e-9
+    assert held_item.funding_source is None
+    assert sum(item.target_weight for item in allocation.items if item.ticker == "CASH") <= .2 + 1e-9
 
 
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:

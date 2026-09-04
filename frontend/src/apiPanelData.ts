@@ -15,6 +15,7 @@ const TABLE_KEY_OVERRIDES: Record<string, keyof KnownPanelTables> = {
 };
 
 const RESERVED_PANEL_KEYS = new Set(["dashboard", "settings", "errors"]);
+const PHASE4_WORKSPACES = new Set(["today", "opportunities", "portfolio", "research", "health"]);
 
 function tableKeyFor(apiKey: string): keyof KnownPanelTables | string {
   if (apiKey in TABLE_KEY_OVERRIDES) return TABLE_KEY_OVERRIDES[apiKey];
@@ -43,6 +44,13 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
   }
   const incomingPhase4 = incomingTables.state === "valid" ? incomingTables : incomingIntegrated;
   const existingPhase4 = phase4IdentityFromPanel(existing);
+  if (snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope) && existingPhase4.state === "valid" && incomingPhase4.state === "absent") {
+    return {
+      ...existing,
+      errors: { ...existing.errors, portfolio: "Phase 4 identity is missing from this workspace response." },
+      scopeStatus: { ...existing.scopeStatus, [snapshot.scope]: { state: "failed", error: "Phase 4 identity is missing from this workspace response." } },
+    };
+  }
   if (incomingPhase4.state === "valid" && existingPhase4.state === "valid" && incomingPhase4.value !== existingPhase4.value) {
     return {
       ...existing,
@@ -65,11 +73,12 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
   }
   if (snapshot.scope) {
     const metadata = snapshot.status?.metadata;
+    const failure = typeof metadata?.snapshot_error === "string" ? metadata.snapshot_error : undefined;
     const stale = metadata?.snapshot_state === "stale";
     next.scopeStatus[snapshot.scope] = {
-      state: stale ? "stale" : "ready",
+      state: failure ? (stale ? "stale" : "failed") : (stale ? "stale" : "ready"),
       message: snapshot.status?.message,
-      error: typeof metadata?.snapshot_error === "string" ? metadata.snapshot_error : undefined,
+      error: failure,
       lastGoodAt: typeof metadata?.last_good_at === "string" ? metadata.last_good_at : undefined,
     };
   }

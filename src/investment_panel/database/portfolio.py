@@ -17,7 +17,6 @@ from investment_panel.core.decision import (
     portfolio_impact_from_persisted,
     portfolio_impact_id_for_persisted,
 )
-from investment_panel.core import portfolio as portfolio_core
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 from investment_panel.core.portfolio import (
     BookAttribution,
@@ -756,6 +755,11 @@ class PortfolioLoopRepository:
                 cash_available=(float(account["cash_balance"]) if account and account["cash_balance"] is not None else None),
                 cash_source_id=(f"broker-account:{account['source_id']}:{account['id']}" if account else None),
                 positions={ticker: f"broker-position:{row['id']}" for ticker, row in position_by_ticker.items()},
+                position_weights={
+                    ticker: max(0.0, float(row["market_value"] or 0) / float(account["net_liquidation"]))
+                    for ticker, row in position_by_ticker.items()
+                    if account and account["net_liquidation"] not in (None, 0)
+                },
                 input_cutoff=as_of,
             ),
             constraints=PortfolioConstraintEvidence(
@@ -789,20 +793,25 @@ class PortfolioLoopRepository:
             authority_snapshot_id=authority_snapshot_id,
             authority_content_hash=canonical_content_hash(authority_payload),
         )
-        return portfolio_core.bind_postgresql_bundle(bundle, authority_payload)
+        # This method is the authority boundary.  The complete source slice
+        # was read in this PostgreSQL snapshot and its digest is carried into
+        # the immutable allocation; no core-module token can issue a bundle.
+        if canonical_content_hash(authority_payload) != bundle.authority_content_hash:
+            raise ValueError("PostgreSQL authority source slice changed before issuance")
+        return bundle
 
     def refresh_authoritative_allocation(self, *, as_of: Any) -> PortfolioAllocationSnapshot:
         """Persist one allocation from the validated PostgreSQL candidate bundle."""
 
         from investment_panel.core.portfolio import (
-            allocate_portfolio, apply_decay_to_allocation,
+            compute_portfolio_allocation, apply_decay_to_allocation,
             build_scenario_artifact_from_observations,
         )
 
         bundle = self.read_authoritative_candidate_bundle(as_of=as_of)
         # A missing persisted hurdle is a hard fail-closed condition. The
         # empty allocator result records CASH without inventing a policy value.
-        allocation = allocate_portfolio(bundle, as_of=as_of)
+        allocation = compute_portfolio_allocation(bundle, as_of=as_of)
         drift_scores = {
             item.allocation_item_id: bundle.drift_scores.get(str(next(
                 (candidate.strategy_registry_id or "").split(":")[-1]
@@ -822,7 +831,7 @@ class PortfolioLoopRepository:
                 # not permission to persist a partial or synthetic scenario.
                 safe_candidates = [candidate.model_copy(update={"blockers": tuple((*candidate.blockers, "scenario_cross_section_missing"))}) for candidate in bundle.candidates]
                 safe_bundle = bundle.model_copy(update={"candidates": tuple(safe_candidates), "complete": False})
-                allocation = allocate_portfolio(safe_bundle, as_of=as_of)
+                allocation = compute_portfolio_allocation(safe_bundle, as_of=as_of)
                 allocation, drift_decisions = apply_decay_to_allocation(
                     allocation, {}, rollback_threshold=1.0,
                 )
@@ -879,8 +888,9 @@ class PortfolioLoopRepository:
             if not observation.allocation_item_id or not observation.action_id:
                 raise ValueError("paper execution requires allocation and action lineage")
             order = connection.execute(
-                """SELECT id, created_at, status, filled_quantity, actual_fill_price, filled_at, exit_at,
-                          policy_result
+                """SELECT id, created_at, status, filled_quantity, actual_fill_price, submitted_at, filled_at,
+                          fill_evidence_at, execution_quote, fees, entry_slippage, exit_slippage,
+                          contract_multiplier, exit_at, policy_result
                    FROM app.paper_order WHERE id = %s""", [observation.paper_order_id]
             ).fetchone()
             if order is None:
@@ -898,8 +908,11 @@ class PortfolioLoopRepository:
                 or order["filled_quantity"] is None
                 or float(order["filled_quantity"]) < observation.filled_quantity
                 or order["actual_fill_price"] is None
-                or order["filled_at"] is None
-                or observation.observed_at < order["filled_at"]
+                or order["submitted_at"] is None or order["fill_evidence_at"] is None
+                or order["execution_quote"] is None or order["fees"] is None
+                or order["entry_slippage"] is None or order["contract_multiplier"] is None
+                or observation.observed_at != order["filled_at"]
+                or observation.available_at != order["fill_evidence_at"]
             ):
                 raise ValueError("paper execution requires a genuine existing fill")
             connection.execute(
@@ -952,6 +965,7 @@ class PortfolioLoopRepository:
         order = connection.execute(
             """SELECT id::text, quantity, filled_quantity, limit_price, intended_limit_price,
                       actual_fill_price, submitted_at, filled_at, exit_at, exit_price,
+                      fill_evidence_at, execution_quote, contract_multiplier,
                       fees, entry_slippage, exit_slippage, side, status, policy_result
                FROM app.paper_order WHERE id = %s::uuid""", [paper_order_id]
         ).fetchone()
@@ -965,34 +979,36 @@ class PortfolioLoopRepository:
                FROM analysis.portfolio_allocation_item item
                JOIN analysis.portfolio_allocation_snapshot snapshot USING (allocation_id)
                WHERE item.action_id = %s AND item.disposition IN ('selected', 'rollback')
-               ORDER BY snapshot.input_cutoff DESC, item.allocation_item_id DESC LIMIT 1""",
-            [action_id],
+                 AND snapshot.input_cutoff >= %s
+               ORDER BY snapshot.input_cutoff, item.allocation_item_id LIMIT 1""",
+            [action_id, order["fill_evidence_at"]],
         ).fetchone()
         if item is None:
             return None
         submitted_at = order["submitted_at"]
         filled_at = order["filled_at"]
         exit_at = order["exit_at"]
-        if submitted_at is None or filled_at is None:
+        evidence_at = order["fill_evidence_at"]
+        if submitted_at is None or filled_at is None or evidence_at is None:
             return None
+        # A fill becomes observable at the persisted fill clock and available
+        # only at the persisted database evidence clock.  Exit state does not
+        # rewrite entry calibration clocks.
         observation_status = "exited" if status in {"exited", "closed"} and order["exit_price"] is not None and exit_at is not None else "filled"
-        event_observed_at = filled_at if observation_status == "exited" else submitted_at
-        event_available_at = exit_at if observation_status == "exited" else filled_at
+        event_observed_at = filled_at
+        event_available_at = evidence_at
         if event_available_at <= event_observed_at:
             return None
-        policy = order["policy_result"] or {}
-        assignment = policy.get("assignment") if isinstance(policy.get("assignment"), dict) else {}
-        contract_multiplier = assignment.get("multiplier", 1)
+        contract_multiplier = order["contract_multiplier"]
         if not isinstance(contract_multiplier, (int, float)) or isinstance(contract_multiplier, bool) or float(contract_multiplier) <= 0:
             return None
-        quote = policy.get("entry_quote") or policy.get("quote") or policy.get("execution_quote")
-        quote = quote if isinstance(quote, dict) else None
+        quote = order["execution_quote"] if isinstance(order["execution_quote"], dict) else None
         midpoint = float(quote["mid"]) if quote and quote.get("mid") is not None else None
         if midpoint is None and quote and quote.get("bid") is not None and quote.get("ask") is not None:
             midpoint = (float(quote["bid"]) + float(quote["ask"])) / 2
         spread_bps = ((float(quote["ask"]) - float(quote["bid"])) / midpoint * 10_000) if quote and midpoint and quote.get("bid") is not None and quote.get("ask") is not None else None
         latency_ms = (filled_at - submitted_at).total_seconds() * 1000
-        impact_bps = policy.get("impact_bps")
+        impact_bps = abs(float(order["entry_slippage"]) / midpoint * 10_000) if midpoint else None
         observation = PaperExecutionObservation(
             paper_execution_observation_id=f"paper-observation:{order['id']}:{order['filled_quantity']}:{order['exit_price'] or ''}",
             allocation_item_id=str(item["allocation_item_id"]), action_id=action_id,
@@ -1001,13 +1017,13 @@ class PortfolioLoopRepository:
             requested_price=float(order["intended_limit_price"] or order["limit_price"]) if (order["intended_limit_price"] or order["limit_price"]) is not None else None,
             fill_price=float(order["actual_fill_price"]) if order["actual_fill_price"] is not None else None,
             spread_bps=spread_bps, latency_ms=latency_ms,
-            impact_bps=float(impact_bps) if impact_bps is not None else None,
+            impact_bps=impact_bps,
             exit_price=float(order["exit_price"]) if observation_status == "exited" else None,
             side=str(order["side"] or "buy"), observed_at=event_observed_at, available_at=event_available_at,
             metadata={"fees": float(order["fees"]) if order["fees"] is not None else None, "paper_order_id": str(order["id"]),
                       "contract_multiplier": float(contract_multiplier),
                       "submitted_at": submitted_at, "filled_at": filled_at, "entry_slippage": order["entry_slippage"],
-                      "exit_slippage": order["exit_slippage"], "quote": quote},
+                      "exit_slippage": order["exit_slippage"], "quote": quote, "fill_evidence_at": evidence_at},
         )
         observation_id = self.record_paper_execution(observation, connection=connection)
         if observation_status == "exited":
