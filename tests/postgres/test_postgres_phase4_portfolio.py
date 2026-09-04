@@ -8,6 +8,7 @@ import psycopg
 import pytest
 from psycopg.errors import CheckViolation, RaiseException
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from investment_panel.core.portfolio import (
     allocation_id_for_snapshot,
@@ -24,11 +25,28 @@ AS_OF = datetime(2026, 9, 2, 15, tzinfo=UTC)
 def insert_cash_allocation(connection: psycopg.Connection) -> None:
     allocation_id = "allocation:" + "a" * 64
     connection.execute(
+        """INSERT INTO ingest.source (id, name, family, kind) VALUES ('phase4-cash', 'cash', 'test', 'test')
+           ON CONFLICT (id) DO NOTHING"""
+    )
+    run_id = connection.execute(
+        """INSERT INTO ingest.run (source_id, capability, started_at, status)
+           VALUES ('phase4-cash', 'test', %s, 'succeeded') RETURNING id""", [AS_OF]
+    ).fetchone()
+    run_id = run_id["id"] if isinstance(run_id, dict) else run_id[0]
+    account_id = connection.execute(
+        """INSERT INTO raw.broker_account_snapshot
+           (source_id, ingest_run_id, account_key, observed_at, net_liquidation, cash_balance)
+           VALUES ('phase4-cash', %s, %s, %s, 100, 100) RETURNING id""",
+        [run_id, f"paper-{run_id}", AS_OF],
+    ).fetchone()
+    account_id = account_id["id"] if isinstance(account_id, dict) else account_id[0]
+    connection.execute(
         """INSERT INTO analysis.portfolio_allocation_snapshot
            (allocation_id, as_of, input_cutoff, status, cash_hurdle, input_hash, content_hash, metadata)
            VALUES (%s, %s, %s, 'cash_only', 0, %s, %s,
-                   '{"authority":"postgresql","authority_snapshot_id":"test-cash","source_hashes":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}'::jsonb)""",
-        [allocation_id, AS_OF, AS_OF, "a" * 64, "b" * 64],
+                   %s)""",
+        [allocation_id, AS_OF, AS_OF, "a" * 64, "b" * 64,
+         Jsonb({"authority": "postgresql", "authority_snapshot_id": f"broker-account:{account_id}", "source_hashes": ["a" * 64]})],
     )
     connection.execute(
         """INSERT INTO analysis.portfolio_allocation_item
@@ -130,7 +148,7 @@ def test_execution_model_store_matches_postgresql_canonical_digest(migrated_post
     with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
         insert_cash_allocation(connection)
         model = build_execution_model_snapshot(
-            "allocation:" + "a" * 64, AS_OF, [],
+            "allocation:" + "a" * 64, AS_OF + timedelta(seconds=1), [],
         )
         PortfolioLoopRepository.store_execution_model(connection, model)
         stored = connection.execute(
@@ -149,7 +167,16 @@ def test_phase4_application_role_cannot_directly_write_forged_authority(migrated
         ).fetchone()[0] is False
         assert connection.execute(
             "SELECT has_function_privilege('market_app', 'analysis.insert_phase4_allocation_snapshot(jsonb)', 'EXECUTE')"
-        ).fetchone()[0] is True
+        ).fetchone()[0] is False
+        assert connection.execute(
+            "SELECT has_function_privilege('public', 'analysis.insert_phase4_allocation_snapshot(jsonb)', 'EXECUTE')"
+        ).fetchone()[0] is False
+        with pytest.raises(RaiseException, match="signature"):
+            connection.execute(
+                "SELECT analysis.write_phase4_allocation(%s, '[]'::jsonb, 'forged')",
+                [Jsonb({"allocation_id": "allocation:" + "a" * 64})],
+            )
+        connection.rollback()
         with pytest.raises(RaiseException, match="authority"):
             connection.execute(
                 """INSERT INTO analysis.portfolio_allocation_snapshot
@@ -163,10 +190,20 @@ def test_phase4_application_role_cannot_directly_write_forged_authority(migrated
 
 def test_repository_persists_and_replays_a_postgresql_owned_cash_allocation(migrated_postgres_dsn: str) -> None:
     with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
+        connection.execute("INSERT INTO ingest.source (id, name, family, kind) VALUES ('phase4-test', 'test', 'test', 'test')")
+        run_id = connection.execute(
+            """INSERT INTO ingest.run (source_id, capability, started_at, status)
+               VALUES ('phase4-test', 'test', %s, 'succeeded') RETURNING id""", [AS_OF]
+        ).fetchone()["id"]
+        account_id = connection.execute(
+            """INSERT INTO raw.broker_account_snapshot
+               (source_id, ingest_run_id, account_key, observed_at, net_liquidation, cash_balance)
+               VALUES ('phase4-test', %s, 'paper', %s, 100, 100) RETURNING id""", [run_id, AS_OF]
+        ).fetchone()["id"]
         allocation = cash_only_allocation(AS_OF, 0.01, "test")
         allocation = allocation.model_copy(update={"metadata": {
-            "authority": "postgresql", "authority_snapshot_id": "test-cash",
-            "source_hashes": ["a" * 64],
+            "authority": "postgresql", "authority_snapshot_id": f"broker-account:{account_id}",
+            "source_hashes": [],
         }})
         allocation = allocation.model_copy(update={"allocation_id": allocation_id_for_snapshot(allocation)})
 

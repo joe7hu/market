@@ -152,6 +152,7 @@ def canonical_content_hash(value: Mapping[str, Any] | Any) -> str:
             "current_weight": field("current_weight"), "marginal_book_utility": field("marginal_book_utility"),
             "trace": field("trace"), "blockers": field("blockers"),
             "funding_source": field("funding_source"), "funding_amount": field("funding_amount"),
+            "funding_sources": field("funding_sources") or {},
         }
     elif field("scenario_artifact_id") is not None:
         payload = {
@@ -535,6 +536,7 @@ class PortfolioAllocationItem(BaseModel):
     marginal_book_utility: float
     funding_source: str | None = None
     funding_amount: float | None = None
+    funding_sources: dict[str, float] = Field(default_factory=dict)
     blockers: tuple[str, ...] = ()
     trace: dict[str, Any] = Field(default_factory=dict)
 
@@ -558,6 +560,10 @@ class PortfolioAllocationItem(BaseModel):
             not self.funding_source or self.funding_amount is None or not isfinite(self.funding_amount) or self.funding_amount <= 0
         ):
             raise ValueError("rollback allocation requires persisted trim funding")
+        if any(not source or not isfinite(amount) or amount <= 0 for source, amount in self.funding_sources.items()):
+            raise ValueError("funding sources must be positive named amounts")
+        if self.funding_sources and self.funding_amount is not None and abs(sum(self.funding_sources.values()) - self.funding_amount) > 1e-9:
+            raise ValueError("funding sources must conserve the funded amount")
         return self
 
 
@@ -940,12 +946,11 @@ def _compute_portfolio_allocation(
     caps = [min(cap, candidate.current_weight) if candidate.current_weight > 0 else cap for cap, (candidate, _, _) in zip(caps, fundable)]
     limits = [(0.0, max(0.0, min(1.0, cap))) for cap in caps]
     source_limits: dict[str, float] = {}
-    released_trim_funding = sum(candidate.trim_available or 0.0 for candidate, utility, _ in eligible if candidate.current_weight > 0 and utility <= cash_hurdle)
-    trim_limits = {
-        candidate.trim_position_id: float(candidate.trim_available or 0.0)
-        for candidate, utility, _ in eligible
-        if utility <= cash_hurdle and candidate.current_weight > 0 and candidate.trim_position_id and (candidate.trim_available or 0) > 0
-    }
+    released_trim_funding = sum(
+        min(candidate.current_weight * (nav if nav is not None else 1.0), float(candidate.trim_available or 0.0))
+        for candidate, _, _ in fundable
+        if candidate.current_weight > 0 and candidate.trim_position_id
+    )
     for candidate, _, _ in fundable:
         key = candidate.cash_source_id if candidate.current_weight <= 0 else None
         amount = candidate.cash_available if candidate.current_weight <= 0 else None
@@ -980,9 +985,20 @@ def _compute_portfolio_allocation(
     weights = list(result.x) if result is not None and result.success else [0.0] * len(fundable)
     # Funding is a conserved joint resource.  The optimizer limits the total;
     # this deterministic projection records every source used by every increase.
+    released_sources: dict[str, float] = {}
+    for weight, (candidate, _, _) in zip(weights, fundable):
+        released = max(0.0, candidate.current_weight - float(weight)) * (nav if nav is not None else 1.0)
+        if released <= 1e-9:
+            continue
+        source = f"TRIM:{candidate.trim_position_id}" if candidate.trim_position_id else ""
+        if not source or source in released_sources or released > float(candidate.trim_available or 0.0) + 1e-9:
+            weights = [0.0] * len(fundable)
+            released_sources = {}
+            break
+        released_sources[source] = released
     funding_remaining = {
         **{f"CASH:{key}": float(value) for key, value in source_limits.items()},
-        **{f"TRIM:{key}": float(value) for key, value in trim_limits.items()},
+        **released_sources,
     }
     for weight, (candidate, utility, trace) in zip(weights, fundable):
         target = max(0.0, float(weight))
@@ -1008,18 +1024,18 @@ def _compute_portfolio_allocation(
             if remaining_funding > 1e-9:
                 ranked.append(_rejection(candidate, ("funding_source_conservation_failed",)))
                 continue
-            funding_source = next(iter(funding_sources))
+            funding_source = next(iter(funding_sources)) if len(funding_sources) == 1 else "MULTI_SOURCE"
         elif decreased:
             funding_source = f"TRIM:{candidate.trim_position_id}" if candidate.trim_position_id else "TRIM:book"
             funding_sources = {funding_source: funding_amount}
-        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": target - candidate.current_weight, "funding_amount": funding_amount, "funding_sources": funding_sources, "released_trim_funding": funding_amount if decreased else 0.0}
+        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": target - candidate.current_weight, "funding_amount": funding_amount, "funding_sources": funding_sources, "trim_position_id": candidate.trim_position_id, "released_trim_funding": funding_amount if decreased else 0.0}
         ranked.append(PortfolioAllocationItem(
             allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'target_weight': target, 'trace': trace})}",
             candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
             action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="selected",
             target_weight=target, current_weight=candidate.current_weight, marginal_book_utility=utility,
             funding_source=funding_source,
-            funding_amount=(funding_amount if increased else max(funding_amount, candidate.trim_available or 0.0)), trace=_json(trace),
+            funding_amount=funding_amount, funding_sources=funding_sources, trace=_json(trace),
         ))
     remaining = max(0.0, 1.0 - existing_weight - sum(item.target_weight for item in ranked if item.disposition == "selected"))
     cash_payload = {"candidate_id": "CASH", "ticker": "CASH", "disposition": "selected", "target_weight": remaining}

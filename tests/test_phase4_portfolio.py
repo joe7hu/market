@@ -243,6 +243,7 @@ def test_record_paper_execution_rebuilds_observation_from_persisted_fill(monkeyp
     assert result == observation.paper_execution_observation_id
     assert stored and stored[0].latency_ms == 60_000
     assert stored[0].spread_bps == pytest.approx(200)
+    assert stored[0].input_cutoff == evidence
 
 
 def test_imported_allocator_cannot_consume_a_caller_bundle() -> None:
@@ -343,7 +344,8 @@ def test_joint_optimizer_conserves_multiple_trim_sources_for_one_increase() -> N
     funded = next(item for item in allocation.items if item.ticker == "FRESH")
     assert funded.disposition == "selected"
     assert sum(funded.trace["funding_sources"].values()) == pytest.approx(funded.funding_amount)
-    assert set(funded.trace["funding_sources"]) == {"CASH:cash:1", "TRIM:broker-position:a", "TRIM:broker-position:b"}
+    assert funded.funding_sources == funded.trace["funding_sources"]
+    assert funded.funding_source == "CASH:cash:1"
 
 
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:

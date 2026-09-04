@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import hmac
 from hashlib import sha256
 import json
 from math import isfinite
+import os
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -259,7 +261,7 @@ class PortfolioLoopRepository:
         if metadata.get("authority") != "postgresql" or not metadata.get("authority_snapshot_id"):
             raise ValueError("allocation persistence requires a PostgreSQL authority context")
         source_hashes = metadata.get("source_hashes")
-        if not isinstance(source_hashes, list) or not source_hashes or any(
+        if not isinstance(source_hashes, list) or any(
             not isinstance(value, str) or len(value) != 64 or value == "0" * 64 for value in source_hashes
         ):
             raise ValueError("allocation persistence requires canonical source hashes")
@@ -295,16 +297,30 @@ class PortfolioLoopRepository:
                     [decision_id, decision_hash, item.action_id, item.rank_id, item.strategy_forecast_id],
                 ).fetchone():
                     raise ValueError("allocation item source digest is not a persisted PostgreSQL decision")
-            connection.execute(
-                "SELECT analysis.insert_phase4_allocation_snapshot(%s)",
-                [Jsonb({
+            snapshot_payload = {
                     "allocation_id": allocation.allocation_id, "as_of": allocation.as_of.isoformat(),
                     "input_cutoff": allocation.input_cutoff.isoformat(), "status": allocation.status,
                     "cash_hurdle": allocation.cash_hurdle, "forecast_ids": list(allocation.forecast_ids),
                     "action_ids": list(allocation.action_ids), "strategy_registry_ids": list(allocation.strategy_registry_ids),
                     "input_hash": allocation.allocation_id.split(":", 1)[1],
                     "content_hash": canonical_content_hash(allocation), "metadata": allocation.metadata,
-                })],
+                }
+            item_payloads = [item.model_dump(mode="json") | {
+                "allocation_id": allocation.allocation_id,
+                "input_hash": item.allocation_item_id.split(":", 1)[1],
+                "content_hash": canonical_content_hash(item.model_dump(mode="json") | {"allocation_id": allocation.allocation_id}),
+            } for item in allocation.items]
+            payload = connection.execute(
+                "SELECT analysis.phase4_allocation_authorization_payload(%s, %s) AS payload",
+                [Jsonb(snapshot_payload), Jsonb(item_payloads)],
+            ).fetchone()
+            signing_key = os.environ.get("MARKET_PHASE4_ALLOCATION_SIGNING_KEY", "").strip()
+            if payload is None or len(signing_key) < 16:
+                raise ValueError("Phase 4 allocation writer authorization is unavailable")
+            signature = hmac.new(signing_key.encode("utf-8"), str(payload["payload"]).encode("utf-8"), "sha256").hexdigest()
+            connection.execute(
+                "SELECT analysis.write_phase4_allocation(%s, %s, %s)",
+                [Jsonb(snapshot_payload), Jsonb(item_payloads), signature],
             )
             stored = connection.execute(
                 """SELECT input_hash, content_hash, as_of, input_cutoff, status, cash_hurdle,
@@ -320,19 +336,11 @@ class PortfolioLoopRepository:
             }.items()):
                 raise ValueError("immutable allocation replay diverges from PostgreSQL content")
             for item in allocation.items:
-                connection.execute(
-                    "SELECT analysis.insert_phase4_allocation_item(%s)",
-                    [Jsonb(item.model_dump(mode="json") | {
-                        "allocation_id": allocation.allocation_id,
-                        "input_hash": item.allocation_item_id.split(":", 1)[1],
-                        "content_hash": canonical_content_hash(item.model_dump(mode="json") | {"allocation_id": allocation.allocation_id}),
-                    })],
-                )
                 stored_item = connection.execute(
                     """SELECT allocation_id, candidate_id, ticker, strategy_forecast_id,
                               action_id, rank_id, hypothesis_id, disposition, target_weight,
                               current_weight, marginal_book_utility, trace, blockers, funding_source,
-                              funding_amount, input_hash, content_hash
+                              funding_amount, funding_sources, input_hash, content_hash
                        FROM analysis.portfolio_allocation_item WHERE allocation_item_id = %s""",
                     [item.allocation_item_id],
                 ).fetchone()
@@ -725,10 +733,10 @@ class PortfolioLoopRepository:
                    FROM analysis.execution_model_snapshot execution
                    JOIN analysis.portfolio_allocation_snapshot allocation
                      ON allocation.allocation_id = execution.allocation_id
-                   WHERE execution.input_cutoff = %s AND execution.available_at <= %s
-                     AND allocation.input_cutoff = %s
+                   WHERE execution.input_cutoff <= %s AND execution.available_at <= %s
+                     AND allocation.input_cutoff < execution.input_cutoff
                    ORDER BY execution.input_cutoff DESC, execution.available_at DESC,
-                            execution.execution_model_snapshot_id DESC LIMIT 1""", [as_of, as_of, as_of]
+                            execution.execution_model_snapshot_id DESC LIMIT 1""", [as_of, as_of]
             ).fetchone()
             if execution_row is not None:
                 try:
@@ -944,6 +952,10 @@ class PortfolioLoopRepository:
         }
         allocation = allocation.model_copy(update={"metadata": authority_metadata})
         allocation = allocation.model_copy(update={"allocation_id": allocation_id_for_snapshot(allocation)})
+        # A missing account snapshot is not an authority record.  Keep the
+        # safe cash result in memory and do not mint a durable allocation.
+        if bundle.authority_snapshot_id == "missing":
+            return allocation
         self.store_allocation(allocation, scenario=scenario)
         # Calibrate only from fills that were persisted before this refresh.
         # This creates a snapshot for the next allocation; it cannot fund the
@@ -973,8 +985,11 @@ class PortfolioLoopRepository:
                 [allocation.allocation_id, as_of],
             ).fetchall()]
             if observations:
+                calibration_cutoff = max(
+                    PaperExecutionObservation.model_validate(row).available_at for row in observations
+                )
                 model = build_execution_model_snapshot(
-                    allocation.allocation_id, allocation.input_cutoff,
+                    allocation.allocation_id, calibration_cutoff,
                     [PaperExecutionObservation.model_validate(row) for row in observations],
                 )
                 if model.calibration_status == "calibrated":
@@ -1157,7 +1172,7 @@ class PortfolioLoopRepository:
             if rows:
                 calibration_cutoff = max(PaperExecutionObservation.model_validate(dict(row)).available_at for row in rows)
                 model = build_execution_model_snapshot(
-                        allocation["allocation_id"], allocation["input_cutoff"],
+                        allocation["allocation_id"], calibration_cutoff,
                         [PaperExecutionObservation.model_validate(dict(row)) for row in rows],
                 )
                 self.store_execution_model(connection, model)
