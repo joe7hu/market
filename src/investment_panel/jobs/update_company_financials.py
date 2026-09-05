@@ -123,6 +123,7 @@ def run(
     started_at = datetime.now(UTC)
     errors: dict[str, str] = {}
     unmapped: list[str] = []
+    not_applicable: list[str] = []
     all_rows: list[dict[str, Any]] = []
     try:
         mapped = ticker_cik_map(sec.company_tickers(user_agent))
@@ -148,6 +149,9 @@ def run(
         }
     for instrument in instruments:
         symbol = instrument["symbol"]
+        if instrument["asset_class"] == "etf":
+            not_applicable.append(symbol)
+            continue
         cik = mapped.get(symbol)
         if not cik:
             unmapped.append(symbol)
@@ -180,7 +184,9 @@ def run(
         no_fact_symbols = [
             instrument["symbol"]
             for instrument in instruments
-            if instrument["symbol"] in mapped and instrument["symbol"] not in {row["symbol"] for row in all_rows}
+            if instrument["asset_class"] != "etf"
+            and instrument["symbol"] in mapped
+            and instrument["symbol"] not in {row["symbol"] for row in all_rows}
         ]
         status = "partial" if errors or unmapped or no_fact_symbols else "succeeded"
         ingestion_run.finish(
@@ -196,9 +202,10 @@ def run(
             ) or None,
             summary={
                 "source": SOURCE_ID,
-                "mapped_symbols": len(instruments) - len(unmapped),
+                "mapped_symbols": len(instruments) - len(unmapped) - len(not_applicable),
                 "symbols_with_facts": symbols_with_facts,
                 "unmapped_symbols": unmapped[:100],
+                "not_applicable_symbols": not_applicable[:100],
                 "no_fact_symbols": no_fact_symbols[:100],
                 "failed_symbols": len(errors),
                 "filing_vintages": True,
@@ -217,11 +224,12 @@ def run(
         "requested_symbols": len(instruments),
         "coverage": {
             "catalog_symbols": len(instruments),
-            "mapped_symbols": len(instruments) - len(unmapped),
+            "mapped_symbols": len(instruments) - len(unmapped) - len(not_applicable),
             "symbols_with_facts": len({row["symbol"] for row in all_rows}),
             "stored_rows": stored,
         },
         "unmapped_symbols": unmapped[:100],
+        "not_applicable_symbols": not_applicable[:100],
         "errors": errors,
         "next_job": "market-publish-ticker-decisions",
     }
