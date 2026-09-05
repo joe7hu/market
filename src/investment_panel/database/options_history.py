@@ -416,7 +416,7 @@ class OptionHistoryRepository:
         if snapshot_id is None:
             return {"snapshot_id": None, "smiles": [], "term_structure": [], "history": [], "history_state": "collecting"}
         rows, _ = self._chain_rows(
-            snapshot_id, expiration=expiration, offset=0, limit=5_000, include_evidence=False
+            snapshot_id, expiration=expiration, offset=0, limit=50_000, include_evidence=False
         )
         smiles: list[dict[str, Any]] = []
         for expiry, kind in sorted({(row["expiration"], row["option_type"]) for row in rows}):
