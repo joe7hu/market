@@ -347,7 +347,10 @@ def test_joint_optimizer_conserves_multiple_trim_sources_for_one_increase() -> N
     assert funded.disposition == "selected"
     assert sum(funded.trace["funding_sources"].values()) == pytest.approx(funded.funding_amount)
     assert funded.funding_sources == funded.trace["funding_sources"]
-    assert funded.funding_source == "CASH:cash:1"
+    assert funded.funding_source == "MULTI_SOURCE"
+    assert set(funded.funding_sources) == {
+        "CASH:cash:1", "TRIM:broker-position:a", "TRIM:broker-position:b",
+    }
 
 
 def test_allocator_persists_covariance_marginal_risk_not_weight_times_volatility() -> None:

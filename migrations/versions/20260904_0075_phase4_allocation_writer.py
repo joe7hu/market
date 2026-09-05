@@ -236,7 +236,73 @@ def downgrade() -> None:
         DROP FUNCTION IF EXISTS analysis.phase4_allocation_signing_key();
         DROP TABLE IF EXISTS analysis.phase4_allocation_signing_secret;
         ALTER TABLE analysis.portfolio_allocation_item DROP COLUMN IF EXISTS funding_sources;
+        ALTER TABLE analysis.portfolio_allocation_item
+          ADD CONSTRAINT phase4_allocation_item_funding_source_shape
+          CHECK (ticker = 'CASH' OR disposition <> 'selected'
+                 OR (funding_source IS NOT NULL AND (funding_source LIKE 'CASH:%' OR funding_source LIKE 'TRIM:%'))),
+          ADD CONSTRAINT phase4_allocation_item_funding_amount_required
+          CHECK (ticker = 'CASH' OR disposition <> 'selected' OR (funding_amount IS NOT NULL AND funding_amount > 0));
+
+        CREATE OR REPLACE FUNCTION analysis.enforce_phase4_review_snapshot_guard()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            IF coalesce(NEW.metadata->>'authority', '') <> 'postgresql'
+               OR coalesce(NEW.metadata->>'authority_snapshot_id', '') = ''
+               OR jsonb_typeof(NEW.metadata->'source_hashes') IS DISTINCT FROM 'array'
+               OR jsonb_array_length(NEW.metadata->'source_hashes') = 0
+               OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(NEW.metadata->'source_hashes') hash
+                          WHERE hash !~ '^[0-9a-f]{64}$' OR hash = repeat('0', 64)) THEN
+                RAISE EXCEPTION 'Phase 4 allocation requires PostgreSQL authority evidence';
+            END IF;
+            IF NEW.status <> 'cash_only' AND NOT EXISTS (
+                SELECT 1 FROM raw.broker_account_snapshot account
+                WHERE ('broker-account:' || account.id::text) = NEW.metadata->>'authority_snapshot_id'
+                  AND account.observed_at <= NEW.input_cutoff
+            ) THEN
+                RAISE EXCEPTION 'Phase 4 allocation authority is not persisted';
+            END IF;
+            NEW.content_hash := analysis.phase4_content_digest(jsonb_build_object(
+                'allocation_id', NEW.allocation_id, 'as_of', analysis.phase4_canonical_timestamp(NEW.as_of),
+                'input_cutoff', analysis.phase4_canonical_timestamp(NEW.input_cutoff), 'status', NEW.status,
+                'cash_hurdle', NEW.cash_hurdle, 'forecast_ids', NEW.forecast_ids,
+                'action_ids', NEW.action_ids, 'strategy_registry_ids', NEW.strategy_registry_ids,
+                'metadata', NEW.metadata));
+            RETURN NEW;
+        END;
+        $$;
+
+        CREATE OR REPLACE FUNCTION analysis.enforce_phase4_execution_snapshot_guard()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE expected_cutoff TIMESTAMPTZ;
+        BEGIN
+            SELECT input_cutoff INTO expected_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id;
+            IF expected_cutoff IS NULL OR NEW.input_cutoff < expected_cutoff THEN
+                RAISE EXCEPTION 'Phase 4 execution snapshot cutoff is not bounded by allocation';
+            END IF;
+            IF NEW.calibration_status = 'calibrated' AND (
+                NEW.sample_count <= 0 OR jsonb_typeof(NEW.metadata->'paper_observation_ids') IS DISTINCT FROM 'array'
+                OR jsonb_array_length(NEW.metadata->'paper_observation_ids') <> NEW.sample_count
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements_text(NEW.metadata->'paper_observation_ids') id
+                    JOIN app.paper_execution_observation observation ON observation.paper_execution_observation_id = id
+                    JOIN analysis.portfolio_allocation_item item ON item.allocation_item_id = observation.allocation_item_id
+                    JOIN app.paper_order paper ON paper.id = observation.paper_order_id
+                    WHERE (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot prior
+                           WHERE prior.allocation_id = item.allocation_id) > observation.available_at
+                       OR observation.available_at > NEW.input_cutoff
+                       OR observation.observed_at IS DISTINCT FROM paper.filled_at OR observation.available_at IS DISTINCT FROM paper.fill_evidence_at
+                       OR observation.filled_quantity <= 0 OR observation.fill_price IS NULL OR paper.submitted_at IS NULL
+                       OR paper.filled_at IS NULL OR paper.fill_evidence_at IS NULL OR paper.execution_quote IS NULL
+                       OR paper.entry_fees IS NULL OR paper.contract_multiplier IS NULL OR paper.actual_fill_price IS NULL
+                       OR paper.status NOT IN ('open', 'entered', 'partial_exited', 'exited', 'closed', 'invalidated')
+                )
+            ) THEN RAISE EXCEPTION 'Phase 4 calibrated snapshot requires matching persisted fills'; END IF;
+            RETURN NEW;
+        END;
+        $$;
         GRANT EXECUTE ON FUNCTION analysis.insert_phase4_allocation_snapshot(JSONB),
           analysis.insert_phase4_allocation_item(JSONB), analysis.insert_phase4_paper_execution_observation(JSONB),
-          analysis.insert_phase4_book_attribution(JSONB) TO market_app;
+          analysis.insert_phase4_book_attribution(JSONB),
+          analysis.insert_phase4_execution(TEXT,TEXT,TEXT,TEXT,INTEGER,DOUBLE PRECISION,DOUBLE PRECISION,DOUBLE PRECISION,DOUBLE PRECISION,TIMESTAMPTZ,TEXT,TEXT,JSONB)
+          TO market_app;
     """)

@@ -619,6 +619,7 @@ class PortfolioActionDTO(BaseModel):
     current_mrc: float | None = None
     proposed_mrc: float | None = None
     funding_source: str | None = None
+    funding_sources: dict[str, float] = Field(default_factory=dict)
     sizing_trace: dict[str, Any]
 
     @model_validator(mode="after")
@@ -700,6 +701,7 @@ def integrated_portfolio_dto(
             current_mrc=(trace.get("current_marginal_risk_contribution") if isinstance(trace.get("current_marginal_risk_contribution"), (int, float)) else None),
             proposed_mrc=(trace.get("proposed_marginal_risk_contribution") if isinstance(trace.get("proposed_marginal_risk_contribution"), (int, float)) else None),
             funding_source=item.funding_source,
+            funding_sources=dict(item.funding_sources),
             sizing_trace=trace,
         ))
     return PortfolioIntegratedDTO(
@@ -891,12 +893,17 @@ def _compute_portfolio_allocation(
     fundable = [(candidate, utility, trace) for candidate, utility, trace in eligible if utility > cash_hurdle]
     for candidate, utility, trace in eligible:
         if utility <= cash_hurdle and candidate.current_weight > 0 and candidate.trim_position_id and (candidate.trim_available or 0) > 0:
+            trim_release = min(
+                float(candidate.trim_available),
+                candidate.current_weight * float(nav),
+            ) if nav is not None and nav > 0 else float(candidate.trim_available)
             ranked.append(PortfolioAllocationItem(
                 allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'disposition': 'rollback', 'trim': candidate.trim_position_id})}",
                 candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
                 action_id=candidate.action_id, rank_id=candidate.rank_id, hypothesis_id=candidate.hypothesis_id, disposition="rollback",
                 target_weight=0, current_weight=candidate.current_weight, marginal_book_utility=utility,
-                funding_source=f"TRIM:{candidate.trim_position_id}", funding_amount=candidate.trim_available,
+                funding_source=f"TRIM:{candidate.trim_position_id}", funding_amount=trim_release,
+                funding_sources={f"TRIM:{candidate.trim_position_id}": trim_release},
                 blockers=("below_cash_hurdle",), trace=_json({**trace, "next_action": "Review the holding for exit and release its persisted trim value."}),
             ))
         elif utility <= cash_hurdle and candidate.current_weight <= 0:
@@ -945,23 +952,94 @@ def _compute_portfolio_allocation(
     # position as a trim source.  Held names can hold or reduce only.
     caps = [min(cap, candidate.current_weight) if candidate.current_weight > 0 else cap for cap, (candidate, _, _) in zip(caps, fundable)]
     limits = [(0.0, max(0.0, min(1.0, cap))) for cap in caps]
-    source_limits: dict[str, float] = {}
-    released_trim_funding = sum(
-        min(candidate.current_weight * (nav if nav is not None else 1.0), float(candidate.trim_available or 0.0))
-        for candidate, _, _ in fundable
-        if candidate.current_weight > 0 and candidate.trim_position_id
-    )
-    for candidate, _, _ in fundable:
-        key = candidate.cash_source_id if candidate.current_weight <= 0 else None
-        amount = candidate.cash_available if candidate.current_weight <= 0 else None
-        if key and amount is not None:
-            source_limits.setdefault(key, amount)
     policy = constraints if authoritative else None
-    def _net_funding(weights: Any) -> float:
-        scale = nav if nav is not None else 1.0
-        return sum((float(weight) - candidate.current_weight) * scale for weight, (candidate, _, _) in zip(weights, fundable))
-    constraints = [{"type": "ineq", "fun": lambda weights: 1.0 - existing_weight - sum(weights)}]
-    constraints.append({"type": "ineq", "fun": lambda weights: (book.cash_available if authoritative and book.cash_available is not None else 0.0) + released_trim_funding - _net_funding(weights)}) if authoritative else None
+    n_fundable = len(fundable)
+
+    # Funding is part of the optimizer state.  The flow variables below are
+    # source-to-increase allocations, while each trim source's capacity is a
+    # function of the same joint weight vector.  This keeps source release and
+    # source consumption conserved in one solution instead of assigning a
+    # scalar budget with a later first-fit pass.
+    source_limits: dict[str, float] = {}
+    source_max: dict[str, float] = {}
+    fixed_releases: dict[str, float] = {}
+    trim_indices: dict[str, list[tuple[int, float]]] = {}
+    increase_indices = [index for index, (candidate, _, _) in enumerate(fundable) if candidate.current_weight <= 0]
+    scale = float(nav if nav is not None else 1.0)
+    if authoritative or fundable:
+        if authoritative and book.cash_source_id and book.cash_available is not None:
+            cash_source = f"CASH:{book.cash_source_id}"
+            source_limits[cash_source] = float(book.cash_available)
+            source_max[cash_source] = float(book.cash_available)
+        if not authoritative:
+            for candidate, _, _ in fundable:
+                if candidate.current_weight <= 0 and candidate.cash_source_id and candidate.cash_available is not None:
+                    source = f"CASH:{candidate.cash_source_id}"
+                    source_limits[source] = max(source_limits.get(source, 0.0), float(candidate.cash_available))
+                    source_max[source] = max(source_max.get(source, 0.0), float(candidate.cash_available))
+        for candidate, utility, _ in eligible:
+            if utility > cash_hurdle or candidate.current_weight <= 0 or not candidate.trim_position_id:
+                continue
+            release = min(candidate.current_weight * scale, float(candidate.trim_available or 0.0))
+            if release <= 0:
+                continue
+            source = f"TRIM:{candidate.trim_position_id}"
+            fixed_releases[source] = max(fixed_releases.get(source, 0.0), release)
+            source_max[source] = max(source_max.get(source, 0.0), release)
+        for index, (candidate, _, _) in enumerate(fundable):
+            if candidate.current_weight <= 0 or not candidate.trim_position_id or candidate.trim_available is None:
+                continue
+            source = f"TRIM:{candidate.trim_position_id}"
+            available = min(candidate.current_weight * scale, float(candidate.trim_available))
+            if available <= 0:
+                continue
+            # One persisted position is one source.  Duplicate candidate rows
+            # cannot mint duplicate capacity; the source is bounded by the
+            # largest authoritative position value observed for that ID.
+            source_max[source] = max(source_max.get(source, 0.0), available)
+            trim_indices.setdefault(source, []).append((index, available))
+
+    def _weights(vector: Any) -> list[float]:
+        return [float(value) for value in vector[:n_fundable]]
+
+    flow_pairs = [
+        (candidate_index, source)
+        for candidate_index in increase_indices
+        for source in sorted(source_max)
+    ] if source_max else []
+    flow_offset = n_fundable
+
+    def _flow(vector: Any, candidate_index: int, source: str) -> float:
+        try:
+            return max(0.0, float(vector[flow_offset + flow_pairs.index((candidate_index, source))]))
+        except ValueError:
+            return 0.0
+
+    def _source_capacity(vector: Any, source: str) -> float:
+        if not source_max:
+            return 0.0
+        weights = _weights(vector)
+        released = fixed_releases.get(source, 0.0)
+        for candidate_index, available in trim_indices.get(source, ()):
+            candidate = fundable[candidate_index][0]
+            released += min(max(0.0, candidate.current_weight - weights[candidate_index]) * scale, available)
+        return min(source_max.get(source, 0.0), released + source_limits.get(source, 0.0)) / scale
+
+    constraints = [{"type": "ineq", "fun": lambda vector: 1.0 - existing_weight - sum(_weights(vector))}]
+    if source_max:
+        for source in sorted(source_max):
+            constraints.append({
+                "type": "ineq",
+                "fun": lambda vector, source=source: _source_capacity(vector, source)
+                - sum(_flow(vector, candidate_index, source) for candidate_index in increase_indices),
+            })
+        for candidate_index in increase_indices:
+            constraints.append({
+                "type": "eq",
+                "fun": lambda vector, candidate_index=candidate_index: sum(
+                    _flow(vector, candidate_index, source) for source in sorted(source_max)
+                ) - _weights(vector)[candidate_index],
+            })
     if authoritative:
         covariance_values = [float((candidate.covariance or {}).get(candidate.ticker, 0.0)) for candidate, _, _ in fundable]
         if any(not isfinite(value) or value < 0 for value in covariance_values):
@@ -972,36 +1050,25 @@ def _compute_portfolio_allocation(
         ):
             return cash_only_allocation(as_of, cash_hurdle, "covariance_not_symmetric")
         for ticker in {candidate.ticker.upper() for candidate, _, _ in fundable}:
-            constraints.append({"type": "ineq", "fun": lambda weights, ticker=ticker: position_limit - sum(float(weight) for weight, (candidate, _, _) in zip(weights, fundable) if candidate.ticker.upper() == ticker)})
+            constraints.append({"type": "ineq", "fun": lambda vector, ticker=ticker: position_limit - sum(float(weight) for weight, (candidate, _, _) in zip(_weights(vector), fundable) if candidate.ticker.upper() == ticker)})
         for label, limits_map, attribute in (("sector", policy.sector_limits, "sector"), ("asset_class", policy.asset_class_limits, "asset_class")):
             for key, limit in limits_map.items():
-                constraints.append({"type": "ineq", "fun": lambda weights, key=key, limit=limit, attribute=attribute: limit - sum(weight for _, weight, exposure in existing_exposures if exposure.get(attribute) == key) - sum(float(weight) for weight, (candidate, _, _) in zip(weights, fundable) if getattr(candidate, attribute) == key)})
+                constraints.append({"type": "ineq", "fun": lambda vector, key=key, limit=limit, attribute=attribute: limit - sum(weight for _, weight, exposure in existing_exposures if exposure.get(attribute) == key) - sum(float(weight) for weight, (candidate, _, _) in zip(_weights(vector), fundable) if getattr(candidate, attribute) == key)})
         for limits_map, attribute in ((policy.factor_limits, "factor_exposure"), (policy.greek_limits, "greeks")):
             for key, limit in limits_map.items():
-                constraints.append({"type": "ineq", "fun": lambda weights, key=key, limit=limit, attribute=attribute: limit - sum(abs(float(weight) * float(exposure.get(attribute, {}).get(key, 0))) for _, weight, exposure in existing_exposures) - sum(abs(float(weight) * float((getattr(candidate, attribute) or {}).get(key, 0))) for weight, (candidate, _, _) in zip(weights, fundable))})
+                constraints.append({"type": "ineq", "fun": lambda vector, key=key, limit=limit, attribute=attribute: limit - sum(abs(float(weight) * float(exposure.get(attribute, {}).get(key, 0))) for _, weight, exposure in existing_exposures) - sum(abs(float(weight) * float((getattr(candidate, attribute) or {}).get(key, 0))) for weight, (candidate, _, _) in zip(_weights(vector), fundable))})
         risk_limit = min(sum(candidate.risk_budget for candidate, _, _ in fundable), policy.aggregate_loss_limit or float("inf"))
-        constraints.append({"type": "ineq", "fun": lambda weights: risk_limit - sum(float(left) * float(right) * float((candidate.covariance or {}).get(other.ticker, 0)) for left, (candidate, _, _), right, (other, _, _) in ((left, first, right, second) for left, first in zip(weights, fundable) for right, second in zip(weights, fundable))) ** 0.5})
-    result = minimize(lambda weights: -sum(float(weight) * (utility if utility > cash_hurdle else -abs(utility)) for weight, (_, utility, _) in zip(weights, fundable)), [lower for lower, _ in limits], bounds=limits, constraints=constraints, method="SLSQP") if fundable else None
-    weights = list(result.x) if result is not None and result.success else [0.0] * len(fundable)
-    # Funding is a conserved joint resource.  The optimizer limits the total;
-    # this deterministic projection records every source used by every increase.
-    released_sources: dict[str, float] = {}
-    for weight, (candidate, _, _) in zip(weights, fundable):
-        released = max(0.0, candidate.current_weight - float(weight)) * (nav if nav is not None else 1.0)
-        if released <= 1e-9:
-            continue
-        source = f"TRIM:{candidate.trim_position_id}" if candidate.trim_position_id else ""
-        if not source or source in released_sources or released > float(candidate.trim_available or 0.0) + 1e-9:
-            weights = [0.0] * len(fundable)
-            released_sources = {}
-            break
-        released_sources[source] = released
-    funding_remaining = {
-        **{f"CASH:{key}": float(value) for key, value in source_limits.items()},
-        **released_sources,
-    }
-    for weight, (candidate, utility, trace) in zip(weights, fundable):
-        target = max(0.0, float(weight))
+        constraints.append({"type": "ineq", "fun": lambda vector: risk_limit - sum(float(left) * float(right) * float((candidate.covariance or {}).get(other.ticker, 0)) for left, (candidate, _, _), right, (other, _, _) in ((left, first, right, second) for left, first in zip(_weights(vector), fundable) for right, second in zip(_weights(vector), fundable))) ** 0.5})
+    bounds = limits + ([(0.0, None)] * len(flow_pairs) if source_max else [])
+    initial = [lower for lower, _ in limits] + ([0.0] * len(flow_pairs) if source_max else [])
+    result = minimize(
+        lambda vector: -sum(float(weight) * (utility if utility > cash_hurdle else -abs(utility)) for weight, (_, utility, _) in zip(_weights(vector), fundable)),
+        initial, bounds=bounds, constraints=constraints, method="SLSQP",
+    ) if fundable else None
+    vector = list(result.x) if result is not None and result.success else [0.0] * len(bounds)
+    weights = _weights(vector)
+    for candidate_index, (candidate, utility, trace) in enumerate(fundable):
+        target = max(0.0, float(weights[candidate_index]))
         if target <= 1e-8:
             ranked.append(_rejection(candidate, ("joint_optimizer_ranked_out",)))
             continue
@@ -1011,24 +1078,23 @@ def _compute_portfolio_allocation(
         funding_source = None
         funding_sources: dict[str, float] = {}
         if increased:
-            remaining_funding = funding_amount
-            for source, available in funding_remaining.items():
-                used = min(available, remaining_funding)
-                if used <= 1e-9:
-                    continue
-                funding_sources[source] = used
-                funding_remaining[source] = available - used
-                remaining_funding -= used
-                if remaining_funding <= 1e-9:
-                    break
-            if remaining_funding > 1e-9:
+            solved_flows = {
+                source: _flow(vector, candidate_index, source) * scale
+                for source in sorted(source_max)
+                if _flow(vector, candidate_index, source) > 1e-8
+            }
+            flow_total = sum(solved_flows.values())
+            if flow_total <= 0 or abs(flow_total - funding_amount) > max(1e-6, funding_amount * 1e-7):
                 ranked.append(_rejection(candidate, ("funding_source_conservation_failed",)))
                 continue
+            # Only normalize solver round-off.  The source proportions come
+            # from the joint solution, not from a first-fit assignment.
+            funding_sources = {source: amount * funding_amount / flow_total for source, amount in solved_flows.items()}
             funding_source = next(iter(funding_sources)) if len(funding_sources) == 1 else "MULTI_SOURCE"
         elif decreased:
             funding_source = f"TRIM:{candidate.trim_position_id}" if candidate.trim_position_id else "TRIM:book"
             funding_sources = {funding_source: funding_amount}
-        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[fundable.index((candidate, utility, trace))], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": target - candidate.current_weight, "funding_amount": funding_amount, "funding_sources": funding_sources, "trim_position_id": candidate.trim_position_id, "released_trim_funding": funding_amount if decreased else 0.0}
+        trace = {**trace, "optimizer": "SLSQP", "constraint_weight": caps[candidate_index], "uncertainty_haircut": max(0.0, min(1.0, 1.0 - candidate.uncertainty / max(abs(candidate.expected_return), 1e-12))), "weight_delta": target - candidate.current_weight, "funding_amount": funding_amount, "funding_sources": funding_sources, "trim_position_id": candidate.trim_position_id, "released_trim_funding": funding_amount if decreased else 0.0}
         ranked.append(PortfolioAllocationItem(
             allocation_item_id=f"allocation-item:{_hash({'candidate_id': candidate.candidate_id, 'target_weight': target, 'trace': trace})}",
             candidate_id=candidate.candidate_id, ticker=candidate.ticker, strategy_forecast_id=candidate.strategy_forecast_id,
@@ -1093,8 +1159,9 @@ def _compute_portfolio_allocation(
     }) for item in updated]
     ranked.sort(key=lambda item: (0 if item.ticker == "CASH" else 1, item.disposition, item.candidate_id))
     selected = [item for item in ranked if item.disposition == "selected" and item.ticker != "CASH"]
-    forecast_ids = tuple(sorted(item.strategy_forecast_id for item in selected if item.strategy_forecast_id))
-    action_ids = tuple(sorted(item.action_id for item in selected if item.action_id))
+    persisted_items = [item for item in ranked if item.disposition in {"selected", "rollback"} and item.ticker != "CASH"]
+    forecast_ids = tuple(sorted(item.strategy_forecast_id for item in persisted_items if item.strategy_forecast_id))
+    action_ids = tuple(sorted(item.action_id for item in persisted_items if item.action_id))
     registry_ids = tuple(sorted(candidate.strategy_registry_id for candidate, _, _ in eligible if candidate.strategy_registry_id))
     allocation_payload = {"as_of": as_of, "cash_hurdle": cash_hurdle, "items": ranked, "forecast_ids": forecast_ids, "action_ids": action_ids, "strategy_registry_ids": registry_ids, "metadata": allocator_metadata}
     return PortfolioAllocationSnapshot(
@@ -1575,19 +1642,35 @@ def build_execution_model_snapshot(
     input_cutoff: datetime,
     observations: list[PaperExecutionObservation],
 ) -> ExecutionModelSnapshot:
+    def metadata_timestamp(item: PaperExecutionObservation, name: str) -> datetime | None:
+        value = item.metadata.get(name)
+        if isinstance(value, datetime):
+            return value if value.tzinfo is not None and value.utcoffset() is not None else None
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+        return None
+
     genuine = [
         item for item in observations
-        if item.filled_quantity > 0 and item.fill_price is not None
+        if item.status in {"partial", "filled", "partial_exited", "exited"}
+        and item.filled_quantity > 0 and item.fill_price is not None
         and item.available_at.astimezone(UTC) <= input_cutoff.astimezone(UTC)
         and item.observed_at.astimezone(UTC) < item.available_at.astimezone(UTC)
         and isinstance(item.metadata.get("paper_order_id"), str)
-        and isinstance(item.metadata.get("submitted_at"), datetime)
-        and isinstance(item.metadata.get("filled_at"), datetime)
+        and metadata_timestamp(item, "submitted_at") is not None
+        and metadata_timestamp(item, "filled_at") is not None
     ]
-    latency_values = [
-        (item.metadata["filled_at"].astimezone(UTC) - item.metadata["submitted_at"].astimezone(UTC)).total_seconds() * 1000
-        for item in genuine
-    ]
+    latency_values: list[float] = []
+    for item in genuine:
+        submitted_at = metadata_timestamp(item, "submitted_at")
+        filled_at = metadata_timestamp(item, "filled_at")
+        if submitted_at is None or filled_at is None:
+            continue
+        latency_values.append((filled_at.astimezone(UTC) - submitted_at.astimezone(UTC)).total_seconds() * 1000)
     impact_values = [
         abs(item.fill_price - item.requested_price) / item.requested_price * 10_000
         for item in genuine if item.fill_price is not None and item.requested_price not in (None, 0)
@@ -1595,7 +1678,10 @@ def build_execution_model_snapshot(
     payload = {
         "allocation_id": allocation_id, "input_cutoff": input_cutoff, "model_version": "paper-telemetry.v1",
         "calibration_status": "calibrated" if genuine else "calibration_pending", "sample_count": len(genuine),
-        "fill_probability": (sum(item.filled_quantity > 0 for item in observations) / len(observations)) if observations else None,
+        # The calibrated sample is the set of persisted genuine fills named in
+        # the model metadata.  A pending observation must not create a caller-
+        # supplied zero fill probability or otherwise calibrate the model.
+        "fill_probability": 1.0 if genuine else None,
         "spread_bps": (sum(item.spread_bps for item in genuine if item.spread_bps is not None) / len([item for item in genuine if item.spread_bps is not None])) if any(item.spread_bps is not None for item in genuine) else None,
         "latency_ms": sum(latency_values) / len(latency_values) if latency_values else None,
         "impact_bps": sum(impact_values) / len(impact_values) if impact_values else None,

@@ -278,7 +278,7 @@ class PortfolioLoopRepository:
             raise ValueError("allocation persistence requires canonical source hashes")
         expected_source_hashes = sorted({str(item.trace.get("source_decision_input_hash") or "")
                                          for item in allocation.items
-                                         if item.disposition == "selected" and item.ticker != "CASH"})
+                                         if item.disposition in {"selected", "rollback"} and item.ticker != "CASH"})
         if expected_source_hashes and sorted(source_hashes) != expected_source_hashes:
             raise ValueError("allocation authority hashes must be issued from its selected PostgreSQL decisions")
         with self.runtime.transaction() as connection:
@@ -339,13 +339,20 @@ class PortfolioLoopRepository:
                    FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = %s""",
                 [allocation.allocation_id],
             ).fetchone()
-            if stored is None or str(stored["input_hash"]).strip() != allocation.allocation_id.split(":", 1)[1] or not str(stored["content_hash"]).strip() or str(stored["content_hash"]).strip() == "0" * 64:
+            expected_snapshot_hash = canonical_content_hash(allocation)
+            if stored is None or str(stored["input_hash"]).strip() != allocation.allocation_id.split(":", 1)[1] or str(stored["content_hash"]).strip() != expected_snapshot_hash:
                 raise ValueError("stored allocation content digest does not match canonical allocation")
             if any(stored[key] != value for key, value in {
                 "as_of": allocation.as_of, "input_cutoff": allocation.input_cutoff,
                 "status": allocation.status, "cash_hurdle": allocation.cash_hurdle,
             }.items()):
                 raise ValueError("immutable allocation replay diverges from PostgreSQL content")
+            if any(stored[key] != list(value) for key, value in {
+                "forecast_ids": allocation.forecast_ids,
+                "action_ids": allocation.action_ids,
+                "strategy_registry_ids": allocation.strategy_registry_ids,
+            }.items()) or stored["metadata"] != allocation.metadata:
+                raise ValueError("immutable allocation authority replay diverges from PostgreSQL content")
             for item in allocation.items:
                 stored_item = connection.execute(
                     """SELECT allocation_id, candidate_id, ticker, strategy_forecast_id,
@@ -958,8 +965,12 @@ class PortfolioLoopRepository:
             "constraint_hash": bundle.constraints.constraint_hash,
             "execution_status": bundle.execution.calibration_status,
             "execution_model_snapshot_id": bundle.execution.snapshot_id,
-            "source_hashes": sorted({candidate.source_decision_input_hash for candidate in bundle.candidates
-                                     if candidate.source_decision_input_hash} or {bundle.authority_content_hash}),
+            "source_hashes": sorted({str(item.trace.get("source_decision_input_hash"))
+                                      for item in allocation.items
+                                      if item.disposition in {"selected", "rollback"}
+                                      and item.ticker != "CASH"
+                                      and item.trace.get("source_decision_input_hash")}
+                                    or {bundle.authority_content_hash}),
         }
         allocation = allocation.model_copy(update={"metadata": authority_metadata})
         allocation = allocation.model_copy(update={"allocation_id": allocation_id_for_snapshot(allocation)})
@@ -1177,10 +1188,15 @@ class PortfolioLoopRepository:
                     [observation.allocation_item_id],
             ).fetchall()
             if rows:
-                calibration_cutoff = max(PaperExecutionObservation.model_validate(dict(row)).available_at for row in rows)
+                typed_rows = [PaperExecutionObservation.model_validate(dict(row)) for row in rows]
+                filled_rows = [row for row in typed_rows if row.filled_quantity > 0 and row.fill_price is not None]
+                calibration_cutoff = max(
+                    (row.available_at for row in filled_rows),
+                    default=max(row.available_at for row in typed_rows),
+                )
                 model = build_execution_model_snapshot(
                         allocation["allocation_id"], calibration_cutoff,
-                        [PaperExecutionObservation.model_validate(dict(row)) for row in rows],
+                        typed_rows,
                 )
                 self.store_execution_model(connection, model)
         return observation.paper_execution_observation_id

@@ -9478,6 +9478,13 @@
             ],
             "title": "Funding Source"
           },
+          "funding_sources": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Funding Sources",
+            "type": "object"
+          },
           "invalidation": {
             "anyOf": [
               {

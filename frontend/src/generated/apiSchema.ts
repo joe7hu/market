@@ -4529,6 +4529,10 @@ export interface components {
             } | null;
             /** Funding Source */
             funding_source?: string | null;
+            /** Funding Sources */
+            funding_sources?: {
+                [key: string]: number;
+            };
             /** Invalidation */
             invalidation?: {
                 [key: string]: unknown;

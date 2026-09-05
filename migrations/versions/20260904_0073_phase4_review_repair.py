@@ -70,11 +70,13 @@ def upgrade() -> None:
                     RAISE EXCEPTION 'Phase 4 cash funding is not persisted';
                 END IF;
                 IF NEW.funding_source LIKE 'TRIM:broker-position:%' AND NOT EXISTS (
-                    SELECT 1 FROM raw.broker_position_snapshot position
+                    SELECT 1
+                    FROM raw.broker_position_snapshot position
+                    JOIN raw.broker_account_snapshot account ON account.id = position.account_snapshot_id
                     WHERE position.id = split_part(NEW.funding_source, ':', 3)::BIGINT
                       AND position.quantity > 0
                       AND abs(coalesce(position.market_value, 0)) >= NEW.funding_amount
-                      AND position.observed_at <= (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id)
+                      AND account.observed_at <= (SELECT input_cutoff FROM analysis.portfolio_allocation_snapshot WHERE allocation_id = NEW.allocation_id)
                 ) THEN
                     RAISE EXCEPTION 'Phase 4 trim funding is not persisted';
                 END IF;

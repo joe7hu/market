@@ -87,5 +87,4 @@ def downgrade() -> None:
       DROP FUNCTION IF EXISTS analysis.phase4_telemetry_authorized(TEXT,JSONB,TEXT);
       DROP FUNCTION IF EXISTS analysis.phase4_telemetry_authorization_payload(TEXT,JSONB);
       GRANT EXECUTE ON FUNCTION analysis.insert_phase4_execution(TEXT,TEXT,TEXT,TEXT,INTEGER,DOUBLE PRECISION,DOUBLE PRECISION,DOUBLE PRECISION,DOUBLE PRECISION,TIMESTAMPTZ,TEXT,TEXT,JSONB) TO market_app;
-      GRANT EXECUTE ON FUNCTION analysis.insert_phase4_paper_execution_observation(JSONB), analysis.insert_phase4_book_attribution(JSONB) TO market_app;
     """)
