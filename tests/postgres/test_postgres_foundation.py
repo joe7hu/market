@@ -539,6 +539,14 @@ def test_runtime_requires_expected_schema_revision(migrated_postgres_dsn: str) -
         runtime.close()
 
 
+def test_panel_metadata_exposes_actual_and_expected_schema_revisions(migrated_postgres_dsn: str) -> None:
+    panel_data = load_panel_data(typed_config(migrated_postgres_dsn), table_names=("source_health",))
+
+    assert panel_data.status.ready is True
+    assert panel_data.metadata["schema_revision"] == HEAD_REVISION
+    assert panel_data.metadata["expected_schema_revision"] == HEAD_REVISION
+
+
 def test_panel_readiness_rejects_deployed_schema_behind_source_head(migrated_postgres_dsn: str) -> None:
     downgrade_database(migrated_postgres_dsn, "20260904_0077")
     try:

@@ -2030,6 +2030,7 @@ def load_postgres_tables(
     metadata = {
         "database": "postgresql",
         "schema_revision": actual_schema_revision,
+        "expected_schema_revision": HEAD_REVISION,
         "loaded_at": datetime.now(UTC).isoformat(),
         "table_count": len(requested),
         "unavailable_models": unavailable,
