@@ -416,7 +416,8 @@ class OptionHistoryRepository:
         if snapshot_id is None:
             return {"snapshot_id": None, "smiles": [], "term_structure": [], "history": [], "history_state": "collecting"}
         rows, _ = self._chain_rows(
-            snapshot_id, expiration=expiration, offset=0, limit=50_000, include_evidence=False
+            snapshot_id, expiration=expiration, offset=0, limit=50_000,
+            include_evidence=False, curve_only=True,
         )
         smiles: list[dict[str, Any]] = []
         for expiry, kind in sorted({(row["expiration"], row["option_type"]) for row in rows}):
@@ -511,7 +512,7 @@ class OptionHistoryRepository:
     def _chain_rows(
         self, snapshot_id: int, *, expiration: date | None = None, option_type: str | None = None,
         min_moneyness: float | None = None, max_moneyness: float | None = None, offset: int, limit: int,
-        include_evidence: bool = True,
+        include_evidence: bool = True, curve_only: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         filters = ["quote.snapshot_id = %s", "quote.capture_generation_id = snapshot.latest_complete_generation_id"]
         parameters: list[Any] = [snapshot_id]
@@ -560,7 +561,13 @@ class OptionHistoryRepository:
             JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
             WHERE {where}
         """
-        select = f"""
+        curve_select = f"""
+            SELECT quote.snapshot_id, contract.expiration, contract.option_type,
+                   greatest(contract.expiration - snapshot.trading_date, 0) AS dte,
+                   {ratio} AS log_moneyness, contract.strike::double precision AS strike,
+                   quote.provider_iv, quote.provider_delta
+        """
+        select = curve_select if curve_only else f"""
             SELECT quote.snapshot_id, snapshot.history_symbol AS symbol, snapshot.slot_at, contract.id AS contract_id,
                    contract.expiration, contract.strike::double precision AS strike, contract.option_type,
                    greatest(contract.expiration - snapshot.trading_date, 0) AS dte,
@@ -575,12 +582,14 @@ class OptionHistoryRepository:
                    quote.underlying_observed_at, quote.underlying_available_at
         """
         with self.runtime.read() as connection:
-            count = connection.execute(f"SELECT count(*) AS count {count_base}", parameters).fetchone()["count"]
+            count = None if curve_only else connection.execute(
+                f"SELECT count(*) AS count {count_base}", parameters
+            ).fetchone()["count"]
             rows = connection.execute(
                 f"{select} {base} ORDER BY contract.expiration, contract.option_type, contract.strike LIMIT %s OFFSET %s",
                 [*parameters, limit, offset],
             ).fetchall()
-        return [dict(row) for row in rows], int(count)
+        return [dict(row) for row in rows], int(count if count is not None else len(rows))
 
     def _insert_anomalies(
         self, connection: Any, snapshot_id: int, slot_at: datetime, rows: list[dict[str, Any]], summaries: list[dict[str, Any]]
