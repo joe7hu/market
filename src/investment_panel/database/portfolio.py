@@ -396,20 +396,52 @@ class PortfolioLoopRepository:
                    WHERE observed_at <= %s
                    ORDER BY observed_at DESC, id DESC LIMIT 1""", [as_of]
             ).fetchone()
-            positions = connection.execute(
-                """SELECT position.instrument_id, position.id, position.market_value,
-                          position.quantity, instrument.symbol, instrument.sector,
-                          instrument.asset_class
-                   FROM raw.broker_position_snapshot position
-                   JOIN raw.broker_account_snapshot account
-                     ON account.id = position.account_snapshot_id
-                   JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
-                   WHERE account.observed_at <= %s
-                     AND account.id = (
-                         SELECT id FROM raw.broker_account_snapshot
-                         WHERE observed_at <= %s ORDER BY observed_at DESC, id DESC LIMIT 1
-                     )""", [as_of, as_of]
-            ).fetchall()
+            account_source_kind = "broker"
+            if account is None:
+                account = connection.execute(
+                    """
+                    SELECT id, 'manual-ledger' AS source_id, account_key,
+                           net_liquidation, cash_balance, effective_at AS observed_at,
+                           reconciliation_state, ledger_book_identity
+                    FROM app.manual_account_snapshot
+                    WHERE account_key = 'manual' AND effective_at <= %s
+                    ORDER BY effective_at DESC, id DESC LIMIT 1
+                    """, [as_of]
+                ).fetchone()
+                account_source_kind = "manual" if account else "broker"
+            if account_source_kind == "manual":
+                positions = connection.execute(
+                    """
+                    SELECT position.instrument_id, position.instrument_id AS id,
+                           position.quantity,
+                           position.quantity * quote.price AS market_value,
+                           instrument.symbol, instrument.sector, instrument.asset_class
+                    FROM app.portfolio_position position
+                    JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
+                    LEFT JOIN LATERAL (
+                      SELECT price FROM raw.current_price_at(%s, ARRAY[position.instrument_id]::bigint[])
+                      LIMIT 1
+                    ) quote ON true
+                    WHERE position.quantity > 0
+                    """, [as_of]
+                ).fetchall()
+            else:
+                positions = connection.execute(
+                    """SELECT position.instrument_id, position.id, position.market_value,
+                              position.quantity, instrument.symbol, instrument.sector,
+                              instrument.asset_class
+                       FROM raw.broker_position_snapshot position
+                       JOIN raw.broker_account_snapshot account
+                         ON account.id = position.account_snapshot_id
+                       JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
+                       WHERE account.observed_at <= %s
+                         AND account.id = (
+                             SELECT id FROM raw.broker_account_snapshot
+                             WHERE observed_at <= %s ORDER BY observed_at DESC, id DESC LIMIT 1
+                         )""", [as_of, as_of]
+                ).fetchall()
+            account_identity = f"{account_source_kind}-account:{account['id']}" if account else None
+            position_prefix = f"{account_source_kind}-position"
             position_by_ticker = {str(row["symbol"]).upper(): dict(row) for row in positions}
             position_exposures: dict[str, dict[str, Any]] = {}
             for position in positions:
@@ -621,8 +653,8 @@ class PortfolioLoopRepository:
                         evidence_status="blocked", blockers=("risk_evidence_invalid",),
                         current_weight=current_weight,
                         cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
-                        cash_source_id=(f"broker-account:{account['id']}" if account else None),
-                        trim_position_id=(f"broker-position:{position['id']}" if position else None),
+                        cash_source_id=account_identity,
+                        trim_position_id=(f"{position_prefix}:{position['id']}" if position else None),
                         trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
                     ))
                     continue
@@ -647,8 +679,8 @@ class PortfolioLoopRepository:
                         evidence_status="blocked", blockers=("portfolio_impact_lineage_conflict",),
                         current_weight=current_weight,
                         cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
-                        cash_source_id=(f"broker-account:{account['id']}" if account else None),
-                        trim_position_id=(f"broker-position:{position['id']}" if position else None),
+                        cash_source_id=account_identity,
+                        trim_position_id=(f"{position_prefix}:{position['id']}" if position else None),
                         trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
                     ))
                     continue
@@ -697,8 +729,8 @@ class PortfolioLoopRepository:
                     blockers=tuple(plan.blockers),
                     current_weight=current_weight,
                     cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
-                    cash_source_id=(f"broker-account:{account['id']}" if account else None),
-                    trim_position_id=(f"broker-position:{position['id']}" if position else None),
+                    cash_source_id=account_identity,
+                    trim_position_id=(f"{position_prefix}:{position['id']}" if position else None),
                     trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
                 ))
             forecast_keys = [candidate.strategy_forecast_id for candidate in candidates if candidate.strategy_forecast_id]
@@ -829,7 +861,7 @@ class PortfolioLoopRepository:
                 "aggregate_loss_limit": risk_policy.ticker_total_open_loss_pct if risk_policy else None,
                 **joint_limits, "min_liquidity": min_liquidity, "allowed_venues": allowed_venues,
             })
-            authority_snapshot_id = f"broker-account:{account['id']}" if account else "missing"
+            authority_snapshot_id = account_identity or "missing"
             authority_payload = {
                 "authority_snapshot_id": authority_snapshot_id,
                 "input_cutoff": as_of,
@@ -861,7 +893,8 @@ class PortfolioLoopRepository:
                 for candidate in candidates
             )
             complete = bool(
-                account is not None and account["cash_balance"] is not None
+                account is not None and account.get("reconciliation_state", "reconciled") == "reconciled"
+                and account["cash_balance"] is not None
                 and account["net_liquidation"] is not None
                 and cash_hurdle is not None and cash_hurdle > 0
                 and candidates and required_candidates and tape_rows
@@ -873,11 +906,11 @@ class PortfolioLoopRepository:
             input_cutoff=as_of,
             candidates=tuple(candidates),
             book=PortfolioBookEvidence(
-                snapshot_id=(f"broker-account:{account['id']}" if account else None),
+                snapshot_id=account_identity,
                 net_liquidation=(float(account["net_liquidation"]) if account and account["net_liquidation"] is not None else None),
                 cash_available=(float(account["cash_balance"]) if account and account["cash_balance"] is not None else None),
-                cash_source_id=(f"broker-account:{account['id']}" if account else None),
-                positions={ticker: f"broker-position:{row['id']}" for ticker, row in position_by_ticker.items()},
+                cash_source_id=account_identity,
+                positions={ticker: f"{position_prefix}:{row['id']}" for ticker, row in position_by_ticker.items()},
                 position_weights={
                     ticker: max(0.0, float(row["market_value"] or 0) / float(account["net_liquidation"]))
                     for ticker, row in position_by_ticker.items()

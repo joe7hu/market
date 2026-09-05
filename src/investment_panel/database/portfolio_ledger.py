@@ -251,6 +251,11 @@ def record_manual_account_reconciliation(config: AppConfig, fields: dict[str, An
         actual = int(current["reconciliation_version"]) if current else 0
         if expected is not None and int(expected) != actual:
             raise ValueError("manual account changed since preview; preview the reconciliation again")
+        latest = connection.execute(
+            "SELECT max(executed_at) AS executed_at FROM app.portfolio_transaction"
+        ).fetchone()
+        if latest and latest["executed_at"] and normalized["effective_at"] < latest["executed_at"]:
+            raise ValueError("manual account effective_at cannot precede the latest ledger transaction")
         ledger = replay_portfolio_at(config, normalized["effective_at"], connection=connection)
         version = actual + 1
         state = "reconciled" if normalized["net_liquidation"] is not None else "pending"
