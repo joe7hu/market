@@ -272,7 +272,15 @@ def run(
                 result = AdapterResult(source_id=source_id, status=Phase2Status.MISSING_SOURCE, reason=f"{contract.credential_env} is not configured")
             else:
                 try:
-                    body = (payloads or {}).get(source_id) if payloads is not None else payload_for(source_id, fetcher=fetcher or _http_fetch)
+                    if payloads is not None:
+                        body = (payloads or {}).get(source_id)
+                    elif source_id in {"robinhood_history_full", "ibkr_options"}:
+                        body = phase2.option_history_payload(
+                            source_id,
+                            limit=int(os.environ.get("MARKET_PHASE2_OPTION_ROWS", "20000")),
+                        )
+                    else:
+                        body = payload_for(source_id, fetcher=fetcher or _http_fetch)
                     result = adapt_source_payload(source_id, body or {}, env=os.environ)
                 except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
                     result = AdapterResult(source_id=source_id, status=Phase2Status.MISSING_SOURCE, reason=f"provider request failed: {type(exc).__name__}")

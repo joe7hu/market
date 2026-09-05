@@ -174,6 +174,57 @@ class Phase2Repository:
             )
         return sla_id
 
+    def option_history_payload(self, source_id: str, *, limit: int = 20_000) -> dict[str, Any]:
+        """Read the existing PostgreSQL option history seam for Phase 2."""
+
+        storage_source = {"robinhood_history_full": "robinhood", "ibkr_options": "ibkr"}.get(source_id)
+        if storage_source is None:
+            return {}
+        safe_limit = max(1, min(int(limit), 50_000))
+        with self.runtime.read() as connection:
+            snapshot = connection.execute(
+                """SELECT id, observed_at, trading_date, market_session, history_symbol
+                     FROM raw.option_snapshot
+                    WHERE source_id = %s AND collection_profile = 'history_full'
+                      AND capture_state = 'complete'
+                    ORDER BY observed_at DESC, id DESC LIMIT 1""",
+                [storage_source],
+            ).fetchone()
+            if snapshot is None:
+                return {}
+            rows = connection.execute(
+                """SELECT quote.contract_id, instrument.symbol AS underlying,
+                          quote.observed_at, quote.available_at, quote.open_interest,
+                          quote.volume
+                     FROM raw.option_quote quote
+                     JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+                     JOIN catalog.instrument instrument
+                       ON instrument.id = contract.underlying_instrument_id
+                    WHERE quote.snapshot_id = %s
+                    ORDER BY quote.contract_id
+                    LIMIT %s""",
+                [snapshot["id"], safe_limit],
+            ).fetchall()
+        observations = [
+            {
+                "contract_id": str(row["contract_id"]),
+                "underlying": row["underlying"],
+                "observed_at": row["observed_at"].isoformat(),
+                "available_at": row["available_at"].isoformat(),
+                "open_interest": row["open_interest"],
+                "volume": row["volume"],
+            }
+            for row in rows
+        ]
+        return {
+            "observations": observations,
+            "source_version": "postgres-option-history.v1",
+            "snapshot_id": str(snapshot["id"]),
+            "trading_date": snapshot["trading_date"].isoformat(),
+            "market_session": snapshot["market_session"],
+            "history_symbol": snapshot["history_symbol"],
+        }
+
     @staticmethod
     def _assert_or_insert(connection: Any, table: str, key_name: str, key: str, expected: dict[str, Any]) -> None:
         existing = connection.execute(f"SELECT * FROM {table} WHERE {key_name} = %s", [key]).fetchone()

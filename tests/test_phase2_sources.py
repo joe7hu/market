@@ -41,6 +41,15 @@ def test_existing_sec_and_option_seams_are_explicitly_dispatched() -> None:
     assert adapt_source_payload("robinhood_history_full", {}).status is Phase2Status.MISSING_HISTORY
 
 
+def test_option_observation_identity_includes_contract() -> None:
+    now = "2026-09-02T14:00:00+00:00"
+    result = adapt_source_payload("ibkr_options", {"observations": [
+        {"contract_id": "c1", "observed_at": now, "available_at": now, "open_interest": 10, "volume": 2},
+        {"contract_id": "c2", "observed_at": now, "available_at": now, "open_interest": 10, "volume": 2},
+    ]})
+    assert len({item.observation_id for item in result.observations}) == 4
+
+
 def test_fred_requests_each_series_and_maps_provider_vintage_clock() -> None:
     calls: list[str] = []
 
