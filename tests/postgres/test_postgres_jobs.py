@@ -123,6 +123,30 @@ def test_stale_recovery_can_exclude_configured_jobs(job_repository: JobRepositor
     assert states["generic-refresh"]["status"] == "failed"
 
 
+def test_refresh_job_rows_respects_extended_timeout_override(
+    postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upgrade_database(postgres_dsn)
+    repository = JobRepository(DatabaseRuntime(postgres_dsn, min_size=1, max_size=2))
+    runtime = repository.runtime
+    runtime.open()
+    try:
+        job = repository.start("refresh_symbol_decision_outcomes")
+        with closing(psycopg.connect(postgres_dsn)) as connection:
+            connection.execute(
+                "UPDATE ops.job_run SET heartbeat_at = %s WHERE id = %s",
+                [datetime.now(UTC) - timedelta(hours=3, minutes=30), job["id"]],
+            )
+            connection.commit()
+
+        monkeypatch.setenv("MARKET_REFRESH_JOB_TIMEOUT_REFRESH_SYMBOL_DECISION_OUTCOMES", "14400")
+        rows = refresh_jobs.refresh_job_rows(postgres_dsn)
+        assert rows[0]["status"] == "running"
+    finally:
+        runtime.close()
+
+
 def test_refresh_job_facade_uses_postgresql_without_sidecars(
     migrated_postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,

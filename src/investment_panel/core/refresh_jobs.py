@@ -274,8 +274,8 @@ ALLOWLIST: dict[str, JobRunner] = {
 
 
 def refresh_job_rows(db_path: Any) -> list[dict[str, Any]]:
+    mark_stale_running_jobs(db_path)
     repository = _job_repository(db_path)
-    repository.mark_stale()
     return repository.rows()
 
 
