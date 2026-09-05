@@ -377,7 +377,7 @@ def _read_inbox(option_actions: Any) -> list[dict[str, Any]]:
     if not callable(reader):
         return []
     try:
-        payload = reader(limit=ACTION_QUEUE_LIMIT, cursor=None)
+        payload = reader(limit=ACTION_QUEUE_LIMIT, cursor=None, current_only=True)
     except Exception:
         # Inbox is an additive read source. A failed read cannot authorize or
         # revive an action, and the canonical panel status remains available.

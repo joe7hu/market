@@ -46,8 +46,12 @@ class OptionsResearchRepository:
             window_days=window_days,
         )
 
-    def decision_inbox(self, *, limit: int, cursor: str | None) -> dict[str, Any]:
-        return DecisionInboxRepository(self.runtime).rows(limit=limit, cursor=cursor)
+    def decision_inbox(
+        self, *, limit: int, cursor: str | None, current_only: bool = False,
+    ) -> dict[str, Any]:
+        return DecisionInboxRepository(self.runtime).rows(
+            limit=limit, cursor=cursor, current_only=current_only,
+        )
 
     def submit_thesis(self, payload: dict[str, Any]) -> dict[str, Any]:
         thesis_id = self.agents.submit("option_thesis", payload)

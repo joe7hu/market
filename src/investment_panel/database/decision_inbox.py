@@ -196,11 +196,47 @@ class DecisionInboxRepository:
             )
         return {"id": inbox_id, "dedupe_key": key, "created": True, "created_at": row["created_at"].isoformat()}
 
-    def rows(self, *, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+    def rows(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str | None = None,
+        current_only: bool = False,
+    ) -> dict[str, Any]:
         bounded_limit = max(1, min(int(limit), 100))
         after = _decode_cursor(cursor)
         conditions = []
         params: list[Any] = []
+        current_filter = ""
+        if current_only:
+            current_filter = """
+                item.status = 'active'
+                AND item.event_type <> 'expired'
+                AND COALESCE(item.payload->>'state_transition', '') <> 'superseded'
+                AND (
+                    COALESCE(
+                        NULLIF(item.payload->>'expires_at', ''),
+                        NULLIF(item.payload->>'expiry', ''),
+                        NULLIF(item.payload->>'expires', '')
+                    ) IS NULL
+                    OR NOT pg_input_is_valid(
+                        COALESCE(
+                            NULLIF(item.payload->>'expires_at', ''),
+                            NULLIF(item.payload->>'expiry', ''),
+                            NULLIF(item.payload->>'expires', '')
+                        ), 'timestamptz'
+                    )
+                    OR (
+                        COALESCE(
+                            NULLIF(item.payload->>'expires_at', ''),
+                            NULLIF(item.payload->>'expiry', ''),
+                            NULLIF(item.payload->>'expires', '')
+                        )::timestamptz > now()
+                    )
+                )
+            """
+            conditions.append(current_filter)
+        current_cte_filter = f"AND {current_filter}" if current_filter else ""
         if after is not None:
             conditions.append("(item.created_at, item.id::text) < (%s, %s)")
             params.extend(after)
@@ -216,6 +252,7 @@ class DecisionInboxRepository:
                     FROM app.decision_inbox_item item
                     WHERE item.status = 'active'
                       AND NULLIF(BTRIM(item.payload->>'opportunity_episode_id'), '') IS NOT NULL
+                      {current_cte_filter}
                 )
                 SELECT item.id::text, item.event_type, item.opportunity_id::text,
                        item.ticket_version, item.paper_order_id::text, item.lane,

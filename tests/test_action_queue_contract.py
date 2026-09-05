@@ -132,3 +132,15 @@ def test_today_queue_excludes_expired_and_superseded_current_tasks() -> None:
     )
 
     assert [item["projection_identity"] for item in queue] == ["capital:1", "research:current"]
+
+
+def test_today_inbox_read_requests_current_projection() -> None:
+    calls: list[dict[str, object]] = []
+
+    def reader(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"items": []}
+
+    actions = type("Actions", (), {"decision_inbox": staticmethod(reader)})()
+    assert panel_router._read_inbox(actions) == []
+    assert calls == [{"limit": 10, "cursor": None, "current_only": True}]

@@ -187,8 +187,12 @@ class OptionsActions:
     def opportunity_scorecard(self, *, lane: str, window_days: int) -> dict[str, Any]:
         return self.research.opportunity_scorecard(lane=lane, window_days=window_days)
 
-    def decision_inbox(self, *, limit: int, cursor: str | None) -> dict[str, Any]:
-        return self.research.decision_inbox(limit=limit, cursor=cursor)
+    def decision_inbox(
+        self, *, limit: int, cursor: str | None, current_only: bool = False,
+    ) -> dict[str, Any]:
+        return self.research.decision_inbox(
+            limit=limit, cursor=cursor, current_only=current_only,
+        )
 
     def stage_paper_entry(self, decision_id: UUID, payload: dict[str, Any]) -> dict[str, Any]:
         return self.execution.stage_paper_entry(decision_id, payload)
