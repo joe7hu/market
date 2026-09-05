@@ -1030,6 +1030,45 @@ def test_decision_inbox_job_produces_portfolio_risk_before_enabled_delivery(
     assert result["delivery"] == {"sent": 0, "failed": 0, "dry_run": 0}
 
 
+def test_decision_inbox_keeps_local_sync_healthy_when_relay_is_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(
+        decision_inbox_enabled=True,
+        telegram_notifications_enabled=True,
+        telegram_notifications_dry_run=False,
+    )
+    config = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=settings))
+
+    class FakeRepository:
+        def __init__(self, _runtime: object) -> None:
+            pass
+
+        def sync_current_decisions(self, _rows: list[object]) -> dict[str, int]:
+            return {"newly_actionable": 0}
+
+        def sync_ticker_paper_lifecycle(self) -> dict[str, int]:
+            return _zero_paper_transitions()
+
+        def sync_current_portfolio_risk(self, _cards, _summary) -> dict[str, int]:
+            return _zero_portfolio_risk()
+
+        def deliver_outbox(self, **_kwargs):
+            raise AssertionError("delivery must not run without a configured relay")
+
+    monkeypatch.delenv("MARKET_GBRAIN_TELEGRAM_OWNER_RELAY_URL", raising=False)
+    monkeypatch.delenv("MARKET_GBRAIN_TELEGRAM_OWNER_RELAY_COMMAND", raising=False)
+    monkeypatch.setattr(decision_inbox_job, "load_config", lambda _path: config)
+    monkeypatch.setattr(decision_inbox_job, "load_postgres_tables", lambda *_args, **_kwargs: ({"ticker_decisions": [], "portfolio_summary": [], "portfolio_performance": [], "correlation_edges": [], "portfolio_risk_cards": []}, {"unavailable_models": []}))
+    monkeypatch.setattr(decision_inbox_job, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(decision_inbox_job, "DecisionInboxRepository", FakeRepository)
+
+    result = decision_inbox_job.run()
+
+    assert result["status"] == "ok"
+    assert result["delivery"]["configuration_required"] == 1
+
+
 def test_current_portfolio_risk_notifies_once_and_tracks_recurrence(
     migrated_postgres_dsn: str,
 ) -> None:

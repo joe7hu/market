@@ -49,7 +49,20 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
             "delivery": {"skipped": 1, "reason": "telegram_notifications_enabled_false"},
         }
     dry_run = bool(settings.telegram_notifications_dry_run)
-    sender: Callable[[str], None] | None = None if dry_run else _fixed_owner_sender()
+    if dry_run:
+        sender = None
+    else:
+        try:
+            sender = _fixed_owner_sender()
+        except RuntimeError as exc:
+            return {
+                "status": "ok", "synced": synced, "paper_lifecycle": paper_lifecycle,
+                "portfolio_risk": portfolio_risk,
+                "delivery": {
+                    "sent": 0, "failed": 0, "dry_run": 0,
+                    "configuration_required": 1, "reason": str(exc),
+                },
+            }
     delivery = repository.deliver_outbox(sender=sender, dry_run=dry_run)
     return {
         "status": "ok", "synced": synced, "paper_lifecycle": paper_lifecycle,
