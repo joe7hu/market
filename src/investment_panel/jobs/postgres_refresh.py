@@ -37,6 +37,7 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
     decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
         config_path,
+        symbols=_priority_ticker_symbols(config, runtime),
         as_of=decision_cutoff,
         market_state_publication_id=_market_state_publication_id(market),
     )
@@ -125,6 +126,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
         config_path,
+        symbols=_priority_ticker_symbols(config, runtime),
         as_of=decision_cutoff,
         market_state_publication_id=_market_state_publication_id(market),
     )
@@ -238,6 +240,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("market_publication", True, publish_market),
         ("ticker_decisions", True, lambda: ticker_decisions.publish(
             config_path,
+            symbols=_priority_ticker_symbols(config, runtime_for_config(config)),
             as_of=market_state_visible_at or bounded_cutoff(),
             market_state_publication_id=market_state_publication_id,
         )),
@@ -297,6 +300,27 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         "warning_steps": warnings,
         "steps": results,
     }
+
+
+def _priority_ticker_symbols(config: AppConfig, runtime: Any) -> list[str]:
+    """Keep scheduled ticker publication bounded to holdings and watchlist."""
+
+    symbols = {
+        str(item.get("symbol") or "").strip().upper()
+        for item in config.watchlist
+        if str(item.get("symbol") or "").strip()
+    }
+    with runtime.read() as connection:
+        rows = connection.execute(
+            """
+            SELECT instrument.symbol
+            FROM app.portfolio_position position
+            JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
+            WHERE position.quantity <> 0
+            """
+        ).fetchall()
+    symbols.update(str(row["symbol"]).strip().upper() for row in rows if str(row["symbol"]).strip())
+    return sorted(symbols)
 
 
 def _market_state_publication_id(result: dict[str, Any]) -> str | None:
