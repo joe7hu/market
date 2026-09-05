@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Plus, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
-import { previewPortfolioTransaction, recordPortfolioTransaction, reversePortfolioTransaction, type PortfolioTransactionInput, type PortfolioTransactionPreview } from "@/api/portfolio";
+import { getManualAccount, previewManualAccount, previewPortfolioTransaction, recordManualAccount, recordPortfolioTransaction, reversePortfolioTransaction, type ManualAccountInput, type ManualAccountPreview, type ManualAccountResponse, type PortfolioTransactionInput, type PortfolioTransactionPreview } from "@/api/portfolio";
 import { DecisionCard, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { Button } from "@/components/ui/button";
@@ -53,6 +53,7 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
     >
       <ScopeStatusNotice status={scopeStatus} onRetry={() => void onRefresh(true)} />
       {announcement ? <div role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{announcement}</div> : null}
+      <ManualAccountPanel refreshSignal={loading} onSaved={() => onRefresh(true)} />
       {!model.holdings.length ? <EmptyPortfolio onAddTrade={() => setTradeOpen(true)} /> : null}
 
       <PortfolioDecisionPanels decision={phase4Decision} />
@@ -85,6 +86,27 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
       <AddTradeSheet open={tradeOpen} onOpenChange={setTradeOpen} holdings={model.holdings} onRecorded={async (symbol) => { try { await onRefresh(true); setAnnouncement(`${symbol} trade recorded. Portfolio, P&L, and risk are reconciled.`); } catch { setAnnouncement(`${symbol} trade recorded, but the displayed portfolio could not refresh. Refresh before recording another trade.`); } }} />
     </WorkspacePage>
   );
+}
+
+type AccountForm = { cashBalance: string; netLiquidation: string; effectiveAt: string; notes: string; idempotencyKey: string };
+
+function ManualAccountPanel({ refreshSignal, onSaved }: { refreshSignal: boolean; onSaved: () => Promise<void> }) {
+  const [account, setAccount] = useState<ManualAccountResponse | null>(null);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState<AccountForm>(() => initialAccountForm());
+  const [preview, setPreview] = useState<ManualAccountPreview | null>(null);
+  const [previewInput, setPreviewInput] = useState<ManualAccountInput | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const accountRequest = useRef(0);
+  const previewRequest = useRef(0);
+  useEffect(() => { const request = ++accountRequest.current; void getManualAccount().then((loaded) => { if (request === accountRequest.current) setAccount(loaded); }).catch((caught) => { if (request === accountRequest.current) setError(caught instanceof Error ? caught.message : "Could not load manual account."); }); }, [refreshSignal]);
+  const update = (fields: Partial<AccountForm>) => { previewRequest.current += 1; setForm((current) => ({ ...current, ...fields })); setPreview(null); setPreviewInput(null); setError(""); };
+  const payload = (): ManualAccountInput => ({ cash_balance: Number(form.cashBalance), net_liquidation: form.netLiquidation.trim() ? Number(form.netLiquidation) : null, effective_at: new Date(form.effectiveAt).toISOString(), notes: form.notes.trim(), idempotency_key: form.idempotencyKey });
+  const reconcile = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(""); const input = payload(); const request = ++previewRequest.current; try { const nextPreview = await previewManualAccount(input); if (request === previewRequest.current) { setPreview(nextPreview); setPreviewInput(input); } } catch (caught) { if (request === previewRequest.current) setError(caught instanceof Error ? caught.message : "Could not preview reconciliation."); } finally { setBusy(false); } };
+  const confirm = async () => { if (!preview || !previewInput) return; setBusy(true); setError(""); let saved: ManualAccountResponse; try { saved = await recordManualAccount({ ...previewInput, expected_reconciliation_version: preview.expected_reconciliation_version }); } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not save reconciliation."); setBusy(false); return; } accountRequest.current += 1; setAccount(saved); setPreview(null); setPreviewInput(null); setOpen(false); setBusy(false); try { await onSaved(); } catch { setError("Snapshot saved, but the portfolio view did not refresh. Refresh before recording another snapshot."); } };
+  const snapshot = account?.snapshot;
+  return <Card aria-label="Manual account reconciliation"><CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between"><div><CardTitle className="text-base">Manual account</CardTitle><CardDescription>Reconcile cash and equity before portfolio sizing. No broker connection is required.</CardDescription></div><Button type="button" variant="outline" onClick={() => { setForm(initialAccountForm()); setPreview(null); setPreviewInput(null); setError(""); setOpen(true); }}>Reconcile account</Button></CardHeader><CardContent className="space-y-2 text-sm">{snapshot ? <div className="flex flex-wrap gap-x-6 gap-y-1"><span>Cash <strong>{moneyOrUnavailable(snapshot.cash_balance)}</strong></span><span>Equity <strong>{moneyOrUnavailable(snapshot.net_liquidation)}</strong></span><span className="text-muted-foreground">{formatDateTime(textValue(snapshot.effective_at))} · version {textValue(snapshot.reconciliation_version)}</span></div> : <p className="text-muted-foreground">No reconciled account snapshot. Sizing stays blocked until you record current cash and, if known, equity.</p>}{error && !open ? <div role="alert" className="text-red-700">{error}</div> : null}<Sheet open={open} onOpenChange={(next) => { if (!busy) setOpen(next); }}><SheetContent className="flex w-full flex-col overflow-y-auto sm:max-w-lg"><SheetHeader><SheetTitle>Reconcile manual account</SheetTitle><SheetDescription>Enter values from your account statement. This creates an immutable, versioned snapshot.</SheetDescription></SheetHeader><form className="mt-6 flex flex-1 flex-col gap-5" onSubmit={reconcile}><FieldLabel label="Cash balance"><Input type="number" min="0" step="0.01" inputMode="decimal" value={form.cashBalance} onChange={(event) => update({ cashBalance: event.target.value })} required autoFocus /></FieldLabel><FieldLabel label="Net liquidation (optional)"><Input type="number" min="0" step="0.01" inputMode="decimal" value={form.netLiquidation} onChange={(event) => update({ netLiquidation: event.target.value })} placeholder="Leave blank when unknown" /></FieldLabel><FieldLabel label="Effective at"><Input type="datetime-local" max={initialAccountForm().effectiveAt} value={form.effectiveAt} onChange={(event) => update({ effectiveAt: event.target.value })} required /></FieldLabel><FieldLabel label="Notes"><textarea value={form.notes} onChange={(event) => update({ notes: event.target.value })} placeholder="Statement date or reconciliation note" className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" /></FieldLabel>{error ? <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div> : null}{preview ? <div className="rounded-lg border border-border bg-muted/40 p-4 text-sm"><div className="mb-2 font-semibold">Confirm snapshot</div><div>Cash {moneyOrUnavailable(preview.proposed.cash_balance)} · Equity {moneyOrUnavailable(preview.proposed.net_liquidation)} · version {textValue(preview.proposed.reconciliation_version)}</div></div> : null}<SheetFooter className="mt-auto border-t border-border pt-5"><Button type="button" variant="outline" disabled={busy} onClick={() => setOpen(false)}>Cancel</Button>{preview ? <Button type="button" disabled={busy} onClick={() => void confirm()}>{busy ? "Saving…" : "Confirm snapshot"}</Button> : <Button type="submit" disabled={busy}>{busy ? "Checking…" : "Preview snapshot"}</Button>}</SheetFooter></form></SheetContent></Sheet></CardContent></Card>;
 }
 
 function PortfolioDecisionPanels({ decision }: { decision: Phase4Decision | null }) {
@@ -249,6 +271,8 @@ function AddTradeSheet({ open, onOpenChange, holdings, onRecorded }: { open: boo
 function FieldLabel({ label, children }: { label: string; children: React.ReactNode }) { return <label className="grid gap-1.5 text-sm font-medium"><span>{label}</span>{children}</label>; }
 function PreviewMetric({ label, value }: { label: string; value: string }) { return <div><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 font-medium tabular-nums">{value}</div></div>; }
 function initialTradeForm(): TradeForm { const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset()); return { side: "buy", symbol: "", quantity: "", price: "", fees: "0", executedAt: now.toISOString().slice(0, 16), notes: "", idempotencyKey: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `trade-${Date.now()}` }; }
+function initialAccountForm(): AccountForm { const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset()); return { cashBalance: "", netLiquidation: "", effectiveAt: now.toISOString().slice(0, 16), notes: "", idempotencyKey: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `account-${Date.now()}` }; }
+function moneyOrUnavailable(value: unknown): string { return typeof value === "number" && Number.isFinite(value) ? formatMoney(value) : "Unavailable"; }
 function formatDateTime(value: string): string { if (!value) return "Awaiting current quote"; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
 function formatDate(value: string): string { if (!value) return "No priced session"; const date = new Date(`${value}T12:00:00`); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
 function formatSignedMoney(value: number): string { const formatted = formatMoney(Math.abs(value)); return `${value > 0 ? "+" : value < 0 ? "−" : ""}${formatted}`; }

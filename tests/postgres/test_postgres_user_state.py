@@ -164,6 +164,18 @@ def test_manual_account_reconciliation_is_previewed_versioned_and_idempotent(cli
     )
     assert duplicate.status_code == 200
     assert duplicate.json()["snapshot"]["id"] == saved.json()["snapshot"]["id"]
+    mismatch = client.post(
+        "/api/portfolio/account/reconciliation",
+        json={**payload, "cash_balance": 1251},
+    )
+    assert mismatch.status_code == 400
+    assert "different reconciliation" in mismatch.json()["detail"]
+    future = client.post(
+        "/api/portfolio/account/reconciliation/preview",
+        json={**payload, "effective_at": "2099-01-01T00:00:00Z", "idempotency_key": "manual-account-future"},
+    )
+    assert future.status_code == 400
+    assert "future" in future.json()["detail"]
     assert client.get("/api/portfolio/account").json()["snapshot"]["cash_balance"] == 1250.0
 
 

@@ -1,7 +1,7 @@
 /** Portfolio transaction requests and their backend-owned contracts. */
 
 import type { components } from "../generated/apiSchema";
-import { sendJson } from "../apiTransport";
+import { getJson, sendJson } from "../apiTransport";
 
 type ApiSchema = components["schemas"];
 
@@ -11,6 +11,23 @@ export type PortfolioTransactionInput = Omit<ApiSchema["PortfolioTransactionInpu
 };
 export type PortfolioTransactionPreview = ApiSchema["PortfolioTransactionPreviewResponse"];
 export type PortfolioTransactionResult = ApiSchema["PortfolioTransactionResultResponse"];
+export type ManualAccountResponse = ApiSchema["ManualAccountResponse"];
+export type ManualAccountPreview = ApiSchema["ManualAccountPreviewResponse"];
+export type ManualAccountInput = Omit<ApiSchema["ManualAccountReconciliationInput"], "account" | "currency" | "expected_reconciliation_version"> & {
+  expected_reconciliation_version?: number;
+};
+
+export function getManualAccount(): Promise<ManualAccountResponse> {
+  return getJson<ManualAccountResponse>("/api/portfolio/account");
+}
+
+export function previewManualAccount(input: ManualAccountInput): Promise<ManualAccountPreview> {
+  return sendJson<ManualAccountPreview>("/api/portfolio/account/reconciliation/preview", "POST", normalizeManualAccount(input));
+}
+
+export function recordManualAccount(input: ManualAccountInput): Promise<ManualAccountResponse> {
+  return sendJson<ManualAccountResponse>("/api/portfolio/account/reconciliation", "POST", normalizeManualAccount(input));
+}
 
 export async function previewPortfolioTransaction(
   transaction: PortfolioTransactionInput,
@@ -30,6 +47,10 @@ function normalizeTransaction(transaction: PortfolioTransactionInput): ApiSchema
     currency: "USD",
     ...transaction,
   };
+}
+
+function normalizeManualAccount(input: ManualAccountInput): ApiSchema["ManualAccountReconciliationInput"] {
+  return { account: "manual", currency: "USD", ...input };
 }
 
 export async function reversePortfolioTransaction(
