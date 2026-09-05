@@ -16,6 +16,8 @@ def upgrade() -> None:
         r"""
         ALTER FUNCTION analysis.write_phase4_execution(JSONB, TEXT)
           RENAME TO write_phase4_execution_0077;
+        REVOKE ALL ON FUNCTION analysis.write_phase4_execution_0077(JSONB, TEXT)
+          FROM PUBLIC, market_app, market_migrator;
 
         CREATE OR REPLACE FUNCTION analysis.write_phase4_execution(p JSONB, sig TEXT)
         RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER
