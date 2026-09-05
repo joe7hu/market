@@ -110,21 +110,25 @@ class JobRepository:
         *,
         stale_after: timedelta = timedelta(hours=3),
         job_name: str | None = None,
+        exclude_job_names: tuple[str, ...] = (),
         reason: str | None = None,
     ) -> int:
         message = reason or f"Refresh job did not finish within {stale_after}."
         cutoff = datetime.now(UTC) - stale_after
-        job_filter = " AND job_name = %s" if job_name is not None else ""
+        filters = ["status = 'running'", "heartbeat_at < %s"]
         parameters: list[Any] = [message, Jsonb({"error": message}), cutoff]
         if job_name is not None:
+            filters.append("job_name = %s")
             parameters.append(job_name)
+        if exclude_job_names:
+            filters.append("job_name <> ALL(%s)")
+            parameters.append(list(exclude_job_names))
         with self.runtime.transaction() as connection:
             result = connection.execute(
                 f"""
                 UPDATE ops.job_run
                 SET status = 'failed', finished_at = now(), error = %s, summary = %s
-                WHERE status = 'running' AND heartbeat_at < %s
-                {job_filter}
+                WHERE {' AND '.join(filters)}
                 """,
                 parameters,
             )

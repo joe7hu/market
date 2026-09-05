@@ -290,8 +290,14 @@ def mark_stale_running_jobs(
     retries: int = 30,
 ) -> int:
     repository = _job_repository(db_path)
-    marked = repository.mark_stale(stale_after=stale_after)
-    for job_name in JOB_TIMEOUT_SECONDS:
+    configured_job_names = tuple(
+        job_name for job_name in ALLOWLIST if _job_timeout_seconds(job_name) is not None
+    )
+    marked = repository.mark_stale(
+        stale_after=stale_after,
+        exclude_job_names=configured_job_names,
+    )
+    for job_name in configured_job_names:
         timeout = _job_timeout_seconds(job_name)
         if timeout is None:
             continue

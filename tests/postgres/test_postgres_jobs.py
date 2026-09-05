@@ -104,6 +104,25 @@ def test_stale_recovery_can_be_scoped_to_one_job(job_repository: JobRepository, 
     assert states["other-refresh"]["status"] == "running"
 
 
+def test_stale_recovery_can_exclude_configured_jobs(job_repository: JobRepository, postgres_dsn: str) -> None:
+    configured = job_repository.start("configured-refresh")
+    generic = job_repository.start("generic-refresh")
+    stale_at = datetime.now(UTC) - timedelta(hours=4)
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        connection.execute(
+            "UPDATE ops.job_run SET heartbeat_at = %s WHERE id IN (%s, %s)",
+            [stale_at, configured["id"], generic["id"]],
+        )
+        connection.commit()
+
+    assert job_repository.mark_stale(
+        exclude_job_names=("configured-refresh",),
+    ) == 1
+    states = {row["job_name"]: row for row in job_repository.rows()}
+    assert states["configured-refresh"]["status"] == "running"
+    assert states["generic-refresh"]["status"] == "failed"
+
+
 def test_refresh_job_facade_uses_postgresql_without_sidecars(
     migrated_postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
