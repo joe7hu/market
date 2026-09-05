@@ -26,6 +26,15 @@ from investment_panel.database.superinvestor_portfolios import superinvestor_por
 from investment_panel.database.runtime import API_PROFILE, RuntimeProfile
 
 __all__ = ["load_postgres_tables", "today_authority_pages"]
+
+
+class SchemaRevisionMismatch(RuntimeError):
+    def __init__(self, actual: str, expected: str) -> None:
+        self.actual = actual
+        self.expected = expected
+        super().__init__(f"PostgreSQL schema revision {actual or 'missing'}; expected {expected}")
+
+
 RECOVERY_MODELS = frozenset({
     "option_recovery_funnel", "option_recovery_event", "option_recovery_opportunity",
     "option_recovery_family_performance", "option_recovery_agent_provenance", "option_recovery_health",
@@ -1758,6 +1767,11 @@ def load_postgres_tables(
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
+    with runtime.read(runtime_profile) as connection:
+        revision_row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    actual_schema_revision = str(revision_row["version_num"]) if revision_row else ""
+    if actual_schema_revision != HEAD_REVISION:
+        raise SchemaRevisionMismatch(actual_schema_revision, HEAD_REVISION)
     published_counts: dict[str, int] = {}
     intelligence_counts: dict[str, int] = {}
     publication_options: dict[str, Any] = {}
@@ -2015,7 +2029,8 @@ def load_postgres_tables(
             row.pop("__panel_total_count", None)
     metadata = {
         "database": "postgresql",
-        "schema_revision": HEAD_REVISION,
+        "schema_revision": actual_schema_revision,
+        "expected_schema_revision": HEAD_REVISION,
         "loaded_at": datetime.now(UTC).isoformat(),
         "table_count": len(requested),
         "unavailable_models": unavailable,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 from datetime import UTC, datetime
 from math import isfinite
+import os
 from typing import Any, Mapping
 from app.scheduler import scheduler_status
 from investment_panel.core.panel import (
@@ -34,11 +35,21 @@ DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
 
 
 def status_payload(panel_data: PanelData) -> dict[str, Any]:
+    metadata = jsonable(panel_data.metadata)
+    actual_schema = metadata.get("schema_revision")
+    expected_schema = metadata.get("expected_schema_revision") or actual_schema
+    metadata["release"] = {
+        "backend_commit": os.environ.get("MARKET_BACKEND_COMMIT", "unknown"),
+        "frontend_build": os.environ.get("MARKET_FRONTEND_BUILD", "unknown"),
+        "scheduler_release": os.environ.get("MARKET_SCHEDULER_RELEASE", "unknown"),
+    }
+    metadata["schema_compatible"] = bool(actual_schema and expected_schema and actual_schema == expected_schema)
+    metadata["required_capability_ready"] = bool(panel_data.status.ready and metadata["schema_compatible"])
     return {
         "ready": panel_data.status.ready,
         "message": panel_data.status.message,
         "source": panel_data.status.source,
-        "metadata": jsonable(panel_data.metadata),
+        "metadata": metadata,
     }
 
 

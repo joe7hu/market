@@ -131,6 +131,10 @@ def test_ticker_option_queries_keep_symbol_filter_before_dense_joins() -> None:
 def test_custom_option_loaders_preserve_exact_page_counts(monkeypatch) -> None:
     class Result:
         @staticmethod
+        def fetchone() -> dict[str, str]:
+            return {"version_num": panel_models.HEAD_REVISION}
+
+        @staticmethod
         def fetchall() -> list[dict[str, object]]:
             return [{"symbol": "QQQ", "__panel_total_count": 7}]
 

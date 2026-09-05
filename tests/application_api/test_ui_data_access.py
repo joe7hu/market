@@ -1219,6 +1219,27 @@ def test_status_payload_reports_disabled_option_agent_paused() -> None:
     assert option_agent["status"] == "paused"
 
 
+def test_status_payload_exposes_release_and_schema_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MARKET_BACKEND_COMMIT", "backend-sha")
+    monkeypatch.setenv("MARKET_FRONTEND_BUILD", "frontend-build")
+    monkeypatch.setenv("MARKET_SCHEDULER_RELEASE", "scheduler-release")
+    panel_data = PanelData(
+        status=DataStatus(False, "schema mismatch", "postgresql-error"),
+        tables={},
+        metadata={"schema_revision": "20260904_0077", "expected_schema_revision": "20260905_0078"},
+    )
+
+    metadata = payloads_owner.status_payload(panel_data)["metadata"]
+
+    assert metadata["release"] == {
+        "backend_commit": "backend-sha",
+        "frontend_build": "frontend-build",
+        "scheduler_release": "scheduler-release",
+    }
+    assert metadata["schema_compatible"] is False
+    assert metadata["required_capability_ready"] is False
+
+
 def test_fastapi_config_reports_runtime_database_override(tmp_path, monkeypatch) -> None:
     runtime_url = "postgresql://localhost/runtime"
     monkeypatch.setenv("MARKET_DATABASE_URL", runtime_url)
