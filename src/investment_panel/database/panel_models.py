@@ -1767,6 +1767,11 @@ def load_postgres_tables(
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
+    with runtime.read(runtime_profile) as connection:
+        revision_row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    actual_schema_revision = str(revision_row["version_num"]) if revision_row else ""
+    if actual_schema_revision != HEAD_REVISION:
+        raise SchemaRevisionMismatch(actual_schema_revision, HEAD_REVISION)
     published_counts: dict[str, int] = {}
     intelligence_counts: dict[str, int] = {}
     publication_options: dict[str, Any] = {}
@@ -1854,10 +1859,6 @@ def load_postgres_tables(
     query_cache_counts: dict[tuple[str, int | None, bool], int] = {}
     query_counts: dict[str, int] = {}
     with runtime.read(runtime_profile) as connection:
-        revision_row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-        actual_schema_revision = str(revision_row["version_num"]) if revision_row else ""
-        if actual_schema_revision != HEAD_REVISION:
-            raise SchemaRevisionMismatch(actual_schema_revision, HEAD_REVISION)
         for name in requested:
             if name in tables:
                 continue
