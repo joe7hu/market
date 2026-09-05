@@ -23,6 +23,7 @@ export const PANEL_TABLE_KEYS = [
   "coverageMatrix",
   "dailyBrief",
   "decisionQueue",
+  "decisionReadiness",
   "decisionTruth",
   "disclosures",
   "discoveredUniverse",
