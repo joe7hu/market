@@ -59,6 +59,12 @@ def test_phase2_event_fields_lineage_and_divergent_identity_are_authoritative(
             "ingest_run_id": str(source_run.id), "content_hash": "a" * 64,
             "parent_snapshot_id": "snapshot-parent",
         }
+        with ingestion.run("trading_economics", "phase2-test-repeat") as repeat_run:
+            repository.record_observations(
+                (event,), ingest_run_id=str(repeat_run.id), payload_id=payload_id,
+                parent_snapshot_id="snapshot-parent",
+            )
+            repeat_run.finish("succeeded")
         with pytest.raises(ValueError, match="identity conflicts"):
             repository.record_observations(
                 (event.model_copy(update={"actual": 9.9}),),
