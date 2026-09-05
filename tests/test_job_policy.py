@@ -35,3 +35,7 @@ def test_source_writers_wait_one_interval_before_first_run() -> None:
 def test_timeout_override_precedes_job_default() -> None:
     assert job_policy.job_timeout_seconds("options_radar_hard_refresh", {}) == 5400
     assert job_policy.job_timeout_seconds("options_radar_hard_refresh", {"options_radar_hard_refresh": 12}) == 12
+
+
+def test_outcome_refresh_timeout_matches_job_database_profile() -> None:
+    assert job_policy.job_timeout_seconds("refresh_symbol_decision_outcomes", {}) == 900

@@ -67,7 +67,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("run_option_recovery_agents", timeout_seconds=600),
         _job("process_options_paper_orders", timeout_seconds=60),
         _job("sync_decision_inbox", timeout_seconds=30),
-        _job("refresh_symbol_decision_outcomes", timeout_seconds=300),
+        _job("refresh_symbol_decision_outcomes", timeout_seconds=900),
         _job("run_stock_alpha_walk_forward", timeout_seconds=1200, freshness_seconds=86400),
         _job("run_option_agents_force"),
         _job("run_option_agents_ondemand"),
