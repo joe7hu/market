@@ -39,9 +39,9 @@ _TODAY_SECONDARY_QUERY_LIMITS = {
 DASHBOARD_DEFAULT_TABLES = frozenset({
     "decision_queue", "portfolio", "catalysts", "thesis_monitor",
     "source_freshness", "source_health", "sources", "source_runs", "source_items",
-    "ticker_source_signals", "broker_status", "agent_recommendations",
+    "ticker_source_signals", "broker_status",
     "preopen_daily_brief", "daily_brief", "feed_signals", "universe_screen",
-    "source_consensus", "ownership_consensus", "market_context",
+    "source_consensus", "ownership_consensus",
     "portfolio_risk_cards", "review_actions", "option_radar_opportunity",
     "candidate_event", "candidate_event_mark", "candidate_event_attribution",
     "option_attribution", "missed_winner_event", "strategy_mutation_proposal",
