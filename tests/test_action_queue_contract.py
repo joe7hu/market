@@ -116,8 +116,19 @@ def test_today_queue_reserves_non_capital_sources_over_global_limit() -> None:
 
     queue = panel_router._bounded_today_queue(capital, inbox, risk, research)
 
-    assert len(queue) == 100
+    assert len(queue) == 10
     assert {item["source"] for item in queue} == {
         "capital_action", "decision_inbox", "portfolio_risk", "research",
     }
     assert queue[0]["projection_identity"] == "capital:0"
+
+
+def test_today_queue_excludes_expired_and_superseded_current_tasks() -> None:
+    queue = panel_router._bounded_today_queue(
+        [{"projection_identity": "capital:1", "source": "capital_action", "lifecycle_state": "actionable"}],
+        [{"projection_identity": "inbox:expired", "source": "decision_inbox", "lifecycle_state": "expired"}],
+        [{"projection_identity": "risk:superseded", "source": "portfolio_risk", "lifecycle_state": "superseded"}],
+        [{"projection_identity": "research:current", "source": "research", "lifecycle_state": "current"}],
+    )
+
+    assert [item["projection_identity"] for item in queue] == ["capital:1", "research:current"]

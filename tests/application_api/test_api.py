@@ -391,7 +391,7 @@ def test_today_keeps_other_sources_when_ticker_capital_exceeds_limit(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["count"] == 100
+    assert payload["count"] == 10
     assert {item["source"] for item in payload["actions"]} == {
         "capital_action", "decision_inbox", "portfolio_risk", "research",
     }

@@ -26,7 +26,7 @@ from investment_panel.core.decision import (
 )
 
 router = APIRouter()
-ACTION_QUEUE_LIMIT = 100
+ACTION_QUEUE_LIMIT = 10
 
 
 @router.get("/api/today", response_model=TodayResponse, response_model_exclude_unset=True)
@@ -551,7 +551,12 @@ def _bounded_today_queue(
 ) -> list[dict[str, Any]]:
     """Keep capital priority while reserving one slot for each other source."""
 
-    secondary = (inbox_actions, portfolio_risk_actions, research_actions)
+    def current(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            row for row in rows
+            if row.get("lifecycle_state") not in {"expired", "superseded"}
+        ]
+    secondary = tuple(current(rows) for rows in (inbox_actions, portfolio_risk_actions, research_actions))
     reserved = [rows[0] for rows in secondary if rows]
     capital_limit = max(0, ACTION_QUEUE_LIMIT - len(reserved))
     queue = [*capital_actions[:capital_limit], *reserved]
