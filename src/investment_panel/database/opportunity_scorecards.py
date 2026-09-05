@@ -152,34 +152,26 @@ class OpportunityScorecardRepository:
                       AND decision.as_of <= %s
                       AND decision.calibration_cohort LIKE %s
                     ORDER BY decision.episode_key, decision.as_of DESC, decision.id DESC
+                ), published_items AS MATERIALIZED (
+                    SELECT publication.analysis_run_id AS run_id, item.payload
+                    FROM app.publication publication
+                    JOIN app.publication_content_item item ON item.publication_id = publication.id
+                    WHERE publication.status IN ('published', 'superseded')
+                      AND (
+                        (publication.scope = 'options-radar'
+                         AND item.model_name = 'option_radar_opportunity')
+                        OR
+                        (publication.scope = 'options-decision-system'
+                         AND item.model_name = 'options_decision_candidate')
+                      )
                 ), published_ids AS MATERIALIZED (
-                    SELECT publication.analysis_run_id AS run_id,
-                           item.payload->>'decision_id' AS decision_id
-                    FROM app.publication publication
-                    JOIN app.publication_content_item item ON item.publication_id = publication.id
-                    WHERE publication.status IN ('published', 'superseded')
-                      AND (
-                        (publication.scope = 'options-radar'
-                         AND item.model_name = 'option_radar_opportunity')
-                        OR
-                        (publication.scope = 'options-decision-system'
-                         AND item.model_name = 'options_decision_candidate')
-                      )
-                      AND item.payload->>'decision_id' IS NOT NULL
+                    SELECT run_id, payload->>'decision_id' AS decision_id
+                    FROM published_items
+                    WHERE payload->>'decision_id' IS NOT NULL
                     UNION
-                    SELECT publication.analysis_run_id AS run_id,
-                           item.payload->>'opportunity_id' AS decision_id
-                    FROM app.publication publication
-                    JOIN app.publication_content_item item ON item.publication_id = publication.id
-                    WHERE publication.status IN ('published', 'superseded')
-                      AND (
-                        (publication.scope = 'options-radar'
-                         AND item.model_name = 'option_radar_opportunity')
-                        OR
-                        (publication.scope = 'options-decision-system'
-                         AND item.model_name = 'options_decision_candidate')
-                      )
-                      AND item.payload->>'opportunity_id' IS NOT NULL
+                    SELECT run_id, payload->>'opportunity_id' AS decision_id
+                    FROM published_items
+                    WHERE payload->>'opportunity_id' IS NOT NULL
                 )
                 SELECT decision.episode_key, decision.as_of AS available_at, decision.state,
                        decision.sample_eligible AS decision_sample_eligible,
