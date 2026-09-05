@@ -762,17 +762,42 @@ class PortfolioLoopRepository:
                     if str(execution_row["content_hash"]).strip() != canonical_content_hash(execution_model):
                         execution_row = None
                     else:
+                        observation_ids = execution_model.metadata.get("paper_observation_ids")
+                        observation_ids = observation_ids if isinstance(observation_ids, list) else []
                         genuine_count = connection.execute(
-                            """SELECT count(*) AS count FROM app.paper_execution_observation observation
+                            """SELECT count(*) AS count, count(DISTINCT observation.paper_execution_observation_id) AS distinct_count
+                               FROM app.paper_execution_observation observation
+                               JOIN analysis.portfolio_allocation_item item
+                                 ON item.allocation_item_id = observation.allocation_item_id
+                               JOIN analysis.portfolio_allocation_snapshot source_allocation
+                                 ON source_allocation.allocation_id = item.allocation_id
                                JOIN app.paper_order paper ON paper.id = observation.paper_order_id
                                WHERE observation.paper_execution_observation_id = ANY(%s)
-                                 AND observation.execution_mode = 'paper' AND observation.paper_only
-                                 AND observation.filled_quantity > 0 AND observation.fill_price IS NOT NULL
+                                 AND item.allocation_id = %s
+                                 AND source_allocation.input_cutoff < observation.available_at
                                  AND observation.available_at <= %s
-                                 AND paper.filled_at IS NOT NULL AND paper.actual_fill_price IS NOT NULL""",
-                            [execution_model.metadata.get("paper_observation_ids") if isinstance(execution_model.metadata.get("paper_observation_ids"), list) else [], as_of],
+                                 AND observation.observed_at < observation.available_at
+                                 AND observation.action_id = item.action_id
+                                 AND paper.policy_result->>'trade_plan_id' = observation.action_id
+                                 AND observation.execution_mode = 'paper' AND observation.paper_only
+                                 AND observation.status IN ('partial', 'filled', 'partial_exited', 'exited')
+                                 AND observation.filled_quantity > 0 AND observation.fill_price IS NOT NULL
+                                 AND observation.contract_multiplier IS NOT NULL AND observation.event_fee IS NOT NULL
+                                 AND paper.paper_only AND paper.submitted_at IS NOT NULL
+                                 AND paper.filled_at IS NOT NULL AND paper.fill_evidence_at IS NOT NULL
+                                 AND paper.fill_evidence_at > paper.filled_at
+                                 AND paper.execution_quote IS NOT NULL AND paper.fees IS NOT NULL
+                                 AND paper.entry_slippage IS NOT NULL AND paper.actual_fill_price IS NOT NULL
+                                 AND paper.filled_quantity > 0 AND paper.contract_multiplier IS NOT NULL
+                                 AND paper.status IN ('open', 'entered', 'partial_exited', 'exited', 'closed', 'invalidated')""",
+                            [observation_ids, execution_model.allocation_id, execution_model.input_cutoff],
                         ).fetchone()
-                        if not execution_model.metadata.get("paper_observation_ids") or int(genuine_count["count"] if genuine_count else 0) != execution_model.sample_count:
+                        if (
+                            not observation_ids
+                            or len(observation_ids) != execution_model.sample_count
+                            or int(genuine_count["count"] if genuine_count else 0) != execution_model.sample_count
+                            or int(genuine_count["distinct_count"] if genuine_count else 0) != execution_model.sample_count
+                        ):
                             execution_row = None
                 except (TypeError, ValueError):
                     execution_row = None
@@ -1179,13 +1204,20 @@ class PortfolioLoopRepository:
             if allocation is None:
                 raise ValueError("paper execution allocation lineage is unavailable")
             rows = connection.execute(
-                    """SELECT paper_execution_observation_id, allocation_item_id, action_id, paper_order_id::text,
-                              execution_mode, paper_only, status, requested_quantity, filled_quantity,
-                              requested_price, fill_price, spread_bps, latency_ms, impact_bps,
-                              side, exit_price, event_fee, contract_multiplier, observed_at, available_at, metadata
-                       FROM app.paper_execution_observation
-                       WHERE allocation_item_id = %s ORDER BY observed_at, paper_execution_observation_id""",
-                    [observation.allocation_item_id],
+                    """SELECT observation.paper_execution_observation_id, observation.allocation_item_id,
+                              observation.action_id, observation.paper_order_id::text,
+                              observation.execution_mode, observation.paper_only, observation.status,
+                              observation.requested_quantity, observation.filled_quantity,
+                              observation.requested_price, observation.fill_price, observation.spread_bps,
+                              observation.latency_ms, observation.impact_bps, observation.side,
+                              observation.exit_price, observation.event_fee, observation.contract_multiplier,
+                              observation.observed_at, observation.available_at, observation.metadata
+                       FROM app.paper_execution_observation observation
+                       JOIN analysis.portfolio_allocation_item item
+                         ON item.allocation_item_id = observation.allocation_item_id
+                       WHERE item.allocation_id = %s
+                       ORDER BY observation.observed_at, observation.paper_execution_observation_id""",
+                    [allocation["allocation_id"]],
             ).fetchall()
             if rows:
                 typed_rows = [PaperExecutionObservation.model_validate(dict(row)) for row in rows]

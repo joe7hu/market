@@ -232,7 +232,7 @@ def test_record_paper_execution_rebuilds_observation_from_persisted_fill(monkeyp
                 return Result({"allocation_id": "allocation:test", "action_id": "action:test"})
             if "phase4_telemetry_authorization_payload" in statement:
                 return Result({"payload": "test-payload"})
-            if "SELECT paper_execution_observation_id" in statement:
+            if "paper_execution_observation_id" in statement:
                 return Result(many=[observation.model_copy(update={"spread_bps": 200, "latency_ms": 60_000, "impact_bps": 100}).model_dump()])
             if "SELECT allocation_id, input_cutoff" in statement:
                 return Result({"allocation_id": "allocation:test", "input_cutoff": AS_OF})

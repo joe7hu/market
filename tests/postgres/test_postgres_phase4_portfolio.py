@@ -152,7 +152,7 @@ def test_execution_model_store_matches_postgresql_canonical_digest(migrated_post
     with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
         insert_cash_allocation(connection)
         model = build_execution_model_snapshot(
-            "allocation:" + "a" * 64, AS_OF + timedelta(seconds=1), [],
+            "allocation:" + "a" * 64, AS_OF + timedelta(seconds=1, microseconds=10), [],
         )
         PortfolioLoopRepository.store_execution_model(connection, model)
         stored = connection.execute(
@@ -253,6 +253,120 @@ def test_repository_persists_genuine_paper_fill_and_database_calibrates_it(
         assert float(model["impact_bps"]) == pytest.approx(50)
         assert model["input_cutoff"] == fill_evidence_at
         assert model["metadata"]["paper_observation_ids"] == [observation.paper_execution_observation_id]
+
+
+def test_repository_calibrates_from_every_item_in_the_persisted_allocation(
+    migrated_postgres_dsn: str,
+) -> None:
+    """The production recording path must use the complete allocation denominator."""
+
+    with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
+        insert_cash_allocation(connection)
+        allocation_id = "allocation:" + "a" * 64
+        second_item_id = "allocation-item:" + "c" * 64
+        connection.execute(
+            """INSERT INTO analysis.portfolio_allocation_item
+               (allocation_item_id, allocation_id, candidate_id, ticker, action_id,
+                disposition, target_weight, current_weight, marginal_book_utility,
+                trace, input_hash, content_hash)
+               VALUES (%s, %s, 'CASH-SECOND', 'CASH', 'action:compatibility',
+                       'selected', .01, 0, 0, '{}'::jsonb, %s, %s)""",
+            [second_item_id, allocation_id, "c" * 64, "d" * 64],
+        )
+
+        observations: list[PaperExecutionObservation] = []
+        for index, item_id in enumerate(("allocation-item:" + "b" * 64, second_item_id)):
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity') RETURNING id",
+                [f"P4MULTI{index}", f"P4MULTI{index}"],
+            ).fetchone()["id"]
+            order_id = uuid4()
+            submitted_at = AS_OF + timedelta(seconds=1 + index)
+            filled_at = AS_OF + timedelta(seconds=61 + index * 60)
+            fill_evidence_at = AS_OF + timedelta(seconds=91 + index * 60)
+            requested_price = 100 + index
+            quote = {"bid": requested_price - 1, "ask": requested_price + 1, "spread": 2.0}
+            connection.execute(
+                """INSERT INTO app.paper_order
+                   (id, instrument_id, created_at, side, quantity, limit_price, intended_limit_price, status,
+                    paper_only, submitted_at, filled_quantity, filled_at, actual_fill_price,
+                    fill_evidence_at, execution_quote, fees, entry_fees, entry_slippage,
+                    contract_multiplier, policy_result)
+                   VALUES (%s, %s, %s, 'buy', 1, %s, %s, 'entered', true, %s, 1, %s, %s,
+                           %s, %s, .25, .25, .5, 100, %s)""",
+                [
+                    order_id, instrument_id, AS_OF, requested_price, requested_price,
+                    submitted_at, filled_at, requested_price + 0.5, fill_evidence_at,
+                    Jsonb(quote), Jsonb({"trade_plan_id": "action:compatibility"}),
+                ],
+            )
+            observations.append(PaperExecutionObservation(
+                paper_execution_observation_id=f"observation:multi-{index}",
+                allocation_item_id=item_id,
+                action_id="action:compatibility",
+                paper_order_id=str(order_id),
+                status="filled",
+                requested_quantity=1,
+                filled_quantity=1,
+                requested_price=requested_price,
+                fill_price=requested_price + 0.5,
+                spread_bps=999,
+                latency_ms=999,
+                impact_bps=999,
+                observed_at=filled_at,
+                available_at=fill_evidence_at,
+                metadata={
+                    "fees": .25,
+                    "paper_order_id": str(order_id),
+                    "contract_multiplier": 100,
+                    "submitted_at": submitted_at,
+                    "filled_at": filled_at,
+                    "quote": quote,
+                },
+            ))
+        connection.commit()
+
+        class Runtime:
+            def transaction(self):
+                return nullcontext(connection)
+
+        repository = PortfolioLoopRepository(Runtime())
+        assert repository.record_paper_execution(observations[0]) == observations[0].paper_execution_observation_id
+        assert repository.record_paper_execution(observations[1]) == observations[1].paper_execution_observation_id
+        model = connection.execute(
+            """SELECT calibration_status, sample_count, spread_bps, latency_ms, impact_bps,
+                              input_cutoff, metadata
+               FROM analysis.execution_model_snapshot
+               WHERE allocation_id = %s
+               ORDER BY input_cutoff DESC, execution_model_snapshot_id DESC
+               LIMIT 1""",
+            [allocation_id],
+        ).fetchone()
+        assert model["calibration_status"] == "calibrated"
+        assert model["sample_count"] == 2
+        assert float(model["spread_bps"]) == pytest.approx((200 + (2 / 101 * 10_000)) / 2)
+        assert float(model["latency_ms"]) == pytest.approx(89_500)
+        assert float(model["impact_bps"]) == pytest.approx((50 + (0.5 / 101 * 10_000)) / 2)
+        assert model["input_cutoff"] == AS_OF + timedelta(seconds=151)
+        assert model["metadata"]["paper_observation_ids"] == [
+            observations[0].paper_execution_observation_id,
+            observations[1].paper_execution_observation_id,
+        ]
+        connection.commit()
+
+        incomplete = build_execution_model_snapshot(
+            allocation_id, AS_OF + timedelta(seconds=151), [observations[1]],
+        )
+        with pytest.raises(RaiseException, match="complete eligible allocation fill set"):
+            repository.store_execution_model(connection, incomplete)
+        connection.rollback()
+
+        forged = build_execution_model_snapshot(
+            "allocation:" + "f" * 64, AS_OF + timedelta(seconds=151), observations,
+        )
+        with pytest.raises(RaiseException, match="not persisted"):
+            repository.store_execution_model(connection, forged)
+        connection.rollback()
 
 
 def test_phase4_application_role_cannot_directly_write_forged_authority(migrated_postgres_dsn: str) -> None:

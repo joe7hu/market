@@ -439,6 +439,8 @@ def upgrade() -> None:
           derived_cutoff TIMESTAMPTZ;
           target_allocation_id TEXT;
           observation_ids JSONB;
+          canonical_requested_ids JSONB;
+          eligible_observation_ids JSONB;
           canonical_metadata JSONB;
           sample_count INTEGER;
           derived_status TEXT;
@@ -465,6 +467,9 @@ def upgrade() -> None:
           IF allocation_cutoff IS NULL THEN
             RAISE EXCEPTION 'Phase 4 execution snapshot allocation is not persisted';
           END IF;
+          IF p->>'input_cutoff' IS NULL THEN
+            RAISE EXCEPTION 'Phase 4 execution writer payload is malformed';
+          END IF;
           observation_ids := coalesce(p->'metadata'->'paper_observation_ids', '[]'::jsonb);
           IF jsonb_typeof(observation_ids) IS DISTINCT FROM 'array' THEN
             RAISE EXCEPTION 'Phase 4 execution observations must be an array';
@@ -473,39 +478,44 @@ def upgrade() -> None:
              <> (SELECT count(DISTINCT value) FROM jsonb_array_elements_text(observation_ids) AS ids(value)) THEN
             RAISE EXCEPTION 'Phase 4 execution observations contain duplicate IDs';
           END IF;
-          SELECT count(*)::INTEGER, max(observation.available_at)
-            INTO sample_count, derived_cutoff
-            FROM jsonb_array_elements_text(observation_ids) AS ids(value)
-            JOIN app.paper_execution_observation observation
-              ON observation.paper_execution_observation_id = ids.value
+          SELECT coalesce(jsonb_agg(ids.value ORDER BY ids.value), '[]'::jsonb)
+            INTO canonical_requested_ids
+            FROM jsonb_array_elements_text(observation_ids) AS ids(value);
+          SELECT coalesce(jsonb_agg(observation.paper_execution_observation_id
+                                    ORDER BY observation.paper_execution_observation_id), '[]'::jsonb),
+                 count(*)::INTEGER, max(observation.available_at)
+            INTO eligible_observation_ids, sample_count, derived_cutoff
+            FROM app.paper_execution_observation observation
             JOIN analysis.portfolio_allocation_item item
               ON item.allocation_item_id = observation.allocation_item_id
-           WHERE item.allocation_id = target_allocation_id;
-          IF jsonb_array_length(observation_ids) <> sample_count THEN
-            RAISE EXCEPTION 'Phase 4 execution observations are not bound to the allocation';
-          END IF;
-          IF EXISTS (
-            SELECT 1
-              FROM jsonb_array_elements_text(observation_ids) AS ids(value)
-              LEFT JOIN app.paper_execution_observation observation
-                ON observation.paper_execution_observation_id = ids.value
-              LEFT JOIN analysis.portfolio_allocation_item item
-                ON item.allocation_item_id = observation.allocation_item_id
-              LEFT JOIN app.paper_order paper ON paper.id = observation.paper_order_id
-             WHERE observation.paper_execution_observation_id IS NULL
-                OR item.allocation_id IS DISTINCT FROM target_allocation_id
-                OR observation.available_at <= allocation_cutoff
-                OR observation.available_at > (p->>'input_cutoff')::TIMESTAMPTZ
-                OR observation.execution_mode <> 'paper' OR NOT observation.paper_only
-                OR observation.status NOT IN ('partial', 'filled', 'partial_exited', 'exited')
-                OR observation.filled_quantity <= 0 OR observation.fill_price IS NULL
-                OR observation.contract_multiplier IS NULL OR observation.event_fee IS NULL
-                OR paper.submitted_at IS NULL OR paper.filled_at IS NULL
-                OR paper.fill_evidence_at IS NULL OR paper.execution_quote IS NULL
-                OR paper.actual_fill_price IS NULL OR paper.contract_multiplier IS NULL
-                OR paper.status NOT IN ('open', 'entered', 'partial_exited', 'exited', 'closed', 'invalidated')
-          ) THEN
-            RAISE EXCEPTION 'Phase 4 execution snapshot requires genuine post-allocation paper fills';
+            JOIN app.paper_order paper ON paper.id = observation.paper_order_id
+           WHERE item.allocation_id = target_allocation_id
+             AND observation.action_id = item.action_id
+             AND paper.policy_result->>'trade_plan_id' = observation.action_id
+             AND observation.available_at > allocation_cutoff
+             AND observation.available_at <= (p->>'input_cutoff')::TIMESTAMPTZ
+             AND observation.observed_at < observation.available_at
+             AND observation.execution_mode = 'paper'
+             AND observation.paper_only
+             AND observation.status IN ('partial', 'filled', 'partial_exited', 'exited')
+             AND observation.filled_quantity > 0
+             AND observation.fill_price IS NOT NULL
+             AND observation.contract_multiplier IS NOT NULL
+             AND observation.event_fee IS NOT NULL
+             AND paper.paper_only
+             AND paper.submitted_at IS NOT NULL
+             AND paper.filled_at IS NOT NULL
+             AND paper.fill_evidence_at IS NOT NULL
+             AND paper.fill_evidence_at > paper.filled_at
+             AND paper.execution_quote IS NOT NULL
+             AND paper.fees IS NOT NULL
+             AND paper.entry_slippage IS NOT NULL
+             AND paper.actual_fill_price IS NOT NULL
+             AND paper.filled_quantity > 0
+             AND paper.contract_multiplier IS NOT NULL
+             AND paper.status IN ('open', 'entered', 'partial_exited', 'exited', 'closed', 'invalidated');
+          IF canonical_requested_ids IS DISTINCT FROM eligible_observation_ids THEN
+            RAISE EXCEPTION 'Phase 4 execution observations must equal the complete eligible allocation fill set';
           END IF;
           IF sample_count > 0 THEN
             derived_status := 'calibrated';
@@ -519,7 +529,7 @@ def upgrade() -> None:
                        / observation.requested_price * 10000)
                      FILTER (WHERE observation.requested_price IS NOT NULL AND observation.requested_price <> 0)
               INTO derived_fill_probability, derived_spread, derived_latency, derived_impact
-              FROM jsonb_array_elements_text(observation_ids) AS ids(value)
+              FROM jsonb_array_elements_text(eligible_observation_ids) AS ids(value)
               JOIN app.paper_execution_observation observation
                 ON observation.paper_execution_observation_id = ids.value
               JOIN app.paper_order paper ON paper.id = observation.paper_order_id;
@@ -535,8 +545,7 @@ def upgrade() -> None:
             RAISE EXCEPTION 'Phase 4 execution cutoff must follow its allocation';
           END IF;
           canonical_metadata := jsonb_build_object(
-            'paper_observation_ids', (SELECT coalesce(jsonb_agg(value ORDER BY value), '[]'::jsonb)
-                                        FROM jsonb_array_elements_text(observation_ids) AS ids(value)),
+            'paper_observation_ids', eligible_observation_ids,
             'genuine_fill_count', sample_count,
             'source', 'paper_execution_observation');
           IF p->>'calibration_status' IS DISTINCT FROM derived_status

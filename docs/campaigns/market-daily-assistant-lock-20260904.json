@@ -1,0 +1,457 @@
+{
+  "source_sha256": "3100ba48690aabd54db91776dd5da3b3e865733393803ee4a1f087a7476d452f",
+  "phases": [
+    {
+      "id": "P0",
+      "title": "Phase 0 — Establish one verified release",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        36,
+        56
+      ],
+      "sha256": "ef2c36a33af928aebc6101ac0beec963e12005c0b9efc92062fecf27421c50ae",
+      "gates": [
+        {
+          "id": "P0-A01",
+          "text": "Reviewed commit equals local and remote `main`.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P0"
+        },
+        {
+          "id": "P0-A02",
+          "text": "Live schema matches the release; API and frontend identify the same release.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P0"
+        },
+        {
+          "id": "P0-A03",
+          "text": "All five workspaces and representative ticker routes load from the deployed build.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P0"
+        },
+        {
+          "id": "P0-A04",
+          "text": "Production-role allocation, telemetry, attribution, and funding regressions pass.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P0"
+        },
+        {
+          "id": "P0-A05",
+          "text": "Required campaign checks pass. Existing dirty work and campaign history remain preserved.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P0"
+        }
+      ]
+    },
+    {
+      "id": "P1",
+      "title": "Phase 1 — Make missing data and daily status actionable",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        57,
+        78
+      ],
+      "sha256": "0af258d95f9b3c8372b9460b47ad0812a0498d9cce00d38b1957ebf304ea5b88",
+      "gates": [
+        {
+          "id": "P1-A01",
+          "text": "Every decision-critical missing field has a reason, owner, impact, and next step.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P1"
+        },
+        {
+          "id": "P1-A02",
+          "text": "No expired item appears as a current task.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P1"
+        },
+        {
+          "id": "P1-A03",
+          "text": "An unavailable optional source does not block an unrelated supported action.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P1"
+        },
+        {
+          "id": "P1-A04",
+          "text": "A repairable missing field can move from request through collection to a new decision revision.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P1"
+        },
+        {
+          "id": "P1-A05",
+          "text": "An unconfigured delivery channel produces a stable configuration state, not repeated rapid failures.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P1"
+        }
+      ]
+    },
+    {
+      "id": "P2",
+      "title": "Phase 2 — Complete the manual account and portfolio ledger",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        79,
+        102
+      ],
+      "sha256": "f3e19dfd8fd952984975057d44b8dfc99c0e29073926756a2e279f4a73578baf",
+      "gates": [
+        {
+          "id": "P2-A01",
+          "text": "The current eight positions migrate without changes to quantity or cost basis.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P2"
+        },
+        {
+          "id": "P2-A02",
+          "text": "Cash reconciles through buys, sells, fees, dividends, deposits, withdrawals, and reversals.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P2"
+        },
+        {
+          "id": "P2-A03",
+          "text": "Duplicate submissions do not duplicate transactions.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P2"
+        },
+        {
+          "id": "P2-A04",
+          "text": "A stale preview cannot overwrite newer account state.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P2"
+        },
+        {
+          "id": "P2-A05",
+          "text": "Missing or unreconciled cash blocks sizing, while research remains available.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P2"
+        },
+        {
+          "id": "P2-A06",
+          "text": "Manual account evidence supports allocation without requiring IBKR.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P2"
+        }
+      ]
+    },
+    {
+      "id": "P3",
+      "title": "Phase 3 — Supply the data the chosen workflow needs",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        103,
+        137
+      ],
+      "sha256": "acfb8e73f16750e8cc5902967b697f7c030df6ae308509453abfbd25383b4c81",
+      "gates": [
+        {
+          "id": "P3-A01",
+          "text": "Each required collector passes an actual provider-payload contract test.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P3"
+        },
+        {
+          "id": "P3-A02",
+          "text": "A normal scheduled run creates usable facts and updates an affected decision.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P3"
+        },
+        {
+          "id": "P3-A03",
+          "text": "Holdings receive first priority; watchlist coverage follows.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P3"
+        },
+        {
+          "id": "P3-A04",
+          "text": "Supported price history meets the selected horizon requirement; short-history instruments remain explicitly restricted.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P3"
+        },
+        {
+          "id": "P3-A05",
+          "text": "Fundamentals distinguish valid zero, missing, stale, and not applicable.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P3"
+        },
+        {
+          "id": "P3-A06",
+          "text": "No new subscription is justified only by a provider’s advertised feature list.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P3"
+        }
+      ]
+    },
+    {
+      "id": "P4",
+      "title": "Phase 4 — Build complete ticker decision packets",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        138,
+        161
+      ],
+      "sha256": "7ed20c80adf11542e3ff4014a4c55821fb5f461389aada23d20e57fa393ba9e9",
+      "gates": [
+        {
+          "id": "P4-A01",
+          "text": "Held stocks, an ETF, an option candidate, and an incomplete-data ticker each render a coherent packet.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P4"
+        },
+        {
+          "id": "P4-A02",
+          "text": "Material factual claims link to evidence.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P4"
+        },
+        {
+          "id": "P4-A03",
+          "text": "No evidence-free directional label is presented as permission to trade.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P4"
+        },
+        {
+          "id": "P4-A04",
+          "text": "Current quotes and historical decision inputs remain distinguishable.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P4"
+        },
+        {
+          "id": "P4-A05",
+          "text": "Generic empty bear/base/bull cards do not substitute for an analysis.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P4"
+        },
+        {
+          "id": "P4-A06",
+          "text": "A material new fact produces a traceable thesis or decision revision.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P4"
+        }
+      ]
+    },
+    {
+      "id": "P5",
+      "title": "Phase 5 — Connect research and calibration to production",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        162,
+        184
+      ],
+      "sha256": "a062a0f67f13c89afa71c211586ac4e531c2119d6509fd9124cabc2fefad980c",
+      "gates": [
+        {
+          "id": "P5-A01",
+          "text": "A scheduled research run creates a trial, results, dossier, and either a qualified forecast or an explicit rejection.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P5"
+        },
+        {
+          "id": "P5-A02",
+          "text": "Every actionable forecast identifies the model artifact that generated it.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P5"
+        },
+        {
+          "id": "P5-A03",
+          "text": "Future-information traps and negative controls fail promotion.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P5"
+        },
+        {
+          "id": "P5-A04",
+          "text": "Exact-cohort probability calibration can progress through genuine observations.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P5"
+        },
+        {
+          "id": "P5-A05",
+          "text": "A rejected or inconclusive model remains a valid research result, but cannot authorize a trade.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P5"
+        },
+        {
+          "id": "P5-A06",
+          "text": "An empty research table has a specific operational explanation.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P5"
+        }
+      ]
+    },
+    {
+      "id": "P6",
+      "title": "Phase 6 — Complete expression comparison and paper follow-through",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        185,
+        205
+      ],
+      "sha256": "8ea7e5a9f7efdedf74bc6c0db63845db4cdee28c7f775951b518471bbaee069a",
+      "gates": [
+        {
+          "id": "P6-A01",
+          "text": "A valid fixture and a real qualified candidate can complete the paper lifecycle when available.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P6"
+        },
+        {
+          "id": "P6-A02",
+          "text": "Invalid, stale, uncalibrated, or collateral-deficient candidates remain blocked.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P6"
+        },
+        {
+          "id": "P6-A03",
+          "text": "Fees, quantities, and contract multipliers reconcile through partial exits.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P6"
+        },
+        {
+          "id": "P6-A04",
+          "text": "Outcome collection runs without manual repair.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P6"
+        },
+        {
+          "id": "P6-A05",
+          "text": "Real-data qualification is reported separately from fixture-based correctness.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P6"
+        }
+      ]
+    },
+    {
+      "id": "P7",
+      "title": "Phase 7 — Make portfolio management useful every day",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        206,
+        227
+      ],
+      "sha256": "dfb739a91066ab9fcc5e8235e2d238ddde2c69aa54aa1243242e930f782c3371",
+      "gates": [
+        {
+          "id": "P7-A01",
+          "text": "Portfolio totals and proposed funding reconcile to the manual ledger.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P7"
+        },
+        {
+          "id": "P7-A02",
+          "text": "Cash-plus-multiple-trim funding persists and replays without overdraw.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P7"
+        },
+        {
+          "id": "P7-A03",
+          "text": "A good standalone candidate can be rejected for overlap, loss budget, liquidity, or funding.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P7"
+        },
+        {
+          "id": "P7-A04",
+          "text": "Missing data on one candidate does not erase supported analysis for unrelated holdings.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P7"
+        },
+        {
+          "id": "P7-A05",
+          "text": "The app can explain a cash decision and the condition that would change it.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P7"
+        }
+      ]
+    },
+    {
+      "id": "P8",
+      "title": "Phase 8 — Complete the daily assistant workflow",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        228,
+        249
+      ],
+      "sha256": "4e78fbe6efe39592f395642549468ce3e113b8ddb49c19b9954a29c90fb709b4",
+      "gates": [
+        {
+          "id": "P8-A01",
+          "text": "All workspaces show the same current action for the same decision.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P8"
+        },
+        {
+          "id": "P8-A02",
+          "text": "Acknowledge and snooze survive refresh and restart.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P8"
+        },
+        {
+          "id": "P8-A03",
+          "text": "No expired or unchanged event causes a new urgent notification.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P8"
+        },
+        {
+          "id": "P8-A04",
+          "text": "The assistant cites the packet and states when it lacks evidence.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P8"
+        },
+        {
+          "id": "P8-A05",
+          "text": "A daily review can be completed from the default screen and ticker drill-downs without visiting System.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P8"
+        }
+      ]
+    },
+    {
+      "id": "P9",
+      "title": "Phase 9 — Verify sustained operation and close the plan",
+      "source": "market-daily-assistant-plan-20260904.md",
+      "lines": [
+        250,
+        270
+      ],
+      "sha256": "318b5e9b844e72d6c9e696dcff73f44bea06a82446175441fa564113e5ac97fa",
+      "gates": [
+        {
+          "id": "P9-A01",
+          "text": "Every holding has a current position review or an explicit due action.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P9"
+        },
+        {
+          "id": "P9-A02",
+          "text": "Every critical missing field has an accurate reason and resolution path.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P9"
+        },
+        {
+          "id": "P9-A03",
+          "text": "No expired or duplicate action appears in the default queue.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P9"
+        },
+        {
+          "id": "P9-A04",
+          "text": "No unexplained critical-route failures occur during the acceptance window.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P9"
+        },
+        {
+          "id": "P9-A05",
+          "text": "Scheduled producers, publication, and outcome collection recover from tested interruptions.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P9"
+        },
+        {
+          "id": "P9-A06",
+          "text": "Readiness, coverage, research validity, and trading permission remain separate measures.",
+          "source_check": "NONE",
+          "owner": "PHASE_OWNED:P9"
+        }
+      ]
+    }
+  ],
+  "phase_lock_sha256": "cdd00438ef758c002b3e651f0bd80298420c8e36694525fd4c1f7722c9e746dc",
+  "gate_lock_sha256": "a92a22d9ba9bfe09c04e425a166fd9cb3aac6c3695a2b377462be3f1bcb2b080"
+}
