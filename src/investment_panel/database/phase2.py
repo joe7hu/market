@@ -61,7 +61,7 @@ class Phase2Repository:
                 if existing is not None:
                     actual = tuple(existing[key] for key in ("source_id", "source_version", "value", "unit", "ingest_run_id", "payload_id", "content_hash", "parent_snapshot_id", "observed_at", "available_at", "publication_at", "release_at", "vintage_at", "status", "confidence", "metadata", "actual", "consensus", "surprise", "revision"))
                     actual = (*actual[:4], str(actual[4]), *actual[5:])
-                    if actual != expected:
+                    if actual[:4] + actual[6:] != expected[:4] + expected[6:]:
                         raise ValueError(f"Phase 2 observation identity conflicts: {row.observation_id}")
                     continue
                 connection.execute(
