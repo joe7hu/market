@@ -105,6 +105,20 @@ def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(
                        has_table_privilege('market_app', 'raw.quote_history', 'SELECT'),
                        has_table_privilege('market_app', 'raw.quote_confirmation', 'SELECT'),
                        has_table_privilege('market_app', 'raw.quote_fact_availability', 'SELECT'),
+                       has_table_privilege('market_app', 'raw.price_bar', 'SELECT'),
+                       has_table_privilege('market_app', 'raw.price_bar', 'INSERT'),
+                       has_table_privilege('market_app', 'raw.price_bar', 'UPDATE'),
+                       has_table_privilege('market_app', 'raw.quote', 'SELECT'),
+                       has_table_privilege('market_app', 'raw.quote', 'INSERT'),
+                       has_table_privilege('market_app', 'raw.quote', 'UPDATE'),
+                       has_table_privilege('market_app', 'raw.price_bar_history', 'INSERT'),
+                       has_table_privilege('market_app', 'raw.quote_history', 'INSERT'),
+                       has_table_privilege('market_app', 'raw.price_bar_confirmation', 'INSERT'),
+                       has_table_privilege('market_app', 'raw.quote_confirmation', 'INSERT'),
+                       has_table_privilege('market_app', 'raw.price_bar_fact_availability', 'INSERT'),
+                       has_table_privilege('market_app', 'raw.quote_fact_availability', 'INSERT'),
+                       has_table_privilege('market_app', 'raw.price_bar_fact_availability', 'UPDATE'),
+                       has_table_privilege('market_app', 'raw.quote_fact_availability', 'UPDATE'),
                        has_table_privilege('market_app', 'analysis.agent_task', 'SELECT'),
                        has_table_privilege('market_app', 'raw.broker_position_snapshot', 'SELECT'),
                        has_table_privilege('market_app', 'app.decision_inbox_item', 'SELECT'),
@@ -120,7 +134,7 @@ def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(
 
         assert tuple(role) == (True, False, False, False, False, False, False)
         assert tuple(membership) == (True, False)
-        assert tuple(privileges) == (True, False, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True, True)
+        assert tuple(privileges) == (True, False, *([True] * 31))
     finally:
         with closing(psycopg.connect(postgres_dsn)) as connection:
             connection.execute(
