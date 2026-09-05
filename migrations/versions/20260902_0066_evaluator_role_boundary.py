@@ -491,8 +491,20 @@ def downgrade() -> None:
         END
         $reassign$;
         DROP FUNCTION IF EXISTS analysis.write_research_evaluator_output(UUID, UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, BOOLEAN, JSONB, TEXT);
-        DROP ROLE IF EXISTS market_app;
-        DROP ROLE IF EXISTS market_migrator;
-        DROP ROLE IF EXISTS market_research_signer;
+        -- Roles are cluster-wide.  A restored database may share this
+        -- cluster with another Market database, so preserve a role that has
+        -- dependencies outside this database instead of failing rollback.
+        DO $drop_roles$
+        DECLARE role_name NAME;
+        BEGIN
+            FOREACH role_name IN ARRAY ARRAY['market_app', 'market_migrator', 'market_research_signer']::NAME[] LOOP
+                BEGIN
+                    EXECUTE format('DROP ROLE IF EXISTS %I', role_name);
+                EXCEPTION WHEN dependent_objects_still_exist THEN
+                    NULL;
+                END;
+            END LOOP;
+        END
+        $drop_roles$;
         """
     )

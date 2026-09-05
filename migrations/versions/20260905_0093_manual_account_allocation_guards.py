@@ -224,6 +224,11 @@ def upgrade() -> None:
             ) THEN
               RAISE EXCEPTION 'Phase 4 trim funding source is not a persisted position: %', source_key;
             END IF;""", """
+            IF (SELECT count(*) FROM jsonb_object_keys(NEW.funding_sources)) = 1
+               AND NEW.funding_amount IS NOT NULL
+               AND abs(source_amount - NEW.funding_amount) > 0.000000001 THEN
+              RAISE EXCEPTION 'Phase 4 funding sources do not conserve funding_amount';
+            END IF;
             IF analysis.phase4_funding_source_capacity(
                  source_key,
                  (SELECT metadata->>'authority_snapshot_id'
@@ -238,7 +243,7 @@ def upgrade() -> None:
                    WHERE allocation_id = NEW.allocation_id),
                  expected_cutoff
                ) < source_amount THEN
-              RAISE EXCEPTION 'Phase 4 funding source is unavailable or insufficient: %', source_key;
+              RAISE EXCEPTION 'Phase 4 funding source is unavailable or over-allocated: %', source_key;
             END IF;""")
     _replace_guard("enforce_phase4_lineage", """
                     ELSIF NEW.funding_source LIKE 'CASH:broker-account:%' AND NOT EXISTS (
@@ -291,7 +296,7 @@ def _replace_guard(function_name: str, old: str, new: str) -> None:
     op.execute(
         f"""
         DO $do$
-        DECLARE body TEXT; original TEXT;
+        DECLARE body TEXT; original TEXT; old_normalized TEXT; new_normalized TEXT;
         BEGIN
           SELECT pg_get_functiondef(oid) INTO body
             FROM pg_proc
@@ -300,9 +305,18 @@ def _replace_guard(function_name: str, old: str, new: str) -> None:
           IF body IS NULL THEN
             RAISE EXCEPTION 'Phase 4 guard function is missing: {sql_function}';
           END IF;
+          -- PostgreSQL deparses stored function bodies with different indentation
+          -- and cast casing than the migration source.  Match the immutable SQL
+          -- fragment by normalized whitespace, then execute the complete body.
+          body := regexp_replace(body, '[[:space:]]+', ' ', 'g');
           original := body;
-          body := replace(body, '{sql_old}', '{sql_new}');
+          old_normalized := trim(regexp_replace('{sql_old}', '[[:space:]]+', ' ', 'g'));
+          new_normalized := trim(regexp_replace('{sql_new}', '[[:space:]]+', ' ', 'g'));
+          body := replace(body, old_normalized, new_normalized);
           IF body = original THEN
+            IF position(new_normalized IN body) > 0 THEN
+              RETURN;
+            END IF;
             RAISE EXCEPTION 'Phase 4 guard replacement did not match: {sql_function}';
           END IF;
           EXECUTE body;

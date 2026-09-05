@@ -19,7 +19,7 @@ from investment_panel.core.portfolio import (
     execution_model_id_for_snapshot,
     PaperExecutionObservation,
 )
-from investment_panel.database.migrations import downgrade_database, upgrade_database
+from investment_panel.database.migrations import HEAD_REVISION, downgrade_database, upgrade_database
 from investment_panel.database.portfolio import PortfolioLoopRepository
 
 
@@ -466,7 +466,7 @@ def test_phase4_source_and_calibration_migration_round_trip_restores_permissions
 
     upgrade_database(migrated_postgres_dsn)
     with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260905_0078"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == HEAD_REVISION
         assert connection.execute(
             "SELECT has_function_privilege('market_app', 'analysis.write_phase4_execution(jsonb,text)', 'EXECUTE')"
         ).fetchone()["has_function_privilege"] is True
