@@ -289,7 +289,17 @@ def mark_stale_running_jobs(
     stale_after: timedelta = timedelta(hours=3),
     retries: int = 30,
 ) -> int:
-    return _job_repository(db_path).mark_stale(stale_after=stale_after)
+    repository = _job_repository(db_path)
+    marked = repository.mark_stale(stale_after=stale_after)
+    for job_name in JOB_TIMEOUT_SECONDS:
+        timeout = _job_timeout_seconds(job_name)
+        if timeout is None:
+            continue
+        marked += repository.mark_stale(
+            stale_after=timedelta(seconds=timeout + (2 * JOB_HEARTBEAT_SECONDS)),
+            job_name=job_name,
+        )
+    return marked
 
 
 def start_refresh_job(
@@ -303,8 +313,14 @@ def start_refresh_job(
         allowed = ", ".join(sorted(ALLOWLIST))
         raise ValueError(f"refresh job is not allowlisted: {job_name}. Allowed jobs: {allowed}")
 
+    timeout = _job_timeout_seconds(job_name)
+    stale_after = timedelta(hours=3) if timeout is None else timedelta(
+        seconds=timeout + (2 * JOB_HEARTBEAT_SECONDS)
+    )
     return _job_repository(db_path).start(
         job_name,
+        stale_after=stale_after,
+        stale_job_name=job_name,
         scheduled_due_at=scheduled_due_at,
         dispatched_at=dispatched_at,
     )

@@ -22,10 +22,11 @@ class JobRepository:
         job_name: str,
         *,
         stale_after: timedelta = timedelta(hours=3),
+        stale_job_name: str | None = None,
         scheduled_due_at: datetime | None = None,
         dispatched_at: datetime | None = None,
     ) -> dict[str, Any]:
-        self.mark_stale(stale_after=stale_after)
+        self.mark_stale(stale_after=stale_after, job_name=stale_job_name)
         with self.runtime.transaction() as connection:
             try:
                 with connection.transaction():
@@ -108,18 +109,24 @@ class JobRepository:
         self,
         *,
         stale_after: timedelta = timedelta(hours=3),
+        job_name: str | None = None,
         reason: str | None = None,
     ) -> int:
         message = reason or f"Refresh job did not finish within {stale_after}."
         cutoff = datetime.now(UTC) - stale_after
+        job_filter = " AND job_name = %s" if job_name is not None else ""
+        parameters: list[Any] = [message, Jsonb({"error": message}), cutoff]
+        if job_name is not None:
+            parameters.append(job_name)
         with self.runtime.transaction() as connection:
             result = connection.execute(
-                """
+                f"""
                 UPDATE ops.job_run
                 SET status = 'failed', finished_at = now(), error = %s, summary = %s
                 WHERE status = 'running' AND heartbeat_at < %s
+                {job_filter}
                 """,
-                [message, Jsonb({"error": message}), cutoff],
+                parameters,
             )
         return int(result.rowcount)
 

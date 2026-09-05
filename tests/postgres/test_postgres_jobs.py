@@ -85,6 +85,25 @@ def test_stale_and_restart_recovery_are_database_owned(
     assert active["id"] != stale["id"]
 
 
+def test_stale_recovery_can_be_scoped_to_one_job(job_repository: JobRepository, postgres_dsn: str) -> None:
+    target = job_repository.start("target-refresh")
+    other = job_repository.start("other-refresh")
+    stale_at = datetime.now(UTC) - timedelta(minutes=10)
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        connection.execute(
+            "UPDATE ops.job_run SET heartbeat_at = %s WHERE id IN (%s, %s)",
+            [stale_at, target["id"], other["id"]],
+        )
+        connection.commit()
+
+    assert job_repository.mark_stale(
+        stale_after=timedelta(minutes=5), job_name="target-refresh"
+    ) == 1
+    states = {row["job_name"]: row for row in job_repository.rows()}
+    assert states["target-refresh"]["status"] == "failed"
+    assert states["other-refresh"]["status"] == "running"
+
+
 def test_refresh_job_facade_uses_postgresql_without_sidecars(
     migrated_postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
