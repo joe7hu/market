@@ -1433,7 +1433,7 @@ def apply_decay_to_allocation(
         "metadata": allocation.metadata,
     }
     adjusted = PortfolioAllocationSnapshot(
-        allocation_id=f"allocation:{_hash(payload)}", as_of=allocation.as_of,
+        allocation_id=allocation_id_for_snapshot(payload), as_of=allocation.as_of,
         input_cutoff=allocation.input_cutoff, cash_hurdle=allocation.cash_hurdle,
         status="available" if selected else "cash_only", items=tuple(updated),
         forecast_ids=allocation.forecast_ids, action_ids=allocation.action_ids,

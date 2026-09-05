@@ -11,6 +11,7 @@ from investment_panel.core import portfolio as portfolio_core
 from investment_panel.core.portfolio import (
     AuthoritativePortfolioBundle,
     PaperExecutionObservation,
+    PortfolioAllocationSnapshot,
     PortfolioCandidate,
     PortfolioBookEvidence,
     PortfolioConstraintEvidence,
@@ -409,6 +410,12 @@ def test_decay_guard_reduces_before_the_rollback_threshold() -> None:
 
 def test_decay_persists_rollback_evidence_and_releases_weight_to_cash() -> None:
     allocation = allocate_portfolio_for_tests([candidate("GOOD")], as_of=AS_OF, cash_hurdle=0.01)
+    # Exercise the canonical reconstruction path with a valid but non-canonical
+    # row order.  The immutable allocation identity is order-independent;
+    # decay must use the same canonical ordering when issuing its replacement.
+    allocation = PortfolioAllocationSnapshot.model_validate({
+        **allocation.model_dump(), "items": tuple(reversed(allocation.items)),
+    })
     item = next(item for item in allocation.items if item.ticker == "GOOD")
     adjusted, decisions = apply_decay_to_allocation(
         allocation, {item.allocation_item_id: 1.0}, rollback_threshold=1.0,
