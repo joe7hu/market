@@ -439,6 +439,32 @@ def test_today_scope_bounds_secondary_publication_reads(monkeypatch) -> None:
     }
 
 
+def test_dashboard_default_defers_deep_optional_models(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_load(_config, *, table_names, query_row_limits=None, **_kwargs):
+        calls.append({"table_names": tuple(table_names), "query_row_limits": query_row_limits})
+        return PanelData(
+            status=DataStatus(True, "loaded", "test"),
+            tables={name: [] for name in table_names},
+            metadata={"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []},
+        )
+
+    monkeypatch.setattr(loaders_owner, "load_panel_data", fake_load)
+
+    panel = loaders_owner.load_panel_scope_data(
+        typed_config("postgresql:///test"), "dashboard", limit=10,
+    )
+
+    names = calls[0]["table_names"]
+    assert "decision_queue" in names
+    assert "portfolio" in names
+    assert "quotes" not in names
+    assert "correlations" not in names
+    assert "options_expiries" not in names
+    assert len(panel.metadata["dashboard_deferred_models"]) > 0
+
+
 def test_source_table_loader_uses_requested_postgresql_model(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 

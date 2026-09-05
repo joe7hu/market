@@ -36,11 +36,16 @@ _TODAY_SECONDARY_QUERY_LIMITS = {
     "portfolio_risk_cards": 8,
     "feed_signals": 12,
 }
-DASHBOARD_DEEP_TABLES = frozenset({
-    "correlations",
-    "options_expiries",
-    "options_payoff_scenarios",
-    "vol_surface_features",
+DASHBOARD_DEFAULT_TABLES = frozenset({
+    "decision_queue", "portfolio", "catalysts", "thesis_monitor",
+    "source_freshness", "source_health", "sources", "source_runs", "source_items",
+    "ticker_source_signals", "broker_status", "agent_recommendations",
+    "preopen_daily_brief", "daily_brief", "feed_signals", "universe_screen",
+    "source_consensus", "ownership_consensus", "market_context",
+    "portfolio_risk_cards", "review_actions", "option_radar_opportunity",
+    "candidate_event", "candidate_event_mark", "candidate_event_attribution",
+    "option_attribution", "missed_winner_event", "strategy_mutation_proposal",
+    "disclosures", "news",
 })
 
 
@@ -372,7 +377,7 @@ def load_panel_scope_data(
     page_offset = max(0, int(offset or 0))
     requested_limit = max(1, int(limit)) if limit is not None else None
     if scope == "dashboard" and requested_limit is not None:
-        requested = tuple(name for name in requested if name not in DASHBOARD_DEEP_TABLES)
+        requested = tuple(name for name in requested if name in DASHBOARD_DEFAULT_TABLES)
     if scope == "market":
         # Market scope is publication-backed. Fetch one bounded page window so
         # the response layer does not materialize every historical chart row.
@@ -468,7 +473,12 @@ def load_panel_scope_data(
             tables=tables,
             metadata=metadata,
         )
-    return load_panel_data(active_config, table_names=requested, query_row_limits=query_row_limits or None)
+    loaded = load_panel_data(active_config, table_names=requested, query_row_limits=query_row_limits or None)
+    if scope == "dashboard" and requested_limit is not None:
+        loaded.metadata["dashboard_deferred_models"] = sorted(
+            set(tables_for_scope("dashboard")) - set(requested)
+        )
+    return loaded
 
 
 def load_opportunities_scope_data(

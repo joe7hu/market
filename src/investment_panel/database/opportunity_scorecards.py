@@ -139,6 +139,48 @@ class OpportunityScorecardRepository:
         with self.runtime.read(JOB_PROFILE) as connection:
             rows = connection.execute(
                 """
+                WITH latest_decisions AS MATERIALIZED (
+                    SELECT DISTINCT ON (decision.episode_key)
+                           decision.id, decision.run_id, decision.episode_key,
+                           decision.as_of, decision.state,
+                           decision.sample_eligible, decision.quarantine_reason,
+                           decision.calibration_cohort
+                    FROM analysis.decision decision
+                    WHERE decision.kind = 'option'
+                      AND decision.lane = %s
+                      AND decision.as_of >= %s
+                      AND decision.as_of <= %s
+                      AND decision.calibration_cohort LIKE %s
+                    ORDER BY decision.episode_key, decision.as_of DESC, decision.id DESC
+                ), published_ids AS MATERIALIZED (
+                    SELECT publication.analysis_run_id AS run_id,
+                           item.payload->>'decision_id' AS decision_id
+                    FROM app.publication publication
+                    JOIN app.publication_content_item item ON item.publication_id = publication.id
+                    WHERE publication.status IN ('published', 'superseded')
+                      AND (
+                        (publication.scope = 'options-radar'
+                         AND item.model_name = 'option_radar_opportunity')
+                        OR
+                        (publication.scope = 'options-decision-system'
+                         AND item.model_name = 'options_decision_candidate')
+                      )
+                      AND item.payload->>'decision_id' IS NOT NULL
+                    UNION
+                    SELECT publication.analysis_run_id AS run_id,
+                           item.payload->>'opportunity_id' AS decision_id
+                    FROM app.publication publication
+                    JOIN app.publication_content_item item ON item.publication_id = publication.id
+                    WHERE publication.status IN ('published', 'superseded')
+                      AND (
+                        (publication.scope = 'options-radar'
+                         AND item.model_name = 'option_radar_opportunity')
+                        OR
+                        (publication.scope = 'options-decision-system'
+                         AND item.model_name = 'options_decision_candidate')
+                      )
+                      AND item.payload->>'opportunity_id' IS NOT NULL
+                )
                 SELECT decision.episode_key, decision.as_of AS available_at, decision.state,
                        decision.sample_eligible AS decision_sample_eligible,
                        decision.quarantine_reason AS decision_quarantine_reason,
@@ -151,23 +193,11 @@ class OpportunityScorecardRepository:
                        paper.status AS paper_status, paper.filled_at, paper.exit_at,
                        EXISTS (
                          SELECT 1
-                         FROM app.publication publication
-                         JOIN app.publication_content_item item ON item.publication_id = publication.id
-                         WHERE publication.analysis_run_id = decision.run_id
-                           AND publication.status IN ('published', 'superseded')
-                           AND (
-                             (publication.scope = 'options-radar'
-                              AND item.model_name = 'option_radar_opportunity')
-                             OR
-                             (publication.scope = 'options-decision-system'
-                              AND item.model_name = 'options_decision_candidate')
-                           )
-                           AND (
-                             item.payload->>'decision_id' = decision.id::text
-                             OR item.payload->>'opportunity_id' = decision.id::text
-                           )
+                         FROM published_ids
+                         WHERE published_ids.run_id = decision.run_id
+                           AND published_ids.decision_id = decision.id::text
                        ) AS published
-                FROM analysis.decision decision
+                FROM latest_decisions decision
                 LEFT JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
                 LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
                 LEFT JOIN LATERAL (
@@ -177,11 +207,6 @@ class OpportunityScorecardRepository:
                     ORDER BY paper_order.created_at DESC
                     LIMIT 1
                 ) paper ON true
-                WHERE decision.kind = 'option'
-                  AND decision.lane = %s
-                  AND decision.as_of >= %s
-                  AND decision.as_of <= %s
-                  AND decision.calibration_cohort LIKE %s
                 ORDER BY decision.as_of, decision.id
                 """,
                 [lane, since, reference, f"{SCORECARD_TRUTH_PREFIX}%"],
