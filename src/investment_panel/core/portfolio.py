@@ -17,7 +17,12 @@ def _json(value: Any) -> Any:
     if isinstance(value, datetime):
         # Match analysis.phase4_canonical_json: timestamps are stored as UTC
         # timestamp-without-time-zone values in the canonical JSON payload.
-        return value.astimezone(UTC).isoformat().removesuffix("+00:00")
+        timestamp = value.astimezone(UTC).isoformat().removesuffix("+00:00")
+        if "." in timestamp:
+            prefix, fraction = timestamp.split(".", 1)
+            fraction = fraction.rstrip("0")
+            timestamp = f"{prefix}.{fraction}" if fraction else prefix
+        return timestamp
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, Enum):
