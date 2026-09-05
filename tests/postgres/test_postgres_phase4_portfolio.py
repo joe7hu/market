@@ -354,6 +354,17 @@ def test_repository_calibrates_from_every_item_in_the_persisted_allocation(
         ]
         connection.commit()
 
+        stale_cutoff = build_execution_model_snapshot(
+            allocation_id, AS_OF + timedelta(seconds=151), observations,
+        )
+        stale_cutoff = stale_cutoff.model_copy(update={"input_cutoff": AS_OF + timedelta(seconds=91)})
+        stale_cutoff = stale_cutoff.model_copy(update={
+            "execution_model_snapshot_id": execution_model_id_for_snapshot(stale_cutoff),
+        })
+        with pytest.raises(RaiseException, match="maximum allocation observation availability"):
+            repository.store_execution_model(connection, stale_cutoff)
+        connection.rollback()
+
         incomplete = build_execution_model_snapshot(
             allocation_id, AS_OF + timedelta(seconds=151), [observations[1]],
         )
@@ -455,7 +466,7 @@ def test_phase4_source_and_calibration_migration_round_trip_restores_permissions
 
     upgrade_database(migrated_postgres_dsn)
     with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260904_0077"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260905_0078"
         assert connection.execute(
             "SELECT has_function_privilege('market_app', 'analysis.write_phase4_execution(jsonb,text)', 'EXECUTE')"
         ).fetchone()["has_function_privilege"] is True
