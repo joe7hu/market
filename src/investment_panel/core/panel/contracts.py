@@ -14,6 +14,14 @@ PHASE4_PORTFOLIO_TABLES = (
     "book_attribution",
 )
 
+# These summary names have no PostgreSQL read-model owner yet. Keep them
+# explicit so dashboard consumers can show an unavailable state.
+DASHBOARD_UNAVAILABLE_MODELS = frozenset({
+    "agent_recommendations",
+    "market_context",
+    "market_valuation_charts",
+})
+
 
 PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "feed": ("feed_signals",),
@@ -78,7 +86,6 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "sources",
         "source_runs",
         "source_items",
-        "agent_recommendations",
         "broker_status",
         "preopen_daily_brief",
         "daily_brief",
@@ -86,12 +93,10 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "universe_screen",
         "source_consensus",
         "ownership_consensus",
-        "market_context",
         "news",
         "candidates",
         "decision_readiness",
         "market_valuation_reference_charts",
-        "market_valuation_charts",
         "market_environment_assets",
         "market_environment_model",
         "agent_postmortem_request",

@@ -2,6 +2,7 @@
 
 from investment_panel.core.panel.contracts import (
     DECISION_REPAIR_TABLES,
+    DASHBOARD_UNAVAILABLE_MODELS,
     FRONTEND_ADDITIONAL_TABLES,
     FRONTEND_TABLE_KEY_OVERRIDES,
     PANEL_SCOPE_TABLES,
@@ -30,6 +31,7 @@ from investment_panel.core.panel.ticker_sections import build_ticker_dossier
 
 __all__ = [
     "DECISION_REPAIR_TABLES",
+    "DASHBOARD_UNAVAILABLE_MODELS",
     "FRONTEND_ADDITIONAL_TABLES",
     "FRONTEND_TABLE_KEY_OVERRIDES",
     "PANEL_SCOPE_TABLES",

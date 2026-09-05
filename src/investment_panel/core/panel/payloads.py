@@ -70,16 +70,13 @@ DASHBOARD_ROW_KEYS = (
     ("source_items", "source_items", 12),
     ("ticker_source_signals", "ticker_source_signals", 12),
     ("broker_status", "broker_status", 8),
-    ("agent_recommendations", "agent_recommendations", 8),
     ("preopen_daily_brief", "preopen_daily_brief", 1),
     ("daily_brief", "daily_brief", 12),
     ("feed_signals", "feed_signals", 12),
     ("universe_screen", "universe_screen", 12),
     ("source_consensus", "source_consensus", 12),
     ("ownership_consensus", "ownership_consensus", 12),
-    ("market_context", "market_context", 12),
     ("market_valuation_reference_charts", "market_valuation_reference_charts", 8),
-    ("market_valuation_charts", "market_valuation_charts", 24),
     ("market_environment_assets", "market_environment_assets", 80),
     ("market_environment_model", "market_environment_model", 12),
     ("portfolio_risk_cards", "portfolio_risk_cards", 8),
@@ -143,16 +140,13 @@ METRIC_TABLES = (
     ("source_items", "source_items"),
     ("ticker_source_signals", "ticker_source_signals"),
     ("broker_providers", "broker_status"),
-    ("agent_recommendations", "agent_recommendations"),
     ("preopen_daily_brief", "preopen_daily_brief"),
     ("daily_brief", "daily_brief"),
     ("feed_signals", "feed_signals"),
     ("universe_screen", "universe_screen"),
     ("source_consensus", "source_consensus"),
     ("ownership_consensus", "ownership_consensus"),
-    ("market_context", "market_context"),
     ("market_valuation_reference_charts", "market_valuation_reference_charts"),
-    ("market_valuation_charts", "market_valuation_charts"),
     ("market_environment_assets", "market_environment_assets"),
     ("market_environment_model", "market_environment_model"),
     ("portfolio_risk_cards", "portfolio_risk_cards"),
@@ -162,8 +156,14 @@ METRIC_TABLES = (
 
 def _deferred_dashboard_models(status: dict[str, Any]) -> set[str]:
     metadata = status.get("metadata")
-    values = metadata.get("dashboard_deferred_models") if isinstance(metadata, dict) else None
-    return {value for value in values if isinstance(value, str)} if isinstance(values, list) else set()
+    if not isinstance(metadata, dict):
+        return set()
+    return {
+        value
+        for key in ("dashboard_deferred_models", "dashboard_unavailable_models")
+        for value in metadata.get(key, [])
+        if isinstance(value, str)
+    }
 
 
 def dashboard_payload(status: dict[str, Any], rows_for_table: RowsForTable) -> dict[str, Any]:

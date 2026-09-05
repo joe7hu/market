@@ -2,7 +2,6 @@
 export const PANEL_TABLE_KEYS = [
   "agentPostmortem",
   "agentPostmortemRequest",
-  "agentRecommendations",
   "agentThesis",
   "agentThesisRequest",
   "agentThesisValidation",
@@ -39,7 +38,6 @@ export const PANEL_TABLE_KEYS = [
   "instrumentStateSnapshot",
   "liquidity",
   "manualWatchlist",
-  "marketContext",
   "marketCoverageVector",
   "marketEnvironmentAssets",
   "marketEnvironmentModel",

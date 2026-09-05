@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.decision import TradePlan
-from investment_panel.core.panel import tables_for_scope
+from investment_panel.core.panel import DASHBOARD_UNAVAILABLE_MODELS, tables_for_scope
 from app.data_access.types import DataStatus, PanelData
 from investment_panel.core.panel import (
     SCOPED_TABLE_ROW_LIMITS,
@@ -476,10 +476,11 @@ def load_panel_scope_data(
             metadata=metadata,
         )
     loaded = load_panel_data(active_config, table_names=requested, query_row_limits=query_row_limits or None)
-    if scope == "dashboard" and requested_limit is not None:
+    if scope == "dashboard":
         loaded.metadata["dashboard_deferred_models"] = sorted(
             set(tables_for_scope("dashboard")) - set(requested)
         )
+        loaded.metadata["dashboard_unavailable_models"] = sorted(DASHBOARD_UNAVAILABLE_MODELS)
     return loaded
 
 
