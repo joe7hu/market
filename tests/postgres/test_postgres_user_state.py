@@ -139,6 +139,34 @@ def test_portfolio_transaction_buy_appends_activity_and_updates_position(client:
     assert activity["rows"][0]["idempotency_key"] == "test-buy-nvda-1"
 
 
+def test_manual_account_reconciliation_is_previewed_versioned_and_idempotent(client: TestClient) -> None:
+    payload = {
+        "effective_at": "2026-07-14T15:30:00Z",
+        "cash_balance": 1250,
+        "net_liquidation": 1250,
+        "idempotency_key": "manual-account-reconciliation-1",
+        "notes": "opening manual cash check",
+    }
+    preview = client.post("/api/portfolio/account/reconciliation/preview", json=payload)
+    assert preview.status_code == 200
+    assert preview.json()["expected_reconciliation_version"] == 0
+    assert preview.json()["proposed"]["reconciliation_version"] == 1
+
+    saved = client.post(
+        "/api/portfolio/account/reconciliation",
+        json={**payload, "expected_reconciliation_version": 0},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["snapshot"]["reconciliation_state"] == "reconciled"
+    duplicate = client.post(
+        "/api/portfolio/account/reconciliation",
+        json={**payload, "expected_reconciliation_version": 0},
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["snapshot"]["id"] == saved.json()["snapshot"]["id"]
+    assert client.get("/api/portfolio/account").json()["snapshot"]["cash_balance"] == 1250.0
+
+
 def test_portfolio_transaction_sell_previews_and_realizes_average_cost_pnl(client: TestClient) -> None:
     buy = {
         "symbol": "MSFT",

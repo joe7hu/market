@@ -3532,6 +3532,129 @@
         "title": "Invalidation",
         "type": "object"
       },
+      "ManualAccountPreviewResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "current_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Snapshot"
+          },
+          "expected_reconciliation_version": {
+            "title": "Expected Reconciliation Version",
+            "type": "integer"
+          },
+          "proposed": {
+            "additionalProperties": true,
+            "title": "Proposed",
+            "type": "object"
+          }
+        },
+        "required": [
+          "expected_reconciliation_version",
+          "proposed"
+        ],
+        "title": "ManualAccountPreviewResponse",
+        "type": "object"
+      },
+      "ManualAccountReconciliationInput": {
+        "properties": {
+          "account": {
+            "const": "manual",
+            "default": "manual",
+            "title": "Account",
+            "type": "string"
+          },
+          "cash_balance": {
+            "minimum": 0.0,
+            "title": "Cash Balance",
+            "type": "number"
+          },
+          "currency": {
+            "const": "USD",
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "effective_at": {
+            "title": "Effective At",
+            "type": "string"
+          },
+          "expected_reconciliation_version": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Reconciliation Version"
+          },
+          "idempotency_key": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "net_liquidation": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Liquidation"
+          },
+          "notes": {
+            "default": "",
+            "title": "Notes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "effective_at",
+          "cash_balance",
+          "idempotency_key"
+        ],
+        "title": "ManualAccountReconciliationInput",
+        "type": "object"
+      },
+      "ManualAccountResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "ledger": {
+            "additionalProperties": true,
+            "title": "Ledger",
+            "type": "object"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot"
+          }
+        },
+        "title": "ManualAccountResponse",
+        "type": "object"
+      },
       "MarketDimensionState": {
         "additionalProperties": true,
         "description": "One typed market dimension at one point-in-time horizon.",
@@ -17929,6 +18052,100 @@
           }
         },
         "summary": "Panel Snapshot"
+      }
+    },
+    "/api/portfolio/account": {
+      "get": {
+        "operationId": "manual_account_api_portfolio_account_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualAccountResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Manual Account"
+      }
+    },
+    "/api/portfolio/account/reconciliation": {
+      "post": {
+        "operationId": "record_manual_account_api_portfolio_account_reconciliation_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualAccountReconciliationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualAccountResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Manual Account"
+      }
+    },
+    "/api/portfolio/account/reconciliation/preview": {
+      "post": {
+        "operationId": "preview_manual_account_api_portfolio_account_reconciliation_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualAccountReconciliationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualAccountPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Manual Account"
       }
     },
     "/api/portfolio/transactions": {

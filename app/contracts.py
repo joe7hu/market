@@ -52,6 +52,17 @@ class PortfolioTransactionReversalInput(BaseModel):
     notes: str = ""
 
 
+class ManualAccountReconciliationInput(BaseModel):
+    effective_at: str
+    cash_balance: float = Field(ge=0, allow_inf_nan=False)
+    net_liquidation: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    account: Literal["manual"] = "manual"
+    currency: Literal["USD"] = "USD"
+    notes: str = ""
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    expected_reconciliation_version: int | None = Field(default=None, ge=0)
+
+
 class DecisionInboxStateInput(BaseModel):
     state: Literal["open", "acknowledged", "snoozed", "dismissed", "review_complete"]
     snoozed_until: str | None = None

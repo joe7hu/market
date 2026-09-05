@@ -7,7 +7,10 @@ from typing import Any, Callable
 from app.data_access import mutations
 from investment_panel.core.config import AppConfig
 from investment_panel.database.portfolio_ledger import (
+    manual_account_snapshot as manual_account_snapshot_owner,
+    preview_manual_account_reconciliation as preview_manual_account_owner,
     preview_portfolio_transaction as preview_transaction_owner,
+    record_manual_account_reconciliation as record_manual_account_owner,
     record_portfolio_transaction as record_transaction_owner,
     reverse_portfolio_transaction as reverse_transaction_owner,
 )
@@ -47,6 +50,15 @@ class PortfolioActions:
 
     def preview_transaction(self, transaction: dict[str, Any]) -> dict[str, Any]:
         return self._preview_transaction(self.config, transaction)
+
+    def manual_account(self) -> dict[str, Any]:
+        return manual_account_snapshot_owner(self.config)
+
+    def preview_manual_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return preview_manual_account_owner(self.config, payload)
+
+    def record_manual_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return record_manual_account_owner(self.config, payload)
 
     def record_transaction(self, transaction: dict[str, Any]) -> dict[str, Any]:
         return self._transaction_payload(self._record_transaction(self.config, transaction))

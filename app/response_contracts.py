@@ -332,6 +332,17 @@ class PortfolioTransactionResultResponse(BaseModel):
     portfolio: TablePayloadResponse
 
 
+class ManualAccountResponse(FlexibleResponse):
+    snapshot: Row | None = None
+    ledger: Row = Field(default_factory=dict)
+
+
+class ManualAccountPreviewResponse(FlexibleResponse):
+    expected_reconciliation_version: int
+    current_snapshot: Row | None = None
+    proposed: Row
+
+
 class WatchlistMutationResponse(BaseModel):
     watchlist_symbol: Row
     data_refresh: Row | None = None

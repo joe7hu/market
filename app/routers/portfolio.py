@@ -11,6 +11,7 @@ from app.actions.portfolio import PortfolioActions
 from app.actions.options import OptionsActions
 from app import dependencies
 from app.contracts import (
+    ManualAccountReconciliationInput,
     OptionsHistoryToggleInput,
     PortfolioTransactionInput,
     PortfolioTransactionReversalInput,
@@ -18,6 +19,8 @@ from app.contracts import (
 )
 from app.data_access import loaders, payloads
 from app.response_contracts import (
+    ManualAccountPreviewResponse,
+    ManualAccountResponse,
     OptionsHistoryPolicyResponse,
     PortfolioTransactionPreviewResponse,
     PortfolioTransactionResultResponse,
@@ -27,6 +30,37 @@ from app.response_contracts import (
 from investment_panel.core.config import AppConfig
 
 router = APIRouter()
+
+
+@router.get("/api/portfolio/account", response_model=ManualAccountResponse, response_model_exclude_unset=True)
+def manual_account(actions: PortfolioActions = Depends(dependencies.get_portfolio_actions)) -> dict[str, Any]:
+    return actions.manual_account()
+
+
+@router.post("/api/portfolio/account/reconciliation/preview", response_model=ManualAccountPreviewResponse, response_model_exclude_unset=True)
+def preview_manual_account(
+    payload: ManualAccountReconciliationInput,
+    actions: PortfolioActions = Depends(dependencies.get_portfolio_actions),
+    _request=Depends(dependencies.get_authorized_request),
+) -> dict[str, Any]:
+    try:
+        return actions.preview_manual_account(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/portfolio/account/reconciliation", response_model=ManualAccountResponse, response_model_exclude_unset=True)
+def record_manual_account(
+    payload: ManualAccountReconciliationInput,
+    actions: PortfolioActions = Depends(dependencies.get_portfolio_actions),
+    _request=Depends(dependencies.get_authorized_request),
+) -> dict[str, Any]:
+    try:
+        result = actions.record_manual_account(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    panel_snapshot.invalidate_context_cache()
+    return result
 
 
 @router.get("/api/portfolio/transactions", response_model=TablePayloadResponse, response_model_exclude_unset=True)

@@ -768,6 +768,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/portfolio/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Manual Account */
+        get: operations["manual_account_api_portfolio_account_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/account/reconciliation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Manual Account */
+        post: operations["record_manual_account_api_portfolio_account_reconciliation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/account/reconciliation/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Manual Account */
+        post: operations["preview_manual_account_api_portfolio_account_reconciliation_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/portfolio/transactions": {
         parameters: {
             query?: never;
@@ -2597,6 +2648,64 @@ export interface components {
             statement: string;
             /** Value */
             value: string | number;
+        };
+        /** ManualAccountPreviewResponse */
+        ManualAccountPreviewResponse: {
+            /** Current Snapshot */
+            current_snapshot?: {
+                [key: string]: unknown;
+            } | null;
+            /** Expected Reconciliation Version */
+            expected_reconciliation_version: number;
+            /** Proposed */
+            proposed: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** ManualAccountReconciliationInput */
+        ManualAccountReconciliationInput: {
+            /**
+             * Account
+             * @default manual
+             * @constant
+             */
+            account: "manual";
+            /** Cash Balance */
+            cash_balance: number;
+            /**
+             * Currency
+             * @default USD
+             * @constant
+             */
+            currency: "USD";
+            /** Effective At */
+            effective_at: string;
+            /** Expected Reconciliation Version */
+            expected_reconciliation_version?: number | null;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Net Liquidation */
+            net_liquidation?: number | null;
+            /**
+             * Notes
+             * @default
+             */
+            notes: string;
+        };
+        /** ManualAccountResponse */
+        ManualAccountResponse: {
+            /** Ledger */
+            ledger?: {
+                [key: string]: unknown;
+            };
+            /** Snapshot */
+            snapshot?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * MarketDimensionState
@@ -7943,6 +8052,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PanelSnapshotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    manual_account_api_portfolio_account_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualAccountResponse"];
+                };
+            };
+        };
+    };
+    record_manual_account_api_portfolio_account_reconciliation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualAccountReconciliationInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualAccountResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_manual_account_api_portfolio_account_reconciliation_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualAccountReconciliationInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualAccountPreviewResponse"];
                 };
             };
             /** @description Validation Error */

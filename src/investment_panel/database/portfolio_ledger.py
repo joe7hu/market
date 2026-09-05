@@ -191,6 +191,86 @@ def reverse_portfolio_transaction(
         return _transaction_row(connection, reversal["id"])
 
 
+def manual_account_snapshot(config: AppConfig) -> dict[str, Any]:
+    runtime = runtime_for_config(config)
+    with runtime.snapshot() as connection:
+        snapshot = connection.execute(
+            """
+            SELECT id, account_key, currency, effective_at, recorded_at, cash_balance,
+                   net_liquidation, reconciliation_state, reconciliation_version,
+                   ledger_book_identity, idempotency_key, notes
+            FROM app.manual_account_snapshot
+            WHERE account_key = 'manual'
+            ORDER BY effective_at DESC, id DESC LIMIT 1
+            """
+        ).fetchone()
+    ledger = replay_portfolio_at(config, snapshot["effective_at"] if snapshot else datetime.now(UTC))
+    return {"snapshot": _serialize_row(dict(snapshot)) if snapshot else None, "ledger": ledger}
+
+
+def preview_manual_account_reconciliation(config: AppConfig, fields: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_manual_account(fields)
+    runtime = runtime_for_config(config)
+    with runtime.read() as connection:
+        current = connection.execute(
+            """
+            SELECT id, account_key, currency, effective_at, recorded_at, cash_balance,
+                   net_liquidation, reconciliation_state, reconciliation_version,
+                   ledger_book_identity, idempotency_key, notes
+            FROM app.manual_account_snapshot
+            WHERE account_key = 'manual'
+            ORDER BY reconciliation_version DESC, id DESC LIMIT 1
+            """
+        ).fetchone()
+    current_version = int(current["reconciliation_version"]) if current else 0
+    return {
+        "expected_reconciliation_version": current_version,
+        "current_snapshot": _serialize_row(dict(current)) if current else None,
+        "proposed": {**normalized, "reconciliation_version": current_version + 1},
+    }
+
+
+def record_manual_account_reconciliation(config: AppConfig, fields: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_manual_account(fields)
+    runtime = runtime_for_config(config)
+    with runtime.transaction() as connection:
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('manual-account-reconciliation', 0))")
+        existing = connection.execute(
+            "SELECT * FROM app.manual_account_snapshot WHERE idempotency_key = %s",
+            [normalized["idempotency_key"]],
+        ).fetchone()
+        if existing:
+            return {
+                "snapshot": _serialize_row(dict(existing)),
+                "ledger": replay_portfolio_at(config, existing["effective_at"], connection=connection),
+            }
+        current = connection.execute(
+            "SELECT reconciliation_version FROM app.manual_account_snapshot WHERE account_key = 'manual' ORDER BY reconciliation_version DESC, id DESC LIMIT 1"
+        ).fetchone()
+        expected = fields.get("expected_reconciliation_version")
+        actual = int(current["reconciliation_version"]) if current else 0
+        if expected is not None and int(expected) != actual:
+            raise ValueError("manual account changed since preview; preview the reconciliation again")
+        ledger = replay_portfolio_at(config, normalized["effective_at"], connection=connection)
+        version = actual + 1
+        state = "reconciled" if normalized["net_liquidation"] is not None else "pending"
+        row = connection.execute(
+            """
+            INSERT INTO app.manual_account_snapshot
+              (account_key, currency, effective_at, cash_balance, net_liquidation,
+               reconciliation_state, reconciliation_version, ledger_book_identity,
+               idempotency_key, notes)
+            VALUES ('manual', 'USD', %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, account_key, currency, effective_at, recorded_at, cash_balance,
+                      net_liquidation, reconciliation_state, reconciliation_version,
+                      ledger_book_identity, idempotency_key, notes
+            """,
+            [normalized["effective_at"], normalized["cash_balance"], normalized["net_liquidation"],
+             state, version, ledger["book_identity"], normalized["idempotency_key"], normalized["notes"]],
+        ).fetchone()
+    return {"snapshot": _serialize_row(dict(row)), "ledger": ledger}
+
+
 def portfolio_transaction_rows(
     config: AppConfig,
     limit: int | None = 100,
@@ -558,6 +638,28 @@ def _normalize_transaction(fields: dict[str, Any]) -> dict[str, Any]:
             if fields.get("expected_position_version") is not None
             else None
         ),
+    }
+
+
+def _normalize_manual_account(fields: dict[str, Any]) -> dict[str, Any]:
+    if str(fields.get("account") or "manual") != "manual":
+        raise ValueError("account must be manual until broker sync is supported")
+    if str(fields.get("currency") or "USD").upper() != "USD":
+        raise ValueError("currency must be USD until FX conversion is supported")
+    effective_at = _datetime(fields.get("effective_at"))
+    cash_balance = _optional_nonnegative(fields.get("cash_balance"), "cash_balance")
+    if cash_balance is None:
+        raise ValueError("cash_balance is required")
+    net_liquidation = _optional_nonnegative(fields.get("net_liquidation"), "net_liquidation")
+    idempotency_key = str(fields.get("idempotency_key") or "").strip()
+    if not idempotency_key:
+        raise ValueError("idempotency_key is required")
+    return {
+        "effective_at": effective_at,
+        "cash_balance": _quantize(cash_balance, 4),
+        "net_liquidation": _quantize(net_liquidation, 4),
+        "idempotency_key": idempotency_key,
+        "notes": str(fields.get("notes") or "").strip(),
     }
 
 
