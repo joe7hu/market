@@ -97,13 +97,17 @@ def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(
                            'analysis.write_research_evaluator_output(uuid,uuid,uuid,text,text,text,text,text,text,integer,boolean,jsonb,text)',
                            'EXECUTE'
                        ),
-                       has_table_privilege('market_app', 'analysis.research_evaluator_output', 'SELECT')
+                       has_table_privilege('market_app', 'analysis.research_evaluator_output', 'SELECT'),
+                       has_schema_privilege('market_app', 'ops', 'USAGE'),
+                       has_table_privilege('market_app', 'ops.job_run', 'SELECT'),
+                       has_table_privilege('market_app', 'ops.job_run', 'INSERT'),
+                       has_table_privilege('market_app', 'ops.job_run', 'UPDATE')
                 """
             ).fetchone()
 
         assert tuple(role) == (True, False, False, False, False, False, False)
         assert tuple(membership) == (True, False)
-        assert tuple(privileges) == (True, False)
+        assert tuple(privileges) == (True, False, True, True, True, True)
     finally:
         with closing(psycopg.connect(postgres_dsn)) as connection:
             connection.execute(
