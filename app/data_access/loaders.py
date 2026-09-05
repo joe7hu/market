@@ -36,6 +36,12 @@ _TODAY_SECONDARY_QUERY_LIMITS = {
     "portfolio_risk_cards": 8,
     "feed_signals": 12,
 }
+DASHBOARD_DEEP_TABLES = frozenset({
+    "correlations",
+    "options_expiries",
+    "options_payoff_scenarios",
+    "vol_surface_features",
+})
 
 
 def load_decision_funnel(
@@ -365,6 +371,8 @@ def load_panel_scope_data(
     requested = tuple(tables_for_scope(scope))
     page_offset = max(0, int(offset or 0))
     requested_limit = max(1, int(limit)) if limit is not None else None
+    if scope == "dashboard" and requested_limit is not None:
+        requested = tuple(name for name in requested if name not in DASHBOARD_DEEP_TABLES)
     if scope == "market":
         # Market scope is publication-backed. Fetch one bounded page window so
         # the response layer does not materialize every historical chart row.

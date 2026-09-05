@@ -700,7 +700,17 @@ def panel_snapshot(
         panel_data = loaders.load_market_panel_data(config, offset=offset, limit=limit)
         return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     if scope == "dashboard":
-        _, panel_data = panel_owner.context(config_loader=lambda: config)
+        dashboard_limit = limit or 12
+        _, panel_data = panel_owner.context(
+            cache_key=f"scope:dashboard:{offset}:{dashboard_limit}",
+            loader=lambda active_config: loaders.load_panel_scope_data(
+                active_config,
+                "dashboard",
+                offset=offset,
+                limit=dashboard_limit,
+            ),
+            config_loader=lambda: config,
+        )
         return payloads.panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
     if scope in {"watchlist-watched", "watchlist-unwatched"}:
         config, panel_data = panel_owner.context(

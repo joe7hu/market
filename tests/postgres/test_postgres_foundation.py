@@ -103,13 +103,14 @@ def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(
                        has_table_privilege('market_app', 'ops.job_run', 'INSERT'),
                        has_table_privilege('market_app', 'ops.job_run', 'UPDATE'),
                        has_table_privilege('market_app', 'raw.quote_history', 'SELECT'),
-                       has_table_privilege('market_app', 'raw.quote_confirmation', 'SELECT')
+                       has_table_privilege('market_app', 'raw.quote_confirmation', 'SELECT'),
+                       has_table_privilege('market_app', 'raw.quote_fact_availability', 'SELECT')
                 """
             ).fetchone()
 
         assert tuple(role) == (True, False, False, False, False, False, False)
         assert tuple(membership) == (True, False)
-        assert tuple(privileges) == (True, False, True, True, True, True, True, True)
+        assert tuple(privileges) == (True, False, True, True, True, True, True, True, True)
     finally:
         with closing(psycopg.connect(postgres_dsn)) as connection:
             connection.execute(
