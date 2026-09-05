@@ -415,7 +415,9 @@ class OptionHistoryRepository:
         snapshot_id = self._resolve_snapshot(symbol, snapshot)
         if snapshot_id is None:
             return {"snapshot_id": None, "smiles": [], "term_structure": [], "history": [], "history_state": "collecting"}
-        rows, _ = self._chain_rows(snapshot_id, expiration=expiration, offset=0, limit=50_000)
+        rows, _ = self._chain_rows(
+            snapshot_id, expiration=expiration, offset=0, limit=5_000, include_evidence=False
+        )
         smiles: list[dict[str, Any]] = []
         for expiry, kind in sorted({(row["expiration"], row["option_type"]) for row in rows}):
             points = [
@@ -509,6 +511,7 @@ class OptionHistoryRepository:
     def _chain_rows(
         self, snapshot_id: int, *, expiration: date | None = None, option_type: str | None = None,
         min_moneyness: float | None = None, max_moneyness: float | None = None, offset: int, limit: int,
+        include_evidence: bool = True,
     ) -> tuple[list[dict[str, Any]], int]:
         filters = ["quote.snapshot_id = %s", "quote.capture_generation_id = snapshot.latest_complete_generation_id"]
         parameters: list[Any] = [snapshot_id]
@@ -526,10 +529,7 @@ class OptionHistoryRepository:
             filters.append(f"{ratio} <= %s")
             parameters.append(max_moneyness)
         where = " AND ".join(filters)
-        base = f"""
-            FROM raw.option_quote quote
-            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+        evidence_join = """
             LEFT JOIN LATERAL (
                 SELECT value.quality_status, value.classification, value.blockers
                 FROM analysis.option_relative_value value
@@ -539,6 +539,19 @@ class OptionHistoryRepository:
                 ORDER BY run.finished_at DESC NULLS LAST, value.id DESC
                 LIMIT 1
             ) evidence ON true
+        """ if include_evidence else ""
+        evidence_columns = """
+                   evidence.quality_status, evidence.classification AS evidence_classification,
+                   coalesce(evidence.blockers, ARRAY[]::text[]) AS evidence_blockers,
+        """ if include_evidence else """
+                   NULL::text AS quality_status, NULL::text AS evidence_classification,
+                   ARRAY[]::text[] AS evidence_blockers,
+        """
+        base = f"""
+            FROM raw.option_quote quote
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            {evidence_join}
             WHERE {where}
         """
         count_base = f"""
@@ -556,8 +569,7 @@ class OptionHistoryRepository:
                    quote.provider_updated_at, quote.provider_iv, quote.provider_delta, quote.provider_gamma,
                    quote.provider_theta, quote.provider_vega, quote.provider_rho, quote.volume, quote.open_interest,
                    quote.chance_of_profit_long, quote.chance_of_profit_short, quote.market_data_status,
-                   evidence.quality_status, evidence.classification AS evidence_classification,
-                   coalesce(evidence.blockers, ARRAY[]::text[]) AS evidence_blockers,
+                   {evidence_columns}
                    quote.capture_generation_id, quote.capture_group_key, quote.group_started_at,
                    quote.group_finished_at, quote.provider_observed_at, quote.available_at,
                    quote.underlying_observed_at, quote.underlying_available_at

@@ -245,7 +245,9 @@ def _journal_payload(row: dict[str, Any], *, record_kind: str) -> dict[str, Any]
         "execution": {
             "staged_at": row.get("staged_at"),
             "signal_quote_at": row.get("quote_observed_at"),
-            "entry_cohort_id": row.get("entry_cohort_id"),
+            "entry_cohort_id": (
+                str(row["entry_cohort_id"]) if row.get("entry_cohort_id") is not None else None
+            ),
             "entry_at": row.get("entry_at"),
             "entry_price": entry_price,
             "fill_basis": row.get("fill_basis") or metrics.get("fill_basis"),
