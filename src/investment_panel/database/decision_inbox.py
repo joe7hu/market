@@ -36,6 +36,7 @@ TICKER_PAPER_TRANSITIONS = frozenset({"paper_staged", "paper_filled", "paper_exi
 TICKER_PAPER_STATE_KEY = "canonical_ticker_paper_lifecycle"
 PORTFOLIO_RISK_STATE_TRANSITION = "portfolio_risk_breached"
 PORTFOLIO_RISK_LOCK_KEY = "decision-inbox:portfolio-risk"
+USER_STATES = frozenset({"open", "acknowledged", "snoozed", "dismissed", "review_complete"})
 
 
 class DecisionInboxRepository:
@@ -211,6 +212,10 @@ class DecisionInboxRepository:
         if current_only:
             current_filter = """
                 item.status = 'active'
+                AND (
+                    item.user_state = 'open'
+                    OR (item.user_state = 'snoozed' AND item.snoozed_until <= now())
+                )
                 AND item.event_type <> 'expired'
                 AND COALESCE(item.payload->>'state_transition', '') <> 'superseded'
                 AND (
@@ -257,7 +262,8 @@ class DecisionInboxRepository:
                 SELECT item.id::text, item.event_type, item.opportunity_id::text,
                        item.ticket_version, item.paper_order_id::text, item.lane,
                        item.severity, item.status, item.payload, item.created_at,
-                       item.resolved_at,
+                       item.resolved_at, item.user_state, item.snoozed_until,
+                       item.dismiss_reason, item.user_state_updated_at, item.reviewed_at,
                        outbox.status AS delivery_status, outbox.attempts,
                        outbox.last_error, outbox.sent_at
                 FROM app.decision_inbox_item item
@@ -323,6 +329,52 @@ class DecisionInboxRepository:
             "duplicate_episode_count": duplicate_episode_count,
         }
         return {"items": page, "count": len(page), "next_cursor": next_cursor, "authority": authority}
+
+    def set_user_state(
+        self,
+        item_id: str,
+        *,
+        state: str,
+        snoozed_until: datetime | None = None,
+        dismiss_reason: str | None = None,
+    ) -> dict[str, Any] | None:
+        normalized = state.strip().lower()
+        if normalized not in USER_STATES:
+            raise ValueError("unsupported decision Inbox user state")
+        if normalized == "snoozed" and snoozed_until is None:
+            raise ValueError("snoozed state requires snoozed_until")
+        if normalized == "snoozed" and (
+            snoozed_until.tzinfo is None or snoozed_until.utcoffset() is None
+        ):
+            raise ValueError("snoozed_until requires a timezone")
+        if normalized == "snoozed" and snoozed_until <= datetime.now(UTC):
+            raise ValueError("snoozed_until must be in the future")
+        if normalized == "dismissed" and not str(dismiss_reason or "").strip():
+            raise ValueError("dismissed state requires dismiss_reason")
+        if normalized != "snoozed":
+            snoozed_until = None
+        if normalized != "dismissed":
+            dismiss_reason = None
+        with self.runtime.transaction() as connection:
+            row = connection.execute(
+                """
+                UPDATE app.decision_inbox_item
+                SET user_state = %s, snoozed_until = %s, dismiss_reason = %s,
+                    user_state_updated_at = now(),
+                    reviewed_at = CASE WHEN %s = 'review_complete' THEN now() ELSE reviewed_at END
+                WHERE id = %s::uuid
+                RETURNING id::text, user_state, snoozed_until, dismiss_reason,
+                          user_state_updated_at, reviewed_at
+                """,
+                [normalized, snoozed_until, dismiss_reason, normalized, item_id],
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        for key in ("snoozed_until", "user_state_updated_at", "reviewed_at"):
+            if result.get(key) is not None:
+                result[key] = result[key].isoformat()
+        return result
 
     def sync_current_decisions(
         self, rows: list[dict[str, Any]], *, now: datetime | None = None,
@@ -1409,7 +1461,7 @@ def _safe_payload(value: dict[str, Any]) -> dict[str, Any]:
 
 def _row_payload(row: Any) -> dict[str, Any]:
     value = dict(row)
-    for key in ("created_at", "resolved_at", "sent_at"):
+    for key in ("created_at", "resolved_at", "sent_at", "snoozed_until", "user_state_updated_at", "reviewed_at"):
         if value.get(key) is not None:
             value[key] = value[key].isoformat()
     value["payload"] = dict(value.get("payload") or {})

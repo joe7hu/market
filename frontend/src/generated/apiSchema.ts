@@ -143,6 +143,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/decision-inbox/{item_id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set Decision Inbox State */
+        post: operations["set_decision_inbox_state_api_decision_inbox__item_id__state_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/event-scout": {
         parameters: {
             query?: never;
@@ -1940,6 +1957,27 @@ export interface components {
             }[];
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /** DecisionInboxStateInput */
+        DecisionInboxStateInput: {
+            /** Dismiss Reason */
+            dismiss_reason?: string | null;
+            /** Snoozed Until */
+            snoozed_until?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "acknowledged" | "snoozed" | "dismissed" | "review_complete";
+        };
+        /** DecisionInboxStateResponse */
+        DecisionInboxStateResponse: {
+            /** Id */
+            id: string;
+            /** User State */
+            user_state: string;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * DecisionResolutionV2
@@ -6744,6 +6782,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DecisionInboxResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_decision_inbox_state_api_decision_inbox__item_id__state_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecisionInboxStateInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionInboxStateResponse"];
                 };
             };
             /** @description Validation Error */

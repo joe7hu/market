@@ -93,6 +93,25 @@ def test_decision_inbox_retries_only_the_compact_fixed_owner_message(
         runtime.close()
 
 
+def test_decision_inbox_user_state_is_durable_and_current_queue_is_clean(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = DecisionInboxRepository(runtime)
+    try:
+        emitted = repository.emit(event_type="ready", payload={"symbol": "TSLA"})
+        item_id = emitted["id"]
+        updated = repository.set_user_state(item_id, state="acknowledged")
+        assert updated and updated["user_state"] == "acknowledged"
+        assert repository.rows(current_only=True)["count"] == 0
+        assert repository.rows()["items"][0]["user_state"] == "acknowledged"
+        with pytest.raises(ValueError, match="requires dismiss_reason"):
+            repository.set_user_state(item_id, state="dismissed")
+    finally:
+        runtime.close()
+
+
 def test_decision_inbox_rejects_operational_noise() -> None:
     class _Runtime:
         pass

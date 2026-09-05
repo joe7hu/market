@@ -14,11 +14,12 @@ from app import panel_snapshot
 from app import dependencies
 from app.actions.options import OptionsActions
 from app.actions.tickers import TickerActions
-from app.contracts import OptionPaperEntryInput, StrategyPromotionInput, TickerPaperEntryInput
+from app.contracts import DecisionInboxStateInput, OptionPaperEntryInput, StrategyPromotionInput, TickerPaperEntryInput
 from app.data_access import loaders, payloads
 from app.response_contracts import (
     AgentSubmissionResponse,
     DecisionInboxResponse,
+    DecisionInboxStateResponse,
     OpportunityScorecardResponse,
     OptionHistoryHealthResponse,
     OptionHistorySymbolsResponse,
@@ -388,6 +389,29 @@ def decision_inbox(
         return actions.decision_inbox(limit=limit, cursor=cursor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/decision-inbox/{item_id}/state", response_model=DecisionInboxStateResponse, response_model_exclude_unset=True)
+def set_decision_inbox_state(
+    item_id: UUID,
+    payload: DecisionInboxStateInput,
+    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    _request=Depends(dependencies.get_authorized_request),
+) -> dict[str, Any]:
+    try:
+        state_time = datetime.fromisoformat(payload.snoozed_until) if payload.snoozed_until else None
+        result = actions.set_decision_inbox_user_state(
+            str(item_id),
+            state=payload.state,
+            snoozed_until=state_time,
+            dismiss_reason=payload.dismiss_reason,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Decision Inbox item not found")
+    panel_snapshot.invalidate_context_cache()
+    return result
 
 
 @router.get("/api/options-radar/signals/{decision_id}", response_model=OptionSignalDetailResponse, response_model_exclude_unset=True)

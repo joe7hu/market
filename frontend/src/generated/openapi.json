@@ -1731,6 +1731,68 @@
         "title": "DecisionInboxResponse",
         "type": "object"
       },
+      "DecisionInboxStateInput": {
+        "properties": {
+          "dismiss_reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dismiss Reason"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "acknowledged",
+              "snoozed",
+              "dismissed",
+              "review_complete"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "DecisionInboxStateInput",
+        "type": "object"
+      },
+      "DecisionInboxStateResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "user_state": {
+            "title": "User State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_state"
+        ],
+        "title": "DecisionInboxStateResponse",
+        "type": "object"
+      },
       "DecisionResolutionV2": {
         "additionalProperties": true,
         "description": "One calculated resolution; compatibility views must derive from it.",
@@ -15607,6 +15669,56 @@
           }
         },
         "summary": "Decision Inbox"
+      }
+    },
+    "/api/decision-inbox/{item_id}/state": {
+      "post": {
+        "operationId": "set_decision_inbox_state_api_decision_inbox__item_id__state_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInboxStateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionInboxStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Decision Inbox State"
       }
     },
     "/api/event-scout": {

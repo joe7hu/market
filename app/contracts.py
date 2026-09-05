@@ -52,6 +52,12 @@ class PortfolioTransactionReversalInput(BaseModel):
     notes: str = ""
 
 
+class DecisionInboxStateInput(BaseModel):
+    state: Literal["open", "acknowledged", "snoozed", "dismissed", "review_complete"]
+    snoozed_until: str | None = None
+    dismiss_reason: str | None = Field(default=None, max_length=500)
+
+
 class WatchlistSymbolInput(BaseModel):
     symbol: str
     name: str | None = None

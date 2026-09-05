@@ -53,6 +53,9 @@ class OptionsResearchRepository:
             limit=limit, cursor=cursor, current_only=current_only,
         )
 
+    def set_decision_inbox_user_state(self, item_id: str, **kwargs: Any) -> dict[str, Any] | None:
+        return DecisionInboxRepository(self.runtime).set_user_state(item_id, **kwargs)
+
     def submit_thesis(self, payload: dict[str, Any]) -> dict[str, Any]:
         thesis_id = self.agents.submit("option_thesis", payload)
         return {

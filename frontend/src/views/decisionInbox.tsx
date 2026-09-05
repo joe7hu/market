@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { loadDecisionInbox } from "@/api/options";
+import { loadDecisionInbox, setDecisionInboxState } from "@/api/options";
 import { PageHeader, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -15,6 +15,7 @@ export function DecisionInboxPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   async function loadFirst() {
     setLoading(true);
@@ -46,6 +47,19 @@ export function DecisionInboxPage() {
     }
   }
 
+  async function updateState(itemId: string, body: { state: "acknowledged" | "snoozed" | "dismissed" | "review_complete"; snoozed_until?: string; dismiss_reason?: string }) {
+    setBusyId(itemId);
+    setError(null);
+    try {
+      await setDecisionInboxState(itemId, body);
+      await loadFirst();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Decision Inbox state could not be saved.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -58,14 +72,14 @@ export function DecisionInboxPage() {
       {error ? <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"><p>GET /api/decision-inbox: {error}</p><Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => void loadFirst()}>Retry</Button></div> : null}
       {!loading && !error && !items.length ? <p className="rounded-md border border-dashed border-border p-5 text-sm text-muted-foreground">No actionable decision event is active.</p> : null}
       <div className="space-y-3">
-        {items.map((item) => <InboxItem key={text(item, "id", `${text(item, "event_type")}-${text(item, "created_at")}`)} item={item} />)}
+        {items.map((item) => <InboxItem key={text(item, "id", `${text(item, "event_type")}-${text(item, "created_at")}`)} item={item} busy={busyId === text(item, "id")} onState={updateState} />)}
       </div>
       {cursor ? <Button type="button" variant="outline" className="mt-4" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading…" : "Load more"}</Button> : null}
     </div>
   );
 }
 
-function InboxItem({ item }: { item: RowRecord }) {
+function InboxItem({ item, busy, onState }: { item: RowRecord; busy: boolean; onState: (itemId: string, body: { state: "acknowledged" | "snoozed" | "dismissed" | "review_complete"; snoozed_until?: string; dismiss_reason?: string }) => void }) {
   const payload = record(item.payload);
   const event = text(item, "event_type").toUpperCase();
   const state = text(payload, "state", event);
@@ -75,6 +89,11 @@ function InboxItem({ item }: { item: RowRecord }) {
   const lane = text(item, "lane", text(payload, "lane", "radar"));
   const reason = text(payload, "reason", text(payload, "primary_reason", text(payload, "primary_blocker")));
   const delivery = text(item, "delivery_status");
+  const itemId = text(item, "id");
+  const dismiss = () => {
+    const reason = window.prompt("Why dismiss this event?")?.trim();
+    if (reason) onState(itemId, { state: "dismissed", dismiss_reason: reason });
+  };
   return (
     <Card className="min-w-0">
       <CardContent className="space-y-3 p-4">
@@ -92,6 +111,12 @@ function InboxItem({ item }: { item: RowRecord }) {
           {decisionId ? <Button asChild size="sm" variant="outline"><Link to={`/options-radar?decision=${encodeURIComponent(decisionId)}`}>Open ticket</Link></Button> : null}
           {paperOrderId ? <span className="break-all rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">Paper order {paperOrderId}</span> : null}
           {text(payload, "expires_at") ? <span className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">Valid until {text(payload, "expires_at")}</span> : null}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "acknowledged" })}>Acknowledge</Button>
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "snoozed", snoozed_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() })}>Snooze 1 day</Button>
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "review_complete" })}>Review complete</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={dismiss}>Dismiss…</Button>
         </div>
       </CardContent>
     </Card>

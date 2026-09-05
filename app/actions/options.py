@@ -194,6 +194,9 @@ class OptionsActions:
             limit=limit, cursor=cursor, current_only=current_only,
         )
 
+    def set_decision_inbox_user_state(self, item_id: str, **kwargs: Any) -> dict[str, Any] | None:
+        return self.research.set_decision_inbox_user_state(item_id, **kwargs)
+
     def stage_paper_entry(self, decision_id: UUID, payload: dict[str, Any]) -> dict[str, Any]:
         return self.execution.stage_paper_entry(decision_id, payload)
 

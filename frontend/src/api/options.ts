@@ -224,6 +224,13 @@ export async function loadDecisionInbox(cursor: string | null = null, signal?: A
   };
 }
 
+export function setDecisionInboxState(
+  itemId: string,
+  body: ApiSchema["DecisionInboxStateInput"],
+): Promise<ApiSchema["DecisionInboxStateResponse"]> {
+  return sendJson(`/api/decision-inbox/${encodeURIComponent(itemId)}/state`, "POST", body);
+}
+
 export async function loadOptionsPaperJournal(symbol = "QQQ", signal?: AbortSignal): Promise<OptionsJournalPage> {
   const payload = await getJson<ApiSchema["OptionsPaperJournalPage"]>(`/api/options/paper-journal?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
   return { ...payload, rows: (payload.rows ?? []) as OptionsPaperJournalRow[] };

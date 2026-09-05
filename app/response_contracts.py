@@ -349,6 +349,11 @@ class DecisionInboxResponse(BaseModel):
     authority: dict[str, Any] | None = None
 
 
+class DecisionInboxStateResponse(FlexibleResponse):
+    id: str
+    user_state: str
+
+
 class OptionHistoryHealthResponse(FlexibleResponse):
     snapshots: int = 0
     complete_captures: int = 0
