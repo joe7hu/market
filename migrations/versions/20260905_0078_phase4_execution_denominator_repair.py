@@ -14,6 +14,7 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         r"""
+        GRANT SELECT ON TABLE public.alembic_version TO market_app;
         ALTER FUNCTION analysis.write_phase4_execution(JSONB, TEXT)
           RENAME TO write_phase4_execution_0077;
         REVOKE ALL ON FUNCTION analysis.write_phase4_execution_0077(JSONB, TEXT)
@@ -98,6 +99,7 @@ def downgrade() -> None:
     op.execute(
         r"""
         REVOKE ALL ON FUNCTION analysis.write_phase4_execution(JSONB, TEXT) FROM PUBLIC, market_app, market_migrator;
+        REVOKE SELECT ON TABLE public.alembic_version FROM market_app;
         DROP FUNCTION analysis.write_phase4_execution(JSONB, TEXT);
         ALTER FUNCTION analysis.write_phase4_execution_0077(JSONB, TEXT)
           RENAME TO write_phase4_execution;
