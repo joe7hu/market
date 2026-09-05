@@ -75,16 +75,16 @@ class OpportunityScorecardRepository:
             relation = "analysis.decision"
             available_at = "as_of"
             lane_clause = "kind = 'option' AND lane = %s"
-        parameters: list[Any] = [f"{SCORECARD_TRUTH_PREFIX}%", since, reference]
+        parameters: list[Any] = [since, reference]
         if lane != "recovery":
-            parameters.insert(1, lane)
+            parameters.insert(0, lane)
         with self.runtime.read(API_PROFILE) as connection:
             row = connection.execute(
                 f"""
                 SELECT count(*) AS observed,
                        count(*) FILTER (
                            WHERE calibration_cohort IS NULL
-                              OR calibration_cohort NOT LIKE %s
+                              OR calibration_cohort NOT LIKE 'option-scorecard-truth-v1:%%'
                        ) AS quarantined
                 FROM {relation}
                 WHERE {lane_clause}
@@ -150,7 +150,7 @@ class OpportunityScorecardRepository:
                       AND decision.lane = %s
                       AND decision.as_of >= %s
                       AND decision.as_of <= %s
-                      AND decision.calibration_cohort LIKE %s
+                      AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
                     ORDER BY decision.episode_key, decision.as_of DESC, decision.id DESC
                 ), eligible_runs AS MATERIALIZED (
                     SELECT DISTINCT run_id FROM latest_decisions
@@ -205,7 +205,7 @@ class OpportunityScorecardRepository:
                 ) paper ON true
                 ORDER BY decision.as_of, decision.id
                 """,
-                [lane, since, reference, f"{SCORECARD_TRUTH_PREFIX}%"],
+                [lane, since, reference],
             ).fetchall()
         normalized: list[dict[str, Any]] = []
         for row in rows:
