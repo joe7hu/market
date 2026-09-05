@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { emptyPanelData, mergePanelData } from "./apiPanelData";
+import { emptyPanelData, mergePanelData, mergeSnapshot } from "./apiPanelData";
 
 describe("mergePanelData", () => {
   it("keeps independently loaded scopes and appends paged rows", () => {
@@ -43,5 +43,19 @@ describe("mergePanelData", () => {
     expect(next.portfolioScenarioArtifact).toBeUndefined();
     expect(next.executionModelSnapshot).toBeUndefined();
     expect(next.portfolioIntegrated).toBeUndefined();
+  });
+
+  it("retains tables explicitly deferred by the bounded dashboard", () => {
+    const existing = mergePanelData(emptyPanelData(), {
+      ...emptyPanelData(),
+      fundamentals: { rows: [{ symbol: "AAA", value: 1 }], count: 1 },
+    });
+    const next = mergeSnapshot(existing, {
+      scope: "dashboard",
+      status: { metadata: { dashboard_deferred_models: ["fundamentals"] } },
+      tables: { fundamentals: { rows: [], count: 0 } },
+    });
+
+    expect(next.fundamentals.rows).toEqual([{ symbol: "AAA", value: 1 }]);
   });
 });

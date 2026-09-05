@@ -462,6 +462,7 @@ def test_dashboard_default_defers_deep_optional_models(monkeypatch) -> None:
     assert "quotes" not in names
     assert "correlations" not in names
     assert "options_expiries" not in names
+    assert calls[0]["query_row_limits"]["decision_queue"] == 10
     assert len(panel.metadata["dashboard_deferred_models"]) > 0
 
 

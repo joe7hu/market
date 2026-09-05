@@ -17,7 +17,7 @@ from investment_panel.database.opportunity_episodes import (
     SCORECARD_TRUTH_PREFIX,
     has_current_scorecard_truth,
 )
-from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.runtime import API_PROFILE, DatabaseRuntime
 
 
 LANES = frozenset({"radar", "qqq", "recovery"})
@@ -78,7 +78,7 @@ class OpportunityScorecardRepository:
         parameters: list[Any] = [f"{SCORECARD_TRUTH_PREFIX}%", since, reference]
         if lane != "recovery":
             parameters.insert(1, lane)
-        with self.runtime.read(JOB_PROFILE) as connection:
+        with self.runtime.read(API_PROFILE) as connection:
             row = connection.execute(
                 f"""
                 SELECT count(*) AS observed,
@@ -96,7 +96,7 @@ class OpportunityScorecardRepository:
         return {"observed": int(row["observed"] or 0), "quarantined": int(row["quarantined"] or 0)}
 
     def _recovery_rows(self, since: datetime, reference: datetime) -> list[dict[str, Any]]:
-        with self.runtime.read(JOB_PROFILE) as connection:
+        with self.runtime.read(API_PROFILE) as connection:
             rows = connection.execute(
                 """
                 SELECT observation.episode_key, observation.available_at, observation.selection_stage,
@@ -136,7 +136,7 @@ class OpportunityScorecardRepository:
         return normalized
 
     def _decision_rows(self, lane: str, since: datetime, reference: datetime) -> list[dict[str, Any]]:
-        with self.runtime.read(JOB_PROFILE) as connection:
+        with self.runtime.read(API_PROFILE) as connection:
             rows = connection.execute(
                 """
                 WITH latest_decisions AS MATERIALIZED (
@@ -152,9 +152,13 @@ class OpportunityScorecardRepository:
                       AND decision.as_of <= %s
                       AND decision.calibration_cohort LIKE %s
                     ORDER BY decision.episode_key, decision.as_of DESC, decision.id DESC
+                ), eligible_runs AS MATERIALIZED (
+                    SELECT DISTINCT run_id FROM latest_decisions
                 ), published_items AS MATERIALIZED (
-                    SELECT publication.analysis_run_id AS run_id, item.payload
-                    FROM app.publication publication
+                    SELECT eligible_runs.run_id, item.payload
+                    FROM eligible_runs
+                    JOIN app.publication publication
+                      ON publication.analysis_run_id = eligible_runs.run_id
                     JOIN app.publication_content_item item ON item.publication_id = publication.id
                     WHERE publication.status IN ('published', 'superseded')
                       AND (

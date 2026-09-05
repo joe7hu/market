@@ -383,6 +383,8 @@ def load_panel_scope_data(
         # the response layer does not materialize every historical chart row.
         market_limit = requested_limit or 120
         query_row_limits = {table: page_offset + market_limit for table in requested}
+    elif scope == "dashboard" and requested_limit is not None:
+        query_row_limits = {table: page_offset + requested_limit for table in requested}
     else:
         query_row_limits = {
             table: page_offset + min(configured_limit, requested_limit or configured_limit)

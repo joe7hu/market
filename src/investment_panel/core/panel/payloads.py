@@ -160,9 +160,16 @@ METRIC_TABLES = (
 )
 
 
+def _deferred_dashboard_models(status: dict[str, Any]) -> set[str]:
+    metadata = status.get("metadata")
+    values = metadata.get("dashboard_deferred_models") if isinstance(metadata, dict) else None
+    return {value for value in values if isinstance(value, str)} if isinstance(values, list) else set()
+
+
 def dashboard_payload(status: dict[str, Any], rows_for_table: RowsForTable) -> dict[str, Any]:
     """Build the dashboard summary from backend read-model rows."""
 
+    deferred = _deferred_dashboard_models(status)
     decision_queue = rows_for_table("decision_queue")
     candidates = rows_for_table("candidates")
     source_freshness = rows_for_table("source_freshness")
@@ -174,12 +181,14 @@ def dashboard_payload(status: dict[str, Any], rows_for_table: RowsForTable) -> d
         "metrics": {
             key: len(rows_for_table(table_name))
             for key, table_name in METRIC_TABLES
+            if table_name not in deferred
         },
         "priority_candidates": (decision_queue or candidates)[:8],
     }
     payload["metrics"]["sources"] = len(sources) or len(source_freshness) or len(source_health)
     for output_key, table_name, limit in DASHBOARD_ROW_KEYS:
-        payload[output_key] = rows_for_table(table_name)[:limit]
+        if table_name not in deferred:
+            payload[output_key] = rows_for_table(table_name)[:limit]
     return payload
 
 
@@ -197,7 +206,8 @@ def panel_snapshot_payload(
     if scope in {"watchlist-watched", "watchlist-unwatched"}:
         return watchlist_section_payload(scope=scope, status=status, rows_for_table=rows_for_table, offset=offset, limit=limit)
 
-    selected = list(tables_for_scope(scope))
+    deferred = _deferred_dashboard_models(status) if scope == "dashboard" else set()
+    selected = [name for name in tables_for_scope(scope) if name not in deferred]
     if any(rows_for_table(name) for name in PHASE4_PORTFOLIO_TABLES):
         selected.extend(PHASE4_PORTFOLIO_TABLES)
     return {

@@ -82,7 +82,9 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
   } else if (snapshot.status) {
     next.dashboard = { ...next.dashboard, status: snapshot.status };
   }
+  const deferred = snapshot.scope === "dashboard" ? deferredDashboardModels(snapshot) : new Set<string>();
   for (const [apiKey, table] of Object.entries(snapshot.tables ?? {})) {
+    if (deferred.has(apiKey)) continue;
     const dataKey = tableKeyFor(apiKey);
     if (!RESERVED_PANEL_KEYS.has(dataKey)) {
       const existingTable = next[dataKey] as TablePayload | undefined;
@@ -101,6 +103,13 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
     };
   }
   return next;
+}
+
+function deferredDashboardModels(snapshot: PanelSnapshotPayload): Set<string> {
+  const values = snapshot.status?.metadata?.dashboard_deferred_models;
+  return Array.isArray(values)
+    ? new Set(values.filter((value): value is string => typeof value === "string"))
+    : new Set<string>();
 }
 
 type Phase4Identity = { state: "absent" | "valid" | "invalid"; value: string | null };
