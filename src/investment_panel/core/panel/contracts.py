@@ -5,6 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 
+PHASE4_PORTFOLIO_TABLES = (
+    "portfolio_allocation",
+    "portfolio_allocation_items",
+    "portfolio_scenario_artifact",
+    "execution_model_snapshot",
+    "paper_execution_observations",
+    "book_attribution",
+)
+
+
 PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "feed": ("feed_signals",),
     # Today is the bounded action queue. Keep canonical ticker decisions first
@@ -441,6 +451,7 @@ def panel_snapshot_table_names() -> frozenset[str]:
         if scope != "settings":
             names.update(tables)
     names.update(WATCHLIST_SECTION_OUTPUT_TABLES)
+    names.update(PHASE4_PORTFOLIO_TABLES)
     return frozenset(names)
 
 

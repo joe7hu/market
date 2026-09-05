@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from investment_panel.core.panel.contracts import tables_for_scope
+from investment_panel.core.panel.contracts import PHASE4_PORTFOLIO_TABLES, tables_for_scope
 from investment_panel.core.panel.coerce import symbols_from_value as _symbols_from_value
 
 
@@ -197,7 +197,9 @@ def panel_snapshot_payload(
     if scope in {"watchlist-watched", "watchlist-unwatched"}:
         return watchlist_section_payload(scope=scope, status=status, rows_for_table=rows_for_table, offset=offset, limit=limit)
 
-    selected = tables_for_scope(scope)
+    selected = list(tables_for_scope(scope))
+    if any(rows_for_table(name) for name in PHASE4_PORTFOLIO_TABLES):
+        selected.extend(PHASE4_PORTFOLIO_TABLES)
     return {
         "scope": scope,
         "status": status,

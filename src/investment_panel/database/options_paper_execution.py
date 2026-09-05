@@ -218,6 +218,7 @@ class OptionsPaperExecutionRepository:
                        paper.lane, paper.status, paper.quantity, paper.limit_price,
                        paper.actual_fill_price, paper.filled_at, paper.submitted_at,
                        paper.filled_quantity, paper.exited_quantity, paper.fees,
+                       paper.fill_evidence_at, paper.execution_quote, paper.contract_multiplier,
                        paper.ticket_version, paper.ticket_snapshot, paper.structure,
                        paper.created_at, instrument.symbol
                 FROM app.paper_order paper
@@ -237,8 +238,9 @@ class OptionsPaperExecutionRepository:
                 """
                 SELECT leg.contract_id, leg.option_type, leg.side, leg.strike::double precision AS strike,
                        leg.bid, leg.ask, leg.bid_size, leg.ask_size, leg.quote_time,
-                       leg.open_interest, leg.volume
+                       leg.open_interest, leg.volume, contract.multiplier, contract.expiration
                 FROM app.paper_order_leg leg
+                JOIN catalog.option_contract contract ON contract.id = leg.contract_id
                 WHERE leg.paper_order_id = %s::uuid
                 ORDER BY leg.leg_index
                 """,
@@ -247,7 +249,7 @@ class OptionsPaperExecutionRepository:
             if not legs:
                 return self._terminal(connection, item, status="rejected", reason="immutable_ticket_legs_missing", now=now)
             status = str(item["status"])
-            if status == "staged":
+            if status in {"staged", "open"} and _quantity(item.get("filled_quantity")) < _quantity(item.get("quantity")):
                 current, reason = self._current_ticket(connection, item, ticket, as_of=now)
                 if current is None:
                     return self._terminal(connection, item, status="rejected", reason=reason, now=now)
@@ -273,8 +275,9 @@ class OptionsPaperExecutionRepository:
                         [now, now, paper_order_id],
                     )
                     return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "fresh_quote_not_fillable", "blockers": current_execution["blockers"]}
-                fill_quantity = _available_quantity(quoted, phase="entry", requested=_quantity(item["quantity"]))
+                fill_quantity = _available_quantity(quoted, phase="entry", requested=max(0.0, _quantity(item["quantity"]) - _quantity(item.get("filled_quantity"))))
                 fill_price = package_price(quoted, phase="entry")
+                new_filled = _quantity(item.get("filled_quantity")) + fill_quantity
                 credit = is_credit_structure(str(item.get("structure") or ticket.get("structure") or ""))
                 limit_price = _number(item.get("limit_price"))
                 can_fill = bool(
@@ -289,24 +292,37 @@ class OptionsPaperExecutionRepository:
                     return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "limit_not_reached"}
                 fees = _fees(len(quoted), fill_quantity)
                 slippage = _entry_slippage(quoted, fill_price, credit)
+                multiplier = _number(quoted[0].get("multiplier")) if quoted else None
+                if multiplier is None or multiplier <= 0:
+                    return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "contract_multiplier_missing"}
+                quote_payload = {
+                    "mid": _midpoint_package(quoted),
+                    "spread": sum(float(leg["ask"]) - float(leg["bid"]) for leg in quoted),
+                    "leg_count": len(quoted),
+                }
                 connection.execute(
                     """
                     UPDATE app.paper_order
-                    SET status = 'entered', actual_fill_price = %s, filled_at = %s,
-                        filled_quantity = %s, fees = coalesce(fees, 0) + %s,
+                    SET status = %s, actual_fill_price = coalesce(actual_fill_price, %s), filled_at = coalesce(filled_at, %s),
+                        fill_evidence_at = clock_timestamp(), execution_quote = %s,
+                        contract_multiplier = %s, filled_quantity = coalesce(filled_quantity, 0) + %s,
+                        fees = coalesce(fees, 0) + %s, entry_fees = coalesce(entry_fees, 0) + %s,
                         entry_slippage = %s, updated_at = %s, unfilled_reason = NULL
                     WHERE id = %s::uuid
                     """,
-                    [fill_price, now, fill_quantity, fees, slippage, now, paper_order_id],
+                    ["entered" if new_filled >= _quantity(item["quantity"]) else "open", fill_price, now, Jsonb(quote_payload), multiplier, fill_quantity, fees, fees, slippage, now, paper_order_id],
                 )
                 _journal(
                     connection, item, action="paper_entry", quantity=fill_quantity,
                     price=fill_price, key=f"generic:{paper_order_id}:entry:{now.isoformat()}",
                     details={"lane": item["lane"], "paper_order_id": paper_order_id, "slippage": slippage, "fees": fees},
                 )
+                self._record_phase4_fill(
+                    connection, paper_order_id=paper_order_id, observed_at=now, status="entered" if new_filled >= _quantity(item["quantity"]) else "partial",
+                )
                 return {
                     "paper_order_id": paper_order_id, "status": "filled",
-                    "event_status": "entered", "filled_quantity": fill_quantity,
+                    "event_status": "entered" if new_filled >= _quantity(item["quantity"]) else None, "filled_quantity": new_filled,
                     "fill_price": fill_price, "fees": fees,
                 }
             # A filled position must retain a safe exit path even after its
@@ -334,8 +350,43 @@ class OptionsPaperExecutionRepository:
         remaining = max(0, filled_quantity - exited_quantity)
         if remaining <= 0:
             return self._terminal(connection, order, status="exited", reason="no_remaining_quantity", now=now)
-        quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now)
         structure = str(order.get("structure") or ticket.get("structure") or "")
+        if structure == "cash_secured_put" and legs and any(
+            leg.get("expiration") is not None and leg["expiration"] <= now.date() for leg in legs
+        ):
+            underlying = connection.execute(
+                """SELECT price FROM raw.confirmed_quote
+                   WHERE instrument_id = %s AND observed_at <= %s AND available_at <= %s
+                   ORDER BY observed_at DESC, available_at DESC LIMIT 1""",
+                [order["instrument_id"], now, now],
+            ).fetchone()
+            underlying_price = _number(underlying["price"]) if underlying else None
+            strike = _number(legs[0].get("strike"))
+            multiplier = _number(legs[0].get("multiplier"))
+            if underlying_price is not None and strike is not None and underlying_price <= strike:
+                if multiplier is None or multiplier <= 0:
+                    return {"paper_order_id": str(order["id"]), "status": "filled", "reason": "assignment_multiplier_missing"}
+                assignment_fee = _fees(len(legs), remaining)
+                policy = dict(order.get("policy_result") or {})
+                policy["assignment"] = {
+                    "status": "assigned", "strike": strike, "underlying_price": underlying_price,
+                    "multiplier": multiplier, "contract_count": remaining,
+                    "settlement_value": (strike - underlying_price) * multiplier * remaining,
+                    "settled_at": now, "assignment_fee": assignment_fee,
+                }
+                connection.execute(
+                    """UPDATE app.paper_order
+                       SET status = 'exited', exited_quantity = %s, exit_price = %s, exit_at = %s,
+                           contract_multiplier = %s, fees = coalesce(fees, 0) + %s,
+                           exit_fees = coalesce(exit_fees, 0) + %s, policy_result = %s,
+                           unfilled_reason = 'assigned_at_expiration', updated_at = %s
+                       WHERE id = %s::uuid""",
+                    [exited_quantity + remaining, max(strike - underlying_price, 0.0), now,
+                     multiplier, assignment_fee, assignment_fee, Jsonb(policy), now, order["id"]],
+                )
+                self._record_phase4_fill(connection, paper_order_id=str(order["id"]), observed_at=now, status="exited")
+                return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
+        quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now)
         execution = execution_policy(
             quoted,
             structure=structure,
@@ -393,11 +444,11 @@ class OptionsPaperExecutionRepository:
             """
             UPDATE app.paper_order
             SET status = %s, exited_quantity = %s, exit_price = %s, exit_at = %s,
-                fees = coalesce(fees, 0) + %s, exit_slippage = %s,
+                fees = coalesce(fees, 0) + %s, exit_fees = coalesce(exit_fees, 0) + %s, exit_slippage = %s,
                 updated_at = %s, unfilled_reason = NULL
             WHERE id = %s::uuid
             """,
-            [status, new_exited, exit_price, now, fees, slippage, now, order["id"]],
+            [status, new_exited, exit_price, now, fees, fees, slippage, now, order["id"]],
         )
         _journal(
             connection, order, action=f"paper_exit:{reason}", quantity=exit_quantity,
@@ -407,6 +458,9 @@ class OptionsPaperExecutionRepository:
                 "net_pnl": round(net_pnl, 2), "slippage": slippage, "fees": fees,
             },
         )
+        self._record_phase4_fill(
+            connection, paper_order_id=str(order["id"]), observed_at=now, status=status,
+        )
         return {
             "paper_order_id": str(order["id"]),
             "status": "closed" if terminal else "filled",
@@ -414,6 +468,20 @@ class OptionsPaperExecutionRepository:
             "reason": reason, "exit_quantity": exit_quantity,
             "exit_price": exit_price, "net_pnl": round(net_pnl, 2),
         }
+
+    def _record_phase4_fill(
+        self, connection: Any, *, paper_order_id: str, observed_at: datetime, status: str,
+    ) -> None:
+        """Bridge genuine option fills without breaking local unit seams."""
+
+        runtime = getattr(self, "runtime", None)
+        if runtime is None:
+            return
+        from investment_panel.database.portfolio import PortfolioLoopRepository
+
+        PortfolioLoopRepository(runtime).record_existing_paper_order_fill(
+            connection, paper_order_id=paper_order_id, observed_at=observed_at, status=status,
+        )
 
     def _current_ticket(
         self,

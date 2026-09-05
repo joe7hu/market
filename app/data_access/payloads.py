@@ -162,6 +162,9 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             total = table_counts.get(name)
             if isinstance(total, int) and not isinstance(total, bool) and total >= len(rows_for_table(name)):
                 table["count"] = total
+    allocation_rows = rows_for_table("portfolio_allocation")
+    if allocation_rows and isinstance(allocation_rows[0].get("canonical_portfolio"), dict):
+        payload["portfolio_integrated"] = allocation_rows[0]["canonical_portfolio"]
     return payload
 
 

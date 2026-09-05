@@ -48,6 +48,7 @@ from investment_panel.core.decision import (
     TradePlan,
     TickerDecision,
 )
+from investment_panel.core.portfolio import PortfolioIntegratedDTO
 
 
 JsonObject = dict[str, Any]
@@ -95,6 +96,7 @@ class PanelSnapshotResponse(BaseModel):
     status: ApiStatusResponse
     dashboard: DashboardResponse | None = None
     tables: dict[str, TablePayloadResponse] = Field(default_factory=dict)
+    portfolio_integrated: PortfolioIntegratedDTO | None = None
 
 
 class TodayResolutionSummaryResponse(BaseModel):

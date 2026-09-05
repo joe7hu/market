@@ -11,6 +11,7 @@ from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.today_analysis import refresh_today_publication
 from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.database.outcomes import OutcomeRepository
+from investment_panel.database.portfolio import PortfolioLoopRepository
 from investment_panel.jobs import (
     refresh_options_radar,
     run_option_agents,
@@ -41,6 +42,7 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
     )
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(runtime, now=decision_cutoff)
+    allocation = _refresh_portfolio_allocation(runtime, decision_cutoff)
     status = "ok" if all(
         str(row.get("status")) == "ok"
         for row in (tickers, today, market)
@@ -52,6 +54,7 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
         "ticker_decisions": tickers,
         "outcomes": outcomes,
         "today": today,
+        "portfolio_allocation": allocation,
         "market": market,
     }
 
@@ -131,6 +134,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         agent_model=config.agents.thesis_monitor.model,
         reasoning_effort=config.agents.thesis_monitor.reasoning_effort,
     )
+    allocation = _refresh_portfolio_allocation(runtime, decision_cutoff)
     option_ready = any(str(result.get("status") or "").lower() == "ok" for result in (before_agents, after_agents))
     thesis_status = str(thesis_monitor.get("status") or "failed").lower()
     publication_ready = all(str(result.get("status") or "").lower() == "ok" for result in (tickers, today, market))
@@ -147,8 +151,23 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         "ticker_decisions": tickers,
         "outcomes": outcomes,
         "today": today,
+        "portfolio_allocation": allocation,
         "market": market,
     }
+
+
+def _refresh_portfolio_allocation(runtime: Any, cutoff: datetime) -> dict[str, Any]:
+    """Return a fail-closed result when a test seam has no DB snapshot API."""
+
+    snapshot = getattr(runtime, "snapshot", None)
+    if not callable(snapshot):
+        return {
+            "allocation_id": None,
+            "status": "unavailable",
+            "reason": "postgresql_authority_runtime_unavailable",
+        }
+    allocation = PortfolioLoopRepository(runtime).refresh_authoritative_allocation(as_of=cutoff)
+    return {"allocation_id": allocation.allocation_id, "status": allocation.status}
 
 
 def _refresh_option_outcomes(runtime: Any, config: AppConfig) -> dict[str, Any]:
@@ -228,6 +247,12 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("today_publication", True, lambda: refresh_today_publication(
             runtime_for_config(config), now=market_state_visible_at or bounded_cutoff()
         )),
+        ("portfolio_allocation", True, lambda: {
+            "status": "ok",
+            "allocation": _refresh_portfolio_allocation(
+                runtime_for_config(config), market_state_visible_at or bounded_cutoff(),
+            ),
+        }),
         ("retention", True, lambda: RetentionRepository(runtime_for_config(config)).prune()),
         ("database_snapshot", False, lambda: snapshot_database.run(config_path)),
     ]

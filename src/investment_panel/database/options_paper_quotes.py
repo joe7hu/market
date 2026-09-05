@@ -32,7 +32,7 @@ def latest_option_legs(
                quote.contract_id, contract.option_type, contract.strike::double precision AS strike,
                quote.bid, quote.ask, quote.bid_size, quote.ask_size,
                quote.open_interest, quote.volume, quote.observed_at,
-               quote.available_at, contract.expiration
+               quote.available_at, contract.expiration, contract.multiplier
         FROM raw.option_quote quote
         JOIN catalog.option_contract contract ON contract.id = quote.contract_id
         JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
@@ -74,6 +74,7 @@ def latest_option_legs(
             "quote_time": _utc(quote.get("available_at")),
             "observed_at": _utc(quote.get("observed_at")),
             "expiration": quote.get("expiration"),
+            "multiplier": _number(quote.get("multiplier")),
         })
     return normalized
 

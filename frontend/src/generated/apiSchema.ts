@@ -4426,6 +4426,7 @@ export interface components {
         /** PanelSnapshotResponse */
         PanelSnapshotResponse: {
             dashboard?: components["schemas"]["DashboardResponse"] | null;
+            portfolio_integrated?: components["schemas"]["PortfolioIntegratedDTO"] | null;
             /** Scope */
             scope: string;
             status: components["schemas"]["ApiStatusResponse"];
@@ -4501,12 +4502,92 @@ export interface components {
             trade_plan_id: string;
         };
         /**
+         * PortfolioActionDTO
+         * @description Canonical action read model for every Phase 4 consumer.
+         */
+        PortfolioActionDTO: {
+            /** Action Id */
+            action_id?: string | null;
+            /** Allocation Id */
+            allocation_id: string;
+            /** Allocation Item Id */
+            allocation_item_id: string;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /** Current Mrc */
+            current_mrc?: number | null;
+            /** Current Weight */
+            current_weight: number;
+            /** Disposition */
+            disposition: string;
+            /** Expression */
+            expression?: {
+                [key: string]: unknown;
+            } | null;
+            /** Funding Source */
+            funding_source?: string | null;
+            /** Funding Sources */
+            funding_sources?: {
+                [key: string]: number;
+            };
+            /** Invalidation */
+            invalidation?: {
+                [key: string]: unknown;
+            } | null;
+            /** Marginal Book Utility */
+            marginal_book_utility: number;
+            /**
+             * Missing Data
+             * @default []
+             */
+            missing_data: string[];
+            /** Next Action */
+            next_action?: string | null;
+            /** Proposed Mrc */
+            proposed_mrc?: number | null;
+            /** Rank Id */
+            rank_id?: string | null;
+            /** Sizing Trace */
+            sizing_trace: {
+                [key: string]: unknown;
+            };
+            /** Strategy Forecast Id */
+            strategy_forecast_id?: string | null;
+            /** Target Weight */
+            target_weight: number;
+            /** Ticker */
+            ticker: string;
+            /**
+             * Why Now
+             * @default []
+             */
+            why_now: string[];
+            /** Why Trade */
+            why_trade?: string | null;
+        };
+        /** PortfolioExecutionDTO */
+        PortfolioExecutionDTO: {
+            /** Allocation Id */
+            allocation_id: string;
+            /** Calibration Status */
+            calibration_status: string;
+            /** Execution Model Snapshot Id */
+            execution_model_snapshot_id: string;
+            /** Sample Count */
+            sample_count: number;
+        };
+        /**
          * PortfolioImpact
          * @description Frozen before/after portfolio impact for one exact expression.
          */
         PortfolioImpact: {
             /** Adv Participation */
             adv_participation?: number | null;
+            /** Asset Class */
+            asset_class?: string | null;
             /**
              * Availability
              * @default unavailable
@@ -4521,6 +4602,8 @@ export interface components {
              * @default []
              */
             blockers: string[];
+            /** Capacity */
+            capacity?: number | null;
             /** Cash Comparator */
             cash_comparator?: {
                 [key: string]: unknown;
@@ -4532,6 +4615,10 @@ export interface components {
             contract_version: string;
             /** Correlation Cluster Delta */
             correlation_cluster_delta?: number | null;
+            /** Covariance */
+            covariance?: {
+                [key: string]: number;
+            } | null;
             /**
              * Cutoff
              * Format: date-time
@@ -4543,6 +4630,8 @@ export interface components {
             decision_revision: string;
             /** Diversification Benefit */
             diversification_benefit?: number | null;
+            /** Drawdown Cap */
+            drawdown_cap?: number | null;
             /** Execution Evidence */
             execution_evidence?: {
                 [key: string]: unknown;
@@ -4573,6 +4662,8 @@ export interface components {
              * @default []
              */
             input_lineage: components["schemas"]["InputLineage"][];
+            /** Kelly Cap */
+            kelly_cap?: number | null;
             /** Liquidity */
             liquidity?: {
                 [key: string]: unknown;
@@ -4612,6 +4703,8 @@ export interface components {
              * @default []
              */
             positions_most_correlated: string[];
+            /** Risk Budget */
+            risk_budget?: number | null;
             /** Risk Budget Consumed */
             risk_budget_consumed?: number | null;
             /** Risk Policy Version */
@@ -4620,6 +4713,8 @@ export interface components {
             scenario_pnl?: {
                 [key: string]: unknown;
             } | null;
+            /** Sector */
+            sector?: string | null;
             /** Sector Concentration Delta */
             sector_concentration_delta?: number | null;
             /** Symbol Concentration Delta */
@@ -4630,8 +4725,64 @@ export interface components {
             ticker: string;
             /** Top Alternative */
             top_alternative?: string | null;
+            /** Volatility */
+            volatility?: number | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * PortfolioIntegratedDTO
+         * @description One typed, immutable allocation view shared by all five workspaces.
+         */
+        PortfolioIntegratedDTO: {
+            /** Actions */
+            actions: components["schemas"]["PortfolioActionDTO"][];
+            /** Allocation Id */
+            allocation_id: string;
+            /**
+             * Attribution Count
+             * @default 0
+             */
+            attribution_count: number;
+            execution?: components["schemas"]["PortfolioExecutionDTO"] | null;
+            /** Execution Model Snapshot Id */
+            execution_model_snapshot_id?: string | null;
+            /**
+             * Input Cutoff
+             * Format: date-time
+             */
+            input_cutoff: string;
+            /**
+             * Postmortem
+             * @default []
+             */
+            postmortem: {
+                [key: string]: unknown;
+            }[];
+            scenario?: components["schemas"]["PortfolioScenarioDTO"] | null;
+            /** Scenario Artifact Id */
+            scenario_artifact_id?: string | null;
+            /** Status */
+            status: string;
+        };
+        /** PortfolioScenarioDTO */
+        PortfolioScenarioDTO: {
+            /** Allocation Id */
+            allocation_id: string;
+            /** Scenario Artifact Id */
+            scenario_artifact_id: string;
+            /** Scenarios */
+            scenarios: {
+                [key: string]: unknown;
+            }[];
+            /** Simultaneous Unwind */
+            simultaneous_unwind: {
+                [key: string]: unknown;
+            };
+            /** Tail Dependence */
+            tail_dependence: {
+                [key: string]: unknown;
+            };
         };
         /** PortfolioTransactionInput */
         PortfolioTransactionInput: {

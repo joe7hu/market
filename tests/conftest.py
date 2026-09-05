@@ -25,6 +25,7 @@ import pytest
 # configuration rather than falling back to its migration owner.
 os.environ.setdefault("MARKET_APP_LOGIN_ROLE", "market_app")
 os.environ.setdefault("MARKET_APP_DATABASE_PASSWORD", "phase1-test-market-app-password")
+os.environ.setdefault("MARKET_PHASE4_ALLOCATION_SIGNING_KEY", "phase4-test-allocation-signing-key")
 
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.database.configuration import DatabaseConfig

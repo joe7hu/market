@@ -42,7 +42,7 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
       setLoading(true);
       setData((current) => withScopeStatus(current, scope, { state: "loading" }));
       try {
-        const loaded = await loadPanelScope(scope, emptyPanelData(), options);
+        const loaded = await loadPanelScope(scope, dataRef.current, options);
         let supplemental;
         if (scope === "today" || scope === "options-radar") {
           try {
@@ -52,7 +52,9 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
             // its existing last-good snapshot when the event endpoint is down.
           }
         }
-        let nextData = mergePanelData(dataRef.current, loaded, options);
+        // Revalidate the provider merge as well as the request merge. This is
+        // the production boundary that combines independently loaded scopes.
+        let nextData = mergePanelData(dataRef.current, loaded);
         if (supplemental) nextData = mergeSnapshot(nextData, supplemental);
         dataRef.current = nextData;
         setData(nextData);

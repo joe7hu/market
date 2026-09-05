@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.jobs import options_paper_execution
+from investment_panel.core.decision import ExpressionKind
 from investment_panel.database import options_paper_execution as paper_execution_database
+from investment_panel.database import ticker_execution as ticker_execution_database
 from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.options_paper_execution import GENERIC_LANES, OptionsPaperExecutionRepository
+from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
 from investment_panel.database.options_paper_ledger import active_paper_exposure
 from investment_panel.database.options_paper_execution import (
     available_quantity,
@@ -101,6 +104,103 @@ def test_paper_exit_uses_profit_stop_time_and_liquidity_gates() -> None:
 def test_paper_net_pnl_includes_both_sides_of_conservative_fees() -> None:
     # One long contract bought at 1.20 and sold at 2.00: 80 gross less 1.30 fees.
     assert net_pnl(credit=False, entry_price=1.2, exit_price=2.0, quantity=1, leg_count=1) == 78.7
+
+
+def test_phase4_option_execution_math_and_coercion_are_conservative() -> None:
+    legs = [{"side": "sell", "bid": 1.0, "ask": 1.2}, {"side": "buy", "bid": 0.2, "ask": 0.4}]
+    assert paper_execution_database._midpoint_package(legs) == 0.8
+    assert paper_execution_database._entry_slippage(legs, 0.7, True) == 0.1
+    assert paper_execution_database._entry_slippage(legs, 1.0, False) == 0.2
+    assert paper_execution_database._exit_slippage(legs, 1.0, True) == 0.2
+    assert paper_execution_database._exit_slippage(legs, 0.7, False) == 0.1
+    assert paper_execution_database._midpoint_package([{"bid": 0, "ask": 1}]) is None
+    assert paper_execution_database._entry_slippage([{"bid": 0, "ask": 1}], 1, True) is None
+    assert paper_execution_database._exit_slippage([{"bid": 0, "ask": 1}], 1, False) is None
+    assert paper_execution_database._fees(2, 3) == 3.9
+    assert paper_execution_database._net_pnl(credit=False, entry_price=1.0, exit_price=2.0, quantity=2, leg_count=1) == 197.4
+    assert paper_execution_database._timestamp(NOW.isoformat()) == NOW
+    assert paper_execution_database._timestamp(NOW.replace(tzinfo=None)) == NOW
+    assert paper_execution_database._timestamp("bad") is None
+    assert paper_execution_database._utc(None).tzinfo is UTC
+    assert paper_execution_database._date(NOW) == NOW.date()
+    assert paper_execution_database._date(NOW.date()) == NOW.date()
+    assert paper_execution_database._date("2026-08-12") == NOW.date()
+    assert paper_execution_database._date("bad") is None
+    assert paper_execution_database._number(None) is None
+    assert paper_execution_database._number("1.5") == 1.5
+    assert paper_execution_database._number("") is None
+    assert paper_execution_database._number("bad") is None
+    assert paper_execution_database._integer("2") == 2
+    assert paper_execution_database._integer(None) is None
+    assert paper_execution_database._integer("") is None
+    assert paper_execution_database._integer("bad") is None
+    assert paper_execution_database._quantity("2.5") == 2.5
+    assert paper_execution_database._quantity(None) == 0
+    assert paper_execution_database._quantity("bad") == 0
+    assert str(paper_execution_database._uuid("00000000-0000-0000-0000-000000000001")) == "00000000-0000-0000-0000-000000000001"
+
+
+def test_phase4_ticker_option_guards_validate_sizes_quotes_and_dates() -> None:
+    leg = {
+        "contract_id": "contract:1", "option_type": "put", "side": "sell", "strike": 100,
+        "bid": 2.0, "ask": 2.2, "bid_size": 3, "ask_size": 4, "quote_time": NOW,
+        "expiration": date(2026, 9, 18),
+    }
+    assert ticker_execution_database._complete_option_legs([leg])
+    assert not ticker_execution_database._complete_option_legs([{**leg, "contract_id": None}])
+    assert ticker_execution_database._option_available_quantity([leg], 5, phase="entry") == 3
+    assert ticker_execution_database._option_available_quantity([leg], 5, phase="exit") == 4
+    assert ticker_execution_database._option_available_quantity([{**leg, "bid_size": 0}], 5, phase="entry") == 0
+    assert ticker_execution_database._option_available_quantity([{**leg, "ask_size": 0}], 5, phase="exit") == 0
+    assert ticker_execution_database._option_available_quantity([{**leg, "ask_size": None}], 5, phase="exit") == 0
+    assert ticker_execution_database._option_available_quantity([], 5, phase="entry") == 0
+    assert ticker_execution_database._option_midpoint([leg]) == 2.1
+    assert ticker_execution_database._option_midpoint([]) is None
+    assert ticker_execution_database._option_midpoint([{**leg, "bid": -1}]) is None
+    assert ticker_execution_database._option_midpoint([{**leg, "ask": 1.0}]) is None
+    assert ticker_execution_database._option_midpoint([{**leg, "ask": 1.0}]) is None
+    assert ticker_execution_database._option_expiration({}, [leg]) == date(2026, 9, 18)
+    assert ticker_execution_database._option_expiration({"expiration": "2026-09-19"}, []) == date(2026, 9, 19)
+    assert ticker_execution_database._option_expiration({"legs": [{"expiration": "2026-09-20"}]}, []) == date(2026, 9, 20)
+    assert ticker_execution_database._option_expiration({"expiration": NOW}, []) == NOW.date()
+    assert ticker_execution_database._option_expiration({"expiration": "bad"}, []) is None
+    assert ticker_execution_database._option_expiration({}, []) is None
+    assert not ticker_execution_database._complete_option_legs([{**leg, "quote_time": "bad"}])
+    assert ticker_execution_database._limit_reached("buy", 99, 100)
+    assert ticker_execution_database._limit_reached("sell", 101, 100)
+    assert not ticker_execution_database._limit_reached("buy", 101, 100)
+    assert not ticker_execution_database._limit_reached("sell", 99, 100)
+    assert ticker_execution_database._option_structure(ExpressionKind.CALL) == "long_call"
+    assert ticker_execution_database._option_structure(ExpressionKind.PUT) == "long_put"
+    assert ticker_execution_database._option_structure(ExpressionKind.DEBIT_SPREAD) == "debit_spread"
+    assert ticker_execution_database._option_structure(ExpressionKind.CASH_SECURED_PUT) == "cash_secured_put"
+    assert ticker_execution_database._utc(NOW.replace(tzinfo=None)) == NOW
+    assert ticker_execution_database._utc(None).tzinfo is UTC
+    assert ticker_execution_database._timestamp(NOW) == NOW
+    assert ticker_execution_database._number("bad") is None
+    assert ticker_execution_database._number(float("inf")) is None
+    assert ticker_execution_database._quantity(-2) == 0
+    assert ticker_execution_database._timestamp("bad") is None
+
+
+def test_phase4_ticker_paper_switches_fail_closed() -> None:
+    repo = object.__new__(TickerPaperExecutionRepository)
+    settings = SimpleNamespace(
+        mode="paper", ticker_paper_actions_enabled=True,
+        stock_paper_actions_enabled=True, options_paper_actions_enabled=True,
+    )
+    repo.config = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=settings))
+    repo._check_switches(ExpressionKind.STOCK)
+    repo._check_switches(ExpressionKind.CALL)
+    for field, kind in (
+        ("mode", ExpressionKind.STOCK), ("ticker_paper_actions_enabled", ExpressionKind.STOCK),
+        ("stock_paper_actions_enabled", ExpressionKind.STOCK), ("options_paper_actions_enabled", ExpressionKind.CALL),
+    ):
+        original = getattr(settings, field)
+        setattr(settings, field, "live" if field == "mode" else False)
+        with pytest.raises(ValueError):
+            repo._check_switches(kind)
+        setattr(settings, field, original)
 
 
 @pytest.mark.parametrize(

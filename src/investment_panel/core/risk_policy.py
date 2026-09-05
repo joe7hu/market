@@ -368,6 +368,9 @@ def compile_risk_policy_snapshot(
     account_source = account.get("account_source") or account.get("account_facts_source")
     if account_source is not None:
         values["account_source"] = str(account_source)
+    for name in ("sector_limits", "asset_class_limits", "factor_limits", "greek_limits", "min_liquidity", "allowed_venues"):
+        if name in account:
+            values[name] = account[name]
     # Hash the normalized model so every carried material fact, including
     # broker observations and allowed source identity, participates once.
     snapshot = RiskPolicySnapshot(policy_version="pending", **values)
