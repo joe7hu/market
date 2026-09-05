@@ -201,7 +201,7 @@ def manual_account_snapshot(config: AppConfig) -> dict[str, Any]:
                    ledger_book_identity, idempotency_key, notes
             FROM app.manual_account_snapshot
             WHERE account_key = 'manual'
-            ORDER BY effective_at DESC, id DESC LIMIT 1
+            ORDER BY reconciliation_version DESC, id DESC LIMIT 1
             """
         ).fetchone()
     ledger = replay_portfolio_at(config, snapshot["effective_at"] if snapshot else datetime.now(UTC))
@@ -240,6 +240,15 @@ def record_manual_account_reconciliation(config: AppConfig, fields: dict[str, An
             [normalized["idempotency_key"]],
         ).fetchone()
         if existing:
+            if (
+                existing.get("effective_at") != normalized.get("effective_at")
+                or any(
+                    _manual_account_number(existing.get(key)) != _manual_account_number(normalized.get(key))
+                    for key in ("cash_balance", "net_liquidation")
+                )
+                or existing.get("notes") != normalized.get("notes")
+            ):
+                raise ValueError("idempotency key is already used by a different reconciliation")
             return {
                 "snapshot": _serialize_row(dict(existing)),
                 "ledger": replay_portfolio_at(config, existing["effective_at"], connection=connection),
@@ -256,6 +265,11 @@ def record_manual_account_reconciliation(config: AppConfig, fields: dict[str, An
         ).fetchone()
         if latest and latest["executed_at"] and normalized["effective_at"] < latest["executed_at"]:
             raise ValueError("manual account effective_at cannot precede the latest ledger transaction")
+        latest_snapshot = connection.execute(
+            "SELECT effective_at FROM app.manual_account_snapshot WHERE account_key = 'manual' ORDER BY reconciliation_version DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if latest_snapshot and normalized["effective_at"] < latest_snapshot["effective_at"]:
+            raise ValueError("manual account effective_at cannot precede the latest reconciliation")
         ledger = replay_portfolio_at(config, normalized["effective_at"], connection=connection)
         version = actual + 1
         state = "reconciled" if normalized["net_liquidation"] is not None else "pending"
@@ -652,6 +666,8 @@ def _normalize_manual_account(fields: dict[str, Any]) -> dict[str, Any]:
     if str(fields.get("currency") or "USD").upper() != "USD":
         raise ValueError("currency must be USD until FX conversion is supported")
     effective_at = _datetime(fields.get("effective_at"))
+    if effective_at > datetime.now(UTC):
+        raise ValueError("effective_at cannot be in the future")
     cash_balance = _optional_nonnegative(fields.get("cash_balance"), "cash_balance")
     if cash_balance is None:
         raise ValueError("cash_balance is required")
@@ -666,6 +682,10 @@ def _normalize_manual_account(fields: dict[str, Any]) -> dict[str, Any]:
         "idempotency_key": idempotency_key,
         "notes": str(fields.get("notes") or "").strip(),
     }
+
+
+def _manual_account_number(value: Any) -> Decimal | None:
+    return None if value is None else Decimal(str(value)).quantize(Decimal("0.0001"))
 
 
 def _reject_backdated_transaction(
