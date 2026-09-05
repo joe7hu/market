@@ -32,6 +32,8 @@ class PortfolioTransactionInput(BaseModel):
         "split",
         "transfer_in",
         "transfer_out",
+        "cash_deposit",
+        "cash_withdrawal",
     ]
     quantity: float | None = None
     price: float | None = None

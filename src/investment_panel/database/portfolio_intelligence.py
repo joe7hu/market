@@ -55,6 +55,7 @@ def portfolio_summary(
     )
     latest_performance = performance[-1] if performance else {}
     portfolio_value = sum(float(row.get("market_value") or 0) for row in positions)
+    cash_balance = replay.get("cash_balance") if replay is not None else None
     cost_basis = sum(float(row.get("quantity") or 0) * float(row.get("avg_cost") or 0) for row in positions)
     net_contributions = accounting["net_contributions"]
     realized_pnl = accounting["realized_pnl"]
@@ -84,6 +85,8 @@ def portfolio_summary(
         "available_at": max(availability_times or quote_times).isoformat() if availability_times or quote_times else None,
         "oldest_quote_at": min(quote_times).isoformat() if quote_times else None,
         "portfolio_value": round(portfolio_value, 6),
+        "cash_balance": round(float(cash_balance), 6) if cash_balance is not None else None,
+        "equity": round(portfolio_value + float(cash_balance), 6) if cash_balance is not None else None,
         "cost_basis": round(cost_basis, 6),
         "net_contributions": round(net_contributions, 6),
         "invested_capital": round(invested_capital, 6),
@@ -738,7 +741,9 @@ def _portfolio_accounting_totals(
             SELECT
                 COALESCE(sum(CASE
                     WHEN transaction_type IN ('opening_balance', 'buy', 'transfer_in') THEN amount + fees
+                    WHEN transaction_type = 'cash_deposit' THEN amount
                     WHEN transaction_type IN ('sell', 'transfer_out') THEN -(amount - fees)
+                    WHEN transaction_type = 'cash_withdrawal' THEN -amount
                     WHEN transaction_type = 'dividend' THEN -(amount - fees)
                     WHEN transaction_type = 'fee' THEN amount + fees
                     WHEN transaction_type = 'split' THEN fees

@@ -4828,7 +4828,7 @@ export interface components {
              * Transaction Type
              * @enum {string}
              */
-            transaction_type: "opening_balance" | "buy" | "sell" | "dividend" | "fee" | "split" | "transfer_in" | "transfer_out";
+            transaction_type: "opening_balance" | "buy" | "sell" | "dividend" | "fee" | "split" | "transfer_in" | "transfer_out" | "cash_deposit" | "cash_withdrawal";
         };
         /** PortfolioTransactionPreviewResponse */
         PortfolioTransactionPreviewResponse: {

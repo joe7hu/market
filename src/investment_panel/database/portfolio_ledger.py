@@ -18,7 +18,7 @@ from psycopg.types.json import Jsonb
 
 
 POSITION_TYPES = {"opening_balance", "buy", "sell", "transfer_in", "transfer_out"}
-CASH_TYPES = {"dividend", "fee"}
+CASH_TYPES = {"dividend", "fee", "cash_deposit", "cash_withdrawal"}
 TRANSACTION_TYPES = POSITION_TYPES | CASH_TYPES | {"split"}
 MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
@@ -301,6 +301,7 @@ def replay_portfolio_at(
     income = 0.0
     fees = 0.0
     net_contributions = 0.0
+    cash_balance: float | None = None
     for row in rows:
         instrument_id = int(row["instrument_id"]) if row.get("instrument_id") is not None else None
         position = positions.get(instrument_id) if instrument_id is not None else None
@@ -317,10 +318,22 @@ def replay_portfolio_at(
         preview = _transaction_preview(fields, position)
         realized_pnl += float(preview.get("realized_pnl") or 0)
         fees += float(row.get("fees") or 0)
+        transaction_type = str(row["transaction_type"])
+        if transaction_type in {"cash_deposit", "cash_withdrawal"} and cash_balance is None:
+            cash_balance = 0.0
+        if cash_balance is not None:
+            amount = float(row.get("amount") or 0)
+            row_fees = float(row.get("fees") or 0)
+            if transaction_type in {"cash_deposit", "dividend", "sell"}:
+                cash_balance += amount - row_fees
+            elif transaction_type in {"cash_withdrawal", "fee", "buy"}:
+                cash_balance -= amount + row_fees
         if row["transaction_type"] == "dividend":
             income += float(row.get("amount") or 0)
-        if row["transaction_type"] in {"opening_balance", "transfer_in"}:
+        if row["transaction_type"] in {"opening_balance", "transfer_in", "cash_deposit"}:
             net_contributions += float(row.get("amount") or 0)
+        elif row["transaction_type"] == "cash_withdrawal":
+            net_contributions -= float(row.get("amount") or 0)
         if instrument_id is not None and row["transaction_type"] in POSITION_TYPES | {"split"}:
             if preview["new_quantity"] > 0:
                 positions[instrument_id] = {
@@ -442,6 +455,9 @@ def replay_portfolio_at(
         "available_at": reference.isoformat(),
         "positions": position_rows,
         "portfolio_value": complete_portfolio_value,
+        "cash_balance": round(cash_balance, 6) if cash_balance is not None else None,
+        "equity": round(complete_portfolio_value + cash_balance, 6)
+        if complete_portfolio_value is not None and cash_balance is not None else None,
         "realized_pnl": round(realized_pnl, 6),
         "income": round(income, 6),
         "fees": round(fees, 6),
@@ -508,7 +524,7 @@ def _normalize_transaction(fields: dict[str, Any]) -> dict[str, Any]:
     amount = _quantize(amount, 6)
     if transaction_type in POSITION_TYPES and (quantity is None or quantity <= 0):
         raise ValueError("quantity must be greater than zero")
-    if transaction_type in {"opening_balance", "buy", "sell", "transfer_in", "transfer_out"} and price is None:
+    if transaction_type in POSITION_TYPES and price is None:
         raise ValueError("price is required for position transactions")
     if transaction_type in CASH_TYPES and amount is None:
         raise ValueError("amount is required for cash transactions")

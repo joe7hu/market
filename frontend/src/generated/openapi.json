@@ -10405,7 +10405,9 @@
               "fee",
               "split",
               "transfer_in",
-              "transfer_out"
+              "transfer_out",
+              "cash_deposit",
+              "cash_withdrawal"
             ],
             "title": "Transaction Type",
             "type": "string"
