@@ -87,6 +87,8 @@ def upgrade() -> None:
           PERFORM analysis.write_phase4_execution_0077(p, sig);
         END;
         $$;
+        REVOKE ALL ON FUNCTION analysis.write_phase4_execution(JSONB, TEXT)
+          FROM PUBLIC, market_migrator;
         GRANT EXECUTE ON FUNCTION analysis.write_phase4_execution(JSONB, TEXT) TO market_app;
         """
     )

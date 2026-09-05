@@ -473,6 +473,11 @@ def test_phase4_source_and_calibration_migration_round_trip_restores_permissions
         assert connection.execute(
             "SELECT has_function_privilege('market_app', 'analysis.write_phase4_execution_0077(jsonb,text)', 'EXECUTE')"
         ).fetchone()["has_function_privilege"] is False
+        for role in ("public", "market_migrator"):
+            assert connection.execute(
+                "SELECT has_function_privilege(%s, 'analysis.write_phase4_execution(jsonb,text)', 'EXECUTE')",
+                [role],
+            ).fetchone()["has_function_privilege"] is False
         assert connection.execute(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'app.paper_execution_observation'::regclass AND conname = 'phase4_paper_observation_status'"
         ).fetchone()["pg_get_constraintdef"].find("partial_exited") >= 0
