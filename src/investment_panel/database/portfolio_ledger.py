@@ -27,6 +27,7 @@ def preview_portfolio_transaction(config: AppConfig, fields: dict[str, Any]) -> 
     normalized = _normalize_transaction(fields)
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
+        _reject_manual_snapshot_backdating(connection, normalized["executed_at"])
         _reject_backdated_transaction(connection, normalized)
         position = _position_for_symbol(connection, normalized.get("symbol"))
     preview = _transaction_preview(normalized, position)
@@ -38,6 +39,7 @@ def record_portfolio_transaction(config: AppConfig, fields: dict[str, Any]) -> d
     normalized = _normalize_transaction(fields)
     runtime = runtime_for_config(config)
     with runtime.transaction() as connection:
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('manual-account-reconciliation', 0))")
         connection.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
             [normalized["idempotency_key"]],
@@ -66,6 +68,7 @@ def record_portfolio_transaction(config: AppConfig, fields: dict[str, Any]) -> d
                 [f"portfolio-instrument:{instrument_id}"],
             )
             connection.execute("SELECT id FROM catalog.instrument WHERE id = %s FOR UPDATE", [instrument_id])
+        _reject_manual_snapshot_backdating(connection, normalized["executed_at"])
         _reject_backdated_transaction(connection, normalized, instrument_id=instrument_id)
         position = _position_for_instrument(connection, instrument_id, lock=True) if instrument_id else None
         expected_position_version = normalized.get("expected_position_version")
@@ -121,6 +124,7 @@ def reverse_portfolio_transaction(
         raise ValueError("idempotency_key is required")
     runtime = runtime_for_config(config)
     with runtime.transaction() as connection:
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('manual-account-reconciliation', 0))")
         connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [key])
         existing = connection.execute(
             "SELECT id, reverses_transaction_id FROM app.portfolio_transaction WHERE idempotency_key = %s",
@@ -201,10 +205,10 @@ def manual_account_snapshot(config: AppConfig) -> dict[str, Any]:
                    ledger_book_identity, idempotency_key, notes
             FROM app.manual_account_snapshot
             WHERE account_key = 'manual'
-            ORDER BY effective_at DESC, id DESC LIMIT 1
+            ORDER BY effective_at DESC, reconciliation_version DESC, id DESC LIMIT 1
             """
         ).fetchone()
-    ledger = replay_portfolio_at(config, snapshot["effective_at"] if snapshot else datetime.now(UTC))
+        ledger = replay_portfolio_at(config, snapshot["effective_at"] if snapshot else datetime.now(UTC), connection=connection)
     return {"snapshot": _serialize_row(dict(snapshot)) if snapshot else None, "ledger": ledger}
 
 
@@ -212,6 +216,7 @@ def preview_manual_account_reconciliation(config: AppConfig, fields: dict[str, A
     normalized = _normalize_manual_account(fields)
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
+        _validate_manual_account_effective_at(connection, normalized["effective_at"])
         current = connection.execute(
             """
             SELECT id, account_key, currency, effective_at, recorded_at, cash_balance,
@@ -240,6 +245,15 @@ def record_manual_account_reconciliation(config: AppConfig, fields: dict[str, An
             [normalized["idempotency_key"]],
         ).fetchone()
         if existing:
+            if (
+                existing.get("effective_at") != normalized.get("effective_at")
+                or any(
+                    _manual_account_number(existing.get(key)) != _manual_account_number(normalized.get(key))
+                    for key in ("cash_balance", "net_liquidation")
+                )
+                or existing.get("notes") != normalized.get("notes")
+            ):
+                raise ValueError("idempotency key is already used by a different reconciliation")
             return {
                 "snapshot": _serialize_row(dict(existing)),
                 "ledger": replay_portfolio_at(config, existing["effective_at"], connection=connection),
@@ -251,11 +265,7 @@ def record_manual_account_reconciliation(config: AppConfig, fields: dict[str, An
         actual = int(current["reconciliation_version"]) if current else 0
         if expected is not None and int(expected) != actual:
             raise ValueError("manual account changed since preview; preview the reconciliation again")
-        latest = connection.execute(
-            "SELECT max(executed_at) AS executed_at FROM app.portfolio_transaction"
-        ).fetchone()
-        if latest and latest["executed_at"] and normalized["effective_at"] < latest["executed_at"]:
-            raise ValueError("manual account effective_at cannot precede the latest ledger transaction")
+        _validate_manual_account_effective_at(connection, normalized["effective_at"])
         ledger = replay_portfolio_at(config, normalized["effective_at"], connection=connection)
         version = actual + 1
         state = "reconciled" if normalized["net_liquidation"] is not None else "pending"
@@ -651,7 +661,11 @@ def _normalize_manual_account(fields: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("account must be manual until broker sync is supported")
     if str(fields.get("currency") or "USD").upper() != "USD":
         raise ValueError("currency must be USD until FX conversion is supported")
+    if not str(fields.get("effective_at") or "").strip():
+        raise ValueError("effective_at is required")
     effective_at = _datetime(fields.get("effective_at"))
+    if effective_at > datetime.now(UTC):
+        raise ValueError("effective_at cannot be in the future")
     cash_balance = _optional_nonnegative(fields.get("cash_balance"), "cash_balance")
     if cash_balance is None:
         raise ValueError("cash_balance is required")
@@ -666,6 +680,23 @@ def _normalize_manual_account(fields: dict[str, Any]) -> dict[str, Any]:
         "idempotency_key": idempotency_key,
         "notes": str(fields.get("notes") or "").strip(),
     }
+
+
+def _manual_account_number(value: Any) -> Decimal | None:
+    return None if value is None else Decimal(str(value)).quantize(Decimal("0.0001"))
+
+
+def _validate_manual_account_effective_at(connection: Any, effective_at: datetime) -> None:
+    latest = connection.execute(
+        "SELECT max(executed_at) AS executed_at FROM app.portfolio_transaction"
+    ).fetchone()
+    if latest and latest["executed_at"] and effective_at < latest["executed_at"]:
+        raise ValueError("manual account effective_at cannot precede the latest ledger transaction")
+    latest_snapshot = connection.execute(
+        "SELECT effective_at FROM app.manual_account_snapshot WHERE account_key = 'manual' ORDER BY reconciliation_version DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if latest_snapshot and effective_at < latest_snapshot["effective_at"]:
+        raise ValueError("manual account effective_at cannot precede the latest reconciliation")
 
 
 def _reject_backdated_transaction(
@@ -702,6 +733,14 @@ def _reject_backdated_transaction(
         raise ValueError(
             f"backdated transactions are not supported; latest {fields['symbol']} activity is {latest_at.isoformat()}"
         )
+
+
+def _reject_manual_snapshot_backdating(connection: Any, executed_at: datetime) -> None:
+    latest = connection.execute(
+        "SELECT effective_at FROM app.manual_account_snapshot WHERE account_key = 'manual' ORDER BY reconciliation_version DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if latest and executed_at < latest["effective_at"]:
+        raise ValueError("portfolio transaction cannot precede the latest manual account reconciliation")
 
 
 def _transaction_matches(existing: dict[str, Any], requested: dict[str, Any]) -> bool:

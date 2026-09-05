@@ -164,7 +164,43 @@ def test_manual_account_reconciliation_is_previewed_versioned_and_idempotent(cli
     )
     assert duplicate.status_code == 200
     assert duplicate.json()["snapshot"]["id"] == saved.json()["snapshot"]["id"]
-    assert client.get("/api/portfolio/account").json()["snapshot"]["cash_balance"] == 1250.0
+    next_snapshot = client.post(
+        "/api/portfolio/account/reconciliation",
+        json={**payload, "effective_at": "2026-07-15T15:30:00Z", "cash_balance": 1300, "idempotency_key": "manual-account-reconciliation-2", "expected_reconciliation_version": 1},
+    )
+    assert next_snapshot.status_code == 200
+    assert client.get("/api/portfolio/account").json()["snapshot"]["cash_balance"] == 1300.0
+    backdated = client.post(
+        "/api/portfolio/account/reconciliation",
+        json={**payload, "effective_at": "2026-07-14T15:31:00Z", "idempotency_key": "manual-account-reconciliation-backdated", "expected_reconciliation_version": 2},
+    )
+    assert backdated.status_code == 400
+    assert "latest reconciliation" in backdated.json()["detail"]
+    mismatch = client.post(
+        "/api/portfolio/account/reconciliation",
+        json={**payload, "cash_balance": 1251},
+    )
+    assert mismatch.status_code == 400
+    assert "different reconciliation" in mismatch.json()["detail"]
+    future = client.post(
+        "/api/portfolio/account/reconciliation/preview",
+        json={**payload, "effective_at": "2099-01-01T00:00:00Z", "idempotency_key": "manual-account-future"},
+    )
+    assert future.status_code == 400
+    assert "future" in future.json()["detail"]
+    backdated_trade = client.post(
+        "/api/portfolio/transactions",
+        json={"symbol": "NVDA", "transaction_type": "buy", "quantity": 1, "price": 100, "executed_at": "2026-07-14T15:30:00Z", "idempotency_key": "manual-account-backdated-trade"},
+    )
+    assert backdated_trade.status_code == 400
+    assert "manual account reconciliation" in backdated_trade.json()["detail"]
+    empty_effective = client.post(
+        "/api/portfolio/account/reconciliation/preview",
+        json={**payload, "effective_at": "", "idempotency_key": "manual-account-empty-effective"},
+    )
+    assert empty_effective.status_code == 400
+    assert "effective_at is required" in empty_effective.json()["detail"]
+    assert client.get("/api/portfolio/account").json()["snapshot"]["cash_balance"] == 1300.0
 
 
 def test_portfolio_transaction_sell_previews_and_realizes_average_cost_pnl(client: TestClient) -> None:

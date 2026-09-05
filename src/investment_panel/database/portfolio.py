@@ -42,6 +42,7 @@ from investment_panel.core.portfolio import (
     attribute_paper_pnl,
 )
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.portfolio_ledger import replay_portfolio_at
 
 
 PHASE4_PANEL_TABLES = (
@@ -87,6 +88,20 @@ class PortfolioLoopRepository:
             ).fetchone()
             if allocation is None:
                 return empty
+            authority_snapshot_id = str((allocation.get("metadata") or {}).get("authority_snapshot_id") or "")
+            if authority_snapshot_id.startswith("manual-account:"):
+                current_manual = connection.execute(
+                    """SELECT id::text, reconciliation_state
+                       FROM app.manual_account_snapshot
+                       WHERE account_key = 'manual'
+                       ORDER BY effective_at DESC, reconciliation_version DESC, id DESC LIMIT 1"""
+                ).fetchone()
+                if (
+                    current_manual is None
+                    or str(current_manual["id"]) != authority_snapshot_id.removeprefix("manual-account:")
+                    or current_manual["reconciliation_state"] != "reconciled"
+                ):
+                    return empty
             allocation_id = allocation["allocation_id"]
             result = {name: [] for name in PHASE4_PANEL_TABLES}
             result["portfolio_allocation"] = [dict(allocation)]
@@ -284,14 +299,27 @@ class PortfolioLoopRepository:
         with self.runtime.transaction() as connection:
             account = None
             if allocation.status != "cash_only":
-                account_id = str(metadata["authority_snapshot_id"]).removeprefix("broker-account:")
-                try:
-                    account = connection.execute(
-                        "SELECT id FROM raw.broker_account_snapshot WHERE id = %s::bigint",
-                        [account_id],
-                    ).fetchone()
-                except (TypeError, ValueError):
-                    account = None
+                authority_snapshot_id = str(metadata["authority_snapshot_id"])
+                if authority_snapshot_id.startswith("broker-account:"):
+                    account_id = authority_snapshot_id.removeprefix("broker-account:")
+                    try:
+                        account = connection.execute(
+                            "SELECT id FROM raw.broker_account_snapshot WHERE id = %s::bigint",
+                            [account_id],
+                        ).fetchone()
+                    except (TypeError, ValueError):
+                        account = None
+                elif authority_snapshot_id.startswith("manual-account:"):
+                    account_id = authority_snapshot_id.removeprefix("manual-account:")
+                    try:
+                        account = connection.execute(
+                            """SELECT id FROM app.manual_account_snapshot
+                               WHERE id = %s::bigint AND account_key = 'manual'
+                                 AND reconciliation_state = 'reconciled'""",
+                            [account_id],
+                        ).fetchone()
+                    except (TypeError, ValueError):
+                        account = None
                 if account is None:
                     raise ValueError("allocation authority snapshot is not a persisted PostgreSQL account")
             for item in allocation.items:
@@ -404,27 +432,18 @@ class PortfolioLoopRepository:
                            net_liquidation, cash_balance, effective_at AS observed_at,
                            reconciliation_state, ledger_book_identity
                     FROM app.manual_account_snapshot
-                    WHERE account_key = 'manual' AND effective_at <= %s
-                    ORDER BY effective_at DESC, id DESC LIMIT 1
-                    """, [as_of]
+                    WHERE account_key = 'manual'
+                      AND effective_at <= %s AND recorded_at <= %s
+                    ORDER BY effective_at DESC, reconciliation_version DESC, id DESC LIMIT 1
+                    """, [as_of, as_of]
                 ).fetchone()
                 account_source_kind = "manual" if account else "broker"
             if account_source_kind == "manual":
-                positions = connection.execute(
-                    """
-                    SELECT position.instrument_id, position.instrument_id AS id,
-                           position.quantity,
-                           position.quantity * quote.price AS market_value,
-                           instrument.symbol, instrument.sector, instrument.asset_class
-                    FROM app.portfolio_position position
-                    JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
-                    LEFT JOIN LATERAL (
-                      SELECT price FROM raw.current_price_at(%s, ARRAY[position.instrument_id]::bigint[])
-                      LIMIT 1
-                    ) quote ON true
-                    WHERE position.quantity > 0
-                    """, [as_of]
-                ).fetchall()
+                positions = [
+                    {**row, "id": row["instrument_id"]}
+                    for row in replay_portfolio_at(None, as_of, connection=connection)["positions"]
+                    if float(row.get("quantity") or 0) > 0
+                ]
             else:
                 positions = connection.execute(
                     """SELECT position.instrument_id, position.id, position.market_value,
@@ -861,7 +880,11 @@ class PortfolioLoopRepository:
                 "aggregate_loss_limit": risk_policy.ticker_total_open_loss_pct if risk_policy else None,
                 **joint_limits, "min_liquidity": min_liquidity, "allowed_venues": allowed_venues,
             })
-            authority_snapshot_id = account_identity or "missing"
+            authority_snapshot_id = (
+                account_identity
+                if account and account.get("reconciliation_state", "reconciled") == "reconciled"
+                else "missing"
+            )
             authority_payload = {
                 "authority_snapshot_id": authority_snapshot_id,
                 "input_cutoff": as_of,
