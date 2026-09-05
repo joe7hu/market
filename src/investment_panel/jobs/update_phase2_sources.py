@@ -117,14 +117,15 @@ def _normalise_treasury(payload: Mapping[str, Any]) -> Mapping[str, Any]:
         date = next((values.get(key) for key in ("NEW_DATE", "BC_DATE", "DATE") if values.get(key)), None)
         if not date:
             continue
+        date = date.split("T", 1)[0]
         for code, value in values.items():
-            match = re.fullmatch(r"(BC|TC)_(\d+)(MONTH|YEAR)", code)
+            match = re.fullmatch(r"(BC|TC)_(\d+(?:_\d+)?)(MONTH|YEAR)", code)
             if not match or value.upper() in {"", "N/A", "NA", "."}:
                 continue
             rows.append({
                 "date": date,
                 "available_at": available_at,
-                "tenor": f"{match.group(2)}{'M' if match.group(3) == 'MONTH' else 'Y'}",
+                "tenor": f"{match.group(2).replace('_', '.')}" f"{'M' if match.group(3) == 'MONTH' else 'Y'}",
                 "real": match.group(1) == "TC",
                 "value": value,
             })
@@ -174,7 +175,14 @@ def payload_for(source_id: str, *, fetcher: Fetcher) -> Mapping[str, Any]:
             merged.extend(_normalise_fred(body, series_id))
         return {"observations": merged, "source_version": "fred-alfred.v1"}
     if source_id == "treasury":
-        return _normalise_treasury(fetcher(url, headers, params))
+        year = os.environ.get("MARKET_TREASURY_YEAR", str(datetime.now(UTC).year))
+        payloads = []
+        for data in ("daily_treasury_yield_curve", "daily_treasury_real_yield_curve"):
+            payloads.append(_normalise_treasury(fetcher(url, headers, {"data": data, "field_tdr_date_value": year})))
+        return {
+            "observations": [row for payload in payloads for row in payload.get("observations", ())],
+            "source_version": "treasury-xml.v1",
+        }
     elif source_id == "trading_economics":
         params["c"] = _credential("TRADING_ECONOMICS_API_KEY") or ""
     elif source_id == "alphavantage":

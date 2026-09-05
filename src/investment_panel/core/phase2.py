@@ -262,7 +262,11 @@ def _observation(
     if observed_at is None or available_at is None:
         return None
     return PITObservation(
-        observation_id=_stable_id(source_id, field_name, row.get("date", row.get("period_end", row.get("period"))), value, available_at.isoformat(), content_hash),
+        observation_id=_stable_id(
+            source_id, field_name, row.get("date", row.get("period_end", row.get("period"))),
+            row.get("tenor", row.get("series_id", row.get("event_id"))), value,
+            available_at.isoformat(), content_hash,
+        ),
         field_name=field_name, dimension=dimension, asset_class=asset_class, source_id=source_id,
         source_version=source_version, value=value, unit=str(row.get("unit") or "") or None,
         observed_at=observed_at, available_at=available_at,

@@ -56,7 +56,7 @@ def test_fred_requests_each_series_and_maps_provider_vintage_clock() -> None:
 def test_treasury_xml_is_normalized_at_provider_boundary() -> None:
     payload = {
         "xml": """<feed xmlns:d="urn:test"><entry><content><d:properties>
-          <d:NEW_DATE>2026-09-02</d:NEW_DATE><d:BC_10YEAR>4.0</d:BC_10YEAR>
+          <d:NEW_DATE>2026-09-02</d:NEW_DATE><d:BC_5YEAR>4.0</d:BC_5YEAR><d:BC_10YEAR>4.0</d:BC_10YEAR>
           <d:TC_10YEAR>1.7</d:TC_10YEAR>
         </d:properties></content></entry></feed>""",
         "retrieved_at": "2026-09-02T14:00:00+00:00",
@@ -66,6 +66,25 @@ def test_treasury_xml_is_normalized_at_provider_boundary() -> None:
     assert {(item.field_name, item.value) for item in result.observations} == {
         ("rates.nominal_yield", 4.0), ("rates.real_yield", 1.7),
     }
+    assert len(result.observations) == 3
+    assert len({item.observation_id for item in result.observations}) == 3
+
+
+def test_treasury_payload_requests_nominal_and_real_documented_feeds(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fetcher(_url, _headers, params):
+        calls.append(params["data"])
+        code = "BC_10YEAR" if params["data"] == "daily_treasury_yield_curve" else "TC_10YEAR"
+        return {
+            "xml": f"<feed><entry><properties><NEW_DATE>2026-09-02T00:00:00</NEW_DATE><{code}>4.0</{code}></properties></entry></feed>",
+            "retrieved_at": "2026-09-02T14:00:00+00:00",
+        }
+
+    monkeypatch.setenv("MARKET_TREASURY_YEAR", "2026")
+    payload = payload_for("treasury", fetcher=fetcher)
+    assert calls == ["daily_treasury_yield_curve", "daily_treasury_real_yield_curve"]
+    assert len(payload["observations"]) == 2
 
 
 def test_alphavantage_earnings_shape_is_normalized_to_existing_contract() -> None:
