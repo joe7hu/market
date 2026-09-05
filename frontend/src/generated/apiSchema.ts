@@ -1831,8 +1831,12 @@ export interface components {
             blocking: boolean;
             /** Field */
             field: string;
+            /** Impact */
+            impact?: string | null;
             /** Next Action */
             next_action: string;
+            /** Owner */
+            owner?: string | null;
             /** Reason */
             reason: string;
             /** Source */
@@ -5850,6 +5854,8 @@ export interface components {
             expressions?: {
                 [key: string]: components["schemas"]["ExpressionDecision"];
             };
+            /** Field States */
+            field_states?: components["schemas"]["DataFieldStateV1"][];
             fundamental: components["schemas"]["HorizonDecision"];
             input_manifest: components["schemas"]["TickerInputManifestResponse"];
             market_evidence_assessment?: components["schemas"]["MarketEvidenceAssessment"] | null;

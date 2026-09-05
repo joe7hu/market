@@ -158,6 +158,8 @@ class DataFieldStateV1(BaseModel):
     reason: str
     blocking: bool
     next_action: str
+    owner: str | None = None
+    impact: str | None = None
 
 
 class TodayCapitalAction(FlexibleResponse):
@@ -727,6 +729,7 @@ class TickerDecisionDetailResponse(BaseModel):
     input_manifest: TickerInputManifestResponse
     market_evidence_assessment: MarketEvidenceAssessment | None = None
     portfolio_impacts: dict[ExpressionKind, TickerPortfolioImpactSummaryResponse] = Field(default_factory=dict)
+    field_states: list[DataFieldStateV1] = Field(default_factory=list)
 
 
 class TickerDetailResponse(FlexibleResponse):

@@ -26,6 +26,7 @@ export function DataFieldStateNotice({ state, compact = false }: { state: DataFi
       <p className="font-semibold text-foreground">Field unavailable: {state.field}</p>
       <p className="mt-1 text-muted-foreground">Status: {state.availability_status} · Source: {state.source}</p>
       <p className="mt-1 text-muted-foreground">Reason: {state.reason}</p>
+      {state.owner ? <p className="mt-1 text-muted-foreground">Owner: {state.owner} · Impact: {state.impact ?? "unspecified"}</p> : null}
       <p className="mt-1 text-muted-foreground">{state.blocking ? "This blocks the decision." : "This does not block the decision."} Next: {state.next_action}</p>
     </div>
   );

@@ -1422,9 +1422,31 @@
             "title": "Field",
             "type": "string"
           },
+          "impact": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact"
+          },
           "next_action": {
             "title": "Next Action",
             "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
           },
           "reason": {
             "title": "Reason",
@@ -13191,6 +13213,13 @@
             },
             "title": "Expressions",
             "type": "object"
+          },
+          "field_states": {
+            "items": {
+              "$ref": "#/components/schemas/DataFieldStateV1"
+            },
+            "title": "Field States",
+            "type": "array"
           },
           "fundamental": {
             "$ref": "#/components/schemas/HorizonDecision"

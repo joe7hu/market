@@ -802,7 +802,7 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
     assert set(decision) == {
         "as_of", "capital_action", "decision_contract_version", "decision_revision",
         "expressions", "fundamental", "input_manifest", "market_evidence_assessment",
-        "portfolio_impacts", "resolution", "selected_expression", "tactical", "ticker",
+        "portfolio_impacts", "resolution", "selected_expression", "tactical", "ticker", "field_states",
     }
     assert "opportunity_episode" not in payload
     assert "resolution" not in payload

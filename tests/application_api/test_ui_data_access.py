@@ -145,6 +145,29 @@ def test_table_payload_normalizes_rows() -> None:
     assert payload["rows"][0]["symbol"] == "ABC"
 
 
+def test_ticker_field_states_preserve_request_owner_and_impact() -> None:
+    states = payloads_owner._ticker_field_states([{
+        "field": "current_price",
+        "ticker": "ABC",
+        "required_source": "confirmed quote",
+        "why_it_matters": "A current price is required.",
+        "collect_now": "update_market_data",
+        "owner": "update_market_data",
+        "decision_impact": "The entry condition becomes testable.",
+    }])
+
+    assert states == [{
+        "field": "current_price",
+        "availability_status": "missing",
+        "source": "confirmed quote",
+        "reason": "A current price is required.",
+        "blocking": True,
+        "next_action": "Run update_market_data for ABC.",
+        "owner": "update_market_data",
+        "impact": "The entry condition becomes testable.",
+    }]
+
+
 def test_ticker_payload_matches_symbol() -> None:
     panel_data = PanelData(
         status=DataStatus(True, "ok", "test"),

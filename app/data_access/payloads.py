@@ -246,6 +246,8 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "opportunity_rank": rank_row,
         "trade_plan": plan.model_dump(mode="json") if plan is not None else None,
     })
+    if ticker_decision_payload["data_requests"]:
+        ticker_decision_payload["field_states"] = _ticker_field_states(ticker_decision_payload["data_requests"])
     outcome_attributions, attribution_blocker = select_current_outcome_attributions(
         tables.get("outcome_attribution") or [], ticker_decision_payload,
     )
@@ -282,6 +284,24 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "decision_revision": ticker_decision_payload["decision_revision"],
         "found": bool(dossier["coverage"].get("present") or dossier["coverage"]["live"]),
     }
+
+
+def _ticker_field_states(requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project rich ticker requests into the shared compact field-state contract."""
+
+    return [
+        {
+            "field": request["field"],
+            "availability_status": "missing",
+            "source": request["required_source"],
+            "reason": request["why_it_matters"],
+            "blocking": True,
+            "next_action": f"Run {request['collect_now']} for {request['ticker']}.",
+            "owner": request["owner"],
+            "impact": request["decision_impact"],
+        }
+        for request in requests
+    ]
 
 
 def _current_alpha_rows(
