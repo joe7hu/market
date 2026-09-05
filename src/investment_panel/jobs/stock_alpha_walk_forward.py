@@ -1077,6 +1077,30 @@ def main() -> None:
     print(result)
 
 
+def scheduled(config_path: str | None = None) -> dict[str, Any]:
+    """Run the stock-alpha path on its scheduled, paper-only boundary."""
+
+    runtime = runtime_for_config(load_config(config_path))
+    cutoff = datetime.now(UTC)
+    observations = load_observations(runtime, cutoff=cutoff)
+    controls = build_control_results(observations, cutoff=cutoff)
+    if not controls["randomized_label_returns"] or not controls["white_noise_market_returns"]:
+        return {
+            "status": "skipped",
+            "reason": "repeated_control_observations_unavailable",
+            "observations": len(observations),
+            "control_metadata": controls.get("control_metadata") or {},
+        }
+    return {
+        "status": "ok",
+        **run(
+            runtime, observations, cutoff=cutoff,
+            universe_members=load_universe_members(runtime, cutoff=cutoff),
+            control_results=controls,
+        ),
+    }
+
+
 def _aware(value: Any) -> datetime:
     parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if parsed.tzinfo is None or parsed.utcoffset() is None:

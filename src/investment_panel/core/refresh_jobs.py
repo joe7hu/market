@@ -49,6 +49,7 @@ from investment_panel.jobs import (
     ticker_decisions,
     ticker_data_requests,
     update_company_financials,
+    stock_alpha_walk_forward,
 )
 from investment_panel.database.retention import RetentionRepository
 
@@ -227,6 +228,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "process_options_paper_orders": lambda config_path: options_paper_execution.run(config_path),
     "sync_decision_inbox": lambda config_path: decision_inbox.run(config_path),
     "refresh_symbol_decision_outcomes": lambda config_path: refresh_symbol_decision_outcomes.run(config_path),
+    "run_stock_alpha_walk_forward": lambda config_path: stock_alpha_walk_forward.scheduled(config_path),
     # Manual run: forces the consolidated agent over the full open queue whenever a
     # command is configured, independent of the auto-run (enabled) toggle.
     "run_option_agents_force": lambda config_path: run_option_agents.run(config_path, force=True),
