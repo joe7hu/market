@@ -17,7 +17,9 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     runtime = runtime_for_config(config)
     symbol_outcomes = SymbolDecisionOutcomeRepository(runtime).refresh()
     ticker_repository = TickerDecisionRepository(runtime)
-    ticker_outcomes = ticker_repository.refresh_outcomes()
+    # Keep the scheduled batch bounded: each ticker has six horizon writes and
+    # the job must finish before its existing 300-second subprocess deadline.
+    ticker_outcomes = ticker_repository.refresh_outcomes(limit=25)
     publish_attributions = getattr(ticker_repository, "publish_outcome_attributions", None)
     attribution_result = (
         publish_attributions()

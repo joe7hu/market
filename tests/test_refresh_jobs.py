@@ -79,7 +79,8 @@ def test_outcome_refresh_includes_ticker_learning_without_staging_orders(monkeyp
         def __init__(self, received_runtime):
             assert received_runtime is runtime
 
-        def refresh_outcomes(self):
+        def refresh_outcomes(self, *, limit):
+            assert limit == 25
             return {"evaluated": 3, "updated": 18, "resolved": 2}
 
     monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "load_config", lambda _path: config)
