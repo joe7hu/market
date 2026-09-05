@@ -12,6 +12,8 @@ from psycopg.sql import Identifier, Literal, SQL
 from investment_panel.database.migrations import HEAD_REVISION, downgrade_database, main as migration_main, upgrade_database
 from investment_panel.database.authority import close_cached_runtimes, runtime_for_url
 from investment_panel.database.runtime import DatabaseRuntime
+from app.data_access.loaders import load_panel_data
+from conftest import typed_config
 
 
 @pytest.fixture
@@ -535,6 +537,17 @@ def test_runtime_requires_expected_schema_revision(migrated_postgres_dsn: str) -
             runtime.check_schema_revision("future_revision")
     finally:
         runtime.close()
+
+
+def test_panel_readiness_rejects_deployed_schema_behind_source_head(migrated_postgres_dsn: str) -> None:
+    downgrade_database(migrated_postgres_dsn, "20260904_0077")
+    try:
+        panel_data = load_panel_data(typed_config(migrated_postgres_dsn), table_names=("source_health",))
+        assert panel_data.status.ready is False
+        assert panel_data.metadata["schema_revision"] == "20260904_0077"
+        assert panel_data.metadata["expected_schema_revision"] == HEAD_REVISION
+    finally:
+        upgrade_database(migrated_postgres_dsn)
 
 
 def test_migration_cli_upgrades_configured_database(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:

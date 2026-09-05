@@ -18,6 +18,7 @@ from investment_panel.database.panel_models import (
     load_postgres_tables,
     today_authority_pages,
 )
+from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 
@@ -247,7 +248,12 @@ def load_panel_data(
         return PanelData(
             status=DataStatus(False, f"PostgreSQL read models unavailable: {exc}", "postgresql-error"),
             tables={name: [] for name in requested},
-            metadata={"database": "postgresql", "error": str(exc)},
+            metadata={
+                "database": "postgresql",
+                "error": str(exc),
+                "schema_revision": getattr(exc, "actual", None),
+                "expected_schema_revision": HEAD_REVISION,
+            },
         )
     unavailable = list(metadata.get("unavailable_models") or [])
     available_count = int(metadata.get("available_model_count") or 0)
