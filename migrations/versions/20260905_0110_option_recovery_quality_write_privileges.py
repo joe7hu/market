@@ -19,5 +19,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
-        "REVOKE SELECT, INSERT, UPDATE ON TABLE analysis.option_recovery_event_session_quality FROM market_app;"
+        "REVOKE INSERT, UPDATE ON TABLE analysis.option_recovery_event_session_quality FROM market_app;"
     )
