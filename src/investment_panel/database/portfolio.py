@@ -405,7 +405,7 @@ class PortfolioLoopRepository:
                            reconciliation_state, ledger_book_identity
                     FROM app.manual_account_snapshot
                     WHERE account_key = 'manual' AND effective_at <= %s
-                    ORDER BY effective_at DESC, id DESC LIMIT 1
+                    ORDER BY reconciliation_version DESC, id DESC LIMIT 1
                     """, [as_of]
                 ).fetchone()
                 account_source_kind = "manual" if account else "broker"

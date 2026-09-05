@@ -201,7 +201,7 @@ def manual_account_snapshot(config: AppConfig) -> dict[str, Any]:
                    ledger_book_identity, idempotency_key, notes
             FROM app.manual_account_snapshot
             WHERE account_key = 'manual'
-            ORDER BY effective_at DESC, id DESC LIMIT 1
+            ORDER BY reconciliation_version DESC, id DESC LIMIT 1
             """
         ).fetchone()
     ledger = replay_portfolio_at(config, snapshot["effective_at"] if snapshot else datetime.now(UTC))
@@ -240,6 +240,8 @@ def record_manual_account_reconciliation(config: AppConfig, fields: dict[str, An
             [normalized["idempotency_key"]],
         ).fetchone()
         if existing:
+            if any(existing.get(key) != normalized.get(key) for key in ("effective_at", "cash_balance", "net_liquidation", "notes")):
+                raise ValueError("idempotency key is already used by a different reconciliation")
             return {
                 "snapshot": _serialize_row(dict(existing)),
                 "ledger": replay_portfolio_at(config, existing["effective_at"], connection=connection),
@@ -652,6 +654,8 @@ def _normalize_manual_account(fields: dict[str, Any]) -> dict[str, Any]:
     if str(fields.get("currency") or "USD").upper() != "USD":
         raise ValueError("currency must be USD until FX conversion is supported")
     effective_at = _datetime(fields.get("effective_at"))
+    if effective_at > datetime.now(UTC):
+        raise ValueError("effective_at cannot be in the future")
     cash_balance = _optional_nonnegative(fields.get("cash_balance"), "cash_balance")
     if cash_balance is None:
         raise ValueError("cash_balance is required")
