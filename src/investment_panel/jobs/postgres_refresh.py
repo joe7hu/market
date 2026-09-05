@@ -194,6 +194,8 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         update_disclosure_sources,
         update_ibkr_options,
         update_market_events,
+        update_company_financials,
+        update_phase2_sources,
         update_robinhood_options,
     )
 
@@ -224,6 +226,8 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
         ("arco_sources", False, lambda: update_arco_sources.run(config_path)),
         ("market_data", False, lambda: update_market_data.run(config_path, publish=False)),
+        ("company_financials", False, lambda: update_company_financials.run(config_path)),
+        ("phase2_sources", False, lambda: update_phase2_sources.run(config_path)),
         ("content_sources", False, lambda: update_content_sources.run(config_path)),
         ("market_events", False, lambda: update_market_events.run(config_path)),
         ("disclosures", False, lambda: update_disclosure_sources.run(config_path)),

@@ -11,11 +11,13 @@ from investment_panel.jobs import (
     update_broker_sources,
     update_arco_sources,
     update_content_sources,
+    update_company_financials,
     update_disclosure_sources,
     update_ibkr_options,
     update_market_data,
     update_market_events,
     update_robinhood_options,
+    update_phase2_sources,
 )
 from conftest import typed_config
 
@@ -36,6 +38,8 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     )
     monkeypatch.setattr(update_arco_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_content_sources, "run", lambda _path: {"status": "ok"})
+    monkeypatch.setattr(update_company_financials, "run", lambda _path: {"status": "ok"})
+    monkeypatch.setattr(update_phase2_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_market_events, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_disclosure_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_robinhood_options, "run", lambda _path: {"status": "auth_required"})

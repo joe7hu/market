@@ -12,7 +12,9 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Callable, Mapping, Sequence
+from xml.etree import ElementTree
 
 import httpx
 
@@ -60,6 +62,8 @@ def _credential(name: str) -> str | None:
 def _http_fetch(url: str, headers: Mapping[str, str], params: Mapping[str, str]) -> Mapping[str, Any]:
     response = httpx.get(url, headers=dict(headers), params=dict(params), timeout=30.0, follow_redirects=True)
     response.raise_for_status()
+    if url.endswith("/xml") or "xml" in response.headers.get("content-type", "").lower():
+        return {"xml": response.text, "retrieved_at": datetime.now(UTC).isoformat()}
     body = response.json()
     if isinstance(body, Mapping):
         return body
@@ -68,7 +72,92 @@ def _http_fetch(url: str, headers: Mapping[str, str], params: Mapping[str, str])
     raise ValueError("Phase 2 provider response must be an object or row list")
 
 
-def _payload_for(source_id: str, *, fetcher: Fetcher) -> Mapping[str, Any]:
+def _clock(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        return f"{text}T00:00:00+00:00"
+    return text or None
+
+
+def _normalise_fred(payload: Mapping[str, Any], series_id: str) -> list[dict[str, Any]]:
+    vintage = payload.get("realtime_start") or payload.get("vintage_at")
+    rows = payload.get("observations", ())
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        item = dict(row)
+        item["series_id"] = item.get("series_id") or series_id
+        item["vintage_at"] = item.get("vintage_at") or item.get("realtime_start") or vintage
+        item["available_at"] = item.get("available_at") or _clock(item["vintage_at"])
+        normalized.append(item)
+    return normalized
+
+
+def _normalise_treasury(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    xml = payload.get("xml")
+    if not isinstance(xml, str):
+        return payload
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError as exc:
+        raise ValueError("Treasury XML payload is malformed") from exc
+    available_at = payload.get("retrieved_at") or payload.get("available_at")
+    rows: list[dict[str, Any]] = []
+    for entry in root.iter():
+        if entry is root or entry.tag.rsplit("}", 1)[-1].lower() not in {"entry", "item", "record"}:
+            continue
+        values = {
+            child.tag.rsplit("}", 1)[-1].upper(): (child.text or "").strip()
+            for child in entry.iter()
+            if child is not entry and child.text and not list(child)
+        }
+        date = next((values.get(key) for key in ("NEW_DATE", "BC_DATE", "DATE") if values.get(key)), None)
+        if not date:
+            continue
+        for code, value in values.items():
+            match = re.fullmatch(r"(BC|TC)_(\d+)(MONTH|YEAR)", code)
+            if not match or value.upper() in {"", "N/A", "NA", "."}:
+                continue
+            rows.append({
+                "date": date,
+                "available_at": available_at,
+                "tenor": f"{match.group(2)}{'M' if match.group(3) == 'MONTH' else 'Y'}",
+                "real": match.group(1) == "TC",
+                "value": value,
+            })
+    return {"observations": rows, "source_version": "treasury-xml.v1"}
+
+
+def _normalise_alphavantage(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Map Alpha Vantage EARNINGS rows to the existing expectation contract."""
+
+    rows = payload.get("quarterlyEarnings")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return payload
+    normalized = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        period_end = row.get("fiscalDateEnding")
+        reported = _clock(row.get("reportedDate"))
+        if not period_end or not reported:
+            continue
+        normalized.append({
+            "period_end": period_end,
+            "date": period_end,
+            "available_at": reported,
+            "publication_at": reported,
+            "expected": row.get("estimatedEPS"),
+            "ticker": payload.get("symbol"),
+            "metric": "EPS",
+        })
+    return {"observations": normalized, "source_version": "alphavantage-earnings.v1"}
+
+
+def payload_for(source_id: str, *, fetcher: Fetcher) -> Mapping[str, Any]:
     if source_id not in _URLS:
         # Existing broker and SEC seams are dispatched explicitly below.  An
         # absent seam is a truthful missing-history result, never a KeyError.
@@ -78,21 +167,29 @@ def _payload_for(source_id: str, *, fetcher: Fetcher) -> Mapping[str, Any]:
     params: dict[str, str] = {}
     if source_id == "fred":
         key = _credential("FRED_API_KEY")
-        params.update({"api_key": key or "", "file_type": "json", "series_id": os.environ.get("MARKET_FRED_SERIES_IDS", "GDP,CPIAUCSL,UNRATE")})
+        series_ids = tuple(item.strip() for item in os.environ.get("MARKET_FRED_SERIES_IDS", "GDP,CPIAUCSL,UNRATE").split(",") if item.strip())
+        merged: list[dict[str, Any]] = []
+        for series_id in series_ids:
+            body = fetcher(url, headers, {"api_key": key or "", "file_type": "json", "series_id": series_id})
+            merged.extend(_normalise_fred(body, series_id))
+        return {"observations": merged, "source_version": "fred-alfred.v1"}
+    if source_id == "treasury":
+        return _normalise_treasury(fetcher(url, headers, params))
     elif source_id == "trading_economics":
         params["c"] = _credential("TRADING_ECONOMICS_API_KEY") or ""
     elif source_id == "alphavantage":
         params.update({"apikey": _credential("ALPHAVANTAGE_API_KEY") or "", "function": "EARNINGS", "symbol": os.environ.get("MARKET_ALPHAVANTAGE_SYMBOL", "SPY")})
     elif source_id == "coinmetrics":
         headers["Authorization"] = f"Bearer {_credential('COINMETRICS_API_KEY') or ''}"
-    return fetcher(url, headers, params)
+    body = fetcher(url, headers, params)
+    return _normalise_alphavantage(body) if source_id == "alphavantage" else body
 
 
 def adapt_source_payload(source_id: str, payload: Mapping[str, Any], *, env: Mapping[str, str] | None = None) -> AdapterResult:
     if source_id == "fred":
         return parse_fred_alfred(payload, env=env)
     if source_id == "treasury":
-        return parse_treasury_yield_curve(payload)
+        return parse_treasury_yield_curve(_normalise_treasury(payload))
     if source_id == "trading_economics":
         return parse_event_consensus(payload, env=env)
     if source_id == "alphavantage":
@@ -167,7 +264,7 @@ def run(
                 result = AdapterResult(source_id=source_id, status=Phase2Status.MISSING_SOURCE, reason=f"{contract.credential_env} is not configured")
             else:
                 try:
-                    body = (payloads or {}).get(source_id) if payloads is not None else _payload_for(source_id, fetcher=fetcher or _http_fetch)
+                    body = (payloads or {}).get(source_id) if payloads is not None else payload_for(source_id, fetcher=fetcher or _http_fetch)
                     result = adapt_source_payload(source_id, body or {}, env=os.environ)
                 except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
                     result = AdapterResult(source_id=source_id, status=Phase2Status.MISSING_SOURCE, reason=f"provider request failed: {type(exc).__name__}")
@@ -192,4 +289,4 @@ def run(
     return {"status": "ok", "database": "postgresql", "sources": results}
 
 
-__all__ = ["adapt_source_payload", "run"]
+__all__ = ["adapt_source_payload", "payload_for", "run"]
