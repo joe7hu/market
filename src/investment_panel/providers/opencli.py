@@ -62,6 +62,8 @@ class OpenCliRunner:
                 )
             except FileNotFoundError as exc:
                 raise OpenCliUnavailableError(f"OpenCLI command not found: {executable}") from exc
+            except PermissionError as exc:
+                raise OpenCliUnavailableError(f"OpenCLI is not executable: {executable}") from exc
             except subprocess.TimeoutExpired as exc:
                 raise OpenCliUnavailableError(
                     f"OpenCLI timed out after {self.timeout_seconds}s: {' '.join(command)}"

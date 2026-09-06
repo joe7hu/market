@@ -83,6 +83,16 @@ def test_read_json_classifies_timeout_as_unavailable(monkeypatch) -> None:
     assert PackageOpenCliUnavailableError is OpenCliUnavailableError
 
 
+def test_read_json_classifies_permission_error_as_unavailable(monkeypatch) -> None:
+    def permission_run(_command, **_kwargs):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(subprocess, "run", permission_run)
+
+    with pytest.raises(OpenCliUnavailableError):
+        OpenCliRunner().read_json(["twitter", "list-tweets"])
+
+
 def test_opencli_resolves_known_installation_when_launchd_path_is_minimal(tmp_path, monkeypatch) -> None:
     candidate = tmp_path / "opencli"
     candidate.write_text("")
