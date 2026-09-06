@@ -383,10 +383,11 @@ def opportunity_scorecard(
 def decision_inbox(
     limit: int = Query(50, ge=1, le=100),
     cursor: str | None = Query(None, max_length=256),
+    current_only: bool = Query(True),
     actions: OptionsActions = Depends(dependencies.get_options_actions),
 ) -> dict[str, Any]:
     try:
-        return actions.decision_inbox(limit=limit, cursor=cursor)
+        return actions.decision_inbox(limit=limit, cursor=cursor, current_only=current_only)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

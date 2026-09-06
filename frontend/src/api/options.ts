@@ -215,7 +215,7 @@ export async function loadOptionTicketDetail(decisionId: string, signal?: AbortS
 }
 
 export async function loadDecisionInbox(cursor: string | null = null, signal?: AbortSignal): Promise<DecisionInboxPayload> {
-  const query = cursor ? `?limit=50&cursor=${encodeURIComponent(cursor)}` : "?limit=50";
+  const query = cursor ? `?limit=50&current_only=true&cursor=${encodeURIComponent(cursor)}` : "?limit=50&current_only=true";
   const payload = await getJson<ApiSchema["DecisionInboxResponse"]>(`/api/decision-inbox${query}`, signal);
   return {
     ...payload,

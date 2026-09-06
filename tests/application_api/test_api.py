@@ -25,6 +25,7 @@ from app import job_control
 from app import dependencies
 import app.panel_snapshot as panel_owner
 import app.main as app_main
+import app.routers.options as options_owner
 import app.routers.system as system_owner
 from app.main import app
 from app.request_security import require_local_request
@@ -1982,3 +1983,20 @@ def test_frontend_fallback_does_not_serve_files_outside_dist(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert response.text == '<div id="root"></div>'
+
+
+def test_decision_inbox_defaults_to_current_items() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def read(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"items": []}
+
+    result = options_owner.decision_inbox(
+        limit=50, cursor=None, actions=SimpleNamespace(decision_inbox=read),
+    )
+
+    assert result == {"items": []}
+    assert calls[0]["limit"] == 50
+    assert calls[0]["cursor"] is None
+    assert calls[0]["current_only"].default is True

@@ -6879,6 +6879,7 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string | null;
+                current_only?: boolean;
             };
             header?: never;
             path?: never;

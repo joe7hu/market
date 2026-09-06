@@ -15774,6 +15774,16 @@
               ],
               "title": "Cursor"
             }
+          },
+          {
+            "in": "query",
+            "name": "current_only",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Current Only",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
