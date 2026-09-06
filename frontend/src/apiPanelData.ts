@@ -17,6 +17,26 @@ const TABLE_KEY_OVERRIDES: Record<string, keyof KnownPanelTables> = {
 const RESERVED_PANEL_KEYS = new Set(["dashboard", "settings", "errors"]);
 const PHASE4_WORKSPACES = new Set(["today", "opportunities", "portfolio", "research", "health"]);
 
+const PHASE4_TABLE_KEYS = ["portfolio_allocation", "portfolio_allocation_items", "portfolio_scenario_artifact", "execution_model_snapshot", "paper_execution_observations", "book_attribution"];
+
+function explicitlyUnavailable(status: DashboardPayload["status"], integrated: unknown, tables: Record<string, unknown> | undefined): boolean {
+  const metadata = status?.metadata;
+  return status?.ready === true && metadata?.database === "postgresql"
+    && metadata.phase4_authority === "unavailable" && metadata.phase4_shared_allocation_id === null
+    && !metadata.snapshot_error && metadata.snapshot_state !== "stale" && metadata.snapshot_state !== "failed"
+    && integrated == null && PHASE4_TABLE_KEYS.every((key) => {
+      const table = tables?.[key];
+      return table == null || (isTablePayload(table) && Array.isArray(table.rows) && table.rows.length === 0 && !table.count);
+    });
+}
+
+function clearPhase4(data: PanelData): void {
+  for (const key of [...PHASE4_TABLE_KEYS.map(tableKeyFor), "portfolioIntegrated"]) {
+    delete (data as Record<string, unknown>)[key];
+  }
+  delete data.errors.portfolio;
+}
+
 function tableKeyFor(apiKey: string): keyof KnownPanelTables | string {
   if (apiKey in TABLE_KEY_OVERRIDES) return TABLE_KEY_OVERRIDES[apiKey];
   return apiKey.replace(/_([a-z0-9])/g, (_, letter: string) => letter.toUpperCase());
@@ -32,31 +52,27 @@ export function emptyPanelData(): PanelData {
 }
 
 export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload, options: { append?: boolean } = {}): PanelData {
+  const unavailable = explicitlyUnavailable(snapshot.status, snapshot.portfolio_integrated, snapshot.tables);
+  const contradictsUnavailable = snapshot.status?.metadata?.phase4_authority === "unavailable" && !unavailable;
   const incomingTables = phase4Identity(snapshot.tables);
   const incomingIntegrated = phase4IdentityFromIntegrated(snapshot.portfolio_integrated);
   const incomingHasPhase4 = incomingTables.state !== "absent" || incomingIntegrated.state !== "absent";
-  if (incomingHasPhase4 && (incomingTables.state === "invalid" || incomingIntegrated.state === "invalid" ||
-      (incomingTables.state === "valid" && incomingIntegrated.state === "valid" && incomingTables.value !== incomingIntegrated.value))) {
+  if (contradictsUnavailable || (incomingHasPhase4 && (incomingTables.state === "invalid" || incomingIntegrated.state === "invalid" ||
+      (incomingTables.state === "valid" && incomingIntegrated.state === "valid" && incomingTables.value !== incomingIntegrated.value)))) {
     return {
       ...existing,
       errors: { ...existing.errors, portfolio: "Invalid or missing Phase 4 snapshot identity." },
+      scopeStatus: { ...existing.scopeStatus, ...(snapshot.scope ? { [snapshot.scope]: { state: "failed", error: "Invalid or missing Phase 4 snapshot identity." } as ScopeSnapshotStatus } : {}) },
     };
   }
   const incomingPhase4 = incomingTables.state === "valid" ? incomingTables : incomingIntegrated;
   const existingPhase4 = phase4IdentityFromPanel(existing);
-  if (snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope) && incomingPhase4.state === "absent") {
+  if (snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope) && incomingPhase4.state === "absent" && !unavailable) {
     const message = "Phase 4 identity is missing from this workspace response.";
     return {
       ...existing,
       errors: { ...existing.errors, portfolio: message },
       scopeStatus: { ...existing.scopeStatus, [snapshot.scope]: { state: "failed", error: message } },
-    };
-  }
-  if (snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope) && existingPhase4.state === "valid" && incomingPhase4.state === "absent") {
-    return {
-      ...existing,
-      errors: { ...existing.errors, portfolio: "Phase 4 identity is missing from this workspace response." },
-      scopeStatus: { ...existing.scopeStatus, [snapshot.scope]: { state: "failed", error: "Phase 4 identity is missing from this workspace response." } },
     };
   }
   if (incomingPhase4.state === "valid" && existingPhase4.state === "valid" && incomingPhase4.value !== existingPhase4.value
@@ -76,9 +92,10 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
     delete reset.executionModelSnapshot;
     delete reset.portfolioIntegrated;
   }
+  if (unavailable) clearPhase4(next);
   if (snapshot.portfolio_integrated) next.portfolioIntegrated = snapshot.portfolio_integrated;
   if (snapshot.dashboard) {
-    next.dashboard = snapshot.dashboard;
+    next.dashboard = { ...snapshot.dashboard, ...(snapshot.status ? { status: snapshot.status } : {}) };
   } else if (snapshot.status) {
     next.dashboard = { ...next.dashboard, status: snapshot.status };
   }
@@ -183,9 +200,11 @@ function phase4IdentityFromPanel(data: PanelData): Phase4Identity {
 
 export function mergePanelData(existing: PanelData, incoming: PanelData, options: { append?: boolean } = {}): PanelData {
   const existingPhase4 = phase4IdentityFromPanel(existing);
-  const incomingPhase4 = phase4IdentityFromPanel(incoming);
   const phase4Scope = Object.keys(incoming.scopeStatus ?? {}).find((scope) => PHASE4_WORKSPACES.has(scope));
-  if (incomingPhase4.state === "invalid" || (phase4Scope && incomingPhase4.state === "absent")) {
+  const unavailable = (!phase4Scope || incoming.scopeStatus[phase4Scope].state === "ready") && explicitlyUnavailable(incoming.dashboard.status, incoming.portfolioIntegrated, Object.fromEntries(PHASE4_TABLE_KEYS.map((key) => [key, incoming[tableKeyFor(key)]])));
+  const contradictsUnavailable = incoming.dashboard.status?.metadata?.phase4_authority === "unavailable" && !unavailable;
+  const incomingPhase4 = phase4IdentityFromPanel(incoming);
+  if (contradictsUnavailable || incomingPhase4.state === "invalid" || (phase4Scope && incomingPhase4.state === "absent" && !unavailable)) {
     const message = "Invalid or missing Phase 4 snapshot identity.";
     return {
       ...existing,
@@ -210,6 +229,7 @@ export function mergePanelData(existing: PanelData, incoming: PanelData, options
       delete (next as Record<string, unknown>)[key];
     }
   }
+  if (unavailable) clearPhase4(next);
   for (const [key, value] of Object.entries(incoming)) {
     if (RESERVED_PANEL_KEYS.has(key) || key === "scopeStatus" || value === undefined) continue;
     const existingTable = next[key] as TablePayload | undefined;

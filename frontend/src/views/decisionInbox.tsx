@@ -90,10 +90,6 @@ function InboxItem({ item, busy, onState }: { item: RowRecord; busy: boolean; on
   const reason = text(payload, "reason", text(payload, "primary_reason", text(payload, "primary_blocker")));
   const delivery = text(item, "delivery_status");
   const itemId = text(item, "id");
-  const dismiss = () => {
-    const reason = window.prompt("Why dismiss this event?")?.trim();
-    if (reason) onState(itemId, { state: "dismissed", dismiss_reason: reason });
-  };
   return (
     <Card className="min-w-0">
       <CardContent className="space-y-3 p-4">
@@ -112,12 +108,7 @@ function InboxItem({ item, busy, onState }: { item: RowRecord; busy: boolean; on
           {paperOrderId ? <span className="break-all rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">Paper order {paperOrderId}</span> : null}
           {text(payload, "expires_at") ? <span className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">Valid until {text(payload, "expires_at")}</span> : null}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "acknowledged" })}>Acknowledge</Button>
-          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "snoozed", snoozed_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() })}>Snooze 1 day</Button>
-          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "review_complete" })}>Review complete</Button>
-          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={dismiss}>Dismiss…</Button>
-        </div>
+        <InboxStateControls itemId={itemId} busy={busy} onState={onState} />
       </CardContent>
     </Card>
   );
@@ -130,4 +121,21 @@ function record(value: JsonValue | undefined): RowRecord {
 function text(row: RowRecord, key: string, fallback = ""): string {
   const value = row[key];
   return value === null || value === undefined ? fallback : String(value);
+}
+
+export type InboxStateChange = { state: "acknowledged" | "snoozed" | "dismissed" | "review_complete"; snoozed_until?: string; dismiss_reason?: string };
+
+export function InboxStateControls({ itemId, busy, onState }: { itemId: string; busy: boolean; onState: (itemId: string, body: InboxStateChange) => void }) {
+  const dismiss = () => {
+    const reason = window.prompt("Why dismiss this event?")?.trim();
+    if (reason) onState(itemId, { state: "dismissed", dismiss_reason: reason });
+  };
+  return (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "acknowledged" })}>Acknowledge</Button>
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "snoozed", snoozed_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() })}>Snooze 1 day</Button>
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onState(itemId, { state: "review_complete" })}>Review complete</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={dismiss}>Dismiss…</Button>
+        </div>
+  );
 }

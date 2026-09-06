@@ -70,7 +70,7 @@ def test_decision_inbox_dedupes_actionable_ticket_events_and_dry_runs_delivery(
         runtime.close()
 
 
-def test_decision_inbox_retries_only_the_compact_fixed_owner_message(
+def test_decision_inbox_quarantines_uncertain_fixed_owner_delivery(
     migrated_postgres_dsn: str,
 ) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
@@ -85,7 +85,7 @@ def test_decision_inbox_retries_only_the_compact_fixed_owner_message(
         result = repository.deliver_outbox(sender=lambda _message: (_ for _ in ()).throw(RuntimeError("relay unavailable")), dry_run=False)
         row = repository.rows()["items"][0]
         assert result == {"sent": 0, "failed": 1, "dry_run": 0}
-        assert row["delivery_status"] == "failed"
+        assert row["delivery_status"] == "uncertain"
         assert "RuntimeError" in str(row["last_error"])
         message = telegram_message({"symbol": "NVDA", "state": "CRITICAL", "evidence": {"do_not": "send"}})
         assert "evidence" not in message.lower()
@@ -380,7 +380,9 @@ def test_decision_inbox_canonical_actionable_transition_emits_one_dry_run_outbox
     reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
     try:
         assert inbox.sync_current_decisions([], now=reference) == _zero_transitions()
-        row = _row(reference + timedelta(minutes=1), plan=_plan())
+        plan = _plan()
+        plan.expiry = (datetime.now(UTC) + timedelta(days=1)).date()
+        row = _row(reference + timedelta(minutes=1), plan=plan)
         assert inbox.sync_current_decisions([row], now=reference + timedelta(minutes=2))["newly_actionable"] == 1
         assert inbox.sync_current_decisions([row], now=reference + timedelta(minutes=3)) == _zero_transitions()
         item = inbox.rows()["items"][0]

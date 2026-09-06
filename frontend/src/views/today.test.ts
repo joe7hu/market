@@ -405,3 +405,15 @@ const plan = (overrides: Partial<TradePlan> = {}): TradePlan => ({
   publication_id: "publication-1",
   ...overrides,
 });
+
+it("shows all review actions on the default screen using explicit Inbox identity", () => {
+  const action = { ...response.actions![0], source: "decision_inbox", inbox_item_id: "stored-inbox-id" };
+  const markup = renderToStaticMarkup(createElement(TodayPage, {
+    data: emptyPanelData(), model: buildModel(emptyPanelData()), lastRefresh: null,
+    actionQueue: { ...response, actions: [action] }, actionQueueLoading: false,
+    actionQueueError: null, loading: false, onRefresh: () => {}, onOpenTicker: () => {},
+  }));
+  for (const label of ["Acknowledge", "Snooze 1 day", "Review complete", "Dismiss…"]) expect(markup).toContain(label);
+  const withoutIdentity = renderToStaticMarkup(createElement(ActionQueueCard, { item: response.actions![0], onOpenTicker: () => {} }));
+  expect(withoutIdentity).not.toContain("Acknowledge");
+});

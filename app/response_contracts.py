@@ -163,6 +163,7 @@ class DataFieldStateV1(BaseModel):
 
 
 class TodayCapitalAction(FlexibleResponse):
+    inbox_item_id: str | None = None
     projection_identity: str
     source_authority: str
     source: str

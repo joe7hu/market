@@ -428,6 +428,7 @@ def decision_inbox_queue(rows: list[dict[str, Any]], *, now: datetime | None = N
             "projection_identity": f"inbox:{authority}",
             "source_authority": authority,
             "source": "decision_inbox",
+            "inbox_item_id": identifier or None,
             "title": _queue_text(_queue_value(row, payload, "title"), f"{event_type.replace('_', ' ').title()} transition"),
             "lifecycle_state": lifecycle,
             "transition": event_type.upper(),

@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { setDecisionInboxState } from "@/api/options";
+import { InboxStateControls, type InboxStateChange } from "./decisionInbox";
 import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -141,14 +144,28 @@ function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { re
       {!loading && !queueError && !items.length && !missingPlanCount ? <EmptyState title="Action Queue is clear" detail="No current actionable or transition items are available." /> : null}
       {!unavailable && items.length ? (
         <div className="grid gap-3 lg:grid-cols-3" role="list">
-          {items.map((item) => <ActionQueueCard key={item.projection_identity} item={item} onOpenTicker={onOpenTicker} />)}
+          {items.map((item) => <ActionQueueCard key={item.projection_identity} item={item} onOpenTicker={onOpenTicker} onRefresh={onRefresh} />)}
         </div>
       ) : null}
     </section>
   );
 }
 
-export function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onOpenTicker: (symbol: string) => void }) {
+export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: TodayAction; onOpenTicker: (symbol: string) => void; onRefresh?: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function updateState(itemId: string, body: InboxStateChange) {
+    setBusy(true);
+    setError(null);
+    try {
+      await setDecisionInboxState(itemId, body);
+      onRefresh?.();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Action could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
   const plan = tradePlanForAction(item);
   const tone = plan !== undefined ? "info" : toneFromText(item.lifecycle_state === "actionable" ? item.action : item.lifecycle_state);
   const statusLabel = item.transition ?? item.action ?? item.lifecycle_state;
@@ -170,6 +187,8 @@ export function ActionQueueCard({ item, onOpenTicker }: { item: TodayAction; onO
             {expiry ? <p className="text-xs text-muted-foreground">Expires {expiry}</p> : null}
           </>
         )}
+        {item.inbox_item_id ? <InboxStateControls itemId={item.inbox_item_id} busy={busy} onState={updateState} /> : null}
+        {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Open drill-down</a> : null}
       </CardContent>
     </Card>

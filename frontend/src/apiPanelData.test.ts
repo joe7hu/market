@@ -59,3 +59,35 @@ describe("mergePanelData", () => {
     expect(next.fundamentals.rows).toEqual([{ symbol: "AAA", value: 1 }]);
   });
 });
+
+describe("research without allocation authority", () => {
+  const status = { ready: true, source: "postgresql", metadata: { database: "postgresql", phase4_authority: "unavailable", phase4_shared_allocation_id: null } };
+  const snapshot = { scope: "opportunities", status, portfolio_integrated: null, tables: { opportunities_ranked: { rows: [{ ticker: "AAA", research_rank: 1 }], count: 806 } } };
+  it("accepts explicit unavailable authority through both production merge stages and clears old actions", () => {
+    const existing = { ...emptyPanelData(), portfolioAllocation: { rows: [{ allocation_id: "old" }] }, portfolioAllocationItems: { rows: [{ action: "BUY" }] }, paperExecutionObservations: { rows: [{ order_id: "old" }] }, bookAttribution: { rows: [{ allocation_id: "old" }] } };
+    for (const first of [emptyPanelData(), existing]) {
+      const incoming = mergeSnapshot(first, snapshot);
+      const result = mergePanelData(existing, incoming);
+      expect(result.opportunitiesRanked.count).toBe(806);
+      expect(result.opportunitiesRanked.rows?.[0].ticker).toBe("AAA");
+      expect(result.portfolioAllocation).toBeUndefined();
+      expect(result.portfolioAllocationItems).toBeUndefined();
+      expect(result.paperExecutionObservations).toBeUndefined();
+      expect(result.bookAttribution).toBeUndefined();
+      expect(result.portfolioIntegrated).toBeUndefined();
+      expect(result.scopeStatus.opportunities.state).toBe("ready");
+    }
+  });
+  it.each([
+    { ...snapshot, status: { ready: true } },
+    { ...snapshot, status: { ...status, metadata: { ...status.metadata, snapshot_error: "unavailable" } } },
+    { ...snapshot, tables: { ...snapshot.tables, portfolio_allocation_items: { rows: [{ action: "BUY" }] } } },
+    { ...snapshot, tables: { ...snapshot.tables, portfolio_allocation: { rows: [{ allocation_id: "contradiction" }] } } },
+  ])("rejects missing, failed, or contradictory authority", (invalid) => {
+    for (const existing of [emptyPanelData(), mergeSnapshot(emptyPanelData(), snapshot)]) {
+      const result = mergePanelData(existing, mergeSnapshot(existing, invalid));
+      expect(result.errors.portfolio).toBeTruthy();
+      expect(result.scopeStatus.opportunities.state).toBe("failed");
+    }
+  });
+});

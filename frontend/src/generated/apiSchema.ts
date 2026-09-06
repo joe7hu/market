@@ -6298,6 +6298,8 @@ export interface components {
             expires_at?: string | null;
             /** Field States */
             field_states?: components["schemas"]["DataFieldStateV1"][];
+            /** Inbox Item Id */
+            inbox_item_id?: string | null;
             /** Lifecycle State */
             lifecycle_state: string;
             /** Next Action */

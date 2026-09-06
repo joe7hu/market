@@ -14295,6 +14295,17 @@
             "title": "Field States",
             "type": "array"
           },
+          "inbox_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inbox Item Id"
+          },
           "lifecycle_state": {
             "title": "Lifecycle State",
             "type": "string"

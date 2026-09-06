@@ -820,30 +820,89 @@ class DecisionInboxRepository:
         limit: int = 20,
         now: datetime | None = None,
     ) -> dict[str, int]:
-        """Deliver only compact fixed-owner messages with bounded retry backoff."""
+        """Claim current work once; uncertain relay outcomes require reconciliation.
+
+        The fixed-owner relay has no idempotency protocol. A claim older than
+        one minute must never be retried: the process can die after delivery.
+        """
 
         reference = _utc(now)
         processed = {"sent": 0, "failed": 0, "dry_run": 0}
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE app.notification_outbox
+                SET status = 'uncertain', last_error = 'delivery lease expired; reconcile with owner relay before any resend',
+                    updated_at = %s
+                WHERE status = 'sending' AND updated_at <= %s
+                """,
+                [reference, reference - timedelta(minutes=1)],
+            )
         for _ in range(max(1, min(int(limit), 100))):
             with self.runtime.transaction() as connection:
                 row = connection.execute(
                     """
-                    SELECT id::text, payload, attempts
-                    FROM app.notification_outbox
-                    WHERE status IN ('queued', 'failed') AND next_attempt_at <= %s
-                    ORDER BY created_at, id
-                    FOR UPDATE SKIP LOCKED
+                    SELECT notification.id::text, notification.payload, notification.attempts,
+                           item.status AS item_status, item.user_state, item.snoozed_until,
+                           item.event_type, item.payload AS item_payload,
+                           (SELECT count(*) FROM app.decision_inbox_item sibling
+                            WHERE sibling.status = 'active'
+                              AND sibling.payload->>'opportunity_episode_id' = item.payload->>'opportunity_episode_id'
+                           ) AS episode_count
+                    FROM app.notification_outbox notification
+                    JOIN app.decision_inbox_item item ON item.id = notification.inbox_item_id
+                    WHERE notification.status IN ('queued', 'failed') AND notification.next_attempt_at <= %s
+                    ORDER BY notification.created_at, notification.id
+                    FOR UPDATE OF notification, item SKIP LOCKED
                     LIMIT 1
                     """,
                     [reference],
                 ).fetchone()
                 if row is None:
                     break
+                payload = dict(row["item_payload"] or {})
+                expiry = next((payload.get(key) for key in ("expires_at", "expiry", "expires") if payload.get(key)), None)
+                expired = False
+                if expiry is not None:
+                    try:
+                        deadline = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+                        if len(str(expiry)) == 10:
+                            deadline = deadline.replace(tzinfo=UTC)
+                        expired = deadline.tzinfo is None or deadline <= reference
+                    except (TypeError, ValueError):
+                        expired = True
+                transition = payload.get("state_transition")
+                obsolete = (
+                    row["item_status"] != "active" or row["event_type"] == "expired"
+                    or transition == "superseded" or expired
+                    or row["user_state"] not in {"open", "snoozed"}
+                    or (transition in CANONICAL_TRANSITIONS and row["episode_count"] != 1)
+                )
+                if obsolete:
+                    connection.execute(
+                        "UPDATE app.notification_outbox SET status = 'suppressed', last_error = 'linked decision is no longer eligible', updated_at = %s WHERE id = %s::uuid",
+                        [reference, row["id"]],
+                    )
+                    continue
+                if row["user_state"] == "snoozed" and (row["snoozed_until"] is None or row["snoozed_until"] > reference):
+                    connection.execute(
+                        "UPDATE app.notification_outbox SET next_attempt_at = %s WHERE id = %s::uuid",
+                        [row["snoozed_until"] or reference + timedelta(days=1), row["id"]],
+                    )
+                    continue
+                # No sender means no external call was attempted, so retry is safe.
+                if sender is None and not dry_run:
+                    connection.execute(
+                        "UPDATE app.notification_outbox SET status = 'failed', last_error = 'owner relay unavailable before send', next_attempt_at = %s, updated_at = %s WHERE id = %s::uuid",
+                        [reference + timedelta(seconds=30), reference, row["id"]],
+                    )
+                    processed["failed"] += 1
+                    continue
                 connection.execute(
                     "UPDATE app.notification_outbox SET status = 'sending', attempts = attempts + 1, updated_at = %s WHERE id = %s::uuid",
                     [reference, row["id"]],
                 )
-            message = telegram_message(dict(row["payload"] or {}))
+            message = telegram_message(payload)
             if dry_run:
                 with self.runtime.transaction() as connection:
                     connection.execute(
@@ -853,21 +912,17 @@ class DecisionInboxRepository:
                 processed["dry_run"] += 1
                 continue
             try:
-                if sender is None:
-                    raise RuntimeError("shared GBrain Telegram owner relay is unavailable")
+                assert sender is not None
                 sender(message)
             except Exception as exc:
-                attempts = int(row["attempts"] or 0) + 1
-                delay = min(3600, 30 * (2 ** min(6, attempts - 1)))
                 with self.runtime.transaction() as connection:
                     connection.execute(
                         """
                         UPDATE app.notification_outbox
-                        SET status = 'failed', last_error = %s, next_attempt_at = %s,
-                            updated_at = %s
+                        SET status = 'uncertain', last_error = %s, updated_at = %s
                         WHERE id = %s::uuid
                         """,
-                        [f"{type(exc).__name__}: {exc}"[:1000], reference + timedelta(seconds=delay), reference, row["id"]],
+                        [f"{type(exc).__name__}: relay outcome unknown; reconcile before resend", reference, row["id"]],
                     )
                 processed["failed"] += 1
             else:
