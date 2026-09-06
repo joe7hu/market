@@ -16,7 +16,7 @@ def upgrade() -> None:
     op.execute("GRANT SELECT, INSERT, UPDATE ON app.option_history_policy TO market_app")
     with op.get_context().autocommit_block():
         op.execute(
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_option_relative_value_generation_contract "
+            "CREATE INDEX CONCURRENTLY ix_option_relative_value_generation_contract "
             "ON analysis.option_relative_value (capture_generation_id, contract_id, id DESC)"
         )
 

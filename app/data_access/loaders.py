@@ -665,15 +665,7 @@ def load_watchlist_scope_data(
     active_config = config if config is not None else load_config()
     page_offset = max(0, int(offset or 0))
     page_limit = max(1, int(limit)) if limit is not None else 80
-    seed_limit = page_offset + page_limit
-    seed = load_panel_data(
-        active_config,
-        table_names=("universe_screen", "manual_watchlist", "portfolio"),
-        query_row_limits=(
-            {"universe_screen": seed_limit, "manual_watchlist": seed_limit}
-            if scope == "watchlist" else None
-        ),
-    )
+    seed = load_panel_data(active_config, table_names=("universe_screen", "manual_watchlist", "portfolio"))
     rows = seed.rows("universe_screen")
     if scope == "watchlist-watched":
         selected = [row for row in rows if str(row.get("watch_state") or "").lower() in {"watched", "owned"}]
@@ -703,7 +695,7 @@ def load_watchlist_scope_data(
     tables = {
         **seed.tables,
         **detail.tables,
-        "manual_watchlist": seed.rows("manual_watchlist")[:seed_limit] if scope == "watchlist" else seed.rows("manual_watchlist"),
+        "manual_watchlist": seed.rows("manual_watchlist"),
         "screener": seed.rows("universe_screen"),
     }
     ready = seed.status.ready and detail.status.ready
@@ -723,6 +715,10 @@ def load_watchlist_scope_data(
             **detail.metadata,
             "watchlist_symbol_count": len(symbols),
             "watchlist_bounded": True,
+            "table_counts": {
+                **(detail.metadata.get("table_counts") or {}),
+                **(seed.metadata.get("table_counts") or {}),
+            },
             **({"table_offsets": table_offsets} if table_offsets is not None else {}),
         },
     )
