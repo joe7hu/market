@@ -464,15 +464,15 @@ function SentimentMark({ sentiment }: { sentiment: Sentiment }) {
   return <Icon className={cn("size-4 shrink-0", bullish ? "text-emerald-600" : "text-red-600")} aria-label={bullish ? "Bullish" : "Bearish"} />;
 }
 
-function sentimentOf(value: string): Sentiment {
-  value = value.toLowerCase();
+function sentimentOf(value: string | null | undefined): Sentiment {
+  value = typeof value === "string" ? value.toLowerCase() : "";
   if (value === "bullish" || value === "good") return "bullish";
   if (value === "bearish" || value === "bad" || value === "sell") return "bearish";
   return "neutral";
 }
 
-function cardTone(value: string): Tone {
-  return toneFromText(value);
+function cardTone(value: string | null | undefined): Tone {
+  return typeof value === "string" ? toneFromText(value) : "muted";
 }
 
 function toneBorder(tone: Tone): string {

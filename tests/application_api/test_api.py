@@ -205,7 +205,7 @@ def test_today_projects_named_context_contract_without_row_aliases(
                 "qqq_outcome": {"status": "pending"},
                 "key_events": [{"event": "Payrolls"}],
             }],
-            "portfolio_risk_cards": [],
+            "portfolio_risk_cards": [{"card_id": "largest-position", "title": "Review concentration", "severity": "watch", "summary": "Stored risk summary", "next_step": "Review position size"}],
             "ticker_decisions": [],
             "portfolio": [],
         },
@@ -232,6 +232,10 @@ def test_today_projects_named_context_contract_without_row_aliases(
         "days_until": None,
         "stats": ["Research rank 1"],
     }]
+    risk = payload["portfolio_risk_items"][0]
+    assert risk["sentiment"] == "neutral"
+    assert risk["summary"] == "Stored risk summary"
+    assert risk["next_action"] == "Review position size"
     assert payload["preopen_brief"]["headline"] == "Named pre-open headline"
     assert payload["preopen_brief"]["key_events"] == ["Payrolls"]
 

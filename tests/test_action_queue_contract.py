@@ -144,3 +144,16 @@ def test_today_inbox_read_requests_current_projection() -> None:
     actions = type("Actions", (), {"decision_inbox": staticmethod(reader)})()
     assert panel_router._read_inbox(actions) == []
     assert calls == [{"limit": 10, "cursor": None, "current_only": True}]
+
+
+def test_stored_portfolio_risk_projection_preserves_summary_and_next_step():
+    projected = panel_router._today_portfolio_risk_payload([{
+        'card_id': 'largest-position', 'risk_type': 'concentration',
+        'severity': 'watch', 'score': 65, 'title': 'AAA is the largest position',
+        'summary': 'Review concentration.', 'symbols': ['AAA'], 'symbol': 'AAA',
+        'impact': 'Portfolio concentration', 'next_step': 'Review the position size.',
+    }])[0]
+    assert projected['summary'] == 'Review concentration.'
+    assert projected['next_action'] == 'Review the position size.'
+    assert projected['stats'] == ['AAA']
+    assert projected['sentiment'] == 'neutral'

@@ -417,3 +417,25 @@ it("shows all review actions on the default screen using explicit Inbox identity
   const withoutIdentity = renderToStaticMarkup(createElement(ActionQueueCard, { item: response.actions![0], onOpenTicker: () => {} }));
   expect(withoutIdentity).not.toContain("Acknowledge");
 });
+
+it("renders stored brief and portfolio risk shapes with omitted optional analysis", () => {
+  // Previous real API shape: risk projection omitted sentiment/antithesis/days_until under
+  // response_model_exclude_unset. Neither missing sentiment nor severity is a signal.
+  const context = {
+    brief_items: [{ stable_key: "thesis:sample", category: "decide_now", title: "Review AAA thesis", summary: "Verify the source evidence.", symbol: "AAA", score: 85, stats: [] }],
+    portfolio_risk_items: [{ stable_key: "largest-position", category: "portfolio_risk", title: "AAA is the largest position", summary: "Review concentration.", score: 65, symbol: "AAA", severity: "watch", action: null, next_action: "Review the position size.", blockers: [], stats: ["AAA"] }],
+  } as unknown as Pick<TodayResponse, "brief_items" | "portfolio_risk_items">;
+  const data = emptyPanelData();
+  const markup = renderToStaticMarkup(createElement(TodayPage, {
+    data, model: buildModel(data), lastRefresh: null,
+    actionQueue: { ...response, ...context, actions: [{ ...response.actions![0], source: "decision_inbox", inbox_item_id: "stored-review-item" }] },
+    actionQueueLoading: false, actionQueueError: null, loading: false,
+    onRefresh: () => {}, onOpenTicker: () => {},
+  }));
+  expect(markup).toContain("Review AAA thesis");
+  expect(markup).toContain("AAA is the largest position");
+  expect(markup).toContain("Review concentration.");
+  expect(markup).toContain("Review complete");
+  expect(markup).not.toContain('aria-label="Bullish"');
+  expect(markup).not.toContain('aria-label="Bearish"');
+});
