@@ -154,6 +154,64 @@ def test_opportunities_fallback_loads_prefix_for_response_pagination(monkeypatch
     assert panel.metadata["table_counts"]["opportunities_ranked"] == 10
 
 
+def test_opportunities_fallback_fails_closed_on_snapshot_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        loaders_owner,
+        "load_panel_data",
+        lambda *_args, **_kwargs: PanelData(
+            status=DataStatus(True, "ok", "postgresql"),
+            tables={"opportunities_ranked": []},
+            metadata={"table_counts": {"opportunities_ranked": 0}},
+        ),
+    )
+
+    def broken_pages(*_args, **_kwargs):
+        raise RuntimeError("snapshot failed")
+
+    monkeypatch.setattr(loaders_owner, "today_authority_pages", broken_pages)
+    panel = loaders_owner.load_opportunities_scope_data(
+        typed_config("postgresql:///opportunities-error")
+    )
+
+    assert panel.status.ready is False
+    assert panel.status.source == "postgresql-error"
+    assert "snapshot failed" in panel.status.message
+
+
+def test_opportunities_fallback_skips_cross_lineage_rank(monkeypatch) -> None:
+    monkeypatch.setattr(
+        loaders_owner,
+        "load_panel_data",
+        lambda *_args, **_kwargs: PanelData(
+            status=DataStatus(True, "ok", "postgresql"),
+            tables={"opportunities_ranked": []},
+            metadata={"table_counts": {"opportunities_ranked": 0}},
+        ),
+    )
+    monkeypatch.setattr(
+        loaders_owner,
+        "today_authority_pages",
+        lambda *_args, **_kwargs: iter([[{
+            "ticker": "AAA",
+            "decision_revision": "decision-1",
+            "opportunity_episode_id": "episode-1",
+            "opportunity_rank_count": 1,
+            "opportunity_rank_page": {
+                "ticker": "BBB",
+                "opportunity_episode_id": "episode-1",
+                "decision_revision": "decision-1",
+                "ranking_publication_id": "publication-1",
+            },
+        }]]),
+    )
+
+    panel = loaders_owner.load_opportunities_scope_data(
+        typed_config("postgresql:///opportunities-lineage")
+    )
+
+    assert panel.rows("opportunities_ranked") == []
+
+
 def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_dsn: str) -> None:
     panel_data = loaders_owner.load_table_panel_data(
         typed_config(migrated_postgres_dsn), "technicals"
