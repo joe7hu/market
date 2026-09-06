@@ -373,6 +373,8 @@ def load_panel_scope_data(
             limit=limit,
             include_screener=include_screener,
         )
+    if scope == "watchlist":
+        return load_watchlist_scope_data(active_config, scope, offset=offset, limit=limit)
     requested = tuple(tables_for_scope(scope))
     page_offset = max(0, int(offset or 0))
     requested_limit = max(1, int(limit)) if limit is not None else None
@@ -661,10 +663,15 @@ def load_watchlist_scope_data(
     to render the first page.
     """
     active_config = config if config is not None else load_config()
-    seed = load_panel_data(active_config, table_names=("universe_screen", "manual_watchlist", "portfolio"))
-    rows = seed.rows("universe_screen")
     page_offset = max(0, int(offset or 0))
     page_limit = max(1, int(limit)) if limit is not None else 80
+    seed_limit = page_offset + page_limit
+    seed = load_panel_data(
+        active_config,
+        table_names=("universe_screen", "manual_watchlist", "portfolio"),
+        query_row_limits={"universe_screen": seed_limit, "manual_watchlist": seed_limit},
+    )
+    rows = seed.rows("universe_screen")
     if scope == "watchlist-watched":
         selected = [row for row in rows if str(row.get("watch_state") or "").lower() in {"watched", "owned"}]
         selected = selected[page_offset : page_offset + page_limit]
@@ -672,7 +679,7 @@ def load_watchlist_scope_data(
         selected = [row for row in rows if str(row.get("watch_state") or "").lower() == "candidate"]
         selected = selected[page_offset : page_offset + page_limit]
     else:
-        selected = rows
+        selected = rows[page_offset : page_offset + page_limit]
     symbols = {str(row.get("symbol") or "").upper() for row in selected if row.get("symbol")}
     detail_names = (
         "quotes", "fundamentals", "technicals", "valuations", "decision_queue",
@@ -690,12 +697,28 @@ def load_watchlist_scope_data(
     # not receive the page offset a second time.
     # ``screener`` is an alias for the already-loaded universe screen; reusing
     # it prevents a second whole-universe CTE for the same request.
-    tables = {**seed.tables, **detail.tables, "screener": seed.rows("universe_screen")}
+    tables = {
+        **seed.tables,
+        **detail.tables,
+        "manual_watchlist": seed.rows("manual_watchlist")[:seed_limit],
+        "screener": seed.rows("universe_screen"),
+    }
     ready = seed.status.ready and detail.status.ready
+    table_offsets = (
+        {name: page_offset for name in (*seed.tables, *detail.tables, "screener")}
+        if scope == "watchlist"
+        else None
+    )
     return PanelData(
         status=DataStatus(ready, "PostgreSQL loaded bounded watchlist details." if ready else detail.status.message, detail.status.source),
         tables=tables,
-        metadata={**seed.metadata, **detail.metadata, "watchlist_symbol_count": len(symbols), "watchlist_bounded": True},
+        metadata={
+            **seed.metadata,
+            **detail.metadata,
+            "watchlist_symbol_count": len(symbols),
+            "watchlist_bounded": True,
+            **({"table_offsets": table_offsets} if table_offsets is not None else {}),
+        },
     )
 
 

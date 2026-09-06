@@ -70,7 +70,24 @@ def test_storage_archive_privileges_are_available_to_application_role(postgres_d
                    has_sequence_privilege('market_app', 'ops.storage_archive_manifest_id_seq', 'USAGE')
             """
         ).fetchone()
-    assert tuple(privileges) == (True,) * 12
+        assert tuple(privileges) == (True,) * 12
+
+
+def test_runtime_read_path_privileges_are_available_to_application_role(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    with psycopg.connect(postgres_dsn) as connection:
+        privileges = connection.execute(
+            """SELECT has_table_privilege('market_app', 'analysis.agent_experiment', 'SELECT'),
+                      has_table_privilege('market_app', 'analysis.agent_experiment', 'INSERT'),
+                      has_table_privilege('market_app', 'analysis.agent_experiment', 'UPDATE'),
+                      has_table_privilege('market_app', 'app.thesis_review_event', 'SELECT'),
+                      has_table_privilege('market_app', 'app.thesis_review_event', 'INSERT'),
+                      has_table_privilege('market_app', 'app.option_history_policy', 'SELECT'),
+                      has_table_privilege('market_app', 'app.option_history_policy', 'INSERT'),
+                      has_table_privilege('market_app', 'app.option_history_policy', 'UPDATE'),
+                      to_regclass('analysis.ix_option_relative_value_generation_contract') IS NOT NULL"""
+        ).fetchone()
+        assert tuple(privileges) == (True,) * 9
 
 
 def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(

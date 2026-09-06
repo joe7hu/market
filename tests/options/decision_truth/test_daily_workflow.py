@@ -121,7 +121,9 @@ def test_notification_outcomes_raw_migration_round_trip(postgres_dsn):
         connection.execute("INSERT INTO app.notification_outbox (dedupe_key, inbox_item_id, event_type, status) VALUES ('migration', %s, 'ready', 'failed')", [item])
     upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
-        assert connection.execute('SELECT version_num FROM alembic_version').fetchone()[0] == '20260906_0128'
+        from investment_panel.database.migrations import HEAD_REVISION
+
+        assert connection.execute('SELECT version_num FROM alembic_version').fetchone()[0] == HEAD_REVISION
         assert connection.execute('SELECT status FROM app.notification_outbox').fetchone()[0] == 'uncertain'
     with pytest.raises(Exception, match='reconcile terminal notification outcomes'):
         downgrade_database(postgres_dsn, '20260906_0127')

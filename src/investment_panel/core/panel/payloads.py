@@ -29,6 +29,23 @@ SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
         "opportunity_rank": 3,
         "trade_plan": 3,
     },
+    # The compatibility scope is still used by older clients. Keep it
+    # bounded like the split watchlist scopes used by the current frontend.
+    "watchlist": {
+        "universe_screen": 80,
+        "manual_watchlist": 80,
+        "discovered_universe": 80,
+        "decision_queue": 80,
+        "research_packets": 80,
+        "ticker_memos": 80,
+        "thesis_monitor": 80,
+        "quotes": 80,
+        "portfolio": 80,
+        "screener": 80,
+        "technicals": 80,
+        "valuations": 80,
+        "options_ticker_signals": 80,
+    },
 }
 
 SCOPED_TABLE_COMPACT_FIELDS: dict[str, dict[str, frozenset[str]]] = {
