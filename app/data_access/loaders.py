@@ -573,7 +573,13 @@ def _load_ticker_decision_opportunity_ranks(
             if not episode_id or episode_id in seen:
                 raise ValueError("opportunity rank episode missing or duplicated")
             seen.add(episode_id)
-            ranks.append(dict(rank))
+            summary = row.get("opportunity_summary")
+            ranks.append({
+                **rank,
+                **({key: summary[key] for key in ("company_name", "horizon", "rationale", "countercase", "research_as_of")
+                    if isinstance(summary.get(key), str) and summary[key].strip()}
+                   if isinstance(summary, dict) else {}),
+            })
     return ranks, total_count
 
 

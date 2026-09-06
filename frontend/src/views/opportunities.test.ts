@@ -52,3 +52,26 @@ describe("opportunity decision surface", () => {
     expect(shouldLoadScreener("episodes")).toBe(false);
   });
 });
+
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { emptyPanelData } from "@/api/panel";
+import { OpportunitiesPage, opportunityReason, screenerMetric } from "./opportunities";
+
+it("shows evidence and a direct ticker review without diagnostics; formats actual metric units", () => {
+  const row = { ...backendPayload[0], company_name: "NVIDIA", rationale: "Demand supports the research case. Full detail follows.", countercase: "Spending may slow.", selected_expression_kind: "CASH", blockers: ["cash_comparator", "forecast_missing"], primary_blocker: "cash_comparator" };
+  const data = { ...emptyPanelData(), opportunitiesRanked: { rows: [row], count: 806, offset: 0, limit: 120 } };
+  const html = renderToStaticMarkup(createElement(OpportunitiesPage, { data, loading: false, onOpenTicker: () => undefined, onRefresh: async () => undefined, onLoadScreener: async () => undefined, onLoadMore: async () => undefined }));
+  expect(html).toContain("NVIDIA");
+  expect(html).toContain("Demand supports the research case.");
+  expect(html).toContain("Spending may slow.");
+  expect(html).toContain("Review NVDA");
+  expect(html).toContain("1 of 806 loaded");
+  expect(html).toContain("Load more");
+  expect(html).not.toMatch(/ep-1|rank-1|ticker-decision|cash_comparator|Not Applicable|Full detail follows/);
+  expect(opportunityReason(row as unknown as OpportunityDecisionRow)).toBe("A supported return forecast is not available.");
+  expect(screenerMetric(0.177, 100, "%")).toBe("17.7%");
+  expect(screenerMetric(28.78, 1, "%")).toBe("28.78%");
+  expect(screenerMetric(0, 100, "%")).toBe("0%");
+  expect(screenerMetric(null, 100, "%")).toBe("—");
+});

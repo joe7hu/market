@@ -89,6 +89,7 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
             "decision_revision": "decision-1",
             "opportunity_episode_id": "episode-1",
             "opportunity_rank_count": 10,
+            "opportunity_summary": {"company_name": "Example Co", "horizon": "FUNDAMENTAL", "rationale": "", "rank_id": "unsafe"},
             "opportunity_rank_page": {
                 "ticker": "AAA",
                 "opportunity_episode_id": "episode-1",
@@ -107,6 +108,8 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
     panel = loaders_owner.load_opportunities_scope_data(typed_config("postgresql:///opportunities-fallback"))
 
     assert panel.rows("opportunities_ranked") == [{
+        "company_name": "Example Co",
+        "horizon": "FUNDAMENTAL",
         "ticker": "AAA",
         "opportunity_episode_id": "episode-1",
         "decision_revision": "decision-1",
@@ -1798,3 +1801,47 @@ def test_opportunities_fallback_rejects_malformed_persisted_rank(monkeypatch, fi
     panel = loaders_owner.load_opportunities_scope_data(typed_config("postgresql:///invalid-rank"))
     assert panel.status.ready is False
     assert panel.rows("opportunities_ranked") == []
+
+
+def test_ticker_action_identity_uses_matching_nested_episode() -> None:
+    row = {"ticker": "AAA", "decision_revision": "revision-1", "policy_version": "policy-1"}
+    episode = {**row, "episode_id": "episode-1"}
+    expected = "decision:AAA:episode-1:revision-1:policy-1"
+    assert payloads_owner._with_action_identity({**row, "opportunity_episode": episode})["action_identity"] == expected
+    assert payloads_owner._with_action_identity({**row, "opportunity_episode_id": "episode-1"})["action_identity"] == expected
+    for key in ("ticker", "decision_revision", "policy_version"):
+        mismatched = {**episode, key: "wrong"}
+        assert "episode-missing" in payloads_owner._with_action_identity({**row, "opportunity_episode": mismatched})["action_identity"]
+
+
+def test_ticker_fundamentals_read_postgres_values_without_screener() -> None:
+    from investment_panel.core.panel.ticker_sections import build_fundamentals
+    result = build_fundamentals("AAA", {"fundamentals": [
+        {"symbol": "AAA", "source": "sec-fundamentals", "metric_set": "sec_fundamentals",
+         "observed_at": "2026-09-01", "values": {"revenue": 100, "free_cash_flow": 0, "form_type": "10-K", "source_url": "https://sec.test/facts"}},
+        {"symbol": "AAA", "source": "daily-market-prices", "metric_set": "market_metrics",
+         "observed_at": "2026-09-02", "values": {"market_cap": 1000, "forward_pe": -5, "return_on_invested_capital": 0.15, "fcf_yield": 0}},
+    ]})
+    assert result["sec"]["revenue"] == 100
+    assert result["sec"]["free_cash_flow"] == 0
+    assert result["sec"]["form_type"] == "10-K"
+    assert result["sec"]["source_url"] == "https://sec.test/facts"
+    assert result["market"]["market_cap"] == 1000
+    assert result["market"]["forward_pe"] is None
+    assert result["market"]["roic"] == 15
+    assert result["market"]["fcf_yield"] == 0
+
+
+def test_ticker_fundamentals_keep_sec_quarter_separate_from_year_to_date() -> None:
+    from investment_panel.core.panel.ticker_sections import build_fundamentals
+    common = {"source": "sec_companyfacts", "metric_set": "sec_companyfacts", "period_end": "2026-06-30", "filed_at": "2026-08-01"}
+    result = build_fundamentals("AAA", {"fundamentals": [
+        {**common, "period_start": "2026-01-01", "values": {"form": "10-Q", "metrics": {"revenue": 200, "operating_cash_flow": 50}}},
+        {**common, "period_start": "2026-04-01", "values": {"form": "10-Q", "metrics": {"revenue": 110}}},
+        {**common, "period_start": None, "values": {"metrics": {"cash": 25}}},
+    ]})
+    assert result["sec"]["revenue"] == 110
+    assert result["sec"]["cash"] == 25
+    assert result["sec"]["form_type"] == "10-Q"
+    assert result["sec"]["filing_date"] == "2026-08-01"
+    assert result["sec"]["free_cash_flow"] is None

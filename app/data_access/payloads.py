@@ -189,6 +189,13 @@ def _with_action_identity(row: Mapping[str, Any]) -> dict[str, Any]:
     revision = str(row.get("decision_revision") or "").strip()
     episode = str(row.get("opportunity_episode_id") or "").strip()
     policy = str(row.get("policy_version") or "").strip()
+    nested_episode = row.get("opportunity_episode")
+    if not episode and isinstance(nested_episode, Mapping) and (
+        str(nested_episode.get("ticker") or "").strip().upper() == ticker
+        and str(nested_episode.get("decision_revision") or "").strip() == revision
+        and str(nested_episode.get("policy_version") or "").strip() == policy
+    ):
+        episode = str(nested_episode.get("episode_id") or "").strip()
     if ticker and revision:
         result.setdefault("action_identity", ":".join(("decision", ticker, episode or "episode-missing", revision, policy or "policy-missing")))
     return result

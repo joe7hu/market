@@ -2,13 +2,13 @@ import { ExternalLink } from "lucide-react";
 
 import { resolveTradingViewSymbol, tradingViewEmbedUrl } from "@/adapters/tradingView";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
-import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
+import { DataFieldStateNotice, missingFieldState, decisionReason } from "@/components/market/dataFieldState";
 import { Button } from "@/components/ui/button";
 import type { components } from "@/generated/apiSchema";
 import type { JsonValue, RowRecord, TickerDossier, TickerLearning, TickerPayload } from "@/types";
 import { displayField, listField, symbolList, textField, titleLabel, toneFromText } from "@/views/rowFormat";
 import type { OpenTicker } from "@/views/workspacePage";
-import { TradePlanCard } from "@/views/TradePlanCard";
+import { PortfolioImpactCard, TradePlanCard } from "@/views/TradePlanCard";
 
 import { CoverageBadge, DecisionStat, MetricGrid, ReasonList, SimpleTable } from "./cells";
 import {
@@ -69,39 +69,19 @@ export function TickerDecisionPanel({
     ? snapshotLearning as TickerLearning
     : learning;
   const disagreement = learningPayload?.disagreement;
+  const noNewTrade = ["CASH", "NO_TRADE", "AVOID"].includes(action.action);
+  const blocker = opportunityRank?.blockers?.find((reason) => reason !== "cash_comparator")
+    ?? (resolution?.primary_blocker !== "cash_comparator" ? resolution?.primary_blocker : undefined);
+  const rationale = noNewTrade && blocker ? decisionReason(blocker) : decisionReason(action.rationale);
+
   return (
     <>
-      <DataTableFrame
-        title={<span className="flex items-center gap-2"><span className="size-2 rounded-full bg-[var(--primary)]" />Capital action</span>}
-        action={<StatusBadge tone={toneFromText(action.action)}>{action.action}</StatusBadge>}
-      >
-        <div className="grid gap-0 xl:grid-cols-[minmax(0,0.78fr)_minmax(420px,1fr)]">
-          <div className="border-b border-border bg-[linear-gradient(135deg,rgba(15,61,46,0.08),transparent_60%)] p-5 xl:border-b-0 xl:border-r">
-            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              <span>{decision.ticker}</span>
-              <span className="text-border">/</span>
-              <span>revision {decision.decision_revision.slice(-16)}</span>
-            </div>
-            <div className="mt-4 flex flex-wrap items-end gap-x-5 gap-y-2">
-              <div>
-                <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">Do this now</p>
-                <p className="mt-1 text-3xl font-semibold tracking-tight">{action.action}</p>
-              </div>
-              <div className="pb-1 text-sm text-muted-foreground">
-                {action.owned ? "Owned ticker" : "Unowned ticker"} · {decision.selected_expression?.kind ?? "Expression state below"}
-              </div>
-            </div>
-            {!decision.selected_expression?.kind ? <div className="mt-3"><DataFieldStateNotice compact state={missingFieldState({ field: "selected_expression", source: "ticker_decision", reason: "selected_expression_missing", nextAction: "Refresh the canonical ticker decision before acting." })} /></div> : null}
-            <p className="mt-4 max-w-2xl text-base leading-7">{action.rationale}</p>
-            {resolution ? (
-              <div className="mt-5 grid gap-2 rounded-md border border-border/80 bg-background/60 p-3 text-xs sm:grid-cols-2">
-                <KeyValue label="Resolution" value={`${resolution.eligibility} · ${resolution.lifecycle}`} />
-                <KeyValue label="Authorization" value={resolution.authorization_mode} />
-                <KeyValue label="Policy" value={resolution.policy_version} />
-                <KeyValue label="Primary blocker" value={resolution.primary_blocker ?? "None"} />
-                <KeyValue label="Next action" value={resolution.next_action} />
-              </div>
-            ) : null}
+      <DataTableFrame title={noNewTrade ? "No new trade" : titleLabel(action.action)}>
+        <div className="space-y-4 p-5">
+          <div>
+            <p className="text-sm text-muted-foreground">{action.owned ? "You hold this stock. A new trade decision does not replace the review of your existing position." : "You do not hold this stock."}</p>
+            <p className="mt-3 max-w-2xl text-base leading-7">{rationale}</p>
+            {resolution?.next_action ? <p className="mt-3 text-sm font-medium">Next: {decisionReason(resolution.next_action)}</p> : null}
             {action.action === "WAIT_FOR_PRICE" ? (
               <div className="mt-5 grid gap-3 rounded-md border border-[var(--warning)]/35 bg-[var(--warning)]/8 p-3 text-sm sm:grid-cols-3">
                 <DecisionTerm label="Price" value={action.price_condition} field="price_condition" />
@@ -109,43 +89,33 @@ export function TickerDecisionPanel({
                 <DecisionTerm label="Expires" value={action.expires_at} field="expires_at" />
               </div>
             ) : null}
-            <p className="mt-5 text-xs text-muted-foreground">Point-in-time inputs: {decision.input_manifest.input_hash.slice(0, 16)}… · {decision.input_manifest.experiment_id}</p>
           </div>
-          <div className="grid gap-4 p-4 sm:p-5">
-            <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-4">
+            <details><summary className="cursor-pointer text-sm font-medium">Time horizon and price conditions</summary><div className="mt-3 grid gap-3 md:grid-cols-2">
               <HorizonCard view={decision.tactical} label="TACTICAL · 1–20 sessions" />
               <HorizonCard view={decision.fundamental} label="FUNDAMENTAL · 3–18 months" />
-            </div>
-            <ExpressionTable expressions={expressions} />
-            <ExecutionEvidencePanel
-              executionEvidence={decision.selected_expression?.execution_evidence as Record<string, unknown> | undefined}
-            />
+            </div></details>
+            <details><summary className="cursor-pointer text-sm font-medium">Compare trade alternatives</summary><div className="mt-3"><ExpressionTable expressions={expressions} /></div></details>
+            {decision.selected_expression?.kind !== "CASH" && decision.selected_expression?.execution_evidence ? <ExecutionEvidencePanel executionEvidence={decision.selected_expression.execution_evidence as Record<string, unknown>} /> : null}
           </div>
         </div>
       </DataTableFrame>
       {snapshot ? (
         <>
           {opportunityRank ? <OpportunityRankPanel signals={alphaSignals} rank={opportunityRank} /> : null}
-          <TradePlanCard plan={tradePlan} />
-          {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
-          {learningPayload ? <LearningLoopPanel learning={learningPayload} /> : null}
+          {noNewTrade ? <details><summary className="cursor-pointer text-sm font-medium">Trade eligibility details</summary><TradePlanCard plan={tradePlan} /></details> : <TradePlanCard plan={tradePlan} />}
+          {dataRequests.length ? <details><summary className="cursor-pointer text-sm font-medium">Evidence needed ({dataRequests.length})</summary><DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /></details> : null}
+          {learningPayload ? <details><summary className="cursor-pointer text-sm font-medium">Past signal performance</summary><LearningLoopPanel learning={learningPayload} /></details> : null}
         </>
       ) : (
         <>
-          <TradePlanCard pending />
-          <DataTableFrame title="Additional decision context" action={<StatusBadge tone="muted">On demand</StatusBadge>}>
-            <div className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
-              <p className="text-muted-foreground">Load the full validated decision snapshot to inspect rank, trade-plan, and collection evidence.</p>
-              <Button type="button" variant="outline" disabled={snapshotLoading} onClick={() => void onLoadSnapshot()}>
-                {snapshotLoading ? "Loading…" : "Load decision context"}
-              </Button>
-            </div>
-            {snapshotError ? <p className="border-t border-border px-4 py-3 text-sm text-[var(--destructive)]">{snapshotError}</p> : null}
-          </DataTableFrame>
+          {snapshotLoading ? <TradePlanCard pending /> : null}
+          {snapshotError ? <div role="alert" className="rounded border border-border p-4 text-sm"><p>{snapshotError} Trade details could not be verified. Do not place a trade from this view.</p><Button type="button" variant="outline" disabled={snapshotLoading} onClick={() => void onLoadSnapshot()}>Retry decision details</Button></div> : null}
+
         </>
       )}
       <SelectedPortfolioImpact decision={decision} />
-      <TickerMarketEvidence decision={decision} />
+      <details><summary className="cursor-pointer text-sm font-medium">Market data checks</summary><TickerMarketEvidence decision={decision} /></details>
       {disagreement ? <DisagreementPanel learning={learningPayload} /> : null}
     </>
   );
@@ -159,10 +129,8 @@ export function ExecutionEvidencePanel({
   const evidence = executionEvidence ?? {};
   const status = typeof evidence.status === "string" && evidence.status.trim() ? evidence.status : null;
   const fields = [
-    ["Status", evidence.status],
-    ["Version", evidence.version],
     ["Observed at", evidence.observed_at],
-    ["Freshness", evidence.freshness_status],
+    ["Freshness", evidence.freshness_status === "available" ? null : evidence.freshness_status],
     ["Delta", evidence.delta],
     ["Gamma", evidence.gamma],
     ["Vega", evidence.vega],
@@ -174,14 +142,14 @@ export function ExecutionEvidencePanel({
     ["Open interest", evidence.open_interest],
     ["Days to exit", evidence.days_to_exit],
     ["Capacity", evidence.capacity],
-  ].filter(([, value]) => value != null);
+  ].filter(([, value]) => typeof value === "string" || typeof value === "number");
   const blockers = Array.isArray(evidence.blockers) ? evidence.blockers.map(String) : [];
   return (
-    <DataTableFrame title="Execution-grade evidence" action={<StatusBadge tone={status === "available" ? "good" : "warn"}>{status ?? "NO DATA"}</StatusBadge>}>
+    <DataTableFrame title="Execution-grade evidence" action={status && status !== "available" ? <StatusBadge tone="warn">{decisionReason(status)}</StatusBadge> : undefined}>
       {fields.length ? <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        {fields.map(([label, value]) => <DecisionKeyValue key={String(label)} label={String(label)} value={typeof value === "object" ? JSON.stringify(value) : String(value)} field={String(label).toLowerCase().replace(/[^a-z0-9]+/g, "_")} source="execution_evidence" />)}
+        {fields.map(([label, value]) => <DecisionKeyValue key={String(label)} label={String(label)} value={String(value)} field={String(label).toLowerCase().replace(/[^a-z0-9]+/g, "_")} source="execution_evidence" />)}
       </div> : <div className="p-4"><DataFieldStateNotice state={missingFieldState({ field: "execution_evidence", source: "ticker_decision_snapshot", reason: "execution_evidence_missing", nextAction: "Refresh execution evidence before placing an order." })} /></div>}
-      {blockers.length ? <ReasonList title="Evidence blockers" rows={blockers} empty="No blockers" /> : null}
+      {blockers.length ? <ReasonList title="Evidence blockers" rows={blockers.map(decisionReason)} empty="No blockers" /> : null}
     </DataTableFrame>
   );
 }
@@ -191,13 +159,13 @@ export function TickerMarketEvidence({ decision }: { decision: TickerDecisionCon
   const requiredDimensions = assessment?.required_dimensions ?? [];
   const blockers = assessment?.blockers ?? [];
   return (
-    <DataTableFrame title="Market evidence for this decision" action={<StatusBadge tone="muted">No global readiness</StatusBadge>}>
+    <DataTableFrame title="Market evidence for this decision">
       <div className="grid gap-2 p-4 text-xs sm:grid-cols-2">
         {assessment ? (
           <div className="rounded border border-border/70 p-2">
             <p className="font-semibold">{assessment.expression_kind} · {assessment.decision_horizon}</p>
-            <p className="mt-1 text-muted-foreground">{assessment.status} · required: {requiredDimensions.join(", ") || "none"}</p>
-            {blockers.length ? <p className="mt-1 text-muted-foreground">Blocking: {blockers.join(", ")}</p> : null}
+            <p className="mt-1 text-muted-foreground">{assessment.status === "available" ? "" : `${titleLabel(assessment.status)} · `}Checks: {requiredDimensions.map(titleLabel).join(", ") || "No required checks supplied"}</p>
+            {blockers.length ? <p className="mt-1 text-muted-foreground">Blocking: {blockers.map(decisionReason).join(" ")}</p> : null}
           </div>
         ) : <DataFieldStateNotice compact state={missingFieldState({ field: "market_evidence_assessment", source: "ticker_decision", reason: "market_evidence_assessment_missing", nextAction: "Refresh the canonical ticker decision before using market evidence." })} />}
       </div>
@@ -207,18 +175,9 @@ export function TickerMarketEvidence({ decision }: { decision: TickerDecisionCon
 
 function SelectedPortfolioImpact({ decision }: { decision: TickerDecisionContract }) {
   const kind = decision.selected_expression?.kind;
-  const impact = kind ? decision.portfolio_impacts?.[kind] : undefined;
-  const blockers = impact?.blockers ?? [];
-  return (
-    <DataTableFrame title="Selected portfolio impact" action={<StatusBadge tone={impact?.availability === "available" ? "good" : "warn"}>{impact?.availability ?? "NO DATA"}</StatusBadge>}>
-      {impact ? <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        <DecisionTerm label="Expression" value={kind} field="selected_expression" source="ticker_decision" />
-        {impact.marginal_risk == null ? <DataFieldStateNotice compact state={missingFieldState({ field: "marginal_risk", source: "portfolio_impact", reason: "marginal_risk_missing", nextAction: "Refresh the selected portfolio impact before sizing the trade." })} /> : <KeyValue label="Marginal risk" value={String(impact.marginal_risk)} />}
-        {impact.risk_budget_consumed == null ? <DataFieldStateNotice compact state={missingFieldState({ field: "risk_budget_consumed", source: "portfolio_impact", reason: "risk_budget_consumed_missing", nextAction: "Refresh the selected portfolio impact before sizing the trade." })} /> : <KeyValue label="Risk budget" value={String(impact.risk_budget_consumed)} />}
-      </div> : <div className="p-4"><DataFieldStateNotice state={missingFieldState({ field: "selected_portfolio_impact", source: "portfolio_impact", reason: "selected_portfolio_impact_missing", nextAction: "Refresh the canonical ticker decision before sizing the trade." })} /></div>}
-      {blockers.length ? <ReasonList title="Blockers" rows={blockers.map(String)} empty="No blockers" /> : null}
-    </DataTableFrame>
-  );
+  if (!kind || kind === "CASH") return null;
+  const impact = decision.portfolio_impacts?.[kind];
+  return impact ? <PortfolioImpactCard impact={{ ...impact, ticker: decision.ticker, expression_kind: kind }} /> : <p className="text-sm text-muted-foreground">Portfolio impact has not been calculated. Do not size this trade yet.</p>;
 }
 
 function HorizonCard({ view, label }: { view: HorizonDecisionContract; label: string }) {
@@ -227,12 +186,11 @@ function HorizonCard({ view, label }: { view: HorizonDecisionContract; label: st
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
-          <p className="mt-1 text-lg font-semibold">{view.stance} <span className="text-sm font-normal text-muted-foreground">· {view.action}</span></p>
+          <p className="mt-1 text-lg font-semibold">{titleLabel(view.stance)} <span className="text-sm font-normal text-muted-foreground">· {titleLabel(view.action)}</span></p>
         </div>
-        <StatusBadge tone={toneFromText(view.stance)}>{view.conviction_tier}</StatusBadge>
+        <StatusBadge tone={toneFromText(view.stance)}>{titleLabel(view.conviction_tier)}</StatusBadge>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-        <DecisionTerm label="Current" value={moneyText(view.current_price)} field="current_price" />
         <DecisionTerm label="Review" value={view.expiry_date} field="expiry_date" />
         <DecisionTerm label="Entry" value={priceRangeText(view.entry_range)} field="entry_range" />
         <DecisionTerm label="Target" value={priceRangeText(view.target_range)} field="target_range" />
@@ -273,21 +231,20 @@ export function OpportunityRankPanel({
   rank?: OpportunityRankContract | null;
 }) {
   const signal = signals.find((item) => item.signal_id === rank?.alpha_signal_id);
-  return (
-    <DataTableFrame title="Book opportunity rank" action={<StatusBadge tone={rank?.trade_rank ? "good" : "warn"}>{rank?.trade_rank ? `Trade #${rank.trade_rank}` : "Cash"}</StatusBadge>}>
-      <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
-        {rank ? <><DecisionKeyValue label="Research rank" value={rank.research_rank == null ? null : `#${rank.research_rank}`} field="research_rank" source="opportunity_rank" /><DecisionKeyValue label="Trade utility" value={rank.trade_utility == null ? null : String(rank.trade_utility)} field="trade_utility" source="opportunity_rank" /><DecisionKeyValue label="Rank reason" value={rank.trade_rank_unavailable_reason ?? "Positive current rank"} field="trade_rank_unavailable_reason" source="opportunity_rank" /><DecisionKeyValue label="Instrument snapshot" value={rank.instrument_state_snapshot_id} field="instrument_state_snapshot_id" source="opportunity_rank" /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "opportunity_rank", source: "ticker_decision_snapshot", reason: "opportunity_rank_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
-        {signal ? <><DecisionKeyValue label="Forecast target" value={signal.target} field="target" source="alpha_signal" /><DecisionKeyValue label="Horizon" value={signal.horizon} field="horizon" source="alpha_signal" /><DecisionKeyValue label="Model / features" value={signal.model_version && signal.feature_version ? `${signal.model_version} · ${signal.feature_version}` : null} field="model_and_feature_version" source="alpha_signal" /><DecisionKeyValue label="OOS interval" value={signal.oos_period_start && signal.oos_period_end ? `${signal.oos_period_start} → ${signal.oos_period_end}` : null} field="oos_interval" source="alpha_signal" /><DecisionKeyValue label="Cohort path" value={signal.cohort_path?.length ? signal.cohort_path.join(" → ") : null} field="cohort_path" source="alpha_signal" /><DecisionKeyValue label="Fallback parent" value={signal.fallback_parent ?? "None"} field="fallback_parent" source="alpha_signal" /><DecisionKeyValue label="Effective sample" value={signal.effective_sample_size == null ? null : String(signal.effective_sample_size)} field="effective_sample_size" source="alpha_signal" /><DecisionKeyValue label="Calibration" value={signal.calibration_state ? `${signal.calibration_state} · Brier ${numberText(signal.calibration_metrics?.brier_score)}` : null} field="calibration" source="alpha_signal" /><DecisionKeyValue label="Research score" value={numberText(signal.research_score) === "—" ? null : numberText(signal.research_score)} field="research_score" source="alpha_signal" /><DecisionKeyValue label="Cost / slippage" value={signal.cost_model_version} field="cost_model_version" source="alpha_signal" /><DecisionKeyValue label="Net lower utility" value={numberText(signal.lower_confidence_net_utility_after_costs) === "—" ? null : numberText(signal.lower_confidence_net_utility_after_costs)} field="lower_confidence_net_utility_after_costs" source="alpha_signal" /><DecisionKeyValue label="Promotion stage" value={signal.promotion_stage} field="promotion_stage" source="alpha_signal" /></> : <DataFieldStateNotice compact state={missingFieldState({ field: "alpha_signal", source: "ticker_decision_snapshot", reason: "alpha_signal_missing", nextAction: "Load or refresh the validated ticker decision snapshot." })} />}
-      </div>
-    </DataTableFrame>
-  );
+  return <DataTableFrame title="Research and trade ranking"><div className="grid gap-2 p-4 text-sm sm:grid-cols-3">
+    {rank?.research_rank != null ? <KeyValue label="Research rank" value={`#${rank.research_rank} within this ranking`} /> : null}
+    {rank?.trade_rank != null ? <KeyValue label="Paper trade rank" value={`#${rank.trade_rank}`} /> : null}
+    {rank?.trade_rank_unavailable_reason ? <KeyValue label="Before trading" value={decisionReason(rank.blockers?.find((reason) => reason !== "cash_comparator") ?? rank.trade_rank_unavailable_reason)} /> : null}
+    {signal?.horizon ? <KeyValue label="Horizon" value={signal.horizon} /> : null}
+    {signal?.effective_sample_size != null ? <KeyValue label="Evidence sample" value={String(signal.effective_sample_size)} /> : null}
+  </div></DataTableFrame>;
 }
 
 function ExpressionTable({ expressions }: { expressions: components["schemas"]["ExpressionDecision"][] }) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold">Expression tournament</h3>
+        <h3 className="text-sm font-semibold">Trade alternatives</h3>
         <span className="text-xs text-muted-foreground">same thesis · same invalidation</span>
       </div>
       {expressions.length ? <div className="overflow-x-auto rounded-md border border-border">
@@ -298,8 +255,8 @@ function ExpressionTable({ expressions }: { expressions: components["schemas"]["
           <tbody>
             {expressions.map((expression) => (
               <tr key={expression.kind} className="border-b border-border last:border-b-0 align-top">
-                <td className="px-3 py-3">{expression.kind}</td>
-                <td className="px-3 py-3">{expression.selected ? "SELECTED" : expression.status.toUpperCase()}</td>
+                <td className="px-3 py-3">{titleLabel(expression.kind)}</td>
+                <td className="px-3 py-3">{expression.selected ? "Selected" : titleLabel(expression.status)}</td>
                 <td className="px-3 py-3"><ExpressionTerm field="quantity" value={expression.quantity == null ? null : expression.quantity.toLocaleString()} /></td>
                 <td className="px-3 py-3"><ExpressionTerm field="planned_loss" value={moneyText(expression.planned_loss)} /></td>
                 <td className="px-3 py-3"><ExpressionTerm field="net_expected_value_per_loss_dollar" value={numberTextOrNull(expression.net_expected_value_per_loss_dollar)} /></td>
@@ -316,17 +273,17 @@ function ExpressionTable({ expressions }: { expressions: components["schemas"]["
 
 function DataRequestPanel({ requests, collecting, onCollect }: { requests: DataRequestContract[]; collecting: string | null; onCollect: (job: string) => Promise<void> }) {
   return (
-    <DataTableFrame title="Missing facts with an owner" action={<StatusBadge tone="warn">{requests.length} open</StatusBadge>}>
+    <DataTableFrame title="Evidence needed" action={<StatusBadge tone="warn">{requests.length} open</StatusBadge>}>
       <div className="divide-y divide-border">
         {requests.map((request) => (
           <div key={`${request.ticker}:${request.field}`} className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
             <div>
-              <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{request.field}</span><span className="text-xs text-muted-foreground">{request.ticker} · max age {request.max_age} · owner {request.owner}</span></div>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">{request.why_it_matters}</p>
-              <p className="mt-1 text-xs text-muted-foreground">Result: {request.expected_completion} Change: {request.decision_impact}</p>
+              <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{titleLabel(request.field)}</span><span className="text-xs text-muted-foreground">{request.ticker}</span></div>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">{decisionReason(request.why_it_matters)}</p>
+              <p className="mt-1 text-xs text-muted-foreground">Result: {decisionReason(request.expected_completion)} Change: {decisionReason(request.decision_impact)}</p>
             </div>
             <Button type="button" variant="outline" size="sm" disabled={collecting !== null} onClick={() => void onCollect(request.collect_now)}>
-              {collecting === request.collect_now ? "Running…" : `Collect now · ${request.collect_now}`}
+              {collecting === request.collect_now ? "Running…" : "Refresh evidence"}
             </Button>
           </div>
         ))}
@@ -339,10 +296,10 @@ function DisagreementPanel({ learning }: { learning?: TickerLearning }) {
   const disagreement = learning?.disagreement;
   if (!disagreement) return null;
   return (
-    <DataTableFrame title="Disagreement engine" action={<span className="text-xs text-muted-foreground">{learning?.independent_episode_count ?? 0} independent episodes</span>}>
+    <DataTableFrame title="Case and countercase">
       <div className="grid gap-0 md:grid-cols-3">
         <KeyValueBlock title="Strongest bull case" value={disagreement.strongest_bull_case} />
-        <KeyValueBlock title="Strongest bear case" value={disagreement.strongest_bear_case} />
+        <KeyValueBlock title="Opposing evidence" value={disagreement.strongest_bear_case ?? "No opposing source evidence is recorded in this decision. Review the thesis invalidation conditions above; this gap does not confirm the bull case."} />
         <KeyValueBlock title="Fact that resolves it" value={disagreement.resolving_fact} />
       </div>
     </DataTableFrame>
@@ -402,7 +359,7 @@ function LearningLoopPanel({ learning }: { learning: TickerLearning }) {
       </div>
       <div className="grid gap-0 xl:grid-cols-2">
         <div className="border-b border-border p-4 xl:border-b-0 xl:border-r">
-          <div className="mb-2 flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Expression tournament outcomes</h3><span className="text-xs text-muted-foreground">same ticker thesis</span></div>
+          <div className="mb-2 flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Trade alternatives outcomes</h3><span className="text-xs text-muted-foreground">same ticker thesis</span></div>
           <SimpleTable rows={expressionRows} empty="No executable expression outcome is measured yet." columns={[["expression", "Expression"], ["state", "State"], ["horizon", "Horizon"], ["result", "Return"]]} />
         </div>
         <div className="p-4">
@@ -450,7 +407,7 @@ function percentValue(value: JsonValue | undefined): string {
 }
 
 function KeyValue({ label, value }: { label: string; value: string }) {
-  return <div><span className="block uppercase tracking-[0.08em] text-muted-foreground">{label}</span><strong className="mt-0.5 block break-words font-medium text-foreground">{value}</strong></div>;
+  return <div><span className="block uppercase tracking-[0.08em] text-muted-foreground">{label}</span><strong className="mt-0.5 block break-words font-medium text-foreground">{decisionReason(value)}</strong></div>;
 }
 
 function DecisionTerm({
@@ -467,17 +424,12 @@ function DecisionTerm({
   nextAction?: string;
 }) {
   if (value != null && value.trim()) return <KeyValue label={label} value={value} />;
-  return <DataFieldStateNotice compact state={missingFieldState({ field, source, reason: `${field}_missing`, nextAction })} />;
+  return <KeyValue label={label} value="Unknown" />;
 }
 
 function ExpressionTerm({ field, value }: { field: string; value: string | null }) {
   if (value != null) return <>{value}</>;
-  return <DataFieldStateNotice compact state={missingFieldState({
-    field,
-    source: "expression_decision",
-    reason: `${field}_missing`,
-    nextAction: "Refresh the canonical ticker decision before selecting an expression.",
-  })} />;
+  return <span className="text-muted-foreground">Unknown</span>;
 }
 
 function DecisionKeyValue({ label, value, field, source }: { label: string; value: string | null | undefined; field: string; source: string }) {
@@ -486,7 +438,7 @@ function DecisionKeyValue({ label, value, field, source }: { label: string; valu
 }
 
 function KeyValueBlock({ title, value }: { title: string; value?: string | null }) {
-  return <div className="border-b border-border p-4 last:border-b-0 md:border-b-0 md:border-r md:last:border-r-0"><p className="text-xs font-semibold uppercase tracking-[0.1em] text-muted-foreground">{title}</p><p className="mt-2 text-sm leading-6">{value || "Not loaded"}</p></div>;
+  return <div className="border-b border-border p-4 last:border-b-0 md:border-b-0 md:border-r md:last:border-r-0"><p className="text-xs font-semibold uppercase tracking-[0.1em] text-muted-foreground">{title}</p><p className="mt-2 text-sm leading-6">{value ? decisionReason(value) : "Not loaded"}</p></div>;
 }
 
 function money(value: number | null | undefined): string {
@@ -817,32 +769,18 @@ export function ThesisPanel({ thesis }: { thesis: TickerDossier["thesis"] }) {
   const bull = listField(packet as RowRecord, ["bull_case"]).slice(0, 4);
   const bear = listField(packet as RowRecord, ["bear_case"]).slice(0, 4);
   const whyNow = listField(packet as RowRecord, ["why_now"]).slice(0, 3);
-  const entry = objectField(packet as RowRecord, "entry_plan");
-  const stateRows = [
-    { field: "Decision", value: displayField(packet as RowRecord, ["decision"], displayField(state, ["status"], "-")) },
-    { field: "Conviction", value: displayField(packet as RowRecord, ["conviction"], "-") },
-    { field: "Thesis", value: displayField(state, ["thesis"], "No thesis text loaded") },
-    { field: "Invalidation", value: displayField(state, ["invalidation"], "No invalidation loaded") },
-    { field: "Ideal Entry", value: displayField(entry, ["ideal_entry"], "Review required") },
-    { field: "Reviewed", value: displayField(state, ["last_reviewed"], displayField(packet as RowRecord, ["created_at"], "-")) },
-  ];
-  return (
-    <DataTableFrame
-      title="Thesis & Research"
-      action={state.needs_review ? <StatusBadge tone="warn">Needs review</StatusBadge> : <CoverageBadge coverage={thesis.coverage} />}
-    >
-      <div className="grid gap-0 xl:grid-cols-[minmax(0,0.9fr)_minmax(320px,0.7fr)]">
-        <div className="border-b border-border p-4 xl:border-b-0 xl:border-r">
-          <SimpleTable rows={stateRows} empty="No ticker thesis state is loaded." columns={[["field", "Field"], ["value", "Value"]]} />
-        </div>
-        <div className="grid gap-4 p-4">
-          <ReasonList title="Bull Case" rows={bull} empty="No bull case loaded." />
-          <ReasonList title="Bear Case" rows={bear} empty="No bear case loaded." />
-          {whyNow.length ? <ReasonList title="Why Now" rows={whyNow} empty="" /> : null}
-        </div>
-      </div>
-    </DataTableFrame>
-  );
+  const thesisText = textField(state, ["thesis"]);
+  const invalidation = textField(state, ["invalidation"]);
+  return <DataTableFrame title="Investment thesis" action={state.needs_review ? <StatusBadge tone="warn">Needs review</StatusBadge> : undefined}>
+    <div className="space-y-4 p-4 text-sm leading-6">
+      <p>{thesisText ? decisionReason(thesisText.split(/(?<=[.!?])\s+/)[0]) : "No supported investment thesis is available yet."}</p>
+      {thesisText ? <details><summary className="cursor-pointer font-medium">Full research case</summary><p className="mt-2 whitespace-pre-line">{decisionReason(thesisText)}</p></details> : null}
+      {invalidation ? <p><strong>What would change the case: </strong>{decisionReason(invalidation)}</p> : null}
+      {bull.length ? <ReasonList title="Supporting case" rows={bull} empty="" /> : null}
+      {bear.length ? <ReasonList title="Countercase" rows={bear} empty="" /> : null}
+      {whyNow.length ? <ReasonList title="Why now" rows={whyNow} empty="" /> : null}
+    </div>
+  </DataTableFrame>;
 }
 
 export function OwnershipPanel({ ownership }: { ownership: TickerDossier["ownership"] }) {
@@ -969,23 +907,18 @@ export function SourceCoveragePanel({ sources, onOpenTicker }: { sources: Ticker
   );
 }
 
-export function EvidencePanel({ sources }: { sources: TickerDossier["sources"] }) {
-  const visibleRows = rowList(sources.evidence)
-    .map((row) => ({
-      source: displayField(row, ["source"], "Source"),
-      title: displayField(row, ["title"], "Evidence item"),
-      signal: displayField(row, ["signal"], "-"),
-      date: displayField(row, ["date"], "-"),
-    }))
-    .filter((row) => row.title !== "Evidence item" || row.signal !== "-" || row.date !== "-")
-    .slice(0, 12);
-  return (
-    <DataTableFrame title="Evidence">
-      <SimpleTable
-        rows={visibleRows}
-        empty="No ticker evidence rows are loaded."
-        columns={[["source", "Source"], ["title", "Item"], ["signal", "Signal"], ["date", "Date"]]}
-      />
-    </DataTableFrame>
-  );
+export function EvidencePanel({ sources, thesisEvidence = [] }: { sources: TickerDossier["sources"]; thesisEvidence?: RowRecord[] }) {
+  const visibleRows = [...thesisEvidence, ...rowList(sources.evidence)].slice(0, 12);
+  return <DataTableFrame title="Source evidence">
+    <div className="divide-y divide-border">{visibleRows.map((row, index) => {
+      const reference = textField(row, ["reference", "url"]);
+      const href = /^https?:\/\//i.test(reference) ? reference : undefined;
+      const title = textField(row, ["title"], "Evidence item");
+      return <article key={index} className="space-y-1 p-4 text-sm">
+        {href ? <a className="font-medium underline" href={href} target="_blank" rel="noreferrer">{title.length > 240 ? `${title.slice(0, 240)}…` : title}</a> : <p className="font-medium">{title}</p>}
+        <p className="text-xs text-muted-foreground">{textField(row, ["source_name", "source"], "Source")}{textField(row, ["date", "observed_at"]) ? ` · ${textField(row, ["date", "observed_at"])}` : ""}</p>
+      </article>;
+    })}</div>
+    {!visibleRows.length ? <p className="p-4 text-sm text-muted-foreground">No linked source evidence is available for this ticker. Treat its thesis as unverified.</p> : null}
+  </DataTableFrame>;
 }

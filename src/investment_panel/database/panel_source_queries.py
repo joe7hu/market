@@ -148,23 +148,11 @@ SOURCE_UNIVERSE_QUERIES = {
             SELECT *
             FROM ranked_candidates
             WHERE candidate_rank <= __CANDIDATE_LIMIT__
-        ), option_summary AS (
-            SELECT candidate.id AS instrument_id, count(decision.id)::int AS actionable_count
-            FROM bounded_candidates candidate
-            LEFT JOIN LATERAL (
-                SELECT decision.id
-                FROM analysis.decision decision
-                WHERE decision.instrument_id = candidate.id
-                  AND decision.kind = 'option'
-                  AND decision.state <> 'REJECT'
-                OFFSET 0
-            ) decision ON true
-            GROUP BY candidate.id
         ), latest_market AS (
-            SELECT candidate.id AS instrument_id, observation.values
+            SELECT candidate.id AS instrument_id, observation.values, observation.observed_at
             FROM bounded_candidates candidate
             LEFT JOIN LATERAL (
-                SELECT observation.values
+                SELECT observation.values, observation.observed_at
                 FROM raw.fundamental_observation observation
                 WHERE observation.instrument_id = candidate.id
                   AND observation.metric_set = 'market_metrics'
@@ -172,10 +160,10 @@ SOURCE_UNIVERSE_QUERIES = {
                 LIMIT 1
             ) observation ON true
         ), latest_sec AS (
-            SELECT candidate.id AS instrument_id, observation.values
+            SELECT candidate.id AS instrument_id, observation.values, observation.observed_at
             FROM bounded_candidates candidate
             LEFT JOIN LATERAL (
-                SELECT observation.values
+                SELECT observation.values, observation.observed_at
                 FROM raw.fundamental_observation observation
                 WHERE observation.instrument_id = candidate.id
                   AND observation.metric_set = 'sec_fundamentals'
@@ -204,7 +192,9 @@ SOURCE_UNIVERSE_QUERIES = {
                candidate.source_counts, candidate.source_names,
                candidate.source_count, candidate.source_item_count,
                candidate.latest_source_timestamp,
-               COALESCE(option_summary.actionable_count, 0) AS option_opportunities,
+               NULL::integer AS option_opportunities,
+               market.observed_at AS market_metrics_observed_at,
+               sec.observed_at AS sec_fundamentals_observed_at,
                (market.values->>'market_cap')::double precision AS market_cap,
                (market.values->>'price_to_sales')::double precision AS ps_ratio,
                CASE WHEN (market.values->>'trailing_pe')::double precision > 0
@@ -237,7 +227,6 @@ SOURCE_UNIVERSE_QUERIES = {
                candidate.__panel_total_count
         FROM bounded_candidates candidate
         LEFT JOIN latest_quotes quote ON quote.instrument_id = candidate.id
-        LEFT JOIN option_summary ON option_summary.instrument_id = candidate.id
         LEFT JOIN latest_market market ON market.instrument_id = candidate.id
         LEFT JOIN latest_sec sec ON sec.instrument_id = candidate.id
         ORDER BY candidate.candidate_rank

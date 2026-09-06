@@ -711,6 +711,10 @@ def test_persisted_ticker_decision_restores_thesis_evidence_and_scenarios() -> N
         },
         as_of=AS_OF,
     )
+    assert source.fundamental.evidence_for[0].reference == "https://example.test/demand"
+    assert [scenario.price_range.low for scenario in source.fundamental.scenarios] == [80, 100, 130]
+    assert source.fundamental.invalidation.statement == "Demand reverses."
+    assert source.selected_expression.kind.value == "CASH"
     persisted = source.model_dump(mode="json")
     persisted.update({"ticker_decision_id": "persisted-thesis-id", "contract_version": "ticker-decision.v1", "available_at": AS_OF})
 

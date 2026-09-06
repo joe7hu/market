@@ -9,9 +9,8 @@ import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { rows, tickerSymbol } from "@/utils";
 import { displayField, numberField, textField, titleLabel, toneFromText } from "@/views/rowFormat";
-import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
+import { WorkspacePage } from "@/views/workspacePage";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
-import { Phase4SharedDecision } from "@/components/market/phase4SharedDecision";
 
 type SourceFamily = "all" | "filing" | "transcript" | "podcast" | "blog" | "private_graph" | "market_data" | "other";
 type RankingMode = "discussed" | "bullish" | "bearish" | "conviction";
@@ -38,7 +37,7 @@ export function SourcesRoute() {
   const [rankingMode, setRankingMode] = useState<RankingMode>("discussed");
   const [family, setFamily] = useState<SourceFamily>("all");
   const [query, setQuery] = useState("");
-  usePanelScope("research");
+  usePanelScope("sources");
 
   const rankingRows = useMemo(() => rows(data.sourceTickerRankings), [data.sourceTickerRankings]);
   const sourceRows = useMemo(() => rows(data.sources), [data.sources]);
@@ -46,19 +45,13 @@ export function SourcesRoute() {
   const rankedTickers = useMemo(() => rankTickerRows(rankingRows, rankingMode), [rankingRows, rankingMode]);
   const filteredSources = useMemo(() => filterSources(sourceRows, family, query), [sourceRows, family, query]);
 
-  const metrics: MetricSpec[] = [
-    ["Ranked Tickers", rankingRows.length.toLocaleString(), "symbols with source consensus", rankingRows.length ? "good" : "warn"],
-    ["Source Consensus", sourceConsensus.length.toLocaleString(), "source-level views", sourceConsensus.length ? "good" : "warn"],
-    ["Ticker Links", rows(data.tickerSourceSignals).length.toLocaleString(), "source-linked evidence", rows(data.tickerSourceSignals).length ? "good" : "muted"],
-    ["Sources", sourceRows.length.toLocaleString(), `${sourceFamilies(sourceRows)} families represented`, sourceRows.length ? "good" : "muted"],
-  ];
+
 
   return (
     <WorkspacePage
       eyebrow="Evidence workbench"
       title="Research"
       subtitle="Source-backed ticker evidence and consensus for research prioritization."
-      metrics={metrics}
       actions={
         <div className="relative w-full min-w-64 sm:w-80">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -66,8 +59,8 @@ export function SourcesRoute() {
         </div>
       }
     >
-      <Phase4SharedDecision data={data} scope="research" status={scopeStatus?.research} onRetry={() => void loadScope("research", { force: true })} />
-      <ScopeStatusNotice status={scopeStatus?.research} onRetry={() => void loadScope("research", { force: true })} />
+
+      <ScopeStatusNotice status={scopeStatus?.sources} onRetry={() => void loadScope("sources", { force: true })} />
       <div className="flex gap-2 overflow-x-auto pb-1">
         {RANKING_MODES.map((item) => {
           const Icon = item.icon;
@@ -80,7 +73,6 @@ export function SourcesRoute() {
         })}
       </div>
 
-      <ResearchAuthorityTable data={data} />
 
       <TickerRankingTable mode={rankingMode} rows={rankedTickers.slice(0, 40)} onOpenTicker={openTicker} />
       <SourceConsensusTable rows={sourceConsensus.slice(0, 60)} onOpenTicker={openTicker} />
@@ -103,7 +95,7 @@ export function SourcesRoute() {
   );
 }
 
-function ResearchAuthorityTable({ data }: { data: PanelData }) {
+export function ResearchAuthorityTable({ data }: { data: PanelData }) {
   const tableGroups: Array<[string, string, string[]]> = [
     ["Hypotheses", "researchHypotheses", ["hypothesis_key", "statement", "mechanism_class", "status"]],
     ["Experiment families", "researchExperimentFamilies", ["family_key", "name", "status", "hypothesis_id"]],
@@ -203,7 +195,6 @@ function SourceConsensusTable({ rows: consensusRows, onOpenTicker }: { rows: Row
             <th className="px-3 py-3">Net</th>
             <th className="px-3 py-3">Bullish Tickers</th>
             <th className="px-3 py-3">Bearish Tickers</th>
-            <th className="px-3 py-3">State</th>
           </tr>
         </thead>
         <tbody>
@@ -220,11 +211,10 @@ function SourceConsensusTable({ rows: consensusRows, onOpenTicker }: { rows: Row
                 <td className="px-3 py-3"><StatusBadge tone={net > 0 ? "good" : net < 0 ? "bad" : "muted"}>{formatSigned(net)}</StatusBadge></td>
                 <td className="px-3 py-3"><SymbolButtons symbols={bullish} onOpenTicker={onOpenTicker} /></td>
                 <td className="px-3 py-3"><SymbolButtons symbols={bearish} onOpenTicker={onOpenTicker} /></td>
-                <td className="px-3 py-3"><StatusBadge tone={textField(row, ["recommendation"], "") === "loaded" ? "good" : "info"}>{displayField(row, ["recommendation", "freshness", "origin"], "loaded")}</StatusBadge></td>
               </tr>
             );
           })}
-          {!consensusRows.length ? <EmptyRow colSpan={8} text="No source consensus rows available." /> : null}
+          {!consensusRows.length ? <EmptyRow colSpan={7} text="No source consensus rows available." /> : null}
         </tbody>
       </table>
     </DataTableFrame>
@@ -239,39 +229,28 @@ function SourceDirectoryTable({ rows: sourceRows }: { rows: RowRecord[] }) {
           <tr>
             <th className="px-3 py-3">Source</th>
             <th className="px-3 py-3">Family</th>
-            <th className="px-3 py-3">Mode</th>
             <th className="px-3 py-3">Items</th>
             <th className="px-3 py-3">Tickers</th>
             <th className="px-3 py-3">Signals</th>
-            <th className="px-3 py-3">Access</th>
-            <th className="px-3 py-3">State</th>
-            <th className="px-3 py-3">Health</th>
           </tr>
         </thead>
         <tbody>
           {sourceRows.map((row, index) => {
-            const enabled = booleanValue(row.enabled) || booleanValue(row.is_followed);
             const signalCount = numberField(row, ["signals_count", "signal_count"], 0);
             const itemCount = numberField(row, ["items_count", "item_count"], 0);
-            const health = displayField(row, ["latest_run_status", "freshness", "health", "status"], "not_loaded");
             return (
               <tr key={`${textField(row, ["source_id", "source_name"], "source")}-${index}`} className="border-b border-border align-top hover:bg-accent/40">
                 <td className="max-w-[300px] px-3 py-3">
                   <div className="font-medium">{textField(row, ["source_name", "source"], "Source")}</div>
-                  <div className="line-clamp-1 text-xs text-muted-foreground">{textField(row, ["notes", "detail"], "")}</div>
                 </td>
                 <td className="px-3 py-3 text-muted-foreground">{titleLabel(textField(row, ["source_family", "content_type"], "source"))}</td>
-                <td className="px-3 py-3 text-muted-foreground">{titleLabel(textField(row, ["ingestion_mode", "source_kind"], "source"))}</td>
                 <td className="px-3 py-3 tabular-nums">{itemCount.toLocaleString()}</td>
                 <td className="px-3 py-3 tabular-nums">{numberField(row, ["tickers_count", "ticker_count"], 0).toLocaleString()}</td>
                 <td className="px-3 py-3 tabular-nums">{signalCount.toLocaleString()}</td>
-                <td className="px-3 py-3 text-muted-foreground">{titleLabel(textField(row, ["raw_access", "origin"], "local"))}</td>
-                <td className="px-3 py-3"><StatusBadge tone={enabled ? "good" : "muted"}>{enabled ? "followed" : "candidate"}</StatusBadge></td>
-                <td className="px-3 py-3"><StatusBadge tone={toneFromText(health)}>{titleLabel(health)}</StatusBadge></td>
               </tr>
             );
           })}
-          {!sourceRows.length ? <EmptyRow colSpan={9} text="No sources match the current filter." /> : null}
+          {!sourceRows.length ? <EmptyRow colSpan={5} text="No sources match the current filter." /> : null}
         </tbody>
       </table>
     </DataTableFrame>

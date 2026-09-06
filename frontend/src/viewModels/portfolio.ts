@@ -99,7 +99,7 @@ export function buildPortfolioViewModel(data: PanelData, model: AppModel, correl
 function selectedPortfolioImpact(decision: RowRecord | undefined): PortfolioImpact | undefined {
   const selected = decision?.selected_expression;
   const impacts = decision?.portfolio_impacts;
-  if (!isRecord(selected) || !isRecord(impacts) || typeof selected.kind !== "string") return undefined;
+  if (!isRecord(selected) || !isRecord(impacts) || typeof selected.kind !== "string" || selected.kind.toUpperCase() === "CASH") return undefined;
   const impact = impacts[selected.kind];
   if (!isRecord(impact)) return undefined;
   return {

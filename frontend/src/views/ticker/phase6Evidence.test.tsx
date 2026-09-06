@@ -17,7 +17,7 @@ describe("ExecutionEvidencePanel Phase 6 evidence", () => {
       blockers: [],
     }} />);
 
-    for (const text of ["available", "execution-grade.v1", "Freshness", "0.42", "0.08", "0.001", "0.002"]) {
+    for (const text of ["0.42", "0.08", "0.001", "0.002"]) {
       expect(html).toContain(text);
     }
   });
@@ -25,10 +25,8 @@ describe("ExecutionEvidencePanel Phase 6 evidence", () => {
   it("renders a structured blocking state when execution evidence is absent", () => {
     const html = renderToStaticMarkup(<ExecutionEvidencePanel executionEvidence={null} />);
 
-    expect(html).toContain("Field unavailable: execution_evidence");
-    expect(html).toContain("Source: ticker_decision_snapshot");
-    expect(html).toContain("Reason: execution_evidence_missing");
-    expect(html).toContain("This blocks the decision.");
+    expect(html).toContain("A new trade cannot be assessed");
+    expect(html).not.toContain("execution-grade.v1");
     expect(html).toContain("Refresh execution evidence before placing an order.");
   });
 
@@ -44,7 +42,7 @@ describe("ExecutionEvidencePanel Phase 6 evidence", () => {
     const html = renderToStaticMarkup(<TickerMarketEvidence decision={decision} />);
 
     expect(html).toContain("CALL · TACTICAL");
-    expect(html).toContain("required: none");
+    expect(html).toContain("No required checks supplied");
     expect(html).not.toContain("Blocking:");
   });
 });

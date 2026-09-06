@@ -1,3 +1,4 @@
+import { ResearchAuthorityTable } from "./SourcesRoute";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -112,6 +113,7 @@ export function HealthRoute() {
         </div>
       ) : null}
       <ScopeStatusNotice status={scopeStatus.health} onRetry={() => void reload()} />
+      <details className="rounded-md border border-border p-4" onToggle={(event) => { if (event.currentTarget.open) void loadScope("research").catch(() => undefined); }}><summary className="cursor-pointer font-semibold">Research diagnostics</summary><ResearchAuthorityTable data={data} /></details>
       <DataFlowDiagram stages={flowStages} />
 
       <DecisionFunnelPanel funnel={decisionFunnel} />

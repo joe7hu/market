@@ -2,8 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { components } from "@/generated/apiSchema";
-import { OpportunityRankPanel, OptionsIntelligencePanel, TickerDecisionPanel } from "@/views/ticker/panels";
-import type { TickerDossier } from "@/types";
+import { EvidencePanel, OpportunityRankPanel, TickerDecisionPanel } from "@/views/ticker/panels";
 
 const compactDecision = {
   ticker: "QQQ",
@@ -25,139 +24,55 @@ const panelProps = {
   onCollect: async () => {},
 };
 
-describe("OpportunityRankPanel Phase 2 evidence", () => {
-  it("keeps the compact ticker page bounded and loads heavy context on demand", () => {
-    const compactHtml = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} />);
-    expect(compactHtml).toContain("Load decision context");
-    expect(compactHtml).not.toContain("Book opportunity rank");
-    expect(compactHtml).toContain("Canonical trade plan");
-    expect(compactHtml).toContain("PENDING");
-    expect(compactHtml).toContain("Status: pending");
-    expect(compactHtml).toContain("Reason: trade_plan_snapshot_not_loaded");
-    expect(compactHtml).toContain("Source: ticker_decision_snapshot");
-
-    const snapshotHtml = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} snapshot={{
-      ...compactDecision,
-      alpha_signals: [],
-      opportunity_rank: { trade_rank: 1 },
-      trade_plan: null,
-      data_requests: [],
-      learning: {},
-    } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"]} />);
-    expect(snapshotHtml).toContain("Book opportunity rank");
-    expect(snapshotHtml).toContain("NO TRADE · CASH");
-    expect(snapshotHtml).toContain("Reason: trade_plan_missing");
+describe("Ticker decision usability", () => {
+  it("keeps linked thesis evidence visible when other evidence fills the list", () => {
+    const html = renderToStaticMarkup(<EvidencePanel
+      sources={{ evidence: Array.from({ length: 12 }, (_, i) => ({ title: `News ${i}` })) }}
+      thesisEvidence={[{ title: "Thesis source", reference: "https://example.com/research" }]}
+    />);
+    expect(html).toContain('href="https://example.com/research"');
+    expect(html).toContain("Thesis source");
   });
-
-  it("uses rank alpha identity and renders all qualification evidence", () => {
-    const signals = [{
-      signal_id: "not-ranked",
-      target: "wrong-target",
-      forecast_value: 99,
-    }, {
-      signal_id: "ranked-signal",
-      target: "positive_return_after_costs",
-      horizon: "TACTICAL",
-      model_version: "ticker-stock-alpha.v2",
-      feature_version: "stock-research-features.v1",
-      oos_period_start: "2026-01-01T00:00:00Z",
-      oos_period_end: "2026-06-30T00:00:00Z",
-      cohort_path: ["cohort:large-liquid", "horizon:TACTICAL"],
-      fallback_parent: "global",
-      effective_sample_size: 84,
-      calibration_state: "calibrated_hierarchical",
-      calibration_metrics: { brier_score: 0.17, calibration_error: 0.04 },
-      research_score: 0.72,
-      cost_model_version: "stock-cost-slippage.v1",
-      lower_confidence_net_utility_after_costs: 0.03,
-      promotion_stage: "paper",
-    }] as unknown as components["schemas"]["AlphaSignal"][];
-    const rank = {
-      alpha_signal_id: "ranked-signal",
-      research_rank: 2,
-      trade_rank: 1,
-      trade_utility: 0.03,
-      instrument_state_snapshot_id: "snapshot:AAA",
-    } as components["schemas"]["OpportunityRank"];
-
+  it("shows loading without a manual load gate or identifiers", () => {
+    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} snapshotLoading />);
+    expect(html).toContain("Loading trade details");
+    expect(html).not.toContain("Load decision context");
+    expect(html).not.toContain("revision-1");
+    expect(html).not.toContain("Field unavailable:");
+  });
+  it("keeps snapshot errors actionable", () => {
+    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} snapshotError="The decision changed." />);
+    expect(html).toContain("The decision changed.");
+    expect(html).toContain("Retry decision details");
+  });
+  it("uses the matching alpha signal without showing its identity", () => {
+    const signals = [{ signal_id: "wrong", horizon: "WRONG" }, { signal_id: "matched", horizon: "TACTICAL", effective_sample_size: 84 }] as components["schemas"]["AlphaSignal"][];
+    const rank = { alpha_signal_id: "matched", research_rank: 2, trade_rank_unavailable_reason: "forecast_missing", instrument_state_snapshot_id: "private-id" } as components["schemas"]["OpportunityRank"];
     const html = renderToStaticMarkup(<OpportunityRankPanel signals={signals} rank={rank} />);
-
-    expect(html).not.toContain("wrong-target");
-    for (const text of [
-      "positive_return_after_costs", "TACTICAL", "ticker-stock-alpha.v2",
-      "stock-research-features.v1", "2026-01-01", "2026-06-30",
-      "cohort:large-liquid", "horizon:TACTICAL", "global", "84", "0.17",
-      "0.72", "stock-cost-slippage.v1", "0.03", "paper",
-      "snapshot:AAA",
-    ]) expect(html).toContain(text);
+    expect(html).toContain("TACTICAL");
+    expect(html).toContain("84");
+    expect(html).toContain("within this ranking");
+    expect(html).toContain("A supported return forecast is not available.");
+    expect(html).not.toContain("WRONG");
+    expect(html).not.toContain("private-id");
   });
-
-  it("renders missing decision terms and a null trade plan as structured blocking states", () => {
-    const nullDecision = {
-      ...compactDecision,
-      capital_action: { ...compactDecision.capital_action, action: "WAIT_FOR_PRICE", price_condition: null, catalyst: null, expires_at: null },
-      tactical: { ...compactDecision.tactical, current_price: null, expiry_date: null, entry_range: null, target_range: null, invalidation: null, confidence: null },
-      fundamental: { ...compactDecision.fundamental, current_price: null, expiry_date: null, entry_range: null, target_range: null, invalidation: null, confidence: null },
-    } as unknown as components["schemas"]["TickerDecisionDetailResponse"];
-    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={nullDecision} snapshot={{
-      ...nullDecision,
-      alpha_signals: [],
-      opportunity_rank: null,
-      trade_plan: null,
-      data_requests: [],
-      learning: {},
-    } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"]} />);
-
-    for (const field of ["price_condition", "selected_expression", "current_price", "entry_range", "target_range", "invalidation", "confidence", "selected_portfolio_impact", "trade_plan"]) {
-      expect(html).toContain(`Field unavailable: ${field}`);
-    }
-    expect(html).toContain("Source: ticker_decision");
-    expect(html).toContain("Reason: entry_range_missing");
-    expect(html).toContain("This blocks the decision.");
-    expect(html).toContain("Next: Refresh the canonical ticker decision before acting.");
-    expect(html).toContain("Canonical trade plan");
-    expect(html).toContain("NO TRADE · CASH");
+  it("explains a blocked new trade using the same substantive rank blocker as Opportunities", () => {
+    const decision = { ...compactDecision, capital_action: { ...compactDecision.capital_action, action: "AVOID", owned: true, rationale: "cash_comparator" }, resolution: { primary_blocker: "cash_comparator", next_action: "Review evidence" } } as unknown as components["schemas"]["TickerDecisionDetailResponse"];
+    const snapshot = { ...decision, opportunity_rank: { blockers: ["cash_comparator", "alpha_strategy_revision_missing"] }, alpha_signals: [], data_requests: [], learning: {} } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"];
+    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={decision} snapshot={snapshot} />);
+    expect(html).toContain("The investment signal has not passed strategy validation.");
+    expect(html).toContain("You hold this stock.");
+    expect(html).not.toContain("Do this now");
+    expect(html).not.toContain("AVOID");
+    expect(html).not.toContain("Owned ticker");
   });
-
-  it("renders a structured IV regime state instead of a plain unavailable label", () => {
-    const html = renderToStaticMarkup(<OptionsIntelligencePanel options={{ signal: {}, expiries: [], capabilities: [], unavailable_signals: [] } as unknown as TickerDossier["options"]} />);
-
-    expect(html).toContain("Field unavailable: iv_regime");
-    expect(html).toContain("Source: options_signal");
-    expect(html).toContain("Reason: iv_regime_missing");
-    expect(html).toContain("This blocks the decision.");
-    expect(html).toContain("Refresh the options signal before selecting an options expression.");
-    expect(html).not.toContain("IV regime unavailable");
-  });
-
-  it("renders nullable expression terms as structured blocking states", () => {
-    const decision = {
-      ...compactDecision,
-      expressions: {
-        CALL: {
-          kind: "CALL",
-          status: "blocked",
-          selected: false,
-          availability_status: "missing",
-          blockers: [],
-          horizon: "TACTICAL",
-          rationale: "Missing expression terms block selection.",
-          quantity: null,
-          planned_loss: null,
-          net_expected_value_per_loss_dollar: null,
-          expected_transaction_costs: null,
-          horizon_fit: null,
-        },
-      },
-    } as unknown as components["schemas"]["TickerDecisionDetailResponse"];
-    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={decision} />);
-
-    for (const field of ["quantity", "planned_loss", "net_expected_value_per_loss_dollar", "expected_transaction_costs", "horizon_fit"]) {
-      expect(html).toContain(`Field unavailable: ${field}`);
-    }
-    expect(html).toContain("Source: expression_decision");
-    expect(html).toContain("Reason: horizon_fit_missing");
-    expect(html).toContain("This blocks the decision.");
-    expect(html).toContain("Refresh the canonical ticker decision before selecting an expression.");
+  it("keeps missing plans blocked and does not imply a stock impact for cash", () => {
+    const decision = { ...compactDecision, selected_expression: { kind: "CASH" }, portfolio_impacts: { CASH: { availability: "available", risk_budget_consumed: 0 } } } as unknown as components["schemas"]["TickerDecisionDetailResponse"];
+    const snapshot = { ...decision, alpha_signals: [], trade_plan: null, data_requests: [], learning: {} } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"];
+    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={decision} snapshot={snapshot} />);
+    expect(html).toContain("No new trade");
+    expect(html).toContain("A complete trade plan is not available.");
+    expect(html).not.toContain("proposed impact");
+    expect(html).not.toContain("Field unavailable:");
   });
 });

@@ -4921,7 +4921,7 @@ def build_ticker_decision(
             or []
         )
     ]
-    return TickerDecision(
+    return _restore_persisted_thesis_context(TickerDecision(
         ticker=symbol,
         as_of=reference,
         decision_revision=decision_revision,
@@ -4941,7 +4941,7 @@ def build_ticker_decision(
         market_state_publication_id=snapshot.publication_id if snapshot is not None else None,
         market_state_snapshot=snapshot,
         portfolio_impacts=impacts,
-    )
+    ))
 
 
 def _build_view(

@@ -72,6 +72,9 @@ def test_screener_keeps_candidate_without_optional_observations(migrated_postgre
         row = next(row for row in tables["screener"] if row["symbol"] == symbol)
         assert row["market_cap"] is None
         assert row["price"] is None
+        assert row["option_opportunities"] is None
+        assert row["market_metrics_observed_at"] is None
+        assert row["sec_fundamentals_observed_at"] is None
         assert metadata["table_counts"]["screener"] >= 1
     finally:
         runtime.close()

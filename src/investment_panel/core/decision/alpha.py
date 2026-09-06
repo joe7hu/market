@@ -733,9 +733,12 @@ def _unavailable_reason(candidate: Mapping[str, Any], utility: TradeUtility, uni
     if not universe_complete:
         return "ranking_universe_incomplete"
     kind = str(candidate.get("selected_expression_kind") or "").upper()
-    if kind == "CASH":
-        return "cash_comparator"
     signal = _model_dump(candidate.get("alpha_signal"))
+    if kind == "CASH":
+        # A cash fallback does not explain why the investment could not be assessed.
+        blockers = (*(candidate.get("blockers") or ()), *(signal.get("blockers") or ()))
+        return next((str(item) for item in blockers if str(item).strip()
+                     and str(item) not in {"cash_comparator", "cash_selected"}), "cash_comparator")
     if signal.get("availability_status") != AvailabilityStatus.AVAILABLE.value:
         blockers = [str(item) for item in signal.get("blockers") or () if str(item).strip()]
         return blockers[0] if blockers else "alpha_signal_unavailable"

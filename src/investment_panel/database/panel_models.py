@@ -772,7 +772,10 @@ DIRECT_QUERIES: dict[str, str] = {
           AND source.enabled AND source.operational_state = 'active'
         JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
           AND ingest_run.finished_at IS NOT NULL
-        ORDER BY observation.observed_at DESC, ingest_run.finished_at DESC
+        ORDER BY row_number() OVER (
+                     PARTITION BY instrument.symbol, observation.metric_set
+                     ORDER BY observation.observed_at DESC, ingest_run.finished_at DESC
+                 ), observation.observed_at DESC, ingest_run.finished_at DESC
     """,
     "catalysts": """
         SELECT catalyst.id::text, instrument.symbol, catalyst.starts_at, catalyst.title AS event,
@@ -1516,6 +1519,18 @@ def today_authority_pages(
                               <= {safe_rank_end}
                     THEN positioned_actions.opportunity_rank
                END AS opportunity_rank_page,
+               jsonb_strip_nulls(jsonb_build_object(
+                   'company_name', (SELECT instrument.name FROM catalog.instrument instrument
+                                    WHERE instrument.id = stored_decision.instrument_id),
+                   'horizon', stored_decision.selected_expression->>'horizon',
+                   'research_as_of', stored_decision.input_manifest #>> '{{inputs,theses,0,available_at}}',
+                   'rationale', left(COALESCE(
+                       NULLIF(stored_decision.input_manifest #>> '{{inputs,theses,0,thesis_json,core_thesis}}', ''),
+                       stored_decision.fundamental->'evidence_for'->0->>'statement'), 2000),
+                   'countercase', left(COALESCE(
+                       NULLIF(stored_decision.input_manifest #>> '{{inputs,theses,0,thesis_json,scenarios,bear,rationale}}', ''),
+                       stored_decision.fundamental->'evidence_against'->0->>'statement'), 2000)
+               )) AS opportunity_summary,
                CASE WHEN positioned_actions.trade_plan_present
                           AND positioned_actions.trade_plan_position
                               > {safe_plan_offset}

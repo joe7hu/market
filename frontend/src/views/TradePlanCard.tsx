@@ -1,7 +1,7 @@
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
-import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
+import { DataFieldStateNotice, missingFieldState, decisionReason } from "@/components/market/dataFieldState";
 import type { components } from "@/generated/apiSchema";
-import type { ReactNode } from "react";
+import { Children, isValidElement, type ReactNode } from "react";
 import { expressionLabel } from "@/viewModels/expression";
 
 type TradePlan = components["schemas"]["TradePlan"];
@@ -15,7 +15,7 @@ export function TradePlanCard({ plan, pending = false }: { plan?: TradePlan | nu
   const actionable = isRenderableActionable(plan);
   return (
     <DataTableFrame
-      title="Canonical trade plan"
+      title="Trade plan"
       action={<StatusBadge tone={actionable ? "good" : "warn"}>{actionable ? authorizationLabel(plan.authorization_mode) : pending ? "PENDING" : "NO TRADE"}</StatusBadge>}
     >
       {actionable ? <ActionablePlan plan={plan} /> : <BlockedPlan plan={plan} pending={pending} />}
@@ -25,11 +25,12 @@ export function TradePlanCard({ plan, pending = false }: { plan?: TradePlan | nu
 
 export function PortfolioImpactCard({ impact }: { impact: PortfolioImpact | PortfolioImpactSummary }) {
   const fullImpact = "impact_id" in impact;
-  const availability = displayText(impact.availability);
+  if (impact.expression_kind?.toUpperCase() === "CASH") return null;
+  const availability = fullImpact ? impact.availability_status : impact.availability;
   return (
     <DataTableFrame
       title={`${impact.ticker ?? "Selected"} proposed impact`}
-      action={<StatusBadge tone={(fullImpact ? impact.availability_status : impact.availability) === "available" ? "good" : "warn"}>{availability === "Not supplied" ? "NO DATA" : availability}</StatusBadge>}
+      action={availability && availability !== "available" ? <StatusBadge tone="warn">Impact incomplete</StatusBadge> : undefined}
     >
       <div className="min-w-0 p-4 text-sm">
         {fullImpact ? <PortfolioImpactDetails impact={impact} /> : <PortfolioImpactSummaryDetails impact={impact} />}
@@ -41,9 +42,8 @@ export function PortfolioImpactCard({ impact }: { impact: PortfolioImpact | Port
 function PortfolioImpactSummaryDetails({ impact }: { impact: PortfolioImpactSummary }) {
   return <section className="space-y-4">
     <h3 className="text-sm font-semibold">Selected portfolio impact</h3>
-    <ImpactSection title="Risk and availability">
+    <ImpactSection title="Risk">
       <ImpactField label="Expression" value={displayText(impact.expression_kind)} />
-      <ImpactField label="Availability" value={displayText(impact.availability)} />
       <ImpactField label="Risk budget consumed" value={numberValue(impact.risk_budget_consumed)} />
       <ImpactField label="Marginal risk" value={numberValue(impact.marginal_risk)} />
       <ImpactField label="Blockers" value={listValue(impact.blockers)} />
@@ -79,32 +79,18 @@ function ActionablePlan({ plan }: { plan: TradePlan }) {
 
       <section>
         <h3 className="text-sm font-semibold">Rationale</h3>
-        <p className="mt-2 leading-6 text-muted-foreground">{displayText(plan.rationale)}</p>
+        <p className="mt-2 leading-6 text-muted-foreground">{decisionReason(displayText(plan.rationale))}</p>
       </section>
 
       <PortfolioImpactDetails impact={impact} />
 
-      <details className="rounded-md border border-border p-3">
-        <summary className="cursor-pointer font-semibold">Provenance</summary>
-        <dl className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
-          <Field label="Trade plan" value={displayText(plan.trade_plan_id)} />
-          <Field label="Opportunity episode" value={displayText(plan.opportunity_episode_id)} />
-          <Field label="Decision revision" value={displayText(plan.decision_revision)} />
-          <Field label="Policy" value={displayText(plan.policy_version)} />
-          <Field label="Rank" value={displayText(plan.rank_id)} />
-          <Field label="Alpha signal" value={displayText(plan.alpha_signal_id)} />
-          <Field label="Market snapshot" value={displayText(plan.market_snapshot_id)} />
-          <Field label="Market state publication" value={displayText(plan.market_state_publication_id)} />
-          <Field label="Publication" value={displayText(plan.publication_id)} />
-          <Field label="Expression identity" value={displayText(plan.selected_expression_identity)} />
-          <Field label="Portfolio impact" value={displayText(plan.portfolio_impact_id)} />
-        </dl>
-      </details>
+
     </div>
   );
 }
 
 function PortfolioImpactDetails({ impact }: { impact?: PortfolioImpact | null }) {
+  if (!impact) return <p>Portfolio impact has not been calculated. Do not size this trade yet.</p>;
   return (
     <section className="space-y-4">
       <h3 className="text-sm font-semibold">Selected portfolio impact</h3>
@@ -115,8 +101,6 @@ function PortfolioImpactDetails({ impact }: { impact?: PortfolioImpact | null })
         <ImpactField label="Net exposure after" value={numberValue(impact?.net_exposure_after)} />
         <ImpactField label="Position weight before" value={numberValue(impact?.position_weight_before)} />
         <ImpactField label="Position weight after" value={numberValue(impact?.position_weight_after)} />
-        <ImpactField label="Portfolio before" value={jsonValue(impact?.portfolio_before)} />
-        <ImpactField label="Portfolio after" value={jsonValue(impact?.portfolio_after)} />
       </ImpactSection>
       <ImpactSection title="Concentration and shared risk">
         <ImpactField label="Symbol concentration delta" value={numberValue(impact?.symbol_concentration_delta)} />
@@ -126,7 +110,6 @@ function PortfolioImpactDetails({ impact }: { impact?: PortfolioImpact | null })
         <ImpactField label="Portfolio overlap penalty" value={numberValue(impact?.portfolio_overlap_penalty)} />
         <ImpactField label="Diversification benefit" value={numberValue(impact?.diversification_benefit)} />
         <ImpactField label="Positions most correlated" value={listValue(impact?.positions_most_correlated)} />
-        <ImpactField label="Factor exposure" value={jsonValue(impact?.factor_exposure)} />
       </ImpactSection>
       <ImpactSection title="Loss and risk budget">
         <ImpactField label="Planned loss" value={money(impact?.planned_loss)} />
@@ -138,40 +121,24 @@ function PortfolioImpactDetails({ impact }: { impact?: PortfolioImpact | null })
         <ImpactField label="ADV participation" value={numberValue(impact?.adv_participation)} />
         <ImpactField label="Days to exit" value={numberValue(impact?.days_to_exit)} />
         <ImpactField label="Expected transaction costs" value={money(impact?.expected_transaction_costs)} />
-        <ImpactField label="Liquidity model" value={jsonValue(impact?.liquidity)} />
       </ImpactSection>
       <ImpactSection title="Stress and alternatives">
-        <ImpactField label="Core stress scenarios" value={jsonValue(impact?.scenario_pnl)} />
-        <ImpactField label="Cash comparator" value={jsonValue(impact?.cash_comparator)} />
         <ImpactField label="Top alternative" value={displayText(impact?.top_alternative)} />
         <ImpactField label="Funding source or position to trim" value={displayText(impact?.funding_source_or_position_to_trim)} />
         <ImpactField label="Position to trim or replace" value={displayText(impact?.position_to_trim_or_replace)} />
       </ImpactSection>
-      <ImpactSection title="Authority">
-        <ImpactField label="Contract version" value={displayText(impact?.contract_version)} />
-        <ImpactField label="Availability" value={displayText(impact?.availability)} />
-        <ImpactField label="Blockers" value={listValue(impact?.blockers)} />
-        <ImpactField label="Opportunity episode" value={displayText(impact?.opportunity_episode_id)} />
-        <ImpactField label="Expression" value={displayText(impact?.expression_kind)} />
-        <ImpactField label="Expression identity" value={displayText(impact?.expression_identity)} />
-        <ImpactField label="Cutoff" value={displayText(impact?.cutoff)} />
-        <ImpactField label="Input lineage" value={jsonValue(impact?.input_lineage)} />
-        <ImpactField label="Greeks" value={jsonValue(impact?.greeks)} />
-        <ImpactField label="Impact" value={displayText(impact?.impact_id)} />
-        <ImpactField label="Decision revision" value={displayText(impact?.decision_revision)} />
-        <ImpactField label="Market snapshot" value={displayText(impact?.market_snapshot_id)} />
-        <ImpactField label="Market state publication" value={displayText(impact?.market_state_publication_id)} />
-        <ImpactField label="Risk policy" value={displayText(impact?.risk_policy_version)} />
-      </ImpactSection>
+      {impact?.blockers?.length ? <p>{impact.blockers.map(decisionReason).join(" ")}</p> : null}
     </section>
   );
 }
 
 function ImpactSection({ title, children }: { title: string; children: ReactNode }) {
+  const fields = Children.toArray(children).filter((child) => isValidElement<{ value: string }>(child) && child.props.value !== "Not supplied");
+  if (!fields.length) return null;
   return (
     <div>
       <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{title}</h4>
-      <dl className="mt-2 grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3">{children}</dl>
+      <dl className="mt-2 grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3">{fields}</dl>
     </div>
   );
 }
@@ -210,14 +177,14 @@ function BlockedPlan({ plan, pending }: { plan?: TradePlan | null; pending: bool
   });
   return (
     <div className="min-w-0 p-4 text-sm">
-      <p className="font-semibold">{pending ? "PENDING · NO TRADE · CASH" : "NO TRADE · CASH"}</p>
+      <p className="font-semibold">{pending ? "Loading trade details…" : "No new trade"}</p>
       <div className="mt-3"><DataFieldStateNotice state={state} /></div>
-      {plan?.trade_plan_id ? <dl className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2"><Field label="Plan" value={plan.trade_plan_id} /></dl> : null}
     </div>
   );
 }
 
 function ImpactField({ label, value }: { label: string; value: string }) {
+  if (value === "Not supplied") return null;
   return <Field label={label} value={value} source="portfolio_impact" nextAction="Refresh the selected portfolio impact before sizing the trade." />;
 }
 
@@ -258,12 +225,7 @@ function numberValue(value: number | null | undefined): string {
 }
 
 function listValue(value: string[] | null | undefined): string {
-  return value?.length ? value.join(", ") : "Not supplied";
-}
-
-function jsonValue(value: unknown): string {
-  if (!value || typeof value !== "object" || !Object.keys(value).length) return "Not supplied";
-  return JSON.stringify(value);
+  return value?.length ? value.map(decisionReason).join(" ") : "Not supplied";
 }
 
 function money(value: number | null | undefined): string {

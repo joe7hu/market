@@ -271,6 +271,7 @@ function appendUniqueRows(existingRows: RowRecord[], incomingRows: RowRecord[]):
 }
 
 function rowKey(row: RowRecord): string {
+  if (typeof row.opportunity_episode_id === "string") return `episode:${row.opportunity_episode_id}`;
   const symbol = String(row.symbol ?? row.ticker ?? "");
   const qualifier = String(row.method ?? row.source ?? row.source_key ?? row.id ?? row.date ?? row.as_of ?? "");
   return symbol || qualifier ? `${symbol}:${qualifier}` : JSON.stringify(row);

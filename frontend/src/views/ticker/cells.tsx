@@ -1,3 +1,4 @@
+import { decisionReason } from "@/components/market/dataFieldState";
 import { StatusBadge } from "@/components/market/workstation";
 import type { Coverage } from "@/types";
 import { toneFromText } from "@/views/rowFormat";
@@ -27,7 +28,7 @@ export function ReasonList({ title, rows, empty }: { title: string; rows: string
       <h3 className="mb-2 text-sm font-semibold">{title}</h3>
       {rows.length ? (
         <ul className="space-y-2 text-sm leading-6">
-          {rows.map((row, index) => <li key={`${title}-${index}`}>{row}</li>)}
+          {rows.map((row, index) => <li key={`${title}-${index}`}>{decisionReason(row)}</li>)}
         </ul>
       ) : (
         <p className="text-sm text-muted-foreground">{empty}</p>

@@ -151,14 +151,45 @@ def build_quote(symbol: str, tables: dict[str, list[dict[str, Any]]], brief: dic
 
 
 def build_fundamentals(symbol: str, tables: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
-    sec_rows = [row for row in (tables.get("fundamentals") or []) if _text(row.get("source")) == "sec_companyfacts"]
-    latest = max(sec_rows, key=lambda row: _row_timestamp(row), default={})
-    metrics = parse_json_dict(latest.get("metrics"))
-    market = _first(tables, "universe_screen")
+    rows = tables.get("fundamentals") or []
+    sec_rows = [row for row in rows if row.get("metric_set") == "sec_fundamentals"
+                or _text(row.get("source")) == "sec_companyfacts"]
+    # SEC companyfacts has separate duration and balance rows. Prefer the latest
+    # reported revenue period; never mix quarter and year-to-date figures.
+    revenue_rows = [row for row in sec_rows if "revenue" in parse_json_dict(
+        parse_json_dict(row.get("values")).get("metrics") or row.get("metrics") or row.get("values")
+    )]
+    latest = max(revenue_rows or sec_rows, key=lambda row: (
+        str(row.get("period_end") or ""), str(row.get("period_start") or ""), _row_timestamp(row)
+    ), default={})
+    raw_values = parse_json_dict(latest.get("values"))
+    metrics = dict(parse_json_dict(raw_values.get("metrics") or latest.get("metrics") or raw_values))
+    for balance in sorted(sec_rows, key=_row_timestamp):
+        if balance.get("period_start") is None and balance.get("period_end") == latest.get("period_end"):
+            balance_values = parse_json_dict(balance.get("values"))
+            balance_metrics = parse_json_dict(balance_values.get("metrics") or balance.get("metrics") or balance_values)
+            for key in ("assets", "liabilities", "cash", "debt_to_assets"):
+                if balance_metrics.get(key) is not None:
+                    metrics[key] = balance_metrics[key]
+    latest = {**raw_values, **latest}
+    market_row = _latest([row for row in rows if row.get("metric_set") == "market_metrics"])
+    values = parse_json_dict(market_row.get("values"))
+    market = dict(_first(tables, "universe_screen"))
+    for target, source in {
+        "market_cap": "market_cap", "ps_ratio": "price_to_sales", "pe_ratio": "trailing_pe",
+        "forward_pe": "forward_pe", "fcf_yield": "fcf_yield", "roic": "return_on_invested_capital",
+    }.items():
+        value = optional_number(values.get(source))
+        if value is not None:
+            market[target] = value * 100 if target == "roic" else value
+            if target in {"pe_ratio", "forward_pe"} and value <= 0:
+                market[target] = None
+    if market_row:
+        market["forward_pe_source"] = market["roic_source"] = market_row.get("source")
     return {
         "sec": {
-            "form_type": _text(latest.get("form_type")),
-            "filing_date": iso_or_none(latest.get("filing_date") or latest.get("period_end")),
+            "form_type": _text(latest.get("form_type") or latest.get("form")),
+            "filing_date": iso_or_none(latest.get("filing_date") or latest.get("filed_at") or latest.get("filed") or latest.get("period_end")),
             "period_end": iso_or_none(latest.get("period_end")),
             "source_url": _text(latest.get("source_url")) or None,
             "revenue": optional_number(metrics.get("revenue")),

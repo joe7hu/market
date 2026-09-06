@@ -6,7 +6,7 @@ import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucid
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
-import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
+import { DataFieldStateNotice, decisionReason, missingFieldState } from "@/components/market/dataFieldState";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { cn } from "@/lib/utils";
 import type { TodayResponse } from "@/api/panel";
@@ -72,7 +72,7 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       <PageHeader
         eyebrow="Daily decision brief"
         title="Command Center"
-        subtitle="The current market stance, book risk, ranked capital actions, position management, critical events, and blockers in one decision surface."
+        subtitle="Your holding risks, current research and next decisions."
         actions={
           <Button type="button" variant="outline" onClick={onRefresh}>
             <RefreshCw className={loading ? "animate-spin" : ""} />
@@ -100,7 +100,7 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
 
       <ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} />
       <PreopenBrief brief={actionQueue?.preopen_brief} />
-      <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
+      <details className="mb-4 rounded-md border border-border p-4"><summary className="cursor-pointer font-semibold">Event research</summary><EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} /></details>
 
       {hasBrief ? (
         <>
@@ -125,7 +125,9 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
 }
 
 function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { response: TodayResponse | null; loading: boolean; error: string | null; onRefresh: () => void; onOpenTicker: (symbol: string) => void }) {
-  const items = response?.actions ?? [];
+  const [showAll, setShowAll] = useState(false);
+  const sorted = (response?.actions ?? []).slice().sort((a, b) => Number(b.source === "portfolio_risk") - Number(a.source === "portfolio_risk"));
+  const items = showAll ? sorted : sorted.slice(0, 10);
   const missingPlanCount = response?.missing_plan_count ?? 0;
   const unavailable = Boolean(response && !response.status.ready);
   const queueError = error ?? (unavailable ? response?.status.message ?? "Action Queue unavailable." : null);
@@ -134,7 +136,7 @@ function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { re
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
           <h2 id="action-queue-title" className="text-lg font-semibold">Action Queue</h2>
-          <p className="text-xs text-muted-foreground">Current capital actions, Inbox transitions, portfolio risks, and decision-blocking research.</p>
+          <p className="text-xs text-muted-foreground">Current holding risks and decisions. Open a ticker to review its evidence.</p>
         </div>
         {response && !unavailable ? <StatusBadge tone="info">{items.length} shown{missingPlanCount ? ` · ${missingPlanCount} missing plans` : ""}</StatusBadge> : null}
       </div>
@@ -145,6 +147,7 @@ function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { re
       {!unavailable && items.length ? (
         <div className="grid gap-3 lg:grid-cols-3" role="list">
           {items.map((item) => <ActionQueueCard key={item.projection_identity} item={item} onOpenTicker={onOpenTicker} onRefresh={onRefresh} />)}
+          {sorted.length > 10 ? <Button variant="outline" onClick={() => setShowAll(!showAll)}>{showAll ? "Show top ten" : `Show all ${sorted.length} current items`}</Button> : null}
         </div>
       ) : null}
     </section>
@@ -176,20 +179,20 @@ export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: Today
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start justify-between gap-2">
           {ticker ? <button type="button" className="font-semibold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onOpenTicker(ticker)}>{ticker}</button> : <h3 className="font-semibold">{item.title}</h3>}
-          {plan === undefined ? <StatusBadge tone={tone}>{statusLabel}</StatusBadge> : null}
+          {plan === undefined ? <StatusBadge tone={tone}>{decisionReason(statusLabel)}</StatusBadge> : null}
         </div>
-        {ticker ? <p className="text-sm font-medium">{item.title}</p> : null}
+        {ticker ? <p className="text-sm font-medium">{item.title.replace(/capital action$/i, "trade assessment")}</p> : null}
         {plan !== undefined ? <CompactPlanSummary plan={plan} fieldStates={item.field_states ?? []} /> : (
           <>
-            {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{item.rationale}</p> : null}
-            {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {item.primary_blocker}</p> : null}
-            <p className="text-sm"><span className="font-semibold">Next:</span> {item.next_action}</p>
+            {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{decisionReason(item.rationale)}</p> : null}
+            {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {decisionReason(item.primary_blocker)}</p> : null}
+            <p className="text-sm"><span className="font-semibold">Next:</span> {decisionReason(item.next_action)}</p>
             {expiry ? <p className="text-xs text-muted-foreground">Expires {expiry}</p> : null}
           </>
         )}
         {item.inbox_item_id ? <InboxStateControls itemId={item.inbox_item_id} busy={busy} onState={updateState} /> : null}
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
-        {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Open drill-down</a> : null}
+        {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Review evidence</a> : null}
       </CardContent>
     </Card>
   );
@@ -203,13 +206,13 @@ function CompactPlanSummary({ plan, fieldStates }: { plan: TradePlan | null; fie
       field: "trade_plan", source: "trade_plan", reason: "trade_plan_missing",
       nextAction: "Refresh the ticker decision and publish its canonical TradePlan.",
     });
-    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">NO TRADE · CASH</p><div className="mt-2"><DataFieldStateNotice state={state} /></div></div>;
+    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">No new trade</p><div className="mt-2"><DataFieldStateNotice state={state} /></div></div>;
   }
   return (
     <div className="rounded-md border border-border p-3 text-sm">
-      <p><span className="font-semibold">Action:</span> {plan.action} · <span className="font-semibold">Expression:</span> {expressionLabel(plan.selected_expression_kind)}</p>
-      <p className="mt-2 text-muted-foreground"><span className="font-semibold text-foreground">Rationale:</span> {plan.rationale}</p>
-      <p className="mt-2"><span className="font-semibold">Next:</span> {plan.next_action}</p>
+      {plan.selected_expression_kind?.toUpperCase() === "CASH" ? <p className="font-semibold">No new trade</p> : <p><span className="font-semibold">Action:</span> {plan.action} · <span className="font-semibold">Expression:</span> {expressionLabel(plan.selected_expression_kind)}</p>}
+      <p className="mt-2 text-muted-foreground"><span className="font-semibold text-foreground">Rationale:</span> {decisionReason(plan.rationale)}</p>
+      <p className="mt-2"><span className="font-semibold">Next:</span> {decisionReason(plan.next_action)}</p>
     </div>
   );
 }

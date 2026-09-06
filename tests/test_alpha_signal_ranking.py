@@ -386,3 +386,14 @@ def test_instrument_snapshot_requires_aware_availability_and_tie_breaks_by_ident
 
     assert snapshot.fundamental is not None
     assert snapshot.fundamental["revision"] == "utc-tie"
+
+
+@pytest.mark.parametrize("blocker_source", ["candidate", "alpha_signal"])
+def test_cash_fallback_keeps_missing_analysis_as_primary_reason(blocker_source: str) -> None:
+    candidate = _candidate("AAA", kind="CASH")
+    target = candidate if blocker_source == "candidate" else candidate["alpha_signal"]
+    target["blockers"] = ["forecast_missing"]
+    rank = rank_opportunities([candidate], evaluated_universe_complete=True)[0]
+    assert rank.trade_rank is None
+    assert rank.trade_rank_unavailable_reason == "forecast_missing"
+    assert rank.availability_status == AvailabilityStatus.MISSING

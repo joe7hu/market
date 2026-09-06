@@ -3,7 +3,6 @@ import { loadToday as loadTodayResponse, type TodayResponse } from "../api/panel
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
 import { TodayPage } from "../views/today";
-import { Phase4SharedDecision } from "@/components/market/phase4SharedDecision";
 
 export function TodayRoute() {
   const { data, model, lastRefresh, loading, loadScope, openTicker, scopeStatus } = useMarketData();
@@ -32,7 +31,7 @@ export function TodayRoute() {
 
   return (
     <>
-      <Phase4SharedDecision data={data} scope="today" status={scopeStatus?.today} onRetry={() => void loadScope("today", { force: true })} />
+
       <TodayPage
       data={data}
       model={model}

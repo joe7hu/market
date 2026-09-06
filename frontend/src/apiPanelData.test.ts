@@ -3,6 +3,12 @@ import { describe, expect, it } from "vitest";
 import { emptyPanelData, mergePanelData, mergeSnapshot } from "./apiPanelData";
 
 describe("mergePanelData", () => {
+  it("retains distinct opportunities for the same ticker across pages", () => {
+    const first = { ...emptyPanelData(), opportunitiesRanked: { rows: [{ ticker: "AAA", opportunity_episode_id: "first" }], count: 2 } };
+    const second = { ...emptyPanelData(), opportunitiesRanked: { rows: [{ ticker: "AAA", opportunity_episode_id: "first" }, { ticker: "AAA", opportunity_episode_id: "second" }], count: 2 } };
+    const result = mergePanelData(first, second, { append: true });
+    expect(result.opportunitiesRanked.rows?.map((row) => row.opportunity_episode_id)).toEqual(["first", "second"]);
+  });
   it("keeps independently loaded scopes and appends paged rows", () => {
     const first = emptyPanelData();
     const merged = mergePanelData(first, {

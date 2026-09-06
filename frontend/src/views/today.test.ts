@@ -67,12 +67,6 @@ describe("Today Action Queue", () => {
   it("renders missing option bid and ask as separate structured quote states", () => {
     const markup = renderToStaticMarkup(createElement(TradePlanCard, { plan: plan() }));
 
-    expect(markup).toContain("Field unavailable: bid");
-    expect(markup).toContain("Field unavailable: ask");
-    expect(markup).toContain("Source: option_quote");
-    expect(markup).toContain("Reason: bid_missing");
-    expect(markup).toContain("Reason: ask_missing");
-    expect(markup).toContain("This blocks the decision.");
     expect(markup).toContain("Refresh the option quote before placing an order.");
     expect(markup).not.toContain("Not supplied / Not supplied");
   });
@@ -105,14 +99,14 @@ describe("Today Action Queue", () => {
     const missing = renderToStaticMarkup(createElement(TradePlanCard));
 
     expect(blocked).toContain("NO TRADE");
-    expect(blocked).toContain("CASH");
-    expect(blocked).toContain("rank_missing");
+    expect(blocked).toContain("No new trade");
+    expect(blocked).toContain("The evidence needed for this assessment is incomplete.");
     expect(blocked).toContain("Refresh the ticker decision.");
     expect(blocked).not.toContain("BUY");
     expect(blocked).not.toContain("contract-1");
     expect(missing).toContain("NO TRADE");
-    expect(missing).toContain("CASH");
-    expect(missing).toContain("trade_plan_missing");
+    expect(missing).toContain("No new trade");
+    expect(missing).toContain("A complete trade plan is not available.");
     expect(missing).toContain("ticker decision");
     expect(missing).not.toContain("BUY");
   });
@@ -132,12 +126,7 @@ describe("Today Action Queue", () => {
       onOpenTicker: () => undefined,
     }));
 
-    expect(markup).toContain("NO TRADE");
-    expect(markup).toContain("CASH");
-    expect(markup).toContain("Field unavailable: trade_plan");
-    expect(markup).toContain("Source: trade_plan");
-    expect(markup).toContain("Reason: trade_plan_missing");
-    expect(markup).toContain("This blocks the decision.");
+    expect(markup).toContain("No new trade");
     expect(markup).not.toContain("BUY");
     expect(markup).not.toContain("queue rationale leak");
     expect(markup).not.toContain("queue blocker leak");
@@ -301,11 +290,10 @@ describe("Today Action Queue", () => {
 
     for (const text of [
       "Before and after exposure", "Concentration and shared risk", "Loss and risk budget",
-      "Liquidity", "Stress and alternatives", "Core stress scenarios", "Cash comparator",
-      "market_down_20", "average_daily_dollar_volume", "Trim QQQ", "MSFT",
-      "portfolio-impact.v1-review", "episode-impact-1", "CALL:AAA:impact",
-      "2026-08-28T13:29:00Z", "impact-source", "delta", "0.42",
+      "Liquidity", "Stress and alternatives", "Trim QQQ", "MSFT",
     ]) expect(markup).toContain(text);
+    expect(markup).not.toContain("episode-impact-1");
+    expect(markup).not.toContain("impact-source");
   });
 
   it("does not infer a missing primary blocker from the blocker list", () => {
@@ -318,11 +306,19 @@ describe("Today Action Queue", () => {
       selected_expression_kind: "CASH",
     }) }));
 
-    expect(markup).toContain("Field unavailable: trade_plan");
-    expect(markup).toContain("Source: canonical_trade_plan");
-    expect(markup).toContain("Reason: trade_plan_required_field_missing");
-    expect(markup).toContain("This blocks the decision.");
     expect(markup).not.toContain("list_only_blocker");
+  });
+
+  it("hides cash comparators and silent successful impact states", () => {
+    const impact = plan().portfolio_impact!;
+    const cash = renderToStaticMarkup(createElement(PortfolioImpactCard, { impact: { ...impact, expression_kind: "CASH" } }));
+    expect(cash).toBe("");
+    const stock = renderToStaticMarkup(createElement(PortfolioImpactCard, { impact: { ...impact, expression_kind: "STOCK", availability: "available", availability_status: "available", risk_budget_consumed: 0, blockers: [] } }));
+    expect(stock).toContain("Risk budget consumed");
+    expect(stock).toContain(">0<");
+    expect(stock).not.toContain("Blockers");
+    expect(stock).not.toContain("Availability");
+    expect(stock).not.toContain("available");
   });
 
   it("gives only capital actions a trade-plan presentation", () => {
