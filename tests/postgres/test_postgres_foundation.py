@@ -51,6 +51,28 @@ def test_migration_creates_layered_postgresql_authority(postgres_dsn: str) -> No
     assert tables >= 35
 
 
+def test_storage_archive_privileges_are_available_to_application_role(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        privileges = connection.execute(
+            """
+            SELECT has_schema_privilege('market_app', 'ops', 'USAGE'),
+                   has_table_privilege('market_app', 'ops.storage_archive_manifest', 'SELECT'),
+                   has_table_privilege('market_app', 'ops.storage_archive_manifest', 'INSERT'),
+                   has_table_privilege('market_app', 'ops.storage_archive_manifest', 'UPDATE'),
+                   has_table_privilege('market_app', 'ops.storage_archive_checkpoint', 'SELECT'),
+                   has_table_privilege('market_app', 'ops.storage_archive_checkpoint', 'INSERT'),
+                   has_table_privilege('market_app', 'ops.storage_archive_checkpoint', 'UPDATE'),
+                   has_table_privilege('market_app', 'ops.storage_archive_manifest_reference', 'SELECT'),
+                   has_table_privilege('market_app', 'ops.storage_archive_manifest_reference', 'INSERT'),
+                   has_table_privilege('market_app', 'ops.storage_archive_manifest_reference', 'UPDATE'),
+                   has_table_privilege('market_app', 'ops.storage_archive_manifest_reference', 'DELETE'),
+                   has_sequence_privilege('market_app', 'ops.storage_archive_manifest_id_seq', 'USAGE')
+            """
+        ).fetchone()
+    assert tuple(privileges) == (True,) * 12
+
+
 def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(
     postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
