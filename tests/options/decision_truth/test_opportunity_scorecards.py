@@ -2,12 +2,26 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from psycopg.errors import QueryCanceled
+
 from investment_panel.database.opportunity_episodes import (
     SCORECARD_TRUTH_VERSION,
     option_episode_key,
 )
 from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository, scorecard_payload
 from investment_panel.database.runtime import DatabaseRuntime
+
+
+def test_scorecard_query_timeout_is_explicitly_invalid_and_fail_closed() -> None:
+    repository = OpportunityScorecardRepository(object())
+    repository._decision_rows = lambda *_args: (_ for _ in ()).throw(QueryCanceled("statement timeout"))
+    repository._scope_counts = lambda *_args: {"observed": 12, "quarantined": 0}
+
+    result = repository.scorecard(lane="radar")
+
+    assert result["status"] == "INVALID"
+    assert result["data_health_defects"] == {"scorecard_query_timeout": 1}
+    assert result["automatic_strategy_promotion"]["eligible"] is False
 
 
 def test_scorecard_repository_returns_invalid_rebuilding_state_for_empty_cohort(

@@ -97,7 +97,7 @@ class OptionsPaperExecutionRepository:
         """Stage only current immutable tickets after lane-level gates pass."""
 
         enabled = set(enabled_lanes)
-        radar_gate = self._radar_gate(now) if "radar" in enabled else None
+        radar_gate = None
         with self.runtime.read(JOB_PROFILE) as connection:
             rows = current_option_publication_answers(connection, cutoff=now)
             rows.sort(
@@ -129,6 +129,8 @@ class OptionsPaperExecutionRepository:
             if expires is None or expires <= now:
                 result.append({"decision_id": decision_id, "lane": lane, "status": "skipped", "reason": "ticket_expired"})
                 continue
+            if lane == "radar" and radar_gate is None:
+                radar_gate = self._radar_gate(now)
             if lane == "radar" and radar_gate is not None and radar_gate.get("status") != "READY_FOR_REVIEW":
                 result.append({
                     "decision_id": decision_id, "lane": lane, "status": "skipped",

@@ -12,6 +12,8 @@ from math import sqrt
 from statistics import mean, stdev
 from typing import Any, Iterable
 
+from psycopg.errors import QueryCanceled
+
 from investment_panel.database.opportunity_episodes import (
     SCORECARD_TRUTH_VERSION,
     SCORECARD_TRUTH_PREFIX,
@@ -43,7 +45,12 @@ class OpportunityScorecardRepository:
         if reference.tzinfo is None:
             raise ValueError("scorecard time must be timezone-aware")
         since = reference - timedelta(days=window_days)
-        rows = self._recovery_rows(since, reference) if normalized_lane == "recovery" else self._decision_rows(normalized_lane, since, reference)
+        query_defects: dict[str, int] = {}
+        try:
+            rows = self._recovery_rows(since, reference) if normalized_lane == "recovery" else self._decision_rows(normalized_lane, since, reference)
+        except QueryCanceled:
+            rows = []
+            query_defects["scorecard_query_timeout"] = 1
         scope = self._scope_counts(normalized_lane, since, reference)
         return _scorecard(
             lane=normalized_lane,
@@ -52,9 +59,12 @@ class OpportunityScorecardRepository:
             raw_observation_count=scope["observed"],
             episodes=rows,
             external_defects=(
-                {"legacy_or_unversioned_truth_contract": scope["quarantined"]}
-                if scope["quarantined"]
-                else None
+                {
+                    **({"legacy_or_unversioned_truth_contract": scope["quarantined"]}
+                       if scope["quarantined"] else {}),
+                    **query_defects,
+                }
+                or None
             ),
             externally_quarantined_episode_count=scope["quarantined"],
         )
