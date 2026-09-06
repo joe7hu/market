@@ -76,21 +76,14 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                    'input_hash', decision.input_hash,
                    'code_version', decision.code_version,
                    'experiment_id', decision.experiment_id,
-                   'inputs', jsonb_build_object(
-                       COALESCE(
-                           decision.input_manifest->'trade_plan'->'input_lineage'->0->>'field',
-                           'decision'
-                       ),
-                       jsonb_build_array(COALESCE(
-                           decision.input_manifest->'trade_plan'->'input_lineage'->0,
-                           jsonb_build_object(
-                               'field', 'decision',
-                               'source_id', 'postgresql',
-                               'source_version', decision.input_hash,
-                               'available_at', decision.as_of
-                           )
+                   'inputs', COALESCE(decision.input_manifest->'inputs', jsonb_build_object(
+                       'decision', jsonb_build_array(jsonb_build_object(
+                           'field', 'decision',
+                           'source_id', 'postgresql',
+                           'source_version', decision.input_hash,
+                           'available_at', decision.as_of
                        ))
-                   ),
+                   )),
                    'source_versions', COALESCE(decision.input_manifest->'source_versions', '{}'::jsonb),
                    'signal_declarations', COALESCE(decision.input_manifest->'signal_declarations', '[]'::jsonb),
                    'alpha_signals', COALESCE((
@@ -124,7 +117,7 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                ) AS market_state_snapshot,
                '{}'::jsonb AS portfolio_impacts,
                NULL::jsonb AS risk_policy_snapshot,
-               NULL::jsonb AS opportunity_episode
+               decision.opportunity_episode
         FROM analysis.ticker_decision decision
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE decision.status IN ('published', 'superseded')
@@ -1354,21 +1347,14 @@ class TickerDecisionRepository:
                            'input_hash', decision.input_hash,
                            'code_version', decision.code_version,
                            'experiment_id', decision.experiment_id,
-                           'inputs', jsonb_build_object(
-                               COALESCE(
-                                   decision.input_manifest->'trade_plan'->'input_lineage'->0->>'field',
-                                   'decision'
-                               ),
-                               jsonb_build_array(COALESCE(
-                                   decision.input_manifest->'trade_plan'->'input_lineage'->0,
-                                   jsonb_build_object(
-                                       'field', 'decision',
-                                       'source_id', 'postgresql',
-                                       'source_version', decision.input_hash,
-                                       'available_at', decision.as_of
-                                   )
+                           'inputs', COALESCE(decision.input_manifest->'inputs', jsonb_build_object(
+                               'decision', jsonb_build_array(jsonb_build_object(
+                                   'field', 'decision',
+                                   'source_id', 'postgresql',
+                                   'source_version', decision.input_hash,
+                                   'available_at', decision.as_of
                                ))
-                           ),
+                           )),
                            'source_versions', COALESCE(decision.input_manifest->'source_versions', '{{}}'::jsonb),
                            'signal_declarations', COALESCE(decision.input_manifest->'signal_declarations', '[]'::jsonb),
                            'alpha_signals', COALESCE(decision.input_manifest->'alpha_signals', '[]'::jsonb),
@@ -1427,6 +1413,62 @@ class TickerDecisionRepository:
         """Publish the complete plan-bound outcome set for the canonical scope."""
 
         reference = _utc(now or datetime.now(UTC))
+        attributions: list[OutcomeAttribution] = []
+        blockers: list[str] = []
+        excluded_legacy = 0
+        evaluated = 0
+        legacy_exclusion_reasons: list[str] = []
+        seen_units: set[str] = set()
+
+        def process_decision(decision_row: dict[str, Any], outcome_rows: list[dict[str, Any]]) -> None:
+            nonlocal excluded_legacy, evaluated
+            evaluated += 1
+            plan, plan_blocker = plan_authority(decision_row)
+            if plan is None:
+                excluded_legacy += 1
+                if plan_blocker:
+                    legacy_exclusion_reasons.append(plan_blocker)
+                return
+            if plan_blocker:
+                blockers.append(plan_blocker)
+                return
+            by_horizon: dict[tuple[str, int], list[dict[str, Any]]] = {}
+            for outcome in outcome_rows:
+                key = (str(outcome["horizon"]), int(outcome["horizon_sessions"]))
+                by_horizon.setdefault(key, []).append(outcome)
+            expected = {(horizon.value, sessions) for horizon in HORIZON_SESSIONS for sessions in HORIZON_SESSIONS[horizon]}
+            missing = expected - set(by_horizon)
+            if missing:
+                blockers.append(f"outcome_units_missing:{plan.trade_plan_id}")
+                return
+            unexpected = set(by_horizon) - expected
+            if unexpected:
+                blockers.append(f"outcome_units_unexpected:{plan.trade_plan_id}")
+                return
+            if any(len(items) != 1 for items in by_horizon.values()):
+                blockers.append(f"outcome_units_duplicated:{plan.trade_plan_id}")
+                return
+            paper, paper_blocker = paper_execution_for_plan(
+                paper_by_plan.get(plan.trade_plan_id, []), reference,
+            )
+            if paper_blocker:
+                blockers.append(f"{paper_blocker}:{plan.trade_plan_id}")
+                return
+            for key in sorted(expected):
+                outcome = by_horizon[key][0]
+                stable_key = outcome_attribution_stable_key(plan.trade_plan_id, key[0], key[1])
+                if stable_key in seen_units:
+                    blockers.append(f"stable_unit_duplicated:{stable_key}")
+                    continue
+                attribution = _build_outcome_attribution(
+                    plan, outcome, evaluation_cutoff=reference, paper_execution=paper,
+                )
+                if attribution is None:
+                    blockers.append(f"outcome_authority_invalid:{stable_key}")
+                    continue
+                seen_units.add(stable_key)
+                attributions.append(attribution)
+
         with self.runtime.read(JOB_PROFILE) as connection:
             legacy_count = connection.execute(
                 """
@@ -1438,13 +1480,16 @@ class TickerDecisionRepository:
                 """,
                 [reference],
             ).fetchone()["count"]
-            decision_rows = connection.execute(
-                OUTCOME_ATTRIBUTION_DECISION_QUERY,
-                [reference],
-            ).fetchall()
-            outcome_rows = connection.execute(OUTCOME_ATTRIBUTION_OUTCOME_QUERY).fetchall()
-            paper_rows = connection.execute(
-                """
+            outcomes_by_decision: dict[str, list[dict[str, Any]]] = {}
+            with connection.cursor(name="ticker-attribution-outcomes") as cursor:
+                cursor.execute(OUTCOME_ATTRIBUTION_OUTCOME_QUERY)
+                for raw in cursor:
+                    decision_id = str(raw["decision_id"])
+                    outcomes_by_decision.setdefault(decision_id, []).append(dict(raw))
+            paper_by_plan: dict[str, list[dict[str, Any]]] = {}
+            with connection.cursor(name="ticker-attribution-paper") as cursor:
+                cursor.execute(
+                    """
                 SELECT paper.id::text AS paper_order_id,
                        paper.policy_result->>'trade_plan_id' AS trade_plan_id,
                        paper.status, paper.paper_only, paper.quantity,
@@ -1472,75 +1517,21 @@ class TickerDecisionRepository:
                   AND paper.paper_only = TRUE
                   AND paper.policy_result->>'trade_plan_id' IS NOT NULL
                 ORDER BY paper.policy_result->>'trade_plan_id', paper.created_at, paper.id
-                """
-            ).fetchall()
-
-        by_decision: dict[str, list[dict[str, Any]]] = {
-            str(raw["decision_id"]): [dict(raw)] for raw in decision_rows
-        }
-        for raw in outcome_rows:
-            decision_id = str(raw["decision_id"])
-            if decision_id in by_decision:
-                by_decision[decision_id].append(dict(raw))
-        paper_by_plan: dict[str, list[dict[str, Any]]] = {}
-        for raw in paper_rows:
-            paper_by_plan.setdefault(str(raw["trade_plan_id"]), []).append(dict(raw))
-
-        attributions: list[OutcomeAttribution] = []
-        blockers: list[str] = []
-        excluded_legacy = int(legacy_count or 0)
-        evaluated = excluded_legacy
-        legacy_exclusion_reasons: list[str] = ["trade_plan_missing"] * excluded_legacy
-        seen_units: set[str] = set()
-        for decision_rows in by_decision.values():
-            evaluated += 1
-            decision_row = decision_rows[0]
-            plan, plan_blocker = plan_authority(decision_row)
-            if plan is None:
-                excluded_legacy += 1
-                if plan_blocker:
-                    legacy_exclusion_reasons.append(plan_blocker)
-                continue
-            if plan_blocker:
-                blockers.append(plan_blocker)
-                continue
-            outcome_rows = decision_rows[1:]
-            by_horizon: dict[tuple[str, int], list[dict[str, Any]]] = {}
-            for outcome in outcome_rows:
-                key = (str(outcome["horizon"]), int(outcome["horizon_sessions"]))
-                by_horizon.setdefault(key, []).append(outcome)
-            expected = {(horizon.value, sessions) for horizon in HORIZON_SESSIONS for sessions in HORIZON_SESSIONS[horizon]}
-            missing = expected - set(by_horizon)
-            if missing:
-                blockers.append(f"outcome_units_missing:{plan.trade_plan_id}")
-                continue
-            unexpected = set(by_horizon) - expected
-            if unexpected:
-                blockers.append(f"outcome_units_unexpected:{plan.trade_plan_id}")
-                continue
-            if any(len(items) != 1 for items in by_horizon.values()):
-                blockers.append(f"outcome_units_duplicated:{plan.trade_plan_id}")
-                continue
-            paper, paper_blocker = paper_execution_for_plan(
-                paper_by_plan.get(plan.trade_plan_id, []), reference,
-            )
-            if paper_blocker:
-                blockers.append(f"{paper_blocker}:{plan.trade_plan_id}")
-                continue
-            for key in sorted(expected):
-                outcome = by_horizon[key][0]
-                stable_key = outcome_attribution_stable_key(plan.trade_plan_id, key[0], key[1])
-                if stable_key in seen_units:
-                    blockers.append(f"stable_unit_duplicated:{stable_key}")
-                    continue
-                attribution = _build_outcome_attribution(
-                    plan, outcome, evaluation_cutoff=reference, paper_execution=paper,
+                    """
                 )
-                if attribution is None:
-                    blockers.append(f"outcome_authority_invalid:{stable_key}")
-                    continue
-                seen_units.add(stable_key)
-                attributions.append(attribution)
+                for raw in cursor:
+                    paper_by_plan.setdefault(str(raw["trade_plan_id"]), []).append(dict(raw))
+
+            with connection.cursor(name="ticker-attribution-decisions") as cursor:
+                cursor.execute(OUTCOME_ATTRIBUTION_DECISION_QUERY, [reference])
+                for raw in cursor:
+                    process_decision(
+                        dict(raw), outcomes_by_decision.get(str(raw["decision_id"]), []),
+                    )
+
+        excluded_legacy = int(legacy_count or 0) + excluded_legacy
+        evaluated = int(legacy_count or 0) + evaluated
+        legacy_exclusion_reasons[0:0] = ["trade_plan_missing"] * int(legacy_count or 0)
 
         unique_blockers = list(dict.fromkeys(blockers))
         result: dict[str, Any] = {
