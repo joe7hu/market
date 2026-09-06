@@ -4661,7 +4661,7 @@ def build_ticker_decision(
                     persisted.get("input_manifest") or {}
                 ).get("trade_plan")
                 persisted_trade_plan = trade_plan_from_persisted(raw_trade_plan, ticker=symbol)
-            return TickerDecision.model_validate({
+            decision = TickerDecision.model_validate({
                 "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
                 "ticker": symbol,
                 "as_of": persisted.get("as_of") or reference,
@@ -4687,6 +4687,7 @@ def build_ticker_decision(
                 "opportunity_rank": persisted.get("opportunity_rank") or None,
                 "trade_plan": persisted_trade_plan,
             })
+            return _restore_persisted_thesis_context(decision)
         except Exception:
             # A malformed persisted row is visible to source-health/learning
             # diagnostics, but it must not make the ticker route disappear.
@@ -4997,6 +4998,94 @@ def _build_view(
         selected_instrument=selected,
         alternate_expression=alternate,
     )
+
+
+def _restore_persisted_thesis_context(decision: TickerDecision) -> TickerDecision:
+    """Fill an old compact packet from its immutable thesis input, without authorizing it."""
+
+    manifest = (
+        decision.input_manifest.model_dump(mode="python")
+        if isinstance(decision.input_manifest, BaseModel)
+        else decision.input_manifest if isinstance(decision.input_manifest, Mapping) else {}
+    )
+    inputs = manifest.get("inputs") if isinstance(manifest.get("inputs"), Mapping) else {}
+    thesis_rows = inputs.get("theses") if isinstance(inputs.get("theses"), list) else []
+    thesis_row = next((row for row in thesis_rows if isinstance(row, Mapping)), {})
+    thesis = thesis_row.get("thesis_json") if isinstance(thesis_row.get("thesis_json"), Mapping) else {}
+    if not thesis:
+        return decision
+
+    revision = str(thesis_row.get("revision") or thesis_row.get("revision_id") or "") or None
+    available_at = _parse_datetime(thesis_row.get("available_at"))
+    raw_scenarios = thesis.get("scenarios") if isinstance(thesis.get("scenarios"), Mapping) else {}
+    raw_pillars = thesis.get("pillars") if isinstance(thesis.get("pillars"), list) else []
+    supporting: list[EvidenceItem] = []
+    opposing: list[EvidenceItem] = []
+    for pillar in raw_pillars:
+        if not isinstance(pillar, Mapping):
+            continue
+        statement = str(pillar.get("claim") or pillar.get("title") or "").strip()
+        if not statement:
+            continue
+        refs = [str(ref).strip() for ref in pillar.get("evidence_refs") or [] if str(ref).strip()]
+        if refs:
+            supporting.extend(EvidenceItem(
+                statement=statement,
+                polarity=EvidencePolarity.FOR,
+                source="thesis",
+                reference=reference,
+                available_at=available_at,
+                revision=revision,
+            ) for reference in refs)
+        else:
+            opposing.append(EvidenceItem(
+                statement=f"Unvalidated thesis condition: {statement}",
+                polarity=EvidencePolarity.AGAINST,
+                source="thesis",
+                available_at=available_at,
+                revision=revision,
+            ))
+
+    def restore_view(view: HorizonDecision) -> HorizonDecision:
+        updates: dict[str, Any] = {}
+        if not view.evidence_for and supporting:
+            updates["evidence_for"] = supporting
+        if not view.evidence_against and opposing:
+            updates["evidence_against"] = opposing
+        if view.invalidation is None:
+            rules = thesis.get("invalidation_rules") if isinstance(thesis.get("invalidation_rules"), list) else []
+            rule = next((item for item in rules if isinstance(item, Mapping)), None)
+            statement = str((rule or {}).get("text") or (rule or {}).get("event") or "").strip()
+            if statement:
+                updates["invalidation"] = Invalidation(kind="event", value=statement, statement=statement)
+        generic = all(
+            scenario.price_range is None and scenario.probability is None
+            and scenario.description.endswith("scenario range not loaded.")
+            for scenario in view.scenarios
+        )
+        if generic and {name for name in raw_scenarios} >= {"bear", "base", "bull"}:
+            scenarios: list[ScenarioOutcome] = []
+            for name in ("bear", "base", "bull"):
+                item = raw_scenarios.get(name)
+                if not isinstance(item, Mapping):
+                    continue
+                target = _number(item.get("target"))
+                probability = _number(item.get("probability"))
+                if probability is not None and probability > 1:
+                    probability /= 100
+                scenarios.append(ScenarioOutcome(
+                    name=name,
+                    probability=probability if probability is not None and 0 <= probability <= 1 else None,
+                    description=str(item.get("rationale") or item.get("description") or f"{name.title()} case from thesis revision {revision or 'unknown'}."),
+                    price_range=PriceRange(low=target, high=target) if target is not None and target >= 0 else None,
+                ))
+            if len(scenarios) == 3 and all(item.probability is not None for item in scenarios) and math.isclose(sum(item.probability or 0 for item in scenarios), 1.0, abs_tol=1e-6):
+                updates["scenarios"] = scenarios
+        return view.model_copy(update=updates) if updates else view
+
+    tactical = restore_view(decision.tactical)
+    fundamental = restore_view(decision.fundamental)
+    return decision.model_copy(update={"tactical": tactical, "fundamental": fundamental})
 
 
 def _build_expressions(

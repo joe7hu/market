@@ -688,6 +688,40 @@ def test_persisted_ticker_decision_is_not_dropped_by_point_in_time_filtering() -
     assert replay.decision_revision == source.decision_revision
 
 
+def test_persisted_ticker_decision_restores_thesis_evidence_and_scenarios() -> None:
+    source = build_ticker_decision(
+        "ACME",
+        {
+            "decision_queue": [{"symbol": "ACME", "stance": "BULLISH", "available_at": AS_OF}],
+            "theses": [{
+                "symbol": "ACME",
+                "revision": 4,
+                "available_at": AS_OF,
+                "thesis_json": {
+                    "pillars": [{"title": "Demand", "claim": "Demand is improving.", "evidence_refs": ["https://example.test/demand"]}],
+                    "scenarios": {
+                        "bear": {"target": 80, "probability": 0.2, "rationale": "Demand weakens."},
+                        "base": {"target": 100, "probability": 0.5, "rationale": "Demand holds."},
+                        "bull": {"target": 130, "probability": 0.3, "rationale": "Demand accelerates."},
+                    },
+                    "invalidation_rules": [{"text": "Demand reverses."}],
+                },
+            }],
+        },
+        as_of=AS_OF,
+    )
+    persisted = source.model_dump(mode="json")
+    persisted.update({"ticker_decision_id": "persisted-thesis-id", "contract_version": "ticker-decision.v1", "available_at": AS_OF})
+
+    replay = build_ticker_decision("ACME", {"ticker_decisions": [persisted]}, as_of=AS_OF)
+
+    assert replay.fundamental.evidence_for[0].reference == "https://example.test/demand"
+    assert replay.fundamental.evidence_for[0].revision == "4"
+    assert [scenario.price_range.low for scenario in replay.fundamental.scenarios] == [80, 100, 130]
+    assert replay.fundamental.invalidation is not None
+    assert replay.fundamental.invalidation.statement == "Demand reverses."
+
+
 def test_persisted_legacy_portfolio_impacts_infer_the_parent_ticker() -> None:
     source = build_ticker_decision(
         "ACME",
