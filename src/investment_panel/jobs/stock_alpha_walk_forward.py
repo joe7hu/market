@@ -1084,20 +1084,18 @@ def scheduled(config_path: str | None = None) -> dict[str, Any]:
     cutoff = datetime.now(UTC)
     observations = load_observations(runtime, cutoff=cutoff)
     controls = build_control_results(observations, cutoff=cutoff)
-    if not controls["randomized_label_returns"] or not controls["white_noise_market_returns"]:
-        return {
-            "status": "skipped",
-            "reason": "repeated_control_observations_unavailable",
-            "observations": len(observations),
-            "control_metadata": controls.get("control_metadata") or {},
-        }
+    controls_missing = not controls["randomized_label_returns"] or not controls["white_noise_market_returns"]
+    result = run(
+        runtime, observations, cutoff=cutoff,
+        universe_members=load_universe_members(runtime, cutoff=cutoff),
+        control_results=controls,
+    )
     return {
-        "status": "ok",
-        **run(
-            runtime, observations, cutoff=cutoff,
-            universe_members=load_universe_members(runtime, cutoff=cutoff),
-            control_results=controls,
-        ),
+        "status": "partial" if controls_missing or not result["complete"] else "ok",
+        "reason": "repeated_control_observations_unavailable" if controls_missing else None,
+        "observations": len(observations),
+        "control_metadata": controls.get("control_metadata") or {},
+        **result,
     }
 
 
