@@ -58,6 +58,96 @@ STOCK_COST_MODEL_VERSION = "stock-close-estimated-cost-v1"
 STOCK_COST_PER_SIDE_BPS = 10.0
 TICKER_RANKING_SCOPE = "ticker-opportunity-ranking"
 
+# Attribution needs plan lineage, not the immutable multi-megabyte evidence
+# snapshots. Keep this projection bounded while retaining every historical
+# decision that can own an outcome.
+OUTCOME_ATTRIBUTION_DECISION_QUERY = """
+    WITH decisions AS (
+        SELECT decision.id::text AS decision_id, instrument.symbol AS ticker,
+               decision.decision_revision, decision.contract_version,
+               decision.as_of, decision.tactical, decision.fundamental,
+               decision.capital_action, decision.resolution,
+               decision.policy_version, decision.opportunity_episode_id,
+               decision.opportunity_cutoff, decision.risk_policy,
+               decision.expressions, decision.selected_expression,
+               decision.data_requests, decision.learning_history,
+               jsonb_build_object(
+                   'as_of', decision.as_of,
+                   'input_hash', decision.input_hash,
+                   'code_version', decision.code_version,
+                   'experiment_id', decision.experiment_id,
+                   'inputs', jsonb_build_object(
+                       COALESCE(
+                           decision.input_manifest->'trade_plan'->'input_lineage'->0->>'field',
+                           'decision'
+                       ),
+                       jsonb_build_array(COALESCE(
+                           decision.input_manifest->'trade_plan'->'input_lineage'->0,
+                           jsonb_build_object(
+                               'field', 'decision',
+                               'source_id', 'postgresql',
+                               'source_version', decision.input_hash,
+                               'available_at', decision.as_of
+                           )
+                       ))
+                   ),
+                   'source_versions', COALESCE(decision.input_manifest->'source_versions', '{}'::jsonb),
+                   'signal_declarations', COALESCE(decision.input_manifest->'signal_declarations', '[]'::jsonb),
+                   'alpha_signals', COALESCE((
+                       SELECT jsonb_agg(jsonb_build_object(
+                           'signal_id', signal->'signal_id',
+                           'contract_version', signal->'contract_version',
+                           'strategy_forecast_id', signal->'strategy_forecast_id'
+                       ))
+                       FROM jsonb_array_elements(
+                           COALESCE(decision.input_manifest->'alpha_signals', '[]'::jsonb)
+                       ) AS signal
+                       WHERE signal->>'signal_id' = decision.input_manifest->'trade_plan'->>'alpha_signal_id'
+                   ), '[]'::jsonb),
+                   'opportunity_rank', COALESCE(
+                       (decision.input_manifest->'opportunity_rank') - 'input_lineage'::text,
+                       '{}'::jsonb
+                   ),
+                   'trade_plan', COALESCE(decision.input_manifest->'trade_plan', '{}'::jsonb)
+               ) AS input_manifest,
+               decision.market_state_publication_id::text,
+               jsonb_build_object(
+                   'snapshot_id', COALESCE(
+                       decision.input_manifest->'trade_plan'->>'market_snapshot_id',
+                       'compact-attribution:' || decision.id::text
+                   ),
+                   'publication_id', decision.input_manifest->'trade_plan'->>'market_state_publication_id',
+                   'as_of', decision.as_of,
+                   'input_cutoff', decision.as_of,
+                   'availability', 'unavailable',
+                   'blockers', jsonb_build_array('compact_attribution_projection')
+               ) AS market_state_snapshot,
+               '{}'::jsonb AS portfolio_impacts,
+               NULL::jsonb AS risk_policy_snapshot,
+               NULL::jsonb AS opportunity_episode
+        FROM analysis.ticker_decision decision
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        WHERE decision.status IN ('published', 'superseded')
+          AND decision.as_of <= %s
+          AND jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
+    )
+    SELECT decisions.*
+    FROM decisions
+    ORDER BY decisions.as_of, decisions.decision_id
+"""
+
+OUTCOME_ATTRIBUTION_OUTCOME_QUERY = """
+    SELECT ticker_decision_id::text AS decision_id,
+           id::text AS outcome_id, horizon, horizon_sessions, state,
+           measured_through, selected_expression AS outcome_selected_expression,
+           selected_return, stock_counterfactual_return,
+           alternate_counterfactual_return, cash_return,
+           sector_return, market_return, error_type,
+           mistake_card, available_at, metadata, updated_at
+    FROM analysis.ticker_outcome
+    ORDER BY ticker_decision_id, horizon, horizon_sessions
+"""
+
 
 def select_current_outcome_attributions(
     rows: list[dict[str, Any]], ticker_decision: Mapping[str, Any],
@@ -1258,10 +1348,47 @@ class TickerDecisionRepository:
                        decision.opportunity_cutoff, decision.opportunity_episode,
                        decision.risk_policy, decision.expressions,
                        decision.selected_expression, decision.data_requests,
-                       decision.learning_history, decision.input_manifest,
+                       decision.learning_history,
+                       jsonb_build_object(
+                           'as_of', decision.as_of,
+                           'input_hash', decision.input_hash,
+                           'code_version', decision.code_version,
+                           'experiment_id', decision.experiment_id,
+                           'inputs', jsonb_build_object(
+                               COALESCE(
+                                   decision.input_manifest->'trade_plan'->'input_lineage'->0->>'field',
+                                   'decision'
+                               ),
+                               jsonb_build_array(COALESCE(
+                                   decision.input_manifest->'trade_plan'->'input_lineage'->0,
+                                   jsonb_build_object(
+                                       'field', 'decision',
+                                       'source_id', 'postgresql',
+                                       'source_version', decision.input_hash,
+                                       'available_at', decision.as_of
+                                   )
+                               ))
+                           ),
+                           'source_versions', COALESCE(decision.input_manifest->'source_versions', '{{}}'::jsonb),
+                           'signal_declarations', COALESCE(decision.input_manifest->'signal_declarations', '[]'::jsonb),
+                           'alpha_signals', COALESCE(decision.input_manifest->'alpha_signals', '[]'::jsonb),
+                           'opportunity_rank', COALESCE(decision.input_manifest->'opportunity_rank', '{{}}'::jsonb),
+                           'trade_plan', COALESCE(decision.input_manifest->'trade_plan', '{{}}'::jsonb)
+                       ) AS input_manifest,
                        decision.market_state_publication_id::text,
-                       decision.market_state_snapshot, decision.portfolio_impacts,
-                       decision.risk_policy_snapshot
+                       jsonb_build_object(
+                           'snapshot_id', COALESCE(
+                               decision.input_manifest->'trade_plan'->>'market_snapshot_id',
+                               'compact-outcome:' || decision.id::text
+                           ),
+                           'publication_id', decision.input_manifest->'trade_plan'->>'market_state_publication_id',
+                           'as_of', decision.as_of,
+                           'input_cutoff', decision.as_of,
+                           'availability', 'unavailable',
+                           'blockers', jsonb_build_array('compact_outcome_projection')
+                       ) AS market_state_snapshot,
+                       '{{}}'::jsonb AS portfolio_impacts,
+                       NULL::jsonb AS risk_policy_snapshot
                 FROM analysis.ticker_decision decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 WHERE {" AND ".join(filters)}
@@ -1301,39 +1428,21 @@ class TickerDecisionRepository:
 
         reference = _utc(now or datetime.now(UTC))
         with self.runtime.read(JOB_PROFILE) as connection:
-            rows = connection.execute(
+            legacy_count = connection.execute(
                 """
-                SELECT decision.id::text AS decision_id, instrument.id AS instrument_id,
-                       instrument.symbol AS ticker, decision.as_of,
-                       decision.contract_version, decision.decision_revision,
-                       decision.tactical, decision.fundamental,
-                       decision.capital_action, decision.resolution,
-                       decision.policy_version, decision.opportunity_episode_id,
-                       decision.opportunity_cutoff, decision.opportunity_episode,
-                       decision.risk_policy, decision.expressions,
-                       decision.selected_expression, decision.data_requests,
-                       decision.learning_history, decision.input_manifest,
-                       decision.market_state_publication_id::text,
-                       decision.market_state_snapshot, decision.portfolio_impacts,
-                       decision.risk_policy_snapshot,
-                       outcome.id::text AS outcome_id, outcome.horizon,
-                       outcome.horizon_sessions, outcome.state,
-                       outcome.measured_through, outcome.selected_expression AS outcome_selected_expression,
-                       outcome.selected_return, outcome.stock_counterfactual_return,
-                       outcome.alternate_counterfactual_return, outcome.cash_return,
-                       outcome.sector_return, outcome.market_return, outcome.error_type,
-                       outcome.mistake_card, outcome.available_at, outcome.metadata,
-                       outcome.updated_at
+                SELECT count(*) AS count
                 FROM analysis.ticker_decision decision
-                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                LEFT JOIN analysis.ticker_outcome outcome
-                  ON outcome.ticker_decision_id = decision.id
                 WHERE decision.status IN ('published', 'superseded')
                   AND decision.as_of <= %s
-                ORDER BY decision.as_of, decision.id, outcome.horizon, outcome.horizon_sessions
+                  AND jsonb_typeof(decision.input_manifest->'trade_plan') IS DISTINCT FROM 'object'
                 """,
                 [reference],
+            ).fetchone()["count"]
+            decision_rows = connection.execute(
+                OUTCOME_ATTRIBUTION_DECISION_QUERY,
+                [reference],
             ).fetchall()
+            outcome_rows = connection.execute(OUTCOME_ATTRIBUTION_OUTCOME_QUERY).fetchall()
             paper_rows = connection.execute(
                 """
                 SELECT paper.id::text AS paper_order_id,
@@ -1366,18 +1475,22 @@ class TickerDecisionRepository:
                 """
             ).fetchall()
 
-        by_decision: dict[str, list[dict[str, Any]]] = {}
-        for raw in rows:
-            by_decision.setdefault(str(raw["decision_id"]), []).append(dict(raw))
+        by_decision: dict[str, list[dict[str, Any]]] = {
+            str(raw["decision_id"]): [dict(raw)] for raw in decision_rows
+        }
+        for raw in outcome_rows:
+            decision_id = str(raw["decision_id"])
+            if decision_id in by_decision:
+                by_decision[decision_id].append(dict(raw))
         paper_by_plan: dict[str, list[dict[str, Any]]] = {}
         for raw in paper_rows:
             paper_by_plan.setdefault(str(raw["trade_plan_id"]), []).append(dict(raw))
 
         attributions: list[OutcomeAttribution] = []
         blockers: list[str] = []
-        legacy_exclusion_reasons: list[str] = []
-        excluded_legacy = 0
-        evaluated = 0
+        excluded_legacy = int(legacy_count or 0)
+        evaluated = excluded_legacy
+        legacy_exclusion_reasons: list[str] = ["trade_plan_missing"] * excluded_legacy
         seen_units: set[str] = set()
         for decision_rows in by_decision.values():
             evaluated += 1
@@ -1391,7 +1504,7 @@ class TickerDecisionRepository:
             if plan_blocker:
                 blockers.append(plan_blocker)
                 continue
-            outcome_rows = [row for row in decision_rows if row["outcome_id"] is not None]
+            outcome_rows = decision_rows[1:]
             by_horizon: dict[tuple[str, int], list[dict[str, Any]]] = {}
             for outcome in outcome_rows:
                 key = (str(outcome["horizon"]), int(outcome["horizon_sessions"]))
