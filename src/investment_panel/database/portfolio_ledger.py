@@ -208,7 +208,7 @@ def manual_account_snapshot(config: AppConfig) -> dict[str, Any]:
             ORDER BY effective_at DESC, reconciliation_version DESC, id DESC LIMIT 1
             """
         ).fetchone()
-        ledger = replay_portfolio_at(config, snapshot["effective_at"] if snapshot else datetime.now(UTC), connection=connection)
+        ledger = replay_portfolio_at(config, datetime.now(UTC), connection=connection)
     return {"snapshot": _serialize_row(dict(snapshot)) if snapshot else None, "ledger": ledger}
 
 
@@ -375,6 +375,18 @@ def replay_portfolio_at(
             [reference, reference, reference, reference],
         ).fetchall()
     ]
+    cash_snapshot = connection.execute(
+        """
+        SELECT effective_at, cash_balance
+        FROM app.manual_account_snapshot
+        WHERE account_key = 'manual'
+          AND effective_at <= %s
+          AND recorded_at <= %s
+        ORDER BY effective_at DESC, reconciliation_version DESC, id DESC
+        LIMIT 1
+        """,
+        [reference, reference],
+    ).fetchone()
     lineage_rows = [
         dict(row)
         for row in connection.execute(
@@ -396,7 +408,12 @@ def replay_portfolio_at(
     income = 0.0
     fees = 0.0
     net_contributions = 0.0
-    cash_balance: float | None = None
+    cash_balance = (
+        float(cash_snapshot["cash_balance"])
+        if cash_snapshot is not None and cash_snapshot["cash_balance"] is not None
+        else None
+    )
+    cash_snapshot_at = cash_snapshot["effective_at"] if cash_snapshot is not None else None
     for row in rows:
         instrument_id = int(row["instrument_id"]) if row.get("instrument_id") is not None else None
         position = positions.get(instrument_id) if instrument_id is not None else None
@@ -414,9 +431,10 @@ def replay_portfolio_at(
         realized_pnl += float(preview.get("realized_pnl") or 0)
         fees += float(row.get("fees") or 0)
         transaction_type = str(row["transaction_type"])
-        if transaction_type in {"cash_deposit", "cash_withdrawal"} and cash_balance is None:
+        after_cash_snapshot = cash_snapshot_at is None or row["executed_at"] > cash_snapshot_at
+        if after_cash_snapshot and transaction_type in {"cash_deposit", "cash_withdrawal"} and cash_balance is None:
             cash_balance = 0.0
-        if cash_balance is not None:
+        if after_cash_snapshot and cash_balance is not None:
             amount = float(row.get("amount") or 0)
             row_fees = float(row.get("fees") or 0)
             if transaction_type in {"cash_deposit", "dividend", "sell"}:

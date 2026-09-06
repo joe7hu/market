@@ -170,6 +170,8 @@ def test_manual_account_reconciliation_is_previewed_versioned_and_idempotent(cli
     )
     assert next_snapshot.status_code == 200
     assert client.get("/api/portfolio/account").json()["snapshot"]["cash_balance"] == 1300.0
+
+
     backdated = client.post(
         "/api/portfolio/account/reconciliation",
         json={**payload, "effective_at": "2026-07-14T15:31:00Z", "idempotency_key": "manual-account-reconciliation-backdated", "expected_reconciliation_version": 2},
@@ -303,6 +305,8 @@ def test_portfolio_summary_and_performance_reconcile_to_one_price_set(client: Te
         "as_of": "ignored",
         "oldest_quote_at": "ignored",
         "portfolio_value": 1100.0,
+        "cash_balance": None,
+        "equity": None,
         "cost_basis": 1000.0,
         "net_contributions": 1000.0,
         "invested_capital": 1000.0,
@@ -1475,3 +1479,39 @@ def test_thesis_routes_keep_revision_history_and_monitor_invalidation(client: Te
 def test_thesis_route_requires_content(client: TestClient) -> None:
     response = client.put("/api/theses/NVDA", json={"thesis": "   "})
     assert response.status_code == 400
+
+
+def test_manual_account_cash_replays_from_snapshot_through_cash_flows_and_reversal(
+    client: TestClient,
+) -> None:
+    reconciliation = client.post(
+        "/api/portfolio/account/reconciliation",
+        json={
+            "effective_at": "2026-07-14T15:30:00Z",
+            "cash_balance": 10000,
+            "net_liquidation": 10000,
+            "idempotency_key": "cash-replay-opening",
+        },
+    )
+    assert reconciliation.status_code == 200
+
+    transactions = [
+        {"symbol": "NVDA", "transaction_type": "buy", "quantity": 2, "price": 100, "fees": 1, "executed_at": "2026-07-14T15:31:00Z", "idempotency_key": "cash-replay-buy"},
+        {"symbol": "NVDA", "transaction_type": "dividend", "amount": 10, "executed_at": "2026-07-14T15:32:00Z", "idempotency_key": "cash-replay-dividend"},
+        {"transaction_type": "fee", "amount": 3, "executed_at": "2026-07-14T15:33:00Z", "idempotency_key": "cash-replay-fee"},
+        {"transaction_type": "cash_deposit", "amount": 100, "executed_at": "2026-07-14T15:34:00Z", "idempotency_key": "cash-replay-deposit"},
+        {"transaction_type": "cash_withdrawal", "amount": 24, "executed_at": "2026-07-14T15:35:00Z", "idempotency_key": "cash-replay-withdrawal"},
+        {"symbol": "NVDA", "transaction_type": "sell", "quantity": 1, "price": 120, "fees": 2, "executed_at": "2026-07-14T15:36:00Z", "idempotency_key": "cash-replay-sell"},
+    ]
+    responses = [client.post("/api/portfolio/transactions", json=item) for item in transactions]
+    assert all(response.status_code == 200 for response in responses)
+    withdrawal_id = responses[4].json()["transaction"]["id"]
+    reversal = client.post(
+        f"/api/portfolio/transactions/{withdrawal_id}/reverse",
+        json={"idempotency_key": "cash-replay-withdrawal-reversal"},
+    )
+    assert reversal.status_code == 200
+
+    ledger = client.get("/api/portfolio/account").json()["ledger"]
+    assert ledger["cash_balance"] == 10024.0
+    assert ledger["positions"][0]["quantity"] == 1.0
