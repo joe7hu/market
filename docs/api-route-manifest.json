@@ -68,6 +68,8 @@
   "/api/theses/{symbol}/review": ["POST"],
   "/api/thesis-monitor/automation": ["POST"],
   "/api/tickers/{ticker}": ["GET"],
+  "/api/tickers/{ticker}/assistant-packet": ["GET"],
+  "/api/tickers/{ticker}/assistant-response": ["POST"],
   "/api/tickers/{ticker}/decision-snapshot": ["GET"],
   "/api/tickers/{ticker}/paper-entry": ["POST"],
   "/api/today": ["GET"],

@@ -1100,6 +1100,34 @@
         "title": "ApiStatusResponse",
         "type": "object"
       },
+      "AssistantCitationResponse": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "available"
+        ],
+        "title": "AssistantCitationResponse",
+        "type": "object"
+      },
       "AuthorizationMode": {
         "enum": [
           "NONE",
@@ -1201,6 +1229,132 @@
         ],
         "title": "CapitalActionType",
         "type": "string"
+      },
+      "ContextualAssistantPacketResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "authority": {
+            "default": "postgresql",
+            "title": "Authority",
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantCitationResponse"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "decision_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Revision"
+          },
+          "execution_mode": {
+            "default": "paper_only",
+            "title": "Execution Mode",
+            "type": "string"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "missing_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Evidence",
+            "type": "array"
+          },
+          "packet_id": {
+            "title": "Packet Id",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "packet_id",
+          "ticker"
+        ],
+        "title": "ContextualAssistantPacketResponse",
+        "type": "object"
+      },
+      "ContextualAssistantResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ContextualAssistantResponse",
+        "type": "object"
+      },
+      "ContextualAssistantResponseInput": {
+        "properties": {
+          "citation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citation Ids",
+            "type": "array"
+          },
+          "packet_id": {
+            "title": "Packet Id",
+            "type": "string"
+          },
+          "requested_calculation": {
+            "default": false,
+            "title": "Requested Calculation",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "packet_id"
+        ],
+        "title": "ContextualAssistantResponseInput",
+        "type": "object"
       },
       "CoverageMatrix": {
         "additionalProperties": true,
@@ -14227,6 +14381,17 @@
             "title": "Action",
             "type": "string"
           },
+          "action_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Identity"
+          },
           "catalyst": {
             "anyOf": [
               {
@@ -14463,6 +14628,17 @@
               }
             ],
             "title": "Transition"
+          },
+          "user_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User State"
           }
         },
         "required": [
@@ -19032,6 +19208,94 @@
           }
         },
         "summary": "Ticker Detail"
+      }
+    },
+    "/api/tickers/{ticker}/assistant-packet": {
+      "get": {
+        "operationId": "ticker_assistant_packet_api_tickers__ticker__assistant_packet_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker",
+            "required": true,
+            "schema": {
+              "title": "Ticker",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextualAssistantPacketResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ticker Assistant Packet"
+      }
+    },
+    "/api/tickers/{ticker}/assistant-response": {
+      "post": {
+        "operationId": "validate_ticker_assistant_response_api_tickers__ticker__assistant_response_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker",
+            "required": true,
+            "schema": {
+              "title": "Ticker",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContextualAssistantResponseInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextualAssistantResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Ticker Assistant Response"
       }
     },
     "/api/tickers/{ticker}/decision-snapshot": {

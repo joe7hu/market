@@ -164,6 +164,8 @@ class DataFieldStateV1(BaseModel):
 
 class TodayCapitalAction(FlexibleResponse):
     inbox_item_id: str | None = None
+    action_identity: str | None = None
+    user_state: str | None = None
     projection_identity: str
     source_authority: str
     source: str
@@ -252,6 +254,31 @@ class TodayResponse(BaseModel):
     portfolio_risk_items: list[TodayBriefItemResponse] = Field(default_factory=list)
     missing_plan_count: int = 0
     count: int = 0
+
+
+class AssistantCitationResponse(BaseModel):
+    id: str
+    label: str
+    kind: str
+    available: bool
+
+
+class ContextualAssistantPacketResponse(FlexibleResponse):
+    packet_id: str
+    ticker: str
+    decision_revision: str | None = None
+    as_of: datetime | None = None
+    authority: str = "postgresql"
+    execution_mode: str = "paper_only"
+    citations: list[AssistantCitationResponse] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class ContextualAssistantResponse(FlexibleResponse):
+    status: str
+    citations: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
 
 
 class DecisionFunnelBlocker(BaseModel):

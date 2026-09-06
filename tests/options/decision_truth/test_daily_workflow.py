@@ -5,7 +5,7 @@ import psycopg
 import pytest
 
 from app.routers.panel import decision_inbox_queue
-from investment_panel.database.decision_inbox import DecisionInboxRepository
+from investment_panel.database.decision_inbox import DecisionInboxRepository, evidence_fingerprint
 from investment_panel.database.migrations import downgrade_database, upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -64,6 +64,18 @@ def test_outage_skips_obsolete_work_and_delivers_current_once(application_postgr
         assert len(sent) == 2
     finally:
         runtime.close()
+
+
+def test_evidence_fingerprint_ignores_timestamps_but_tracks_input_revision():
+    base = {
+        'ticker': 'AAA', 'opportunity_episode_id': 'episode-1',
+        'decision_revision': 'revision-1', 'policy_version': 'risk-policy.v2',
+        'input_hash': 'inputs-1', 'published_at': '2026-09-06T12:00:00Z',
+    }
+    later = {**base, 'published_at': '2026-09-06T12:01:00Z'}
+    changed = {**base, 'input_hash': 'inputs-2'}
+    assert evidence_fingerprint(base) == evidence_fingerprint(later)
+    assert evidence_fingerprint(base) != evidence_fingerprint(changed)
 
 
 @pytest.mark.parametrize('crash', ['before_send', 'after_send', 'exception_after_send'])

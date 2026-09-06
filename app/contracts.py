@@ -219,6 +219,12 @@ class AgentAnalyzeInput(BaseModel):
     prompt: str | None = None
 
 
+class ContextualAssistantResponseInput(BaseModel):
+    packet_id: str
+    citation_ids: list[str] = Field(default_factory=list)
+    requested_calculation: bool = False
+
+
 class TradeJournalInput(BaseModel):
     ticker: str
     contract_id: str
@@ -234,6 +240,7 @@ class TradeJournalInput(BaseModel):
 
 __all__ = [
     "AgentAnalyzeInput",
+    "ContextualAssistantResponseInput",
     "AgentSettingsInput",
     "OptionAgentSettingsInput",
     "OptionPaperEntryInput",

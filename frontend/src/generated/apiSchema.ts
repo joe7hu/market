@@ -1197,6 +1197,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tickers/{ticker}/assistant-packet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ticker Assistant Packet */
+        get: operations["ticker_assistant_packet_api_tickers__ticker__assistant_packet_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tickers/{ticker}/assistant-response": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate Ticker Assistant Response */
+        post: operations["validate_ticker_assistant_response_api_tickers__ticker__assistant_response_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tickers/{ticker}/decision-snapshot": {
         parameters: {
             query?: never;
@@ -1754,6 +1788,17 @@ export interface components {
             /** Source */
             source: string;
         };
+        /** AssistantCitationResponse */
+        AssistantCitationResponse: {
+            /** Available */
+            available: boolean;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+        };
         /**
          * AuthorizationMode
          * @enum {string}
@@ -1786,6 +1831,58 @@ export interface components {
          * @enum {string}
          */
         CapitalActionType: "BUY" | "ADD" | "HOLD" | "TRIM" | "EXIT" | "HEDGE" | "AVOID" | "WAIT_FOR_PRICE";
+        /** ContextualAssistantPacketResponse */
+        ContextualAssistantPacketResponse: {
+            /** As Of */
+            as_of?: string | null;
+            /**
+             * Authority
+             * @default postgresql
+             */
+            authority: string;
+            /** Citations */
+            citations?: components["schemas"]["AssistantCitationResponse"][];
+            /** Decision Revision */
+            decision_revision?: string | null;
+            /**
+             * Execution Mode
+             * @default paper_only
+             */
+            execution_mode: string;
+            /** Limitations */
+            limitations?: string[];
+            /** Missing Evidence */
+            missing_evidence?: string[];
+            /** Packet Id */
+            packet_id: string;
+            /** Ticker */
+            ticker: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ContextualAssistantResponse */
+        ContextualAssistantResponse: {
+            /** Citations */
+            citations?: string[];
+            /** Limitations */
+            limitations?: string[];
+            /** Status */
+            status: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ContextualAssistantResponseInput */
+        ContextualAssistantResponseInput: {
+            /** Citation Ids */
+            citation_ids?: string[];
+            /** Packet Id */
+            packet_id: string;
+            /**
+             * Requested Calculation
+             * @default false
+             */
+            requested_calculation: boolean;
+        };
         /**
          * CoverageMatrix
          * @description Frozen point-in-time coverage contract for market state inputs.
@@ -6286,6 +6383,8 @@ export interface components {
              * @default NO_TRADE
              */
             action: string;
+            /** Action Identity */
+            action_identity?: string | null;
             /** Catalyst */
             catalyst?: string | null;
             /** Current At */
@@ -6347,6 +6446,8 @@ export interface components {
             trade_utility?: number | null;
             /** Transition */
             transition?: string | null;
+            /** User State */
+            user_state?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -8833,6 +8934,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TickerDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ticker_assistant_packet_api_tickers__ticker__assistant_packet_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextualAssistantPacketResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_ticker_assistant_response_api_tickers__ticker__assistant_response_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContextualAssistantResponseInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextualAssistantResponse"];
                 };
             };
             /** @description Validation Error */

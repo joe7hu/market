@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from app import panel_snapshot
 from app import dependencies
 from app.actions.tickers import TickerActions
-from app.contracts import TickerPaperEntryInput
+from app.contracts import ContextualAssistantResponseInput, TickerPaperEntryInput
 from app.data_access import loaders, payloads
-from app.response_contracts import TickerDecisionSnapshotResponse, TickerDetailResponse, TickerPaperEntryResponse
+from app.response_contracts import ContextualAssistantPacketResponse, ContextualAssistantResponse, TickerDecisionSnapshotResponse, TickerDetailResponse, TickerPaperEntryResponse
+from investment_panel.core.contextual_assistant import build_contextual_packet, validate_contextual_response
 from investment_panel.core.config import AppConfig
 from investment_panel.core.decision import TickerDecision
 
@@ -70,6 +71,36 @@ def ticker_decision_snapshot(
     snapshot = dict(full_payload["ticker_decision"])
     snapshot["learning"] = full_payload.get("learning") or {}
     return snapshot
+
+
+@router.get("/api/tickers/{ticker}/assistant-packet", response_model=ContextualAssistantPacketResponse, response_model_exclude_unset=True)
+def ticker_assistant_packet(
+    ticker: str,
+    config: AppConfig = Depends(dependencies.get_config),
+) -> dict[str, Any]:
+    normalized = ticker.strip().upper()
+    _, panel_data = panel_snapshot.context(
+        cache_key=f"ticker:{normalized}",
+        loader=lambda active_config: loaders.load_ticker_panel_data(active_config, normalized),
+        config_loader=lambda: config,
+    )
+    return build_contextual_packet(payloads.ticker_payload(panel_data, normalized), normalized)
+
+
+@router.post("/api/tickers/{ticker}/assistant-response", response_model=ContextualAssistantResponse, response_model_exclude_unset=True)
+def validate_ticker_assistant_response(
+    ticker: str,
+    request: ContextualAssistantResponseInput,
+    config: AppConfig = Depends(dependencies.get_config),
+) -> dict[str, Any]:
+    packet = ticker_assistant_packet(ticker, config)
+    if request.packet_id != packet["packet_id"]:
+        raise HTTPException(status_code=409, detail="Contextual assistant packet is stale; reload the current packet.")
+    allowed = {str(item["id"]) for item in packet.get("citations", []) if item.get("available")}
+    invalid = [citation for citation in request.citation_ids if citation not in allowed]
+    if invalid:
+        raise HTTPException(status_code=400, detail="Contextual assistant citation is outside the immutable packet.")
+    return validate_contextual_response(packet, request.citation_ids, requested_calculation=request.requested_calculation)
 
 
 @router.post(

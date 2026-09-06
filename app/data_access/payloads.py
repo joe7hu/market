@@ -156,7 +156,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
 
     def rows_for_table(name: str) -> list[dict[str, Any]]:
         if name not in normalized_rows:
-            normalized_rows[name] = panel_data.rows(name)
+            normalized_rows[name] = [_with_action_identity(row) for row in panel_data.rows(name)]
         return normalized_rows[name]
 
     payload = core_panel_snapshot_payload(
@@ -181,6 +181,17 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
 
 def watchlist_section_payload(panel_data: PanelData, scope: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
     return panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
+
+
+def _with_action_identity(row: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(row)
+    ticker = str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+    revision = str(row.get("decision_revision") or "").strip()
+    episode = str(row.get("opportunity_episode_id") or "").strip()
+    policy = str(row.get("policy_version") or "").strip()
+    if ticker and revision:
+        result.setdefault("action_identity", ":".join(("decision", ticker, episode or "episode-missing", revision, policy or "policy-missing")))
+    return result
 
 
 
@@ -246,6 +257,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "opportunity_rank": rank_row,
         "trade_plan": plan.model_dump(mode="json") if plan is not None else None,
     })
+    ticker_decision_payload = _with_action_identity(ticker_decision_payload)
     if ticker_decision_payload["data_requests"]:
         ticker_decision_payload["field_states"] = _ticker_field_states(ticker_decision_payload["data_requests"])
     outcome_attributions, attribution_blocker = select_current_outcome_attributions(

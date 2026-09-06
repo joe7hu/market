@@ -10,7 +10,7 @@ import {
   RefreshCw,
   Search,
 } from "lucide-react";
-import { useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useMarketData } from "@/marketData";
+import { loadContextualAssistantPacket, type ContextualAssistantPacket } from "@/api/panel";
 import type { Tone } from "@/ui/tone";
 
 type NavItem = {
@@ -113,6 +114,15 @@ export function AppShell() {
 
 function ContextualAgentDrawer() {
   const location = useLocation();
+  const [packet, setPacket] = useState<ContextualAssistantPacket | null>(null);
+  const [packetError, setPacketError] = useState<string | null>(null);
+  const tickerMatch = location.pathname.match(/^\/tickers\/([^/]+)/i);
+  const ticker = tickerMatch ? decodeURIComponent(tickerMatch[1]).toUpperCase() : "";
+  useEffect(() => {
+    setPacket(null);
+    setPacketError(null);
+    if (ticker) void loadContextualAssistantPacket(ticker).then(setPacket).catch((error) => setPacketError(error instanceof Error ? error.message : "Packet unavailable."));
+  }, [ticker]);
   return (
     <Sheet>
       <SheetTrigger asChild>
@@ -124,9 +134,9 @@ function ContextualAgentDrawer() {
           <SheetDescription>Research help for the current Market surface.</SheetDescription>
         </SheetHeader>
         <div className="space-y-4 py-5 text-sm">
-          <div className="rounded-lg border border-border bg-card p-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Current context</p><p className="mt-2 font-medium">{location.pathname}</p><p className="mt-1 text-muted-foreground">The agent should use the visible recommendation, source evidence, and blocker as context.</p></div>
+          <div className="rounded-lg border border-border bg-card p-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Immutable packet</p><p className="mt-2 font-medium">{packet?.packet_id ?? (ticker ? "Loading…" : location.pathname)}</p><p className="mt-1 text-muted-foreground">The agent may cite only evidence in this PostgreSQL packet. It cannot authorize an order or calculate authoritative values.</p>{packetError ? <p role="alert" className="mt-2 text-[var(--destructive)]">{packetError}</p> : null}{packet?.missing_evidence.length ? <p className="mt-2 text-amber-700 dark:text-amber-300">Evidence unavailable: {packet.missing_evidence.join(", ")}.</p> : null}{packet?.citations.length ? <ul className="mt-3 space-y-1 text-xs text-muted-foreground">{packet.citations.map((citation) => <li key={citation.id}>[{citation.id}] {citation.label}{citation.available ? "" : " · unavailable"}</li>)}</ul> : null}</div>
           <p className="text-muted-foreground">Agent actions remain advisory and paper-only. Open the full workspace to submit a bounded research request.</p>
-          <Button asChild className="w-full"><Link to={`/agent?context=${encodeURIComponent(location.pathname)}`}>Open agent workspace</Link></Button>
+          <Button asChild className="w-full"><Link to={`/agent?context=${encodeURIComponent(location.pathname)}${packet ? `&packet_id=${encodeURIComponent(packet.packet_id)}` : ""}`}>Open agent workspace</Link></Button>
         </div>
       </SheetContent>
     </Sheet>

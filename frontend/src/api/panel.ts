@@ -125,6 +125,22 @@ export async function loadTickerDecisionSnapshot(symbol: string): Promise<Ticker
   return getJson<TickerDecisionSnapshot>(`/api/tickers/${encodeURIComponent(symbol)}/decision-snapshot`);
 }
 
+export type ContextualAssistantPacket = {
+  packet_id: string;
+  ticker: string;
+  decision_revision: string | null;
+  as_of: string | null;
+  authority: string;
+  execution_mode: string;
+  citations: Array<{ id: string; label: string; kind: string; available: boolean }>;
+  missing_evidence: string[];
+  limitations: string[];
+};
+
+export async function loadContextualAssistantPacket(symbol: string): Promise<ContextualAssistantPacket> {
+  return getJson<ContextualAssistantPacket>(`/api/tickers/${encodeURIComponent(symbol)}/assistant-packet`);
+}
+
 export async function loadSourceCatalog(): Promise<SourceCatalogPayload> {
   return getJson<SourceCatalogPayload>("/api/source-catalog");
 }

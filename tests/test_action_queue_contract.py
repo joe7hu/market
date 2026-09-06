@@ -63,6 +63,23 @@ def test_missing_inbox_identity_is_explicit_and_non_actionable() -> None:
     assert item["action"] == "NO_TRADE"
 
 
+def test_inbox_and_ticker_decision_can_share_action_identity() -> None:
+    item = decision_inbox_queue([{
+        "id": "inbox-1",
+        "event_type": "ready",
+        "status": "active",
+        "payload": {
+            "ticker": "AAA",
+            "opportunity_episode_id": "episode-1",
+            "decision_revision": "revision-1",
+            "policy_version": "risk-policy.v2",
+        },
+    }])[0]
+
+    assert item["action_identity"] == "decision:AAA:episode-1:revision-1:risk-policy.v2"
+    assert item["user_state"] == "open"
+
+
 def test_action_queue_does_not_duplicate_portfolio_risk_inbox_audit() -> None:
     reference = datetime(2026, 8, 27, 15, tzinfo=UTC)
     inbox = decision_inbox_queue([

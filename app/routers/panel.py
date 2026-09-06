@@ -94,6 +94,12 @@ def today(
         revision = str(row.get("decision_revision") or "").strip()
         decision_id = str(row.get("ticker_decision_id") or "").strip()
         identity = decision_id or (f"{symbol}:{revision}" if symbol and revision else "")
+        action_identity = _shared_action_identity(
+            symbol,
+            str(row.get("opportunity_episode_id") or "").strip(),
+            revision,
+            str(resolution.policy_version or row.get("policy_version") or "").strip(),
+        )
         identity_missing = not symbol or not identity
         blocked = identity_missing or plan is None or plan.eligibility == "BLOCKED"
         if blocked:
@@ -106,6 +112,7 @@ def today(
             "projection_identity": f"capital:ticker-decision:{authority}",
             "source_authority": f"ticker-decision:{authority}",
             "source": "capital_action",
+            "action_identity": action_identity,
             "title": f"{symbol} capital action" if symbol else "Ticker decision needs identity",
             "lifecycle_state": "unavailable" if identity_missing else "blocked" if blocked else "actionable",
             "transition": None,
@@ -148,9 +155,12 @@ def today(
         and exact_missing_plan_count >= 0
     ) else sampled_missing_plan_count
     visible_capital_actions = [row for row in capital_actions if not _is_unranked_today_action(row)]
+    inbox_rows = _read_inbox(option_actions)
+    capital_action_identities = {row.get("action_identity") for row in visible_capital_actions if row.get("action_identity")}
+    inbox_actions = [item for item in decision_inbox_queue(inbox_rows) if item.get("action_identity") not in capital_action_identities]
     queue_items = _bounded_today_queue(
         visible_capital_actions,
-        decision_inbox_queue(_read_inbox(option_actions)),
+        inbox_actions,
         _portfolio_risk_queue(panel_data.rows("portfolio_risk_cards")),
         research_queue(panel_data.rows("feed_signals")),
     )
@@ -419,6 +429,12 @@ def decision_inbox_queue(rows: list[dict[str, Any]], *, now: datetime | None = N
             expiry is not None and expiry <= reference
         )
         ticker = _queue_text(_queue_value(row, payload, "ticker", "symbol")).upper() or None
+        action_identity = _shared_action_identity(
+            ticker or "",
+            _queue_text(_queue_value(row, payload, "opportunity_episode_id", "episode_id")),
+            _queue_text(_queue_value(row, payload, "decision_revision", "revision")),
+            _queue_text(_queue_value(row, payload, "policy_version"), "risk-policy.v2:legacy"),
+        )
         blocker = _queue_text(_queue_value(row, payload, "primary_blocker", "blocker")) or None
         lifecycle = "unavailable" if unavailable or expiry_invalid else "expired" if expired else "transition"
         if unavailable:
@@ -430,6 +446,8 @@ def decision_inbox_queue(rows: list[dict[str, Any]], *, now: datetime | None = N
             "source_authority": authority,
             "source": "decision_inbox",
             "inbox_item_id": identifier or None,
+            "action_identity": action_identity,
+            "user_state": _queue_text(row.get("user_state"), "open"),
             "title": _queue_text(_queue_value(row, payload, "title"), f"{event_type.replace('_', ' ').title()} transition"),
             "lifecycle_state": lifecycle,
             "transition": event_type.upper(),
@@ -543,6 +561,12 @@ def dedupe_queue(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(identity)
         output.append(row)
     return output
+
+
+def _shared_action_identity(ticker: str, episode: str, revision: str, policy: str) -> str | None:
+    if not ticker or not revision:
+        return None
+    return ":".join(("decision", ticker.upper(), episode or "episode-missing", revision, policy or "policy-missing"))
 
 
 def _bounded_today_queue(

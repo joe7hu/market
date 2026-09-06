@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import base64
+from hashlib import sha256
 import json
 from datetime import UTC, datetime, timedelta
 import math
@@ -409,6 +410,14 @@ class DecisionInboxRepository:
                     transition = "newly_actionable"
                 elif str(prior.get("action") or "") != plan.action:
                     transition = "action_changed"
+                elif (
+                    prior.get("evidence_fingerprint")
+                    and prior["evidence_fingerprint"] != evidence_fingerprint(row)
+                ) or (
+                    not prior.get("evidence_fingerprint")
+                    and str(prior.get("decision_revision") or "") != revision
+                ):
+                    transition = "action_changed"
             elif prior and prior["actionable"]:
                 transition = "decision_authority_degraded"
             if transition is None:
@@ -431,6 +440,13 @@ class DecisionInboxRepository:
                 blocker=blocker,
                 next_action=next_action,
             )
+            transition_key = transition_dedupe_key(
+                episode_id, revision,
+                "blocking_data_degradation" if transition == "decision_authority_degraded" else transition,
+                policy_version,
+            )
+            if transition == "action_changed":
+                transition_key += ":" + str(payload["evidence_fingerprint"])
             with self.runtime.transaction() as connection:
                 event = self._emit_governance_transition_in_transaction(
                     connection,
@@ -443,15 +459,12 @@ class DecisionInboxRepository:
                     ),
                     policy_version=policy_version,
                     payload=payload,
+                    dedupe_key=transition_key,
                 )
                 self._resolve_canonical_actionable_item(
                     connection,
                     episode_id,
-                    exclude_dedupe_key=transition_dedupe_key(
-                        episode_id, revision,
-                        "blocking_data_degradation" if transition == "decision_authority_degraded" else transition,
-                        policy_version,
-                    ),
+                    exclude_dedupe_key=transition_key,
                 )
             created[transition] += int(event["created"])
         return created
@@ -723,6 +736,8 @@ class DecisionInboxRepository:
                 return {
                     "actionable": str(payload.get("state") or "").upper() == "ACTIONABLE",
                     "action": payload.get("action"),
+                    "decision_revision": payload.get("decision_revision"),
+                    "evidence_fingerprint": payload.get("evidence_fingerprint"),
                 }
         return None
 
@@ -1100,6 +1115,7 @@ def _canonical_event_payload(
             else "NONE"
         ),
         "detail_url": f"/tickers/{ticker}" if ticker else "/tickers",
+        "evidence_fingerprint": evidence_fingerprint(row),
     }
     if published_at is not None:
         payload["published_at"] = published_at.isoformat()
@@ -1123,6 +1139,14 @@ def _canonical_event_payload(
             "next_action": _compact_text(next_action),
         })
     return payload
+
+
+def evidence_fingerprint(row: Mapping[str, Any]) -> str:
+    values = {
+        key: row.get(key)
+        for key in ("ticker", "symbol", "opportunity_episode_id", "decision_revision", "policy_version", "input_hash")
+    }
+    return sha256(json.dumps(values, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()[:24]
 
 
 def _canonical_dedupe_key(
