@@ -1,6 +1,7 @@
 """Repair application-role access and the option-history evidence join path."""
 
 from alembic import op
+from sqlalchemy import text
 
 
 revision = "20260906_0129"
@@ -14,11 +15,26 @@ def upgrade() -> None:
     op.execute("GRANT SELECT, INSERT, UPDATE ON analysis.agent_experiment TO market_app")
     op.execute("GRANT SELECT, INSERT ON app.thesis_review_event TO market_app")
     op.execute("GRANT SELECT, INSERT, UPDATE ON app.option_history_policy TO market_app")
-    with op.get_context().autocommit_block():
-        op.execute(
-            "CREATE INDEX CONCURRENTLY ix_option_relative_value_generation_contract "
-            "ON analysis.option_relative_value (capture_generation_id, contract_id, id DESC)"
+    bind = op.get_bind()
+    valid = bind.execute(
+        text(
+            """SELECT indexrel.indisvalid
+               FROM pg_index indexrel
+               JOIN pg_class index_class ON index_class.oid = indexrel.indexrelid
+               JOIN pg_namespace index_schema ON index_schema.oid = index_class.relnamespace
+               WHERE index_schema.nspname = 'analysis'
+                 AND index_class.relname = 'ix_option_relative_value_generation_contract'"""
         )
+    ).scalar_one_or_none()
+    if valid is False:
+        with op.get_context().autocommit_block():
+            op.execute("DROP INDEX CONCURRENTLY analysis.ix_option_relative_value_generation_contract")
+    with op.get_context().autocommit_block():
+        if valid is not True:
+            op.execute(
+                "CREATE INDEX CONCURRENTLY ix_option_relative_value_generation_contract "
+                "ON analysis.option_relative_value (capture_generation_id, contract_id, id DESC)"
+            )
 
 
 def downgrade() -> None:
