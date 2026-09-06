@@ -39,7 +39,27 @@ Base: `5841a51`; worktree: `market-db-simplify`; target: `main`.
 - Preservation: all 10 account/research/signing-key table fingerprints unchanged.
 - Live plans: transition page 233 ms (50 rows), exact count 125 ms; chain 48 ms
   (50 rows), volatility 4 ms (3 rows); zero temporary disk spill in all four.
-- Canonical API restart, browser proof and landing: next release step.
+- Canonical API and frontend restarted; five affected API probes and frontend
+  returned HTTP 200. Browser: Options Trade Desk and Market evidence loaded,
+  chain showed 104 contracts (10 displayed), no console errors.
+- Code landed on `main` (`b1b4ce7`); dependency-link cleanup landed as `f6313ca`.
+  A local symlink entered the first commit and broke the frontend restart; it
+  was removed, the ignore rule fixed, dependencies restored, and build/UI verified.
+- Final production build passed. Both runtime release fields are set to the
+  final landed commit during restart.
+- Open ledger items: none.
+
+Commands: `uv run pytest -q tests/postgres tests/options
+ tests/contracts/test_architecture_guards.py
+ tests/contracts/test_postgres_runtime_boundary.py --maxfail=2` (679 passed);
+`uv run pytest -q tests/postgres/test_schema_baseline.py` (22 passed);
+final architecture/runtime guard group (26 passed); `uvx ruff check` on changed
+Python paths; `npm run build`; wheel build and isolated runtime import check.
+Independent review: autoreview `--mode local --no-web-search` with the scoped
+review prompt, final report `autoreview-seventh.json`: no actionable findings.
+No rebase conflicts. Live evidence is saved under `/tmp/market-db-baseline`;
+backup manifest is on NAS under `data-sources/market-mini/backups/db-baseline-20260906`.
+
 
 Known limits: pages show current mutable values; old archive copies remain as
 provenance; historical migration code is retained in Git. Generated baseline keeps

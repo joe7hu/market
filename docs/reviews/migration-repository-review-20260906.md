@@ -91,3 +91,5 @@ The migration runner itself has no migration-wide lock or explicit timeout polic
 **Repair order:** (1) complete application-role contracts and migration recovery; (2) fix current-snapshot semantics and filter placement; (3) bound paging and transition work; (4) add populated-data plan checks and workflow tests. Keep one small reproducer per defect. Do not raise API timeouts to conceal unbounded history reads.
 
 Local audit evidence: `/tmp/market-db-review/` contains `revision`, `plans.py`, `plans.json`, `measure.py`, `measured.json`, `test_audit_repros.py`, `focused-tests.log`, `repros.log`, and the compact checkpoint. These scratch artifacts are not committed and can be removed by system cleanup. No GBrain skill or routing update was made.
+
+All eight findings were repaired and verified. See [completion ledger](db-simplification-ledger.md).
