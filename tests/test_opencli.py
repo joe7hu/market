@@ -9,6 +9,7 @@ from investment_panel.providers.opencli import (
     OpenCliError,
     OpenCliRateLimitError,
     OpenCliRunner,
+    OpenCliUnavailableError,
 )
 
 
@@ -68,6 +69,16 @@ def test_read_json_does_not_retry_non_rate_limit_errors(monkeypatch) -> None:
 
     assert not isinstance(excinfo.value, OpenCliRateLimitError)
     assert len(calls) == 1  # no retries for ordinary failures
+
+
+def test_read_json_classifies_timeout_as_unavailable(monkeypatch) -> None:
+    def timeout_run(_command, **_kwargs):
+        raise subprocess.TimeoutExpired("opencli", 25)
+
+    monkeypatch.setattr(subprocess, "run", timeout_run)
+
+    with pytest.raises(OpenCliUnavailableError):
+        OpenCliRunner().read_json(["twitter", "list-tweets"])
 
 
 def test_opencli_resolves_known_installation_when_launchd_path_is_minimal(tmp_path, monkeypatch) -> None:

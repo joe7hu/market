@@ -20,6 +20,10 @@ class OpenCliRateLimitError(OpenCliError):
     """Raised when OpenCLI reports an upstream rate limit (HTTP 429)."""
 
 
+class OpenCliUnavailableError(OpenCliError):
+    """Raised when the local OpenCLI access path is unavailable."""
+
+
 # Matches the upstream rate-limit signal regardless of surrounding text, e.g.
 # "scanner 429:", "Too Many Requests", "rate limit exceeded".
 _RATE_LIMIT_PATTERN = re.compile(r"\b429\b|too many requests|rate limit", re.IGNORECASE)
@@ -57,9 +61,11 @@ class OpenCliRunner:
                     env=executable_environment(executable),
                 )
             except FileNotFoundError as exc:
-                raise OpenCliError(f"OpenCLI command not found: {executable}") from exc
+                raise OpenCliUnavailableError(f"OpenCLI command not found: {executable}") from exc
             except subprocess.TimeoutExpired as exc:
-                raise OpenCliError(f"OpenCLI timed out after {self.timeout_seconds}s: {' '.join(command)}") from exc
+                raise OpenCliUnavailableError(
+                    f"OpenCLI timed out after {self.timeout_seconds}s: {' '.join(command)}"
+                ) from exc
             if completed.returncode != 0:
                 detail = (completed.stderr or completed.stdout).strip()
                 message = detail or f"OpenCLI exited {completed.returncode}: {' '.join(command)}"

@@ -23,7 +23,12 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.payload_archive import provider_archive_path
 from investment_panel.database.source_facts import SourceFactRepository
-from investment_panel.providers.opencli import OpenCliRateLimitError, OpenCliRunner, ensure_list
+from investment_panel.providers.opencli import (
+    OpenCliRateLimitError,
+    OpenCliRunner,
+    OpenCliUnavailableError,
+    ensure_list,
+)
 
 
 NEWS_COMMANDS = {
@@ -157,6 +162,17 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
                 return {
                     "source_id": source_id,
                     "status": "rate_limited",
+                    "source_status": "partial",
+                    "downstream_status": "not_run",
+                    "items": 0,
+                    "instrument_links": 0,
+                    "error": str(exc),
+                }
+            except OpenCliUnavailableError as exc:
+                ingestion_run.finish("partial", failure_detail=str(exc))
+                return {
+                    "source_id": source_id,
+                    "status": "unavailable",
                     "source_status": "partial",
                     "downstream_status": "not_run",
                     "items": 0,
