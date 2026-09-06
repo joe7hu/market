@@ -23,6 +23,7 @@ from investment_panel.analysis.stock_alpha import (
 )
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
+from investment_panel.core.instruments import normalize_symbol
 from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.core.decision import build_strategy_forecast, opportunity_episode_id
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE, activate_application_role
@@ -1040,7 +1041,7 @@ def load_universe_members(runtime: DatabaseRuntime, *, cutoff: datetime) -> list
                ORDER BY as_of DESC, available_at DESC, id DESC LIMIT 1""",
             [cutoff, cutoff],
         ).fetchone()
-    return sorted({str(symbol).strip().upper() for symbol in (row["exact_membership"] if row else []) if str(symbol).strip()})
+    return sorted({normalize_symbol(str(symbol)) for symbol in (row["exact_membership"] if row else []) if str(symbol).strip()})
 
 
 def _independent_universe_members(connection: Any, *, cutoff: datetime) -> list[str]:
@@ -1052,7 +1053,7 @@ def _independent_universe_members(connection: Any, *, cutoff: datetime) -> list[
            ORDER BY as_of DESC, available_at DESC, id DESC LIMIT 1""",
         [cutoff, cutoff],
     ).fetchone()
-    return sorted({str(symbol).strip().upper() for symbol in (row["exact_membership"] if row else []) if str(symbol).strip()})
+    return sorted({normalize_symbol(str(symbol)) for symbol in (row["exact_membership"] if row else []) if str(symbol).strip()})
 
 
 def main() -> None:
