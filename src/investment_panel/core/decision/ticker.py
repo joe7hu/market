@@ -6419,3 +6419,30 @@ __all__ = [
     "portfolio_impact_from_persisted", "portfolio_impacts_from_persisted",
     "trade_plan_from_persisted",
 ]
+
+
+def opportunity_rank_blocker(rank: Mapping[str, Any] | None, selected: Mapping[str, Any]) -> str | None:
+    """Validate the shared expression identity and positive, complete trade rank."""
+    if rank is None:
+        return "opportunity_rank_missing"
+    if str(rank.get("selected_expression_kind") or "") != str(selected.get("kind") or ""):
+        return "opportunity_rank_identity_mismatch"
+    try:
+        if str(rank.get("selected_expression_identity") or "") != trade_expression_identity(selected):
+            return "opportunity_rank_identity_mismatch"
+        if not bool(rank.get("evaluated_universe_complete")):
+            return "ranking_universe_incomplete"
+        utility = float(rank.get("trade_utility"))
+        if int(rank.get("trade_rank")) <= 0 or not math.isfinite(utility) or utility <= 0:
+            return str(rank.get("trade_rank_unavailable_reason") or "opportunity_rank_unavailable")
+    except (TypeError, ValueError, OverflowError):
+        return str(rank.get("trade_rank_unavailable_reason") or "opportunity_rank_unavailable")
+    return str(rank["trade_rank_unavailable_reason"]) if rank.get("trade_rank_unavailable_reason") else None
+
+
+def trade_plan_rank_identity_matches(plan: TradePlan, rank: Mapping[str, Any]) -> bool:
+    """Match the common plan/rank identity before any surface-specific checks."""
+    return bool(plan.publication_id and rank.get("publication_id")) and plan.publication_id == rank["publication_id"] and all(
+        getattr(plan, key) == str(rank.get(key) or "")
+        for key in ("rank_id", "selected_expression_identity", "portfolio_impact_id", "market_state_publication_id")
+    )

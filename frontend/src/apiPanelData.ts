@@ -87,10 +87,7 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
     && existingPhase4.state === "valid" && incomingPhase4.state === "valid"
     && existingPhase4.value !== incomingPhase4.value);
   if (validScopedRollover) {
-    const reset = next as Record<string, unknown>;
-    delete reset.portfolioScenarioArtifact;
-    delete reset.executionModelSnapshot;
-    delete reset.portfolioIntegrated;
+    clearPhase4(next);
   }
   if (unavailable) clearPhase4(next);
   if (snapshot.portfolio_integrated) next.portfolioIntegrated = snapshot.portfolio_integrated;
@@ -196,48 +193,6 @@ function phase4IdentityFromPanel(data: PanelData): Phase4Identity {
   if (tables.state === "invalid" || integrated.state === "invalid") return { state: "invalid", value: null };
   if (tables.state === "valid" && integrated.state === "valid" && tables.value !== integrated.value) return { state: "invalid", value: null };
   return tables.state === "valid" ? tables : integrated;
-}
-
-export function mergePanelData(existing: PanelData, incoming: PanelData, options: { append?: boolean; scope?: string } = {}): PanelData {
-  const existingPhase4 = phase4IdentityFromPanel(existing);
-  const phase4Scope = options.scope && PHASE4_WORKSPACES.has(options.scope) ? options.scope : undefined;
-  const unavailable = Boolean(options.scope && incoming.scopeStatus[options.scope]?.state === "ready") && explicitlyUnavailable(incoming.dashboard.status, incoming.portfolioIntegrated, Object.fromEntries(PHASE4_TABLE_KEYS.map((key) => [key, incoming[tableKeyFor(key)]])));
-  const contradictsUnavailable = incoming.dashboard.status?.metadata?.phase4_authority === "unavailable" && !unavailable;
-  const incomingPhase4 = phase4IdentityFromPanel(incoming);
-  if (contradictsUnavailable || incomingPhase4.state === "invalid" || (phase4Scope && incomingPhase4.state === "absent" && !unavailable)) {
-    const message = "Invalid or missing Phase 4 snapshot identity.";
-    return {
-      ...existing,
-      errors: { ...existing.errors, portfolio: message },
-      scopeStatus: { ...existing.scopeStatus, ...(phase4Scope ? { [phase4Scope]: { state: "failed", error: message } } : {}) },
-    };
-  }
-  if (existingPhase4.state === "valid" && incomingPhase4.state === "valid" && existingPhase4.value !== incomingPhase4.value && !phase4Scope) {
-    return { ...existing, errors: { ...existing.errors, portfolio: "Phase 4 snapshot identity diverged; retained the prior immutable view." } };
-  }
-  const validScopedRollover = Boolean(phase4Scope && existingPhase4.state === "valid" && incomingPhase4.state === "valid"
-    && existingPhase4.value !== incomingPhase4.value);
-  const next: PanelData = {
-    ...existing,
-    dashboard: { ...existing.dashboard, ...incoming.dashboard },
-    settings: { ...existing.settings, ...incoming.settings },
-    errors: { ...existing.errors, ...incoming.errors },
-    scopeStatus: { ...existing.scopeStatus, ...incoming.scopeStatus },
-  };
-  if (validScopedRollover) {
-    for (const key of ["portfolioAllocation", "portfolioAllocationItems", "portfolioScenarioArtifact", "executionModelSnapshot", "paperExecutionObservations", "bookAttribution", "portfolioIntegrated"]) {
-      delete (next as Record<string, unknown>)[key];
-    }
-  }
-  if (unavailable) clearPhase4(next);
-  for (const [key, value] of Object.entries(incoming)) {
-    if (RESERVED_PANEL_KEYS.has(key) || key === "scopeStatus" || value === undefined) continue;
-    const existingTable = next[key] as TablePayload | undefined;
-    next[key] = options.append && isTablePayload(existingTable) && isTablePayload(value)
-      ? appendTable(existingTable, value)
-      : value;
-  }
-  return next;
 }
 
 export function withScopeStatus(data: PanelData, scope: string, status: ScopeSnapshotStatus): PanelData {

@@ -43,7 +43,8 @@ frontend:
 	@echo "→ frontend typecheck"
 	@npm run typecheck
 
-typecheck: frontend
+typecheck:
+	@npm run typecheck
 
 test: test-all
 

@@ -7,6 +7,9 @@ background-task adapter and cache invalidation after a job completes.
 
 from __future__ import annotations
 
+from typing import Any
+from fastapi import BackgroundTasks
+
 
 from app.panel_snapshot import invalidate_context_cache
 from investment_panel.core.refresh_jobs import (
@@ -25,6 +28,12 @@ DECISION_REPAIR_JOBS = frozenset({
     "update_phase2_sources", "update_short_interest_and_borrow", "update_disclosures",
     "update_ibkr_options", "publish_ticker_benchmark",
 })
+
+
+def schedule_created_job(tasks: BackgroundTasks, job: dict[str, Any], job_name: str, database_url: str) -> None:
+    """Dispatch only the job this request created; duplicates already have an owner."""
+    if job.get("created"):
+        tasks.add_task(execute_background_refresh_job, job["id"], job_name, database_url)
 
 
 def execute_background_refresh_job(job_id: str, job_name: str, database_url: str) -> None:
@@ -48,6 +57,7 @@ def execute_thesis_monitor_automation(symbols: list[str], *, dry_run: bool, forc
 
 
 __all__ = [
+    "schedule_created_job",
     "ALLOWLIST",
     "execute_background_refresh_job",
     "execute_refresh_job",

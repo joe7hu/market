@@ -85,7 +85,7 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
     _use_temp_api_db(monkeypatch, tmp_path / "status.json")
     monkeypatch.setitem(
         app.dependency_overrides,
-        dependencies.get_options_actions,
+        dependencies.get_options_research,
         lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
     )
     capital = {
@@ -146,7 +146,7 @@ def test_today_and_snapshot_share_one_authoritative_load_and_invalidate_together
     _use_temp_api_db(monkeypatch, tmp_path / "today-shared-cache.json")
     monkeypatch.setitem(
         app.dependency_overrides,
-        dependencies.get_options_actions,
+        dependencies.get_options_research,
         lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
     )
     loads = 0
@@ -180,7 +180,7 @@ def test_today_projects_named_context_contract_without_row_aliases(
     _use_temp_api_db(monkeypatch, tmp_path / "today-context.json")
     monkeypatch.setitem(
         app.dependency_overrides,
-        dependencies.get_options_actions,
+        dependencies.get_options_research,
         lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
     )
     panel = PanelData(
@@ -252,7 +252,7 @@ def test_today_projects_named_context_contract_without_row_aliases(
 def test_today_missing_plan_field_state_preserves_blocker_semantics(
     reason: str, availability_status: str,
 ) -> None:
-    from app.routers.panel import today_field_states
+    from app.actions.today import today_field_states
 
     states = today_field_states(identity_missing=False, plan_missing=True, reason=reason)
 
@@ -315,7 +315,7 @@ def test_today_aggregates_missing_plan_backlog_before_queue_limit(
     ]
     monkeypatch.setitem(
         app.dependency_overrides,
-        dependencies.get_options_actions,
+        dependencies.get_options_research,
         lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": transitions}),
     )
     panel = PanelData(
@@ -353,7 +353,7 @@ def test_today_keeps_other_sources_when_ticker_capital_exceeds_limit(
     _use_temp_api_db(monkeypatch, tmp_path / "bounded-today.json")
     monkeypatch.setitem(
         app.dependency_overrides,
-        dependencies.get_options_actions,
+        dependencies.get_options_research,
         lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {
             "items": [{
                 "id": "inbox-fair",

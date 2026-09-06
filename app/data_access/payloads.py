@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 from datetime import UTC, datetime
-from math import isfinite
 import os
 from typing import Any, Mapping
 from app.scheduler import scheduler_status
@@ -20,6 +19,8 @@ from investment_panel.core.decision import (
     ExpressionKind,
     MarketStateSnapshot,
     TradePlan,
+    opportunity_rank_blocker,
+    trade_plan_rank_identity_matches,
     apply_opportunity_rank_safety,
     build_ticker_decision,
     evaluate_ticker_policy,
@@ -388,19 +389,11 @@ def _validated_trade_plan(
             return None
         if value.selected_expression_kind.value != str(rank.get("selected_expression_kind") or ""):
             return None
-        if value.selected_expression_identity != str(rank.get("selected_expression_identity") or ""):
-            return None
-        if value.rank_id != str(rank.get("rank_id") or ""):
-            return None
         if value.alpha_signal_id != str(rank.get("alpha_signal_id") or ""):
-            return None
-        if value.portfolio_impact_id != str(rank.get("portfolio_impact_id") or ""):
             return None
         if value.market_snapshot_id != str(rank.get("market_snapshot_id") or ""):
             return None
-        if value.market_state_publication_id != str(rank.get("market_state_publication_id") or ""):
-            return None
-        if not value.publication_id or not rank.get("publication_id") or value.publication_id != rank.get("publication_id"):
+        if not trade_plan_rank_identity_matches(value, rank):
             return None
         if value.alpha_signal_id not in {str(row.get("signal_id") or "") for row in signals}:
             return None
@@ -425,23 +418,7 @@ def _rank_is_current_for_decision(rank: dict[str, Any] | None, decision: Any) ->
         return False
     if str(rank.get("opportunity_episode_id") or "") != decision.opportunity_episode_id:
         return False
-    if str(rank.get("selected_expression_kind") or "") != selected.kind.value:
-        return False
-    try:
-        from investment_panel.core.decision import trade_expression_identity
-
-        if str(rank.get("selected_expression_identity") or "") != trade_expression_identity(selected):
-            return False
-        if not bool(rank.get("evaluated_universe_complete")):
-            return False
-        return (
-            int(rank.get("trade_rank")) > 0
-            and isfinite(float(rank.get("trade_utility")))
-            and float(rank.get("trade_utility")) > 0
-            and not rank.get("trade_rank_unavailable_reason")
-        )
-    except (TypeError, ValueError, OverflowError):
-        return False
+    return opportunity_rank_blocker(rank, selected.model_dump(mode="json")) is None
 
 
 def ticker_decision_summary(ticker_decision: dict[str, Any]) -> dict[str, Any]:
@@ -693,26 +670,11 @@ def _portfolio_context_blockers(ticker_decision: dict[str, Any]) -> list[str]:
 
 def _opportunity_rank_blocker(ticker_decision: dict[str, Any]) -> str | None:
     rank = ticker_decision.get("opportunity_rank")
-    if not isinstance(rank, dict):
-        return "opportunity_rank_missing"
-    try:
-        selected = ticker_decision.get("selected_expression") or {}
-        if str(rank.get("selected_expression_kind") or "") != str(selected.get("kind") or ""):
-            return "opportunity_rank_identity_mismatch"
-        from investment_panel.core.decision import trade_expression_identity
-
-        if str(rank.get("selected_expression_identity") or "") != trade_expression_identity(selected):
-            return "opportunity_rank_identity_mismatch"
-        if not bool(rank.get("evaluated_universe_complete")):
-            return "ranking_universe_incomplete"
-        rank_utility = float(rank.get("trade_utility"))
-        if int(rank.get("trade_rank")) <= 0 or not isfinite(rank_utility) or rank_utility <= 0:
-            return str(rank.get("trade_rank_unavailable_reason") or "opportunity_rank_unavailable")
-        if rank.get("trade_rank_unavailable_reason"):
-            return str(rank["trade_rank_unavailable_reason"])
-    except (TypeError, ValueError, OverflowError):
-        return str(rank.get("trade_rank_unavailable_reason") or "opportunity_rank_unavailable")
-    return None
+    selected = ticker_decision.get("selected_expression")
+    return opportunity_rank_blocker(
+        rank if isinstance(rank, dict) else None,
+        selected if isinstance(selected, dict) else {},
+    )
 
 
 def _compatibility_option_candidate(

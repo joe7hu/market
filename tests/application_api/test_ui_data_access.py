@@ -1,3 +1,4 @@
+from investment_panel.database import thesis as thesis_owner
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1491,7 +1492,7 @@ def test_portfolio_position_projection_is_owned_by_transaction_ledger(migrated_p
 def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str) -> None:
     config = typed_config(migrated_postgres_dsn, raw={"watchlist": [{"symbol": "NVDA"}]})
 
-    saved = mutations_owner.save_thesis(
+    saved = thesis_owner.save_thesis(
         config,
         "nvda",
         {
@@ -1518,14 +1519,14 @@ def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str
 def test_save_thesis_requires_thesis_text(migrated_postgres_dsn: str) -> None:
     config = typed_config(migrated_postgres_dsn)
     with pytest.raises(ValueError):
-        mutations_owner.save_thesis(config, "ZZZT", {"thesis": "   "})
+        thesis_owner.save_thesis(config, "ZZZT", {"thesis": "   "})
 
 
 def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> None:
     config = typed_config(migrated_postgres_dsn, raw={"watchlist": [{"symbol": "MU"}]})
 
-    mutations_owner.save_thesis(config, "MU", {"thesis": "Memory upcycle.", "invalidation": "below $80"})
-    reviewed = mutations_owner.mark_thesis_reviewed(config, "mu")
+    thesis_owner.save_thesis(config, "MU", {"thesis": "Memory upcycle.", "invalidation": "below $80"})
+    reviewed = thesis_owner.mark_thesis_reviewed(config, "mu")
 
     assert reviewed["symbol"] == "MU"
     assert reviewed["last_reviewed"]
@@ -1534,7 +1535,7 @@ def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> 
 def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) -> None:
     config = typed_config(migrated_postgres_dsn, raw={"watchlist": [{"symbol": "TSLA"}]})
 
-    first = mutations_owner.save_thesis(
+    first = thesis_owner.save_thesis(
         config,
         "TSLA",
         {
@@ -1547,7 +1548,7 @@ def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) ->
             "change_rationale": "Initial bearish monitor.",
         },
     )
-    second = mutations_owner.save_thesis(
+    second = thesis_owner.save_thesis(
         config,
         "TSLA",
         {
@@ -1586,7 +1587,7 @@ def test_thesis_review_rejects_empty_legacy_acknowledgement(migrated_postgres_ds
         )
 
     with pytest.raises(ValueError, match="empty-thesis"):
-        mutations_owner.mark_thesis_reviewed(config, "BLNK")
+        thesis_owner.mark_thesis_reviewed(config, "BLNK")
 
 
 def test_delete_config_watchlist_symbol_persists_unwatch_override(migrated_postgres_dsn: str) -> None:

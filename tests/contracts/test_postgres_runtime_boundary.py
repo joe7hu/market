@@ -19,7 +19,7 @@ def test_production_dependencies_are_postgresql_only() -> None:
 def test_fastapi_import_does_not_load_retired_storage() -> None:
     script = """
 import app.main
-from investment_panel.jobs import full_market_refresh, hourly_options_radar, premarket_options_intelligence
+from investment_panel.jobs import postgres_refresh, hourly_options_radar, premarket_options_intelligence
 from investment_panel.jobs import update_arco_sources, update_broker_sources, update_content_sources
 from investment_panel.jobs import update_disclosure_sources, update_market_data, update_market_events
 assert app.main.app is not None

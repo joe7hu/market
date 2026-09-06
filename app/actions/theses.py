@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.data_access import mutations
 from investment_panel.core.config import AppConfig
-from investment_panel.database.thesis import record_thesis_review, thesis_history, thesis_monitor_payload
+from investment_panel.database.thesis import record_thesis_review, save_thesis, thesis_history, thesis_monitor_payload
 
 
 class ThesisActions:
@@ -16,7 +15,7 @@ class ThesisActions:
         self.config = config
 
     def save(self, symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
-        saved = mutations.save_thesis(self.config, symbol, fields)
+        saved = save_thesis(self.config, symbol, fields)
         return {"thesis": saved, "thesis_monitor": thesis_monitor_payload(self.config)}
 
     def review(self, symbol: str, fields: dict[str, Any]) -> dict[str, Any]:

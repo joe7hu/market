@@ -6,7 +6,6 @@ markers. It does not own SQL or write actions.
 
 from __future__ import annotations
 
-import inspect
 import json
 from hashlib import sha256
 from threading import Event, RLock
@@ -55,16 +54,16 @@ PANEL_SNAPSHOT_CONTRACT_REVISION = panel_snapshot_contract_revision()
 
 def context(
     cache_key: str = "full",
-    loader: Callable[[dict[str, Any]], Any] | None = None,
+    loader: Callable[[AppConfig], Any] | None = None,
     *,
     config_loader: Callable[[], AppConfig] | None = None,
     database_url_loader: Callable[[AppConfig], str] | None = None,
     panel_loader: Callable[..., Any] | None = None,
-) -> tuple[dict[str, Any], Any]:
+) -> tuple[AppConfig, Any]:
     active_config_loader = config_loader or load_config
     active_database_url_loader = database_url_loader or database_url
     active_panel_loader = panel_loader or loaders_owner.load_panel_data
-    active_loader = loader or (lambda active_config: _load_panel_data_without_repairs(active_config, panel_loader=active_panel_loader))
+    active_loader = loader or active_panel_loader
     while True:
         config = active_config_loader()
         config_key = active_database_url_loader(config)
@@ -130,13 +129,6 @@ def _prune_context_entries(entries: dict[str, Any], now: float) -> None:
             entries.pop(key, None)
     while len(entries) > CONTEXT_CACHE_MAX_ENTRIES:
         entries.pop(next(iter(entries)))
-
-
-def _load_panel_data_without_repairs(active_config: AppConfig, *, panel_loader: Callable[..., Any]) -> Any:
-    parameters = inspect.signature(panel_loader).parameters
-    if "ensure_decision_models" not in parameters:
-        return panel_loader(active_config)
-    return panel_loader(active_config, ensure_decision_models=False, ensure_source_models=False)
 
 
 def table_payload_for(

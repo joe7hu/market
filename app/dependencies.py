@@ -13,6 +13,11 @@ from app.actions.options import OptionsActions
 from app.actions.portfolio import PortfolioActions
 from app.actions.theses import ThesisActions
 from app.actions.tickers import TickerActions
+from investment_panel.database.options_history import OptionsHistoryService
+from investment_panel.database.options_research import OptionsResearchRepository
+from investment_panel.database.options_execution import OptionsExecutionRepository
+from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
+from investment_panel.database.options_recovery_read import RecoveryReadRepository
 from app import job_control
 from app.request_security import require_local_request
 from investment_panel.core.config import AppConfig, load_config
@@ -54,14 +59,7 @@ def get_ticker_actions(config: AppConfig = Depends(get_config)) -> TickerActions
 
 
 def get_portfolio_actions(config: AppConfig = Depends(get_config)) -> PortfolioActions:
-    from app.data_access import mutations
-
-    return PortfolioActions(
-        config,
-        save_watchlist=mutations.save_watchlist_symbol,
-        populate_watchlist=mutations.populate_watchlist_symbol_data,
-        delete_watchlist=mutations.delete_watchlist_symbol,
-    )
+    return PortfolioActions(config)
 
 
 def get_source_repository(config: AppConfig = Depends(get_config)) -> SourceRepository:
@@ -94,6 +92,17 @@ def get_thesis_actions(config: AppConfig = Depends(get_config)) -> ThesisActions
 
 
 __all__ = [
+    "get_options_history",
+    "OptionsHistoryService",
+    "get_options_research",
+    "OptionsResearchRepository",
+    "get_options_execution",
+    "OptionsExecutionRepository",
+    "get_options_decision_system",
+    "OptionsDecisionSystemRepository",
+    "get_options_recovery",
+    "RecoveryReadRepository",
+
     "AppConfig",
     "get_config",
     "get_runtime",
@@ -109,3 +118,23 @@ __all__ = [
     "load_config",
     "runtime_for_config",
 ]
+
+
+def get_options_history(config: AppConfig = Depends(get_config)) -> OptionsHistoryService:
+    return OptionsHistoryService(runtime_for_config(config), options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital)
+
+
+def get_options_research(config: AppConfig = Depends(get_config)) -> OptionsResearchRepository:
+    return OptionsResearchRepository(runtime_for_config(config), config)
+
+
+def get_options_execution(config: AppConfig = Depends(get_config)) -> OptionsExecutionRepository:
+    return OptionsExecutionRepository(runtime_for_config(config), config)
+
+
+def get_options_decision_system(config: AppConfig = Depends(get_config)) -> OptionsDecisionSystemRepository:
+    return OptionsDecisionSystemRepository(runtime_for_config(config), mode=config.analysis.options_decision_system.mode)
+
+
+def get_options_recovery(config: AppConfig = Depends(get_config)) -> RecoveryReadRepository:
+    return RecoveryReadRepository(runtime_for_config(config), recovery_paper_actions_enabled=config.analysis.options_decision_system.recovery_paper_actions_enabled)

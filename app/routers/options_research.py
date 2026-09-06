@@ -7,7 +7,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
-from app.actions.options import OptionsActions
 from app import dependencies
 from app.options_history_contracts import DistributionShiftResponse, EventStudyResponse
 
@@ -19,15 +18,16 @@ def option_event_study(
     ticker: str = Query(..., min_length=1, max_length=16),
     event_kind: str = Query(..., min_length=1, max_length=64),
     as_of: datetime = Query(...),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
 ) -> dict[str, Any]:
     return actions.event_study(ticker=ticker, event_kind=event_kind, as_of=as_of)
+
 
 
 @router.get("/api/options/history/distribution-shift", response_model=DistributionShiftResponse, response_model_exclude_unset=True)
 def option_distribution_shift(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     as_of: datetime = Query(...),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
 ) -> dict[str, Any]:
     return actions.distribution_shift(symbol=symbol, as_of=as_of)

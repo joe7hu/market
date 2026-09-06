@@ -1,4 +1,4 @@
-from app.routers.panel import book_action_queue
+from app.actions.today import book_action_queue
 
 
 def test_book_queue_ranks_current_opportunities_and_cash() -> None:

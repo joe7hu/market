@@ -59,8 +59,7 @@ def launch_refresh_job_background(
         job = job_control.start_refresh_job(job_name, dsn)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if job.get("created"):
-        background_tasks.add_task(job_control.execute_background_refresh_job, job["id"], job_name, dsn)
+    job_control.schedule_created_job(background_tasks, job, job_name, dsn)
     return job
 
 

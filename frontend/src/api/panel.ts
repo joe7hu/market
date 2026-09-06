@@ -1,8 +1,8 @@
 /** Panel, read-model, settings, source, ticker, and refresh requests. */
 
 import type { components } from "../generated/apiSchema";
-import { emptyPanelData, mergeSnapshot, type PanelSnapshotPayload } from "../apiPanelData";
-import type { DashboardPayload, PanelData, RowRecord, TablePayload, TickerDossier, TickerLearning } from "../types";
+import { type PanelSnapshotPayload } from "../apiPanelData";
+import type { DashboardPayload, RowRecord, TablePayload, TickerDossier, TickerLearning } from "../types";
 import { getJson, patchJson, sendJson } from "../apiTransport";
 
 type ApiSchema = components["schemas"];
@@ -68,10 +68,6 @@ export type ResearchSourcesInput = ApiSchema["ResearchSourcesInput"];
 
 export { emptyPanelData } from "../apiPanelData";
 
-export async function loadPanelData(): Promise<PanelData> {
-  return loadPanelScope("feed");
-}
-
 export async function loadToday(): Promise<TodayResponse> {
   return getJson<TodayResponse>("/api/today");
 }
@@ -82,23 +78,21 @@ export async function loadDecisionFunnel(): Promise<DecisionFunnel> {
 
 export async function loadPanelScope(
   scope: string,
-  existing?: PanelData,
   options: PanelScopeOptions = {},
-): Promise<PanelData> {
+): Promise<{ snapshot: PanelSnapshotPayload; settings?: SettingsPayload }> {
   const params = new URLSearchParams({ scope });
   if (options.offset !== undefined) params.set("offset", String(options.offset));
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.includeScreener) params.set("include_screener", "true");
   const snapshot = await getJson<ApiSchema["PanelSnapshotResponse"]>(`/api/panel-snapshot?${params.toString()}`);
-  const data = mergeSnapshot(existing ?? emptyPanelData(), {
+  const result: PanelSnapshotPayload = {
     scope: snapshot.scope,
     status: snapshot.status as unknown as DashboardPayload["status"],
     dashboard: snapshot.dashboard as unknown as DashboardPayload | null | undefined,
     tables: snapshot.tables as unknown as Record<string, TablePayload> | undefined,
     portfolio_integrated: snapshot.portfolio_integrated,
-  }, options);
-  if (scope === "settings") data.settings = await loadSettings();
-  return data;
+  };
+  return { snapshot: result, settings: scope === "settings" ? await loadSettings() : undefined };
 }
 
 export async function loadEventScoutSnapshot(signal?: AbortSignal): Promise<PanelSnapshotPayload> {

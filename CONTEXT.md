@@ -5,6 +5,7 @@ Use these terms consistently when reading or changing Market.
 | Term | Meaning | Primary owner |
 |---|---|---|
 | Publication | An immutable, versioned application decision/read-model output selected for API use | `database/panel_publications.py`, domain publication modules |
+| Today Queue | A bounded composition of current capital actions, inbox transitions, portfolio risks, and research updates | `app/actions/today.py` |
 | Read Model | A PostgreSQL query result shaped for a product surface; it is not a provider payload | `database/panel_models.py`, `database/panel_queries.py`, `/api/panel-snapshot` |
 | Ingestion Run | One managed collector execution with start, counts, terminal status, and failure details | `database/ingestion.py` |
 | Decision Truth | The current evidence-backed state, route verdict, readiness, and execution blocker for a symbol | `database/options_decision_system.py`, `core/event_scout.py` |

@@ -1239,7 +1239,7 @@ def test_shared_risk_models_use_live_portfolio_contracts(
         "review_actions": [{"action_id": "live-action", "next_step": "Review sizing"}],
     }
     monkeypatch.setattr(postgres_panel, "_published_tables", lambda _runtime, _requested: published.copy())
-    monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", lambda _config: live)
+    monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", lambda _config, **_options: live)
     tables, _metadata = postgres_panel.load_postgres_tables(
         typed_config(postgres_dsn),
         ("portfolio_risk_cards", "review_actions"),
@@ -1270,7 +1270,7 @@ def test_shared_scopes_load_one_live_portfolio_contract_bundle(
         "review_actions": [{"action_id": "live-action"}],
     }
     monkeypatch.setattr(postgres_panel, "_published_tables", lambda _runtime, _requested: published.copy())
-    monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", lambda _config: live)
+    monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", lambda _config, **_options: live)
 
     tables, _metadata = postgres_panel.load_postgres_tables(
         typed_config(postgres_dsn),

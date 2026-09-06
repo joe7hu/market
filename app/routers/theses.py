@@ -84,13 +84,7 @@ def run_thesis_automation_endpoint(
         job = job_control.start_refresh_job(job_name, config.database.url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if job.get("created"):
-        background_tasks.add_task(
-            job_control.execute_background_refresh_job,
-            job["id"],
-            job_name,
-            config.database.url,
-        )
+    job_control.schedule_created_job(background_tasks, job, job_name, config.database.url)
     panel_snapshot.invalidate_context_cache()
     return {"job": job, "symbols": "all", "dry_run": payload.dry_run, "force": True}
 

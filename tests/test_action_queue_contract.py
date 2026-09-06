@@ -2,8 +2,8 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 
-from app.routers import panel as panel_router
-from app.routers.panel import dedupe_queue, decision_inbox_queue, research_queue
+from app.actions import today as panel_router
+from app.actions.today import dedupe_queue, decision_inbox_queue, research_queue
 
 
 def test_action_queue_keeps_current_transitions_and_dedupes_exact_source_identity() -> None:

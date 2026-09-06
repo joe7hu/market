@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from investment_panel.core.config import AppConfig, load_config
-from investment_panel.core.decision import OpportunityRank, TradePlan
+from investment_panel.core.decision import OpportunityRank, TradePlan, trade_plan_rank_identity_matches
 from investment_panel.core.panel import DASHBOARD_UNAVAILABLE_MODELS, tables_for_scope
 from app.data_access.types import DataStatus, PanelData
 from investment_panel.core.panel import (
@@ -121,13 +121,7 @@ def today_plan_for_row(
         return None
     try:
         plan = TradePlan.model_validate(matches[0])
-        if plan.rank_id != str(rank.get("rank_id") or ""):
-            return None
-        if plan.selected_expression_identity != str(rank.get("selected_expression_identity") or ""):
-            return None
-        if plan.portfolio_impact_id != str(rank.get("portfolio_impact_id") or ""):
-            return None
-        if plan.market_state_publication_id != str(rank.get("market_state_publication_id") or ""):
+        if not trade_plan_rank_identity_matches(plan, rank):
             return None
         return plan
     except (TypeError, ValueError, KeyError):
@@ -228,14 +222,11 @@ def _load_today_authority(
 def load_panel_data(
     config: AppConfig | None = None,
     table_names: Iterable[str] | None = None,
-    ensure_decision_models: bool | None = None,
-    ensure_source_models: bool | None = None,
     query_row_limits: dict[str, int] | None = None,
     query_symbol_filter: set[str] | None = None,
     portfolio_summary_include_performance: bool = True,
     thesis_monitor_include_current_prices: bool = True,
 ) -> PanelData:
-    del ensure_decision_models, ensure_source_models
     active_config = config if config is not None else load_config()
     requested = _all_contract_tables() if table_names is None else tuple(table_names)
     if not requested:

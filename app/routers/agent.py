@@ -68,12 +68,6 @@ def analyze_ticker(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     job = result["job"]
-    if job.get("created"):
-        background_tasks.add_task(
-            job_control.execute_background_refresh_job,
-            job["id"],
-            "run_option_agents_ondemand",
-            config.database.url,
-        )
+    job_control.schedule_created_job(background_tasks, job, "run_option_agents_ondemand", config.database.url)
     panel_snapshot.invalidate_context_cache()
     return result

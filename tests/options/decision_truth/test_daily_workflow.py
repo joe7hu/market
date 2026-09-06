@@ -4,7 +4,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from app.routers.panel import decision_inbox_queue
+from app.actions.today import decision_inbox_queue
 from investment_panel.database.decision_inbox import DecisionInboxRepository, evidence_fingerprint
 from investment_panel.database.migrations import HEAD_REVISION, upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime

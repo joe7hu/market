@@ -26,6 +26,7 @@ OWNER_MODULES = (
     "app/job_control.py",
     "app/request_security.py",
     "app/actions/options.py",
+    "app/actions/today.py",
     "app/actions/event_scout.py",
     "src/investment_panel/database/panel_models.py",
     "src/investment_panel/database/panel_queries.py",

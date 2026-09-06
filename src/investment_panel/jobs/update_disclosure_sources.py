@@ -32,9 +32,10 @@ from investment_panel.database.source_facts import SourceFactRepository
 
 def run(config_path: str | None = None) -> dict[str, Any]:
     config = load_config(config_path)
-    sources = _configured_csvs(config_path)
-    traders = _configured_house_traders(config_path)
-    trackers = configured_13f_trackers(config_path)
+    base, disclosures = _disclosure_config(config_path)
+    sources = _configured_csvs(base, disclosures)
+    traders = _configured_house_traders(disclosures)
+    trackers = _trackers(disclosures)
     runtime = runtime_for_config(config)
     results = [_ingest_csv(runtime, source) for source in sources]
     results.extend(_ingest_house(runtime, config, trader) for trader in traders)
@@ -515,15 +516,10 @@ def _normalize(row: dict[str, Any], source: dict[str, Any]) -> dict[str, Any] | 
     }
 
 
-def _configured_csvs(config_path: str | None) -> list[dict[str, Any]]:
-    path = resolve_path(config_path or "config.yaml")
-    if not path.is_file():
-        return []
-    with path.open("r", encoding="utf-8") as handle:
-        disclosures = dict((yaml.safe_load(handle) or {}).get("disclosures") or {})
+def _configured_csvs(base: Path, disclosures: dict[str, Any]) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     for row in disclosures.get("public_disclosure_csvs") or []:
-        sources.extend(_source_rows(row, path.parent, {}))
+        sources.extend(_source_rows(row, base, {}))
     for trader in disclosures.get("tracked_traders") or []:
         defaults = {
             "trader_name": trader.get("trader_name")
@@ -535,16 +531,11 @@ def _configured_csvs(config_path: str | None) -> list[dict[str, Any]]:
             "source_kind": trader.get("source_kind") or "public_disclosure",
         }
         for row in trader.get("daily_csvs") or trader.get("incremental_csvs") or []:
-            sources.extend(_source_rows(row, path.parent, defaults))
+            sources.extend(_source_rows(row, base, defaults))
     return sources
 
 
-def _configured_house_traders(config_path: str | None) -> list[dict[str, Any]]:
-    path = resolve_path(config_path or "config.yaml")
-    if not path.is_file():
-        return []
-    with path.open("r", encoding="utf-8") as handle:
-        disclosures = dict((yaml.safe_load(handle) or {}).get("disclosures") or {})
+def _configured_house_traders(disclosures: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "trader_name": str(row.get("trader_name") or row.get("name")),
@@ -558,12 +549,20 @@ def _configured_house_traders(config_path: str | None) -> list[dict[str, Any]]:
     ]
 
 
-def configured_13f_trackers(config_path: str | None) -> list[dict[str, Any]]:
+def _disclosure_config(config_path: str | None) -> tuple[Path, dict[str, Any]]:
     path = resolve_path(config_path or "config.yaml")
     if not path.is_file():
-        return []
+        return path.parent, {}
     with path.open("r", encoding="utf-8") as handle:
-        disclosures = dict((yaml.safe_load(handle) or {}).get("disclosures") or {})
+        return path.parent, dict((yaml.safe_load(handle) or {}).get("disclosures") or {})
+
+
+def configured_13f_trackers(config_path: str | None) -> list[dict[str, Any]]:
+    _, disclosures = _disclosure_config(config_path)
+    return _trackers(disclosures)
+
+
+def _trackers(disclosures: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "name": str(row.get("name") or row.get("trader_name") or row["cik"]),

@@ -555,7 +555,7 @@ def test_legacy_mutation_routes_keep_their_error_contract() -> None:
 
     class FailingOptions:
         @staticmethod
-        def set_history_requested_state(_symbol: str, _payload: dict[str, object]) -> None:
+        def set_requested_state(_symbol: str, _payload: dict[str, object]) -> None:
             raise RuntimeError("database unavailable")
 
         @staticmethod

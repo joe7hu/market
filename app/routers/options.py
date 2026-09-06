@@ -119,14 +119,16 @@ def historical_option_snapshots(
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     include_partial: bool = False,
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
 ) -> dict[str, Any]:
-    return actions.history_snapshots(symbol=symbol, offset=offset, limit=limit, include_partial=include_partial)
+    return actions.snapshots(symbol=symbol, offset=offset, limit=limit, include_partial=include_partial)
+
 
 
 @router.get("/api/options/history/symbols", response_model=OptionHistorySymbolsResponse, response_model_exclude_unset=True)
-def historical_option_symbols(actions: OptionsActions = Depends(dependencies.get_options_actions)) -> dict[str, Any]:
-    return actions.history_symbols()
+def historical_option_symbols(actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history)) -> dict[str, Any]:
+    return actions.symbols()
+
 
 
 @router.get("/api/options/history/chain", response_model=OptionChainPage, response_model_exclude_unset=True)
@@ -139,14 +141,15 @@ def historical_option_chain(
     max_moneyness: float | None = Query(None, ge=-2, le=2),
     offset: int = Query(0, ge=0),
     limit: int = Query(250, ge=1, le=1000),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
 ) -> dict[str, Any]:
     if min_moneyness is not None and max_moneyness is not None and min_moneyness > max_moneyness:
         raise HTTPException(status_code=422, detail="min_moneyness cannot exceed max_moneyness")
-    return actions.history_chain(
+    return actions.chain(
         symbol=symbol, snapshot=snapshot, expiration=expiration, option_type=option_type,
         min_moneyness=min_moneyness, max_moneyness=max_moneyness, offset=offset, limit=limit,
     )
+
 
 
 @router.get("/api/options/history/surface", response_model=OptionSurfaceEvidence, response_model_exclude_unset=True)
@@ -155,18 +158,20 @@ def historical_option_surface(
     snapshot: int | None = Query(None, ge=1),
     expiration: date = Query(...),
     option_type: str = Query(..., pattern="^(call|put)$"),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
 ) -> dict[str, Any]:
-    return actions.history_surface(symbol=symbol, snapshot=snapshot, expiration=expiration, option_type=option_type)
+    return actions.surface(symbol=symbol, snapshot=snapshot, expiration=expiration, option_type=option_type)
+
 
 
 @router.get("/api/options/history/surface-groups", response_model=OptionSurfaceGroups, response_model_exclude_unset=True)
 def historical_option_surface_groups(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
 ) -> dict[str, Any]:
-    return actions.history_surface_groups(symbol=symbol, snapshot=snapshot)
+    return actions.surface_groups(symbol=symbol, snapshot=snapshot)
+
 
 
 @router.get("/api/options/history/surface-grid", response_model=IVSurfaceGrid, response_model_exclude_unset=True)
@@ -177,12 +182,12 @@ def historical_option_surface_grid(
     min_moneyness: float = Query(-0.30, ge=-2, le=2),
     max_moneyness: float = Query(0.30, ge=-2, le=2),
     max_dte: int = Query(365, ge=1, le=1095),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
 ) -> dict[str, Any]:
     """Bounded provider-IV grid for the interactive surface explorer."""
     if min_moneyness >= max_moneyness:
         raise HTTPException(status_code=422, detail="min_moneyness must be less than max_moneyness")
-    return actions.history_surface_grid(
+    return actions.surface_grid(
         symbol=symbol,
         snapshot=snapshot,
         option_type=option_type,
@@ -192,14 +197,16 @@ def historical_option_surface_grid(
     )
 
 
+
 @router.get("/api/options/history/curves", response_model=IVCurveSet, response_model_exclude_unset=True)
 def historical_option_curves(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
     expiration: date | None = None,
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
 ) -> dict[str, Any]:
-    return actions.history_curves(symbol=symbol, snapshot=snapshot, expiration=expiration)
+    return actions.curves(symbol=symbol, snapshot=snapshot, expiration=expiration)
+
 
 
 @router.get("/api/options/history/anomalies", response_model=OptionAnomalyPage, response_model_exclude_unset=True)
@@ -208,18 +215,21 @@ def historical_option_anomalies(
     snapshot: int | None = Query(None, ge=1),
     offset: int = Query(0, ge=0),
     limit: int = Query(250, ge=1, le=1000),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
 ) -> dict[str, Any]:
-    return actions.history_anomalies(symbol=symbol, snapshot=snapshot, offset=offset, limit=limit)
+    return actions.anomalies(symbol=symbol, snapshot=snapshot, offset=offset, limit=limit)
+
 
 
 @router.get("/api/options/history/health", response_model=OptionHistoryHealthResponse, response_model_exclude_unset=True)
 def historical_option_health(
     symbol: str | None = Query(None, min_length=1, max_length=16),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
+    config: AppConfig = Depends(dependencies.get_config),
 ) -> dict[str, Any]:
     """Operational storage and completeness reporting for the Health surface."""
-    return actions.history_health(symbol=symbol)
+    return actions.health(symbol=symbol, mode=config.analysis.options_decision_system.mode)
+
 
 
 @router.get("/api/health/options-recovery", response_model=RecoveryHealthResponse, response_model_exclude_unset=True)
@@ -248,9 +258,9 @@ def recovery_event(
     event_id: UUID,
     cohort: str | None = Query(None, min_length=1, max_length=96),
     include_invalidated: bool = Query(False),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.RecoveryReadRepository = Depends(dependencies.get_options_recovery),
 ) -> dict[str, Any]:
-    detail = actions.recovery_event(
+    detail = actions.event_detail(
         str(event_id),
         cohort=cohort,
         include_invalidated=include_invalidated,
@@ -258,6 +268,7 @@ def recovery_event(
     if detail is None:
         raise HTTPException(status_code=404, detail="Options recovery event not found")
     return detail
+
 
 
 @router.get("/api/options/decision-brief", response_model=OptionsDecisionBrief, response_model_exclude_unset=True)
@@ -318,9 +329,10 @@ def historical_relative_values(
     classification: Literal["relative_cheap", "relative_rich", "historical_static_arbitrage_candidate", "verified_static_arbitrage_candidate", "rejected"] | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsDecisionSystemRepository = Depends(dependencies.get_options_decision_system),
 ) -> dict[str, Any]:
     return actions.relative_values(symbol=symbol, snapshot=snapshot, classification=classification, offset=offset, limit=limit)
+
 
 
 @router.post("/api/options/history/static-arbitrage-candidates/{candidate_id}/verify", response_model=StaticArbitrageVerificationResponse, response_model_exclude_unset=True)
@@ -340,9 +352,10 @@ def options_paper_journal(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsDecisionSystemRepository = Depends(dependencies.get_options_decision_system),
 ) -> dict[str, Any]:
     return actions.paper_journal(symbol=symbol, offset=offset, limit=limit)
+
 
 
 @router.get("/api/options/shadow-observations", response_model=OptionsPaperJournalPage, response_model_exclude_unset=True)
@@ -350,7 +363,7 @@ def options_shadow_observations(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsDecisionSystemRepository = Depends(dependencies.get_options_decision_system),
 ) -> dict[str, Any]:
     return actions.shadow_observations(
         symbol=symbol,
@@ -359,19 +372,21 @@ def options_shadow_observations(
     )
 
 
+
 @router.get("/api/options/learning-progress", response_model=OptionsLearningProgressPage, response_model_exclude_unset=True)
 def options_learning_progress(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsDecisionSystemRepository = Depends(dependencies.get_options_decision_system),
 ) -> dict[str, Any]:
     return actions.learning_progress(symbol=symbol)
+
 
 
 @router.get("/api/opportunity-scorecard", response_model=OpportunityScorecardResponse, response_model_exclude_unset=True)
 def opportunity_scorecard(
     lane: Literal["radar", "qqq", "recovery"] = Query("radar"),
     window: int = Query(120, ge=1, le=3650),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
 ) -> dict[str, Any]:
     return actions.opportunity_scorecard(
         lane=lane,
@@ -379,12 +394,13 @@ def opportunity_scorecard(
     )
 
 
+
 @router.get("/api/decision-inbox", response_model=DecisionInboxResponse, response_model_exclude_unset=True)
 def decision_inbox(
     limit: int = Query(50, ge=1, le=100),
     cursor: str | None = Query(None, max_length=256),
     current_only: bool = Query(True),
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
 ) -> dict[str, Any]:
     try:
         return actions.decision_inbox(limit=limit, cursor=cursor, current_only=current_only)
@@ -392,11 +408,12 @@ def decision_inbox(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+
 @router.post("/api/decision-inbox/{item_id}/state", response_model=DecisionInboxStateResponse, response_model_exclude_unset=True)
 def set_decision_inbox_state(
     item_id: UUID,
     payload: DecisionInboxStateInput,
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
     _request=Depends(dependencies.get_authorized_request),
 ) -> dict[str, Any]:
     try:
@@ -415,15 +432,17 @@ def set_decision_inbox_state(
     return result
 
 
+
 @router.get("/api/options-radar/signals/{decision_id}", response_model=OptionSignalDetailResponse, response_model_exclude_unset=True)
 def option_radar_signal_detail(
     decision_id: UUID,
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsExecutionRepository = Depends(dependencies.get_options_execution),
 ) -> dict[str, Any]:
     detail = actions.signal_detail(decision_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Options-radar signal not found")
     return detail
+
 
 
 @router.get("/api/options-radar/learning/{collection}", response_model=OptionLearningCollectionResponse, response_model_exclude_unset=True)
@@ -458,7 +477,7 @@ def option_radar_learning_collection(
 @router.get("/api/options/tickets/{decision_id}", response_model=OptionTicketDetailResponse, response_model_exclude_unset=True)
 def option_trade_ticket(
     decision_id: UUID,
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsExecutionRepository = Depends(dependencies.get_options_execution),
 ) -> dict[str, Any]:
     detail = actions.signal_detail(decision_id)
     if detail is not None:
@@ -473,6 +492,7 @@ def option_trade_ticket(
     if detail is None:
         raise HTTPException(status_code=404, detail="Option decision not found")
     raise HTTPException(status_code=409, detail="Current publication has no trade ticket; refresh the decision surface")
+
 
 
 def _ticket_detail_contract(ticket: dict[str, Any], signal: dict[str, Any]) -> dict[str, Any]:
@@ -510,7 +530,7 @@ def _ticket_detail_contract(ticket: dict[str, Any], signal: dict[str, Any]) -> d
 def stage_option_radar_paper_entry(
     decision_id: UUID,
     payload: OptionPaperEntryInput,
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsExecutionRepository = Depends(dependencies.get_options_execution),
     ticker_actions: TickerActions = Depends(dependencies.get_ticker_actions),
     config: AppConfig = Depends(dependencies.get_config),
     _request=Depends(dependencies.get_authorized_request),
@@ -553,6 +573,7 @@ def stage_option_radar_paper_entry(
     return result
 
 
+
 def _ticker_expression_for_legacy_structure(structure: str) -> ExpressionKind | None:
     if structure in {"long_call", "call"}:
         return ExpressionKind.CALL
@@ -568,7 +589,7 @@ def _ticker_expression_for_legacy_structure(structure: str) -> ExpressionKind | 
 @router.post("/api/agent-thesis", response_model=AgentSubmissionResponse, response_model_exclude_unset=True)
 def submit_agent_thesis(
     payload: dict[str, Any],
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
     _request=Depends(dependencies.get_authorized_request),
 ) -> dict[str, Any]:
     try:
@@ -579,10 +600,11 @@ def submit_agent_thesis(
     return result
 
 
+
 @router.post("/api/agent-postmortems", response_model=AgentSubmissionResponse, response_model_exclude_unset=True)
 def submit_agent_postmortem(
     payload: dict[str, Any],
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
     _request=Depends(dependencies.get_authorized_request),
 ) -> dict[str, Any]:
     try:
@@ -593,10 +615,11 @@ def submit_agent_postmortem(
     return result
 
 
+
 @router.post("/api/radar-alerts/{alert_id}/ack", response_model=RadarAlertAcknowledgementResponse, response_model_exclude_unset=True)
 def acknowledge_radar_alert_endpoint(
     alert_id: str,
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsExecutionRepository = Depends(dependencies.get_options_execution),
     _request=Depends(dependencies.get_authorized_request),
 ) -> dict[str, Any]:
     acknowledged = actions.acknowledge_alert(alert_id)
@@ -604,6 +627,7 @@ def acknowledge_radar_alert_endpoint(
     if not acknowledged:
         raise HTTPException(status_code=404, detail="Radar alert not found")
     return acknowledged
+
 
 
 @router.post("/api/strategy-mutation-proposals/{proposal_id}/promote", response_model=StrategyPromotionResponse, response_model_exclude_unset=True)

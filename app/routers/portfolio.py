@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app import panel_snapshot
 from app.actions.portfolio import PortfolioActions
-from app.actions.options import OptionsActions
 from app import dependencies
 from app.contracts import (
     ManualAccountReconciliationInput,
@@ -153,17 +152,18 @@ def delete_watchlist_symbol_endpoint(
 def set_watchlist_options_history_endpoint(
     symbol: str,
     payload: OptionsHistoryToggleInput,
-    actions: OptionsActions = Depends(dependencies.get_options_actions),
+    actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
     _request=Depends(dependencies.get_authorized_request),
 ) -> dict[str, Any]:
     try:
-        result = actions.set_history_requested_state(symbol, payload.model_dump())
+        result = actions.set_requested_state(symbol, payload.model_dump())
     except Exception as exc:
         if actions.is_policy_conflict(exc):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     panel_snapshot.invalidate_context_cache()
     return result
+
 
 
 __all__ = ["router"]

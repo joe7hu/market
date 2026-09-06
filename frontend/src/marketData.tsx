@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { emptyPanelData, loadEventScoutSnapshot, loadPanelScope, type PanelScopeOptions } from "./api/panel";
-import { mergePanelData, mergeSnapshot, withScopeStatus } from "./apiPanelData";
+import { mergeSnapshot, withScopeStatus } from "./apiPanelData";
 import { buildModel, type AppModel } from "./model";
 import type { PanelData, ScopeSnapshotStatus } from "./types";
 
@@ -40,9 +40,10 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
     if (inFlight) return inFlight;
     const request = (async () => {
       setLoading(true);
-      setData((current) => withScopeStatus(current, scope, { state: "loading" }));
+      dataRef.current = withScopeStatus(dataRef.current, scope, { state: "loading" });
+      setData(dataRef.current);
       try {
-        const loaded = await loadPanelScope(scope, dataRef.current, options);
+        const loaded = await loadPanelScope(scope, options);
         let supplemental;
         if (scope === "today" || scope === "options-radar") {
           try {
@@ -52,9 +53,8 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
             // its existing last-good snapshot when the event endpoint is down.
           }
         }
-        // Revalidate the provider merge as well as the request merge. This is
-        // the production boundary that combines independently loaded scopes.
-        let nextData = mergePanelData(dataRef.current, loaded, { scope });
+        let nextData = mergeSnapshot(dataRef.current, loaded.snapshot, options);
+        if (loaded.settings) nextData = { ...nextData, settings: loaded.settings };
         if (supplemental) nextData = mergeSnapshot(nextData, supplemental);
         dataRef.current = nextData;
         setData(nextData);
@@ -67,7 +67,7 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
         throw error;
       } finally {
         inFlightScopesRef.current.delete(requestKey);
-        setLoading(false);
+        setLoading(inFlightScopesRef.current.size > 0);
       }
     })();
     inFlightScopesRef.current.set(requestKey, request);

@@ -47,3 +47,17 @@ archive lag over 24 hours, more than eight complete hot option days, local
 free space below 30 GiB, availability below 100%, scheduler work above two,
 repeated API statement timeouts, or a real second implementation that earns a
 new seam.
+
+
+## Amendment: personal-app maintenance, 2026-09-06
+
+Joe approved simplification across all feature modules, retaining the current
+folders, features, PostgreSQL data, and Python/React stack. This supersedes the
+90-day code architecture freeze. It does not relax the storage, scheduler,
+publication, or execution rules above.
+
+Reuse deep owners and remove redundant forwarding. Keep one owner for each
+workflow. Internal interfaces may change when all callers change together;
+HTTP contracts and CLI names remain stable by default. Prefer focused checks
+during edits and one integrated release gate. No replacement framework,
+database layer, or feature retirement is part of this change.

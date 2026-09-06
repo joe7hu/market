@@ -173,6 +173,7 @@ uv run python scripts/architecture_inventory.py --area options
 Focused backend gates are available through Make:
 
 ```bash
+make typecheck  # TypeScript only
 make test-unit
 make test-api
 make test-options

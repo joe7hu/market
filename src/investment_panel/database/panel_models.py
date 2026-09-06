@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import inspect
 from typing import Any, Iterable, Mapping
 
 from investment_panel.core.config import AppConfig
@@ -1879,21 +1878,12 @@ def load_postgres_tables(
         # intelligence bundle for callers that only need holdings.
         tables["portfolio"] = portfolio_rows(config)
     elif requested_intelligence:
-        # Keep existing test/facade seams compatible while the concrete owner
-        # accepts the selected model set for bounded production reads.
-        intelligence_signature = inspect.signature(portfolio_intelligence_tables).parameters
-        intelligence_options: dict[str, Any] = {}
-        if "models" in intelligence_signature:
-            intelligence_options["models"] = requested_intelligence
-        if "include_performance" in intelligence_signature:
-            intelligence_options["include_performance"] = portfolio_summary_include_performance
-        if "row_limits" in intelligence_signature:
-            intelligence_options["row_limits"] = query_row_limits
-        if "total_counts" in intelligence_signature:
-            intelligence_options["total_counts"] = intelligence_counts
-        if "symbols" in intelligence_signature:
-            intelligence_options["symbols"] = query_symbol_filter
-        live_tables = portfolio_intelligence_tables(config, **intelligence_options)
+        live_tables = portfolio_intelligence_tables(
+            config, models=requested_intelligence,
+            include_performance=portfolio_summary_include_performance,
+            row_limits=query_row_limits, total_counts=intelligence_counts,
+            symbols=query_symbol_filter,
+        )
         for name in requested_intelligence:
             tables[name] = live_tables.get(name, [])
             published_counts.pop(name, None)

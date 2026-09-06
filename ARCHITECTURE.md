@@ -24,7 +24,7 @@ Browser
   -> frontend/src/api/{panel,options,agent,portfolio,userState}.ts
   -> app/routers/
   -> app/dependencies.py / app/panel_snapshot.py / app/job_control.py
-  -> domain action or PostgreSQL read-model owner
+  -> workflow owner or direct typed read dependency
   -> PostgreSQL 18
 ```
 
@@ -43,6 +43,7 @@ and mutation routes remain separate.
 | `app/panel_snapshot.py` | panel scopes, pagination, freshness, and last-good cache | a panel read changes |
 | `app/job_control.py` | refresh start, heartbeat, and subprocess boundary | refresh control changes |
 | `app/actions/options.py` | option workflow sequencing and fail-closed gates | options actions change |
+| `app/actions/today.py` | bounded Today queue and brief composition | Today workflow changes |
 | `app/actions/event_scout.py` | Event Scout packet, cooldown, and replay workflow | Event Scout mutation changes |
 | `app/data_access/loaders.py` | panel query composition | a Read Model scope needs bounded loading |
 | `src/investment_panel/core/panel/` | panel contract and payload rules | a canonical panel shape changes |
@@ -81,7 +82,10 @@ accepts both `AppConfig` and arbitrary dictionaries.
 Backend Pydantic response models own direct domain contracts. The generated
 OpenAPI files are reproducible build outputs. `frontend/src/apiTransport.ts`
 owns transport behavior; domain request modules own URL and request shaping;
-views import domain modules directly. `RowRecord` is kept only at the dynamic
+views import domain modules directly. Panel requests return bounded snapshots.
+`MarketDataProvider` merges each snapshot once into current state, and its
+in-flight map owns loading status. Never return captured application state
+from a request helper. `RowRecord` is kept only at the dynamic
 panel-table seam. Do not hand-edit or routinely inspect generated schemas,
 bundles, or full build logs. Use the contract checks, TypeScript check, and
 production build to verify them.
@@ -94,7 +98,8 @@ Each recipe starts with no more than three owner interfaces:
    the domain owner. Run `make test-api` and `make check`.
 2. Panel Read Model: `core/panel/`, `database/panel_models.py`, and the
    owning database query module. Run `make test-postgres` and `make check`.
-3. Options behavior: `app/actions/options.py`, one deep options owner, and its
+3. Options behavior: a typed read dependency or `app/actions/options.py` for
+   coordinated workflows, one deep options owner, and its
    public test interface. Run `make test-options` and `make check`.
 4. Provider behavior: `providers/advisory.py`, the option-agent workflow, and
    its adapter tests. Run `make test-unit` and `make check`.
@@ -141,6 +146,15 @@ database ticks use worker threads inside the scheduler; long collectors and
 provider or agent work use isolated subprocesses. No external queue is part of
 the runtime contract.
 
+## Fast iteration
+
+- `make typecheck` runs TypeScript only; `make frontend` also runs Vitest.
+- Use the existing focused backend target for the changed owner during edits.
+- Run `make check` before commit and the full release gate once on the final
+  integrated candidate. Do not repeat a full gate for unchanged code.
+- Preserve tests through public interfaces; update old doubles instead of
+  adding callback bags, signature inspection, or alternate production paths.
+
 ## Verification
 
 ```sh
@@ -162,8 +176,12 @@ do not weaken the storage safety gate.
 Storage recovery procedures and destructive-command gates are recorded in
 [`docs/storage-operations.md`](docs/storage-operations.md) and
 [`docs/adr/20260821-final-architecture-scale.md`](docs/adr/20260821-final-architecture-scale.md).
-Keep architecture changes frozen for 90 days unless a measured threshold in
-the ADR fails.
+The September 6 personal-app maintenance direction supersedes the architecture
+freeze for code simplification. Keep the storage and execution invariants in
+the ADR. Retain current folders and deep owners; remove forwarding layers
+when callers can use the existing typed owner directly. Routers obtain those
+owners through dependencies, not database imports. Do not add interfaces for
+a single implementation or divide modules to meet a line-count target.
 
 For live checks, bind API and Vite to `0.0.0.0`, probe `/api/status` and the
 changed routes, and compare the served frontend asset between `:5173` and

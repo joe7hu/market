@@ -360,3 +360,14 @@ def main_preopen() -> None:
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()
     print(json.dumps(scheduled_preopen(args.config), indent=2, default=str))
+
+
+def main_full() -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--continue-on-error", action="store_true")
+    args = parser.parse_args()
+    print(json.dumps(full(args.config, continue_on_error=args.continue_on_error), indent=2, default=str))

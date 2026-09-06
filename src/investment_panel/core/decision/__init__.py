@@ -114,6 +114,8 @@ from investment_panel.core.phase2 import (  # noqa: E402
     source_status,
 )
 from investment_panel.core.decision.ticker import (
+    opportunity_rank_blocker,
+    trade_plan_rank_identity_matches,
     CONTRACT_VERSION as TICKER_DECISION_CONTRACT_VERSION,
     MARKET_DIMENSIONS,
     MARKET_HORIZONS,
@@ -221,6 +223,8 @@ from investment_panel.core.decision.ticker import AvailabilityStatus, availabili
 from investment_panel.core.risk_policy import RiskPolicySnapshot
 
 __all__ = [
+    "opportunity_rank_blocker",
+    "trade_plan_rank_identity_matches",
     "ARCO_STALE_DAYS",
     "DAILY_ANALYSIS_SOURCES",
     "DAILY_STALE_DAYS",
