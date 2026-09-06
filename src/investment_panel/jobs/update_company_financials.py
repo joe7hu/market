@@ -87,14 +87,45 @@ def run(
         for symbol in symbols or []
         if str(symbol).strip()
     }
+    configured_symbols = {
+        str(item.get("symbol") or "").strip().upper()
+        for item in config.watchlist
+        if str(item.get("symbol") or "").strip()
+    }
+    priority_symbols = requested or configured_symbols
     with runtime.read() as connection:
         catalog_rows = connection.execute(
             """
-            SELECT symbol, name, asset_class
-            FROM catalog.instrument
-            WHERE asset_class IN ('equity', 'etf')
-            ORDER BY symbol
+            SELECT instrument.symbol, instrument.name, instrument.asset_class
+            FROM catalog.instrument instrument
+            LEFT JOIN app.portfolio_position position
+              ON position.instrument_id = instrument.id
+            LEFT JOIN app.watchlist_item watchlist
+              ON watchlist.instrument_id = instrument.id
+            WHERE instrument.asset_class IN ('equity', 'etf')
+              AND (
+                %s <> '{}'::text[]
+                AND instrument.symbol = ANY(%s)
+                OR (
+                  position.instrument_id IS NOT NULL
+                  AND position.quantity <> 0
+                )
+                OR (
+                  watchlist.instrument_id IS NOT NULL
+                  AND watchlist.watch_state <> 'excluded'
+                )
+              )
+            ORDER BY (
+                position.instrument_id IS NOT NULL
+                AND position.quantity <> 0
+            ) DESC,
+            (
+                watchlist.instrument_id IS NOT NULL
+                AND watchlist.watch_state <> 'excluded'
+            ) DESC,
+            instrument.symbol
             """,
+            [sorted(priority_symbols), sorted(priority_symbols)],
         ).fetchall()
     instruments = [
         {
