@@ -300,12 +300,14 @@ def test_publication_retention_reclaims_large_and_preexisting_orphan_batches(
 
 def test_backup_is_custom_format_sha_verified_and_contains_all_schemas(
     migrated_postgres_dsn: str,
+    migrated_postgresql_proc,
     tmp_path: Path,
 ) -> None:
     result = create_verified_backup(
         migrated_postgres_dsn,
         tmp_path,
         now=datetime(2026, 7, 11, 12, tzinfo=UTC),
+        postgres_bin_dir=Path(migrated_postgresql_proc.executable).parent,
     )
 
     dump_path = Path(result["dump_path"])

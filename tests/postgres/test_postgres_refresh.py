@@ -28,6 +28,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     market_publication = {"status": "ok", "publication_id": "market-publication-full-test"}
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(postgres_refresh, "_priority_ticker_symbols", lambda *_: ["HELD"])
     monkeypatch.setattr(
         update_market_data,
         "run",
@@ -46,7 +47,8 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     monkeypatch.setattr(update_ibkr_options, "run", lambda _path: {"status": "gateway_offline"})
     monkeypatch.setattr(update_broker_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh.refresh_options_radar, "run", lambda _path: {"status": "ok"})
-    def publish_tickers(_path, *, as_of=None, market_state_publication_id=None):
+    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None):
+        assert symbols == ["HELD"]
         assert market_state_publication_id == market_publication["publication_id"]
         events.append(("ticker", as_of))
         return {"status": "ok"}
@@ -172,6 +174,7 @@ def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkey
 
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(postgres_refresh, "_priority_ticker_symbols", lambda *_: ["HELD"])
     monkeypatch.setattr(
         postgres_refresh.refresh_options_radar,
         "run_deterministic_only",
@@ -183,7 +186,8 @@ def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkey
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
-    def publish_tickers(_path, *, as_of=None, market_state_publication_id=None):
+    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None):
+        assert symbols == ["HELD"]
         assert market_state_publication_id == market_publication["publication_id"]
         events.append(("ticker", as_of))
         return {"status": "ok"}
@@ -215,6 +219,7 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
     market_publication = {"status": "ok", "publication_id": "market-publication-premarket-test"}
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(postgres_refresh, "_priority_ticker_symbols", lambda *_: ["HELD"])
     monkeypatch.setattr(postgres_refresh.refresh_options_radar, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(
         postgres_refresh.refresh_options_radar,
@@ -233,7 +238,8 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
-    def publish_tickers(_path, *, as_of=None, market_state_publication_id=None):
+    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None):
+        assert symbols == ["HELD"]
         assert market_state_publication_id == market_publication["publication_id"]
         events.append(("ticker", as_of))
         return {"status": "ok"}
