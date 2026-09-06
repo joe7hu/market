@@ -5019,6 +5019,9 @@ def _restore_persisted_thesis_context(decision: TickerDecision) -> TickerDecisio
     available_at = _parse_datetime(thesis_row.get("available_at"))
     raw_scenarios = thesis.get("scenarios") if isinstance(thesis.get("scenarios"), Mapping) else {}
     raw_pillars = thesis.get("pillars") if isinstance(thesis.get("pillars"), list) else []
+    raw_rules = thesis.get("invalidation_rules") if isinstance(thesis.get("invalidation_rules"), list) else []
+    rule = next((item for item in raw_rules if isinstance(item, Mapping)), None)
+    rule_statement = str((rule or {}).get("text") or (rule or {}).get("event") or "").strip()
     supporting: list[EvidenceItem] = []
     opposing: list[EvidenceItem] = []
     for pillar in raw_pillars:
@@ -5052,12 +5055,20 @@ def _restore_persisted_thesis_context(decision: TickerDecision) -> TickerDecisio
             updates["evidence_for"] = supporting
         if not view.evidence_against and opposing:
             updates["evidence_against"] = opposing
-        if view.invalidation is None:
-            rules = thesis.get("invalidation_rules") if isinstance(thesis.get("invalidation_rules"), list) else []
-            rule = next((item for item in rules if isinstance(item, Mapping)), None)
-            statement = str((rule or {}).get("text") or (rule or {}).get("event") or "").strip()
-            if statement:
-                updates["invalidation"] = Invalidation(kind="event", value=statement, statement=statement)
+        if view.invalidation is None and rule_statement:
+            updates["invalidation"] = Invalidation(kind="event", value=rule_statement, statement=rule_statement)
+        if (
+            rule_statement
+            and view.fact_that_would_flip.reference is None
+            and view.fact_that_would_flip.statement.startswith("A confirmed ")
+        ):
+            updates["fact_that_would_flip"] = EvidenceItem(
+                statement=rule_statement,
+                polarity=EvidencePolarity.FLIP,
+                source="thesis",
+                available_at=available_at,
+                revision=revision,
+            )
         generic = all(
             scenario.price_range is None and scenario.probability is None
             and scenario.description.endswith("scenario range not loaded.")
@@ -5085,7 +5096,15 @@ def _restore_persisted_thesis_context(decision: TickerDecision) -> TickerDecisio
 
     tactical = restore_view(decision.tactical)
     fundamental = restore_view(decision.fundamental)
-    return decision.model_copy(update={"tactical": tactical, "fundamental": fundamental})
+    catalysts = thesis.get("catalysts") if isinstance(thesis.get("catalysts"), list) else []
+    catalyst_row = next((item for item in catalysts if isinstance(item, Mapping)), None)
+    catalyst = str((catalyst_row or {}).get("title") or (catalyst_row or {}).get("event") or "").strip()
+    updates: dict[str, Any] = {"tactical": tactical, "fundamental": fundamental}
+    if catalyst and not decision.capital_action.catalyst:
+        updates["capital_action"] = decision.capital_action.model_copy(update={"catalyst": catalyst})
+        if decision.resolution is not None and not decision.resolution.catalyst:
+            updates["resolution"] = decision.resolution.model_copy(update={"catalyst": catalyst})
+    return decision.model_copy(update=updates)
 
 
 def _build_expressions(

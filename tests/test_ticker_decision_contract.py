@@ -705,6 +705,7 @@ def test_persisted_ticker_decision_restores_thesis_evidence_and_scenarios() -> N
                         "bull": {"target": 130, "probability": 0.3, "rationale": "Demand accelerates."},
                     },
                     "invalidation_rules": [{"text": "Demand reverses."}],
+                    "catalysts": [{"title": "Next earnings release"}],
                 },
             }],
         },
@@ -720,6 +721,8 @@ def test_persisted_ticker_decision_restores_thesis_evidence_and_scenarios() -> N
     assert [scenario.price_range.low for scenario in replay.fundamental.scenarios] == [80, 100, 130]
     assert replay.fundamental.invalidation is not None
     assert replay.fundamental.invalidation.statement == "Demand reverses."
+    assert replay.fundamental.fact_that_would_flip.statement == "Demand reverses."
+    assert replay.capital_action.catalyst == "Next earnings release"
 
 
 def test_persisted_legacy_portfolio_impacts_infer_the_parent_ticker() -> None:
