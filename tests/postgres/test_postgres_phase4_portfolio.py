@@ -79,6 +79,8 @@ def test_phase4_artifacts_are_immutable_and_paper_only(migrated_postgres_dsn: st
         with pytest.raises(RaiseException):
             connection.execute("UPDATE analysis.portfolio_allocation_snapshot SET status = 'unavailable'")
         connection.rollback()
+
+
         with pytest.raises(RaiseException):
             connection.execute("DELETE FROM analysis.portfolio_allocation_item")
         connection.rollback()
@@ -769,3 +771,52 @@ def test_repository_persists_and_replays_cash_plus_two_trim_sources_with_conserv
                  cash_source, Jsonb({cash_source: .1}), "f" * 64, "1" * 64],
             )
         connection.rollback()
+
+
+def test_manual_funding_capacity_replays_cash_after_snapshot_and_reversal(
+    migrated_postgres_dsn: str,
+) -> None:
+    now = datetime.now(UTC)
+    effective_at = now - timedelta(minutes=10)
+    cutoff = now + timedelta(minutes=10)
+    with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
+        account_id = connection.execute(
+            """
+            INSERT INTO app.manual_account_snapshot
+              (effective_at, recorded_at, cash_balance, net_liquidation,
+               reconciliation_state, reconciliation_version, ledger_book_identity, idempotency_key)
+            VALUES (%s, %s, 100, 100, 'reconciled', 1, %s, %s)
+            RETURNING id
+            """,
+            [effective_at, effective_at, "test-book", "manual-capacity-snapshot"],
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO app.portfolio_transaction
+              (transaction_type, amount, executed_at, idempotency_key)
+            VALUES ('cash_deposit', 100, %s, 'manual-capacity-deposit')
+            """,
+            [now - timedelta(minutes=5)],
+        )
+        withdrawal_id = connection.execute(
+            """
+            INSERT INTO app.portfolio_transaction
+              (transaction_type, amount, executed_at, idempotency_key)
+            VALUES ('cash_withdrawal', 25, %s, 'manual-capacity-withdrawal')
+            RETURNING id
+            """,
+            [now - timedelta(minutes=4)],
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO app.portfolio_transaction
+              (transaction_type, amount, executed_at, idempotency_key, reverses_transaction_id)
+            VALUES ('cash_withdrawal', 25, %s, 'manual-capacity-withdrawal-reversal', %s)
+            """,
+            [now - timedelta(minutes=1), withdrawal_id],
+        )
+        capacity = connection.execute(
+            "SELECT analysis.phase4_funding_source_capacity(%s, %s, %s) AS capacity",
+            [f"CASH:manual-account:{account_id}", f"manual-account:{account_id}", cutoff],
+        ).fetchone()["capacity"]
+        assert float(capacity) == pytest.approx(200)

@@ -414,6 +414,31 @@ def replay_portfolio_at(
         else None
     )
     cash_snapshot_at = cash_snapshot["effective_at"] if cash_snapshot is not None else None
+    if cash_balance is not None and cash_snapshot_at is not None:
+        reversed_before_snapshot = connection.execute(
+            """
+            SELECT COALESCE(SUM(
+                CASE
+                  WHEN original.transaction_type IN ('cash_deposit', 'dividend', 'sell')
+                    THEN COALESCE(original.amount, 0) - COALESCE(original.fees, 0)
+                  WHEN original.transaction_type IN ('cash_withdrawal', 'fee', 'buy')
+                    THEN -(COALESCE(original.amount, 0) + COALESCE(original.fees, 0))
+                  ELSE 0
+                END
+            ), 0) AS adjustment
+            FROM app.portfolio_transaction original
+            JOIN app.portfolio_transaction reversal
+              ON reversal.reverses_transaction_id = original.id
+            WHERE original.reverses_transaction_id IS NULL
+              AND original.executed_at <= %s
+              AND original.created_at <= %s
+              AND reversal.executed_at > %s
+              AND reversal.executed_at <= %s
+              AND reversal.created_at <= %s
+            """,
+            [cash_snapshot_at, reference, cash_snapshot_at, reference, reference],
+        ).fetchone()
+        cash_balance -= float(reversed_before_snapshot["adjustment"] or 0)
     for row in rows:
         instrument_id = int(row["instrument_id"]) if row.get("instrument_id") is not None else None
         position = positions.get(instrument_id) if instrument_id is not None else None
