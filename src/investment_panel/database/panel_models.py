@@ -1164,8 +1164,9 @@ def today_authority_pages(
     safe_decision_limit = max(
         1, min(int(decision_limit), 10_003 - safe_decision_offset),
     )
+    # Opportunities permits offset 10,000 plus a 500-row response page.
     safe_rank_limit = max(
-        1, min(int(rank_limit), 10_003 - safe_rank_offset),
+        1, min(int(rank_limit), 10_500 - safe_rank_offset),
     )
     safe_plan_limit = max(
         1, min(int(plan_limit), 10_003 - safe_plan_offset),

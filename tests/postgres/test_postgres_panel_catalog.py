@@ -763,3 +763,63 @@ def test_ticker_governance_projection_binds_one_options_radar_revision(
         assert second["governance_evaluations"] == []
     finally:
         runtime.close()
+
+
+def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
+    queries = []
+
+    class Cursor:
+        def execute(self, query):
+            queries.append(" ".join(query.split()))
+
+        def fetchmany(self, _size):
+            return []
+
+    class Connection:
+        def cursor(self, **_kwargs):
+            return nullcontext(Cursor())
+
+    class Runtime:
+        def snapshot(self, _profile):
+            return nullcontext(Connection())
+
+    monkeypatch.setattr(panel_models, "runtime_for_config", lambda _config: Runtime())
+    for offset, limit in ((0, 10_500), (10_000, 500)):
+        assert list(today_authority_pages(
+            typed_config("postgresql:///page"), rank_offset=offset, rank_limit=limit,
+        )) == []
+    assert all("opportunity_rank_position <= 10500" in query for query in queries)
+
+
+def test_opportunities_fallback_accepts_production_rank_projection(migrated_postgres_dsn):
+    from app.data_access.loaders import load_opportunities_scope_data
+    from investment_panel.core.decision import OpportunityRank
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    as_of = datetime.now(UTC) - timedelta(minutes=1)
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('PROOF', 'PROOF', 'equity')"
+            )
+        decision = build_ticker_decision("PROOF", {}, as_of=as_of)
+        rank = OpportunityRank(
+            rank_id="rank-proof", ticker=decision.ticker,
+            opportunity_episode_id=decision.opportunity_episode_id,
+            decision_revision=decision.decision_revision, policy_version=decision.policy_version,
+            cutoff=as_of, input_cutoff=as_of, blockers=("no_trade_evidence",),
+        ).model_dump(mode="json")
+        rank["ranking_publication_id"] = str(uuid4())
+        TickerDecisionRepository(runtime).publish(decision.model_copy(update={"opportunity_rank": rank}))
+        panel = load_opportunities_scope_data(typed_config(migrated_postgres_dsn))
+        assert panel.status.ready is True
+        assert panel.metadata["opportunities_rank_fallback"] is True
+        assert panel.metadata["table_counts"]["opportunities_ranked"] == 1
+        projected = panel.rows("opportunities_ranked")[0]
+        assert projected["rank_id"] == rank["rank_id"]
+        assert projected["blockers"] == ["no_trade_evidence"]
+        assert "input_lineage" not in projected
+        assert "utility" not in projected
+    finally:
+        runtime.close()

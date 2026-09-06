@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from investment_panel.core.config import AppConfig, load_config
-from investment_panel.core.decision import TradePlan
+from investment_panel.core.decision import OpportunityRank, TradePlan
 from investment_panel.core.panel import DASHBOARD_UNAVAILABLE_MODELS, tables_for_scope
 from app.data_access.types import DataStatus, PanelData
 from investment_panel.core.panel import (
@@ -495,7 +495,7 @@ def load_opportunities_scope_data(
 
     active_config = config if config is not None else load_config()
     page_offset = max(0, int(offset or 0))
-    page_limit = min(120, max(1, int(limit))) if limit is not None else 120
+    page_limit = min(500, max(1, int(limit))) if limit is not None else 120
     table_names = ("opportunities_ranked", "screener") if include_screener else ("opportunities_ranked",)
     query_limit = page_offset + page_limit
     panel = load_panel_data(
@@ -546,25 +546,30 @@ def _load_ticker_decision_opportunity_ranks(
             rank = row.get("opportunity_rank_page")
             if not isinstance(rank, dict):
                 continue
+            # SQL omits bulky lineage/utility fields, but all identity, cutoff,
+            # and blocker fields must still be present in persisted evidence.
+            if rank.get("contract_version") != "opportunity-rank.v1" or "blockers" not in rank:
+                raise ValueError("opportunity rank contract or blockers missing")
+            OpportunityRank.model_validate(rank)
             ticker = str(row.get("ticker") or "").strip().upper()
             rank_ticker = str(rank.get("ticker") or rank.get("symbol") or "").strip().upper()
             if not ticker or rank_ticker != ticker:
-                continue
+                raise ValueError("opportunity rank lineage mismatch")
             if str(rank.get("decision_revision") or "") != str(row.get("decision_revision") or ""):
-                continue
+                raise ValueError("opportunity rank lineage mismatch")
             if str(rank.get("opportunity_episode_id") or "") != str(row.get("opportunity_episode_id") or ""):
-                continue
+                raise ValueError("opportunity rank lineage mismatch")
             ranking_publication_id = str(rank.get("ranking_publication_id") or "").strip()
             publication_id = str(rank.get("publication_id") or "").strip()
             if ranking_publication_id and publication_id and ranking_publication_id != publication_id:
-                continue
+                raise ValueError("opportunity rank publication mismatch")
             publication_id = ranking_publication_id or publication_id
             if not publication_id:
-                continue
+                raise ValueError("opportunity rank publication missing")
             rank["publication_id"] = publication_id
             episode_id = str(rank.get("opportunity_episode_id") or "")
             if not episode_id or episode_id in seen:
-                continue
+                raise ValueError("opportunity rank episode missing or duplicated")
             seen.add(episode_id)
             ranks.append(dict(rank))
     return ranks, total_count

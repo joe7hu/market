@@ -93,6 +93,11 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
                 "ticker": "AAA",
                 "opportunity_episode_id": "episode-1",
                 "decision_revision": "decision-1",
+                "contract_version": "opportunity-rank.v1",
+                "policy_version": "policy-1",
+                "cutoff": "2026-09-01T00:00:00Z",
+                "input_cutoff": "2026-09-01T00:00:00Z",
+                "blockers": [],
                 "rank_id": "rank-1",
                 "ranking_publication_id": "publication-1",
             },
@@ -105,6 +110,11 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
         "ticker": "AAA",
         "opportunity_episode_id": "episode-1",
         "decision_revision": "decision-1",
+        "contract_version": "opportunity-rank.v1",
+        "policy_version": "policy-1",
+        "cutoff": "2026-09-01T00:00:00Z",
+        "input_cutoff": "2026-09-01T00:00:00Z",
+        "blockers": [],
         "rank_id": "rank-1",
         "ranking_publication_id": "publication-1",
         "publication_id": "publication-1",
@@ -137,6 +147,11 @@ def test_opportunities_fallback_loads_prefix_for_response_pagination(monkeypatch
                     "ticker": "AAA",
                     "opportunity_episode_id": f"episode-{index}",
                     "decision_revision": f"decision-{index}",
+                    "contract_version": "opportunity-rank.v1",
+                    "policy_version": "policy-1",
+                    "cutoff": "2026-09-01T00:00:00Z",
+                    "input_cutoff": "2026-09-01T00:00:00Z",
+                    "blockers": [],
                     "rank_id": f"rank-{index}",
                     "ranking_publication_id": f"publication-{index}",
                 },
@@ -1705,3 +1720,81 @@ def test_save_watchlist_symbol_rejects_malformed_ticker(migrated_postgres_dsn: s
 
     with pytest.raises(ValueError, match="valid ticker"):
         mutations_owner.save_watchlist_symbol(config, {"symbol": "ABC!"})
+
+
+@pytest.mark.parametrize("offset,limit", [(0, 500), (10_000, 500)])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_opportunities_preserves_maximum_page(monkeypatch, offset, limit, fallback):
+    from investment_panel.core.decision import OpportunityRank
+
+    count = offset + limit + 1
+    rows = [{
+        **OpportunityRank(
+            rank_id=f"rank-{i}", ticker=f"T{i}",
+            opportunity_episode_id=f"episode-{i}", decision_revision=f"decision-{i}",
+            policy_version="policy-1", cutoff=datetime(2026, 9, 1, tzinfo=UTC),
+            input_cutoff=datetime(2026, 9, 1, tzinfo=UTC),
+        ).model_dump(mode="json"),
+        "ranking_publication_id": f"publication-{i}",
+    } for i in range(count)]
+    def load(*_a, query_row_limits, **_kw):
+        assert query_row_limits["opportunities_ranked"] == offset + limit
+        return PanelData(
+            status=DataStatus(True, "ok", "postgresql"),
+            tables={"opportunities_ranked": [] if fallback else rows[:offset + limit]},
+            metadata={"table_counts": {"opportunities_ranked": 0 if fallback else count}},
+        )
+
+    monkeypatch.setattr(loaders_owner, "load_panel_data", load)
+
+    def pages(*_a, rank_limit, **_kw):
+        assert rank_limit == offset + limit
+        return iter([[{**rank, "opportunity_rank_page": rank,
+                       "opportunity_rank_count": count}
+                      for rank in rows[:rank_limit]]])
+
+    monkeypatch.setattr(loaders_owner, "today_authority_pages", pages)
+    panel = loaders_owner.load_opportunities_scope_data(
+        typed_config("postgresql:///pagination"), offset=offset, limit=limit,
+    )
+    table = payloads_owner.panel_snapshot_payload(
+        panel, "opportunities", offset=offset, limit=limit,
+    )["tables"]["opportunities_ranked"]
+    assert len(table["rows"]) == 500
+    assert table["rows"][0]["rank_id"] == f"rank-{offset}"
+    assert table["rows"][-1]["rank_id"] == f"rank-{offset + limit - 1}"
+    assert table["count"] == count
+
+
+@pytest.mark.parametrize("field,bad_value", [
+    ("contract_version", None), ("contract_version", "wrong.v1"),
+    ("rank_id", None), ("cutoff", None), ("input_cutoff", None),
+    ("cutoff", "2026-09-01T00:00:00"),
+    ("input_cutoff", "2026-09-02T00:00:00Z"),
+    ("blockers", None), ("blockers", "not-an-array"),
+])
+def test_opportunities_fallback_rejects_malformed_persisted_rank(monkeypatch, field, bad_value):
+    from investment_panel.core.decision import OpportunityRank
+
+    rank = OpportunityRank(
+        rank_id="rank-1", ticker="AAA", opportunity_episode_id="episode-1",
+        decision_revision="decision-1", policy_version="policy-1",
+        cutoff=datetime(2026, 9, 1, tzinfo=UTC),
+        input_cutoff=datetime(2026, 9, 1, tzinfo=UTC),
+    ).model_dump(mode="json")
+    rank["ranking_publication_id"] = "publication-1"
+    if bad_value is None:
+        rank.pop(field)
+    else:
+        rank[field] = bad_value
+    monkeypatch.setattr(loaders_owner, "load_panel_data", lambda *_a, **_kw: PanelData(
+        status=DataStatus(True, "ok", "postgresql"), tables={"opportunities_ranked": []},
+    ))
+    monkeypatch.setattr(loaders_owner, "today_authority_pages", lambda *_a, **_kw: iter([[{
+        "ticker": "AAA", "decision_revision": "decision-1",
+        "opportunity_episode_id": "episode-1", "opportunity_rank_count": 1,
+        "opportunity_rank_page": rank,
+    }]]))
+    panel = loaders_owner.load_opportunities_scope_data(typed_config("postgresql:///invalid-rank"))
+    assert panel.status.ready is False
+    assert panel.rows("opportunities_ranked") == []
