@@ -30,6 +30,7 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
             "correlation_edges", "portfolio_risk_cards",
         ),
         runtime_profile=JOB_PROFILE,
+        compact_ticker_decisions=True,
     )
     repository = DecisionInboxRepository(runtime_for_config(config))
     synced = repository.sync_current_decisions(tables["ticker_decisions"])

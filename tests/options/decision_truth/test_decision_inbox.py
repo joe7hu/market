@@ -921,6 +921,7 @@ def test_decision_inbox_job_calls_paper_lifecycle_once_after_decisions(
 ) -> None:
     calls: list[str] = []
     loaded_tables: list[tuple[str, ...]] = []
+    load_options: list[dict[str, object]] = []
     settings = SimpleNamespace(
         decision_inbox_enabled=True, telegram_notifications_enabled=False,
     )
@@ -951,6 +952,7 @@ def test_decision_inbox_job_calls_paper_lifecycle_once_after_decisions(
 
     def fake_load_postgres_tables(_config: object, table_names: tuple[str, ...], **_kwargs: Any) -> tuple[dict[str, list[object]], dict[str, list[str]]]:
         loaded_tables.append(table_names)
+        load_options.append(_kwargs)
         return {name: [] for name in table_names}, {"unavailable_models": []}  # type: ignore[return-value]
 
     monkeypatch.setattr(
@@ -966,6 +968,7 @@ def test_decision_inbox_job_calls_paper_lifecycle_once_after_decisions(
     assert loaded_tables == [
         ("ticker_decisions", "portfolio_summary", "portfolio_performance", "correlation_edges", "portfolio_risk_cards"),
     ]
+    assert load_options == [{"runtime_profile": decision_inbox_job.JOB_PROFILE, "compact_ticker_decisions": True}]
     assert calls == ["decisions", "paper_lifecycle", "portfolio_risk"]
     assert result["paper_lifecycle"] == _zero_paper_transitions()
     assert result["portfolio_risk"] == _zero_portfolio_risk()
