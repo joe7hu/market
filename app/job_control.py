@@ -19,10 +19,23 @@ from investment_panel.core.refresh_jobs import (
 )
 from investment_panel.jobs import run_thesis_monitor
 
+DECISION_REPAIR_JOBS = frozenset({
+    "update_market_data", "update_market_valuations", "update_broker_account",
+    "update_company_financials", "update_earnings_and_estimates", "update_macro_series",
+    "update_phase2_sources", "update_short_interest_and_borrow", "update_disclosures",
+    "update_ibkr_options", "publish_ticker_benchmark",
+})
+
 
 def execute_background_refresh_job(job_id: str, job_name: str, database_url: str) -> None:
     try:
-        execute_refresh_job_subprocess(job_id, job_name, database_url, "config.yaml")
+        result = execute_refresh_job_subprocess(job_id, job_name, database_url, "config.yaml")
+        if job_name in DECISION_REPAIR_JOBS and result.get("status") in {"succeeded", "partial"}:
+            republish = start_refresh_job("refresh_decision_models", database_url)
+            if republish.get("created"):
+                execute_refresh_job_subprocess(
+                    str(republish["id"]), "refresh_decision_models", database_url, "config.yaml"
+                )
     finally:
         invalidate_context_cache()
 

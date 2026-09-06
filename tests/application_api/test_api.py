@@ -2000,3 +2000,22 @@ def test_decision_inbox_defaults_to_current_items() -> None:
     assert calls[0]["limit"] == 50
     assert calls[0]["cursor"] is None
     assert calls[0]["current_only"].default is True
+
+
+def test_background_data_repair_republishes_decisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def execute(job_id: str, job_name: str, _database_url: str, _config_path: str) -> dict[str, Any]:
+        calls.append((job_id, job_name))
+        return {"status": "partial" if job_name == "update_market_data" else "succeeded"}
+
+    monkeypatch.setattr(job_control, "execute_refresh_job_subprocess", execute)
+    monkeypatch.setattr(
+        job_control, "start_refresh_job",
+        lambda job_name, _database_url: {"id": "republish-1", "created": True, "job_name": job_name},
+    )
+    monkeypatch.setattr(job_control, "invalidate_context_cache", lambda: None)
+
+    job_control.execute_background_refresh_job("collector-1", "update_market_data", "postgresql://market")
+
+    assert calls == [("collector-1", "update_market_data"), ("republish-1", "refresh_decision_models")]
