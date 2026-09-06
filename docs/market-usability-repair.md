@@ -17,8 +17,8 @@ inputs. No new engine, provider, framework or speculative schema.
 | U6 | Research shows ticker evidence; diagnostic authority stays in System | done | Research uses sources scope: 318 ticker rankings; authority table in System details only. |
 | U7 | Command Center prioritizes current holding risks and a bounded daily brief | done | Holding risks sort first; bounded action queue; loaded mobile Command Center check. |
 | U8 | Supported missing data repaired; genuine external gaps identified | done | Current PostgreSQL metric_set/values and nested episode identity repaired; see genuine gaps below. |
-| U9 | AVGO, MSFT and TSLA agree across API and rendered pages | open | AVGO, MSFT, TSLA API checks: matching decision/action identity, fundamentals restored, thesis and countercase present. Live release check pending. |
-| U10 | Focused checks, independent review, release gate and deployed browser proof | open | Independent REVIEW_PASS; 105 frontend tests and build pass; 1530 backend tests pass with 80.47% coverage. Live release check pending. |
+| U9 | AVGO, MSFT and TSLA agree across API and rendered pages | done | AVGO, MSFT, TSLA API checks: matching decision/action identity, fundamentals restored, thesis and countercase present. Live release 5e226d9 verified on API :8000 and browser :5173. |
+| U10 | Focused checks, independent review, release gate and deployed browser proof | done | Independent REVIEW_PASS; 105 frontend tests and build pass; 1530 backend tests pass with 80.47% coverage. Live release 5e226d9 verified on API :8000 and browser :5173. |
 
 Stop when all rows have evidence and no repairable defect remains open. Genuine
 account/history limits must be explicit; do not infer completion of older
@@ -40,3 +40,12 @@ campaign observation gates. Batch review findings before the final release gate.
 - A dated reference close is not an executable quote; execution freshness rules remain unchanged.
 
 No new provider, engine, schema, or dependency was added. PostgreSQL and paper-only controls are unchanged.
+
+## Deployed proof
+
+- Code release `5e226d9d8a297285be24025f282031b8f827fb68` landed on `origin/main`. API, frontend and scheduler release labels agree. Schema `20260906_0001` is compatible. Both services listen on all interfaces.
+- Read-only API checks passed for AVGO, MSFT and TSLA: same decision and action identity, restored SEC fundamentals, stored thesis and countercase.
+- Browser checked Opportunities → AVGO, MSFT, TSLA, Portfolio, Research and Command Center after restart. No browser errors. Mobile Command Center width is 390px with no page overflow.
+- All 320 screener rows loaded in preview through 120/240/320 page counts using the same code. Research has 318 ticker rows; Opportunities has 806 stored rows.
+- Source links and episode pagination findings are closed. All ten bounded acceptance items are done. Genuine gaps above are data inputs, not hidden successful states.
+- Durable capture: GBrain `inbox/2026-09-06-45fd8eca`.
