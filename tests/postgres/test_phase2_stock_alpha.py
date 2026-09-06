@@ -15,6 +15,7 @@ from app.data_access.loaders import load_daily_research_panel_data, load_panel_d
 from conftest import typed_config
 from investment_panel.analysis.stock_alpha import FEATURE_VERSION, research_score
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime, activate_application_role
 from investment_panel.jobs.stock_alpha_walk_forward import load_observations, load_universe_members, run
 
@@ -49,6 +50,14 @@ def _controls() -> dict[str, list[float]]:
 @pytest.fixture(autouse=True)
 def _configured_evaluator_signing_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MARKET_RESEARCH_EVALUATOR_SIGNING_KEY", "phase2-test-signing-key")
+
+
+@pytest.fixture
+def migrated_postgres_dsn(postgres_dsn: str, _configured_evaluator_signing_key) -> str:
+    # These role/signing-key tests change migration inputs per test. Keep them
+    # on the raw process, separate from the fixed session template.
+    upgrade_database(postgres_dsn)
+    return postgres_dsn
 
 
 def _seed_universe_tape(runtime: DatabaseRuntime, cutoff: datetime, symbols: list[str], *, as_of: datetime | None = None) -> None:

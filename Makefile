@@ -7,6 +7,9 @@
 #   make lint    - high-signal ruff rules (config in pyproject.toml [tool.ruff])
 #   make test-unit/test-api/test-options/test-postgres - focused behavior gates
 #   make test-all - complete backend suite
+#   make test-workflow - focused production-role and fixture-isolation checks
+#   make test-migrations - raw-database migration/recovery checks
+#   make release-gate - descriptive alias for the unchanged phase0-gate
 #
 # `check` is intentionally green-or-bust and quick so it can run on every commit.
 # The full backend suite uses ephemeral PostgreSQL fixtures. Storage archive
@@ -15,7 +18,7 @@
 PY := uv run python
 RUFF := uvx ruff
 
-.PHONY: check contracts guards lint frontend typecheck test test-unit test-api test-options test-postgres test-all coverage build phase0-gate
+.PHONY: check contracts guards lint frontend typecheck test test-unit test-api test-options test-postgres test-all coverage build phase0-gate test-workflow test-migrations release-gate
 
 check: contracts guards lint frontend
 	@echo "✓ check passed"
@@ -56,6 +59,12 @@ test-options:
 test-postgres:
 	@$(PY) -m pytest tests/postgres tests/options -q
 
+test-workflow:
+	@$(PY) -m pytest -q tests/postgres/test_application_workflows.py tests/postgres/test_fixture_isolation.py tests/postgres/test_phase2_stock_alpha.py::test_distinct_noinherit_login_is_the_only_runtime_activation_boundary tests/postgres/test_postgres_phase4_portfolio.py::test_manual_funding_capacity_replays_cash_after_snapshot_and_reversal tests/test_wait_for_job.py
+
+test-migrations:
+	@$(PY) -m pytest tests/postgres/test_postgres_foundation.py -q
+
 test-all:
 	@$(PY) -m pytest tests -q
 
@@ -68,3 +77,5 @@ build:
 phase0-gate: check build
 	@$(PY) -m pytest tests -q --run-slow --cov=src/investment_panel/database --cov=app --cov-fail-under=80
 	@git diff --check
+
+release-gate: phase0-gate

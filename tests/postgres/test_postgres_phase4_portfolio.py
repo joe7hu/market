@@ -21,6 +21,7 @@ from investment_panel.core.portfolio import (
 )
 from investment_panel.database.migrations import HEAD_REVISION, downgrade_database, upgrade_database
 from investment_panel.database.portfolio import PortfolioLoopRepository
+from investment_panel.database.runtime import DatabaseRuntime
 
 
 AS_OF = datetime(2026, 9, 2, 15, tzinfo=UTC)
@@ -774,7 +775,7 @@ def test_repository_persists_and_replays_cash_plus_two_trim_sources_with_conserv
 
 
 def test_manual_funding_capacity_replays_cash_after_snapshot_and_reversal(
-    migrated_postgres_dsn: str,
+    migrated_postgres_dsn: str, application_postgres_dsn: str,
 ) -> None:
     now = datetime.now(UTC)
     effective_at = now - timedelta(minutes=10)
@@ -820,3 +821,17 @@ def test_manual_funding_capacity_replays_cash_after_snapshot_and_reversal(
             [f"CASH:manual-account:{account_id}", f"manual-account:{account_id}", cutoff],
         ).fetchone()["capacity"]
         assert float(capacity) == pytest.approx(200)
+        connection.commit()
+    # Seed as owner, then execute the production guard with the real app login.
+    runtime = DatabaseRuntime(application_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.read() as connection:
+            assert connection.execute("SELECT current_user").fetchone()["current_user"] == "market_app"
+            capacity = connection.execute(
+                "SELECT analysis.phase4_funding_source_capacity(%s, %s, %s) AS capacity",
+                [f"CASH:manual-account:{account_id}", f"manual-account:{account_id}", cutoff],
+            ).fetchone()["capacity"]
+            assert float(capacity) == pytest.approx(200)
+    finally:
+        runtime.close()

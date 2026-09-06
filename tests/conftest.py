@@ -1,24 +1,20 @@
-"""Pytest session setup: a fast default inner loop plus an opt-in slow tier.
+"""Isolated PostgreSQL tests; expensive integration cases opt in with --run-slow.
 
-Two things make the suite painful to iterate on:
-
-1. A couple of end-to-end integration tests (building candidates from a local
-   Arco fixture, the free-source round-trip) do ~90s of real computation each.
-   They are marked ``@pytest.mark.slow`` and skipped by default. Run the full
-   suite with ``uv run pytest --run-slow``.
-
-So ``uv run pytest`` is the fast loop (~40s); ``uv run pytest --run-slow`` is the
-complete run for CI / pre-push.
+Behavior tests clone a session-migrated template. The plugin's original
+postgresql/postgres_dsn fixtures stay blank for migration and role-DDL tests.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
 
 import pytest
+from pytest_postgresql import factories
+from sqlalchemy.engine import URL, make_url
 
 # CI provisions the same explicit app-login contract that production uses.
 # These are test credentials only; the migration still requires deployment
@@ -32,6 +28,21 @@ from investment_panel.database.configuration import DatabaseConfig
 from dataclasses import replace
 from investment_panel.database.authority import close_cached_runtimes
 from investment_panel.database.migrations import upgrade_database
+
+
+def _postgres_url(*, host, port, user, dbname, password=None) -> str:
+    return URL.create(
+        "postgresql", username=user, password=password, host=host, port=port, database=dbname,
+    ).render_as_string(hide_password=False)
+
+
+def _load_migrated_database(**connection: object) -> None:
+    upgrade_database(_postgres_url(**connection))
+
+
+# A separate process keeps migration/role-DDL tests away from this template.
+migrated_postgresql_proc = factories.postgresql_proc(load=[_load_migrated_database])
+migrated_postgresql = factories.postgresql("migrated_postgresql_proc")
 
 
 def typed_config(
@@ -97,6 +108,18 @@ def postgres_dsn(postgresql) -> str:
 
 
 @pytest.fixture
-def migrated_postgres_dsn(postgres_dsn: str) -> str:
-    upgrade_database(postgres_dsn)
-    return postgres_dsn
+def migrated_postgres_dsn(migrated_postgresql) -> Iterator[str]:
+    info = migrated_postgresql.info
+    try:
+        yield _postgres_url(host=info.host, port=info.port, user=info.user, password=info.password, dbname=info.dbname)
+    finally:
+        close_cached_runtimes()  # Close API pools before the plugin drops the clone.
+
+
+@pytest.fixture
+def application_postgres_dsn(migrated_postgres_dsn: str) -> str:
+    """Use the configured application login, never the migration owner."""
+    return make_url(migrated_postgres_dsn).set(
+        username=os.environ["MARKET_APP_LOGIN_ROLE"],
+        password=os.environ["MARKET_APP_DATABASE_PASSWORD"],
+    ).render_as_string(hide_password=False)
