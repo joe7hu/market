@@ -6044,6 +6044,8 @@ export interface components {
             expressions: {
                 [key: string]: components["schemas"]["ExpressionDecision"];
             };
+            /** Field States */
+            field_states?: components["schemas"]["DataFieldStateV1"][];
             fundamental: components["schemas"]["HorizonDecision"];
             input_manifest: components["schemas"]["InputManifest"];
             /** Instrument State Snapshot */

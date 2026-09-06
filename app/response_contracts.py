@@ -775,6 +775,7 @@ class TickerDetailResponse(FlexibleResponse):
 class TickerDecisionSnapshotResponse(TickerDecision):
     """The full validated decision and its derived learning context."""
 
+    field_states: list[DataFieldStateV1] = Field(default_factory=list)
     learning: JsonObject = Field(default_factory=dict)
 
 

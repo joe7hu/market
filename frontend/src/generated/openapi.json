@@ -13520,6 +13520,13 @@
             "title": "Expressions",
             "type": "object"
           },
+          "field_states": {
+            "items": {
+              "$ref": "#/components/schemas/DataFieldStateV1"
+            },
+            "title": "Field States",
+            "type": "array"
+          },
           "fundamental": {
             "$ref": "#/components/schemas/HorizonDecision"
           },
