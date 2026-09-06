@@ -85,10 +85,16 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
         loaders_owner,
         "today_authority_pages",
         lambda *_args, **_kwargs: iter([[{
+            "ticker": "AAA",
+            "decision_revision": "decision-1",
+            "opportunity_episode_id": "episode-1",
+            "opportunity_rank_count": 10,
             "opportunity_rank_page": {
                 "ticker": "AAA",
                 "opportunity_episode_id": "episode-1",
+                "decision_revision": "decision-1",
                 "rank_id": "rank-1",
+                "ranking_publication_id": "publication-1",
             },
         }]]),
     )
@@ -98,9 +104,54 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
     assert panel.rows("opportunities_ranked") == [{
         "ticker": "AAA",
         "opportunity_episode_id": "episode-1",
+        "decision_revision": "decision-1",
         "rank_id": "rank-1",
+        "ranking_publication_id": "publication-1",
+        "publication_id": "publication-1",
     }]
     assert panel.metadata["opportunities_rank_fallback"] is True
+    assert panel.metadata["table_counts"]["opportunities_ranked"] == 10
+
+
+def test_opportunities_fallback_loads_prefix_for_response_pagination(monkeypatch) -> None:
+    captured: dict[str, int] = {}
+    monkeypatch.setattr(
+        loaders_owner,
+        "load_panel_data",
+        lambda *_args, **_kwargs: PanelData(
+            status=DataStatus(True, "ok", "postgresql"),
+            tables={"opportunities_ranked": []},
+            metadata={"table_counts": {"opportunities_ranked": 0}},
+        ),
+    )
+
+    def pages(*_args, **kwargs):
+        captured.update(kwargs)
+        return iter([[
+            {
+                "ticker": "AAA",
+                "decision_revision": f"decision-{index}",
+                "opportunity_episode_id": f"episode-{index}",
+                "opportunity_rank_count": 10,
+                "opportunity_rank_page": {
+                    "ticker": "AAA",
+                    "opportunity_episode_id": f"episode-{index}",
+                    "decision_revision": f"decision-{index}",
+                    "rank_id": f"rank-{index}",
+                    "ranking_publication_id": f"publication-{index}",
+                },
+            }
+            for index in range(4)
+        ]])
+
+    monkeypatch.setattr(loaders_owner, "today_authority_pages", pages)
+    panel = loaders_owner.load_opportunities_scope_data(
+        typed_config("postgresql:///opportunities-pagination"), offset=2, limit=2,
+    )
+
+    assert captured["rank_limit"] == 4
+    assert len(panel.rows("opportunities_ranked")) == 4
+    assert panel.metadata["table_counts"]["opportunities_ranked"] == 10
 
 
 def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_dsn: str) -> None:

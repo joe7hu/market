@@ -507,13 +507,20 @@ def load_opportunities_scope_data(
         },
     )
     if panel.status.ready and not panel.rows("opportunities_ranked"):
-        fallback = _load_ticker_decision_opportunity_ranks(
-            active_config, offset=page_offset, limit=page_limit,
-        )
+        try:
+            fallback, fallback_count = _load_ticker_decision_opportunity_ranks(
+                active_config, limit=query_limit,
+            )
+        except Exception as exc:
+            return PanelData(
+                status=DataStatus(False, f"PostgreSQL opportunities unavailable: {exc}", "postgresql-error"),
+                tables=panel.tables,
+                metadata={**panel.metadata, "error": str(exc)},
+            )
         if fallback:
             panel.tables["opportunities_ranked"] = fallback
             counts = dict(panel.metadata.get("table_counts") or {})
-            counts["opportunities_ranked"] = len(fallback)
+            counts["opportunities_ranked"] = fallback_count
             panel.metadata["table_counts"] = counts
             panel.metadata["opportunities_rank_source"] = "ticker_decision_input_manifest"
             panel.metadata["opportunities_rank_fallback"] = True
@@ -521,29 +528,46 @@ def load_opportunities_scope_data(
 
 
 def _load_ticker_decision_opportunity_ranks(
-    config: AppConfig, *, offset: int, limit: int,
-) -> list[dict[str, Any]]:
+    config: AppConfig, *, limit: int,
+) -> tuple[list[dict[str, Any]], int]:
     """Expose bounded rank evidence when its publication projection is empty."""
 
     ranks: list[dict[str, Any]] = []
     seen: set[str] = set()
+    total_count = 0
     for page in today_authority_pages(
         config,
         decision_limit=1,
-        rank_offset=offset,
         rank_limit=limit,
         plan_limit=1,
     ):
         for row in page:
+            total_count = max(total_count, int(row.get("opportunity_rank_count") or 0))
             rank = row.get("opportunity_rank_page")
             if not isinstance(rank, dict):
                 continue
+            ticker = str(row.get("ticker") or "").strip().upper()
+            rank_ticker = str(rank.get("ticker") or rank.get("symbol") or "").strip().upper()
+            if not ticker or rank_ticker != ticker:
+                continue
+            if str(rank.get("decision_revision") or "") != str(row.get("decision_revision") or ""):
+                continue
+            if str(rank.get("opportunity_episode_id") or "") != str(row.get("opportunity_episode_id") or ""):
+                continue
+            ranking_publication_id = str(rank.get("ranking_publication_id") or "").strip()
+            publication_id = str(rank.get("publication_id") or "").strip()
+            if ranking_publication_id and publication_id and ranking_publication_id != publication_id:
+                continue
+            publication_id = ranking_publication_id or publication_id
+            if not publication_id:
+                continue
+            rank["publication_id"] = publication_id
             episode_id = str(rank.get("opportunity_episode_id") or "")
             if not episode_id or episode_id in seen:
                 continue
             seen.add(episode_id)
             ranks.append(dict(rank))
-    return ranks
+    return ranks, total_count
 
 
 def load_portfolio_scope_data(
