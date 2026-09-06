@@ -13537,6 +13537,17 @@
       "TickerDecisionDetailResponse": {
         "description": "Decision conclusions used by the ticker page; audit bodies live on the snapshot route.",
         "properties": {
+          "action_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Identity"
+          },
           "as_of": {
             "format": "date-time",
             "title": "As Of",

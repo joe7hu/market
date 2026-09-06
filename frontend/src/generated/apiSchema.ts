@@ -6089,6 +6089,8 @@ export interface components {
          * @description Decision conclusions used by the ticker page; audit bodies live on the snapshot route.
          */
         TickerDecisionDetailResponse: {
+            /** Action Identity */
+            action_identity?: string | null;
             /**
              * As Of
              * Format: date-time

@@ -764,6 +764,7 @@ class TickerDecisionDetailResponse(BaseModel):
     ticker: str
     as_of: datetime
     decision_revision: str
+    action_identity: str | None = None
     tactical: HorizonDecision
     fundamental: HorizonDecision
     capital_action: CapitalAction
