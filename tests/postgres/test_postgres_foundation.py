@@ -85,9 +85,10 @@ def test_runtime_read_path_privileges_are_available_to_application_role(postgres
                       has_table_privilege('market_app', 'app.option_history_policy', 'SELECT'),
                       has_table_privilege('market_app', 'app.option_history_policy', 'INSERT'),
                       has_table_privilege('market_app', 'app.option_history_policy', 'UPDATE'),
+                      has_sequence_privilege('market_app', 'app.thesis_review_event_id_seq', 'USAGE'),
                       to_regclass('analysis.ix_option_relative_value_generation_contract') IS NOT NULL"""
         ).fetchone()
-        assert tuple(privileges) == (True,) * 9
+        assert tuple(privileges) == (True,) * 10
 
 
 def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(

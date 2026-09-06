@@ -669,7 +669,10 @@ def load_watchlist_scope_data(
     seed = load_panel_data(
         active_config,
         table_names=("universe_screen", "manual_watchlist", "portfolio"),
-        query_row_limits={"universe_screen": seed_limit, "manual_watchlist": seed_limit},
+        query_row_limits=(
+            {"universe_screen": seed_limit, "manual_watchlist": seed_limit}
+            if scope == "watchlist" else None
+        ),
     )
     rows = seed.rows("universe_screen")
     if scope == "watchlist-watched":
@@ -700,12 +703,15 @@ def load_watchlist_scope_data(
     tables = {
         **seed.tables,
         **detail.tables,
-        "manual_watchlist": seed.rows("manual_watchlist")[:seed_limit],
+        "manual_watchlist": seed.rows("manual_watchlist")[:seed_limit] if scope == "watchlist" else seed.rows("manual_watchlist"),
         "screener": seed.rows("universe_screen"),
     }
     ready = seed.status.ready and detail.status.ready
     table_offsets = (
-        {name: page_offset for name in (*seed.tables, *detail.tables, "screener")}
+        {
+            name: 0 if name in {"universe_screen", "manual_watchlist", "portfolio", "screener"} else page_offset
+            for name in (*seed.tables, *detail.tables, "screener")
+        }
         if scope == "watchlist"
         else None
     )
