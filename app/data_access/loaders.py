@@ -498,7 +498,7 @@ def load_opportunities_scope_data(
     page_limit = min(120, max(1, int(limit))) if limit is not None else 120
     table_names = ("opportunities_ranked", "screener") if include_screener else ("opportunities_ranked",)
     query_limit = page_offset + page_limit
-    return load_panel_data(
+    panel = load_panel_data(
         active_config,
         table_names=table_names,
         query_row_limits={
@@ -506,6 +506,44 @@ def load_opportunities_scope_data(
             **({"screener": query_limit} if include_screener else {}),
         },
     )
+    if panel.status.ready and not panel.rows("opportunities_ranked"):
+        fallback = _load_ticker_decision_opportunity_ranks(
+            active_config, offset=page_offset, limit=page_limit,
+        )
+        if fallback:
+            panel.tables["opportunities_ranked"] = fallback
+            counts = dict(panel.metadata.get("table_counts") or {})
+            counts["opportunities_ranked"] = len(fallback)
+            panel.metadata["table_counts"] = counts
+            panel.metadata["opportunities_rank_source"] = "ticker_decision_input_manifest"
+            panel.metadata["opportunities_rank_fallback"] = True
+    return panel
+
+
+def _load_ticker_decision_opportunity_ranks(
+    config: AppConfig, *, offset: int, limit: int,
+) -> list[dict[str, Any]]:
+    """Expose bounded rank evidence when its publication projection is empty."""
+
+    ranks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for page in today_authority_pages(
+        config,
+        decision_limit=1,
+        rank_offset=offset,
+        rank_limit=limit,
+        plan_limit=1,
+    ):
+        for row in page:
+            rank = row.get("opportunity_rank_page")
+            if not isinstance(rank, dict):
+                continue
+            episode_id = str(rank.get("opportunity_episode_id") or "")
+            if not episode_id or episode_id in seen:
+                continue
+            seen.add(episode_id)
+            ranks.append(dict(rank))
+    return ranks
 
 
 def load_portfolio_scope_data(

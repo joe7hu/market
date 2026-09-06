@@ -37,6 +37,7 @@ def test_opportunities_loads_dense_screener_only_when_requested(monkeypatch) -> 
         return PanelData(status=DataStatus(True, "ok", "test"), tables={})
 
     monkeypatch.setattr(loaders_owner, "load_panel_data", fake_load_panel_data)
+    monkeypatch.setattr(loaders_owner, "today_authority_pages", lambda *_args, **_kwargs: iter(()))
     config = typed_config("postgresql:///opportunities-lazy")
 
     loaders_owner.load_opportunities_scope_data(config)
@@ -68,6 +69,38 @@ def test_opportunities_snapshot_keeps_the_on_demand_screener() -> None:
     payload = payloads_owner.panel_snapshot_payload(panel, "opportunities")
 
     assert payload["tables"]["screener"]["rows"] == [{"symbol": "BBB"}]
+
+
+def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -> None:
+    monkeypatch.setattr(
+        loaders_owner,
+        "load_panel_data",
+        lambda *_args, **_kwargs: PanelData(
+            status=DataStatus(True, "ok", "postgresql"),
+            tables={"opportunities_ranked": []},
+            metadata={"table_counts": {"opportunities_ranked": 0}},
+        ),
+    )
+    monkeypatch.setattr(
+        loaders_owner,
+        "today_authority_pages",
+        lambda *_args, **_kwargs: iter([[{
+            "opportunity_rank_page": {
+                "ticker": "AAA",
+                "opportunity_episode_id": "episode-1",
+                "rank_id": "rank-1",
+            },
+        }]]),
+    )
+
+    panel = loaders_owner.load_opportunities_scope_data(typed_config("postgresql:///opportunities-fallback"))
+
+    assert panel.rows("opportunities_ranked") == [{
+        "ticker": "AAA",
+        "opportunity_episode_id": "episode-1",
+        "rank_id": "rank-1",
+    }]
+    assert panel.metadata["opportunities_rank_fallback"] is True
 
 
 def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_dsn: str) -> None:
