@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from investment_panel.providers import OpenCliUnavailableError as PackageOpenCliUnavailableError
 from investment_panel.providers.opencli import (
     OpenCliError,
     OpenCliRateLimitError,
@@ -79,6 +80,7 @@ def test_read_json_classifies_timeout_as_unavailable(monkeypatch) -> None:
 
     with pytest.raises(OpenCliUnavailableError):
         OpenCliRunner().read_json(["twitter", "list-tweets"])
+    assert PackageOpenCliUnavailableError is OpenCliUnavailableError
 
 
 def test_opencli_resolves_known_installation_when_launchd_path_is_minimal(tmp_path, monkeypatch) -> None:

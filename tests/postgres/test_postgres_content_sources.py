@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs import update_content_sources
+from investment_panel.providers.opencli import OpenCliUnavailableError
 
 
 def test_content_refresh_archives_payload_and_stores_compact_linked_facts(
@@ -86,5 +87,49 @@ def test_content_refresh_archives_payload_and_stores_compact_linked_facts(
         assert signal["details"]["evidence_state"] == "HYPOTHESIS"
         assert signal["details"]["transformation"] == "content-hypothesis-v1"
         assert signal["analysis_status"] == "succeeded"
+    finally:
+        runtime.close()
+
+
+def test_social_access_timeout_is_partial_and_does_not_publish_thesis(
+    migrated_postgres_dsn: str,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        config = SimpleNamespace(
+            database=SimpleNamespace(url=migrated_postgres_dsn),
+            nas=SimpleNamespace(market_dir=tmp_path / "nas"),
+            report_dir=tmp_path / "reports",
+            data_sources=SimpleNamespace(opencli=SimpleNamespace(command="opencli", timeout_seconds=1)),
+            research_sources=SimpleNamespace(
+                news=SimpleNamespace(enabled=False, providers=[], limit=10),
+                blogs=SimpleNamespace(enabled=False, substack_urls=[], rss_urls=[]),
+                x=SimpleNamespace(enabled=True, list_id="list-1", limit=10),
+            ),
+        )
+
+        class _Runner:
+            def read_json(self, _args):
+                raise OpenCliUnavailableError("OpenCLI timed out")
+
+        monkeypatch.setattr(update_content_sources, "load_config", lambda _path=None: config)
+        monkeypatch.setattr(update_content_sources, "runtime_for_config", lambda _config: runtime)
+        monkeypatch.setattr(update_content_sources, "OpenCliRunner", lambda **_kwargs: _Runner())
+
+        result = update_content_sources.run("config.yaml", kinds={"social"})
+
+        assert result["status"] == "partial"
+        assert result["runs"][0]["status"] == "unavailable"
+        assert result["runs"][0]["downstream_status"] == "not_run"
+        with runtime.read() as connection:
+            row = connection.execute(
+                "SELECT status, failure_detail FROM ingest.run WHERE source_id = 'birdclaw_primary_tweets' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert row["status"] == "partial"
+        assert row["failure_detail"] == "OpenCLI timed out"
     finally:
         runtime.close()
