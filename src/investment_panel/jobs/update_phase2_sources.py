@@ -34,7 +34,7 @@ from investment_panel.core.phase2 import (
 )
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.payload_archive import provider_archive_path
+from investment_panel.database.payload_archive import write_provider_payload
 from investment_panel.database.phase2 import Phase2Repository
 
 
@@ -226,9 +226,8 @@ def _source_definition(source_id: str) -> dict[str, Any]:
 
 
 def _archive_payload(app_config: AppConfig, source_id: str, run_id: Any, payload: Mapping[str, Any]) -> Path:
-    path = provider_archive_path(app_config, source_id, datetime.now(UTC).strftime("%Y/%m/%d"), f"{run_id}.json")
-    path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-    return path
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return write_provider_payload(app_config, raw, compressed=False)
 
 
 def run(

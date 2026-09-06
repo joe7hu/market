@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, date, datetime, time, timedelta
 import hashlib
-import gzip
 import json
 import re
 from typing import Any
@@ -16,7 +15,7 @@ from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.core import sec
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.payload_archive import provider_archive_path
+from investment_panel.database.payload_archive import write_provider_payload
 from investment_panel.database.source_facts import SourceFactRepository
 
 
@@ -101,13 +100,8 @@ def _bls_events(user_agent: str) -> tuple[list[dict[str, Any]], list[dict[str, s
 
 
 def _archive_payload(config: AppConfig, run_id: Any, payloads: list[dict[str, str]]) -> Any:
-
-    path = provider_archive_path(
-        config, SOURCE_ID, datetime.now(UTC).strftime("%Y/%m/%d"), f"{run_id}.json.gz"
-    )
-    with gzip.open(path, "wt", encoding="utf-8") as handle:
-        json.dump(payloads, handle, ensure_ascii=False, separators=(",", ":"))
-    return path
+    raw = json.dumps(payloads, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return write_provider_payload(config, raw)
 
 
 def _parse_bls(html: str, release: str, kind: str, url: str) -> list[dict[str, Any]]:

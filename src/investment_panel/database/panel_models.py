@@ -22,6 +22,7 @@ from investment_panel.database.panel_watchlist import TECHNICALS_QUERY, options_
 from investment_panel.database.options_recovery_read import RecoveryReadRepository
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.current_quotes import current_quote_rows
+from investment_panel.database.panel_option_queries import TRANSITION_QUERY, current_option_query, transition_rows
 from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
 from investment_panel.database.runtime import API_PROFILE, RuntimeProfile
 
@@ -758,56 +759,8 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
     """,
     "quotes": "SELECT NULL::text AS symbol WHERE false",
-    "options_chain": """
-        WITH latest_symbol_snapshot AS (
-            SELECT DISTINCT ON (instrument.id)
-                   instrument.id AS instrument_id, snapshot.id AS snapshot_id
-            FROM raw.option_snapshot snapshot
-            JOIN raw.option_quote quote ON quote.snapshot_id = snapshot.id
-            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-            ORDER BY instrument.id, snapshot.observed_at DESC,
-                     CASE snapshot.source_id WHEN 'robinhood' THEN 0 WHEN 'ibkr' THEN 1 ELSE 2 END,
-                     snapshot.id DESC
-        )
-        SELECT instrument.symbol, contract.expiration AS expiry, contract.strike,
-               contract.option_type, quote.bid, quote.ask, quote.mid, quote.last,
-               quote.volume, quote.open_interest, quote.provider_iv AS iv,
-               quote.provider_delta AS delta, quote.provider_gamma AS gamma,
-               quote.provider_theta AS theta, quote.provider_vega AS vega,
-               quote.observed_at, snapshot.source_id AS source,
-               contract.id::text AS contract_symbol
-        FROM raw.option_quote quote
-        JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
-        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-        JOIN latest_symbol_snapshot latest
-          ON latest.snapshot_id = snapshot.id AND latest.instrument_id = instrument.id
-        ORDER BY instrument.symbol, contract.expiration, contract.strike, contract.option_type
-    """,
-    "options_expiries": """
-        WITH latest_symbol_snapshot AS (
-            SELECT DISTINCT ON (instrument.id)
-                   instrument.id AS instrument_id, snapshot.id AS snapshot_id
-            FROM raw.option_snapshot snapshot
-            JOIN raw.option_quote quote ON quote.snapshot_id = snapshot.id
-            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-            ORDER BY instrument.id, snapshot.observed_at DESC,
-                     CASE snapshot.source_id WHEN 'robinhood' THEN 0 WHEN 'ibkr' THEN 1 ELSE 2 END,
-                     snapshot.id DESC
-        )
-        SELECT instrument.symbol, contract.expiration AS expiry,
-               max(quote.observed_at) AS observed_at, snapshot.source_id AS source
-        FROM raw.option_quote quote
-        JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
-        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-        JOIN latest_symbol_snapshot latest
-          ON latest.snapshot_id = snapshot.id AND latest.instrument_id = instrument.id
-        GROUP BY instrument.symbol, contract.expiration, snapshot.source_id
-        ORDER BY instrument.symbol, contract.expiration
-    """,
+    "options_chain": current_option_query("options_chain"),
+    "options_expiries": current_option_query("options_expiries"),
     "fundamentals": """
         SELECT instrument.symbol, observation.period_start, observation.period_end, observation.filed_at,
                observation.observed_at, observation.metric_set, observation.values,
@@ -1022,19 +975,7 @@ DIRECT_QUERIES: dict[str, str] = {
             WHERE instrument_id = instrument.id ORDER BY id LIMIT 1
         ) alias ON true ORDER BY instrument.symbol
     """,
-    "vol_surface_features": """
-        SELECT instrument.symbol AS ticker, contract.expiration,
-               avg(quote.provider_iv) FILTER (WHERE contract.option_type = 'call') AS call_iv,
-               avg(quote.provider_iv) FILTER (WHERE contract.option_type = 'put') AS put_iv,
-               avg(quote.provider_iv) FILTER (WHERE contract.option_type = 'put')
-                 - avg(quote.provider_iv) FILTER (WHERE contract.option_type = 'call') AS put_call_skew,
-               max(quote.observed_at) AS as_of, count(*) AS contracts
-        FROM raw.option_quote quote
-        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-        GROUP BY instrument.symbol, contract.expiration
-        ORDER BY as_of DESC, instrument.symbol, contract.expiration
-    """,
+    "vol_surface_features": current_option_query("vol_surface_features"),
     "exploration_gate_report": """
         SELECT run.id::text AS analysis_run_id, strategy.strategy_key AS strategy_version,
                instrument.symbol AS ticker, summary.gate_code,
@@ -1067,17 +1008,7 @@ DIRECT_QUERIES: dict[str, str] = {
           AND run.feature_versions->>'option' = 'option-professional-v3-ticket'
         ORDER BY outcome.peak_return DESC, decision.id DESC
     """,
-    "radar_state_transition": """
-        SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
-               decision.as_of AS transitioned_at, decision.state AS to_state,
-               lag(decision.state) OVER (
-                   PARTITION BY option_decision.contract_id ORDER BY decision.as_of
-               ) AS from_state, decision.score
-        FROM analysis.decision decision
-        JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
-        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-        ORDER BY decision.as_of DESC
-    """,
+    "radar_state_transition": TRANSITION_QUERY.replace("%s", "500"),
     "correlations": """
         WITH returns AS (
             SELECT instrument.id, instrument.symbol, bar.trading_date,
@@ -2028,7 +1959,7 @@ def load_postgres_tables(
             alias = MODEL_ALIASES.get(name)
             policy = QUERY_POLICIES.get(alias or name)
             if policy:
-                limit = int((query_row_limits or {}).get(name) or 0) or None
+                limit = int((query_row_limits or {}).get(name) or 0) or policy.default_limit
                 symbol_scoped = query_symbol_filter is not None and policy.symbol_scoped
                 cache_key = (alias or name, limit, symbol_scoped)
                 if cache_key not in query_cache:
@@ -2073,12 +2004,19 @@ def load_postgres_tables(
                             symbols=query_symbol_filter if symbol_scoped else None,
                             limit=limit,
                         )
-                    elif policy.custom_loader == "options_expiries":
-                        query_cache[cache_key] = _options_expiry_rows(
-                            connection,
-                            symbols=query_symbol_filter if symbol_scoped else None,
-                            limit=limit,
-                        )
+                    elif policy.custom_loader == "current_options":
+                        normalized = _normalized_symbols(query_symbol_filter if symbol_scoped else None)
+                        query = current_option_query(alias or name, scoped=normalized is not None)
+                        params: list[Any] = [normalized] if normalized is not None else []
+                        if limit:
+                            query += " LIMIT %s"
+                            params.append(limit)
+                        query_cache[cache_key] = [dict(row) for row in connection.execute(query, params).fetchall()]
+                    elif policy.custom_loader == "radar_state_transition":
+                        query_cache[cache_key] = transition_rows(connection, limit=limit or 500)
+                        query_cache_counts[cache_key] = connection.execute(
+                            "SELECT count(*) AS total FROM analysis.option_decision"
+                        ).fetchone()["total"]
                     else:
                         selected_query = (
                             COMPACT_TICKER_DECISIONS_QUERY
@@ -2345,49 +2283,6 @@ def _options_payoff_scenario_rows(
          AND option_quote.contract_id = option_decision.contract_id
          AND option_quote.observed_at = option_decision.quote_observed_at
         ORDER BY decision.as_of DESC, decision.rank
-    """
-    if limit:
-        query += " LIMIT %s"
-        params.append(limit)
-    result = connection.execute(query, params)
-    return [dict(row) for row in result.fetchall()]
-
-
-def _options_expiry_rows(
-    connection: Any,
-    *,
-    symbols: set[str] | None,
-    limit: int | None,
-) -> list[dict[str, Any]]:
-    normalized = _normalized_symbols(symbols)
-    if normalized == []:
-        return []
-    filter_sql = "WHERE instrument.symbol = ANY(%s)" if normalized is not None else ""
-    params: list[Any] = [normalized] if normalized is not None else []
-    query = f"""
-        WITH latest_symbol_snapshot AS (
-            SELECT DISTINCT ON (instrument.id)
-                   instrument.id AS instrument_id, snapshot.id AS snapshot_id
-            FROM raw.option_quote quote
-            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
-            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-            {filter_sql}
-            ORDER BY instrument.id, snapshot.observed_at DESC,
-                     CASE snapshot.source_id WHEN 'robinhood' THEN 0 WHEN 'ibkr' THEN 1 ELSE 2 END,
-                     snapshot.id DESC
-        )
-        SELECT instrument.symbol, contract.expiration AS expiry,
-               max(quote.observed_at) AS observed_at, snapshot.source_id AS source,
-               count(*) OVER () AS __panel_total_count
-        FROM raw.option_quote quote
-        JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
-        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-        JOIN latest_symbol_snapshot latest
-          ON latest.snapshot_id = snapshot.id AND latest.instrument_id = instrument.id
-        GROUP BY instrument.symbol, contract.expiration, snapshot.source_id
-        ORDER BY instrument.symbol, contract.expiration
     """
     if limit:
         query += " LIMIT %s"

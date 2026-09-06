@@ -451,13 +451,13 @@ def final_architecture_inventory() -> dict[str, Any]:
             text = path.read_text(encoding="utf-8", errors="replace")
             for marker in counts:
                 counts[marker] += int(marker.casefold() in text.casefold())
-    current_selector = (ROOT / "migrations" / "versions" / "20260821_0043_final_architecture_scale.py").read_text(
+    current_selector = (ROOT / "migrations" / "baseline.sql").read_text(
         encoding="utf-8", errors="replace"
     )
     return {
         **FINAL_ARCHITECTURE_INVARIANTS,
-        "availability_cutover_migration": "20260821_0043" in current_selector,
-        "current_price_projection_only": "include_legacy_fallback=False" in current_selector,
+        "availability_contract": "raw.quote_fact_availability" in current_selector,
+        "current_price_selector": "CREATE FUNCTION raw.current_price_for_instruments" in current_selector,
         "retired_marker_counts": counts,
     }
 

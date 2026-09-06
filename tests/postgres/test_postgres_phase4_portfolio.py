@@ -19,7 +19,7 @@ from investment_panel.core.portfolio import (
     execution_model_id_for_snapshot,
     PaperExecutionObservation,
 )
-from investment_panel.database.migrations import HEAD_REVISION, downgrade_database, upgrade_database
+from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.portfolio import PortfolioLoopRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -443,31 +443,7 @@ def test_repository_persists_and_replays_a_postgresql_owned_cash_allocation(migr
         ).fetchone()["count"] == 1
 
 
-def test_phase4_source_and_calibration_migration_round_trip_restores_permissions(
-    migrated_postgres_dsn: str,
-) -> None:
-    """The repair migration must return to the exact 0076 writer boundary."""
-
-    downgrade_database(migrated_postgres_dsn, "20260904_0076")
-    with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260904_0076"
-        assert connection.execute(
-            "SELECT has_function_privilege('market_app', 'analysis.insert_phase4_execution(text,text,text,text,integer,double precision,double precision,double precision,double precision,timestamptz,text,text,jsonb)', 'EXECUTE')"
-        ).fetchone()["has_function_privilege"] is False
-        assert connection.execute(
-            "SELECT has_function_privilege('market_app', 'analysis.write_phase4_execution(jsonb,text)', 'EXECUTE')"
-        ).fetchone()["has_function_privilege"] is True
-        assert connection.execute(
-            "SELECT has_function_privilege('market_app', 'analysis.insert_phase4_paper_execution_observation(jsonb)', 'EXECUTE')"
-        ).fetchone()["has_function_privilege"] is False
-        assert connection.execute(
-            "SELECT has_column_privilege('market_app', 'analysis.portfolio_allocation_item', 'funding_sources', 'SELECT')"
-        ).fetchone()["has_column_privilege"] is True
-        assert connection.execute(
-            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'app.paper_execution_observation'::regclass AND conname = 'paper_execution_observation_status_check'"
-        ).fetchone()["pg_get_constraintdef"].find("partial_exited") == -1
-
-    upgrade_database(migrated_postgres_dsn)
+def test_phase4_baseline_preserves_execution_writer_permissions(migrated_postgres_dsn: str) -> None:
     with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == HEAD_REVISION
         assert connection.execute(
@@ -476,6 +452,16 @@ def test_phase4_source_and_calibration_migration_round_trip_restores_permissions
         assert connection.execute(
             "SELECT has_function_privilege('market_app', 'analysis.write_phase4_execution_0077(jsonb,text)', 'EXECUTE')"
         ).fetchone()["has_function_privilege"] is False
+        for function in (
+            'analysis.insert_phase4_execution(text,text,text,text,integer,double precision,double precision,double precision,double precision,timestamptz,text,text,jsonb)',
+            'analysis.insert_phase4_paper_execution_observation(jsonb)',
+        ):
+            assert connection.execute(
+                "SELECT has_function_privilege('market_app', %s, 'EXECUTE')", [function],
+            ).fetchone()["has_function_privilege"] is False
+        assert connection.execute(
+            "SELECT has_column_privilege('market_app', 'analysis.portfolio_allocation_item', 'funding_sources', 'SELECT')"
+        ).fetchone()["has_column_privilege"] is True
         for role in ("public", "market_migrator"):
             assert connection.execute(
                 "SELECT has_function_privilege(%s, 'analysis.write_phase4_execution(jsonb,text)', 'EXECUTE')",
@@ -484,29 +470,6 @@ def test_phase4_source_and_calibration_migration_round_trip_restores_permissions
         assert connection.execute(
             "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'app.paper_execution_observation'::regclass AND conname = 'phase4_paper_observation_status'"
         ).fetchone()["pg_get_constraintdef"].find("partial_exited") >= 0
-
-    downgrade_database(migrated_postgres_dsn, "20260904_0075")
-    with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260904_0075"
-        assert connection.execute(
-            "SELECT has_function_privilege('market_app', 'analysis.insert_phase4_execution(text,text,text,text,integer,double precision,double precision,double precision,double precision,timestamptz,text,text,jsonb)', 'EXECUTE')"
-        ).fetchone()["has_function_privilege"] is True
-        assert connection.execute(
-            "SELECT has_function_privilege('market_app', 'analysis.insert_phase4_paper_execution_observation(jsonb)', 'EXECUTE')"
-        ).fetchone()["has_function_privilege"] is False
-
-    upgrade_database(migrated_postgres_dsn)
-    downgrade_database(migrated_postgres_dsn, "20260904_0074")
-    with closing(psycopg.connect(migrated_postgres_dsn, row_factory=dict_row)) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260904_0074"
-        assert connection.execute(
-            "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'analysis' AND table_name = 'portfolio_allocation_item' AND column_name = 'funding_sources'"
-        ).fetchone()["count"] == 0
-        assert connection.execute(
-            "SELECT has_function_privilege('market_app', 'analysis.insert_phase4_allocation_item(jsonb)', 'EXECUTE')"
-        ).fetchone()["has_function_privilege"] is True
-
-    upgrade_database(migrated_postgres_dsn)
 
 
 def test_repository_persists_and_replays_cash_plus_two_trim_sources_with_conservation(

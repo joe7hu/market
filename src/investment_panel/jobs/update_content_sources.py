@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -21,7 +20,7 @@ from investment_panel.core.settings_validation import resolve_public_http_url
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.payload_archive import provider_archive_path
+from investment_panel.database.payload_archive import write_provider_payload
 from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.providers.opencli import (
     OpenCliRateLimitError,
@@ -396,11 +395,8 @@ def _symbols(text: str, known: set[str]) -> list[str]:
 
 
 def _archive_payload(config: AppConfig, source_id: str, run_id: Any, payload: Any) -> Path:
-    day = datetime.now(UTC).strftime("%Y/%m/%d")
-    path = provider_archive_path(config, source_id, day, f"{run_id}.json.gz")
-    with gzip.open(path, "wt", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"), default=str)
-    return path
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    return write_provider_payload(config, raw)
 
 
 def _fetch_rss(url: str) -> list[dict[str, Any]]:

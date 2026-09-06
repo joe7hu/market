@@ -198,23 +198,16 @@ def test_confirmation_is_idempotent_per_price_fact_version(migrated_postgres_dsn
         runtime.close()
 
 
-def test_current_price_projection_backfills_existing_successful_confirmations(postgres_dsn: str) -> None:
-    """The selector stays PIT-correct when 0033 upgrades existing audit rows."""
+def test_current_price_projection_rebuilds_from_successful_confirmations(postgres_dsn: str) -> None:
+    """Rebuilding missing projections preserves successful fact availability."""
 
-    upgrade_database(postgres_dsn, "20260812_0032")
+    upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
     runtime.open()
     repository = IngestionRepository(runtime)
     try:
-        # This test intentionally stops before the lifecycle migration, so use
-        # the legacy source shape for the pre-migration fixture. The head
-        # migration must then backfill the current production identities.
-        with runtime.transaction() as connection:
-            connection.execute(
-                "INSERT INTO ingest.source (id, name, family, kind) VALUES "
-                "('daily-market-prices', 'Daily', 'market', 'daily_bars'), "
-                "('robinhood', 'Robinhood', 'broker', 'quote')"
-            )
+        repository.register_source("daily-market-prices", name="Daily", family="market", kind="daily_bars")
+        repository.register_source("robinhood", name="Robinhood", family="broker", kind="quote")
         daily_run = repository.start_run(
             "daily-market-prices", "price_bars", started_at=datetime(2026, 8, 12, 15, tzinfo=UTC)
         )
@@ -235,10 +228,12 @@ def test_current_price_projection_backfills_existing_successful_confirmations(po
     finally:
         runtime.close()
 
-    upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
     runtime.open()
     try:
+        with runtime.transaction() as connection:
+            connection.execute("DELETE FROM raw.price_bar_fact_availability")
+            connection.execute("DELETE FROM raw.quote_fact_availability")
         with runtime.read() as connection:
             instrument_id = connection.execute(
                 "SELECT id FROM catalog.instrument WHERE symbol = 'NVDA'"

@@ -18,6 +18,7 @@ class QueryPolicy:
     exclude_future_rows: bool = False
     chronological: bool = False
     custom_loader: str | None = None
+    default_limit: int | None = None
 
 
 def build_query_policies(queries: Mapping[str, str]) -> dict[str, QueryPolicy]:
@@ -27,11 +28,12 @@ def build_query_policies(queries: Mapping[str, str]) -> dict[str, QueryPolicy]:
         "event_decision_packets", "decision_truth", "event_scout_events",
         "valuations", "disclosures", "ownership_consensus", "liquidity",
         "options_payoff_scenarios", "options_expiries", "ticker_outcomes",
-        "ticker_decisions",
+        "ticker_decisions", "options_chain", "vol_surface_features",
     }
     return {
         name: QueryPolicy(
             query=query,
+            default_limit={"event_decision_packets": 200, "decision_truth": 500, "event_scout_events": 200}.get(name),
             symbol_scoped=name in symbol_scoped,
             allow_symbol_less=name in {"catalysts", "earnings"},
             exclude_future_rows=name in {"catalysts", "earnings", "research_packets"},
@@ -43,7 +45,8 @@ def build_query_policies(queries: Mapping[str, str]) -> dict[str, QueryPolicy]:
                 else "universe_screen" if name == "universe_screen"
                 else "liquidity" if name == "liquidity"
                 else "options_payoff_scenarios" if name == "options_payoff_scenarios"
-                else "options_expiries" if name == "options_expiries"
+                else "current_options" if name in {"options_expiries", "options_chain", "vol_surface_features"}
+                else "radar_state_transition" if name == "radar_state_transition"
                 else None
             ),
         )

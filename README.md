@@ -186,3 +186,5 @@ The retained HTTP paths and methods are checked against
 schemas, frontend bundles, and full logs are verification outputs. Do not use
 them as normal navigation material; inspect the owning interface and run the
 focused check instead.
+
+Database schema changes: [maintenance guide](docs/database-maintenance.md).

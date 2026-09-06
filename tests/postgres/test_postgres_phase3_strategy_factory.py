@@ -46,7 +46,7 @@ def test_phase3_migration_exposes_bounded_registry_contract(migrated_postgres_ds
 
 def test_phase3_downgrade_removes_registry_views_before_related_objects(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
-    downgrade_database(postgres_dsn, "20260902_0069")
+    downgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
         assert connection.execute(
             "SELECT count(*) FROM information_schema.views WHERE table_schema = 'analysis' AND table_name IN ('strategy_registry', 'strategy_trial_accounting')",

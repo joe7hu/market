@@ -1,5 +1,7 @@
 # PostgreSQL Authority Migration
 
+Historical migration record. For current operations, see [Database maintenance](database-maintenance.md).
+
 ## Goal packet
 
 - User request: make PostgreSQL 18 the only runtime data seam and simplify the

@@ -3,15 +3,12 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
 
 
 config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
 
-database_url = config.get_main_option("sqlalchemy.url")
-config.set_main_option("sqlalchemy.url", database_url.replace("postgresql://", "postgresql+psycopg://", 1))
 target_metadata = None
 
 
@@ -28,15 +25,13 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-    with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, transaction_per_migration=True)
+    supplied = config.attributes.get("connection")
+    if supplied is not None:
+        context.configure(connection=supplied, target_metadata=target_metadata, transaction_per_migration=True)
         with context.begin_transaction():
             context.run_migrations()
+        return
+    raise RuntimeError("Use market-db-migrate so schema changes have a single-runner lock and time limits")
 
 
 if context.is_offline_mode():

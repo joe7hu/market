@@ -6,7 +6,7 @@ import pytest
 
 from app.routers.panel import decision_inbox_queue
 from investment_panel.database.decision_inbox import DecisionInboxRepository, evidence_fingerprint
-from investment_panel.database.migrations import downgrade_database, upgrade_database
+from investment_panel.database.migrations import HEAD_REVISION, upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -110,25 +110,17 @@ def test_uncertain_delivery_never_blindly_retries(application_postgres_dsn, cras
         runtime.close()
 
 
-def test_notification_outcomes_raw_migration_round_trip(postgres_dsn):
-    upgrade_database(postgres_dsn, '20260906_0127')
+def test_notification_terminal_outcomes_survive_idempotent_upgrade(postgres_dsn):
     upgrade_database(postgres_dsn)
-    downgrade_database(postgres_dsn, '20260906_0127')
-    upgrade_database(postgres_dsn)
-    downgrade_database(postgres_dsn, '20260906_0127')
     with psycopg.connect(postgres_dsn) as connection:
         item = connection.execute("INSERT INTO app.decision_inbox_item (dedupe_key, event_type) VALUES ('migration', 'ready') RETURNING id").fetchone()[0]
-        connection.execute("INSERT INTO app.notification_outbox (dedupe_key, inbox_item_id, event_type, status) VALUES ('migration', %s, 'ready', 'failed')", [item])
+        connection.execute("INSERT INTO app.notification_outbox (dedupe_key, inbox_item_id, event_type, status) VALUES ('migration', %s, 'ready', 'uncertain')", [item])
     upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
-        from investment_panel.database.migrations import HEAD_REVISION
-
         assert connection.execute('SELECT version_num FROM alembic_version').fetchone()[0] == HEAD_REVISION
         assert connection.execute('SELECT status FROM app.notification_outbox').fetchone()[0] == 'uncertain'
-    with pytest.raises(Exception, match='reconcile terminal notification outcomes'):
-        downgrade_database(postgres_dsn, '20260906_0127')
-    with psycopg.connect(postgres_dsn) as connection:
-        assert connection.execute('SELECT status FROM app.notification_outbox').fetchone()[0] == 'uncertain'
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute("UPDATE app.notification_outbox SET status = 'unknown-delivery-state'")
 
 
 def test_review_endpoint_refresh_and_authorization(application_postgres_dsn, monkeypatch):
