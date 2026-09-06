@@ -1865,6 +1865,11 @@ export interface components {
             point_in_time_safe: boolean;
             /** Provider */
             provider?: string | null;
+            /**
+             * Restricted Members
+             * @default []
+             */
+            restricted_members: string[];
             /** Selected Source */
             selected_source?: string | null;
             /**

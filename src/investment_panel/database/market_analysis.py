@@ -577,6 +577,7 @@ def _horizon_evidence(
                 "missing_member_count": 0,
                 "stale_member_count": 0,
                 "truncated_member_count": 0,
+                "restricted_members": (),
                 "expected_trading_days": 0,
                 "minimum_history_trading_days": 0,
                 "lineage": (),
@@ -586,6 +587,9 @@ def _horizon_evidence(
         expected = completed_trading_dates(cutoff, count=lookback)
         valid_rows: list[dict[str, Any]] = []
         missing = stale = truncated = 0
+        missing_members: list[str] = []
+        stale_members: list[str] = []
+        truncated_members: list[str] = []
         member_returns: list[float] = []
         for member in benchmark:
             rows = list(bars_by_id.get(int(member["id"]), ()))
@@ -596,6 +600,7 @@ def _horizon_evidence(
             }
             if not by_date:
                 missing += 1
+                missing_members.append(str(member["symbol"]))
                 continue
             latest_available = max(
                 (_as_utc(row.get("available_at")) for row in by_date.values() if row.get("available_at") is not None),
@@ -603,9 +608,11 @@ def _horizon_evidence(
             )
             if latest_available is not None and cutoff - latest_available > _MARKET_STALE_AFTER:
                 stale += 1
+                stale_members.append(str(member["symbol"]))
                 continue
             if len(by_date) != len(expected) or set(by_date) != set(expected):
                 truncated += 1
+                truncated_members.append(str(member["symbol"]))
                 continue
             selected = [by_date[trading_date] for trading_date in expected]
             valid_rows.extend(selected)
@@ -635,6 +642,7 @@ def _horizon_evidence(
             "missing_member_count": missing,
             "stale_member_count": stale,
             "truncated_member_count": truncated,
+            "restricted_members": tuple(sorted(missing_members + stale_members + truncated_members)),
             "expected_trading_days": lookback,
             "minimum_history_trading_days": lookback,
             "history_start": expected[-1] if expected else None,
@@ -679,6 +687,7 @@ def _volatility_evidence(
                 "missing_member_count": 0,
                 "stale_member_count": 0,
                 "truncated_member_count": 0,
+                "restricted_members": (),
                 "duplicate_member_count": 0,
                 "invalid_member_count": 0,
                 "expected_trading_days": 0,
@@ -694,6 +703,9 @@ def _volatility_evidence(
         valid_rows: list[dict[str, Any]] = []
         member_volatilities: list[float] = []
         missing = stale = truncated = duplicate = invalid = 0
+        missing_members: list[str] = []
+        stale_members: list[str] = []
+        truncated_members: list[str] = []
         for member in benchmark:
             rows = [
                 row for row in bars_by_id.get(int(member["id"]), ())
@@ -702,6 +714,7 @@ def _volatility_evidence(
             dates = [row.get("trading_date") for row in rows]
             if not rows:
                 missing += 1
+                missing_members.append(str(member["symbol"]))
                 continue
             if len(dates) != len(set(dates)):
                 duplicate += 1
@@ -709,6 +722,7 @@ def _volatility_evidence(
             by_date = {row["trading_date"]: row for row in rows}
             if len(by_date) != len(expected) or set(by_date) != set(expected):
                 truncated += 1
+                truncated_members.append(str(member["symbol"]))
                 continue
             selected = [by_date[trading_date] for trading_date in expected]
             available_at = [_as_utc(row.get("available_at")) for row in selected]
@@ -721,6 +735,7 @@ def _volatility_evidence(
                 continue
             if cutoff - available_at[0] > _MARKET_STALE_AFTER:
                 stale += 1
+                stale_members.append(str(member["symbol"]))
                 continue
             closes = [_number(row.get("close")) for row in selected]
             if any(value is None or value <= 0 or not math.isfinite(value) for value in closes):
@@ -760,6 +775,7 @@ def _volatility_evidence(
             "missing_member_count": missing,
             "stale_member_count": stale,
             "truncated_member_count": truncated,
+            "restricted_members": tuple(sorted(missing_members + stale_members + truncated_members)),
             "duplicate_member_count": duplicate,
             "invalid_member_count": invalid,
             "expected_trading_days": return_window,
@@ -2157,6 +2173,8 @@ def _coverage_row(
         source_priority=MARKET_SOURCE_PRIORITY.get(dimension, ()),
         selected_source=lineage[0].source_id if lineage else None,
         blockers=blockers if not available else (),
+        restricted_members=tuple(selected_evidence.get("restricted_members") or ())
+        if dimension in {"equity internals", "volatility"} else (),
         benchmark_key=selected_evidence.get("benchmark_key")
         if dimension in {"equity internals", "volatility", "corporate cycle", "crypto liquidity"} else None,
         eligible_members=tuple(selected_evidence.get("eligible_members") or ())

@@ -482,6 +482,7 @@ class CoverageMatrixRow(BaseModel):
     source_priority: tuple[str, ...] = ()
     selected_source: str | None = None
     blockers: tuple[str, ...] = ()
+    restricted_members: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def enforce_lineage_cutoff(self) -> "CoverageMatrixRow":

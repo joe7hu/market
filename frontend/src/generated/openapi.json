@@ -1348,6 +1348,14 @@
             ],
             "title": "Provider"
           },
+          "restricted_members": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Restricted Members",
+            "type": "array"
+          },
           "selected_source": {
             "anyOf": [
               {

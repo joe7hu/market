@@ -1055,6 +1055,7 @@ def test_market_realized_volatility_fails_closed_per_member_quality(
         assert tuple(row.blockers) == (expected_blocker,)
         assert not row.input_lineage
         assert row.model_dump(mode="json")[count_key] == 1
+        assert row.restricted_members == (("NVDA",) if quality in {"missing", "stale", "future"} else ())
 
 
 @pytest.mark.parametrize("source_state", ["disabled", "unconfirmed", "unfinished"])
