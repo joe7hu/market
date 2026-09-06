@@ -478,6 +478,7 @@ def option_radar_learning_collection(
 def option_trade_ticket(
     decision_id: UUID,
     actions: dependencies.OptionsExecutionRepository = Depends(dependencies.get_options_execution),
+    recovery: dependencies.RecoveryReadRepository = Depends(dependencies.get_options_recovery),
 ) -> dict[str, Any]:
     detail = actions.signal_detail(decision_id)
     if detail is not None:
@@ -486,7 +487,7 @@ def option_trade_ticket(
             return _ticket_detail_contract(ticket, detail)
     # A recovery signal has an analysis.decision row for provenance. Prefer its
     # canonical recovery ticket before treating the decision as incomplete.
-    recovery_ticket = actions.recovery_ticket(decision_id)
+    recovery_ticket = recovery.ticket(str(decision_id))
     if recovery_ticket is not None:
         return _ticket_detail_contract(recovery_ticket, detail or {})
     if detail is None:

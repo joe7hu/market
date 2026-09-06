@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from investment_panel.core.config import AppConfig
 from investment_panel.database.authority import runtime_for_config
@@ -82,9 +81,6 @@ class OptionsActions:
         from app.scheduler import scheduler_status
 
         return {**self.recovery.health(), "scheduler": scheduler_status(self.config)}
-
-    def recovery_ticket(self, decision_id: UUID) -> dict[str, Any] | None:
-        return self.recovery.ticket(str(decision_id))
 
     def decision_brief(self, **filters: Any) -> dict[str, Any]:
         payload = self.decision_system.decision_brief(**filters)
