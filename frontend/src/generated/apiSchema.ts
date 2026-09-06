@@ -6089,8 +6089,6 @@ export interface components {
          * @description Decision conclusions used by the ticker page; audit bodies live on the snapshot route.
          */
         TickerDecisionDetailResponse: {
-            /** Action Identity */
-            action_identity?: string | null;
             /**
              * As Of
              * Format: date-time
@@ -6193,6 +6191,8 @@ export interface components {
         };
         /** TickerDetailResponse */
         TickerDetailResponse: {
+            /** Action Identity */
+            action_identity?: string | null;
             /** Alpha Signals */
             alpha_signals?: components["schemas"]["AlphaSignal"][];
             /** As Of */

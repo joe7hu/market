@@ -764,7 +764,6 @@ class TickerDecisionDetailResponse(BaseModel):
     ticker: str
     as_of: datetime
     decision_revision: str
-    action_identity: str | None = None
     tactical: HorizonDecision
     fundamental: HorizonDecision
     capital_action: CapitalAction
@@ -780,6 +779,7 @@ class TickerDecisionDetailResponse(BaseModel):
 class TickerDetailResponse(FlexibleResponse):
     symbol: str
     ticker: str
+    action_identity: str | None = None
     status: ApiStatusResponse
     as_of: datetime | None = None
     dossier: Row = Field(default_factory=dict)

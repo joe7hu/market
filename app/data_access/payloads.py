@@ -276,6 +276,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
     return {
         "symbol": normalized_ticker,
         "ticker": normalized_ticker,
+        "action_identity": ticker_decision_payload.get("action_identity"),
         "status": status_payload(panel_data),
         "as_of": dossier["coverage"].get("as_of"),
         "dossier": dossier,
