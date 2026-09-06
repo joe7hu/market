@@ -425,6 +425,7 @@ class PortfolioLoopRepository:
                    ORDER BY observed_at DESC, id DESC LIMIT 1""", [as_of]
             ).fetchone()
             account_source_kind = "broker"
+            manual_ledger: dict[str, Any] | None = None
             if account is None:
                 account = connection.execute(
                     """
@@ -439,9 +440,10 @@ class PortfolioLoopRepository:
                 ).fetchone()
                 account_source_kind = "manual" if account else "broker"
             if account_source_kind == "manual":
+                manual_ledger = replay_portfolio_at(None, as_of, connection=connection)
                 positions = [
                     {**row, "id": row["instrument_id"]}
-                    for row in replay_portfolio_at(None, as_of, connection=connection)["positions"]
+                    for row in manual_ledger["positions"]
                     if float(row.get("quantity") or 0) > 0
                 ]
             else:
@@ -459,6 +461,14 @@ class PortfolioLoopRepository:
                              WHERE observed_at <= %s ORDER BY observed_at DESC, id DESC LIMIT 1
                          )""", [as_of, as_of]
                 ).fetchall()
+            account_cash_balance = (
+                manual_ledger.get("cash_balance")
+                if manual_ledger is not None
+                else account.get("cash_balance") if account else None
+            )
+            account_cash_balance = (
+                float(account_cash_balance) if account_cash_balance is not None else None
+            )
             account_identity = f"{account_source_kind}-account:{account['id']}" if account else None
             position_prefix = f"{account_source_kind}-position"
             position_by_ticker = {str(row["symbol"]).upper(): dict(row) for row in positions}
@@ -671,7 +681,7 @@ class PortfolioLoopRepository:
                         input_cutoff=forecast.input_cutoff, available_at=forecast.available_at,
                         evidence_status="blocked", blockers=("risk_evidence_invalid",),
                         current_weight=current_weight,
-                        cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
+                        cash_available=account_cash_balance,
                         cash_source_id=account_identity,
                         trim_position_id=(f"{position_prefix}:{position['id']}" if position else None),
                         trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
@@ -697,7 +707,7 @@ class PortfolioLoopRepository:
                         input_cutoff=forecast.input_cutoff, available_at=forecast.available_at,
                         evidence_status="blocked", blockers=("portfolio_impact_lineage_conflict",),
                         current_weight=current_weight,
-                        cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
+                        cash_available=account_cash_balance,
                         cash_source_id=account_identity,
                         trim_position_id=(f"{position_prefix}:{position['id']}" if position else None),
                         trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
@@ -747,7 +757,7 @@ class PortfolioLoopRepository:
                     evidence_status="available" if plan.eligibility == "ACTIONABLE" else "blocked",
                     blockers=tuple(plan.blockers),
                     current_weight=current_weight,
-                    cash_available=float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
+                    cash_available=account_cash_balance,
                     cash_source_id=account_identity,
                     trim_position_id=(f"{position_prefix}:{position['id']}" if position else None),
                     trim_available=(abs(float(position["market_value"])) if position and position.get("market_value") is not None else None),
@@ -917,7 +927,7 @@ class PortfolioLoopRepository:
             )
             complete = bool(
                 account is not None and account.get("reconciliation_state", "reconciled") == "reconciled"
-                and account["cash_balance"] is not None
+                and account_cash_balance is not None
                 and account["net_liquidation"] is not None
                 and cash_hurdle is not None and cash_hurdle > 0
                 and candidates and required_candidates and tape_rows
@@ -931,7 +941,7 @@ class PortfolioLoopRepository:
             book=PortfolioBookEvidence(
                 snapshot_id=account_identity,
                 net_liquidation=(float(account["net_liquidation"]) if account and account["net_liquidation"] is not None else None),
-                cash_available=(float(account["cash_balance"]) if account and account["cash_balance"] is not None else None),
+                cash_available=account_cash_balance,
                 cash_source_id=account_identity,
                 positions={ticker: f"{position_prefix}:{row['id']}" for ticker, row in position_by_ticker.items()},
                 position_weights={
