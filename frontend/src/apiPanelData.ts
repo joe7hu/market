@@ -198,10 +198,10 @@ function phase4IdentityFromPanel(data: PanelData): Phase4Identity {
   return tables.state === "valid" ? tables : integrated;
 }
 
-export function mergePanelData(existing: PanelData, incoming: PanelData, options: { append?: boolean } = {}): PanelData {
+export function mergePanelData(existing: PanelData, incoming: PanelData, options: { append?: boolean; scope?: string } = {}): PanelData {
   const existingPhase4 = phase4IdentityFromPanel(existing);
-  const phase4Scope = Object.keys(incoming.scopeStatus ?? {}).find((scope) => PHASE4_WORKSPACES.has(scope));
-  const unavailable = (!phase4Scope || incoming.scopeStatus[phase4Scope].state === "ready") && explicitlyUnavailable(incoming.dashboard.status, incoming.portfolioIntegrated, Object.fromEntries(PHASE4_TABLE_KEYS.map((key) => [key, incoming[tableKeyFor(key)]])));
+  const phase4Scope = options.scope && PHASE4_WORKSPACES.has(options.scope) ? options.scope : undefined;
+  const unavailable = Boolean(options.scope && incoming.scopeStatus[options.scope]?.state === "ready") && explicitlyUnavailable(incoming.dashboard.status, incoming.portfolioIntegrated, Object.fromEntries(PHASE4_TABLE_KEYS.map((key) => [key, incoming[tableKeyFor(key)]])));
   const contradictsUnavailable = incoming.dashboard.status?.metadata?.phase4_authority === "unavailable" && !unavailable;
   const incomingPhase4 = phase4IdentityFromPanel(incoming);
   if (contradictsUnavailable || incomingPhase4.state === "invalid" || (phase4Scope && incomingPhase4.state === "absent" && !unavailable)) {

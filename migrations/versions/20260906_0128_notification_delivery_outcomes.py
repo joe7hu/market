@@ -8,7 +8,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("GRANT INSERT ON app.decision_inbox_item, app.notification_outbox TO market_app")
+    op.execute("GRANT INSERT (dedupe_key, event_type, opportunity_id, ticket_version, paper_order_id, lane, severity, payload) ON app.decision_inbox_item TO market_app")
+    op.execute("GRANT INSERT (dedupe_key, inbox_item_id, event_type, payload) ON app.notification_outbox TO market_app")
     op.execute("GRANT UPDATE (status, resolved_at) ON app.decision_inbox_item TO market_app")
     op.execute("GRANT UPDATE (status, attempts, next_attempt_at, last_error, sent_at, updated_at) ON app.notification_outbox TO market_app")
     op.execute("ALTER TABLE app.notification_outbox DROP CONSTRAINT notification_outbox_status_check")
@@ -21,9 +22,9 @@ def downgrade() -> None:
     # Fail closed: old code cannot understand these terminal outcomes. Never
     # map them to a retryable status or report an unproven successful delivery.
     op.execute("DO $$ BEGIN IF EXISTS (SELECT 1 FROM app.notification_outbox WHERE status IN ('suppressed', 'uncertain')) THEN RAISE EXCEPTION 'reconcile terminal notification outcomes before downgrade'; END IF; END $$")
-    op.execute("REVOKE INSERT ON app.decision_inbox_item, app.notification_outbox FROM market_app")
+    op.execute("REVOKE INSERT (dedupe_key, event_type, opportunity_id, ticket_version, paper_order_id, lane, severity, payload) ON app.decision_inbox_item FROM market_app")
+    op.execute("REVOKE INSERT (dedupe_key, inbox_item_id, event_type, payload) ON app.notification_outbox FROM market_app")
     op.execute("REVOKE UPDATE (status, resolved_at) ON app.decision_inbox_item FROM market_app")
     op.execute("REVOKE UPDATE (status, attempts, next_attempt_at, last_error, sent_at, updated_at) ON app.notification_outbox FROM market_app")
     op.execute("ALTER TABLE app.notification_outbox DROP CONSTRAINT notification_outbox_status_check")
     op.execute("ALTER TABLE app.notification_outbox ADD CONSTRAINT notification_outbox_status_check CHECK (status IN ('queued', 'sending', 'sent', 'failed', 'dry_run'))")
-

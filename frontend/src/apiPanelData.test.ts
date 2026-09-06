@@ -32,12 +32,12 @@ describe("mergePanelData", () => {
       executionModelSnapshot: { rows: [{ allocation_id: "allocation:old", execution_model_snapshot_id: "execution:old" }] },
       portfolioIntegrated: { allocation_id: "allocation:old", input_cutoff: "2026-09-02T15:00:00Z", status: "cash_only", actions: [], scenario_artifact_id: "scenario:old", execution_model_snapshot_id: "execution:old" } as any,
       scopeStatus: { portfolio: { state: "ready" } },
-    });
+    }, { scope: "portfolio" });
     const next = mergePanelData(existing, {
       ...emptyPanelData(),
       portfolioAllocation: { rows: [{ allocation_id: "allocation:new" }] },
       scopeStatus: { portfolio: { state: "ready" } },
-    });
+    }, { scope: "portfolio" });
 
     expect(next.portfolioAllocation.rows?.[0].allocation_id).toBe("allocation:new");
     expect(next.portfolioScenarioArtifact).toBeUndefined();
@@ -67,7 +67,7 @@ describe("research without allocation authority", () => {
     const existing = { ...emptyPanelData(), portfolioAllocation: { rows: [{ allocation_id: "old" }] }, portfolioAllocationItems: { rows: [{ action: "BUY" }] }, paperExecutionObservations: { rows: [{ order_id: "old" }] }, bookAttribution: { rows: [{ allocation_id: "old" }] } };
     for (const first of [emptyPanelData(), existing]) {
       const incoming = mergeSnapshot(first, snapshot);
-      const result = mergePanelData(existing, incoming);
+      const result = mergePanelData(existing, incoming, { scope: "opportunities" });
       expect(result.opportunitiesRanked.count).toBe(806);
       expect(result.opportunitiesRanked.rows?.[0].ticker).toBe("AAA");
       expect(result.portfolioAllocation).toBeUndefined();
@@ -85,9 +85,36 @@ describe("research without allocation authority", () => {
     { ...snapshot, tables: { ...snapshot.tables, portfolio_allocation: { rows: [{ allocation_id: "contradiction" }] } } },
   ])("rejects missing, failed, or contradictory authority", (invalid) => {
     for (const existing of [emptyPanelData(), mergeSnapshot(emptyPanelData(), snapshot)]) {
-      const result = mergePanelData(existing, mergeSnapshot(existing, invalid));
+      const result = mergePanelData(existing, mergeSnapshot(existing, invalid), { scope: "opportunities" });
       expect(result.errors.portfolio).toBeTruthy();
       expect(result.scopeStatus.opportunities.state).toBe("failed");
     }
   });
+});
+
+it("recovers the current response after historical failures without retaining allocation actions", () => {
+  const valid = mergeSnapshot(emptyPanelData(), {
+    scope: "portfolio",
+    tables: { portfolio_allocation: { rows: [{ allocation_id: "old" }] }, portfolio_allocation_items: { rows: [{ action: "BUY" }] } },
+  });
+  const failed = mergePanelData(valid, mergeSnapshot(valid, {
+    scope: "today", status: { ready: false, metadata: { snapshot_error: "timeout" } },
+  }), { scope: "today" });
+  expect(failed.scopeStatus.today.state).toBe("failed");
+  expect(failed.portfolioAllocationItems.rows?.[0].action).toBe("BUY");
+  failed.scopeStatus.research = { state: "stale" };
+  const current = mergeSnapshot(failed, {
+    scope: "opportunities",
+    status: { ready: true, source: "postgresql", metadata: { database: "postgresql", phase4_authority: "unavailable", phase4_shared_allocation_id: null } },
+    portfolio_integrated: null,
+    tables: { opportunities_ranked: { rows: [{ ticker: "AAA" }], count: 806 } },
+  });
+  const result = mergePanelData(failed, current, { scope: "opportunities" });
+  expect(result.scopeStatus.today.state).toBe("failed");
+  expect(result.scopeStatus.research.state).toBe("stale");
+  expect(result.scopeStatus.opportunities.state).toBe("ready");
+  expect(result.opportunitiesRanked.count).toBe(806);
+  expect(result.portfolioAllocation).toBeUndefined();
+  expect(result.portfolioAllocationItems).toBeUndefined();
+  expect(result.errors.portfolio).toBeUndefined();
 });

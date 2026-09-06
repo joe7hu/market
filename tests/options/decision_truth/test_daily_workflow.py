@@ -178,3 +178,35 @@ def test_concurrent_delivery_claim_sends_once(application_postgres_dsn):
     finally:
         release.set()
         runtime.close()
+
+
+@pytest.mark.parametrize('table,column,value', [
+    ('decision_inbox_item', 'status', 'resolved'),
+    ('decision_inbox_item', 'user_state', 'review_complete'),
+    ('decision_inbox_item', 'reviewed_at', datetime.now(UTC)),
+    ('decision_inbox_item', 'created_at', datetime.now(UTC)),
+    ('notification_outbox', 'status', 'sent'),
+    ('notification_outbox', 'attempts', 9),
+    ('notification_outbox', 'sent_at', datetime.now(UTC)),
+    ('notification_outbox', 'updated_at', datetime.now(UTC)),
+])
+def test_application_cannot_insert_forged_audit_fields(application_postgres_dsn, table, column, value):
+    from psycopg import sql
+
+    runtime = DatabaseRuntime(application_postgres_dsn)
+    runtime.open()
+    try:
+        repository = DecisionInboxRepository(runtime)
+        item = repository.emit(event_type='ready', payload={'symbol': 'AAA'}, dedupe_key=str(uuid4()))
+        columns, values = ['dedupe_key', 'event_type', column], [str(uuid4()), 'ready', value]
+        if table == 'notification_outbox':
+            columns.append('inbox_item_id')
+            values.append(item['id'])
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with runtime.transaction() as connection:
+                connection.execute(sql.SQL('INSERT INTO app.{} ({}) VALUES ({})').format(
+                    sql.Identifier(table), sql.SQL(', ').join(map(sql.Identifier, columns)),
+                    sql.SQL(', ').join(sql.Placeholder() for _ in values),
+                ), values)
+    finally:
+        runtime.close()

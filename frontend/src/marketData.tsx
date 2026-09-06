@@ -54,7 +54,7 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
         }
         // Revalidate the provider merge as well as the request merge. This is
         // the production boundary that combines independently loaded scopes.
-        let nextData = mergePanelData(dataRef.current, loaded);
+        let nextData = mergePanelData(dataRef.current, loaded, { scope });
         if (supplemental) nextData = mergeSnapshot(nextData, supplemental);
         dataRef.current = nextData;
         setData(nextData);
