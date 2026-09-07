@@ -130,7 +130,8 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                 connection.cursor().executemany(
                     """INSERT INTO app.trade_journal (decision_id, instrument_id, action, quantity, price, rationale, details)
                        VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s)""",
-                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id)}))
+                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id),
+                      **({"contract_multiplier": 100} if action == "paper_entry" else {"entry_contract_multiplier": 100, "exit_contract_multiplier": 100})}))
                      for action, price in (("paper_entry", 100), ("paper_exit", 110))],
                 )
             baseline = {"net_expectancy": .10, "precision_at_5": .50, "max_drawdown": -.20, "calibration_error": .10}
@@ -1617,7 +1618,8 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                        (decision_id, instrument_id, action, quantity, price, rationale, details, created_at)
                        VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s,
                                now() - make_interval(mins => %s))""",
-                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id)}), minutes)
+                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id),
+                      **({"contract_multiplier": 100} if action == "paper_entry" else {"entry_contract_multiplier": 100, "exit_contract_multiplier": 100})}), minutes)
                      for action, price, minutes in (("paper_entry", 100, 60), ("paper_exit:take_profit", 110, 30))],
                 )
             metrics = {

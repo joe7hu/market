@@ -50,7 +50,7 @@ def test_option_paper_writer_grants_are_narrow_and_reversible(postgres_dsn):
     with psycopg.connect(postgres_dsn) as connection:
         before = schema_contract(connection)
         assert all(not columns for columns in _writer_columns(connection).values())
-    upgrade_database(postgres_dsn)
+    upgrade_database(postgres_dsn, "20260907_0004")
     with psycopg.connect(postgres_dsn) as connection:
         upgraded = schema_contract(connection)
         assert _writer_columns(connection) == WRITER_COLUMNS
@@ -92,7 +92,7 @@ def test_option_paper_writer_grants_are_narrow_and_reversible(postgres_dsn):
     with psycopg.connect(postgres_dsn) as connection:
         assert all(not columns for columns in _writer_columns(connection).values())
         assert schema_contract(connection) == before
-    upgrade_database(postgres_dsn)
+    upgrade_database(postgres_dsn, "20260907_0004")
     with psycopg.connect(postgres_dsn) as connection:
         assert _writer_columns(connection) == WRITER_COLUMNS
         assert schema_contract(connection) == upgraded

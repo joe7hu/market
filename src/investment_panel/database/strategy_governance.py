@@ -11,6 +11,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.core.decision import promotion_readiness
 from investment_panel.database.strategy_parameters import merge_strategy_parameters, mutation_capability
+from investment_panel.database.options_paper_ledger import PAPER_FILL_MULTIPLIERS_SQL
 
 
 class StrategyGovernanceRepository:
@@ -381,7 +382,7 @@ def paper_provenance_is_database_backed(
                    paper.entry_slippage, paper.exit_slippage, paper.contract_multiplier,
                    decision.id::text AS decision_id, decision.as_of, decision.lane, decision.episode_key,
                    fills.entry_price AS actual_fill_price, fills.exit_price,
-                   fills.entry_quantity, fills.exit_quantity, paper_episode.paper_order_count
+                   fills.entry_quantity, fills.exit_quantity, fills.fill_multipliers_verified, paper_episode.paper_order_count
             FROM app.paper_order paper
             JOIN analysis.decision decision ON decision.id = paper.decision_id
             LEFT JOIN LATERAL ({episode_orders}) paper_episode ON TRUE
@@ -391,7 +392,8 @@ def paper_provenance_is_database_backed(
                        sum(quantity * price) FILTER (WHERE action = 'paper_exit' OR action LIKE 'paper_exit:%%')
                            / nullif(sum(quantity) FILTER (WHERE action = 'paper_exit' OR action LIKE 'paper_exit:%%'), 0) AS exit_price,
                        sum(quantity) FILTER (WHERE action = 'paper_entry') AS entry_quantity,
-                       sum(quantity) FILTER (WHERE action = 'paper_exit' OR action LIKE 'paper_exit:%%') AS exit_quantity
+                       sum(quantity) FILTER (WHERE action = 'paper_exit' OR action LIKE 'paper_exit:%%') AS exit_quantity,
+                       {PAPER_FILL_MULTIPLIERS_SQL} AS fill_multipliers_verified
                 FROM app.trade_journal
                 WHERE details->>'paper_order_id' = paper.id::text
                   AND decision_id = decision.id AND quantity > 0 AND price IS NOT NULL

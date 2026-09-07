@@ -11,7 +11,8 @@ import investment_panel.database.strategy_governance as strategy_governance
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
 
 
-@pytest.mark.parametrize("paper_defect", [None, "missing_journal", "incomplete_exit", "repeated_episode", "missing_cost", "late_journal"])
+@pytest.mark.parametrize("paper_defect", [None, "missing_journal", "incomplete_exit", "repeated_episode", "missing_cost", "late_journal",
+                                       "missing_entry_multiplier", "conflicting_exit_multiplier"])
 def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
     migrated_postgres_dsn: str,
     paper_defect: str | None,
@@ -70,7 +71,8 @@ def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
                 connection.cursor().executemany(
                     """INSERT INTO app.trade_journal (decision_id, instrument_id, action, quantity, price, rationale, details)
                        VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s)""",
-                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id)}))
+                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id),
+                      **({"contract_multiplier": 100} if action == "paper_entry" else {"entry_contract_multiplier": 100, "exit_contract_multiplier": 100})}))
                      for action, price in (("paper_entry", 100), ("paper_exit:take_profit", 110))],
                 )
             for stage in ("walk_forward", "shadow", "execution_grade_paper"):
@@ -113,6 +115,11 @@ def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
                     connection.execute("UPDATE app.paper_order SET entry_slippage = NULL WHERE id = %s", [paper_order_ids[0]])
                 elif paper_defect == "late_journal":
                     connection.execute("UPDATE app.trade_journal SET created_at = clock_timestamp() WHERE details->>'paper_order_id' = %s", [paper_order_ids[0]])
+                elif paper_defect == "missing_entry_multiplier":
+                    connection.execute("UPDATE app.trade_journal SET details = details - 'contract_multiplier' WHERE details->>'paper_order_id' = %s AND action = 'paper_entry'", [paper_order_ids[0]])
+                elif paper_defect == "conflicting_exit_multiplier":
+                    connection.execute("UPDATE app.trade_journal SET details = details || %s WHERE details->>'paper_order_id' = %s AND action LIKE 'paper_exit:%%'",
+                                       [Jsonb({"exit_contract_multiplier": 10}), paper_order_ids[0]])
                 else:
                     connection.execute("UPDATE analysis.decision SET episode_key = 'one-repeated-episode' WHERE strategy_revision_id = %s", [strategy_id])
         result = StrategyGovernanceRepository(runtime).promotion_readiness(strategy_id)

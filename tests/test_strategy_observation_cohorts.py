@@ -123,7 +123,7 @@ def test_paper_drawdown_requires_its_own_observed_marks_not_shadow_drawdown():
         "as_of": at, "paper_order_id": "paper", "paper_only": True, "paper_status": "exited", "paper_order_count": 1,
         "filled_at": at + timedelta(hours=1), "exit_at": at + timedelta(hours=2),
         "actual_fill_price": .5, "exit_price": .7, "filled_quantity": 1, "exited_quantity": 1,
-        "entry_quantity": 1, "exit_quantity": 1, "contract_multiplier": 100,
+        "entry_quantity": 1, "exit_quantity": 1, "contract_multiplier": 100, "fill_multipliers_verified": True,
         "fees": 1.3, "entry_slippage": .01, "exit_slippage": .01,
         "structure": "long_call", "current_return": 2.0, "peak_return": 3.0, "max_drawdown": -.8,
     }
@@ -207,7 +207,7 @@ def _paper(row, losing=False):
         "filled_at": at + timedelta(minutes=1), "exit_at": at + timedelta(hours=1),
         "actual_fill_price": 1, "exit_price": .5 if losing else 1.2,
         "filled_quantity": 1, "exited_quantity": 1, "entry_quantity": 1, "exit_quantity": 1,
-        "contract_multiplier": 100, "fees": 0, "entry_slippage": 0, "exit_slippage": 0,
+        "contract_multiplier": 100, "fill_multipliers_verified": True, "fees": 0, "entry_slippage": 0, "exit_slippage": 0,
         "structure": "long_call",
     }
 

@@ -11,11 +11,26 @@ from investment_panel.core.decision import MARKET_TZ
 
 OPEN_STATUSES = ("staged", "open", "entered", "partial_exited")
 
+# Used by execution, loss reconciliation, learning, and stored paper proof.
+# Each cash flow must preserve its observed multiplier; an order/catalog
+# snapshot cannot supply missing evidence for an earlier journal entry.
+PAPER_FILL_MULTIPLIERS_SQL = """bool_and(coalesce(
+    paper.contract_multiplier > 0 AND paper.contract_multiplier < 'Infinity'::numeric
+    AND CASE WHEN action = 'paper_entry' THEN
+        jsonb_typeof(details->'contract_multiplier') = 'number'
+        AND details->'contract_multiplier' = to_jsonb(paper.contract_multiplier)
+    ELSE
+        jsonb_typeof(details->'entry_contract_multiplier') = 'number'
+        AND jsonb_typeof(details->'exit_contract_multiplier') = 'number'
+        AND details->'entry_contract_multiplier' = to_jsonb(paper.contract_multiplier)
+        AND details->'exit_contract_multiplier' = to_jsonb(paper.contract_multiplier)
+    END, false))"""
+
 
 def paper_fill_totals(connection: Any, order: dict[str, Any], *, as_of: datetime) -> dict[str, Any] | None:
     """Read only this order's journal cash flows, including prior partial exits."""
     return connection.execute(
-        """SELECT coalesce(sum(quantity) FILTER (WHERE action = 'paper_entry'), 0) AS entry_quantity,
+        f"""SELECT coalesce(sum(quantity) FILTER (WHERE action = 'paper_entry'), 0) AS entry_quantity,
                   coalesce(sum(quantity) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_quantity,
                   coalesce(sum(quantity * price) FILTER (WHERE action = 'paper_entry'), 0) AS entry_units,
                   coalesce(sum(quantity * price) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_units,
@@ -28,13 +43,15 @@ def paper_fill_totals(connection: Any, order: dict[str, Any], *, as_of: datetime
                       quantity > 0 AND quantity < 'Infinity'::numeric
                       AND price >= 0 AND price < 'Infinity'::numeric
                       AND (action <> 'paper_entry' OR price > 0), false)) AS invalid_fills,
+                  {PAPER_FILL_MULTIPLIERS_SQL} AS fill_multipliers_verified,
                   array_agg(id::text ORDER BY created_at, id) AS journal_ids,
                   array_agg(id::text ORDER BY created_at, id) FILTER (WHERE action = 'paper_entry') AS entry_journal_ids
            FROM app.trade_journal
+           CROSS JOIN (SELECT %s::numeric AS contract_multiplier) paper
            WHERE details->>'paper_order_id' = %s AND decision_id = %s::uuid
              AND (action IN ('paper_entry', 'paper_exit') OR action LIKE 'paper_exit:%%')
              AND created_at <= %s AND rationale = 'deterministic_options_paper_execution'""",
-        [str(order["id"]), order.get("decision_id"), as_of],
+        [order.get("contract_multiplier"), str(order["id"]), order.get("decision_id"), as_of],
     ).fetchone()
 
 
@@ -50,7 +67,7 @@ def _number(value: Any) -> float | None:
 
 def _reconciled_exit_pnl(row: dict[str, Any], fills: dict[str, Any] | None) -> float | None:
     """Recheck an unknown exit from the same fill and paid-fee evidence."""
-    if not fills or fills["missing_fees"] or fills["invalid_fills"]:
+    if not fills or fills["missing_fees"] or fills["invalid_fills"] or fills.get("fill_multipliers_verified") is not True:
         return None
     if str(row["journal_id"]) not in (fills.get("journal_ids") or []):
         return None
@@ -58,8 +75,15 @@ def _reconciled_exit_pnl(row: dict[str, Any], fills: dict[str, Any] | None) -> f
     filled, exited = _number(row.get("filled_quantity")), _number(row.get("exited_quantity"))
     entry_fees, paid_fees = _number(row.get("entry_fees")), _number(row.get("fees"))
     multiplier = _number(row.get("contract_multiplier"))
+    details = row["journal_details"] or {}
+    entry_multiplier = _number(details.get("entry_contract_multiplier"))
+    exit_multiplier = _number(details.get("exit_contract_multiplier"))
+    # Missing legacy evidence and recorded conflicts remain unknown. The
+    # current catalog/order multiplier cannot repair the two exit-time facts.
+    if entry_multiplier is None or exit_multiplier is None or not 0 < entry_multiplier == exit_multiplier == multiplier:
+        return None
     quantity, price = _number(row["journal_quantity"]), _number(row["journal_price"])
-    exit_fees = _number((row["journal_details"] or {}).get("fees"))
+    exit_fees = _number(details.get("fees"))
     if any(value is None for value in (*values.values(), filled, exited, entry_fees, paid_fees, multiplier, quantity, price, exit_fees)):
         return None
     if (filled <= 0 or values["entry_quantity"] != filled or values["exit_quantity"] != exited

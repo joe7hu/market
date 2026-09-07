@@ -69,7 +69,9 @@ def test_known_loss_uses_new_york_day_and_cutoff_with_existing_numeric_scope(led
         assert shared_sleeve_loss_state(connection, now=NOW + timedelta(days=1))["value"] == 0
 
 
-@pytest.mark.parametrize("gap", ["entry_fee", "exit_decision", "exit_quantity", "multiplier"])
+@pytest.mark.parametrize("gap", ["entry_fee", "exit_decision", "exit_quantity", "multiplier",
+                                 "missing_entry_multiplier", "missing_exit_multiplier", "conflicting_exit_multiplier",
+                                 "nonfinite_exit_multiplier", "boolean_exit_multiplier"])
 def test_unknown_assignment_loss_reconciles_only_complete_order_evidence(ledger, gap):
     runtime, instrument = ledger
     run = AnalysisRepository(runtime).start_run("ledger-regression", input_cutoff=NOW, code_version="test", inputs={})
@@ -86,21 +88,38 @@ def test_unknown_assignment_loss_reconciles_only_complete_order_evidence(ledger,
             [decision, instrument, NOW - timedelta(hours=3), NOW - timedelta(hours=1), NOW - timedelta(hours=2)],
         ).fetchone()["id"]
         entry = _journal(connection, instrument, at=NOW - timedelta(hours=2), decision=decision,
-            action="paper_entry", price=.5, details={"paper_order_id": str(paper), "fees": .65})
+            action="paper_entry", price=.5, details={"paper_order_id": str(paper), "fees": .65, "contract_multiplier": 10})
         exit_id = _journal(connection, instrument, at=NOW, decision=decision,
-            action="paper_exit:assignment", details={"paper_order_id": str(paper), "fees": .65, "net_pnl": None})
+            action="paper_exit:assignment", details={"paper_order_id": str(paper), "fees": .65, "net_pnl": None,
+                                                    "entry_contract_multiplier": 10, "exit_contract_multiplier": 10})
         if gap == "entry_fee":
             connection.execute("UPDATE app.trade_journal SET details = details - 'fees' WHERE id = %s", [entry])
         elif gap == "exit_decision":
             connection.execute("UPDATE app.trade_journal SET decision_id = NULL WHERE id = %s", [exit_id])
         elif gap == "exit_quantity":
             connection.execute("UPDATE app.trade_journal SET quantity = .5 WHERE id = %s", [exit_id])
-        else:
+        elif gap == "multiplier":
             connection.execute("UPDATE app.paper_order SET contract_multiplier = NULL WHERE id = %s", [paper])
+        elif gap == "missing_entry_multiplier":
+            connection.execute("UPDATE app.trade_journal SET details = details - 'entry_contract_multiplier' WHERE id = %s", [exit_id])
+        elif gap == "missing_exit_multiplier":
+            connection.execute("UPDATE app.trade_journal SET details = details - 'exit_contract_multiplier' WHERE id = %s", [exit_id])
+        else:
+            value = {"conflicting_exit_multiplier": 100, "nonfinite_exit_multiplier": "Infinity", "boolean_exit_multiplier": True}[gap]
+            connection.execute("UPDATE app.trade_journal SET details = details || %s WHERE id = %s", [Jsonb({"exit_contract_multiplier": value}), exit_id])
     with runtime.read() as connection:
         assert shared_sleeve_loss_state(connection, now=NOW) == {
             "value": None, "unresolved_exits": 1, "reconciled_exits": 0,
         }
+    if gap not in {"entry_fee", "exit_decision", "exit_quantity", "multiplier"}:
+        # Later order state is not corrected evidence for the immutable exit.
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE app.paper_order SET contract_multiplier = 100 WHERE id = %s", [paper])
+        with runtime.read() as connection:
+            assert shared_sleeve_loss_state(connection, now=NOW + timedelta(days=1)) == {
+                "value": None, "unresolved_exits": 1, "reconciled_exits": 0,
+            }
+        return
     # Restored evidence is sufficient; no journal P&L rewrite or new state is required.
     with runtime.transaction() as connection:
         connection.execute("UPDATE app.trade_journal SET details = details || %s WHERE id = %s", [Jsonb({"fees": .65}), entry])

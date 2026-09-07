@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.options_paper_ledger import PAPER_FILL_MULTIPLIERS_SQL
 from investment_panel.core.decision import TRACKED_METRICS, MARKET_TZ
 from investment_panel.database.strategy_parameters import (
     merge_strategy_parameters,
@@ -363,7 +364,7 @@ OUTCOME_QUERY = f"""
            fills.exit_price, paper.filled_quantity, paper.exited_quantity,
            paper.entry_slippage, paper.exit_slippage, paper.fees, paper.contract_multiplier,
            paper.execution_quote->'observed_liquidation_v1' AS paper_marks,
-           paper.reserved_collateral, fills.entry_quantity, fills.exit_quantity,
+           paper.reserved_collateral, fills.entry_quantity, fills.exit_quantity, fills.fill_multipliers_verified,
            paper_episode.paper_order_count, paper_episode.first_paper_at, paper_episode.last_paper_at
     FROM eligible
     JOIN analysis.decision decision ON decision.id = eligible.decision_id
@@ -389,7 +390,8 @@ OUTCOME_QUERY = f"""
                sum(quantity * price) FILTER (WHERE action = 'paper_exit' OR action LIKE 'paper_exit:%%')
                    / nullif(sum(quantity) FILTER (WHERE action = 'paper_exit' OR action LIKE 'paper_exit:%%'), 0) AS exit_price,
                sum(quantity) FILTER (WHERE action = 'paper_entry') AS entry_quantity,
-               sum(quantity) FILTER (WHERE action = 'paper_exit' OR action LIKE 'paper_exit:%%') AS exit_quantity
+               sum(quantity) FILTER (WHERE action = 'paper_exit' OR action LIKE 'paper_exit:%%') AS exit_quantity,
+               {PAPER_FILL_MULTIPLIERS_SQL} AS fill_multipliers_verified
         FROM app.trade_journal
         WHERE details->>'paper_order_id' = paper.id::text AND decision_id = decision.id
           AND quantity > 0 AND price IS NOT NULL
@@ -542,7 +544,8 @@ def has_multiple_paper_orders(row: Mapping[str, Any]) -> bool:
 def paper_execution_complete(row: Mapping[str, Any]) -> bool:
     """Require one fully journaled order for an independent paper sample."""
     if (row.get("paper_only") is not True or row.get("paper_status") not in {"exited", "closed"}
-        or type(row.get("paper_order_count")) is not int or row["paper_order_count"] != 1):
+        or type(row.get("paper_order_count")) is not int or row["paper_order_count"] != 1
+        or row.get("fill_multipliers_verified") is not True):
         return False
     required = (
         row.get("paper_order_id"), row.get("filled_at"), row.get("exit_at"),

@@ -458,13 +458,32 @@ def test_partial_exit_keeps_residual_position_open_until_all_filled_contracts_ex
     assert update_parameters[1] == 2
 
 
-def test_paper_liquidation_mark_uses_all_entry_fills_and_partial_exit_cash() -> None:
+def test_multi_leg_exit_preserves_each_multiplier_conflict_without_blocking_holding_exit(monkeypatch) -> None:
+    quote = {**_executable_long_quote(quote_time=NOW), "option_type": "call", "strike": 150, "multiplier": 100}
+    short = {**quote, "contract_id": "2", "side": "sell", "strike": 160, "bid": .1, "ask": .2, "multiplier": 10}
+    monkeypatch.setattr(paper_execution_database, "latest_option_legs", lambda *_args, **_kwargs: [quote, short])
+    repository = OptionsPaperExecutionRepository.__new__(OptionsPaperExecutionRepository)
+    connection = _RecordingConnection()
+    result = repository._manage_open(
+        connection, {**_open_order(), "structure": "call_debit_spread", "contract_multiplier": 100},
+        {}, [quote, short], NOW, forced_exit_reason="thesis_invalidated_or_closed",
+    )
+    assert result["status"] == "closed" and result["exit_quantity"] == 1 and result["net_pnl"] is None
+    details = next(parameters[6].obj for statement, parameters in connection.statements if "INSERT INTO app.trade_journal" in statement)
+    assert details["entry_contract_multiplier"] == 100 and details["exit_contract_multiplier"] is None
+    assert details["exit_contract_multipliers"] == [100, 10]
+    assert details["net_pnl_basis"] == "paper_contract_multiplier_conflict"
+
+
+@pytest.mark.parametrize("multiplier_evidence", [True, False, None])
+def test_paper_liquidation_mark_uses_all_entry_fills_and_partial_exit_cash(multiplier_evidence) -> None:
     class JournalConnection(_RecordingConnection):
         def execute(self, statement, parameters=None):
             if "AS entry_quantity" in statement:
                 # Two entries at .80 and 1.00; one prior exit at 1.20.
                 return _Result({"entry_quantity": 2, "exit_quantity": 1, "entry_units": 1.8,
                                 "exit_units": 1.2, "actual_fees": 1.95, "missing_fees": 0, "invalid_fills": 0,
+                                "fill_multipliers_verified": multiplier_evidence,
                                 "journal_ids": ["entry-a", "entry-b", "exit-a"]})
             return super().execute(statement, parameters)
 
@@ -480,6 +499,10 @@ def test_paper_liquidation_mark_uses_all_entry_fills_and_partial_exit_cash() -> 
              "bid": .7, "ask": .8, "multiplier": 100, "observed_at": at, "capture_complete": True}
     paper_execution_database._record_liquidation_mark(connection, order, [quote], now=at, execution_blockers=[])
     mark = connection.statements[-1][1][0].obj[key]
+    if multiplier_evidence is not True:
+        assert mark["status"] == "unknown" and mark["current_net_return"] is None and mark["max_drawdown"] is None
+        assert mark["reason"] == "paper_fill_or_fee_journal_incomplete"
+        return
     expected = (120 + 70 - 180 - 1.95 - .65) / 180
     assert mark["status"] == "observed" and mark["remaining_quantity"] == 1
     assert mark["current_net_return"] == pytest.approx(expected)
@@ -494,6 +517,7 @@ def test_cancelled_partial_holding_measures_its_exact_filled_basis(monkeypatch, 
             if "AS entry_quantity" in statement:
                 return _Result({"entry_quantity": 1, "exit_quantity": 0, "entry_units": .5, "exit_units": 0,
                                 "actual_fees": .65, "entry_fees": .65, "missing_fees": 0, "invalid_fills": 0,
+                                "fill_multipliers_verified": True,
                                 "journal_ids": ["actual-entry"], "entry_journal_ids": ["actual-entry"]})
             return super().execute(statement, parameters)
 

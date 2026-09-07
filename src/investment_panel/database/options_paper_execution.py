@@ -273,11 +273,20 @@ class OptionsPaperExecutionRepository:
             thesis_reason = _thesis_blocker(connection, int(item["instrument_id"]), now)
             missing_legs = "immutable_ticket_legs_missing" if not legs else None
             entry_pending = status in {"staged", "open"} and _quantity(item.get("filled_quantity")) < _quantity(item.get("quantity"))
+            quoted = None
             if entry_pending:
                 current, reason = self._current_ticket(connection, item, ticket, as_of=now)
                 entry_blocker = missing_legs or (reason if current is None else None) or thesis_reason
                 if not entry_blocker:
                     entry_blocker = "ticket_expiry_missing" if expires is None else "ticket_expired_before_fill" if expires <= now else None
+                if not entry_blocker and _quantity(item.get("filled_quantity")) > 0:
+                    fills = paper_fill_totals(connection, item, as_of=now)
+                    quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now, **_experiment_quote_scope(ticket))
+                    if (not fills or fills.get("fill_multipliers_verified") is not True
+                        or _number(fills.get("entry_quantity")) != _quantity(item.get("filled_quantity"))):
+                        entry_blocker = "paper_entry_multiplier_unverified"
+                    elif quoted and any(_number(leg.get("multiplier")) != _number(item.get("contract_multiplier")) for leg in quoted):
+                        entry_blocker = "paper_entry_multiplier_conflict"
                 if entry_blocker:
                     if _quantity(item.get("filled_quantity")) <= 0:
                         return self._terminal(connection, item, status="unfilled" if entry_blocker == "ticket_expired_before_fill" else "rejected", reason=entry_blocker, now=now)
@@ -297,7 +306,8 @@ class OptionsPaperExecutionRepository:
                     item["execution_quote"] = {**dict(item.get("execution_quote") or {}), ENTRY_CANCELLATION_KEY: cancellation}
                     entry_pending = False
             if entry_pending:
-                quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now, **_experiment_quote_scope(ticket))
+                if quoted is None:
+                    quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now, **_experiment_quote_scope(ticket))
                 current_execution = execution_policy(
                     quoted,
                     structure=str(item.get("structure") or ticket.get("structure") or ""),
@@ -329,7 +339,7 @@ class OptionsPaperExecutionRepository:
                 fees = _fees(len(quoted), fill_quantity)
                 slippage = _entry_slippage(quoted, fill_price, credit)
                 multiplier = _number(quoted[0].get("multiplier")) if quoted else None
-                if multiplier is None or multiplier <= 0:
+                if multiplier is None or not isfinite(multiplier) or multiplier <= 0 or any(_number(leg.get("multiplier")) != multiplier for leg in quoted):
                     return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "contract_multiplier_missing"}
                 quote_payload = {
                     **dict(item.get("execution_quote") or {}),
@@ -354,6 +364,7 @@ class OptionsPaperExecutionRepository:
                     connection, item, action="paper_entry", quantity=fill_quantity,
                     price=fill_price, key=f"generic:{paper_order_id}:entry:{now.isoformat()}",
                     details={"lane": item["lane"], "paper_order_id": paper_order_id, "slippage": slippage, "fees": fees,
+                             "contract_multiplier": multiplier,
                              **_experiment_quote_evidence(ticket, quoted)},
                 )
                 _record_liquidation_mark(connection, {
@@ -504,10 +515,17 @@ class OptionsPaperExecutionRepository:
         status = "exited" if terminal else "partial_exited"
         fees = _fees(len(quoted), exit_quantity)
         slippage = _exit_slippage(quoted, exit_price, credit)
+        exit_multipliers = [_number(leg.get("multiplier")) for leg in quoted]
+        exit_multipliers = [value if value is not None and isfinite(value) and value > 0 else None for value in exit_multipliers]
+        multipliers_agree = bool(exit_multipliers) and all(value == exit_multipliers[0] for value in exit_multipliers)
         accounting = _exit_accounting(
             connection, order, now=now, credit=credit, exit_price=exit_price,
-            quantity=exit_quantity, multiplier=_number(quoted[0].get("multiplier")), exit_fees=fees,
+            quantity=exit_quantity, multiplier=exit_multipliers[0] if multipliers_agree else None, exit_fees=fees,
         )
+        if not multipliers_agree:
+            accounting["exit_contract_multipliers"] = exit_multipliers
+            if all(value is not None for value in exit_multipliers):
+                accounting["net_pnl_basis"] = "paper_contract_multiplier_conflict"
         connection.execute(
             """
             UPDATE app.paper_order
@@ -688,10 +706,20 @@ def _exit_accounting(
     exit_price: float, quantity: float, multiplier: float | None, exit_fees: float,
 ) -> dict[str, Any]:
     """Allocate actual entry cost to this exit; never substitute the first fill."""
+    entry_multiplier = _number(order.get("contract_multiplier"))
+    entry_multiplier = entry_multiplier if entry_multiplier is not None and isfinite(entry_multiplier) and entry_multiplier > 0 else None
+    exit_multiplier = multiplier if multiplier is not None and isfinite(multiplier) and multiplier > 0 else None
     result = {"net_pnl": None, "allocated_entry_fees": None, "entry_journal_ids": [],
-              "net_pnl_basis": "paper_fill_or_fee_journal_incomplete"}
+              "net_pnl_basis": "paper_fill_or_fee_journal_incomplete",
+              "entry_contract_multiplier": entry_multiplier, "exit_contract_multiplier": exit_multiplier}
+    # Preserve the two observations even when accounting fails. A later order
+    # or catalog update cannot establish agreement at this recorded exit.
+    if entry_multiplier is None or exit_multiplier is None:
+        return {**result, "net_pnl_basis": "paper_contract_multiplier_missing"}
+    if entry_multiplier != exit_multiplier:
+        return {**result, "net_pnl_basis": "paper_contract_multiplier_conflict"}
     fills = paper_fill_totals(connection, order, as_of=now)
-    if not fills or fills["missing_fees"] or fills["invalid_fills"]:
+    if not fills or fills["missing_fees"] or fills["invalid_fills"] or fills.get("fill_multipliers_verified") is not True:
         return result
     values = {key: _number(fills[key]) for key in ("entry_quantity", "exit_quantity", "entry_units", "entry_fees", "actual_fees")}
     filled, exited = _number(order.get("filled_quantity")), _number(order.get("exited_quantity"))
@@ -701,13 +729,13 @@ def _exit_accounting(
         return result
     if (filled <= 0 or values["entry_quantity"] != filled or values["exit_quantity"] != exited
         or values["entry_units"] <= 0 or not 0 < quantity <= filled - exited
-        or multiplier <= 0 or multiplier != _number(order.get("contract_multiplier")) or exit_price < 0 or exit_fees < 0
+        or exit_price < 0 or exit_fees < 0
         or abs(values["entry_fees"] - paid_entry_fees) > 1e-6 or abs(values["actual_fees"] - paid_fees) > 1e-6):
         return result
     allocated_entry_fees = values["entry_fees"] * quantity / filled
     entry_vwap = values["entry_units"] / filled
     gross = (entry_vwap - exit_price if credit else exit_price - entry_vwap) * multiplier * quantity
-    return {"net_pnl": round(gross - allocated_entry_fees - exit_fees, 2),
+    return {**result, "net_pnl": round(gross - allocated_entry_fees - exit_fees, 2),
             "allocated_entry_fees": allocated_entry_fees, "entry_journal_ids": fills["entry_journal_ids"],
             "net_pnl_basis": "journal_entry_vwap_and_paid_fees"}
 
@@ -769,7 +797,8 @@ def _record_liquidation_mark(
                 mark = {"status": "unknown", "checked_at": measured_at.isoformat(),
                         "current_net_return": None, "max_drawdown": None, "coverage": "observed_executable_quotes_only"}
             if (float(fills["entry_quantity"]) != filled or float(fills["exit_quantity"]) != exited
-                or fills["missing_fees"] or fills["invalid_fills"] or entry_cash <= 0 or price is None
+                or fills["missing_fees"] or fills["invalid_fills"] or fills.get("fill_multipliers_verified") is not True
+                or entry_cash <= 0 or price is None
                 or any(not isfinite(value) for value in (entry_cash, exit_cash, actual_fees))
                 or abs(actual_fees - float(order.get("fees") or 0)) > 1e-6):
                 reason = "paper_fill_or_fee_journal_incomplete"

@@ -392,3 +392,48 @@ remaining holding exits; repaired journals reconcile the original unknown
 exits to -62.60. Missing, malformed, nonfinite, wrong-identity, wrong-quantity,
 wrong-multiplier and future evidence remain blocked. No new reconciliation
 table, workflow, grant or risk limit was added.
+
+## Eighth independent review
+
+Review v8 returned `patch is incorrect` for commit
+`52516770d0bfe56e8c74bfc8e753ff7f9bb55703`, tree
+`e46d6226d5845f167180c573db05d459f550416b`. The report is archived as
+`market-assistant-review-v8.json` with prior review history.
+
+| Finding | State | Required correction |
+|---|---|---|
+| R36 P2 | fixed; review pending | Preserve conflicting entry/exit multipliers during reconciliation; complete fees alone cannot resolve that uncertainty |
+| R37 P2 | fixed; review pending | Use the actual market-session close in daily-bar ingestion and prove early-close settlement through the real producer |
+
+The exact restored 5251677 app passed all 18 HTTP reads and semantic checks on
+schema 0004. The real experiment job also ran under `market_app` via the
+non-owner login with the three-second API timeout. It skipped all 47 existing
+candidates for unsupported parameters; no candidate was forced through a gate.
+Writer-proof evidence is archived as `experiment-job-proof.json`. No complete
+review acceptance, full release gate, landing or production deployment yet.
+
+R36 binds each entry and exit journal to its observed contract multiplier.
+Partial fills cannot replace the original filled basis; an incompatible
+remainder is canceled while the holding remains managed. Every exit leg must
+agree before a scalar multiplier is used. Missing legacy evidence or a recorded
+conflict remains unknown in loss reconciliation, liquidation marks, learning,
+rollback and stored promotion proof. One shared SQL predicate supplies these
+readers. The combined run passed 190 checks; eight settlement test comparisons
+needed time-zone normalization and are tracked in R37. Three final normal and
+multi-leg exit checks passed after the last caller change. No R36 schema,
+authority or risk-limit changes were required.
+
+R37 uses the actual US equity/ETF session close at the daily-bar producer and
+preserves stable fact identity, archived versions and original availability.
+Legitimate reingestion records a corrected clock with current availability and
+updates its exact materialized quote. Migration 20260907_0005 corrects only the
+existing current-price function, retaining its owner, privileges and signature.
+Verified early-close facts use their actual clocks; legacy winter prices retain
+the prior close fallback. Premature ordinary-day 13:00 captures remain excluded.
+Foreign, non-equity and daily_quote clock behavior is preserved. Exact schema,
+owner and ACL equality passed for downgrade and re-upgrade. Twenty-four
+producer, reader, history, migration and writer checks passed, followed by five
+existing ingestion and import checks. Root then passed all 18 application-login
+settlement variants against schema 0005 in 6.06 seconds. All changed Python files
+pass Ruff; diff checks pass. Independent acceptance and the full release gate
+remain pending. No production changes have occurred.

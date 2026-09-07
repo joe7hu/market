@@ -293,13 +293,15 @@ def test_paper_return_requires_complete_quantity_and_uses_multiplier_and_credit_
         "exit_at": datetime(2026, 8, 3, tzinfo=UTC), "paper_only": True, "paper_status": "exited",
         "paper_order_id": "order", "paper_order_count": 1, "actual_fill_price": 2.5, "exit_price": 3.0,
         "filled_quantity": 2, "exited_quantity": 2, "entry_quantity": 2, "exit_quantity": 2,
-        "contract_multiplier": 100, "fees": 2.6, "entry_slippage": .1, "exit_slippage": .1,
+        "contract_multiplier": 100, "fill_multipliers_verified": True, "fees": 2.6, "entry_slippage": .1, "exit_slippage": .1,
         "structure": "long_call",
     }
     assert abs(paper_realized_return(row) - .1948) < 1e-9
     assert paper_realized_return({**row, "exit_quantity": 1}) is None
     assert paper_realized_return({**row, "contract_multiplier": None}) is None
     assert paper_realized_return({**row, "entry_slippage": None}) is None
+    for evidence in (None, False, 1, "true"):
+        assert paper_realized_return({**row, "fill_multipliers_verified": evidence}) is None
     for count in (None, 0, 2, True):
         assert paper_realized_return({**row, "paper_order_count": count}) is None
     credit = {**row, "structure": "cash_secured_put", "exit_price": 0, "reserved_collateral": 10_000}

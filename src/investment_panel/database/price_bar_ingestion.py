@@ -7,7 +7,7 @@ from typing import Any, Sequence
 from uuid import UUID
 
 from investment_panel.core.decision import is_us_market_day, market_session_bounds
-from investment_panel.core.market_time import current_market_date
+from investment_panel.core.market_time import current_market_date, market_timezone_for_symbol
 from investment_panel.database.ingestion_coerce import calendar_date, number
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.price_fact_versions import confirm_price_fact, lock_price_fact
@@ -57,31 +57,38 @@ def store_price_bars(
                 continue
             if trading_date == market_date and source.get("is_complete") is not True:
                 continue
-            observed_at = datetime.combine(trading_date, time(20), tzinfo=UTC)
+            legacy_observed_at = datetime.combine(trading_date, time(20), tzinfo=UTC)
+            asset_class = normalized_asset_classes.get(symbol, str(source.get("asset_class") or "equity"))
+            session_close = (
+                market_session_bounds(trading_date)[1].astimezone(UTC)
+                if asset_class in {"equity", "etf"} and market_timezone_for_symbol(symbol) == "America/New_York"
+                and is_us_market_day(trading_date) else None
+            )
+            observed_at = session_close or legacy_observed_at
             open_price = number(source.get("open"))
             high = number(source.get("high"))
             low = number(source.get("low"))
             volume = number(source.get("volume"))
             currency = str(source.get("currency") or "USD")
-            lock_price_fact(connection, "price_bar", instruments[symbol], source_id, "1d", observed_at)
+            # Keep the existing date-stable lock while repairing the old
+            # nominal clock through the same fact/version owner.
+            lock_price_fact(connection, "price_bar", instruments[symbol], source_id, "1d", legacy_observed_at)
             latest_bar = connection.execute(
                 """
-                SELECT bar.id, bar.available_at, bar.open, bar.high, bar.low, bar.close,
+                SELECT bar.id, bar.available_at, bar.observed_at, bar.ingest_run_id, bar.open, bar.high, bar.low, bar.close,
                        bar.volume, bar.currency, price_run.status AS run_status
                 FROM raw.price_bar bar
                 JOIN ingest.run price_run ON price_run.id = bar.ingest_run_id
                 WHERE bar.instrument_id = %s AND bar.source_id = %s
-                  AND bar.interval = '1d' AND bar.observed_at = %s
+                  AND bar.interval = '1d' AND bar.trading_date = %s
+                  AND bar.observed_at = ANY(%s)
+                ORDER BY (bar.observed_at = %s) DESC, bar.available_at DESC
+                LIMIT 1
                 FOR UPDATE
                 """,
-                [instruments[symbol], source_id, observed_at],
+                [instruments[symbol], source_id, trading_date, [observed_at, legacy_observed_at], observed_at],
             ).fetchone()
             current_bar = (open_price, high, low, close, volume, currency)
-            asset_class = normalized_asset_classes.get(symbol, str(source.get("asset_class") or "equity"))
-            session_close = (
-                market_session_bounds(trading_date)[1]
-                if asset_class in {"equity", "etf"} and is_us_market_day(trading_date) else None
-            )
             # The availability projection retains the first confirmation of
             # a fact version. Preserve a distinct completed-session version
             # when an earlier, unchanged daily value was known before close.
@@ -104,7 +111,7 @@ def store_price_bars(
                 ).fetchone()
             elif (
                 tuple(latest_bar[key] for key in ("open", "high", "low", "close", "volume", "currency"))
-                != current_bar or needs_close_version
+                != current_bar or needs_close_version or latest_bar["observed_at"] != observed_at
             ):
                 connection.execute(
                     "INSERT INTO raw.price_bar_history SELECT * FROM raw.price_bar WHERE id = %s",
@@ -112,12 +119,12 @@ def store_price_bars(
                 )
                 bar_fact = connection.execute(
                     """
-                    UPDATE raw.price_bar SET ingest_run_id = %s, trading_date = %s,
+                    UPDATE raw.price_bar SET ingest_run_id = %s, trading_date = %s, observed_at = %s,
                         open = %s, high = %s, low = %s, close = %s, volume = %s,
                         currency = %s, available_at = clock_timestamp()
                     WHERE id = %s RETURNING id, available_at
                     """,
-                    [run_id, trading_date, open_price, high, low, close, volume,
+                    [run_id, trading_date, observed_at, open_price, high, low, close, volume,
                      currency, latest_bar["id"]],
                 ).fetchone()
             else:
@@ -133,6 +140,8 @@ def store_price_bars(
                 latest[symbol] = {
                     "instrument_id": instruments[symbol], "date": trading_date,
                     "price": close, "observed_at": observed_at,
+                    "previous_observed_at": latest_bar["observed_at"] if latest_bar else None,
+                    "previous_ingest_run_id": latest_bar["ingest_run_id"] if latest_bar else None,
                 }
         _materialize_latest_quotes(connection, run_id, source_id, latest)
     return stored
@@ -146,10 +155,14 @@ def _materialize_latest_quotes(
 ) -> None:
     for row in latest.values():
         observed_at = row["observed_at"]
-        lock_price_fact(connection, "quote", row["instrument_id"], source_id, observed_at)
+        previous_observed_at = row.get("previous_observed_at")
+        repair_clock = previous_observed_at is not None and previous_observed_at != observed_at
+        # Acquire both quote identities in a stable order during a clock repair.
+        for quote_clock in sorted({observed_at, previous_observed_at} if repair_clock else {observed_at}):
+            lock_price_fact(connection, "quote", row["instrument_id"], source_id, quote_clock)
         latest_quote = connection.execute(
             """
-            SELECT quote.id, quote.available_at, quote.price, price_run.status AS run_status
+            SELECT quote.id, quote.available_at, quote.observed_at, quote.price, price_run.status AS run_status
             FROM raw.quote quote
             JOIN ingest.run price_run ON price_run.id = quote.ingest_run_id
             WHERE quote.instrument_id = %s AND quote.source_id = %s AND quote.observed_at = %s
@@ -157,7 +170,15 @@ def _materialize_latest_quotes(
             """,
             [row["instrument_id"], source_id, observed_at],
         ).fetchone()
-        if latest_quote is not None and float(latest_quote["price"]) == float(row["price"]):
+        if latest_quote is None and repair_clock:
+            latest_quote = connection.execute(
+                """SELECT quote.id, quote.available_at, quote.observed_at, quote.price, price_run.status AS run_status
+                   FROM raw.quote quote JOIN ingest.run price_run ON price_run.id = quote.ingest_run_id
+                   WHERE quote.instrument_id = %s AND quote.source_id = %s AND quote.observed_at = %s
+                     AND quote.ingest_run_id = %s FOR UPDATE""",
+                [row["instrument_id"], source_id, previous_observed_at, row["previous_ingest_run_id"]],
+            ).fetchone()
+        if latest_quote is not None and latest_quote["observed_at"] == observed_at and float(latest_quote["price"]) == float(row["price"]):
             if latest_quote["run_status"] == "failed":
                 connection.execute(
                     "UPDATE raw.quote SET ingest_run_id = %s WHERE id = %s",
@@ -183,10 +204,10 @@ def _materialize_latest_quotes(
             )
             quote_fact = connection.execute(
                 """
-                UPDATE raw.quote SET ingest_run_id = %s, price = %s,
+                UPDATE raw.quote SET ingest_run_id = %s, price = %s, observed_at = %s,
                     currency = 'USD', available_at = clock_timestamp()
                 WHERE id = %s RETURNING id, available_at
                 """,
-                [run_id, row["price"], latest_quote["id"]],
+                [run_id, row["price"], observed_at, latest_quote["id"]],
             ).fetchone()
         confirm_price_fact(connection, "quote", quote_fact["id"], quote_fact["available_at"], run_id)
