@@ -7,10 +7,12 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from conftest import typed_config
+from investment_panel.core.decision import market_session_bounds
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket
 from investment_panel.core.risk_policy import PortfolioAssignmentPolicy, RiskPolicySnapshot
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.analysis import AnalysisRepository, current_option_publication_answers
+from investment_panel.database.confirmed_daily_prices import completed_trading_dates
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_analysis import DEFAULT_PARAMETERS, FEATURE_VERSION, refresh_options_radar
 from investment_panel.database.options_calibration import calibration_profiles
@@ -583,6 +585,20 @@ def test_application_login_exits_use_all_partial_entry_prices_and_paid_fees(expe
             exited = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=seconds + 1))
             assert exited["status"] == expected_status and exited["exit_quantity"] == 1
             assert exited["net_pnl"] is None if future_entry_journal else exited["net_pnl"] == pytest.approx(expected_pnl)
+            if future_entry_journal:
+                # An unknown partial exit blocks more risk while the remaining
+                # holding still reaches the next execution loop and exits.
+                with application.read() as connection:
+                    assert "shared_exit_accounting_unreconciled" in shared_sleeve_blockers(
+                        connection, now=now + timedelta(seconds=seconds + 1), lane="radar", sleeve_capital=50000,
+                        daily_loss_halt_pct=.02, max_open_positions=None,
+                    )
+                with pytest.raises(ValueError, match="shared_exit_accounting_unreconciled"):
+                    ActionRepository(application).stage_option_paper_entry(
+                        decision_id=ready.decision_id, idempotency_key=f"blocked-after-unknown-{seconds}", ticket_version=1,
+                        quantity=1, limit_price=.5, current_options_risk_sleeve_capital=50000,
+                        experiment_publication_id=ready.publication_id,
+                    )
         with application.read() as connection:
             paper = connection.execute("SELECT * FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()
             assert paper["actual_fill_price"] == .5  # This snapshot is the first fill, not the cash basis.
@@ -607,12 +623,59 @@ def test_application_login_exits_use_all_partial_entry_prices_and_paid_fees(expe
                     connection, now=now + timedelta(seconds=41), lane="radar", sleeve_capital=3000,
                     daily_loss_halt_pct=.02, max_open_positions=None,
                 )
+        if future_entry_journal:
+            from investment_panel.database.options_paper_ledger import shared_sleeve_loss_state
+
+            # The missing fee/fill journal becomes available after both exits.
+            # Reconcile from that evidence without rewriting the unknown exits.
+            with owner.transaction() as connection:
+                connection.execute(
+                    "UPDATE app.trade_journal SET created_at = %s WHERE details->>'paper_order_id' = %s AND action = 'paper_entry' AND price = .4",
+                    [now + timedelta(seconds=42), staged["paper_order_id"]],
+                )
+            with application.read() as connection:
+                state = shared_sleeve_loss_state(connection, now=now + timedelta(seconds=43))
+                assert state == {"value": pytest.approx(-62.6), "unresolved_exits": 0, "reconciled_exits": 2}
+                assert shared_sleeve_blockers(
+                    connection, now=now + timedelta(seconds=43), lane="radar", sleeve_capital=50000,
+                    daily_loss_halt_pct=.02, max_open_positions=None,
+                ) == []
+                assert "shared_daily_loss_halt" in shared_sleeve_blockers(
+                    connection, now=now + timedelta(seconds=43), lane="radar", sleeve_capital=3000,
+                    daily_loss_halt_pct=.02, max_open_positions=None,
+                )
+                assert all(row["details"]["net_pnl"] is None for row in connection.execute(
+                    "SELECT details FROM app.trade_journal WHERE details->>'paper_order_id' = %s AND action LIKE 'paper_exit:%%'",
+                    [staged["paper_order_id"]],
+                ).fetchall())
     finally:
         application.close()
 
 
-@pytest.mark.parametrize("previously_exited,entry_journal_complete", [(0, True), (1, True), (0, False)])
-def test_application_login_settles_preauthorized_csp_without_changing_policy(experiment_context, application_postgres_dsn, monkeypatch, previously_exited, entry_journal_complete):
+def _expiration_close_fixture(runtime, ingestion, expiration, *, price, observed_at, available_at, confirmed_at):
+    source = "test-expiration-close"
+    ingestion.register_source(source, name=source, family="test", kind="daily_bars")
+    run_id = ingestion.start_run(source, "price_bars", started_at=confirmed_at - timedelta(seconds=1))
+    assert ingestion.store_price_bars(run_id, source, [{"symbol": "NVDA", "date": expiration.isoformat(), "close": price, "is_complete": True}]) == 1
+    ingestion.finish_run(run_id, "succeeded")
+    with runtime.transaction() as connection:
+        connection.execute("UPDATE ingest.run SET finished_at = %s WHERE id = %s", [confirmed_at, run_id])
+        fact = connection.execute("SELECT id FROM raw.price_bar WHERE ingest_run_id = %s", [run_id]).fetchone()
+        connection.execute("UPDATE raw.price_bar SET observed_at = %s, available_at = %s WHERE id = %s", [observed_at, available_at, fact["id"]])
+        connection.execute("UPDATE raw.price_bar_confirmation SET fact_available_at = %s WHERE fact_id = %s AND ingest_run_id = %s", [available_at, fact["id"], run_id])
+        connection.execute("UPDATE raw.price_bar_fact_availability SET fact_available_at = %s WHERE fact_id = %s AND ingest_run_id = %s", [available_at, fact["id"], run_id])
+    return {"basis": "confirmed_expiration_daily_close", "close": price, "trading_date": expiration.isoformat(),
+            "session_close_at": market_session_bounds(expiration)[1].astimezone(UTC).isoformat(),
+            "source_id": source, "fact_id": fact["id"], "fact_table": "raw.price_bar", "ingest_run_id": str(run_id),
+            "observed_at": observed_at.isoformat(), "available_at": available_at.isoformat(), "confirmed_at": confirmed_at.isoformat()}
+
+
+@pytest.mark.parametrize("previously_exited,entry_journal_complete,closing_price,mark_case", [
+    (0, True, 8, "valid"), (1, True, 8, "valid"), (0, False, 8, "valid"),
+    (0, True, 10, "valid"), (0, True, 12, "valid"),
+    *[(0, True, 8, case) for case in ("missing", "stale", "premarket", "intraday", "future_available", "future_confirmation", "future_observed", "disabled", "failed", "nonfinite")],
+])
+def test_application_login_settles_preauthorized_csp_without_changing_policy(experiment_context, application_postgres_dsn, monkeypatch, previously_exited, entry_journal_complete, closing_price, mark_case):
     owner, ingestion, now, parent, _candidate = experiment_context
     application = DatabaseRuntime(application_postgres_dsn)
     application.open()
@@ -626,9 +689,11 @@ def test_application_login_settles_preauthorized_csp_without_changing_policy(exp
         execution = OptionsPaperExecutionRepository(application)
         _capture(owner, ingestion, now + timedelta(seconds=10))
         assert execution._manage_one(other["paper_order_id"], now + timedelta(seconds=11))["status"] == "filled"
-        entry_at = now - timedelta(days=2)
+        expiration = completed_trading_dates(now, count=1)[0]
+        session_close = market_session_bounds(expiration)[1].astimezone(UTC)
+        entry_at = session_close - timedelta(days=2)
         historical = _capture(owner, ingestion, entry_at, bid=.5, ask=.52, contracts=(
-            {"strike": 10, "option_type": "put", "expiration": now.date().isoformat(), "underlying_price": 12},
+            {"strike": 10, "option_type": "put", "expiration": expiration.isoformat(), "underlying_price": 12},
         ))
         with owner.read() as connection:
             contract_id = connection.execute(
@@ -651,7 +716,7 @@ def test_application_login_settles_preauthorized_csp_without_changing_policy(exp
             required_cash=1000, symbol_limit=5000, aggregate_limit=15000, evaluated_at=entry_at,
         )
         ticket = build_option_trade_ticket(
-            decision_id=str(decision_id), symbol="NVDA", structure="cash_secured_put", expiration=now.date(),
+            decision_id=str(decision_id), symbol="NVDA", structure="cash_secured_put", expiration=expiration,
             legs=[{"contract_id": contract_id, "option_type": "put", "side": "sell", "strike": 10,
                    "bid": .5, "ask": .52, "bid_size": 10, "ask_size": 10, "open_interest": 1000, "quote_time": entry_at}],
             entry_price=.5, one_unit_max_loss=None, secured_cash=1000, state="READY", evaluated_at=entry_at,
@@ -701,23 +766,69 @@ def test_application_login_settles_preauthorized_csp_without_changing_policy(exp
                      Jsonb({"paper_order_id": str(paper_id), "fees": .65, "net_pnl": 23.7, "idempotency_key": "preauthorized-partial-exit"})],
                 )
         with ingestion.run("test-experiment", "assignment-quote") as run:
-            ingestion.store_quotes(run.id, "test-experiment", [{"symbol": "NVDA", "price": 8, "observed_at": now + timedelta(seconds=20)}])
+            # Even a fresh ITM spot must not become an expiration settlement.
+            ingestion.store_quotes(run.id, "test-experiment", [{"symbol": "NVDA", "price": 1, "observed_at": now + timedelta(seconds=20)}])
+        mark = None
+        if mark_case != "missing":
+            bar_date = completed_trading_dates(session_close - timedelta(seconds=1), count=1)[0] if mark_case == "stale" else expiration
+            observed_at = now + timedelta(seconds=60) if mark_case == "future_observed" else market_session_bounds(bar_date)[1].astimezone(UTC)
+            available_at = now + timedelta(seconds=18)
+            confirmed_at = now + timedelta(seconds=19)
+            if mark_case in {"premarket", "intraday"}:
+                observed_at = session_close - timedelta(hours=10 if mark_case == "premarket" else 1)
+                available_at = observed_at + timedelta(seconds=1)
+                confirmed_at = available_at + timedelta(seconds=1)
+            elif mark_case == "future_available":
+                available_at = now + timedelta(seconds=29)
+                confirmed_at = now + timedelta(seconds=30)
+            elif mark_case == "future_confirmation":
+                confirmed_at = now + timedelta(seconds=30)
+            mark = _expiration_close_fixture(
+                owner, ingestion, bar_date, price=closing_price, observed_at=observed_at,
+                available_at=available_at, confirmed_at=confirmed_at,
+            )
+            with owner.transaction() as connection:
+                if mark_case == "disabled":
+                    connection.execute("UPDATE ingest.source SET enabled = false WHERE id = %s", [mark["source_id"]])
+                elif mark_case == "failed":
+                    connection.execute("UPDATE ingest.run SET status = 'failed' WHERE id = %s", [mark["ingest_run_id"]])
+                elif mark_case == "nonfinite":
+                    connection.execute("UPDATE raw.price_bar SET close = 'NaN'::float8 WHERE id = %s", [mark["fact_id"]])
         _capture(owner, ingestion, now + timedelta(seconds=20), bid=.6, ask=.62)
         settlement_at = now + timedelta(seconds=21)
         managed = execution.manage_orders(lanes=["radar"], decision_inbox_enabled=False, now=settlement_at, limit=10)
-        assert [(row["paper_order_id"], row["reason"]) for row in managed] == [(str(paper_id), "assignment"), (other["paper_order_id"], "exit_not_triggered")]
+        reason = "assignment" if closing_price < 10 else "expiration_unassigned"
+        assert [(row["paper_order_id"], row["reason"]) for row in managed] == [
+            (str(paper_id), reason if mark_case == "valid" else "expiration_settlement_pending"),
+            (other["paper_order_id"], "exit_not_triggered"),
+        ]
+        if mark_case != "valid":
+            with application.read() as connection:
+                pending = connection.execute("SELECT * FROM app.paper_order WHERE id = %s", [paper_id]).fetchone()
+                assert pending["status"] == "entered" and pending["exited_quantity"] == 0 and pending["exit_price"] is None
+                assert pending["policy_result"] == pending["policy_snapshot"] == policy and pending["ticket_snapshot"] == ticket
+                assert pending["execution_quote"]["assignment"]["status"] == "pending_settlement"
+                assert {key: pending["execution_quote"][key] for key in prior_quotes} == prior_quotes
+                assert float(pending["fees"]) == pytest.approx(1.3)
+                assert connection.execute("SELECT count(*) AS count FROM app.trade_journal WHERE details->>'paper_order_id' = %s AND action LIKE 'paper_exit:%%'", [str(paper_id)]).fetchone()["count"] == 0
+            if mark_case == "future_confirmation":
+                later = execution._manage_one(str(paper_id), now + timedelta(seconds=31))
+                assert later["reason"] == "assignment" and later["status"] == "closed"
+            return
+        intrinsic = max(10 - closing_price, 0)
         with application.read() as connection:
             paper = connection.execute("SELECT * FROM app.paper_order WHERE id = %s", [paper_id]).fetchone()
             assert paper["policy_result"] == paper["policy_snapshot"] == policy and paper["ticket_snapshot"] == ticket
             assert paper["status"] == "exited" and paper["filled_quantity"] == paper["exited_quantity"] == 2
-            assert paper["exit_price"] == 2 and paper["contract_multiplier"] == 100 and float(paper["fees"]) == pytest.approx(2.6)
+            assert paper["exit_price"] == intrinsic and paper["contract_multiplier"] == 100 and float(paper["fees"]) == pytest.approx(2.6)
             assert {key: paper["execution_quote"][key] for key in prior_quotes} == prior_quotes
             assert paper["execution_quote"]["assignment"] == {
-                "status": "assigned", "strike": 10, "underlying_price": 8, "multiplier": 100,
-                "contract_count": 2 - previously_exited, "settlement_value": 200 * (2 - previously_exited),
-                "settled_at": settlement_at.isoformat(), "assignment_fee": .65 * (2 - previously_exited),
+                "status": "assigned" if intrinsic else "expired_unassigned", "strike": 10, "underlying_price": closing_price, "multiplier": 100,
+                "contract_count": 2 - previously_exited, "settlement_value": intrinsic * 100 * (2 - previously_exited),
+                "settled_at": settlement_at.isoformat(), "assignment_fee": .65 * (2 - previously_exited) if intrinsic else 0,
+                "settlement_fee": .65 * (2 - previously_exited), "expiration_mark": mark,
                 "allocated_entry_fees": .65 * (2 - previously_exited) if entry_journal_complete else None,
-                "net_pnl": -151.3 * (2 - previously_exited) if entry_journal_complete else None,
+                "net_pnl": round(((.5 - intrinsic) * 100 - 1.3) * (2 - previously_exited), 2) if entry_journal_complete else None,
                 "entry_journal_ids": entry_journal_ids,
                 "net_pnl_basis": "journal_entry_vwap_and_paid_fees" if entry_journal_complete else "paper_fill_or_fee_journal_incomplete",
             }
@@ -727,22 +838,27 @@ def test_application_login_settles_preauthorized_csp_without_changing_policy(exp
             ).fetchall()
             assert sum(row["quantity"] for row in journal) == 2
             assert sum(row["details"]["fees"] for row in journal) == pytest.approx(1.3)
-            assert journal[-1]["action"] == "paper_exit:assignment" and journal[-1]["price"] == 2
+            assert journal[-1]["action"] == f"paper_exit:{reason}" and journal[-1]["price"] == intrinsic
             assert journal[-1]["quantity"] == 2 - previously_exited
             if entry_journal_complete:
-                assert sum(row["details"]["net_pnl"] for row in journal) == pytest.approx(-127.6 if previously_exited else -302.6)
-                assert "shared_daily_loss_halt" in shared_sleeve_blockers(
+                assert sum(row["details"]["net_pnl"] for row in journal) == pytest.approx(-127.6 if previously_exited else ((.5 - intrinsic) * 100 - 1.3) * 2)
+                if intrinsic:
+                    assert "shared_daily_loss_halt" in shared_sleeve_blockers(
+                        connection, now=settlement_at, lane="radar", sleeve_capital=5000,
+                        daily_loss_halt_pct=.02, max_open_positions=None,
+                    )
+            else:
+                assert journal[-1]["details"]["net_pnl"] is None
+                assert "shared_exit_accounting_unreconciled" in shared_sleeve_blockers(
                     connection, now=settlement_at, lane="radar", sleeve_capital=5000,
                     daily_loss_halt_pct=.02, max_open_positions=None,
                 )
-            else:
-                assert journal[-1]["details"]["net_pnl"] is None
             assert not connection.execute("SELECT has_column_privilege(current_user, 'app.paper_order', 'policy_result', 'UPDATE') AS allowed").fetchone()["allowed"]
         again = execution.manage_orders(lanes=["radar"], decision_inbox_enabled=False, now=now + timedelta(seconds=22), limit=10)
         assert len(again) == 1 and again[0]["paper_order_id"] == other["paper_order_id"]
         with application.read() as connection:
             assert connection.execute(
-                "SELECT count(*) AS count FROM app.trade_journal WHERE details->>'paper_order_id' = %s AND action = 'paper_exit:assignment'",
+                "SELECT count(*) AS count FROM app.trade_journal WHERE details->>'paper_order_id' = %s AND action IN ('paper_exit:assignment', 'paper_exit:expiration_unassigned')",
                 [str(paper_id)],
             ).fetchone()["count"] == 1
             assert float(connection.execute("SELECT fees FROM app.paper_order WHERE id = %s", [paper_id]).fetchone()["fees"]) == pytest.approx(2.6)

@@ -351,3 +351,44 @@ arithmetic helper is removed. Eighty option, execution and writer-privilege
 checks passed, including application-login full/partial assignment, later batch
 management, mixed-price entry fills, repeat idempotency and the shared loss
 halt. No privilege, assignment configuration or recovery authority changed.
+
+## Seventh independent review
+
+Review v7 returned `patch is incorrect` for commit
+`26bd582eb9aec4fc85782ce22eae6f5f3abea274`, tree
+`c402923d0137f2f4a289031f9e005693dc14a230`. The report is archived as
+`market-assistant-review-v7.json` with the prior independent reports.
+
+| Finding | State | Required correction |
+|---|---|---|
+| R34 P2 | fixed; review pending | Keep unknown exit-loss accounting in the shared entry gate until reconciled; never default it to zero, while preserving holding exits |
+| R35 P2 | fixed; review pending | Require the correct expiration-session close and confirmed settlement mark before paper assignment; stale spot quotes leave settlement unresolved |
+
+The exact 26bd582 restored API passed 18 HTTP reads and semantic checks on
+schema 0004. The new findings concern downstream accounting and settlement
+evidence, not those read paths. No accepted complete review, full release gate,
+landing, production migration or deployment has occurred.
+
+R35 uses the existing exact-session `confirmed_daily_bars` reader and market
+calendar, including early closes. It records source/fact and observation,
+availability and confirmation clocks. ITM puts settle as assigned; equal/OTM
+puts settle at zero intrinsic as expired unassigned. Missing, stale, early,
+future, inactive, failed or nonfinite evidence keeps settlement pending. Before
+close, executable holding risk exits remain available; later holdings still run
+when settlement is pending. The three focused suites passed 102 tests; 35
+targeted checks passed after moving shared journal totals into the existing
+ledger owner to keep the execution-to-ledger import direction. No new provider,
+grant, assignment configuration or authority was added.
+
+R34 blocks new entries across all three option lanes when exit accounting is
+unresolved, including across day changes. It reuses the same exact-order fill
+and fee totals for read-only reconciliation; the original exit history remains
+unchanged. Complete restored journals can clear the unknown block, with known
+P&L attributed to its New York exit day and the configured loss halt unchanged.
+The shared blocker action now directs the user to reconcile the fill/fee journal.
+The combined ledger, full experiment, execution and import-guard run passed
+115 tests. Actual normal partial exits block a later public stage while the
+remaining holding exits; repaired journals reconcile the original unknown
+exits to -62.60. Missing, malformed, nonfinite, wrong-identity, wrong-quantity,
+wrong-multiplier and future evidence remain blocked. No new reconciliation
+table, workflow, grant or risk limit was added.

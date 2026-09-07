@@ -365,6 +365,7 @@ def next_action_for(blocker: str | None) -> str:
         "stock_cash_comparator_missing": "Recalculate the stock return after costs against cash from the same decision date.",
         "trade_plan_missing": "Refresh the ticker evidence and publish its trade plan.",
         "risk_policy_blocked": "Reduce the proposed risk or keep cash; retain the configured risk limits.",
+        "shared_exit_accounting_unreconciled": "Reconcile the paper trade's fill and fee journal before opening another position.",
     }
     return actions.get(str(blocker or ""), "Refresh the required fact and recalculate the resolution.")
 

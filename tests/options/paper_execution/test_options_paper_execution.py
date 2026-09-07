@@ -8,7 +8,7 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.jobs import options_paper_execution
-from investment_panel.core.decision import ExpressionKind
+from investment_panel.core.decision import ExpressionKind, market_session_bounds
 from investment_panel.core.option_trade_ticket import exit_reason
 from investment_panel.database import options_paper_execution as paper_execution_database
 from investment_panel.database import ticker_execution as ticker_execution_database
@@ -105,6 +105,58 @@ def test_paper_exit_uses_profit_stop_time_and_liquidity_gates() -> None:
         ticket={**ticket, "expiration": (NOW.date() + timedelta(days=7)).isoformat()},
         exits=exits, credit=False, entry_price=1.0, exit_price=1.0, execution_blockers=[], now=NOW,
     ) == "time_exit"
+
+
+@pytest.mark.parametrize("expiration,close_hour", [(date(2026, 8, 12), 20), (date(2026, 11, 27), 18)])
+@pytest.mark.parametrize("clock", ["premarket", "intraday", "before_close", "at_close", "after_close"])
+def test_expiration_settlement_obeys_regular_and_early_session_close(monkeypatch, expiration, close_hour, clock) -> None:
+    close_at = market_session_bounds(expiration)[1].astimezone(UTC)
+    assert close_at.hour == close_hour
+    offsets = {"premarket": -8 * 3600, "intraday": -3600, "before_close": -1, "at_close": 0, "after_close": 2}
+    now = close_at + timedelta(seconds=offsets[clock])
+    calls = []
+
+    def confirmed(_connection, instrument_ids, **kwargs):
+        calls.append(kwargs)
+        assert instrument_ids == [1] and kwargs["trading_dates"] == [expiration]
+        assert kwargs["require_session_close"] is True and kwargs["as_of"] == now
+        return {1: [{"fact_id": 99, "fact_table": "raw.price_bar", "ingest_run_id": "confirmed-run",
+                     "trading_date": expiration, "close": 8, "source_id": "confirmed-source",
+                     "observed_at": close_at, "available_at": close_at + timedelta(seconds=1),
+                     "confirmed_at": close_at + timedelta(seconds=2)}]}
+
+    monkeypatch.setattr(paper_execution_database, "confirmed_daily_bars", confirmed)
+    monkeypatch.setattr(paper_execution_database, "latest_option_legs", lambda *_args, **_kwargs: [])
+    repository = OptionsPaperExecutionRepository.__new__(OptionsPaperExecutionRepository)
+    connection = _RecordingConnection()
+    order = {**_open_order(), "structure": "cash_secured_put", "contract_multiplier": 100}
+    result = repository._manage_open(
+        connection, order, {"expiration": expiration.isoformat(), "exits": {"time_exit_dte": 7}},
+        [{"contract_id": "1", "option_type": "put", "side": "sell", "strike": 10, "multiplier": 100, "expiration": expiration}], now,
+    )
+    if clock == "after_close":
+        assert result["status"] == "closed" and result["reason"] == "assignment"
+        settlement = next(parameters[6].obj["assignment"] for statement, parameters in connection.statements if "SET status = 'exited'" in statement)
+        assert settlement["expiration_mark"]["session_close_at"] == close_at.isoformat()
+        assert settlement["expiration_mark"]["source_id"] == "confirmed-source"
+    else:
+        assert result["status"] == "filled" and result["reason"] == "expiration_settlement_pending"
+        assert not any("SET status = 'exited'" in statement or "INSERT INTO app.trade_journal" in statement for statement, _parameters in connection.statements)
+        assert len(calls) == (1 if clock == "at_close" else 0)
+
+
+def test_before_expiration_close_retains_existing_executable_risk_exit(monkeypatch) -> None:
+    expiration = date(2026, 11, 27)
+    now = market_session_bounds(expiration)[1].astimezone(UTC) - timedelta(minutes=1)
+    quote = {**_executable_long_quote(quote_time=now), "option_type": "put", "side": "sell", "multiplier": 100}
+    monkeypatch.setattr(paper_execution_database, "latest_option_legs", lambda *_args, **_kwargs: [quote])
+    repository = OptionsPaperExecutionRepository.__new__(OptionsPaperExecutionRepository)
+    result = repository._manage_open(
+        _RecordingConnection(), {**_open_order(), "structure": "cash_secured_put", "contract_multiplier": 100},
+        {"expiration": expiration.isoformat()},
+        [{**quote, "strike": 10, "expiration": expiration}], now, forced_exit_reason="thesis_invalidated_or_closed",
+    )
+    assert result["status"] == "closed" and result["reason"] == "thesis_invalidated_or_closed"
 
 
 @pytest.mark.parametrize("entry_blocker", [

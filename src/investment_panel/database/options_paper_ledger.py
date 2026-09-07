@@ -3,12 +3,123 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Any
 
 from investment_panel.core.decision import MARKET_TZ
 
 
 OPEN_STATUSES = ("staged", "open", "entered", "partial_exited")
+
+
+def paper_fill_totals(connection: Any, order: dict[str, Any], *, as_of: datetime) -> dict[str, Any] | None:
+    """Read only this order's journal cash flows, including prior partial exits."""
+    return connection.execute(
+        """SELECT coalesce(sum(quantity) FILTER (WHERE action = 'paper_entry'), 0) AS entry_quantity,
+                  coalesce(sum(quantity) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_quantity,
+                  coalesce(sum(quantity * price) FILTER (WHERE action = 'paper_entry'), 0) AS entry_units,
+                  coalesce(sum(quantity * price) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_units,
+                  coalesce(sum((details->>'fees')::numeric)
+                      FILTER (WHERE details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS actual_fees,
+                  coalesce(sum((details->>'fees')::numeric)
+                      FILTER (WHERE action = 'paper_entry' AND details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS entry_fees,
+                  count(*) FILTER (WHERE NOT coalesce(details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)) AS missing_fees,
+                  count(*) FILTER (WHERE NOT coalesce(
+                      quantity > 0 AND quantity < 'Infinity'::numeric
+                      AND price >= 0 AND price < 'Infinity'::numeric
+                      AND (action <> 'paper_entry' OR price > 0), false)) AS invalid_fills,
+                  array_agg(id::text ORDER BY created_at, id) AS journal_ids,
+                  array_agg(id::text ORDER BY created_at, id) FILTER (WHERE action = 'paper_entry') AS entry_journal_ids
+           FROM app.trade_journal
+           WHERE details->>'paper_order_id' = %s AND decision_id = %s::uuid
+             AND (action IN ('paper_entry', 'paper_exit') OR action LIKE 'paper_exit:%%')
+             AND created_at <= %s AND rationale = 'deterministic_options_paper_execution'""",
+        [str(order["id"]), order.get("decision_id"), as_of],
+    ).fetchone()
+
+
+def _number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if isfinite(number) else None
+
+
+def _reconciled_exit_pnl(row: dict[str, Any], fills: dict[str, Any] | None) -> float | None:
+    """Recheck an unknown exit from the same fill and paid-fee evidence."""
+    if not fills or fills["missing_fees"] or fills["invalid_fills"]:
+        return None
+    if str(row["journal_id"]) not in (fills.get("journal_ids") or []):
+        return None
+    values = {name: _number(fills[name]) for name in ("entry_quantity", "exit_quantity", "entry_units", "entry_fees", "actual_fees")}
+    filled, exited = _number(row.get("filled_quantity")), _number(row.get("exited_quantity"))
+    entry_fees, paid_fees = _number(row.get("entry_fees")), _number(row.get("fees"))
+    multiplier = _number(row.get("contract_multiplier"))
+    quantity, price = _number(row["journal_quantity"]), _number(row["journal_price"])
+    exit_fees = _number((row["journal_details"] or {}).get("fees"))
+    if any(value is None for value in (*values.values(), filled, exited, entry_fees, paid_fees, multiplier, quantity, price, exit_fees)):
+        return None
+    if (filled <= 0 or values["entry_quantity"] != filled or values["exit_quantity"] != exited
+        or values["entry_units"] <= 0 or not 0 < quantity <= exited <= filled
+        or multiplier <= 0 or price < 0 or exit_fees < 0 or entry_fees < 0 or paid_fees < 0
+        or abs(values["entry_fees"] - entry_fees) > 1e-6 or abs(values["actual_fees"] - paid_fees) > 1e-6):
+        return None
+    structure = row.get("structure") or (row.get("ticket_snapshot") or {}).get("structure")
+    credit = structure in {"cash_secured_put", "put_credit_spread", "call_credit_spread"}
+    if not credit and structure not in {"long_call", "long_put", "call_debit_spread", "put_debit_spread"}:
+        return None
+    entry_vwap = values["entry_units"] / filled
+    gross = (entry_vwap - price if credit else price - entry_vwap) * multiplier * quantity
+    result = gross - entry_fees * quantity / filled - exit_fees
+    return round(result, 2) if isfinite(result) else None
+
+
+def shared_sleeve_loss_state(connection: Any, *, now: datetime) -> dict[str, Any]:
+    """Keep unresolved exit accounting visible until its journals reconcile.
+
+    Reconciliation is read-only. The original unknown exit remains in the
+    audit journal; restored fill/fee evidence is checked again at each cutoff.
+    Known P&L belongs to the exit journal's New York day. Unknown exits remain
+    unresolved across day boundaries instead of becoming zero at midnight.
+    """
+    day_start = now.astimezone(MARKET_TZ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+    rows = connection.execute(
+        """SELECT paper.*, journal.id::text AS journal_id, journal.action AS journal_action,
+                  journal.created_at AS journal_at, journal.quantity AS journal_quantity,
+                  journal.price AS journal_price, journal.details AS journal_details
+           FROM app.trade_journal journal
+           LEFT JOIN app.paper_order paper ON paper.id::text = journal.details->>'paper_order_id'
+                AND paper.decision_id = journal.decision_id AND paper.instrument_id = journal.instrument_id
+                AND paper.paper_only IS TRUE AND paper.created_at <= %s
+           WHERE journal.created_at <= %s AND (
+               journal.action = 'paper_exit' OR journal.action LIKE 'paper_exit:%%'
+               OR (journal.created_at >= %s AND journal.details ? 'net_pnl'))
+             AND (journal.created_at >= %s OR NOT coalesce(
+                 journal.details->>'net_pnl' ~ '^-?[0-9]{1,18}([.][0-9]{1,8})?$', false))
+           ORDER BY journal.created_at, journal.id""",
+        [now, now, day_start, day_start],
+    ).fetchall()
+    total, unresolved, reconciled = 0.0, 0, 0
+    fills_by_order: dict[Any, Any] = {}
+    for source in rows:
+        row = dict(source)
+        value = _number((row["journal_details"] or {}).get("net_pnl"))
+        if value is None and row.get("id") is not None and row.get("updated_at") <= now:
+            order_id = row["id"]
+            if order_id not in fills_by_order:
+                fills_by_order[order_id] = paper_fill_totals(connection, row, as_of=now)
+            value = _reconciled_exit_pnl(row, fills_by_order[order_id])
+            reconciled += int(value is not None)
+        if value is None:
+            unresolved += 1
+        elif row["journal_at"] >= day_start:
+            total += value
+    if not isfinite(total):
+        unresolved += 1
+    return {"value": total if not unresolved else None, "unresolved_exits": unresolved, "reconciled_exits": reconciled}
 
 
 def active_paper_exposure(
@@ -133,8 +244,9 @@ def shared_sleeve_blockers(
           count(*) FILTER (WHERE lane = %s AND created_at >= %s) AS lane_new_today,
           count(*) FILTER (WHERE lane = %s AND status = 'exited') AS clean_completed_lifecycles
         FROM app.paper_order
+        WHERE created_at <= %s
         """,
-        [list(OPEN_STATUSES), lane, day_start, lane],
+        [list(OPEN_STATUSES), lane, day_start, lane, now],
     ).fetchone()
     # A production aggregate always returns one row.  Treat an absent row as
     # an empty ledger so lightweight repository adapters remain fail-safe for
@@ -148,19 +260,12 @@ def shared_sleeve_blockers(
     if max_open_positions is not None and int(summary.get("clean_completed_lifecycles") or 0) < 5 and int(summary.get("lane_new_today") or 0) >= 1:
         blockers.append("lane_initial_one_new_position_per_day")
 
+    pnl = shared_sleeve_loss_state(connection, now=now)
+    if pnl["unresolved_exits"]:
+        blockers.append("shared_exit_accounting_unreconciled")
     if daily_loss_halt_pct is not None and daily_loss_halt_pct > 0:
-        pnl = connection.execute(
-            """
-            SELECT coalesce(sum((details->>'net_pnl')::numeric), 0) AS value
-            FROM app.trade_journal
-            WHERE created_at >= %s AND created_at <= %s
-              AND details ? 'net_pnl'
-              AND (details->>'net_pnl') ~ '^-?[0-9]+(\\.[0-9]+)?$'
-            """,
-            [day_start, now],
-        ).fetchone()
         loss_halt = sleeve_capital * daily_loss_halt_pct
-        if float((pnl or {}).get("value") or 0) <= -loss_halt:
+        if pnl["value"] is not None and pnl["value"] <= -loss_halt:
             blockers.append("shared_daily_loss_halt")
     return blockers
 

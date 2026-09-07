@@ -13,14 +13,15 @@ from typing import Any, Iterable
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import is_market_open
+from investment_panel.core.decision import MARKET_TZ, is_market_open, is_us_market_day, market_session_bounds
 from investment_panel.core.option_trade_ticket import execution_policy, exit_reason
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.analysis import current_option_publication_answers, current_option_publication_rows
+from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.decision_inbox import DecisionInboxRepository
 from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
-from investment_panel.database.options_paper_ledger import acquire_shared_sleeve_lock
+from investment_panel.database.options_paper_ledger import acquire_shared_sleeve_lock, paper_fill_totals
 from investment_panel.database.options_paper_quotes import (
     is_credit_structure,
     latest_option_legs,
@@ -391,31 +392,43 @@ class OptionsPaperExecutionRepository:
         if remaining <= 0:
             return self._terminal(connection, order, status="exited", reason="no_remaining_quantity", now=now)
         structure = str(order.get("structure") or ticket.get("structure") or "")
+        pending_settlement = None
         if structure == "cash_secured_put" and legs and any(
-            leg.get("expiration") is not None and leg["expiration"] <= now.date() for leg in legs
+            leg.get("expiration") is not None and leg["expiration"] <= now.astimezone(MARKET_TZ).date() for leg in legs
         ):
-            underlying = connection.execute(
-                """SELECT price FROM raw.confirmed_quote
-                   WHERE instrument_id = %s AND observed_at <= %s AND available_at <= %s
-                   ORDER BY observed_at DESC, available_at DESC LIMIT 1""",
-                [order["instrument_id"], now, now],
-            ).fetchone()
-            underlying_price = _number(underlying["price"]) if underlying else None
+            mark, pending_reason = _expiration_mark(connection, order, legs, now=now)
             strike = _number(legs[0].get("strike"))
             multiplier = _number(legs[0].get("multiplier"))
-            if underlying_price is not None and strike is not None and underlying_price <= strike:
-                if multiplier is None or multiplier <= 0:
-                    return {"paper_order_id": str(order["id"]), "status": "filled", "reason": "assignment_multiplier_missing"}
-                assignment_fee = _fees(len(legs), remaining)
+            if mark is not None and any(value is None or not isfinite(value) or value <= 0 for value in (strike, multiplier)):
+                mark, pending_reason = None, "expiration_contract_terms_unverified"
+            if mark is None:
+                pending_settlement = {"status": "pending_settlement", "reason": pending_reason,
+                                      "expiration": str(legs[0].get("expiration")), "checked_at": now.isoformat()}
+                connection.execute(
+                    "UPDATE app.paper_order SET unfilled_reason = %s, execution_quote = coalesce(execution_quote, '{}'::jsonb) || %s, "
+                    "updated_at = %s WHERE id = %s::uuid",
+                    [f"expiration_settlement_pending: {pending_reason}", Jsonb({"assignment": pending_settlement}), now, order["id"]],
+                )
+                # Before the close, executable risk exits still use the normal
+                # holding policy. After close only an expiration mark can settle.
+                if pending_reason != "expiration_session_not_closed" or not is_market_open(now):
+                    return {"paper_order_id": str(order["id"]), "status": "filled", "reason": "expiration_settlement_pending",
+                            "settlement_pending_reason": pending_reason}
+            else:
+                underlying_price = mark["close"]
+                intrinsic = max(strike - underlying_price, 0.0)
+                assigned = intrinsic > 0
+                settlement_fee = _fees(len(legs), remaining)
                 accounting = _exit_accounting(
-                    connection, order, now=now, credit=True, exit_price=strike - underlying_price,
-                    quantity=remaining, multiplier=multiplier, exit_fees=assignment_fee,
+                    connection, order, now=now, credit=True, exit_price=intrinsic,
+                    quantity=remaining, multiplier=multiplier, exit_fees=settlement_fee,
                 )
                 assignment = {
-                    "status": "assigned", "strike": strike, "underlying_price": underlying_price,
+                    "status": "assigned" if assigned else "expired_unassigned", "strike": strike, "underlying_price": underlying_price,
                     "multiplier": multiplier, "contract_count": remaining,
-                    "settlement_value": (strike - underlying_price) * multiplier * remaining,
-                    "settled_at": now.isoformat(), "assignment_fee": assignment_fee,
+                    "settlement_value": intrinsic * multiplier * remaining,
+                    "settled_at": now.isoformat(), "settlement_fee": settlement_fee,
+                    "assignment_fee": settlement_fee if assigned else 0, "expiration_mark": mark,
                     **accounting,
                 }
                 connection.execute(
@@ -424,19 +437,22 @@ class OptionsPaperExecutionRepository:
                            contract_multiplier = %s, fees = coalesce(fees, 0) + %s,
                            exit_fees = coalesce(exit_fees, 0) + %s,
                            execution_quote = coalesce(execution_quote, '{}'::jsonb) || %s,
-                           unfilled_reason = 'assigned_at_expiration', updated_at = %s
+                           unfilled_reason = %s, updated_at = %s
                        WHERE id = %s::uuid""",
-                    [exited_quantity + remaining, max(strike - underlying_price, 0.0), now,
-                     multiplier, assignment_fee, assignment_fee, Jsonb({"assignment": assignment}), now, order["id"]],
+                    [exited_quantity + remaining, intrinsic, now,
+                     multiplier, settlement_fee, settlement_fee, Jsonb({"assignment": assignment}),
+                     "assigned_at_expiration" if assigned else "expired_unassigned", now, order["id"]],
                 )
+                reason = "assignment" if assigned else "expiration_unassigned"
                 _journal(
-                    connection, order, action="paper_exit:assignment", quantity=remaining,
-                    price=max(strike - underlying_price, 0.0), key=f"generic:{order['id']}:exit:{now.isoformat()}:assignment",
-                    details={"lane": order["lane"], "paper_order_id": str(order["id"]), "fees": assignment_fee,
+                    connection, order, action=f"paper_exit:{reason}", quantity=remaining,
+                    price=intrinsic, key=f"generic:{order['id']}:exit:{now.isoformat()}:{reason}",
+                    details={"lane": order["lane"], "paper_order_id": str(order["id"]), "fees": settlement_fee,
                              **accounting, "assignment": assignment},
                 )
                 self._record_phase4_fill(connection, paper_order_id=str(order["id"]), observed_at=now, status="exited")
-                return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
+                return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": reason,
+                        "assigned_strike": strike if assigned else None}
         quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now, **_experiment_quote_scope(ticket))
         execution = execution_policy(
             quoted,
@@ -464,7 +480,8 @@ class OptionsPaperExecutionRepository:
             return {
                 "paper_order_id": str(order["id"]),
                 "status": "filled",
-                "reason": f"{pending_reason}_pending_executable_quote",
+                "reason": "expiration_settlement_pending" if pending_settlement else f"{pending_reason}_pending_executable_quote",
+                **({"settlement_pending_reason": pending_settlement["reason"]} if pending_settlement else {}),
                 "blockers": policy_blockers,
             }
         if reason is None:
@@ -634,30 +651,36 @@ class OptionsPaperExecutionRepository:
         return {"paper_order_id": str(order["id"]), "status": "closed" if status in {"exited", "invalidated"} else status, "reason": reason, "event_status": status if status in {"exited", "invalidated"} else None}
 
 
-def _paper_fill_totals(connection: Any, order: dict[str, Any], *, as_of: datetime) -> dict[str, Any] | None:
-    """Read only this order's journal cash flows, including prior partial exits."""
-    return connection.execute(
-        """SELECT coalesce(sum(quantity) FILTER (WHERE action = 'paper_entry'), 0) AS entry_quantity,
-                  coalesce(sum(quantity) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_quantity,
-                  coalesce(sum(quantity * price) FILTER (WHERE action = 'paper_entry'), 0) AS entry_units,
-                  coalesce(sum(quantity * price) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_units,
-                  coalesce(sum((details->>'fees')::numeric)
-                      FILTER (WHERE details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS actual_fees,
-                  coalesce(sum((details->>'fees')::numeric)
-                      FILTER (WHERE action = 'paper_entry' AND details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS entry_fees,
-                  count(*) FILTER (WHERE NOT coalesce(details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)) AS missing_fees,
-                  count(*) FILTER (WHERE NOT coalesce(
-                      quantity > 0 AND quantity < 'Infinity'::numeric
-                      AND price >= 0 AND price < 'Infinity'::numeric
-                      AND (action <> 'paper_entry' OR price > 0), false)) AS invalid_fills,
-                  array_agg(id::text ORDER BY created_at, id) AS journal_ids,
-                  array_agg(id::text ORDER BY created_at, id) FILTER (WHERE action = 'paper_entry') AS entry_journal_ids
-           FROM app.trade_journal
-           WHERE details->>'paper_order_id' = %s AND decision_id = %s::uuid
-             AND (action IN ('paper_entry', 'paper_exit') OR action LIKE 'paper_exit:%%')
-             AND created_at <= %s AND rationale = 'deterministic_options_paper_execution'""",
-        [str(order["id"]), order.get("decision_id"), as_of],
-    ).fetchone()
+def _expiration_mark(
+    connection: Any, order: dict[str, Any], legs: list[dict[str, Any]], *, now: datetime,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Use an exact confirmed expiration close; a stored spot is not settlement."""
+    expiration = _date(legs[0].get("expiration"))
+    if (len(legs) != 1 or legs[0].get("option_type") != "put" or legs[0].get("side") not in {"sell", "short"}
+        or expiration is None or not is_us_market_day(expiration)):
+        return None, "expiration_session_or_contract_ineligible"
+    session_close = market_session_bounds(expiration)[1].astimezone(UTC)
+    if now < session_close:
+        return None, "expiration_session_not_closed"
+    rows = confirmed_daily_bars(
+        connection, [int(order["instrument_id"])], as_of=now, trading_dates=[expiration], require_session_close=True,
+    ).get(int(order["instrument_id"]), [])
+    if len(rows) != 1:
+        return None, "confirmed_expiration_close_unavailable"
+    row = rows[0]
+    close = _number(row.get("close"))
+    observed, available, confirmed = (_timestamp(row.get(key)) for key in ("observed_at", "available_at", "confirmed_at"))
+    if (close is None or not isfinite(close) or close <= 0 or not row.get("fact_id") or not row.get("source_id")
+        or not row.get("ingest_run_id") or observed is None or available is None or confirmed is None
+        or observed.astimezone(MARKET_TZ).date() != expiration
+        or not session_close <= available <= confirmed <= now or observed > available):
+        return None, "expiration_close_clock_or_value_invalid"
+    return {
+        "basis": "confirmed_expiration_daily_close", "close": close, "trading_date": expiration.isoformat(),
+        "session_close_at": session_close.isoformat(), "source_id": str(row["source_id"]),
+        "fact_id": row["fact_id"], "fact_table": row["fact_table"], "ingest_run_id": str(row["ingest_run_id"]),
+        "observed_at": observed.isoformat(), "available_at": available.isoformat(), "confirmed_at": confirmed.isoformat(),
+    }, None
 
 
 def _exit_accounting(
@@ -667,7 +690,7 @@ def _exit_accounting(
     """Allocate actual entry cost to this exit; never substitute the first fill."""
     result = {"net_pnl": None, "allocated_entry_fees": None, "entry_journal_ids": [],
               "net_pnl_basis": "paper_fill_or_fee_journal_incomplete"}
-    fills = _paper_fill_totals(connection, order, as_of=now)
+    fills = paper_fill_totals(connection, order, as_of=now)
     if not fills or fills["missing_fees"] or fills["invalid_fills"]:
         return result
     values = {key: _number(fills[key]) for key in ("entry_quantity", "exit_quantity", "entry_units", "entry_fees", "actual_fees")}
@@ -728,7 +751,7 @@ def _record_liquidation_mark(
     elif _available_quantity(quotes, phase="exit", requested=remaining) < remaining:
         reason = "full_remaining_liquidation_size_unavailable"
     else:
-        fills = _paper_fill_totals(connection, order, as_of=measured_at)
+        fills = paper_fill_totals(connection, order, as_of=measured_at)
         if fills is None:
             reason = "paper_fill_journal_missing"
         else:
