@@ -446,6 +446,7 @@ def ticker_decision_summary(ticker_decision: dict[str, Any]) -> dict[str, Any]:
         "risk_plan": {"invalidation": invalidation.get("statement") or invalidation.get("value")},
         "evidence_for": fundamental.get("evidence_for") or tactical.get("evidence_for") or [],
         "evidence_against": fundamental.get("evidence_against") or tactical.get("evidence_against") or [],
+        "unsupported_assumptions": fundamental.get("unsupported_assumptions") or tactical.get("unsupported_assumptions") or [],
         "unknowns": [request.get("field") for request in ticker_decision.get("data_requests") or []],
     }
 
@@ -917,6 +918,7 @@ def ticker_learning_payload(
         "disagreement": {
             "strongest_bull_case": _first_statement(fundamental.get("evidence_for")),
             "strongest_bear_case": _first_statement(fundamental.get("evidence_against")),
+            "unsupported_assumptions": fundamental.get("unsupported_assumptions") or [],
             "resolving_fact": (fundamental.get("fact_that_would_flip") or {}).get("statement"),
         },
         "expression_tournament": [

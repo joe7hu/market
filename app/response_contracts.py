@@ -8,7 +8,7 @@ generated frontend contract have one owner for each browser-facing shape.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -166,6 +166,7 @@ class TodayCapitalAction(FlexibleResponse):
     inbox_item_id: str | None = None
     action_identity: str | None = None
     user_state: str | None = None
+    useful: bool | None = None
     projection_identity: str
     source_authority: str
     source: str
@@ -217,6 +218,16 @@ class TodayBriefItemResponse(BaseModel):
     stats: list[str] = Field(default_factory=list)
 
 
+class TodayBriefCategoryResponse(BaseModel):
+    """Published category totals, separate from source coverage."""
+
+    category: str
+    total_count: int | None = Field(default=None, ge=0)
+    shown_count: int = Field(default=0, ge=0)
+    coverage_status: Literal["complete", "partial", "unavailable", "unknown"] = "unknown"
+    coverage_message: str = ""
+
+
 class TodayPreopenBriefResponse(BaseModel):
     """Named pre-open context; nested publication payloads stay server-side."""
 
@@ -251,6 +262,7 @@ class TodayResponse(BaseModel):
     book_actions: list[TodayCapitalAction] = Field(default_factory=list)
     preopen_brief: TodayPreopenBriefResponse | None = None
     brief_items: list[TodayBriefItemResponse] = Field(default_factory=list)
+    brief_categories: list[TodayBriefCategoryResponse] = Field(default_factory=list)
     portfolio_risk_items: list[TodayBriefItemResponse] = Field(default_factory=list)
     missing_plan_count: int = 0
     count: int = 0
@@ -391,6 +403,81 @@ class DecisionInboxResponse(BaseModel):
 class DecisionInboxStateResponse(FlexibleResponse):
     id: str
     user_state: str
+
+
+class DecisionInboxUsefulnessResponse(BaseModel):
+    id: str
+    useful: bool
+    usefulness_updated_at: datetime
+
+
+class ResearchEvaluationResponse(BaseModel):
+    stage: str
+    verdict: str
+    evaluated_at: datetime | None = None
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    independent_sample_count: int | None = None
+    net_return_lower_bound: float | None = None
+    brier_score: float | None = None
+    evidence_basis: Literal[
+        "independent_stock_episodes", "obsolete_stock_target", "independence_unconfirmed",
+        "independent_options_replay", "independent_options_shadow", "independent_options_paper",
+    ]
+    comparison_denominator: int | None = Field(default=None, ge=0)
+    unmatched_episodes: int | None = Field(default=None, ge=0)
+    comparison_window_complete: bool | None = None
+    failed_gates: list[str] = Field(default_factory=list)
+
+
+class ResearchStrategySummaryResponse(BaseModel):
+    strategy_revision_id: int
+    strategy_key: str
+    revision: int
+    name: str
+    status: str
+    hypothesis: str | None = None
+    last_policy_change: datetime | None = None
+    automatic_paper_tuning: bool
+    evaluations: list[ResearchEvaluationResponse] = Field(default_factory=list)
+    failed_gates: list[str] = Field(default_factory=list)
+    trial_status: str | None = None
+    included_count: int | None = None
+    excluded_count: int | None = None
+    expected_count: int | None = None
+    next_observation: str
+
+
+class ResearchIdeaResponse(BaseModel):
+    ticker: str
+    owned: bool
+    as_of: datetime
+    thesis: str | None = None
+    countercase: str | None = None
+    invalidation: str | None = None
+    catalyst: str | None = None
+    holding_weight_pct: float | None = None
+    next_action: str
+
+
+class ResearchReviewActivityResponse(BaseModel):
+    window_days: int
+    total: int
+    acknowledged: int
+    completed: int
+    rated: int
+    helpful: int
+    not_helpful: int
+    helpful_rate: float | None = None
+
+
+class ResearchSummaryResponse(BaseModel):
+    as_of: datetime
+    paper_only: bool
+    strategy_count: int
+    strategies: list[ResearchStrategySummaryResponse] = Field(default_factory=list)
+    ideas: list[ResearchIdeaResponse] = Field(default_factory=list)
+    review_activity: ResearchReviewActivityResponse
 
 
 class OptionHistoryHealthResponse(FlexibleResponse):
@@ -908,6 +995,7 @@ __all__ = [
     "TablePayloadResponse",
     "TodayCapitalAction",
     "TodayBriefItemResponse",
+    "TodayBriefCategoryResponse",
     "TodayPreopenBriefResponse",
     "TodayResolutionSummaryResponse",
     "TodayResponse",

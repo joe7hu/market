@@ -69,6 +69,10 @@ class DecisionInboxStateInput(BaseModel):
     dismiss_reason: str | None = Field(default=None, max_length=500)
 
 
+class DecisionInboxUsefulnessInput(BaseModel):
+    useful: bool = Field(strict=True)
+
+
 class WatchlistSymbolInput(BaseModel):
     symbol: str
     name: str | None = None

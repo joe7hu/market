@@ -499,6 +499,40 @@ def sizing_policy(
     }
 
 
+def exit_reason(
+    *,
+    ticket: dict[str, Any],
+    exits: dict[str, Any],
+    credit: bool,
+    entry_price: float | None,
+    exit_price: float | None,
+    execution_blockers: list[str],
+    now: datetime,
+) -> str | None:
+    """Evaluate holding rules; the entry deadline is checked before a fill."""
+    expiration = _as_datetime(ticket.get("expiration"))
+    time_exit_dte = _int_or_none(exits.get("time_exit_dte"))
+    if expiration is not None and time_exit_dte is not None and (expiration.date() - now.date()).days <= time_exit_dte:
+        return "time_exit"
+    if execution_blockers:
+        return "liquidity_exit"
+    if entry_price is None or exit_price is None:
+        return None
+    profit = _number(exits.get("profit_price"))
+    loss = _number(exits.get("loss_price"))
+    if credit:
+        if profit is not None and exit_price <= profit:
+            return "profit_target"
+        if loss is not None and exit_price >= loss:
+            return "stop_loss"
+    else:
+        if profit is not None and exit_price >= profit:
+            return "profit_target"
+        if loss is not None and exit_price <= loss:
+            return "stop_loss"
+    return None
+
+
 def exit_policy(
     *,
     structure: str,

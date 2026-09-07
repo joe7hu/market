@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.jobs import options_paper_execution
 from investment_panel.core.decision import ExpressionKind
+from investment_panel.core.option_trade_ticket import exit_reason
 from investment_panel.database import options_paper_execution as paper_execution_database
 from investment_panel.database import ticker_execution as ticker_execution_database
 from investment_panel.database.instruments import reconcile_instrument
@@ -16,7 +18,6 @@ from investment_panel.database.ticker_execution import TickerPaperExecutionRepos
 from investment_panel.database.options_paper_ledger import active_paper_exposure
 from investment_panel.database.options_paper_execution import (
     available_quantity,
-    exit_reason,
     net_pnl,
 )
 from investment_panel.database.options_paper_quotes import package_price
@@ -99,6 +100,59 @@ def test_paper_exit_uses_profit_stop_time_and_liquidity_gates() -> None:
         ticket=ticket, exits=exits, credit=False, entry_price=1.0,
         exit_price=1.0, execution_blockers=["long_leg_open_interest_below_100"], now=NOW,
     ) == "liquidity_exit"
+    assert exit_reason(
+        ticket={**ticket, "expires_at": (NOW - timedelta(seconds=1)).isoformat()},
+        exits=exits, credit=False, entry_price=1.0, exit_price=1.0, execution_blockers=[], now=NOW,
+    ) is None
+    assert exit_reason(
+        ticket={**ticket, "expiration": (NOW.date() + timedelta(days=7)).isoformat()},
+        exits=exits, credit=False, entry_price=1.0, exit_price=1.0, execution_blockers=[], now=NOW,
+    ) == "time_exit"
+
+
+@pytest.mark.parametrize("entry_blocker", ["ticket_expired", "candidate entry blocked_terminal_evidence"])
+def test_blocked_partial_entry_keeps_the_filled_quantity_in_holding_management(monkeypatch, entry_blocker) -> None:
+    order = {**_open_order(filled_quantity=1), "quantity": 2, "status": "open",
+             "ticket_snapshot": {"expires_at": (NOW - timedelta(seconds=1)).isoformat()}}
+
+    class Connection(_RecordingConnection):
+        def execute(self, statement, parameters=None):
+            if "FOR UPDATE OF paper" in statement:
+                return _Result(order)
+            if "FROM app.paper_order_leg" in statement:
+                return SimpleNamespace(fetchall=lambda: [{"contract_id": 1}])
+            return super().execute(statement, parameters)
+
+    connection = Connection()
+
+    @contextmanager
+    def transaction(*_args, **_kwargs):
+        yield connection
+
+    repository = OptionsPaperExecutionRepository.__new__(OptionsPaperExecutionRepository)
+    repository.runtime = SimpleNamespace(transaction=transaction)
+
+    def current_ticket(_connection, _order, ticket, **kwargs):
+        if kwargs.get("for_entry", True):
+            return None, entry_blocker
+        return ticket, ""
+
+    def manage_open(_connection, item, _ticket, _legs, _now, **kwargs):
+        assert item["status"] == "entered" and item["filled_quantity"] == 1 and item["quantity"] == 2
+        cancelled = item["execution_quote"][paper_execution_database.ENTRY_CANCELLATION_KEY]
+        assert cancelled == {"status": "cancelled", "paper_order_id": "paper-order-1", "cancelled_at": NOW.isoformat(),
+                             "reason": entry_blocker, "requested_quantity": 2, "filled_quantity": 1, "cancelled_quantity": 1}
+        assert kwargs["forced_exit_reason"] is None
+        return {"status": "filled", "reason": "exit_not_triggered"}
+
+    monkeypatch.setattr(repository, "_current_ticket", current_ticket)
+    monkeypatch.setattr(repository, "_manage_open", manage_open)
+    monkeypatch.setattr(paper_execution_database, "_thesis_blocker", lambda *_args: None)
+    result = repository._manage_one("paper-order-1", NOW)
+    assert result["reason"] == "exit_not_triggered"
+    assert any(parameters[0] == f"{entry_blocker}: unfilled_remainder_cancelled"
+               for statement, parameters in connection.statements if "unfilled_reason" in statement)
+    assert not any("app.trade_journal" in statement for statement, _ in connection.statements)
 
 
 def test_paper_net_pnl_includes_both_sides_of_conservative_fees() -> None:
@@ -250,10 +304,12 @@ def test_lane_switches_only_control_entry_staging(
     )
     monkeypatch.setattr(options_paper_execution, "runtime_for_config", lambda _config: object())
     monkeypatch.setattr(options_paper_execution, "OptionsPaperExecutionRepository", _Repository)
+    monkeypatch.setattr(options_paper_execution, "advance_experiment_shadows", lambda *_args, **_kwargs: {"closed": 1})
 
     result = options_paper_execution.run("config.yaml")
 
     assert result["paper_only"] is True
+    assert result["experiments"]["status"] == "disabled" and result["experiments"]["observations"]["closed"] == 1
     assert calls["process"]["enabled_lanes"] == expected_lanes
 
 
@@ -350,6 +406,91 @@ def test_partial_exit_keeps_residual_position_open_until_all_filled_contracts_ex
     )
     assert update_parameters[0] == "partial_exited"
     assert update_parameters[1] == 2
+
+
+def test_paper_liquidation_mark_uses_all_entry_fills_and_partial_exit_cash() -> None:
+    class JournalConnection(_RecordingConnection):
+        def execute(self, statement, parameters=None):
+            if "AS entry_quantity" in statement:
+                # Two entries at .80 and 1.00; one prior exit at 1.20.
+                return _Result({"entry_quantity": 2, "exit_quantity": 1, "entry_units": 1.8,
+                                "exit_units": 1.2, "actual_fees": 1.95, "missing_fees": 0,
+                                "journal_ids": ["entry-a", "entry-b", "exit-a"]})
+            return super().execute(statement, parameters)
+
+    at = datetime.now(UTC)
+    connection = JournalConnection()
+    key = paper_execution_database.PAPER_MARK_KEY
+    order = {**_open_order(filled_quantity=2, exited_quantity=1), "decision_id": "decision-id",
+             "actual_fill_price": .8, "contract_multiplier": 100, "fees": 1.95,
+             "execution_quote": {key: {"entry_cash": 180, "peak_net_return": .1,
+                 "peak_at": (at - timedelta(seconds=10)).isoformat(), "mark_count": 1,
+                 "quote_ids": ["earlier-quote"], "observed_max_drawdown": 0}}}
+    quote = {**_executable_long_quote(quote_time=at, bid_size=1), "quote_id": "current-quote",
+             "bid": .7, "ask": .8, "multiplier": 100, "observed_at": at, "capture_complete": True}
+    paper_execution_database._record_liquidation_mark(connection, order, [quote], now=at, execution_blockers=[])
+    mark = connection.statements[-1][1][0].obj[key]
+    expected = (120 + 70 - 180 - 1.95 - .65) / 180
+    assert mark["status"] == "observed" and mark["remaining_quantity"] == 1
+    assert mark["current_net_return"] == pytest.approx(expected)
+    assert mark["max_drawdown"] == pytest.approx((1 + expected) / 1.1 - 1)
+    assert mark["actual_fees"] == 1.95 and mark["modeled_remaining_exit_fees"] == .65
+
+
+@pytest.mark.parametrize("valid_cancellation,entry_quote_available", [(True, True), (True, False), (False, True)])
+def test_cancelled_partial_holding_measures_its_exact_filled_basis(monkeypatch, valid_cancellation, entry_quote_available) -> None:
+    class JournalConnection(_RecordingConnection):
+        def execute(self, statement, parameters=None):
+            if "AS entry_quantity" in statement:
+                return _Result({"entry_quantity": 1, "exit_quantity": 0, "entry_units": .5, "exit_units": 0,
+                                "actual_fees": .65, "missing_fees": 0,
+                                "journal_ids": ["actual-entry"], "entry_journal_ids": ["actual-entry"]})
+            return super().execute(statement, parameters)
+
+    at = datetime.now(UTC)
+    connection = JournalConnection()
+    key, cancellation_key = paper_execution_database.PAPER_MARK_KEY, paper_execution_database.ENTRY_CANCELLATION_KEY
+    order = {**_open_order(filled_quantity=1), "quantity": 2, "status": "open", "decision_id": "decision-id",
+             "actual_fill_price": .5, "filled_at": at, "contract_multiplier": 100, "fees": .65, "execution_quote": {}}
+    quote = {**_executable_long_quote(quote_time=at), "quote_id": "actual-entry-quote",
+             "bid": .48, "ask": .5, "multiplier": 100, "observed_at": at, "capture_complete": entry_quote_available}
+    paper_execution_database._record_liquidation_mark(connection, order, [quote], now=at, execution_blockers=[])
+    pending = connection.statements[-1][1][0].obj[key]
+    assert pending["status"] == "unknown"
+    assert pending["current_net_return"] is None and pending["max_drawdown"] is None
+    if entry_quote_available:
+        assert pending["reason"] == "entry_fill_quantity_incomplete" and pending["entry_quantity_fixed"] is False
+        assert pending["mark_count"] == 1 and pending["entry_cash"] == 50 and pending["quotes"][0]["quote_id"] == "actual-entry-quote"
+    else:
+        assert pending["reason"] == "complete_fresh_executable_mark_unavailable" and pending.get("mark_count", 0) == 0
+    cancellation = {"status": "cancelled", "paper_order_id": order["id"], "cancelled_at": (at + timedelta(seconds=10)).isoformat(),
+                    "requested_quantity": 2, "filled_quantity": 1 if valid_cancellation else 2, "cancelled_quantity": 1}
+    order.update(status="entered", execution_quote={key: pending, cancellation_key: cancellation})
+    later = {**quote, "quote_id": "later-holding-quote", "bid": .6, "ask": .62, "capture_complete": True,
+             "observed_at": at + timedelta(seconds=11), "quote_time": at + timedelta(seconds=11)}
+    paper_execution_database._record_liquidation_mark(connection, order, [later], now=at + timedelta(seconds=11), execution_blockers=[])
+    mark = connection.statements[-1][1][0].obj[key]
+    if not valid_cancellation:
+        assert mark["status"] == "unknown" and mark["max_drawdown"] is None
+        return
+    assert mark["status"] == "observed" and mark["entry_quantity_fixed"] is True
+    assert mark["entry_quantity_basis"] == "cancelled_remainder" and mark["entry_quantity"] == 1
+    assert mark["current_net_return"] == pytest.approx(.174)
+    assert mark["max_drawdown"] == pytest.approx(-.066) if entry_quote_available else mark["max_drawdown"] is None
+    assert mark["mark_count"] == (2 if entry_quote_available else 1) and mark["journal_ids"] == ["actual-entry"]
+    order["execution_quote"][key] = mark
+    exit_quote = {**later, "quote_id": "actual-exit-quote", "bid": .2, "ask": .22,
+                  "observed_at": at + timedelta(seconds=21), "quote_time": at + timedelta(seconds=21)}
+    monkeypatch.setattr(paper_execution_database, "latest_option_legs", lambda *_args, **_kwargs: [exit_quote])
+    monkeypatch.setattr(paper_execution_database, "is_market_open", lambda _now: True)
+    repository = OptionsPaperExecutionRepository.__new__(OptionsPaperExecutionRepository)
+    exited = repository._manage_open(connection, order, {"exits": {"loss_price": .25}}, [quote], at + timedelta(seconds=21))
+    assert exited["status"] == "closed" and exited["exit_quantity"] == 1
+    mark = next(parameters[0].obj[key] for statement, parameters in reversed(connection.statements) if "execution_quote = coalesce" in statement)
+    assert mark["current_net_return"] == pytest.approx(-.626)
+    assert mark["max_drawdown"] == pytest.approx(.374 / 1.174 - 1) and mark["mark_count"] == (3 if entry_quote_available else 2)
+    assert mark["drawdown_peak_quotes"][0]["quote_id"] == "later-holding-quote"
+    assert mark["drawdown_trough_quotes"][0]["quote_id"] == "actual-exit-quote"
 
 
 def test_partial_exit_residual_is_aggregated_for_risk_and_cash_collateral(migrated_postgres_dsn: str) -> None:

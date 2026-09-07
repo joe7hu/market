@@ -15,6 +15,8 @@ def latest_option_legs(
     *,
     ticket_legs: list[dict[str, Any]],
     as_of: datetime,
+    source_id: str | None = None,
+    complete_capture_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Return one latest available complete-capture quote for every ticket leg.
 
@@ -29,6 +31,9 @@ def latest_option_legs(
     rows = connection.execute(
         """
         SELECT DISTINCT ON (quote.contract_id)
+               quote.id AS quote_id, quote.snapshot_id, quote.capture_generation_id, snapshot.source_id,
+               (snapshot.capture_state = 'complete' AND
+                (quote.capture_generation_id IS NULL OR generation.capture_state = 'complete')) AS capture_complete,
                quote.contract_id, contract.option_type, contract.strike::double precision AS strike,
                quote.bid, quote.ask, quote.bid_size, quote.ask_size,
                quote.open_interest, quote.volume, quote.observed_at,
@@ -40,6 +45,9 @@ def latest_option_legs(
           ON generation.id = quote.capture_generation_id
         WHERE quote.contract_id = ANY(%s::bigint[])
           AND quote.available_at <= %s
+          AND (%s::text IS NULL OR snapshot.source_id = %s)
+          AND (NOT %s OR (snapshot.capture_state = 'complete'
+               AND (quote.capture_generation_id IS NULL OR generation.capture_state = 'complete')))
           AND snapshot.capture_state IN ('complete', 'partial')
           AND (
             quote.capture_generation_id IS NULL
@@ -51,7 +59,7 @@ def latest_option_legs(
           )
         ORDER BY quote.contract_id, quote.available_at DESC, quote.observed_at DESC, quote.id DESC
         """,
-        [[int(value) for value in contract_ids if value is not None], as_of, as_of],
+        [[int(value) for value in contract_ids if value is not None], as_of, source_id, source_id, complete_capture_only, as_of],
     ).fetchall()
     by_contract = {int(row["contract_id"]): dict(row) for row in rows}
     normalized: list[dict[str, Any]] = []
@@ -60,6 +68,9 @@ def latest_option_legs(
         if quote is None:
             return []
         normalized.append({
+            "quote_id": quote.get("quote_id"), "snapshot_id": quote.get("snapshot_id"),
+            "capture_generation_id": quote.get("capture_generation_id"), "source_id": quote.get("source_id"),
+            "capture_complete": quote.get("capture_complete") is True,
             "contract_id": str(contract_id),
             "option_type": str(ticket_leg.get("option_type") or quote["option_type"]),
             "side": str(ticket_leg.get("side") or "buy"),

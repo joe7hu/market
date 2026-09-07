@@ -177,7 +177,8 @@ def _refresh_option_outcomes(runtime: Any, config: AppConfig) -> dict[str, Any]:
 
     enabled = bool(config.analysis.options_decision_system.strategy_auto_promotion_enabled)
     repository = OutcomeRepository(runtime)
-    return repository.refresh(strategy_auto_promotion_enabled=enabled)
+    result = repository.refresh(strategy_auto_promotion_enabled=enabled)
+    return refresh_options_radar.refresh_after_policy_change(config, result)
 
 
 def full(config_path: str | None = None, *, continue_on_error: bool = True) -> dict[str, Any]:

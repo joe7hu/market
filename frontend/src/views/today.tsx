@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { setDecisionInboxState } from "@/api/options";
-import { InboxStateControls, type InboxStateChange } from "./decisionInbox";
+import { InboxStateControls, InboxUsefulnessControls, type InboxStateChange } from "./decisionInbox";
 import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import type { components } from "@/generated/apiSchema";
 import type { AppModel } from "@/model";
 import type { PanelData, ScopeSnapshotStatus } from "@/types";
 import { expressionLabel } from "@/viewModels/expression";
+import { buildPortfolioViewModel } from "@/viewModels/portfolio";
 import { formatMoney, formatPct, toneFromText, type Tone } from "./rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
 
@@ -32,6 +33,7 @@ type TodayPageProps = {
 
 type TodayAction = NonNullable<TodayResponse["actions"]>[number];
 type TodayBriefItem = components["schemas"]["TodayBriefItemResponse"];
+type TodayBriefCategory = components["schemas"]["TodayBriefCategoryResponse"];
 type TodayPreopenBrief = components["schemas"]["TodayPreopenBriefResponse"];
 
 type TodayCategory = {
@@ -57,15 +59,16 @@ const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCa
 export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLoading, actionQueueError, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
   const briefItems = actionQueue?.brief_items ?? [];
   const riskExceptions = actionQueue?.portfolio_risk_items ?? [];
+  const categoryStates = Object.fromEntries((actionQueue?.brief_categories ?? []).map((category) => [category.category, category]));
   const decideNow = briefItems.filter((item) => item.category === "decide_now");
   const whatsChanged = briefItems.filter((item) => item.category === "whats_changed");
   const catalysts = briefItems.filter((item) => item.category === "catalysts").slice().sort((a, b) => (a.days_until ?? Number.MAX_SAFE_INTEGER) - (b.days_until ?? Number.MAX_SAFE_INTEGER));
-  const hero = decideNow[0] ?? whatsChanged[0] ?? null;
+  const portfolioPulse = briefItems.filter((item) => item.category === "portfolio_pulse");
   const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
   const largestHolding = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
-  const portfolioPnl = model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0);
-  const portfolioPnlPct = model.portfolioValue ? (portfolioPnl / model.portfolioValue) * 100 : 0;
-  const hasBrief = briefItems.length > 0;
+  const { summary } = buildPortfolioViewModel(data, model);
+  const hasPortfolioSummary = Boolean(data.portfolioSummary?.rows?.length);
+  const hasBrief = Boolean(actionQueue);
 
   return (
     <section>
@@ -84,12 +87,13 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
 
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricTile
-          label="Portfolio P&L"
-          value={model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "No positions"}
-          tone={portfolioPnl >= 0 ? "good" : "bad"}
+          label="Total P&L"
+          value={hasPortfolioSummary ? `${formatMoney(summary.totalPnl)}${summary.totalPnlPct === null ? "" : ` (${formatPct(summary.totalPnlPct)})`}` : "Unavailable"}
+          caption={hasPortfolioSummary ? `Return on invested capital · ${summary.asOf ? new Date(summary.asOf).toLocaleString() : "Quote time unavailable"}` : "Portfolio summary is not loaded."}
+          tone={!hasPortfolioSummary ? "muted" : summary.totalPnl >= 0 ? "good" : "bad"}
         />
-        <MetricTile label="Decisions due" value={decideNow.length} caption="candidates, risks, thesis reviews" tone={decideNow.length ? "warn" : "good"} />
-        <MetricTile label="Source updates" value={whatsChanged.length} caption="fresh signals on owned / watched" tone={whatsChanged.length ? "info" : "muted"} />
+        <MetricTile label="Decisions due" value={categoryStates.decide_now?.total_count ?? "Unavailable"} caption={`${decideNow.length} shown · candidates, risks, thesis reviews`} tone={decideNow.length ? "warn" : "muted"} />
+        <MetricTile label="Source updates" value={categoryStates.whats_changed?.total_count ?? "Unavailable"} caption={`${whatsChanged.length} shown · published changes; source coverage ${categoryStates.whats_changed?.coverage_status ?? "unknown"}`} tone={whatsChanged.length ? "info" : "muted"} />
         <MetricTile
           label="Top exposure"
           value={largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "None"}
@@ -106,15 +110,10 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
         <>
           <div className="grid gap-6">
             <BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk exceptions", subtitle: "The three highest-priority concentration, loss, or thesis-risk exceptions." }} rows={riskExceptions.slice(0, 3)} onOpenTicker={onOpenTicker} columns />
-            <CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalyst and macro veto", subtitle: "Near-term events and the current deterministic pre-open veto context." }} rows={catalysts.slice(0, 3)} onOpenTicker={onOpenTicker} />
-            <details className="rounded-md border border-border bg-card p-4">
-              <summary className="cursor-pointer text-sm font-semibold">More daily context</summary>
-              <div className="mt-5 grid gap-6">
-                <HeroDecision item={hero} onOpenTicker={onOpenTicker} />
-                <BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} onOpenTicker={onOpenTicker} columns />
-                <BriefSection section={SECTION_BY_KEY.whats_changed} rows={whatsChanged} onOpenTicker={onOpenTicker} columns />
-              </div>
-            </details>
+            <BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns />
+            <CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalyst and macro veto", subtitle: "Near-term events and the current deterministic pre-open veto context." }} rows={catalysts} category={categoryStates.catalysts} onOpenTicker={onOpenTicker} />
+            <BriefSection section={SECTION_BY_KEY.whats_changed} rows={whatsChanged} category={categoryStates.whats_changed} onOpenTicker={onOpenTicker} columns />
+            <BriefSection section={SECTION_BY_KEY.portfolio_pulse} rows={portfolioPulse} category={categoryStates.portfolio_pulse} onOpenTicker={onOpenTicker} columns />
           </div>
         </>
       ) : (
@@ -191,6 +190,7 @@ export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: Today
           </>
         )}
         {item.inbox_item_id ? <InboxStateControls itemId={item.inbox_item_id} busy={busy} onState={updateState} /> : null}
+        {item.inbox_item_id ? <InboxUsefulnessControls itemId={item.inbox_item_id} useful={item.useful} /> : null}
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Review evidence</a> : null}
       </CardContent>
@@ -286,36 +286,7 @@ function PreopenBrief({ brief }: { brief: TodayPreopenBrief | null | undefined }
   );
 }
 
-function HeroDecision({ item, onOpenTicker }: { item: TodayBriefItem | null; onOpenTicker: (symbol: string) => void }) {
-  if (!item) return null;
-  const tone = cardTone(item.severity);
-  const sentiment = sentimentOf(item.sentiment);
-  const stats = item.stats ?? [];
-  return (
-    <div className={cn("mb-6 rounded-lg border bg-card p-4", toneBorder(tone))}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold uppercase text-muted-foreground">Top priority</span>
-        <ContextChip context={item.category} sentiment={sentiment} tone={tone} />
-      </div>
-      <p className="mt-2 flex items-center gap-2 text-lg font-semibold leading-7 text-foreground">
-        {sentiment !== "neutral" ? <SentimentMark sentiment={sentiment} /> : null}
-        <span className="min-w-0">{item.title}</span>
-      </p>
-      {stats.length ? <StatRow stats={stats} className="mt-1 text-sm" /> : null}
-      {item.summary ? <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.summary}</p> : null}
-      {item.antithesis ? <p className="mt-1 text-sm leading-6 text-muted-foreground">Counter: {item.antithesis}</p> : null}
-      {item.symbol ? (
-        <div className="mt-3">
-          <Button type="button" size="sm" onClick={() => onOpenTicker(item.symbol!)}>
-            Open {item.symbol}
-          </Button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SectionHeader({ section, count }: { section: TodayCategory; count: number }) {
+function SectionHeader({ section, count, category }: { section: TodayCategory; count: number; category?: TodayBriefCategory }) {
   return (
     <div className="mb-3 flex items-center justify-between gap-3 border-b border-border pb-2">
       <div className="flex min-w-0 items-center gap-2">
@@ -325,15 +296,16 @@ function SectionHeader({ section, count }: { section: TodayCategory; count: numb
           <p className="truncate text-xs text-muted-foreground">{section.subtitle}</p>
         </div>
       </div>
-      <StatusBadge tone={count ? section.tone : "muted"}>{count}</StatusBadge>
+      <StatusBadge tone={count ? section.tone : "muted"}>{category?.total_count == null ? `${count} shown` : `${count} of ${category.total_count} shown`}</StatusBadge>
     </div>
   );
 }
 
-function BriefSection({ section, rows, onOpenTicker, columns }: { section: TodayCategory; rows: TodayBriefItem[]; onOpenTicker: (symbol: string) => void; columns?: boolean }) {
+function BriefSection({ section, rows, category, onOpenTicker, columns }: { section: TodayCategory; rows: TodayBriefItem[]; category?: TodayBriefCategory; onOpenTicker: (symbol: string) => void; columns?: boolean }) {
   return (
     <div className="min-w-0">
-      <SectionHeader section={section} count={rows.length} />
+      <SectionHeader section={section} count={rows.length} category={category} />
+      {category?.coverage_message ? <p className="mb-3 text-xs text-muted-foreground">{category.coverage_message}</p> : null}
       {rows.length ? (
         <div className={cn("grid gap-3", columns && "xl:grid-cols-2")}>
           {rows.map((item) => (
@@ -341,16 +313,17 @@ function BriefSection({ section, rows, onOpenTicker, columns }: { section: Today
           ))}
         </div>
       ) : (
-        <EmptyState title="Nothing here" detail={`No ${section.title.toLowerCase()} items right now.`} />
+        <EmptyState title="No published items" detail={category?.coverage_status === "complete" ? `No ${section.title.toLowerCase()} items were found in complete coverage.` : `No ${section.title.toLowerCase()} items are loaded. Coverage is ${category?.coverage_status ?? "unknown"}.`} />
       )}
     </div>
   );
 }
 
-function CatalystSection({ section, rows, onOpenTicker }: { section: TodayCategory; rows: TodayBriefItem[]; onOpenTicker: (symbol: string) => void }) {
+function CatalystSection({ section, rows, category, onOpenTicker }: { section: TodayCategory; rows: TodayBriefItem[]; category?: TodayBriefCategory; onOpenTicker: (symbol: string) => void }) {
   return (
     <div className="min-w-0">
-      <SectionHeader section={section} count={rows.length} />
+      <SectionHeader section={section} count={rows.length} category={category} />
+      {category?.coverage_message ? <p className="mb-3 text-xs text-muted-foreground">{category.coverage_message}</p> : null}
       {rows.length ? (
         <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
           {rows.map((item) => (
@@ -358,7 +331,7 @@ function CatalystSection({ section, rows, onOpenTicker }: { section: TodayCatego
           ))}
         </ul>
       ) : (
-        <EmptyState title="No catalysts on your names" detail="Nothing scheduled in the next two weeks for names you own or watch." />
+        <EmptyState title={category?.coverage_status === "complete" ? "No catalysts found" : "Catalyst coverage is unavailable"} detail={category?.coverage_status === "complete" ? "No events were found in the next two weeks in complete coverage." : "No events are loaded. The available data cannot establish that nothing is scheduled."} />
       )}
     </div>
   );
@@ -403,6 +376,7 @@ function TodayBriefCard({ item, onOpenTicker }: { item: TodayBriefItem; onOpenTi
         {stats.length ? <StatRow stats={stats} /> : null}
         {item.summary ? <p className="text-sm leading-6 text-muted-foreground">{item.summary}</p> : null}
         {item.antithesis ? <p className="text-sm leading-6 text-muted-foreground">Counter: {item.antithesis}</p> : null}
+        {item.next_action ? <p className="text-sm font-medium">Next: {decisionReason(item.next_action)}</p> : null}
         {item.symbol ? (
           <div className="flex flex-wrap gap-1.5 pt-1">
             <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => onOpenTicker(item.symbol!)}>

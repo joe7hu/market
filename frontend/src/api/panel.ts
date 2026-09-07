@@ -72,6 +72,12 @@ export async function loadToday(): Promise<TodayResponse> {
   return getJson<TodayResponse>("/api/today");
 }
 
+export type ResearchSummary = ApiSchema["ResearchSummaryResponse"];
+
+export function loadResearchSummary(signal?: AbortSignal): Promise<ResearchSummary> {
+  return getJson<ResearchSummary>("/api/research/summary", signal);
+}
+
 export async function loadDecisionFunnel(): Promise<DecisionFunnel> {
   return getJson<DecisionFunnel>("/api/decision-funnel");
 }

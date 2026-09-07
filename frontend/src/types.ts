@@ -98,6 +98,7 @@ export type TickerLearning = {
   disagreement?: {
     strongest_bull_case?: string | null;
     strongest_bear_case?: string | null;
+    unsupported_assumptions?: string[];
     resolving_fact?: string | null;
   };
   expression_tournament?: Array<Record<string, JsonValue | undefined>>;

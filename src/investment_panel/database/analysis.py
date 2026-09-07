@@ -11,6 +11,13 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.analysis.stock_alpha import (
+    COST_MODEL_VERSION as STOCK_ALPHA_COST_MODEL_VERSION,
+    FEATURE_VERSION as STOCK_ALPHA_FEATURE_VERSION,
+    MODEL_VERSION as STOCK_ALPHA_MODEL_VERSION,
+    TARGET_HORIZON_SESSIONS as STOCK_ALPHA_HORIZON_SESSIONS,
+    TARGET_VERSION as STOCK_ALPHA_TARGET_VERSION,
+)
 from investment_panel.database.opportunity_episodes import (
     canonical_option_lane,
     option_episode_key,
@@ -481,6 +488,8 @@ class AnalysisRepository:
             "artifact_hash": parameters.get("artifact_hash"),
             "input_hash": parameters.get("input_hash"),
             "model_version": parameters.get("model_version"),
+            "target_version": parameters.get("target_version"),
+            "horizon_sessions": parameters.get("horizon_sessions"),
             "feature_version": parameters.get("feature_version"),
             "target": parameters.get("target"),
             "horizon": str(horizon),
@@ -496,6 +505,7 @@ class AnalysisRepository:
             "fallback_parent": metrics.get("fallback_parent"),
             "effective_sample_size": metrics.get("effective_sample_size"),
             "calibration_metrics": metrics.get("calibration_metrics") or {},
+            "baseline_comparisons": metrics.get("baseline_comparisons") or {},
             "cost_model_version": metrics.get("cost_model_version") or parameters.get("cost_model_version"),
             "lower_confidence_net_utility_after_costs": metrics.get(
                 "lower_confidence_net_utility_after_costs"
@@ -537,6 +547,17 @@ class AnalysisRepository:
                 "available_at": row["forecast_available_at"],
             }] if row["strategy_forecast_id"] is not None else []),
         }
+        current_contract = {
+            "cost_model_version": STOCK_ALPHA_COST_MODEL_VERSION,
+            "model_version": STOCK_ALPHA_MODEL_VERSION,
+            "feature_version": STOCK_ALPHA_FEATURE_VERSION,
+            "target_version": STOCK_ALPHA_TARGET_VERSION,
+            "horizon_sessions": STOCK_ALPHA_HORIZON_SESSIONS,
+        }
+        if any(parameters.get(name) != expected for name, expected in current_contract.items()):
+            return {**base, "availability_status": "policy_blocked", "blockers": ["alpha_target_version_incompatible"]}
+        if str(horizon).upper() != "TACTICAL":
+            return {**base, "availability_status": "policy_blocked", "blockers": ["alpha_artifact_scope_mismatch"]}
         if row["strategy_evaluation_id"] is None:
             return {**base, "availability_status": "not_calibrated", "blockers": ["alpha_oos_evaluation_missing"]}
         if str(row["verdict"] or "").lower() != "pass":
@@ -559,6 +580,7 @@ class AnalysisRepository:
         lineage_names = (
             "artifact_id", "artifact_hash", "input_hash", "model_version",
             "feature_version", "cohort_id", "cost_model_version",
+            "target_version", "target", "horizon_sessions",
         )
         if any(
             str(metrics.get(name) or "") != str(parameters.get(name) or "")

@@ -10,6 +10,7 @@ from urllib.parse import quote
 from app import panel_snapshot as panel_owner
 from investment_panel.database.options_research import OptionsResearchRepository
 from app.data_access import loaders, payloads
+from app.data_access.types import PanelData
 from investment_panel.core.config import AppConfig
 from investment_panel.core.decision import (
     AvailabilityStatus,
@@ -18,9 +19,11 @@ from investment_panel.core.decision import (
     capital_action_from_resolution,
     resolution_from_legacy,
     opportunity_rank_blocker,
+    next_action_for,
 )
 
 ACTION_QUEUE_LIMIT = 10
+BRIEF_CATEGORY_LIMITS = {"decide_now": 4, "catalysts": 3, "whats_changed": 3, "portfolio_pulse": 2}
 
 
 def today(
@@ -111,7 +114,7 @@ def today(
             "transition": None,
             "current_at": _queue_datetime(row.get("published_at") or row.get("available_at") or row.get("as_of")),
             "primary_blocker": "ticker_decision_identity_missing" if identity_missing else (rank_reason or "trade_plan_blocked") if blocked else None,
-            "next_action": plan.next_action if plan is not None else "Refresh the ticker decision and trade plan.",
+            "next_action": _today_next_action(plan) if plan is not None else "Refresh the ticker decision and trade plan.",
             "drill_down": f"/tickers/{quote(symbol)}" if symbol else None,
             "ticker": symbol,
             "decision_revision": revision or None,
@@ -164,13 +167,15 @@ def today(
         if (timestamp := _latest_timestamp(panel_data.rows(name))) is not None
     )
     as_of = max(timestamps, default=None)
+    brief_items = _today_brief_items_payload(panel_data.rows("daily_brief"))
     return {
         "status": payloads.status_payload(panel_data),
         "as_of": as_of,
         "actions": queue_items,
         "book_actions": book_action_queue(capital_actions),
         "preopen_brief": _today_preopen_brief_payload(panel_data.rows("preopen_daily_brief")),
-        "brief_items": _today_brief_items_payload(panel_data.rows("daily_brief")),
+        "brief_items": brief_items,
+        "brief_categories": _today_brief_categories_payload(panel_data, brief_items),
         "portfolio_risk_items": _today_portfolio_risk_payload(panel_data.rows("portfolio_risk_cards")),
         "missing_plan_count": missing_plan_count,
         "count": len(queue_items),
@@ -178,21 +183,29 @@ def today(
 
 
 def _today_resolution_payload(resolution: Any) -> dict[str, Any]:
-    return resolution.model_dump(mode="json", include={
+    return {**resolution.model_dump(mode="json", include={
         "contract_version", "lifecycle", "eligibility", "authorization_mode", "data_quality",
         "action", "trade_plan_id", "primary_blocker", "blockers", "next_action", "policy_version",
         "decision_revision", "ticker", "rationale", "owned", "price_condition", "catalyst", "expires_at",
-    })
+    }), "next_action": _today_next_action(resolution)}
 
 
 def _today_trade_plan_payload(plan: Any) -> dict[str, Any]:
-    return plan.model_dump(mode="json", include={
+    return {**plan.model_dump(mode="json", include={
         "contract_version", "trade_plan_id", "publication_id", "ticker", "opportunity_episode_id",
         "decision_revision", "policy_version", "selected_expression_kind", "selected_expression_identity",
         "rank_id", "alpha_signal_id", "portfolio_impact_id", "market_snapshot_id",
         "market_state_publication_id", "action", "eligibility", "authorization_mode", "data_quality",
         "rationale", "primary_blocker", "blockers", "next_action",
-    })
+    }), "next_action": _today_next_action(plan)}
+
+
+def _today_next_action(value: Any) -> str:
+    action = value.next_action
+    if action not in {"Refresh the required fact and recalculate the resolution.", "Refresh and recalculate the decision."}:
+        return action
+    blocker = next((reason for reason in value.blockers if reason not in {"cash_comparator", "cash_selected"}), value.primary_blocker)
+    return next_action_for(blocker)
 
 
 def _today_preopen_brief_payload(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -230,7 +243,43 @@ def _today_preopen_brief_payload(rows: list[dict[str, Any]]) -> dict[str, Any] |
 
 
 def _today_brief_items_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [_today_brief_item_payload(row, index) for index, row in enumerate(rows)]
+    selected: list[dict[str, Any]] = []
+    for category, limit in BRIEF_CATEGORY_LIMITS.items():
+        candidates = [row for row in rows if row.get("category") == category]
+        if category == "catalysts":
+            candidates.sort(key=lambda row: (_integer(row.get("days_until")) is None, _integer(row.get("days_until")) or 0))
+        selected.extend(candidates[:limit])
+    return [_today_brief_item_payload(row, index) for index, row in enumerate(selected)]
+
+
+def _today_brief_categories_payload(panel_data: PanelData, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = panel_data.rows("daily_brief")
+    unavailable = not panel_data.status.ready or "daily_brief" in panel_data.metadata.get("unavailable_models", [])
+    preopen = next(iter(panel_data.rows("preopen_daily_brief")), {})
+    # A successful publication is not proof of full source coverage. Honor
+    # explicit producer coverage only when it belongs to this publication.
+    same_publication = bool(preopen.get("publication_id")) and all(
+        row.get("publication_id") == preopen["publication_id"] for row in rows
+    )
+    coverage = preopen.get("brief_coverage") if same_publication and isinstance(preopen.get("brief_coverage"), dict) else {}
+    output = []
+    for category in BRIEF_CATEGORY_LIMITS:
+        state = coverage.get(category) if isinstance(coverage.get(category), dict) else {}
+        status = "unavailable" if unavailable else str(state.get("status") or "unknown")
+        if status not in {"complete", "partial", "unavailable", "unknown"}:
+            status = "unknown"
+        output.append({
+            "category": category,
+            "total_count": None if unavailable else sum(row.get("category") == category for row in rows),
+            "shown_count": sum(row.get("category") == category for row in items),
+            "coverage_status": status,
+            "coverage_message": str(state.get("message") or (
+                "Daily context could not be loaded. Refresh this view."
+                if unavailable else "Source coverage has not been confirmed; an empty list does not mean no events or changes."
+                if status == "unknown" else ""
+            )),
+        })
+    return output
 
 
 def _today_portfolio_risk_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -441,6 +490,7 @@ def decision_inbox_queue(rows: list[dict[str, Any]], *, now: datetime | None = N
             "inbox_item_id": identifier or None,
             "action_identity": action_identity,
             "user_state": _queue_text(row.get("user_state"), "open"),
+            "useful": row.get("useful") if isinstance(row.get("useful"), bool) else None,
             "title": _queue_text(_queue_value(row, payload, "title"), f"{event_type.replace('_', ' ').title()} transition"),
             "lifecycle_state": lifecycle,
             "transition": event_type.upper(),

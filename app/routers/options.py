@@ -14,12 +14,13 @@ from app import panel_snapshot
 from app import dependencies
 from app.actions.options import OptionsActions
 from app.actions.tickers import TickerActions
-from app.contracts import DecisionInboxStateInput, OptionPaperEntryInput, StrategyPromotionInput, TickerPaperEntryInput
+from app.contracts import DecisionInboxStateInput, DecisionInboxUsefulnessInput, OptionPaperEntryInput, StrategyPromotionInput, TickerPaperEntryInput
 from app.data_access import loaders, payloads
 from app.response_contracts import (
     AgentSubmissionResponse,
     DecisionInboxResponse,
     DecisionInboxStateResponse,
+    DecisionInboxUsefulnessResponse,
     OpportunityScorecardResponse,
     OptionHistoryHealthResponse,
     OptionHistorySymbolsResponse,
@@ -431,6 +432,20 @@ def set_decision_inbox_state(
     panel_snapshot.invalidate_context_cache()
     return result
 
+
+
+@router.post("/api/decision-inbox/{item_id}/usefulness", response_model=DecisionInboxUsefulnessResponse)
+def set_decision_inbox_usefulness(
+    item_id: UUID,
+    payload: DecisionInboxUsefulnessInput,
+    actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
+    _request=Depends(dependencies.get_authorized_request),
+) -> dict[str, Any]:
+    result = actions.set_decision_inbox_usefulness(str(item_id), useful=payload.useful)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Decision Inbox item not found")
+    panel_snapshot.invalidate_context_cache()
+    return result
 
 
 @router.get("/api/options-radar/signals/{decision_id}", response_model=OptionSignalDetailResponse, response_model_exclude_unset=True)

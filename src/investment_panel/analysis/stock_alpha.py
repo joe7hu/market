@@ -5,18 +5,21 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
-from math import exp, isfinite, sqrt
+from math import erfc, exp, isfinite, sqrt
 from random import Random
 from statistics import fmean, stdev
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from investment_panel.analysis.stats import brier_score
 from investment_panel.analysis.research_validation import combinatorial_path_records, multiple_testing_metrics
 
 
-MODEL_VERSION = "ticker-stock-alpha.v2"
+MODEL_VERSION = "ticker-stock-alpha.v3"
 FEATURE_VERSION = "daily-trend-v1"
-COST_MODEL_VERSION = "stock-cost-slippage.v1"
+COST_MODEL_VERSION = "stock-close-estimated-cost-v1"
+TARGET_VERSION = "stock-counterfactual-20-session-net.v1"
+TARGET_HORIZON_SESSIONS = 20
+CONTROL_STATISTIC_VERSION = "oos-brier-improvement-over-generator-null.v1"
 RESEARCH_FEATURES = (
     "momentum_5d",
     "momentum_20d",
@@ -59,9 +62,7 @@ def walk_forward(
     """Evaluate expanding folds with PIT outcomes and hierarchical calibration."""
 
     reference = _aware(cutoff)
-    rows = [_normalise(row) for row in observations]
-    rows = [row for row in rows if row is not None and row["as_of"] <= reference]
-    rows.sort(key=lambda row: (row["as_of"], row["ticker"], row["horizon"], row["cohort_id"]))
+    rows = independent_observations(observations, cutoff=reference)
     pit_rejections: list[dict[str, Any]] = []
     predictions: list[dict[str, Any]] = []
     folds_data: list[dict[str, Any]] = []
@@ -232,15 +233,30 @@ def walk_forward(
                 "domain_valid": True,
             },
         })
+    baseline_comparisons = {}
+    for name in ("cash", "market", "sector", "trend"):
+        paired = [row for row in predictions if row["baseline_returns"].get(name) is not None]
+        baseline_comparisons[name] = {
+            "sample_count": len(paired),
+            "reference": "net_cash_return" if name == "cash" else "gross_benchmark_return",
+            "mean_return": round(fmean(float(row["baseline_returns"][name]) for row in paired), 8) if paired else None,
+            "mean_stock_net_excess": round(fmean(
+                float(row["net_utility_after_costs"]) - float(row["baseline_returns"][name])
+                for row in paired
+            ), 8) if paired else None,
+        }
     artifact = {
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,
         "cost_model_version": COST_MODEL_VERSION,
+        "target_version": TARGET_VERSION,
+        "horizon_sessions": TARGET_HORIZON_SESSIONS,
         "target": "positive_return_after_costs",
         "horizons": sorted({row["horizon"] for row in rows}),
         "oos_period_start": period_start.isoformat() if period_start else None,
         "oos_period_end": period_end.isoformat() if period_end else None,
         "calibration_metrics": metrics,
+        "baseline_comparisons": baseline_comparisons,
         "cohort_path": max(
             (list(row["cohort_path"]) for row in predictions),
             key=len,
@@ -250,6 +266,13 @@ def walk_forward(
             (row["fallback_parent"] for row in reversed(predictions) if row["fallback_parent"]),
             None,
         ),
+        "sample_windows": [
+            _jsonable({**{key: row[key] for key in (
+                "ticker", "opportunity_episode_id", "horizon", "horizon_sessions",
+                "sample_window_start", "sample_window_end", "outcome_available_at",
+            )}, **({"terminal_evidence": row["terminal_evidence"]} if row.get("terminal_evidence") else {})})
+            for row in rows
+        ],
         "predictions": [_jsonable(row) for row in predictions],
         "validation_paths": validation_paths,
         "validation_path_records": validation_path_records,
@@ -285,13 +308,23 @@ def build_control_results(
     white-noise controls replace both research features and realized price
     returns with deterministic independent draws from the observed scale. Both
     controls execute ``walk_forward`` itself, including fold calibration and
-    path generation. No sign clipping, antithetic pairing, or return transform
-    is applied to the evaluator output.
+    path generation. Their statistic is the out-of-sample improvement in
+    Brier loss over the control generator's known null target probability:
+    ``(null_probability - target)**2 - (forecast - target)**2``. A positive value means
+    forecast skill remains after the perturbation and fails the zero-tolerance
+    control gate. The legacy ``*_returns`` fields carry this prediction score,
+    not unchanged stock returns; primary economic returns and costs are separate.
+    Full-corpus prevalence and the Gaussian null are used only for falsification,
+    never as model fitting inputs or live forecast features.
     """
 
     if repeats < 2 or repeats > 32:
         raise ValueError("control repeats must be in [2, 32]")
-    source_rows = [dict(row) for row in observations]
+    source_rows = [
+        row for row in independent_observations(observations, cutoff=cutoff)
+        if row["outcome_available_at"] <= _aware(cutoff)
+        and row["feature_available_at"] <= row["as_of"]
+    ]
     rows = []
     for raw in source_rows:
         try:
@@ -305,7 +338,7 @@ def build_control_results(
         rows.append((realized, cost, 1.0 if label > 0.5 else -1.0))
     if not rows:
         return {"randomized_label_returns": [], "white_noise_market_returns": [], "control_metadata": {}}
-    seed = content_hash({"cutoff": cutoff, "rows": source_rows, "control": "phase1-v1"})
+    seed = content_hash({"rows": source_rows, "control": MODEL_VERSION})
     generator = Random(seed)
     randomized: list[float] = []
     noise: list[float] = []
@@ -313,6 +346,7 @@ def build_control_results(
     scale = stdev(return_values) if len(return_values) > 1 else abs(return_values[0])
     scale = max(scale, 1e-12)
     labels = [row[2] for row in rows]
+    randomized_null_probability = fmean(label > 0 for label in labels)
     feature_values = {
         name: [float(dict(raw.get("features") or {}).get(name)) for raw in source_rows if dict(raw.get("features") or {}).get(name) is not None]
         for name in RESEARCH_FEATURES
@@ -328,18 +362,30 @@ def build_control_results(
     metadata: dict[str, Any] = {
         "repeats": repeats,
         "source_sample_count": len(rows),
+        "statistic_version": CONTROL_STATISTIC_VERSION,
+        "statistic": "(null_probability - target)^2 - (calibrated_probability - target)^2",
+        "units": "brier_loss_improvement",
+        "null_reference": {
+            "scope": "falsification_controls_only",
+            "randomized_label_probability": randomized_null_probability,
+            "white_noise_return_mean": 0.0,
+            "white_noise_return_scale": scale,
+            "white_noise_positive_after_cost_probability": "0.5 * erfc(modeled_cost / (return_scale * sqrt(2)))",
+        },
         "randomized_label": {"runs": 0, "sample_count": 0, "path_count": 0, "input_hashes": []},
         "white_noise_market": {"runs": 0, "sample_count": 0, "path_count": 0, "input_hashes": []},
     }
     for _ in range(repeats):
         shuffled = list(labels)
         generator.shuffle(shuffled)
-        randomized_rows = [dict(raw, outcome=label) for raw, label in zip(source_rows, shuffled)]
+        randomized_rows = [dict(raw, outcome=float(label > 0)) for raw, label in zip(source_rows, shuffled)]
         randomized_artifact = walk_forward(
             randomized_rows, cutoff=cutoff, min_train=run_min_train,
             fold_size=run_fold_size, min_cohort=run_min_cohort,
         )
-        randomized_values = [float(row["net_utility_after_costs"]) for row in randomized_artifact.get("predictions") or []]
+        randomized_values = _control_prediction_scores(
+            randomized_artifact, null_probability=lambda _row: randomized_null_probability,
+        )
         randomized.extend(randomized_values)
         randomized_meta = metadata["randomized_label"]
         randomized_meta["runs"] += 1
@@ -355,12 +401,18 @@ def build_control_results(
                     continue
                 features[name] = generator.gauss(feature_mean[name], feature_scale[name])
             realized = generator.gauss(0.0, scale)
-            white_noise_rows.append(dict(raw, features=features, realized_return=realized, outcome=float(realized > 0.0)))
+            white_noise_rows.append(dict(
+                raw, features=features, realized_return=realized,
+                outcome=float(realized > float(raw["modeled_cost"])),
+            ))
         white_noise_artifact = walk_forward(
             white_noise_rows, cutoff=cutoff, min_train=run_min_train,
             fold_size=run_fold_size, min_cohort=run_min_cohort,
         )
-        white_noise_values = [float(row["net_utility_after_costs"]) for row in white_noise_artifact.get("predictions") or []]
+        white_noise_values = _control_prediction_scores(
+            white_noise_artifact,
+            null_probability=lambda row: .5 * erfc(float(row["modeled_cost"]) / (scale * sqrt(2.0))),
+        )
         noise.extend(white_noise_values)
         noise_meta = metadata["white_noise_market"]
         noise_meta["runs"] += 1
@@ -372,6 +424,16 @@ def build_control_results(
         "white_noise_market_returns": noise,
         "control_metadata": metadata,
     }
+
+
+def _control_prediction_scores(
+    artifact: Mapping[str, Any], *, null_probability: Callable[[Mapping[str, Any]], float],
+) -> list[float]:
+    return [
+        (null_probability(row) - float(row["outcome"])) ** 2
+        - (float(row["calibrated_probability"]) - float(row["outcome"])) ** 2
+        for row in artifact.get("predictions") or []
+    ]
 
 
 def hierarchical_calibration(
@@ -407,11 +469,41 @@ def content_hash(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def independent_observations(
+    observations: Iterable[Mapping[str, Any]], *, cutoff: datetime,
+) -> list[dict[str, Any]]:
+    """Keep the earliest non-overlapping 20-session windows within each episode."""
+
+    reference = _aware(cutoff)
+    rows = [_normalise(row) for row in observations]
+    rows = [row for row in rows if row is not None and row["as_of"] <= reference]
+    rows.sort(key=lambda row: (row["as_of"], row["ticker"], row["horizon"], content_hash(row)))
+    episodes: dict[tuple[str, str], dict[str, Any]] = {}
+    independent: list[dict[str, Any]] = []
+    for row in rows:
+        key = (row["opportunity_episode_id"], row["horizon"])
+        previous = episodes.get(key)
+        if previous is not None and row["as_of"] == previous["as_of"] and row != previous:
+            raise ValueError("conflicting observations for one stock-alpha episode")
+        if previous is None or (
+            row["as_of"] > previous["as_of"]
+            and row["as_of"] >= previous["sample_window_end"]
+        ):
+            episodes[key] = row
+            independent.append(row)
+    return independent
+
+
 def _normalise(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    if raw.get("target_version") != TARGET_VERSION:
+        raise ValueError("incompatible stock-alpha target version")
+    if str(raw.get("horizon") or "").upper() != "TACTICAL" or raw.get("horizon_sessions") != TARGET_HORIZON_SESSIONS:
+        raise ValueError("stock-alpha requires the tactical 20-session target")
     features = dict(raw.get("features") or {})
     score = research_score(features)
     required = {
         "ticker": str(raw.get("ticker") or "").strip().upper(),
+        "opportunity_episode_id": str(raw.get("opportunity_episode_id") or "").strip(),
         "horizon": str(raw.get("horizon") or "").strip().upper(),
         "cohort_id": str(raw.get("cohort_id") or "").strip(),
         "as_of": _maybe_aware(raw.get("as_of")),
@@ -425,7 +517,25 @@ def _normalise(raw: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     if not 0.0 <= float(required["outcome"]) <= 1.0 or float(required["modeled_cost"]) < 0:
         return None
-    return {**required, "features": features, "research_score": score}
+    measured_through = raw.get("outcome_measured_through")
+    window_end = (
+        _maybe_aware(measured_through) if measured_through is not None
+        else required["outcome_available_at"]
+    )
+    if window_end is None or not required["as_of"] < window_end <= required["outcome_available_at"]:
+        return None
+    return {
+        **required, "features": features, "research_score": score,
+        "outcome_measured_through": window_end if measured_through is not None else None,
+        "sample_window_start": required["as_of"], "sample_window_end": window_end,
+        "target_version": TARGET_VERSION, "horizon_sessions": TARGET_HORIZON_SESSIONS,
+        "benchmark_membership_hash": raw.get("benchmark_membership_hash"),
+        **({"terminal_evidence": dict(raw["terminal_evidence"])} if raw.get("terminal_evidence") else {}),
+        "baseline_returns": {
+            name: _number(dict(raw.get("baseline_returns") or {}).get(name))
+            for name in ("cash", "market", "sector", "trend")
+        },
+    }
 
 
 def _probability(score: float) -> float:

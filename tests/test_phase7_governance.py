@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from investment_panel.core.decision.governance import (
     OUTCOME_ERROR_TYPES,
     TRACKED_METRICS,
@@ -15,8 +17,13 @@ from investment_panel.database import decision_inbox
 from investment_panel.database.strategy_learning import StrategyLearningRepository
 
 
+_EXECUTION_METRICS = ("net_pnl_after_realized_costs", "turnover", "slippage", "capacity")
+
+
 def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
     metrics = {name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1) for name in TRACKED_METRICS}
+    if stage != "execution_grade_paper":
+        metrics.update({name: None for name in _EXECUTION_METRICS})
     if aliases:
         metrics["calibration_error"] = metrics.pop("calibration")
         metrics["precision_at_5"] = metrics.pop("precision_at_top_k")
@@ -45,16 +52,62 @@ def _evaluation(stage: str, *, aliases: bool = False) -> dict[str, object]:
     }
 
 
-def test_phase7_promotion_requires_all_real_stages_and_metrics() -> None:
+def test_phase7_promotion_requires_stage_metrics_and_verified_paper_evidence() -> None:
     rows = [_evaluation(stage) for stage in ("walk_forward", "shadow", "execution_grade_paper")]
     result = promotion_readiness(rows, now=datetime(2026, 8, 30, 13, tzinfo=UTC))
     assert result["promotion_eligible"] is True
     assert result["paper_only"] is True
     assert result["live_eligibility"] == "unavailable"
+    for stage in ("walk_forward", "shadow"):
+        stage_result = result["stages"][stage]
+        assert stage_result["status"] == "available"
+        assert len(stage_result["required_metrics"]) == 10
+        assert "regime_performance" in stage_result["required_metrics"]
+        assert set(stage_result["required_metrics"]) == set(TRACKED_METRICS) - set(_EXECUTION_METRICS)
+        assert all(stage_result["metrics"][name] is None for name in _EXECUTION_METRICS)
+    assert result["stages"]["execution_grade_paper"]["required_metrics"] == list(TRACKED_METRICS)
+    assert len(result["stages"]["execution_grade_paper"]["required_metrics"]) == 14
 
     missing = promotion_readiness(rows[:2], now=datetime(2026, 8, 30, 13, tzinfo=UTC))
     assert missing["promotion_eligible"] is False
     assert "execution_grade_paper_evidence_missing" in missing["blockers"]
+    assert missing["stages"]["execution_grade_paper"]["required_metrics"] == list(TRACKED_METRICS)
+
+
+@pytest.mark.parametrize("stage", ["walk_forward", "shadow"])
+@pytest.mark.parametrize("metric", ["calibration", "regime_performance"])
+@pytest.mark.parametrize("absent", [False, True])
+def test_phase7_common_metrics_remain_required_before_paper(stage: str, metric: str, absent: bool) -> None:
+    rows = [_evaluation(name) for name in ("walk_forward", "shadow", "execution_grade_paper")]
+    changed = next(row for row in rows if row["stage"] == stage)
+    if absent:
+        changed["metrics"].pop(metric)
+    else:
+        changed["metrics"][metric] = None
+    result = promotion_readiness(rows, now=datetime(2026, 8, 30, 13, tzinfo=UTC))
+    assert result["promotion_eligible"] is False
+    assert f"{stage}_{metric}_{'missing' if absent else 'malformed'}" in result["blockers"]
+
+
+@pytest.mark.parametrize("metric", _EXECUTION_METRICS)
+@pytest.mark.parametrize("absent", [False, True])
+def test_phase7_paper_execution_metrics_cannot_be_unknown(metric: str, absent: bool) -> None:
+    rows = [_evaluation(stage) for stage in ("walk_forward", "shadow", "execution_grade_paper")]
+    if absent:
+        rows[-1]["metrics"].pop(metric)
+    else:
+        rows[-1]["metrics"][metric] = None
+    result = promotion_readiness(rows, now=datetime(2026, 8, 30, 13, tzinfo=UTC))
+    assert result["promotion_eligible"] is False
+    assert f"execution_grade_paper_{metric}_{'missing' if absent else 'malformed'}" in result["blockers"]
+
+
+def test_phase7_reported_optional_execution_metric_still_requires_valid_domain() -> None:
+    rows = [_evaluation(stage) for stage in ("walk_forward", "shadow", "execution_grade_paper")]
+    rows[1]["metrics"]["slippage"] = -0.1
+    result = promotion_readiness(rows, now=datetime(2026, 8, 30, 13, tzinfo=UTC))
+    assert result["promotion_eligible"] is False
+    assert "shadow_slippage_malformed" in result["blockers"]
 
 
 def test_phase7_malformed_or_legacy_claims_are_unavailable() -> None:
@@ -199,7 +252,7 @@ def test_strategy_learning_does_not_reuse_parent_paper_execution_for_candidate()
             if "SELECT candidate.parameters" in query:
                 return _LearningResult(one={"parameters": {}, "supersedes_id": 42, "base_parameters": {}})
             if "FROM analysis.option_outcome" in query:
-                return _LearningResult(many=[parent_row] if params == [42] else [])
+                return _LearningResult(many=[parent_row] if params == [42, 42] else [])
             if "INSERT INTO analysis.strategy_evaluation" in query:
                 self.evaluation_types.append(params[1])
             return _LearningResult()
@@ -208,3 +261,44 @@ def test_strategy_learning_does_not_reuse_parent_paper_execution_for_candidate()
     repository = object.__new__(StrategyLearningRepository)
     repository._evaluate(connection, 1)
     assert connection.evaluation_types == ["walk_forward", "shadow"]
+
+
+def test_strategy_comparison_uses_net_returns_and_the_original_opportunity_denominator() -> None:
+    from investment_panel.database.strategy_learning import evaluate_comparison
+
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    baseline = [
+        {"ticker": str(index), "as_of": now + timedelta(days=index), "peak_return": 2.0,
+         "current_return": .1, "max_drawdown": -.1}
+        for index in range(6)
+    ]
+    # A selected average of20% loses to the incumbent when it captures only
+    # two of six profitable opportunities and leaves the rest in CASH.
+    selected = [{**row, "current_return": .2} for row in baseline[:2]]
+    result = evaluate_comparison(baseline, selected, minimum=2)
+    assert result["verdict"] == "fail"
+    assert result["candidate_net_on_comparison_universe"] < result["baseline"]["net_expectancy"]
+    assert result["missed_winners"] == 4 / 6
+    loss = [{**row, "current_return": -.1} for row in baseline]
+    assert evaluate_comparison(baseline, loss, minimum=2)["verdict"] == "fail"
+    unmatched = [{**row, "ticker": "other"} for row in selected]
+    assert evaluate_comparison(baseline, unmatched, minimum=2, paired=True)["verdict"] == "insufficient_data"
+
+
+def test_paper_return_requires_complete_quantity_and_uses_multiplier_and_credit_direction() -> None:
+    from investment_panel.database.strategy_learning import paper_realized_return
+
+    row = {
+        "as_of": datetime(2026, 8, 1, tzinfo=UTC), "filled_at": datetime(2026, 8, 2, tzinfo=UTC),
+        "exit_at": datetime(2026, 8, 3, tzinfo=UTC), "paper_only": True, "paper_status": "exited",
+        "paper_order_id": "order", "actual_fill_price": 2.5, "exit_price": 3.0,
+        "filled_quantity": 2, "exited_quantity": 2, "entry_quantity": 2, "exit_quantity": 2,
+        "contract_multiplier": 100, "fees": 2.6, "entry_slippage": .1, "exit_slippage": .1,
+        "structure": "long_call",
+    }
+    assert abs(paper_realized_return(row) - .1948) < 1e-9
+    assert paper_realized_return({**row, "exit_quantity": 1}) is None
+    assert paper_realized_return({**row, "contract_multiplier": None}) is None
+    assert paper_realized_return({**row, "entry_slippage": None}) is None
+    credit = {**row, "structure": "cash_secured_put", "exit_price": 0, "reserved_collateral": 10_000}
+    assert abs(paper_realized_return(credit) - .04974) < 1e-9

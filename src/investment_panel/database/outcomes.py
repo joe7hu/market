@@ -70,7 +70,7 @@ class OutcomeRepository:
                       SELECT 1
                       FROM analysis.shadow_trade shadow
                       WHERE shadow.decision_id = decision.id
-                        AND shadow.source_kind = 'options_history_v3'
+                        AND shadow.source_kind IN ('options_history_v3', 'options_paper_experiment')
                   )
                   AND (outcome.decision_id IS NULL OR outcome.maturity_state = 'observing'
                        OR option_decision.structure IN ('call_debit_spread', 'put_debit_spread'))

@@ -13,6 +13,7 @@ from investment_panel.database.ingestion import IngestionRepository, normalize_o
 from investment_panel.core.market_time import market_timezone_for_symbol
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options import market_session
+from investment_panel.database import options as option_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs import update_robinhood_options
 
@@ -107,6 +108,38 @@ def test_register_source_cannot_rewrite_canonical_identity_or_lifecycle(reposito
             "SELECT family, kind, origin, enabled, operational_state FROM ingest.source WHERE id = 'phase2-identity-test'"
         ).fetchone()
     assert row == ("phase2", "provider", "approved", True, "active")
+
+
+def test_option_collectors_reuse_source_identity_and_preserve_lifecycle(
+    migrated_postgres_dsn: str, monkeypatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = IngestionRepository(runtime)
+        monkeypatch.setattr(option_database, "runtime_for_config", lambda _config: runtime)
+        for source_id, kind in (("robinhood", "market_data"), ("ibkr", "broker_account"), ("test-option-chain", "option_chain")):
+            repository.register_source(
+                source_id, name=source_id, family="broker", kind=kind,
+                origin="canonical-provider", capabilities={"quotes": True},
+                operational_state="standby", enabled=False,
+            )
+            persisted = option_database.persist_collected_option_chains(
+                None, source_id, {"observed_at": "2026-09-04T20:00:00+00:00", "rows": {}, "quotes": []},
+            )
+            assert persisted["run_id"]
+            option_database.register_option_source(repository, source_id, capabilities={"option_history_full": True})
+            with runtime.read() as connection:
+                row = connection.execute(
+                    "SELECT family, kind, origin, enabled, operational_state, capabilities FROM ingest.source WHERE id = %s",
+                    [source_id],
+                ).fetchone()
+            assert row["family"] == "broker" and row["kind"] == kind
+            assert row["origin"] == "canonical-provider"
+            assert row["enabled"] is False and row["operational_state"] == "standby"
+            assert row["capabilities"] == {"quotes": True, "option_quotes": True, "option_history_full": True}
+    finally:
+        runtime.close()
 
 
 def test_failed_ingestion_run_persists_failure(repository: IngestionRepository, postgres_dsn: str) -> None:

@@ -136,6 +136,7 @@ class ActionRepository:
         policy_version: str | None = None,
         daily_loss_halt_pct: float | None = None,
         max_open_positions: int | None = None,
+        experiment_publication_id: UUID | None = None,
     ) -> dict[str, Any]:
         if ticket_version != TICKET_VERSION:
             raise ValueError("stale option trade ticket version")
@@ -216,11 +217,19 @@ class ActionRepository:
             ).fetchone()
             if signal is None:
                 raise ValueError("options-radar signal not found")
-            current_rows = [
-                row for row in current_option_publication_answers(connection, cutoff=now)
-                if str((row["payload"] or {}).get("decision_id") or (row["payload"] or {}).get("opportunity_id") or "")
-                == str(decision_id)
-            ]
+            if experiment_publication_id is not None:
+                from investment_panel.database.options_experiments import experiment_publication_row
+
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", ["strategy:options-radar-core"])
+                current_rows = [experiment_publication_row(connection, str(experiment_publication_id), str(decision_id), as_of=now)]
+                if signal["structure"] not in {"long_call", "long_put"}:
+                    raise ValueError("candidate experiment supports core long options only")
+            else:
+                current_rows = [
+                    row for row in current_option_publication_answers(connection, cutoff=now)
+                    if str((row["payload"] or {}).get("decision_id") or (row["payload"] or {}).get("opportunity_id") or "")
+                    == str(decision_id)
+                ]
             if len(current_rows) != 1:
                 raise ValueError("option opportunity has no unique current publication authority")
             current_row = current_rows[0]
@@ -506,6 +515,7 @@ class ActionRepository:
                 "risk_policy_snapshot": ticket_risk.get("policy_snapshot") or {},
                 "fully_cash_secured": structure == "cash_secured_put",
                 "live_order_submission": False,
+                **({"experiment": ticket["experiment"]} if experiment_publication_id is not None else {}),
             }
             order_ticket = _ordered_ticket_snapshot(ticket, quantity=quantity, total_risk=total_risk)
             row = connection.execute(

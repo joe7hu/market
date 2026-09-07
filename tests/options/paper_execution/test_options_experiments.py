@@ -1,0 +1,665 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
+from psycopg.types.json import Jsonb
+
+from investment_panel.core.option_trade_ticket import build_option_trade_ticket
+from investment_panel.database.actions import ActionRepository
+from investment_panel.database.analysis import AnalysisRepository, current_option_publication_answers
+from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.options_analysis import DEFAULT_PARAMETERS, FEATURE_VERSION, refresh_options_radar
+from investment_panel.database.options_calibration import calibration_profiles
+from investment_panel.database.options_paper_execution import PAPER_MARK_KEY, OptionsPaperExecutionRepository
+from investment_panel.database.options_experiments import (
+    EXPERIMENT_VERSION, advance_experiment_shadows, experiment_candidate, experiment_publication_row,
+    experiment_identity,
+)
+from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.strategy_parameters import merge_strategy_parameters
+from investment_panel.jobs.options_paper_execution import run_experiments
+
+
+@pytest.fixture
+def experiment_context(migrated_postgres_dsn, monkeypatch):
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    now = datetime.now(UTC) - timedelta(seconds=2)
+    ingestion = IngestionRepository(runtime)
+    ingestion.register_source("test-experiment", name="Experiment test", family="test", kind="option_chain")
+    with runtime.transaction() as connection:
+        parent = connection.execute(
+            "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, created_at, promoted_at) "
+            "VALUES ('options-radar-core', 3, 'Incumbent', 'active', %s, 'options-radar-core', %s, %s) RETURNING id",
+            [Jsonb(DEFAULT_PARAMETERS), now - timedelta(days=150), now - timedelta(days=150)],
+        ).fetchone()["id"]
+        changes = {"min_open_interest": 100}
+        candidate = connection.execute(
+            "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, supersedes_id, created_at) "
+            "VALUES ('options-radar-core__experiment', 1, 'Candidate', 'candidate', %s, 'options-radar-core', %s, %s) RETURNING id",
+            [Jsonb(merge_strategy_parameters(DEFAULT_PARAMETERS, changes)), parent, now - timedelta(hours=1)],
+        ).fetchone()["id"]
+        connection.execute(
+            "INSERT INTO analysis.agent_task (task_kind, status, request, result, created_at) "
+            "VALUES ('strategy_mutation_proposal', 'completed', '{}', %s, %s)",
+            [Jsonb({"candidate_revision_id": candidate, "proposed_parameter_changes": changes}), now - timedelta(hours=1)],
+        )
+        connection.execute(
+            "INSERT INTO analysis.strategy_evaluation (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics) "
+            "VALUES (%s, 'walk_forward', %s, %s, 'pass', '{}')",
+            [candidate, now - timedelta(minutes=59), now - timedelta(minutes=59)],
+        )
+    monkeypatch.setattr("investment_panel.database.options_experiments.is_market_open", lambda _: True)
+    try:
+        yield runtime, ingestion, now, parent, candidate
+    finally:
+        runtime.close()
+
+
+def _capture(runtime, ingestion, at, *, bid=0.48, ask=0.50, complete=True, available_at=None, open_interest=1000, include_put=False, bid_size=10, symbols=("NVDA",), contracts=()):
+    with ingestion.run("test-experiment", "option_quotes", started_at=at) as run:
+        snapshot = ingestion.store_option_snapshot(
+            run.id, source_id="test-experiment", observed_at=at, market_session="regular", universe="test",
+            rows=[{
+                "symbol": symbol, "expiration": (at.date() + timedelta(days=40)).isoformat(),
+                "strike": 160, "option_type": option_type, "underlying_price": 155,
+                "bid": bid, "ask": ask, "mid": (bid + ask) / 2, "bid_size": bid_size, "ask_size": 10,
+                "volume": 1000, "open_interest": open_interest, "iv": 0.3, "delta": 0.4,
+                "last_trade_at": at, "captured_at": at, "market_data_status": "live",
+                "style": "american", "settlement": "physical", "deliverable_key": f"{symbol.lower()}-standard",
+                "standard_contract_verified": True, **contract,
+            } for symbol in symbols for option_type in (["call", "put"] if include_put else ["call"])
+              for contract in (contracts or ({},))],
+        )
+    with runtime.transaction() as connection:
+        connection.execute("UPDATE raw.option_snapshot SET capture_state = %s WHERE id = %s", ["complete" if complete else "partial", snapshot["snapshot_id"]])
+        connection.execute("UPDATE raw.option_quote SET available_at = %s WHERE snapshot_id = %s", [available_at or at, snapshot["snapshot_id"]])
+    return snapshot
+
+
+def test_incumbent_and_candidate_gain_real_forward_calibration_before_promotion(experiment_context):
+    runtime, ingestion, now, parent, candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    incumbent = refresh_options_radar(runtime, source_id="test-experiment", code_version="experiment-test")
+    challenger = refresh_options_radar(runtime, source_id="test-experiment", code_version="experiment-test", candidate_revision_id=candidate)
+    assert incumbent["shadow_trades"] == 1 and challenger["shadow_trades"] == 1
+    with runtime.read() as connection:
+        shadows = connection.execute("SELECT source_kind, status, entry_at FROM analysis.shadow_trade ORDER BY created_at").fetchall()
+        assert all(row["source_kind"] == "options_paper_experiment" and row["status"] == "pending" and row["entry_at"] is None for row in shadows)
+        active = connection.execute("SELECT id FROM analysis.strategy_revision WHERE status = 'active'").fetchone()["id"]
+        assert active == parent
+        assert all(row["publication_id"] != challenger["publication_id"] for row in current_option_publication_answers(connection))
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=5))["entered"] == 0
+    # Incomplete captures and quotes not yet available cannot become a shadow fill.
+    _capture(runtime, ingestion, now + timedelta(seconds=30), complete=False)
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=31))["entered"] == 0
+    _capture(runtime, ingestion, now + timedelta(seconds=60), available_at=now + timedelta(seconds=65))
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=64))["entered"] == 0
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=66))["entered"] == 2
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=67))["closed"] == 0
+    _capture(runtime, ingestion, now + timedelta(seconds=90), bid=1.1, ask=1.12)
+    disabled = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=SimpleNamespace(strategy_auto_promotion_enabled=False)))
+    completed = run_experiments(runtime, disabled, now=now + timedelta(seconds=91))
+    assert completed["status"] == "disabled" and completed["observations"]["closed"] == 2
+    with runtime.read() as connection:
+        outcomes = connection.execute(
+            "SELECT outcome.*, shadow.metrics, shadow.source_kind FROM analysis.option_outcome outcome "
+            "JOIN analysis.shadow_trade shadow ON shadow.id = outcome.shadow_trade_id"
+        ).fetchall()
+        assert len(outcomes) == 2
+        for row in outcomes:
+            assert row["objective_version"] == EXPERIMENT_VERSION and row["sample_eligible"] is True
+            assert row["promotion_eligible"] is False
+            assert row["entry_fill_at"] < row["exit_fill_at"]
+            assert row["current_return"] == pytest.approx(((1.1 - .5) * 100 - 1.3) / 50)
+            assert row["metrics"]["entry_quotes"][0]["quote_id"]
+            assert row["metrics"]["exit_quotes"][0]["source_id"] == "test-experiment"
+        assert connection.execute("SELECT status FROM analysis.strategy_revision WHERE id = %s", [candidate]).fetchone()["status"] == "candidate"
+        # Use the fixture's forward observation clock for the evaluator handoff.
+        from investment_panel.database.strategy_learning import OBSERVATION_QUERY, OUTCOME_QUERY
+
+        observed_query = OUTCOME_QUERY.replace("now()", f"TIMESTAMPTZ '{(now + timedelta(seconds=92)).isoformat()}'")
+        for revision in (parent, candidate):
+            measured = connection.execute(observed_query, [revision, revision]).fetchall()
+            assert len(measured) == 1 and measured[0]["current_return"] > 0
+        cohort_query = OBSERVATION_QUERY.replace("now()", f"TIMESTAMPTZ '{(now + timedelta(seconds=92)).isoformat()}'")
+        cohort = connection.execute(cohort_query, [[parent, candidate], now - timedelta(hours=1)]).fetchall()
+        assert len(cohort) == 2 and all(row["shadow_status"] == "closed" and row["payload"] for row in cohort)
+    for revision in (parent, candidate):
+        profiles = calibration_profiles(runtime, revision, feature_version=FEATURE_VERSION)
+        assert profiles[0]["sample_size"] == 1 and profiles[0]["ready"] is False
+
+
+def test_candidate_gate_parent_and_unobserved_paper_authority_stay_closed(experiment_context):
+    runtime, ingestion, now, parent, candidate = experiment_context
+    with runtime.read() as connection:
+        assert experiment_candidate(connection, candidate, as_of=datetime.now(UTC))["id"] == candidate
+        with pytest.raises(ValueError, match="passing shadow"):
+            experiment_candidate(connection, candidate, as_of=datetime.now(UTC), require_shadow=True)
+    _capture(runtime, ingestion, now)
+    published = refresh_options_radar(runtime, source_id="test-experiment", code_version="experiment-test", candidate_revision_id=candidate)
+    rows = AnalysisRepository(runtime).publication_rows(f"options-paper-experiment:{candidate}", "option_paper_experiment")
+    with runtime.read() as connection:
+        with pytest.raises(ValueError, match="passing shadow"):
+            experiment_publication_row(connection, published["publication_id"], rows[0]["decision_id"], as_of=datetime.now(UTC))
+    with runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [parent])
+    with runtime.read() as connection:
+        with pytest.raises(ValueError, match="parent"):
+            experiment_candidate(connection, candidate, as_of=datetime.now(UTC))
+
+
+@pytest.mark.parametrize("evaluation_type", ["shadow", "execution_grade_paper"])
+def test_terminal_evidence_blocks_entries_but_preserves_existing_shadow_holdings(experiment_context, evaluation_type):
+    runtime, ingestion, now, _parent, candidate = experiment_context
+    with runtime.transaction() as connection:
+        connection.execute(
+            "INSERT INTO analysis.strategy_evaluation (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics) "
+            "VALUES (%s, 'shadow', %s, %s, 'pass', '{}')", [candidate, now - timedelta(seconds=1), now - timedelta(seconds=1)],
+        )
+    _capture(runtime, ingestion, now, symbols=("NVDA", "AMD"))
+    published = refresh_options_radar(runtime, source_id="test-experiment", code_version="terminal-entry-test", candidate_revision_id=candidate)
+    _capture(runtime, ingestion, now + timedelta(seconds=20))
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))["entered"] == 1
+    with runtime.transaction() as connection:
+        connection.execute(
+            "INSERT INTO analysis.strategy_evaluation (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics) "
+            "VALUES (%s, %s, %s, %s, 'blocked_terminal_evidence', '{}')",
+            [candidate, evaluation_type, now + timedelta(seconds=30), now + timedelta(seconds=30)],
+        )
+    with runtime.read() as connection:
+        with pytest.raises(ValueError, match="blocked_terminal_evidence"):
+            experiment_candidate(connection, candidate, as_of=now + timedelta(seconds=31))
+        assert experiment_candidate(connection, candidate, as_of=now + timedelta(seconds=31), require_shadow=True, for_entry=False)["id"] == candidate
+        decision_id = connection.execute(
+            "SELECT shadow.decision_id FROM analysis.shadow_trade shadow WHERE shadow.status = 'entered'",
+        ).fetchone()["decision_id"]
+        with pytest.raises(ValueError, match="blocked_terminal_evidence"):
+            experiment_publication_row(connection, published["publication_id"], str(decision_id), as_of=now + timedelta(seconds=31))
+        assert experiment_publication_row(connection, published["publication_id"], str(decision_id), as_of=now + timedelta(seconds=31), for_entry=False)
+    _capture(runtime, ingestion, now + timedelta(seconds=40), symbols=("NVDA", "AMD"))
+    result = advance_experiment_shadows(runtime, now=now + timedelta(seconds=41))
+    assert result == {"entered": 0, "closed": 0, "unfilled": 1, "unmeasurable": 0, "rejected": 0}
+    with runtime.transaction() as connection:
+        assert connection.execute("SELECT count(*) AS count FROM analysis.shadow_trade WHERE status = 'entered'").fetchone()["count"] == 1
+        # A genuine later qualification failure still fails holding authority.
+        connection.execute(
+            "INSERT INTO analysis.strategy_evaluation (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics) "
+            "VALUES (%s, 'shadow', %s, %s, 'fail', '{}')", [candidate, now + timedelta(seconds=50), now + timedelta(seconds=50)],
+        )
+        with pytest.raises(ValueError, match="passing shadow"):
+            experiment_candidate(connection, candidate, as_of=now + timedelta(seconds=51), require_shadow=True, for_entry=False)
+
+
+def test_rejected_independent_opportunities_remain_in_both_denominators(experiment_context):
+    runtime, ingestion, now, parent, candidate = experiment_context
+    _capture(runtime, ingestion, now, open_interest=0, include_put=True)
+    for candidate_id in (None, candidate):
+        result = refresh_options_radar(runtime, source_id="test-experiment", code_version="reject-test", candidate_revision_id=candidate_id)
+        assert result["shadow_trades"] == 2
+    with runtime.read() as connection:
+        rows = connection.execute(
+            "SELECT decision.strategy_revision_id, count(DISTINCT decision.episode_key) AS episodes, "
+            "bool_and(shadow.status = 'rejected') AS all_rejected FROM analysis.shadow_trade shadow "
+            "JOIN analysis.decision decision ON decision.id = shadow.decision_id GROUP BY decision.strategy_revision_id"
+        ).fetchall()
+        assert {row["strategy_revision_id"] for row in rows} == {parent, candidate}
+        assert all(row["episodes"] == 2 and row["all_rejected"] for row in rows)
+        assert connection.execute("SELECT count(*) AS count FROM analysis.option_outcome").fetchone()["count"] == 0
+        from investment_panel.database.strategy_learning import OBSERVATION_QUERY
+
+        cohort = connection.execute(OBSERVATION_QUERY, [[parent, candidate], now - timedelta(hours=1)]).fetchall()
+        assert len(cohort) == 4 and all(row["shadow_status"] == "rejected" for row in cohort)
+
+
+@pytest.mark.parametrize("legacy_pending", [False, True])
+def test_score_rejections_stay_confirmed_cash_without_shadow_fills(experiment_context, monkeypatch, legacy_pending):
+    from investment_panel.database.strategy_learning import OBSERVATION_QUERY, OUTCOME_QUERY, forward_cohort
+
+    runtime, ingestion, now, parent, candidate = experiment_context
+    reference = now
+
+    class ObservationClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return reference + timedelta(seconds=10)
+
+    monkeypatch.setattr("investment_panel.database.options_analysis.datetime", ObservationClock)
+    # Two explicit fixture sessions let the fixed cohort exclude its first
+    # partial session and still retain a confirmed CASH observation per side.
+    for reference in (now, now + timedelta(days=1)):
+        _capture(runtime, ingestion, reference, open_interest=100, contracts=({"delta": 0},))
+        for candidate_id in (None, candidate):
+            result = refresh_options_radar(runtime, source_id="test-experiment", code_version="score-reject", candidate_revision_id=candidate_id)
+            assert result["shadow_trades"] == 1
+    with runtime.transaction() as connection:
+        rows = connection.execute(
+            "SELECT decision.state, decision.score, decision.sample_eligible, shadow.status "
+            "FROM analysis.shadow_trade shadow JOIN analysis.decision decision ON decision.id = shadow.decision_id",
+        ).fetchall()
+        assert len(rows) == 4
+        assert all(row["state"] == "REJECTED" and row["score"] < 55 and row["sample_eligible"] for row in rows)
+        assert all(row["status"] == "rejected" for row in rows)
+        if legacy_pending:
+            connection.execute("UPDATE analysis.shadow_trade SET status = 'pending', pending_entry_reason = 'later_quote_required'")
+    _capture(runtime, ingestion, reference + timedelta(seconds=20))
+    advance = advance_experiment_shadows(runtime, now=reference + timedelta(seconds=21))
+    assert advance["entered"] == 0 and advance["closed"] == 0 and advance["rejected"] == (4 if legacy_pending else 0)
+    clock_sql = f"TIMESTAMPTZ '{(reference + timedelta(seconds=22)).isoformat()}'"
+    with runtime.read() as connection:
+        assert connection.execute("SELECT count(*) AS count FROM analysis.option_outcome").fetchone()["count"] == 0
+        observations = connection.execute(OBSERVATION_QUERY.replace("now()", clock_sql), [[parent, candidate], now - timedelta(hours=1)]).fetchall()
+        assert len(observations) == 4 and all(row["shadow_status"] == "rejected" for row in observations)
+        assert all(row["pending_entry_reason"] == "candidate_gate_rejected" and row["entry_at"] is None and row["entry_price"] is None for row in observations)
+        assert all(connection.execute(OUTCOME_QUERY.replace("now()", clock_sql), [revision, revision]).fetchall() == [] for revision in (parent, candidate))
+        proposal_id = str(experiment_candidate(connection, candidate, as_of=reference + timedelta(seconds=22))["proposal_id"])
+    baseline, proposed, cohort = forward_cohort(observations, [], [], candidate_id=candidate, parent_id=parent, proposal_id=proposal_id, span_days=30)
+    assert baseline == proposed == []
+    assert len(cohort["baseline_cash_keys"]) == len(cohort["proposed_cash_keys"]) == 1
+    assert cohort["window_complete"] is False
+
+
+def test_candidate_and_promoted_revision_select_after_the_same_expectancy_scoring(experiment_context, monkeypatch):
+    from investment_panel.database.options_expressions import enrich_long_option_expectancy
+
+    runtime, ingestion, now, parent, candidate = experiment_context
+    _capture(runtime, ingestion, now, contracts=(
+        {"strike": 160, "bid": 1.9, "ask": 2.0, "mid": 1.95},
+        {"strike": 180, "bid": .499, "ask": .5, "mid": .4995},
+    ))
+    # A bounded deterministic history isolates the retention/scoring seam. The
+    # cheaper contract leads liquidity scoring but expires out of the money.
+    monkeypatch.setattr("investment_panel.database.options_expressions._histories",
+                        lambda _connection, cutoffs, _limits: {
+                            instrument: [100 * 1.1 ** (index / 28) for index in range(60)]
+                            for instrument in cutoffs
+                        })
+    initial_contracts = []
+
+    def score(runtime, run_id, calibrated_ready):
+        with runtime.read() as connection:
+            rows = connection.execute(
+                "SELECT contract.strike FROM analysis.decision decision "
+                "JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id "
+                "JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id "
+                "WHERE decision.run_id = %s ORDER BY decision.score DESC, decision.decision_key", [run_id],
+            ).fetchall()
+            initial_contracts.append([float(row["strike"]) for row in rows])
+        return enrich_long_option_expectancy(runtime, run_id, calibrated_ready)
+
+    monkeypatch.setattr("investment_panel.database.options_analysis.enrich_long_option_expectancy", score)
+    before = refresh_options_radar(runtime, source_id="test-experiment", code_version="selection-before", candidate_revision_id=candidate)
+    assert before["empirical_long_options"] == 2 and before["shadow_trades"] == 1
+    with runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [parent])
+        connection.execute("UPDATE analysis.strategy_revision SET status = 'active', promoted_at = now() WHERE id = %s", [candidate])
+    after = refresh_options_radar(runtime, source_id="test-experiment", code_version="selection-after")
+    assert after["empirical_long_options"] == 2 and initial_contracts == [[180, 160], [180, 160]]
+    with runtime.read() as connection:
+        selected = []
+        for run_id in (before["analysis_run_id"], after["analysis_run_id"]):
+            rows = connection.execute(
+                "SELECT contract.strike, decision.score FROM analysis.decision decision "
+                "JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id "
+                "JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id "
+                "WHERE decision.run_id = %s AND option_decision.structure = 'long_call' "
+                "ORDER BY (decision.state = 'REJECTED'), decision.score DESC, decision.decision_key", [run_id],
+            ).fetchall()
+            assert len(rows) == 2 and rows[0]["score"] > rows[1]["score"]
+            selected.append(float(rows[0]["strike"]))
+        assert selected == [160, 160]
+        observed = connection.execute(
+            "SELECT contract.strike FROM analysis.shadow_trade shadow "
+            "JOIN analysis.option_decision option_decision ON option_decision.decision_id = shadow.decision_id "
+            "JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id "
+            "WHERE shadow.source_kind = 'options_paper_experiment'",
+        ).fetchall()
+        assert [float(row["strike"]) for row in observed] == [160]
+
+
+@pytest.mark.parametrize(("changes", "reason"), [
+    ({"score_weights": {"liquidity": .1}}, "unsupported_parameters"),
+    ({"min_open_interest": 1}, "requires_rejected_or_shadow_outcomes"),
+])
+def test_candidate_observation_rejects_unsupported_and_relaxed_changes(experiment_context, changes, reason):
+    runtime, _ingestion, _now, parent, _candidate = experiment_context
+    with runtime.transaction() as connection:
+        candidate = connection.execute(
+            "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, supersedes_id) "
+            "VALUES ('unsupported-experiment', 1, 'Unsupported candidate', 'candidate', %s, 'options-radar-core', %s) RETURNING id",
+            [Jsonb(merge_strategy_parameters(DEFAULT_PARAMETERS, changes)), parent],
+        ).fetchone()["id"]
+        connection.execute(
+            "INSERT INTO analysis.agent_task (task_kind, status, request, result) "
+            "VALUES ('strategy_mutation_proposal', 'completed', '{}', %s)",
+            [Jsonb({"candidate_revision_id": candidate, "proposed_parameter_changes": changes})],
+        )
+    with runtime.read() as connection:
+        with pytest.raises(ValueError, match=reason):
+            experiment_candidate(connection, candidate, as_of=datetime.now(UTC))
+
+
+def test_scheduled_candidate_staging_uses_a_clock_after_its_publication(experiment_context, monkeypatch):
+    runtime, _ingestion, _now, _parent, candidate = experiment_context
+    clocks = {}
+
+    def publish(*_args, **kwargs):
+        assert kwargs["candidate_revision_id"] == candidate
+        clocks["published_at"] = datetime.now(UTC)
+        return {"publication_id": "isolated-experiment-publication"}
+
+    def stage(_self, **kwargs):
+        clocks["staged_at"] = kwargs["now"]
+        assert kwargs["experiment_publication_id"] == "isolated-experiment-publication"
+        return []
+
+    monkeypatch.setattr("investment_panel.jobs.options_paper_execution.refresh_options_radar", publish)
+    monkeypatch.setattr(OptionsPaperExecutionRepository, "stage_current_ready", stage)
+    settings = SimpleNamespace(strategy_auto_promotion_enabled=True, options_paper_actions_enabled=True, radar_paper_actions_enabled=True,
+                               options_risk_sleeve_capital=25000, daily_loss_halt_pct=.02, max_recovery_open_positions=2)
+    config = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=settings))
+    assert run_experiments(runtime, config)["status"] == "ok"
+    assert clocks["published_at"] <= clocks["staged_at"]
+
+
+@pytest.mark.parametrize("regime,clock_offset", [("trend_up", 0), ("trend_down", 0), ("trend_up", 60)])
+def test_candidate_records_only_the_regime_available_at_its_decision(experiment_context, monkeypatch, regime, clock_offset):
+    runtime, ingestion, now, _parent, candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    monkeypatch.setattr("investment_panel.database.options_analysis.refresh_symbol_trend_features",
+                        lambda *_args, **_kwargs: {"market_regime": {"state": regime, "quality_status": "complete",
+                            "as_of": (now + timedelta(seconds=clock_offset)).isoformat()}})
+    published = refresh_options_radar(runtime, source_id="test-experiment", code_version="regime-test", candidate_revision_id=candidate)
+    with runtime.read() as connection:
+        rows = connection.execute(
+            "SELECT option_decision.market_regime, option_decision.market_regime_detail "
+            "FROM analysis.option_decision option_decision JOIN analysis.decision decision ON decision.id = option_decision.decision_id "
+            "WHERE decision.run_id = %s", [published["analysis_run_id"]],
+        ).fetchall()
+        assert rows and all(row["market_regime"] == (regime if clock_offset == 0 else None) for row in rows)
+        assert all(row["market_regime_detail"]["quality_status"] == ("complete" if clock_offset == 0 else "unavailable") for row in rows)
+
+
+def test_qualified_candidate_after_ten_blocked_candidates_is_not_starved(experiment_context, monkeypatch):
+    runtime, _ingestion, now, parent, candidate = experiment_context
+    previous = AnalysisRepository(runtime).start_run("options-paper-experiment", input_cutoff=now,
+        code_version="prior-cycle", inputs={}, strategy_revision_id=candidate)
+    AnalysisRepository(runtime).finish_run(previous, "failed", {})
+    with runtime.transaction() as connection:
+        for index in range(10):
+            connection.execute(
+                "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, supersedes_id) "
+                "VALUES (%s, 1, 'Unproposed', 'candidate', %s, 'options-radar-core', %s)",
+                [f"unproposed-{index}", Jsonb(DEFAULT_PARAMETERS), parent],
+            )
+    monkeypatch.setattr("investment_panel.jobs.options_paper_execution.refresh_options_radar",
+                        lambda *_args, **kwargs: {"candidate_revision_id": kwargs["candidate_revision_id"]})
+    settings = SimpleNamespace(strategy_auto_promotion_enabled=True, options_paper_actions_enabled=False,
+                               options_risk_sleeve_capital=25000)
+    result = run_experiments(runtime, SimpleNamespace(analysis=SimpleNamespace(options_decision_system=settings)))
+    assert result["status"] == "ok" and result["candidate_revision_id"] == candidate
+    assert len(result["blocked"]) == 10
+
+
+def test_shadow_drawdown_measures_a_decline_from_peak_wealth(experiment_context):
+    runtime, ingestion, now, _parent, candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    refresh_options_radar(runtime, source_id="test-experiment", code_version="drawdown-test", candidate_revision_id=candidate)
+    _capture(runtime, ingestion, now + timedelta(seconds=20))
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))["entered"] == 1
+    _capture(runtime, ingestion, now + timedelta(seconds=140), bid=.913, ask=.933)
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=141))["closed"] == 0
+    _capture(runtime, ingestion, now + timedelta(seconds=160), bid=.613, ask=.633)
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=161))["closed"] == 0
+    with runtime.read() as connection:
+        metrics = connection.execute("SELECT metrics FROM analysis.shadow_trade").fetchone()["metrics"]
+        assert metrics["initial_wealth"] == 1 and metrics["peak_return"] == pytest.approx(.8)
+        assert metrics["current_return"] == pytest.approx(.2) and metrics["max_drawdown"] == pytest.approx(-1 / 3)
+        assert metrics["drawdown_peak_quotes"][0]["quote_id"] != metrics["drawdown_trough_quotes"][0]["quote_id"]
+    _capture(runtime, ingestion, now + timedelta(seconds=180), bid=.2, ask=.22)
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=181))["closed"] == 1
+    with runtime.read() as connection:
+        outcome = connection.execute("SELECT max_drawdown FROM analysis.option_outcome").fetchone()
+        assert outcome["max_drawdown"] == pytest.approx(.374 / 1.8 - 1)
+
+
+@pytest.mark.parametrize("observe_gap,exit_bid,entry_window", [
+    (False, .6, "current"), (True, .6, "current"), (False, .4, "current"),
+    (False, 1.1, "holding"), (False, .6, "expired_unfilled"), (False, 1.1, "terminal_blocked_holding"),
+])
+def test_candidate_paper_uses_same_risk_checks_and_immutable_experiment_provenance(experiment_context, monkeypatch, observe_gap, exit_bid, entry_window):
+    runtime, ingestion, now, parent, candidate = experiment_context
+    monkeypatch.setattr("investment_panel.database.actions.is_market_open", lambda _: True)
+    monkeypatch.setattr("investment_panel.database.options_paper_execution.is_market_open", lambda _: True)
+    _capture(runtime, ingestion, now)
+    with runtime.transaction() as connection:
+        connection.execute(
+            "INSERT INTO analysis.strategy_evaluation (strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics) "
+            "VALUES (%s, 'shadow', now(), 'pass', '{}')", [candidate],
+        )
+        quote = connection.execute(
+            "SELECT quote.contract_id, quote.snapshot_id, snapshot.ingest_run_id, contract.underlying_instrument_id AS instrument_id "
+            "FROM raw.option_quote quote JOIN catalog.option_contract contract ON contract.id = quote.contract_id "
+            "JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id LIMIT 1"
+        ).fetchone()
+        connection.execute(
+            "INSERT INTO raw.broker_account_snapshot (source_id, ingest_run_id, account_key, observed_at, net_liquidation, buying_power, cash_balance) "
+            "VALUES ('test-experiment', %s, 'paper-test', %s, 100000, 100000, 100000)",
+            [quote["ingest_run_id"], now],
+        )
+    with runtime.read() as connection:
+        context = experiment_candidate(connection, candidate, as_of=datetime.now(UTC), require_shadow=True)
+    analysis = AnalysisRepository(runtime)
+    run_id = analysis.start_run("options-paper-experiment", input_cutoff=now, code_version="ready-fixture",
+                                inputs={"experiment": experiment_identity(context)}, strategy_revision_id=candidate)
+    decision_id = analysis.store_option_decision(
+        run_id, decision_key="paper-fixture", instrument_id=quote["instrument_id"], contract_id=quote["contract_id"],
+        snapshot_id=quote["snapshot_id"], quote_observed_at=now, state="READY", score=90, rank=1,
+        inputs={}, strategy_revision_id=candidate, lane="radar",
+        details={"structure": "long_call", "entry_price": .5, "max_loss": 50, "quality_status": "complete"},
+    )
+    ticket = build_option_trade_ticket(
+        decision_id=str(decision_id), symbol="NVDA", structure="long_call", expiration=now.date() + timedelta(days=40),
+        legs=[{"contract_id": quote["contract_id"], "option_type": "call", "side": "buy", "strike": 160,
+               "bid": .48, "ask": .5, "bid_size": 10, "ask_size": 10, "open_interest": 1000, "quote_time": now}],
+        entry_price=.5, one_unit_max_loss=50, state="READY", evaluated_at=now, market_session="regular",
+        sleeve_capital=25000, broker_available_capital=100000,
+        thesis={"direction": "long", "invalidation": "Exit below the stated thesis level"},
+        forecast={"probability_semantics": "calibrated_exact_cohort", "probability_profit": .7,
+                  "effective_sample_size": 42, "lower_95_expected_value": 10},
+        provenance={"quote_source": "test-experiment"}, lane="radar",
+    )
+    assert ticket["state"] == "READY"
+    ticket["experiment"] = experiment_identity(context, str(run_id))
+    payload = {"decision_id": str(decision_id), "ticket": ticket, "experiment": ticket["experiment"],
+               "data_source": "test-experiment", "structure": "long_call", "captured_at": now,
+               "last_trade_at": now, "bid_size": 10, "ask_size": 10, "execution_ready": True}
+    publication_id = analysis.publish(run_id, f"options-paper-experiment:{candidate}",
+                                      {"option_paper_experiment": [payload]}, complete_run_summary={})
+    arguments = dict(decision_id=decision_id, idempotency_key="experiment-risk", ticket_version=1, quantity=1,
+                     limit_price=.5, current_options_risk_sleeve_capital=25000, experiment_publication_id=publication_id)
+    actions = ActionRepository(runtime)
+    with pytest.raises(ValueError, match="no unique current publication"):
+        actions.stage_option_paper_entry(**{key: value for key, value in arguments.items() if key != "experiment_publication_id"})
+    with pytest.raises(ValueError, match="ticket recommendation"):
+        actions.stage_option_paper_entry(**{**arguments, "quantity": 2})
+    with pytest.raises(ValueError, match="current options risk sleeve"):
+        actions.stage_option_paper_entry(**{**arguments, "current_options_risk_sleeve_capital": 100})
+    execution = OptionsPaperExecutionRepository(runtime)
+    staged_rows = execution.stage_current_ready(
+        enabled_lanes=["radar"], sleeve_capital=25000, daily_loss_halt_pct=.02,
+        max_open_positions=2, now=datetime.now(UTC), limit=1, experiment_publication_id=str(publication_id),
+    )
+    assert len(staged_rows) == 1
+    staged = staged_rows[0]
+    assert staged["status"] == "staged"
+    with runtime.read() as connection:
+        order = connection.execute("SELECT policy_snapshot, ticket_snapshot FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()
+        assert order["policy_snapshot"]["experiment"]["candidate_revision_id"] == candidate
+        assert order["ticket_snapshot"]["publication_lineage"]["publication_id"] == str(publication_id)
+        assert connection.execute("SELECT status FROM analysis.strategy_revision WHERE id = %s", [candidate]).fetchone()["status"] == "candidate"
+    if entry_window == "expired_unfilled":
+        _capture(runtime, ingestion, now + timedelta(seconds=130))
+        expired = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=131))
+        assert expired["status"] == "rejected" and expired["reason"] == "ticket_expired"
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM app.trade_journal WHERE quantity > 0").fetchone()["count"] == 0
+        return
+    _capture(runtime, ingestion, now + timedelta(seconds=10))
+    assert execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=11))["status"] == "filled"
+    with runtime.read() as connection:
+        mark = connection.execute("SELECT execution_quote FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()["execution_quote"][PAPER_MARK_KEY]
+        assert mark["status"] == "observed" and mark["mark_count"] == 1
+        assert mark["current_net_return"] == pytest.approx(-.066)
+        assert mark["max_drawdown"] is None
+    if entry_window == "terminal_blocked_holding":
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO analysis.strategy_evaluation (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics) "
+                "VALUES (%s, 'shadow', %s, %s, 'blocked_terminal_evidence', '{}')",
+                [candidate, now + timedelta(seconds=20), now + timedelta(seconds=20)],
+            )
+    if observe_gap:
+        _capture(runtime, ingestion, now + timedelta(seconds=14), bid=.7, ask=.72)
+        assert execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=15))["reason"] == "exit_not_triggered"
+        _capture(runtime, ingestion, now + timedelta(seconds=16), bid=.7, ask=.72, bid_size=0)
+        execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=17))
+        with runtime.read() as connection:
+            mark = connection.execute("SELECT execution_quote FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()["execution_quote"][PAPER_MARK_KEY]
+            assert mark["status"] == "unknown" and mark["current_net_return"] is None and mark["max_drawdown"] is None
+            assert mark["mark_count"] == 2 and mark["observed_max_drawdown"] == pytest.approx(-.066)
+    holding = entry_window in {"holding", "terminal_blocked_holding"}
+    if holding:
+        _capture(runtime, ingestion, now + timedelta(seconds=130))
+        held = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=131))
+        assert held["status"] == "filled" and held["reason"] == "exit_not_triggered"
+        exit_at = now + timedelta(seconds=150)
+    else:
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [parent])
+        exit_at = now + timedelta(seconds=20)
+    _capture(runtime, ingestion, exit_at, bid=exit_bid, ask=exit_bid + .02)
+    exited = execution._manage_one(staged["paper_order_id"], exit_at + timedelta(seconds=1))
+    assert exited["status"] == "closed"
+    assert exited["reason"] == "profit_target" if holding else "parent" in exited["reason"]
+    with runtime.read() as connection:
+        entries = connection.execute("SELECT action, quantity, details FROM app.trade_journal WHERE decision_id = %s AND quantity > 0 ORDER BY created_at", [decision_id]).fetchall()
+        assert len(entries) == 2 and all(row["quantity"] == 1 for row in entries)
+        assert entries[0]["action"] == "paper_entry" and entries[1]["action"].startswith("paper_exit:")
+        assert all(row["details"]["experiment"]["candidate_revision_id"] == candidate for row in entries)
+        assert all(row["details"]["quotes"][0]["quote_id"] for row in entries)
+        stored_quote = connection.execute("SELECT execution_quote FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()["execution_quote"]
+        mark = stored_quote[PAPER_MARK_KEY]
+        assert mark["status"] == "observed" and mark["mark_count"] == (3 if observe_gap or holding else 2)
+        assert mark.get("missing_mark_count", 0) == int(observe_gap)
+        exit_return = 2 * exit_bid - 1.026
+        expected_peak = .374 if observe_gap else max(0, exit_return)
+        assert mark["current_net_return"] == pytest.approx(exit_return)
+        assert mark["peak_net_return"] == pytest.approx(expected_peak)
+        assert mark["max_drawdown"] == pytest.approx(min(-.066, (1 + exit_return) / (1 + expected_peak) - 1))
+        if observe_gap:
+            assert mark["drawdown_peak_quotes"][0]["quote_id"] != mark["drawdown_trough_quotes"][0]["quote_id"]
+        assert mark["actual_fees"] == .65 and mark["modeled_remaining_exit_fees"] == .65
+        assert stored_quote["quotes"][0]["quote_id"] == entries[0]["details"]["quotes"][0]["quote_id"]
+        if exit_bid < .5:
+            assert mark["drawdown_peak_basis"] == "initial_entry_capital" and mark["drawdown_peak_quotes"] == []
+            assert mark["drawdown_peak_journal_ids"] and mark["drawdown_peak_at"] == (now + timedelta(seconds=11)).isoformat()
+
+
+@pytest.mark.parametrize("cohort", [
+    "losers", "duplicate_episode", "before_promotion", "invalid_lineage", "paper_winners",
+    "paper_incomplete_quarantined", "paper_complete_quarantined", "paper_incomplete_nan_fee", "score_rejected",
+])
+def test_rollback_requires_twenty_independent_current_incumbent_losses(experiment_context, monkeypatch, cohort):
+    from investment_panel.database import strategy_learning
+    from investment_panel.database.strategy_governance import StrategyGovernanceRepository
+
+    runtime, ingestion, now, parent, active = experiment_context
+    with runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [parent])
+        connection.execute("UPDATE analysis.strategy_revision SET status = 'active', promoted_at = %s WHERE id = %s",
+                           [now - timedelta(seconds=1), active])
+    symbols = tuple(f"OBSA{chr(65 + index)}" for index in range(19 if cohort == "duplicate_episode" else 20))
+    _capture(runtime, ingestion, now, symbols=symbols)
+    first = refresh_options_radar(runtime, source_id="test-experiment", code_version="rollback-test")
+    assert first["shadow_trades"] == len(symbols)
+    if cohort == "duplicate_episode":
+        second = refresh_options_radar(runtime, source_id="test-experiment", code_version="rollback-duplicate")
+        # Two truthful observations of the same economic episode still count once.
+        with runtime.transaction() as connection:
+            row = connection.execute(
+                "SELECT publication.id::text, item.payload FROM app.publication publication "
+                "JOIN app.publication_content_item item ON item.publication_id = publication.id "
+                "WHERE publication.analysis_run_id = %s AND publication.scope = %s "
+                "AND item.model_name = 'option_paper_experiment' AND item.payload->>'ticker' = %s",
+                [second["analysis_run_id"], f"options-paper-incumbent:{active}", symbols[0]],
+            ).fetchone()
+            metrics = connection.execute("SELECT metrics FROM analysis.shadow_trade LIMIT 1").fetchone()["metrics"]
+            metrics.update(experiment=row["payload"]["experiment"], ticket=row["payload"]["ticket"], publication_id=row["id"])
+            connection.execute(
+                "INSERT INTO analysis.shadow_trade (decision_id, status, source_kind, pending_entry_reason, structure, metrics) "
+                "VALUES (%s, 'pending', 'options_paper_experiment', 'later_quote_required', 'long_call', %s)",
+                [row["payload"]["decision_id"], Jsonb(metrics)],
+            )
+    _capture(runtime, ingestion, now + timedelta(seconds=20), symbols=symbols)
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))["entered"] == 20
+    _capture(runtime, ingestion, now + timedelta(seconds=40), bid=.2, ask=.22, symbols=symbols)
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=41))["closed"] == 20
+    with runtime.transaction() as connection:
+        if cohort == "before_promotion":
+            connection.execute("UPDATE analysis.strategy_revision SET promoted_at = %s WHERE id = %s", [now + timedelta(seconds=10), active])
+        elif cohort == "invalid_lineage":
+            connection.execute("UPDATE analysis.shadow_trade SET metrics = jsonb_set(metrics, '{experiment,run_id}', '\"wrong-run\"') WHERE id = (SELECT id FROM analysis.shadow_trade LIMIT 1)")
+        elif cohort == "score_rejected":
+            connection.execute("UPDATE analysis.decision SET state = 'REJECTED', score = 0 WHERE strategy_revision_id = %s", [active])
+        elif cohort in {"paper_winners", "paper_incomplete_quarantined", "paper_complete_quarantined", "paper_incomplete_nan_fee"}:
+            if cohort.endswith("quarantined"):
+                connection.execute("UPDATE analysis.option_outcome SET quarantine_reason = 'test_rejected_shadow'")
+            elif cohort.endswith("nan_fee"):
+                connection.execute("UPDATE analysis.option_outcome SET fee_total = 'NaN'::numeric")
+            decisions = connection.execute("SELECT decision_id, decision.instrument_id FROM analysis.shadow_trade shadow JOIN analysis.decision decision ON decision.id = shadow.decision_id").fetchall()
+            for row in decisions:
+                paper = connection.execute(
+                    "INSERT INTO app.paper_order (decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
+                    "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, fees, entry_slippage, exit_slippage, lane, contract_multiplier) "
+                    "VALUES (%s, %s, 'buy', 1, .5, 'exited', true, %s, .5, %s, .7, 1, 1, 1.3, .01, .01, 'radar', 100) RETURNING id",
+                    [row["decision_id"], row["instrument_id"], now + timedelta(seconds=22), now + timedelta(seconds=40)],
+                ).fetchone()["id"]
+                for action, price in (("paper_entry", .5), ("paper_exit:profit", .7)):
+                    if cohort.startswith("paper_incomplete_") and action.startswith("paper_exit:"):
+                        continue
+                    connection.execute(
+                        "INSERT INTO app.trade_journal (decision_id, instrument_id, action, quantity, price, rationale, details) "
+                        "VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s)",
+                        [row["decision_id"], row["instrument_id"], action, price, Jsonb({"paper_order_id": str(paper), "fees": .65})],
+                    )
+    # Use the fixture's forward clock without waiting or rewriting recorded timestamps.
+    measured_at = now + timedelta(seconds=45)
+    for name in ("OUTCOME_QUERY", "OBSERVATION_QUERY"):
+        monkeypatch.setattr(strategy_learning, name, getattr(strategy_learning, name).replace("now()", f"TIMESTAMPTZ '{measured_at.isoformat()}'"))
+
+    class ObservationClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return measured_at if tz else measured_at.replace(tzinfo=None)
+
+    monkeypatch.setattr(strategy_learning, "datetime", ObservationClock)
+    if cohort == "score_rejected":
+        with runtime.read() as connection:
+            assert connection.execute(strategy_learning.OUTCOME_QUERY, [active, active]).fetchall() == []
+    if cohort.endswith(("quarantined", "nan_fee")):
+        with runtime.read() as connection:
+            rows = connection.execute(strategy_learning.OUTCOME_QUERY, [active, active]).fetchall()
+        assert len(rows) == 20 and all(row["current_return"] is None and row["peak_return"] is None for row in rows)
+        measured = strategy_learning.measured_rows([dict(row) for row in rows])
+        if cohort.startswith("paper_incomplete_"):
+            assert measured == []
+        else:
+            assert len(measured) == 20
+            assert all(row["current_return"] == pytest.approx(.374) and row["shadow_current_return"] is None for row in measured)
+    assert StrategyGovernanceRepository(runtime).rollback_regressing_active() == int(cohort == "losers")
+    with runtime.read() as connection:
+        actual = connection.execute("SELECT id FROM analysis.strategy_revision WHERE authority_group = 'options-radar-core' AND status = 'active'").fetchone()["id"]
+        assert actual == (parent if cohort == "losers" else active)

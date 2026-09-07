@@ -41,6 +41,15 @@ TRACKED_METRICS = (
     "false_positives",
     "missed_winners",
 )
+_EXECUTION_ONLY_METRICS = frozenset({
+    "net_pnl_after_realized_costs", "turnover", "slippage", "capacity",
+})
+_COMMON_METRICS = tuple(name for name in TRACKED_METRICS if name not in _EXECUTION_ONLY_METRICS)
+STAGE_REQUIRED_METRICS = {
+    "walk_forward": _COMMON_METRICS,
+    "shadow": _COMMON_METRICS,
+    "execution_grade_paper": TRACKED_METRICS,
+}
 OUTCOME_ERROR_TYPES = (
     "forecast_error",
     "thesis_error",
@@ -70,7 +79,9 @@ def promotion_readiness(
 
     The three required stages need real, fresh, structured evidence.  A row
     can use either a flat metrics object or a nested ``metrics`` object.  A
-    stage is not considered real when it only carries a verdict.
+    stage is not considered real when it only carries a verdict. Execution
+    metrics become mandatory at the paper stage; earlier stages retain them
+    as unknown until executions exist.
     """
 
     reference = _aware(now or datetime.now(UTC))
@@ -79,7 +90,11 @@ def promotion_readiness(
     blockers: list[str] = []
     for stage in PROMOTION_STAGES:
         row = rows.get(stage)
-        stage_result: dict[str, Any] = {"stage": stage, "status": "unavailable", "metrics": {}}
+        required_metrics = STAGE_REQUIRED_METRICS[stage]
+        stage_result: dict[str, Any] = {
+            "stage": stage, "status": "unavailable", "metrics": {},
+            "required_metrics": list(required_metrics),
+        }
         if row is None:
             blockers.append(f"{stage}_evidence_missing")
             stages[stage] = stage_result
@@ -100,10 +115,11 @@ def promotion_readiness(
             blockers.append(f"{stage}_evidence_stale")
             stages[stage] = stage_result
             continue
-        missing = [name for name in TRACKED_METRICS if not _metric_present(metrics, name)]
+        missing = [name for name in required_metrics if not _metric_present(metrics, name)]
         malformed = [
             name for name in TRACKED_METRICS
             if _metric_present(metrics, name)
+            and (name in required_metrics or _metric_value(metrics, name) is not None)
             and not _metric_domain_valid(name, _metric_value(metrics, name))
         ]
         if missing:

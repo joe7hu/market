@@ -32,7 +32,9 @@ from investment_panel.database.ticker_decisions import TickerDecisionRepository
 _TICKER_OPTIONAL_DEEP_TABLES = ("liquidity",)
 _TODAY_SECONDARY_QUERY_LIMITS = {
     "preopen_daily_brief": 1,
-    "daily_brief": 12,
+    # Count and select within each category from the current publication.
+    # A global limit here can hide every catalyst behind thesis reviews.
+    "portfolio_summary": 1,
     "portfolio_risk_cards": 8,
     "feed_signals": 12,
 }
@@ -395,6 +397,7 @@ def load_panel_scope_data(
             active_config,
             table_names=tuple(name for name in requested if name not in authority_names),
             query_row_limits=secondary_query_row_limits or None,
+            portfolio_summary_include_performance=False,
         )
         decision_limit = min(
             SCOPED_TABLE_ROW_LIMITS[scope]["ticker_decisions"],

@@ -160,6 +160,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/decision-inbox/{item_id}/usefulness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set Decision Inbox Usefulness */
+        post: operations["set_decision_inbox_usefulness_api_decision_inbox__item_id__usefulness_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/event-scout": {
         parameters: {
             query?: never;
@@ -950,6 +967,23 @@ export interface paths {
         put?: never;
         /** Launch Refresh Job Background */
         post: operations["launch_refresh_job_background_api_refresh_jobs__job_name__background_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Results */
+        get: operations["research_results_api_research_summary_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2132,6 +2166,23 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** DecisionInboxUsefulnessInput */
+        DecisionInboxUsefulnessInput: {
+            /** Useful */
+            useful: boolean;
+        };
+        /** DecisionInboxUsefulnessResponse */
+        DecisionInboxUsefulnessResponse: {
+            /** Id */
+            id: string;
+            /** Useful */
+            useful: boolean;
+            /**
+             * Usefulness Updated At
+             * Format: date-time
+             */
+            usefulness_updated_at: string;
+        };
         /**
          * DecisionResolutionV2
          * @description One calculated resolution; compatibility views must derive from it.
@@ -2575,6 +2626,8 @@ export interface components {
             selected_instrument: components["schemas"]["ExpressionKind"];
             stance: components["schemas"]["Stance"];
             target_range?: components["schemas"]["PriceRange"] | null;
+            /** Unsupported Assumptions */
+            unsupported_assumptions?: string[];
         };
         /** IVCurveSet */
         IVCurveSet: {
@@ -5286,6 +5339,62 @@ export interface components {
             /** Substack Urls */
             substack_urls?: string[] | string | null;
         };
+        /** ResearchEvaluationResponse */
+        ResearchEvaluationResponse: {
+            /** Brier Score */
+            brier_score?: number | null;
+            /** Comparison Denominator */
+            comparison_denominator?: number | null;
+            /** Comparison Window Complete */
+            comparison_window_complete?: boolean | null;
+            /** Evaluated At */
+            evaluated_at?: string | null;
+            /**
+             * Evidence Basis
+             * @enum {string}
+             */
+            evidence_basis: "independent_stock_episodes" | "obsolete_stock_target" | "independence_unconfirmed" | "independent_options_replay" | "independent_options_shadow" | "independent_options_paper";
+            /** Failed Gates */
+            failed_gates?: string[];
+            /** Independent Sample Count */
+            independent_sample_count?: number | null;
+            /** Net Return Lower Bound */
+            net_return_lower_bound?: number | null;
+            /** Period End */
+            period_end?: string | null;
+            /** Period Start */
+            period_start?: string | null;
+            /** Stage */
+            stage: string;
+            /** Unmatched Episodes */
+            unmatched_episodes?: number | null;
+            /** Verdict */
+            verdict: string;
+        };
+        /** ResearchIdeaResponse */
+        ResearchIdeaResponse: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Catalyst */
+            catalyst?: string | null;
+            /** Countercase */
+            countercase?: string | null;
+            /** Holding Weight Pct */
+            holding_weight_pct?: number | null;
+            /** Invalidation */
+            invalidation?: string | null;
+            /** Next Action */
+            next_action: string;
+            /** Owned */
+            owned: boolean;
+            /** Thesis */
+            thesis?: string | null;
+            /** Ticker */
+            ticker: string;
+        };
         /** ResearchNewsSettingsInput */
         ResearchNewsSettingsInput: {
             /** Enabled */
@@ -5295,11 +5404,80 @@ export interface components {
             /** Providers */
             providers?: string[] | string | null;
         };
+        /** ResearchReviewActivityResponse */
+        ResearchReviewActivityResponse: {
+            /** Acknowledged */
+            acknowledged: number;
+            /** Completed */
+            completed: number;
+            /** Helpful */
+            helpful: number;
+            /** Helpful Rate */
+            helpful_rate?: number | null;
+            /** Not Helpful */
+            not_helpful: number;
+            /** Rated */
+            rated: number;
+            /** Total */
+            total: number;
+            /** Window Days */
+            window_days: number;
+        };
         /** ResearchSourcesInput */
         ResearchSourcesInput: {
             blogs?: components["schemas"]["ResearchBlogsSettingsInput"] | null;
             news?: components["schemas"]["ResearchNewsSettingsInput"] | null;
             x?: components["schemas"]["ResearchXSettingsInput"] | null;
+        };
+        /** ResearchStrategySummaryResponse */
+        ResearchStrategySummaryResponse: {
+            /** Automatic Paper Tuning */
+            automatic_paper_tuning: boolean;
+            /** Evaluations */
+            evaluations?: components["schemas"]["ResearchEvaluationResponse"][];
+            /** Excluded Count */
+            excluded_count?: number | null;
+            /** Expected Count */
+            expected_count?: number | null;
+            /** Failed Gates */
+            failed_gates?: string[];
+            /** Hypothesis */
+            hypothesis?: string | null;
+            /** Included Count */
+            included_count?: number | null;
+            /** Last Policy Change */
+            last_policy_change?: string | null;
+            /** Name */
+            name: string;
+            /** Next Observation */
+            next_observation: string;
+            /** Revision */
+            revision: number;
+            /** Status */
+            status: string;
+            /** Strategy Key */
+            strategy_key: string;
+            /** Strategy Revision Id */
+            strategy_revision_id: number;
+            /** Trial Status */
+            trial_status?: string | null;
+        };
+        /** ResearchSummaryResponse */
+        ResearchSummaryResponse: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Ideas */
+            ideas?: components["schemas"]["ResearchIdeaResponse"][];
+            /** Paper Only */
+            paper_only: boolean;
+            review_activity: components["schemas"]["ResearchReviewActivityResponse"];
+            /** Strategies */
+            strategies?: components["schemas"]["ResearchStrategySummaryResponse"][];
+            /** Strategy Count */
+            strategy_count: number;
         };
         /** ResearchXSettingsInput */
         ResearchXSettingsInput: {
@@ -6333,6 +6511,32 @@ export interface components {
             primary_blocker?: string | null;
         };
         /**
+         * TodayBriefCategoryResponse
+         * @description Published category totals, separate from source coverage.
+         */
+        TodayBriefCategoryResponse: {
+            /** Category */
+            category: string;
+            /**
+             * Coverage Message
+             * @default
+             */
+            coverage_message: string;
+            /**
+             * Coverage Status
+             * @default unknown
+             * @enum {string}
+             */
+            coverage_status: "complete" | "partial" | "unavailable" | "unknown";
+            /**
+             * Shown Count
+             * @default 0
+             */
+            shown_count: number;
+            /** Total Count */
+            total_count?: number | null;
+        };
+        /**
          * TodayBriefItemResponse
          * @description One named context item for the Today decision surface.
          */
@@ -6448,6 +6652,8 @@ export interface components {
             trade_utility?: number | null;
             /** Transition */
             transition?: string | null;
+            /** Useful */
+            useful?: boolean | null;
             /** User State */
             user_state?: string | null;
         } & {
@@ -6564,6 +6770,8 @@ export interface components {
             as_of?: string | null;
             /** Book Actions */
             book_actions?: components["schemas"]["TodayCapitalAction"][];
+            /** Brief Categories */
+            brief_categories?: components["schemas"]["TodayBriefCategoryResponse"][];
             /** Brief Items */
             brief_items?: components["schemas"]["TodayBriefItemResponse"][];
             /**
@@ -7039,6 +7247,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DecisionInboxStateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_decision_inbox_usefulness_api_decision_inbox__item_id__usefulness_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecisionInboxUsefulnessInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionInboxUsefulnessResponse"];
                 };
             };
             /** @description Validation Error */
@@ -8537,6 +8780,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_results_api_research_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchSummaryResponse"];
                 };
             };
         };

@@ -12,6 +12,7 @@ from investment_panel.core.decision import MARKET_CLOSE, MARKET_OPEN, MARKET_TZ,
 from investment_panel.core.robinhood_options import RobinhoodClient, collect_robinhood_full_option_chain
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.options import register_option_source
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_policy import EVENT_PROFILE, HISTORY_PROFILE, OptionHistoryPolicyRepository
 from investment_panel.database.option_events import OptionEventRepository
@@ -85,8 +86,8 @@ def run(
         and not capacity.history_collection_allowed
     ]
     scheduled = [item for item in scheduled if item not in blocked_history]
-    ingestion.register_source(
-        "robinhood", name="Robinhood", family="broker", kind="option_chain",
+    register_option_source(
+        ingestion, "robinhood",
         capabilities={"option_quotes": True, "option_history_full": True},
     )
     captures: list[dict[str, Any]] = [

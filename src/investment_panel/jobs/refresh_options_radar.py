@@ -8,7 +8,7 @@ from typing import Any
 
 from psycopg.errors import LockNotAvailable
 
-from investment_panel.core.config import load_config
+from investment_panel.core.config import AppConfig, load_config
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options_analysis import refresh_options_radar
@@ -90,6 +90,7 @@ def run_learning_marks(
             config.analysis.options_decision_system.strategy_auto_promotion_enabled
         ),
     )
+    result = refresh_after_policy_change(config, result)
     return {
         "database": "postgresql",
         "strategy_version": strategy_version,
@@ -98,6 +99,19 @@ def run_learning_marks(
         "recent_days": recent_days,
         "include_calibration": include_calibration,
     }
+
+
+def refresh_after_policy_change(config: AppConfig, result: dict[str, Any]) -> dict[str, Any]:
+    """Recalculate tickets from current facts after a policy transition."""
+
+    if not (result.get("automatic_promotions") or result.get("automatic_rollbacks")):
+        return result
+    refresh = refresh_options_radar(
+        runtime_for_config(config),
+        options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+        config=config,
+    )
+    return {**result, "policy_signal_refresh": refresh}
 
 
 def main() -> None:

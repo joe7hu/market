@@ -11,7 +11,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
-HEAD_REVISION = "20260906_0001"
+HEAD_REVISION = "20260907_0003"
 
 
 def alembic_config(dsn: str) -> Config:

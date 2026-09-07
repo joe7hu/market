@@ -44,13 +44,7 @@ def persist_collected_option_chains(
 ) -> dict[str, Any]:
     runtime = runtime_for_config(config)
     repository = IngestionRepository(runtime)
-    repository.register_source(
-        source_id,
-        name=source_id.upper(),
-        family="broker" if source_id in {"robinhood", "ibkr"} else "market_data",
-        kind="option_chain",
-        capabilities={"option_quotes": True},
-    )
+    register_option_source(repository, source_id, capabilities={"option_quotes": True})
     observed_at = _coerce_observed_at(collected.get("observed_at"))
     flattened = [
         {"underlying_symbol": symbol, **row}
@@ -82,6 +76,29 @@ def persist_collected_option_chains(
             },
         )
     return {**snapshot, "quote_count": quote_count, "run_id": str(run.id)}
+
+
+def register_option_source(
+    repository: IngestionRepository,
+    source_id: str,
+    *,
+    capabilities: dict[str, Any],
+) -> None:
+    """Reuse the provider identity across sampled, history, and equity collectors."""
+    with repository.runtime.read() as connection:
+        existing = connection.execute(
+            "SELECT family, kind, origin, capabilities FROM ingest.source WHERE id = %s",
+            [source_id],
+        ).fetchone()
+    broker = source_id in {"robinhood", "ibkr"}
+    repository.register_source(
+        source_id,
+        name=source_id.upper(),
+        family=existing["family"] if existing else ("broker" if broker else "market_data"),
+        kind=existing["kind"] if existing else ("market_data" if broker else "option_chain"),
+        origin=existing["origin"] if existing else None,
+        capabilities={**(existing["capabilities"] or {}), **capabilities} if existing else capabilities,
+    )
 
 
 def _coerce_observed_at(value: Any) -> datetime:

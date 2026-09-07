@@ -532,6 +532,7 @@ def test_today_scope_contains_only_canonical_ticker_actions_and_ownership() -> N
         "opportunity_rank",
         "trade_plan",
         "portfolio",
+        "portfolio_summary",
         "preopen_daily_brief",
         "daily_brief",
         "portfolio_risk_cards",
@@ -617,7 +618,7 @@ def test_today_scope_bounds_secondary_publication_reads(monkeypatch) -> None:
     assert panel.status.ready is True
     assert calls[0]["query_row_limits"] == {
         "preopen_daily_brief": 1,
-        "daily_brief": 12,
+        "portfolio_summary": 1,
         "portfolio_risk_cards": 8,
         "feed_signals": 12,
     }

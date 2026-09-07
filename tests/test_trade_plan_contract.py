@@ -520,7 +520,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     authority_source = inspect.getsource(today_authority_pages)
     assert calls == [{
         "preopen_daily_brief": 1,
-        "daily_brief": 12,
+        "portfolio_summary": 1,
         "portfolio_risk_cards": 8,
         "feed_signals": 12,
     }]

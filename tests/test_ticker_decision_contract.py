@@ -698,7 +698,10 @@ def test_persisted_ticker_decision_restores_thesis_evidence_and_scenarios() -> N
                 "revision": 4,
                 "available_at": AS_OF,
                 "thesis_json": {
-                    "pillars": [{"title": "Demand", "claim": "Demand is improving.", "evidence_refs": ["https://example.test/demand"]}],
+                    "pillars": [
+                        {"title": "Demand", "claim": "Demand is improving.", "evidence_refs": ["https://example.test/demand"]},
+                        {"title": "Growth", "claim": "New products will support growth."},
+                    ],
                     "scenarios": {
                         "bear": {"target": 80, "probability": 0.2, "rationale": "Demand weakens."},
                         "base": {"target": 100, "probability": 0.5, "rationale": "Demand holds."},
@@ -712,16 +715,25 @@ def test_persisted_ticker_decision_restores_thesis_evidence_and_scenarios() -> N
         as_of=AS_OF,
     )
     assert source.fundamental.evidence_for[0].reference == "https://example.test/demand"
+    assert source.fundamental.evidence_against == []
+    assert source.fundamental.unsupported_assumptions == ["New products will support growth."]
     assert [scenario.price_range.low for scenario in source.fundamental.scenarios] == [80, 100, 130]
     assert source.fundamental.invalidation.statement == "Demand reverses."
     assert source.selected_expression.kind.value == "CASH"
     persisted = source.model_dump(mode="json")
+    persisted["fundamental"]["evidence_against"] = [
+        {"statement": "Unvalidated thesis condition: New products will support growth.", "source": "thesis", "polarity": "AGAINST"},
+        {"statement": "Sales declined.", "source": "filing", "reference": "https://example.test/sales", "polarity": "AGAINST"},
+    ]
     persisted.update({"ticker_decision_id": "persisted-thesis-id", "contract_version": "ticker-decision.v1", "available_at": AS_OF})
 
     replay = build_ticker_decision("ACME", {"ticker_decisions": [persisted]}, as_of=AS_OF)
 
     assert replay.fundamental.evidence_for[0].reference == "https://example.test/demand"
     assert replay.fundamental.evidence_for[0].revision == "4"
+    assert replay.fundamental.unsupported_assumptions == ["New products will support growth."]
+    assert [item.statement for item in replay.fundamental.evidence_against] == ["Sales declined."]
+    assert replay.selected_expression.kind.value == "CASH"
     assert [scenario.price_range.low for scenario in replay.fundamental.scenarios] == [80, 100, 130]
     assert replay.fundamental.invalidation is not None
     assert replay.fundamental.invalidation.statement == "Demand reverses."

@@ -35,6 +35,8 @@ def confirmed_daily_bars(
     max_bars: int | None = None,
     include_versions: bool = False,
     max_fact_versions: int | None = None,
+    trading_dates: Iterable[date] | None = None,
+    require_session_close: bool = False,
 ) -> dict[int, list[dict[str, Any]]]:
     """Confirmed daily bars, optionally retaining point-in-time fact versions."""
 
@@ -42,9 +44,16 @@ def confirmed_daily_bars(
     if not ids:
         return {}
     reference = _utc(as_of)
+    dates = sorted(set(trading_dates)) if trading_dates is not None else None
+    if require_session_close and dates is None:
+        raise ValueError("session-close confirmation requires exact trading dates")
+    confirmation_dates = dates if require_session_close else []
+    session_closes = [market_session_bounds(day)[1] for day in confirmation_dates]
     rows = connection.execute(
         """
-        WITH facts AS (
+        WITH session_closes AS (
+            SELECT * FROM unnest(%s::date[], %s::timestamptz[]) AS session(trading_date, not_before)
+        ), facts AS (
             SELECT fact.*, 'raw.price_bar'::text AS fact_table
             FROM raw.price_bar fact
             UNION ALL
@@ -57,6 +66,7 @@ def confirmed_daily_bars(
               ON source.id = fact.source_id
              AND source.enabled
              AND source.operational_state = 'active'
+            LEFT JOIN session_closes ON session_closes.trading_date = fact.trading_date
             JOIN LATERAL (
                 SELECT price_run.finished_at
                 FROM raw.price_bar_fact_availability availability
@@ -66,11 +76,13 @@ def confirmed_daily_bars(
                   AND price_run.status IN ('succeeded', 'partial')
                   AND price_run.finished_at IS NOT NULL
                   AND price_run.finished_at <= %s
+                  AND price_run.finished_at >= COALESCE(session_closes.not_before, '-infinity'::timestamptz)
                 ORDER BY price_run.finished_at, price_run.id
                 LIMIT 1
             ) confirmation_run ON true
             WHERE fact.instrument_id = ANY(%s) AND fact.interval = '1d' AND fact.close > 0
               AND fact.observed_at <= %s AND fact.available_at <= %s
+              AND (%s::date[] IS NULL OR fact.trading_date = ANY(%s::date[]))
         ), versioned AS (
             SELECT fact.*,
                    row_number() OVER (
@@ -107,7 +119,7 @@ def confirmed_daily_bars(
         ORDER BY instrument_id, trading_date, available_at, confirmed_at, source_id
         """,
         [
-            reference, ids, reference, reference, include_versions,
+            confirmation_dates, session_closes, reference, ids, reference, reference, dates, dates, include_versions,
             max_bars, max_bars, max_fact_versions, max_fact_versions,
         ],
     ).fetchall()
@@ -123,6 +135,39 @@ def confirmed_daily_bars(
         output.setdefault(instrument_id, []).append(row)
     for instrument_id in overflowed:
         output[instrument_id] = []
+    return output
+
+
+def forward_trading_dates(as_of: datetime, *, count: int) -> tuple[date, ...]:
+    """The exact next US market sessions after a decision's local date."""
+
+    cursor = _utc(as_of).astimezone(MARKET_TZ).date()
+    dates: list[date] = []
+    while len(dates) < count:
+        cursor += timedelta(days=1)
+        if is_us_market_day(cursor):
+            dates.append(cursor)
+    return tuple(dates)
+
+
+def confirmed_forward_bars(
+    connection: Any, instrument_id: int, *, as_of: datetime, cutoff: datetime, sessions: int,
+) -> list[dict[str, Any]]:
+    """Canonical completed bars within an exact forward session window."""
+
+    dates = forward_trading_dates(as_of, count=sessions)
+    rows = confirmed_daily_bars(
+        connection, [instrument_id], as_of=cutoff, trading_dates=dates, require_session_close=True,
+    ).get(int(instrument_id), [])
+    output = []
+    for row in rows:
+        observed = _utc(row["observed_at"])
+        available = max(_utc(row["available_at"]), _utc(row["confirmed_at"]))
+        close_at = market_session_bounds(row["trading_date"])[1]
+        measured = max(observed, close_at)
+        if available < measured:
+            continue
+        output.append({**row, "bar_observed_at": observed, "observed_at": measured, "available_at": available})
     return output
 
 

@@ -119,7 +119,10 @@ def postmortem_system_prompt() -> str:
         "You write structured options-radar postmortems only. "
         "Use the supplied outcome, attribution, candidate, and thesis context. "
         "You may propose rule or parameter changes, but deterministic code decides "
-        "backtests, forward tests, and promotion. Do not recommend trades."
+        "backtests, forward tests, and paper-only promotion. Propose only the numeric "
+        "gates in the output schema; use null for unchanged gates. Do not change "
+        "strategy families, risk budgets, assignment permissions, or execution modes. "
+        "Do not recommend trades."
     )
 
 

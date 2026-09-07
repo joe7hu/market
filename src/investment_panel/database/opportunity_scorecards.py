@@ -1,8 +1,9 @@
 """Independent-episode scorecards for the option lanes.
 
 The scorecard is deliberately conservative.  It reports raw observation volume
-separately, but computes metrics and gates from one latest row per stable
-episode.  It never turns an incomplete denominator into a win rate or EV.
+separately, but computes metrics and gates from one canonical row per stable
+episode. Radar retains the active incumbent's prospective observation across
+refreshes. It never turns an incomplete denominator into a win rate or EV.
 """
 
 from __future__ import annotations
@@ -88,6 +89,17 @@ class OpportunityScorecardRepository:
         parameters: list[Any] = [since, reference]
         if lane != "recovery":
             parameters.insert(0, lane)
+        if lane == "radar":
+            lane_clause += """
+                AND strategy_revision_id = (
+                    SELECT id FROM analysis.strategy_revision
+                    WHERE authority_group = 'options-radar-core' AND status = 'active'
+                      AND created_at <= %s AND promoted_at <= %s
+                )
+                AND EXISTS (SELECT 1 FROM analysis.run run WHERE run.id = analysis.decision.run_id
+                            AND run.run_type = 'options-radar')
+            """
+            parameters[1:1] = [reference, reference]
         with self.runtime.read(API_PROFILE) as connection:
             row = connection.execute(
                 f"""
@@ -146,6 +158,8 @@ class OpportunityScorecardRepository:
         return normalized
 
     def _decision_rows(self, lane: str, since: datetime, reference: datetime) -> list[dict[str, Any]]:
+        if lane == "radar":
+            return self._incumbent_rows(since, reference)
         with self.runtime.read(API_PROFILE) as connection:
             rows = connection.execute(
                 """
@@ -217,32 +231,167 @@ class OpportunityScorecardRepository:
                 """,
                 [lane, since, reference],
             ).fetchall()
-        normalized: list[dict[str, Any]] = []
+        return _normalize_decision_rows(rows)
+
+    def _incumbent_rows(self, since: datetime, reference: datetime) -> list[dict[str, Any]]:
+        from investment_panel.database.options_experiments import EXPERIMENT_VERSION
+        from investment_panel.database.strategy_learning import observation_lineage_matches
+
+        with self.runtime.read(API_PROFILE) as connection:
+            rows = connection.execute(
+                """
+                WITH active_revision AS MATERIALIZED (
+                    SELECT id FROM analysis.strategy_revision
+                    WHERE authority_group = 'options-radar-core' AND status = 'active'
+                      AND created_at <= %(reference)s AND promoted_at <= %(reference)s
+                ), canonical_decisions AS MATERIALIZED (
+                    SELECT DISTINCT ON (decision.episode_key)
+                           decision.id, decision.run_id, decision.episode_key, decision.lane,
+                           decision.as_of, decision.state, decision.strategy_revision_id,
+                           decision.sample_eligible, decision.quarantine_reason, decision.calibration_cohort,
+                           shadow.id AS retained_shadow_id
+                    FROM analysis.decision decision
+                    JOIN active_revision active ON active.id = decision.strategy_revision_id
+                    JOIN analysis.run run ON run.id = decision.run_id
+                         AND run.strategy_revision_id = decision.strategy_revision_id
+                         AND run.run_type = 'options-radar'
+                    LEFT JOIN analysis.shadow_trade shadow ON shadow.decision_id = decision.id
+                         AND shadow.source_kind = 'options_paper_experiment'
+                         AND shadow.created_at <= %(reference)s
+                    WHERE decision.kind = 'option' AND decision.lane = 'radar'
+                      AND decision.as_of BETWEEN %(since)s AND %(reference)s
+                      AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
+                    ORDER BY decision.episode_key, (shadow.id IS NULL),
+                             CASE WHEN shadow.id IS NOT NULL THEN decision.as_of END,
+                             decision.as_of DESC, decision.id DESC
+                )
+                SELECT decision.id::text AS decision_id, decision.episode_key,
+                       decision.as_of AS available_at, decision.state, decision.strategy_revision_id,
+                       decision.sample_eligible AS decision_sample_eligible,
+                       decision.quarantine_reason AS decision_quarantine_reason,
+                       decision.calibration_cohort, decision.retained_shadow_id,
+                       run.id::text AS run_id, run.run_type, run.status AS run_status, run.input_cutoff,
+                       jsonb_build_object('observation', run.inputs->'observation') AS inputs,
+                       jsonb_build_object('experiment', shadow.metrics->'experiment') AS metrics,
+                       jsonb_build_object('experiment', item.payload->'experiment',
+                           'ticket', jsonb_build_object('experiment', item.payload->'ticket'->'experiment')) AS payload,
+                       observation.scope, shadow.metrics->'ticket' = item.payload->'ticket' AS ticket_matches,
+                       outcome.quarantine_reason AS outcome_quarantine_reason,
+                       outcome.outcome_classification, outcome.maturity_state,
+                       CASE WHEN shadow.id IS NOT NULL THEN outcome.current_return
+                            ELSE coalesce(outcome.realized_exit_return, outcome.current_return) END AS realized_return,
+                       run.status = 'succeeded' AND run.input_cutoff <= decision.as_of
+                         AND decision.sample_eligible IS TRUE AND outcome.sample_eligible IS TRUE
+                         AND decision.quarantine_reason IS NULL AND outcome.quarantine_reason IS NULL
+                         AND outcome.lane = decision.lane AND outcome.episode_key = decision.episode_key
+                         AND outcome.calibration_cohort = decision.calibration_cohort
+                         AND outcome.outcome_classification = 'captured'
+                         AND outcome.maturity_state IN ('mature', 'expired', 'closed')
+                         AND outcome.observed_through BETWEEN decision.as_of AND %(reference)s
+                         AND outcome.updated_at <= %(reference)s
+                         AND coalesce(outcome.realized_exit_return, outcome.current_return) > '-Infinity'::double precision
+                         AND coalesce(outcome.realized_exit_return, outcome.current_return) < 'Infinity'::double precision
+                         AND ((shadow.id IS NULL AND outcome.promotion_eligible IS TRUE) OR (
+                             shadow.status = 'closed' AND decision.state IN ('WATCH', 'SETUP', 'READY')
+                             AND outcome.shadow_trade_id = shadow.id AND outcome.objective_version = %(version)s
+                             AND outcome.current_return > '-Infinity'::double precision
+                             AND outcome.current_return < 'Infinity'::double precision
+                             AND decision.as_of < outcome.entry_fill_at AND outcome.entry_fill_at < outcome.exit_fill_at
+                             AND outcome.entry_fill_at = shadow.entry_at AND outcome.exit_fill_at = shadow.exit_at
+                             AND outcome.entry_fill_price = shadow.entry_price AND outcome.exit_fill_price = shadow.exit_price
+                             AND outcome.entry_fill_price > 0 AND outcome.entry_fill_price < 'Infinity'::numeric
+                             AND outcome.exit_fill_price >= 0 AND outcome.exit_fill_price < 'Infinity'::numeric
+                             AND outcome.exit_fill_at <= outcome.observed_through
+                             AND outcome.fee_total >= 0 AND outcome.fee_total < 'Infinity'::numeric
+                             AND outcome.slippage_total >= 0 AND outcome.slippage_total < 'Infinity'::numeric
+                         )) AS outcome_sample_eligible,
+                       option_decision.probability_profit,
+                       paper.status AS paper_status, paper.filled_at, paper.exit_at,
+                       EXISTS (
+                           SELECT 1 FROM app.publication publication
+                           JOIN app.publication_content_item published ON published.publication_id = publication.id
+                           WHERE publication.analysis_run_id = decision.run_id
+                             AND publication.scope = 'options-radar'
+                             AND publication.status IN ('published', 'superseded')
+                             AND publication.published_at <= %(reference)s
+                             AND published.model_name = 'option_radar_opportunity'
+                             AND published.payload->>'decision_id' = decision.id::text
+                       ) AS published
+                FROM canonical_decisions decision
+                JOIN analysis.run run ON run.id = decision.run_id
+                LEFT JOIN analysis.shadow_trade shadow ON shadow.id = decision.retained_shadow_id
+                LEFT JOIN app.publication observation
+                    ON observation.id = CASE WHEN pg_input_is_valid(shadow.metrics->>'publication_id', 'uuid')
+                        THEN (shadow.metrics->>'publication_id')::uuid END
+                   AND observation.analysis_run_id = decision.run_id
+                   AND observation.status IN ('published', 'superseded')
+                   AND observation.published_at <= %(reference)s
+                LEFT JOIN app.publication_content_item item ON item.publication_id = observation.id
+                     AND item.model_name = 'option_paper_experiment'
+                     AND item.payload->>'decision_id' = decision.id::text
+                LEFT JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
+                LEFT JOIN LATERAL (
+                    SELECT CASE WHEN filled_at > %(reference)s THEN 'staged'
+                                WHEN exit_at > %(reference)s THEN 'entered' ELSE status END AS status,
+                           CASE WHEN filled_at <= %(reference)s THEN filled_at END AS filled_at,
+                           CASE WHEN exit_at <= %(reference)s THEN exit_at END AS exit_at
+                    FROM app.paper_order
+                    WHERE decision_id = decision.id AND paper_only IS TRUE
+                      AND created_at <= %(reference)s
+                    ORDER BY created_at DESC, id DESC LIMIT 1
+                ) paper ON true
+                ORDER BY decision.as_of, decision.id
+                """,
+                {"since": since, "reference": reference, "version": EXPERIMENT_VERSION},
+            ).fetchall()
+        prepared = []
         for row in rows:
             item = dict(row)
-            state = str(item.get("state") or "").upper()
-            paper_status = str(item.get("paper_status") or "").lower()
-            published = bool(item.get("published"))
-            item["selection_stage"] = (
-                "exited" if published and paper_status in {"exited", "invalidated"}
-                else "filled" if published and paper_status in {"entered", "partial_exited"}
-                else "ticketed" if published and (state == "READY" or paper_status == "staged")
-                else "published" if published
-                else "ranked_out" if state in {"REJECT", "REJECTED"}
-                else "observed"
-            )
-            item["sample_eligible"] = bool(
-                item.get("outcome_sample_eligible")
-                if item.get("outcome_sample_eligible") is not None
-                else item.get("decision_sample_eligible")
-            )
-            item["quarantine_reason"] = item.get("outcome_quarantine_reason") or item.get("decision_quarantine_reason")
-            item["entry_fill_at"] = item.get("filled_at") if paper_status in {"entered", "partial_exited", "exited"} else None
-            item["exit_fill_at"] = item.get("exit_at") if paper_status in {"exited", "invalidated"} else None
-            if item.get("outcome_classification") is None:
-                item["outcome_classification"] = "observing"
-            normalized.append(item)
-        return normalized
+            if item["retained_shadow_id"] is not None:
+                valid = (
+                    item["run_status"] == "succeeded" and item["input_cutoff"] <= item["available_at"]
+                    and item["ticket_matches"] is True
+                    and observation_lineage_matches(item, revision_id=item["strategy_revision_id"])
+                )
+                item["published"] = valid
+                if not valid:
+                    item["outcome_sample_eligible"] = False
+                    item["outcome_quarantine_reason"] = "incumbent_observation_lineage_invalid"
+            item["outcome_sample_eligible"] = bool(item["outcome_sample_eligible"])
+            if not item["outcome_sample_eligible"]:
+                item["realized_return"] = None
+            prepared.append(item)
+        return _normalize_decision_rows(prepared)
+
+
+def _normalize_decision_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        state = str(item.get("state") or "").upper()
+        paper_status = str(item.get("paper_status") or "").lower()
+        published = bool(item.get("published"))
+        item["selection_stage"] = (
+            "exited" if published and paper_status in {"exited", "invalidated"}
+            else "filled" if published and paper_status in {"entered", "partial_exited"}
+            else "ticketed" if published and (state == "READY" or paper_status == "staged")
+            else "published" if published
+            else "ranked_out" if state in {"REJECT", "REJECTED"}
+            else "observed"
+        )
+        item["sample_eligible"] = bool(
+            item.get("outcome_sample_eligible")
+            if item.get("outcome_sample_eligible") is not None
+            else item.get("decision_sample_eligible")
+        )
+        item["quarantine_reason"] = item.get("outcome_quarantine_reason") or item.get("decision_quarantine_reason")
+        item["entry_fill_at"] = item.get("filled_at") if paper_status in {"entered", "partial_exited", "exited"} else None
+        item["exit_fill_at"] = item.get("exit_at") if paper_status in {"exited", "invalidated"} else None
+        if item.get("outcome_classification") is None:
+            item["outcome_classification"] = "observing"
+        normalized.append(item)
+    return normalized
 
 
 def _latest_by_episode(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

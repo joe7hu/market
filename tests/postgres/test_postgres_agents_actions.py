@@ -65,30 +65,34 @@ def test_agent_today_window_uses_new_york_calendar_day() -> None:
     )
 
 
-def test_strategy_governance_automatically_promotes_only_complete_evidence(postgres_dsn: str) -> None:
+@pytest.mark.parametrize("proposal_case", ["complete", "stale_parent", "mismatched_parameters", "legacy_alias"])
+def test_strategy_governance_automatically_promotes_only_complete_evidence(postgres_dsn: str, proposal_case: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
     runtime.open()
     try:
         with runtime.transaction() as connection:
+            parent_parameters = {"contract_version": 2, "gates": {"max_spread_pct": .25}}
+            if proposal_case == "legacy_alias":
+                parent_parameters = {"contract_version": 2, "reject_spread_pct": .25}
             base_id = connection.execute(
                 "INSERT INTO analysis.strategy_revision "
                 "(strategy_key, revision, name, status, parameters, authority_group, promoted_at) "
                 "VALUES ('options-radar-core', 2, 'core', 'active', %s, 'options-radar-core', now()) RETURNING id",
-                [Jsonb({"contract_version": 2, "gates": {"max_spread_pct": .25}})],
+                [Jsonb(parent_parameters)],
             ).fetchone()["id"]
             candidate_id = connection.execute(
                 "INSERT INTO analysis.strategy_revision "
                 "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
                 "VALUES ('options-radar-core__agent_auto', 1, 'auto', 'candidate', %s, %s, 'options-radar-core') RETURNING id",
-                [Jsonb({"contract_version": 2, "gates": {"max_spread_pct": .20}}), base_id],
+                [Jsonb({"contract_version": 2, "gates": {"max_spread_pct": .10 if proposal_case == "mismatched_parameters" else .20}}), base_id],
             ).fetchone()["id"]
             task_id = connection.execute(
                 "INSERT INTO analysis.agent_task (task_kind, status, request, result, validation) "
                 "VALUES ('strategy_mutation_proposal', 'completed', %s, %s, %s) RETURNING id",
                 [
                     Jsonb({"source": "test"}),
-                    Jsonb({"candidate_revision_id": candidate_id, "proposed_parameter_changes": {"max_spread_pct": .20}}),
+                    Jsonb({"candidate_revision_id": candidate_id, "proposed_parameter_changes": {"reject_spread_pct" if proposal_case == "legacy_alias" else "max_spread_pct": .20}}),
                     Jsonb({"status": "ready"}),
                 ],
                 ).fetchone()["id"]
@@ -108,21 +112,27 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
             for index in range(100):
                 decision_id = connection.execute(
                     "INSERT INTO analysis.decision "
-                    "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) "
-                    "VALUES (%s, %s, %s, 'option', 'resolved', now(), %s, %s) RETURNING id",
-                    [run_id, instrument_id, f"phase7-{index}", "1" * 64, candidate_id],
+                    "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id, lane, episode_key) "
+                    "VALUES (%s, %s, %s, 'option', 'resolved', now() - interval '2 hours', %s, %s, 'ticker', %s) RETURNING id",
+                    [run_id, instrument_id, f"phase7-{index}", "1" * 64, candidate_id, f"episode-{index}"],
                 ).fetchone()["id"]
                 paper_order_id = connection.execute(
                     "INSERT INTO app.paper_order "
                     "(decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
                     "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, "
-                    "fees, entry_slippage, exit_slippage, lane) "
-                    "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now(), 100, now(), 110, 1, 1, 0.5, 0.1, 0.1, 'ticker') "
+                    "fees, entry_slippage, exit_slippage, lane, contract_multiplier) "
+                    "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now() - interval '1 hour', 100, now() - interval '30 minutes', 110, 1, 1, 0.5, 0.1, 0.1, 'ticker', 100) "
                     "RETURNING id",
                     [decision_id, instrument_id],
                 ).fetchone()["id"]
                 paper_order_ids.append(str(paper_order_id))
                 decision_ids.append(str(decision_id))
+                connection.cursor().executemany(
+                    """INSERT INTO app.trade_journal (decision_id, instrument_id, action, quantity, price, rationale, details)
+                       VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s)""",
+                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id)}))
+                     for action, price in (("paper_entry", 100), ("paper_exit", 110))],
+                )
             baseline = {"net_expectancy": .10, "precision_at_5": .50, "max_drawdown": -.20, "calibration_error": .10}
             for evaluation_type, sample, span in (
                 ("walk_forward", 100, 120),
@@ -160,13 +170,23 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                     })],
                 )
 
+        if proposal_case == "stale_parent":
+            with runtime.transaction() as connection:
+                connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [base_id])
+                connection.execute(
+                    """INSERT INTO analysis.strategy_revision
+                       (strategy_key, revision, name, status, parameters, authority_group)
+                       VALUES ('new-options-incumbent', 1, 'New incumbent', 'active', %s, 'options-radar-core')""",
+                    [Jsonb(parent_parameters)],
+                )
         governance = StrategyGovernanceRepository(runtime)
         assert governance.automatic_promote_eligible(enabled=False) == 0
         with runtime.read() as connection:
             assert connection.execute(
                 "SELECT status FROM analysis.strategy_revision WHERE id = %s", [candidate_id]
             ).fetchone()["status"] == "candidate"
-        assert governance.automatic_promote_eligible() == 1
+        eligible = proposal_case in {"complete", "legacy_alias"}
+        assert governance.automatic_promote_eligible() == int(eligible)
         with runtime.read() as connection:
             statuses = connection.execute(
                 "SELECT id, status FROM analysis.strategy_revision WHERE id IN (%s, %s) ORDER BY id",
@@ -175,8 +195,13 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
             validation = connection.execute(
                 "SELECT validation FROM analysis.agent_task WHERE id = %s", [task_id]
             ).fetchone()["validation"]
-        assert [row["status"] for row in statuses] == ["superseded", "active"]
-        assert validation["authority"] == "automatic_deterministic_governance"
+        if eligible:
+            assert [row["status"] for row in statuses] == ["superseded", "active"]
+            assert validation["authority"] == "automatic_deterministic_governance"
+            assert governance.automatic_promote_eligible() == 0
+        else:
+            assert [row["status"] for row in statuses] == ["superseded" if proposal_case == "stale_parent" else "active", "candidate"]
+            assert validation["status"] == "ready"
     finally:
         runtime.close()
 
@@ -1561,7 +1586,8 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
             evidence_run_id = connection.execute(
                 "INSERT INTO analysis.run "
                 "(run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status, strategy_revision_id) "
-                "VALUES ('phase7-evidence', now(), 'test', %s, now(), now(), 'succeeded', %s) RETURNING id",
+                "VALUES ('phase7-evidence', now() - interval '3 hours', 'test', %s, "
+                "now() - interval '3 hours', now() - interval '2 hours 1 minute', 'succeeded', %s) RETURNING id",
                 ["0" * 64, candidate_id],
             ).fetchone()["id"]
             paper_order_ids = []
@@ -1569,21 +1595,31 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
             for index in range(30):
                 decision_id = connection.execute(
                     "INSERT INTO analysis.decision "
-                    "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) "
-                    "VALUES (%s, %s, %s, 'option', 'resolved', now(), %s, %s) RETURNING id",
-                    [evidence_run_id, instrument_id, f"phase7-action-{uuid4().hex}-{index}", "1" * 64, candidate_id],
+                    "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id, lane, episode_key) "
+                    "VALUES (%s, %s, %s, 'option', 'resolved', now() - interval '2 hours', %s, %s, 'ticker', %s) RETURNING id",
+                    [evidence_run_id, instrument_id, f"phase7-action-{uuid4().hex}-{index}", "1" * 64, candidate_id,
+                     f"phase7-action-episode-{index}"],
                 ).fetchone()["id"]
                 paper_order_id = connection.execute(
                     "INSERT INTO app.paper_order "
                     "(decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
                     "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, "
-                    "fees, entry_slippage, exit_slippage, lane) "
-                    "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now(), 100, now(), 110, 1, 1, 0.5, 0.1, 0.1, 'ticker') "
+                    "fees, entry_slippage, exit_slippage, lane, contract_multiplier) "
+                    "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now() - interval '1 hour', 100, "
+                    "now() - interval '30 minutes', 110, 1, 1, 0.5, 0.1, 0.1, 'ticker', 100) "
                     "RETURNING id",
                     [decision_id, instrument_id],
                 ).fetchone()["id"]
                 paper_order_ids.append(str(paper_order_id))
                 decision_ids.append(str(decision_id))
+                connection.cursor().executemany(
+                    """INSERT INTO app.trade_journal
+                       (decision_id, instrument_id, action, quantity, price, rationale, details, created_at)
+                       VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s,
+                               now() - make_interval(mins => %s))""",
+                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id)}), minutes)
+                     for action, price, minutes in (("paper_entry", 100, 60), ("paper_exit:take_profit", 110, 30))],
+                )
             metrics = {
                 name: ({"risk_on": 0.5} if name == "regime_performance" else 0.1)
                 for name in TRACKED_METRICS

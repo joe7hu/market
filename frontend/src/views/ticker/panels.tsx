@@ -82,6 +82,7 @@ export function TickerDecisionPanel({
             <p className="text-sm text-muted-foreground">{action.owned ? "You hold this stock. A new trade decision does not replace the review of your existing position." : "You do not hold this stock."}</p>
             <p className="mt-3 max-w-2xl text-base leading-7">{rationale}</p>
             {resolution?.next_action ? <p className="mt-3 text-sm font-medium">Next: {decisionReason(resolution.next_action)}</p> : null}
+            {decision.fundamental.unsupported_assumptions?.length ? <div className="mt-4"><ReasonList title="Assumptions needing evidence" rows={decision.fundamental.unsupported_assumptions} empty="" /></div> : null}
             {action.action === "WAIT_FOR_PRICE" ? (
               <div className="mt-5 grid gap-3 rounded-md border border-[var(--warning)]/35 bg-[var(--warning)]/8 p-3 text-sm sm:grid-cols-3">
                 <DecisionTerm label="Price" value={action.price_condition} field="price_condition" />
@@ -487,6 +488,7 @@ export function DecisionPanel({ brief }: { brief: RowRecord }) {
   const action = displayField(verdict, ["action"], "WAIT_FOR_PRICE");
   const supports = listField(brief, ["evidence_for"]).slice(0, 4);
   const concerns = listField(brief, ["evidence_against"]).slice(0, 4);
+  const assumptions = listField(brief, ["unsupported_assumptions"]);
   const unknowns = listField(brief, ["unknowns"]).slice(0, 3);
   const setupRows = [
     { label: "Entry", value: displayField(setup, ["entry_zone"], "No entry plan loaded") },
@@ -511,7 +513,8 @@ export function DecisionPanel({ brief }: { brief: RowRecord }) {
         </div>
         <div className="grid gap-4 p-4">
           <ReasonList title="Why It Could Work" rows={supports} empty="No positive evidence loaded." />
-          <ReasonList title="Why It Is Gated" rows={concerns} empty="No risk evidence loaded." />
+          <ReasonList title="Opposing evidence" rows={concerns} empty="No opposing evidence loaded." />
+          {assumptions.length ? <ReasonList title="Assumptions needing evidence" rows={assumptions} empty="" /> : null}
           {unknowns.length ? <ReasonList title="Still Unknown" rows={unknowns} empty="" /> : null}
         </div>
       </div>

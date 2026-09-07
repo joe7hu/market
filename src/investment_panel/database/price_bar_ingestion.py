@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, time
 from typing import Any, Sequence
 from uuid import UUID
 
+from investment_panel.core.decision import is_us_market_day, market_session_bounds
 from investment_panel.core.market_time import current_market_date
 from investment_panel.database.ingestion_coerce import calendar_date, number
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
@@ -76,6 +77,18 @@ def store_price_bars(
                 [instruments[symbol], source_id, observed_at],
             ).fetchone()
             current_bar = (open_price, high, low, close, volume, currency)
+            asset_class = normalized_asset_classes.get(symbol, str(source.get("asset_class") or "equity"))
+            session_close = (
+                market_session_bounds(trading_date)[1]
+                if asset_class in {"equity", "etf"} and is_us_market_day(trading_date) else None
+            )
+            # The availability projection retains the first confirmation of
+            # a fact version. Preserve a distinct completed-session version
+            # when an earlier, unchanged daily value was known before close.
+            needs_close_version = (
+                latest_bar is not None and session_close is not None
+                and latest_bar["available_at"] < session_close <= stored_at
+            )
             if latest_bar is None:
                 bar_fact = connection.execute(
                     """
@@ -89,7 +102,10 @@ def store_price_bars(
                     [instruments[symbol], source_id, run_id, trading_date, observed_at,
                      open_price, high, low, close, volume, currency],
                 ).fetchone()
-            elif tuple(latest_bar[key] for key in ("open", "high", "low", "close", "volume", "currency")) != current_bar:
+            elif (
+                tuple(latest_bar[key] for key in ("open", "high", "low", "close", "volume", "currency"))
+                != current_bar or needs_close_version
+            ):
                 connection.execute(
                     "INSERT INTO raw.price_bar_history SELECT * FROM raw.price_bar WHERE id = %s",
                     [latest_bar["id"]],

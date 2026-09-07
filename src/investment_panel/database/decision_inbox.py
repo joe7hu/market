@@ -265,6 +265,7 @@ class DecisionInboxRepository:
                        item.severity, item.status, item.payload, item.created_at,
                        item.resolved_at, item.user_state, item.snoozed_until,
                        item.dismiss_reason, item.user_state_updated_at, item.reviewed_at,
+                       item.useful, item.usefulness_updated_at,
                        outbox.status AS delivery_status, outbox.attempts,
                        outbox.last_error, outbox.sent_at
                 FROM app.decision_inbox_item item
@@ -376,6 +377,21 @@ class DecisionInboxRepository:
             if result.get(key) is not None:
                 result[key] = result[key].isoformat()
         return result
+
+    def set_usefulness(self, item_id: str, *, useful: bool) -> dict[str, Any] | None:
+        if type(useful) is not bool:
+            raise ValueError("useful must be true or false")
+        with self.runtime.transaction() as connection:
+            row = connection.execute(
+                """UPDATE app.decision_inbox_item
+                   SET usefulness_updated_at = CASE WHEN useful IS DISTINCT FROM %s
+                       THEN now() ELSE usefulness_updated_at END,
+                       useful = %s
+                   WHERE id = %s::uuid
+                   RETURNING id::text, useful, usefulness_updated_at""",
+                [useful, useful, item_id],
+            ).fetchone()
+        return dict(row) if row else None
 
     def sync_current_decisions(
         self, rows: list[dict[str, Any]], *, now: datetime | None = None,
@@ -1540,7 +1556,7 @@ def _safe_payload(value: dict[str, Any]) -> dict[str, Any]:
 
 def _row_payload(row: Any) -> dict[str, Any]:
     value = dict(row)
-    for key in ("created_at", "resolved_at", "sent_at", "snoozed_until", "user_state_updated_at", "reviewed_at"):
+    for key in ("created_at", "resolved_at", "sent_at", "snoozed_until", "user_state_updated_at", "reviewed_at", "usefulness_updated_at"):
         if value.get(key) is not None:
             value[key] = value[key].isoformat()
     value["payload"] = dict(value.get("payload") or {})

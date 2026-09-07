@@ -1955,6 +1955,43 @@
         "title": "DecisionInboxStateResponse",
         "type": "object"
       },
+      "DecisionInboxUsefulnessInput": {
+        "properties": {
+          "useful": {
+            "title": "Useful",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "useful"
+        ],
+        "title": "DecisionInboxUsefulnessInput",
+        "type": "object"
+      },
+      "DecisionInboxUsefulnessResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "useful": {
+            "title": "Useful",
+            "type": "boolean"
+          },
+          "usefulness_updated_at": {
+            "format": "date-time",
+            "title": "Usefulness Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "useful",
+          "usefulness_updated_at"
+        ],
+        "title": "DecisionInboxUsefulnessResponse",
+        "type": "object"
+      },
       "DecisionResolutionV2": {
         "additionalProperties": true,
         "description": "One calculated resolution; compatibility views must derive from it.",
@@ -3188,6 +3225,13 @@
                 "type": "null"
               }
             ]
+          },
+          "unsupported_assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unsupported Assumptions",
+            "type": "array"
           }
         },
         "required": [
@@ -11437,6 +11481,232 @@
         "title": "ResearchBlogsSettingsInput",
         "type": "object"
       },
+      "ResearchEvaluationResponse": {
+        "properties": {
+          "brier_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brier Score"
+          },
+          "comparison_denominator": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison Denominator"
+          },
+          "comparison_window_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison Window Complete"
+          },
+          "evaluated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluated At"
+          },
+          "evidence_basis": {
+            "enum": [
+              "independent_stock_episodes",
+              "obsolete_stock_target",
+              "independence_unconfirmed",
+              "independent_options_replay",
+              "independent_options_shadow",
+              "independent_options_paper"
+            ],
+            "title": "Evidence Basis",
+            "type": "string"
+          },
+          "failed_gates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Failed Gates",
+            "type": "array"
+          },
+          "independent_sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Independent Sample Count"
+          },
+          "net_return_lower_bound": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Return Lower Bound"
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End"
+          },
+          "period_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Start"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "unmatched_episodes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unmatched Episodes"
+          },
+          "verdict": {
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "verdict",
+          "evidence_basis"
+        ],
+        "title": "ResearchEvaluationResponse",
+        "type": "object"
+      },
+      "ResearchIdeaResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "catalyst": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst"
+          },
+          "countercase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Countercase"
+          },
+          "holding_weight_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holding Weight Pct"
+          },
+          "invalidation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "thesis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thesis"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "owned",
+          "as_of",
+          "next_action"
+        ],
+        "title": "ResearchIdeaResponse",
+        "type": "object"
+      },
       "ResearchNewsSettingsInput": {
         "properties": {
           "enabled": {
@@ -11482,6 +11752,60 @@
         "title": "ResearchNewsSettingsInput",
         "type": "object"
       },
+      "ResearchReviewActivityResponse": {
+        "properties": {
+          "acknowledged": {
+            "title": "Acknowledged",
+            "type": "integer"
+          },
+          "completed": {
+            "title": "Completed",
+            "type": "integer"
+          },
+          "helpful": {
+            "title": "Helpful",
+            "type": "integer"
+          },
+          "helpful_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Helpful Rate"
+          },
+          "not_helpful": {
+            "title": "Not Helpful",
+            "type": "integer"
+          },
+          "rated": {
+            "title": "Rated",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "window_days": {
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_days",
+          "total",
+          "acknowledged",
+          "completed",
+          "rated",
+          "helpful",
+          "not_helpful"
+        ],
+        "title": "ResearchReviewActivityResponse",
+        "type": "object"
+      },
       "ResearchSourcesInput": {
         "properties": {
           "blogs": {
@@ -11516,6 +11840,172 @@
           }
         },
         "title": "ResearchSourcesInput",
+        "type": "object"
+      },
+      "ResearchStrategySummaryResponse": {
+        "properties": {
+          "automatic_paper_tuning": {
+            "title": "Automatic Paper Tuning",
+            "type": "boolean"
+          },
+          "evaluations": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchEvaluationResponse"
+            },
+            "title": "Evaluations",
+            "type": "array"
+          },
+          "excluded_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded Count"
+          },
+          "expected_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Count"
+          },
+          "failed_gates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Failed Gates",
+            "type": "array"
+          },
+          "hypothesis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hypothesis"
+          },
+          "included_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Included Count"
+          },
+          "last_policy_change": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Policy Change"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_observation": {
+            "title": "Next Observation",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "strategy_key": {
+            "title": "Strategy Key",
+            "type": "string"
+          },
+          "strategy_revision_id": {
+            "title": "Strategy Revision Id",
+            "type": "integer"
+          },
+          "trial_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Status"
+          }
+        },
+        "required": [
+          "strategy_revision_id",
+          "strategy_key",
+          "revision",
+          "name",
+          "status",
+          "automatic_paper_tuning",
+          "next_observation"
+        ],
+        "title": "ResearchStrategySummaryResponse",
+        "type": "object"
+      },
+      "ResearchSummaryResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "ideas": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchIdeaResponse"
+            },
+            "title": "Ideas",
+            "type": "array"
+          },
+          "paper_only": {
+            "title": "Paper Only",
+            "type": "boolean"
+          },
+          "review_activity": {
+            "$ref": "#/components/schemas/ResearchReviewActivityResponse"
+          },
+          "strategies": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchStrategySummaryResponse"
+            },
+            "title": "Strategies",
+            "type": "array"
+          },
+          "strategy_count": {
+            "title": "Strategy Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "as_of",
+          "paper_only",
+          "strategy_count",
+          "review_activity"
+        ],
+        "title": "ResearchSummaryResponse",
         "type": "object"
       },
       "ResearchXSettingsInput": {
@@ -14271,6 +14761,54 @@
         "title": "TickerResolutionSummaryResponse",
         "type": "object"
       },
+      "TodayBriefCategoryResponse": {
+        "description": "Published category totals, separate from source coverage.",
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "coverage_message": {
+            "default": "",
+            "title": "Coverage Message",
+            "type": "string"
+          },
+          "coverage_status": {
+            "default": "unknown",
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable",
+              "unknown"
+            ],
+            "title": "Coverage Status",
+            "type": "string"
+          },
+          "shown_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Shown Count",
+            "type": "integer"
+          },
+          "total_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Count"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "title": "TodayBriefCategoryResponse",
+        "type": "object"
+      },
       "TodayBriefItemResponse": {
         "description": "One named context item for the Today decision surface.",
         "properties": {
@@ -14639,6 +15177,17 @@
               }
             ],
             "title": "Transition"
+          },
+          "useful": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Useful"
           },
           "user_state": {
             "anyOf": [
@@ -15036,6 +15585,13 @@
               "$ref": "#/components/schemas/TodayCapitalAction"
             },
             "title": "Book Actions",
+            "type": "array"
+          },
+          "brief_categories": {
+            "items": {
+              "$ref": "#/components/schemas/TodayBriefCategoryResponse"
+            },
+            "title": "Brief Categories",
             "type": "array"
           },
           "brief_items": {
@@ -16065,6 +16621,56 @@
           }
         },
         "summary": "Set Decision Inbox State"
+      }
+    },
+    "/api/decision-inbox/{item_id}/usefulness": {
+      "post": {
+        "operationId": "set_decision_inbox_usefulness_api_decision_inbox__item_id__usefulness_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInboxUsefulnessInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionInboxUsefulnessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Decision Inbox Usefulness"
       }
     },
     "/api/event-scout": {
@@ -18715,6 +19321,24 @@
           }
         },
         "summary": "Launch Refresh Job Background"
+      }
+    },
+    "/api/research/summary": {
+      "get": {
+        "operationId": "research_results_api_research_summary_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchSummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Research Results"
       }
     },
     "/api/settings": {

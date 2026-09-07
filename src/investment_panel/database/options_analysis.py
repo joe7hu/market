@@ -1,6 +1,6 @@
 """Fast PostgreSQL-native option feature, decision, and publication pipeline."""
 from __future__ import annotations
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Sequence
 from psycopg.types.json import Jsonb
 from investment_panel.database.analysis import AnalysisRepository
@@ -36,7 +36,7 @@ DEFAULT_PARAMETERS = {
 }
 
 
-def retain_reject_sample(connection: Any, run_id: Any) -> None:
+def retain_reject_sample(connection: Any, run_id: Any, *, prune: bool = True) -> None:
     """Keep every one-blocker near miss and a stable 5% sample of other rejects."""
     sampled = "cardinality(decision.blockers) = 1 OR " \
         "mod(('x' || substr(md5(decision.decision_key), 1, 8))::bit(32)::bigint, 20) = 0"
@@ -52,6 +52,8 @@ def retain_reject_sample(connection: Any, run_id: Any) -> None:
         GROUP BY decision.run_id, decision.strategy_revision_id, decision.instrument_id, blocker
         """, [run_id],
     )
+    if not prune:
+        return
     connection.execute(
         f"""DELETE FROM analysis.option_decision option_decision USING analysis.decision decision
             WHERE option_decision.decision_id = decision.id AND decision.run_id = %s
@@ -71,17 +73,44 @@ def refresh_options_radar(
     code_version: str = "working-tree",
     options_risk_sleeve_capital: float | None = None,
     config: object | None = None,
+    candidate_revision_id: int | None = None,
 ) -> dict[str, Any]:
+    from investment_panel.database.options_experiments import experiment_candidate, experiment_identity, incumbent_identity, seed_experiment_shadows
+
     repository = AnalysisRepository(runtime)
-    strategy_id, strategy_parameters = _active_strategy(runtime)
+    candidate = None
+    scope = "options-radar"
+    if candidate_revision_id is None:
+        strategy_id, strategy_parameters = _active_strategy(runtime)
+    else:
+        with runtime.read(JOB_PROFILE) as connection:
+            candidate = experiment_candidate(connection, candidate_revision_id, as_of=datetime.now(UTC))
+        strategy_id, strategy_parameters = candidate["id"], candidate["parameters"]
+        scope = f"options-paper-experiment:{strategy_id}"
     cutoff = _latest_snapshot_time(runtime, source_id=source_id, symbols=symbols)
     if cutoff is None:
+        if candidate:
+            return {"status": "skipped", "reason": "fresh_prospective_quote_required"}
         return publish_degraded_if_needed(repository, code_version, FEATURE_VERSION, STRATEGY_KEY)
+    if candidate:
+        if not max(candidate["created_at"], candidate["proposal_created_at"]) <= cutoff <= datetime.now(UTC) or (datetime.now(UTC) - cutoff).total_seconds() > 300:
+            return {"status": "skipped", "reason": "fresh_prospective_quote_required"}
+        with runtime.read(JOB_PROFILE) as connection:
+            previous = connection.execute(
+                "SELECT publication.id::text FROM app.publication publication JOIN analysis.run run ON run.id = publication.analysis_run_id "
+                "WHERE publication.scope = %s AND publication.status = 'published' AND run.status = 'succeeded' "
+                "AND run.input_cutoff = %s AND run.strategy_revision_id = %s AND run.code_version = %s",
+                [scope, cutoff, strategy_id, code_version],
+            ).fetchone()
+        if previous:
+            seed_experiment_shadows(runtime, repository.publication_rows(scope, "option_paper_experiment"), publication_id=previous["id"])
+            return {"status": "ok", "publication_id": previous["id"], "reused": True}
     run_id = repository.start_run(
-        "options-radar",
+        "options-paper-experiment" if candidate else "options-radar",
         input_cutoff=cutoff,
         code_version=code_version,
-        inputs={"source_id": source_id, "symbols": list(symbols or []), "cutoff": cutoff.isoformat()},
+        inputs={"source_id": source_id, "symbols": list(symbols or []), "cutoff": cutoff.isoformat(),
+                **({"experiment": experiment_identity(candidate)} if candidate else {"observation": incumbent_identity(strategy_id)})},
         feature_versions={"option": FEATURE_VERSION},
         strategy_revision_id=strategy_id,
     )
@@ -103,12 +132,33 @@ def refresh_options_radar(
         )
         trend_features = refresh_symbol_trend_features(runtime, run_id, as_of=cutoff)
         decision_count = _insert_decisions(runtime, run_id, strategy_id, strategy_parameters)
+        regime = dict(trend_features["market_regime"])
+        regime_known = regime.get("quality_status") == "complete" and regime.get("state") not in {None, "", "unknown", "unavailable"}
+        try:
+            regime_at = datetime.fromisoformat(str(regime.get("as_of") or "").replace("Z", "+00:00"))
+        except ValueError:
+            regime_at = None
+        regime_known = regime_known and regime_at == cutoff
+        unavailable_regime = {**regime, "quality_status": "unavailable", "reason_codes": sorted(set(
+            list(regime.get("reason_codes") or []) + ["decision_cutoff_precedes_or_lacks_market_regime"]
+        ))}
+        with runtime.transaction(JOB_PROFILE) as connection:
+            connection.execute(
+                """UPDATE analysis.option_decision option_decision
+                   SET market_regime = CASE WHEN decision.as_of = %s AND %s THEN %s ELSE NULL END,
+                       market_regime_detail = CASE WHEN decision.as_of = %s AND %s THEN %s ELSE %s END
+                   FROM analysis.decision decision
+                   WHERE option_decision.decision_id = decision.id AND decision.run_id = %s
+                     AND option_decision.structure IN ('long_call', 'long_put')""",
+                [cutoff, regime_known, regime.get("state"), cutoff, regime_known,
+                 Jsonb(regime), Jsonb(unavailable_regime), run_id],
+            )
         empirical_long_options = enrich_long_option_expectancy(runtime, run_id, calibrated_ready)
-        call_debit_spreads = insert_call_debit_spreads(runtime, repository, run_id, strategy_id, calibrated_ready)
+        call_debit_spreads = 0 if candidate else insert_call_debit_spreads(runtime, repository, run_id, strategy_id, calibrated_ready)
         decision_count += call_debit_spreads
-        put_debit_spreads = insert_put_debit_spreads(runtime, repository, run_id, strategy_id, calibrated_ready)
+        put_debit_spreads = 0 if candidate else insert_put_debit_spreads(runtime, repository, run_id, strategy_id, calibrated_ready)
         decision_count += put_debit_spreads
-        cash_secured_puts = insert_cash_secured_put_decisions(
+        cash_secured_puts = 0 if candidate else insert_cash_secured_put_decisions(
             runtime, repository, run_id, strategy_id, strategy_parameters, calibrated_ready,
             evaluated_at=cutoff,
         )
@@ -120,14 +170,14 @@ def refresh_options_radar(
             }
         except Exception as error:
             event_studies = {"count": 0, "state": "unavailable", "error": type(error).__name__}
-        strategy_routes = apply_strategy_routes(
+        strategy_routes = {"status": "experiment_core_gates_only"} if candidate else apply_strategy_routes(
             runtime,
             run_id,
             market_regime=dict(trend_features["market_regime"]),
             config=config,
             options_risk_sleeve_capital=options_risk_sleeve_capital,
         )
-        shadow_trades = _ensure_shadow_trades(runtime, run_id)
+        shadow_trades = 0 if candidate else _ensure_shadow_trades(runtime, run_id)
         discovery = materialize_discovery_foundation(
             runtime, run_id, cutoff=cutoff, contracts_evaluated=feature_count,
             source_id=source_id, requested_scope=symbols,
@@ -147,10 +197,19 @@ def refresh_options_radar(
             market_regime=dict(trend_features["market_regime"]),
             previous_opportunities=previous_opportunities,
         )
+        actionable_count = len(models["option_radar_opportunity"])
         models["option_calibration"] = calibration
+        experiment = experiment_identity(candidate, str(run_id)) if candidate else incumbent_identity(strategy_id, str(run_id))
+        experiment_rows = [
+            {**row, "experiment": experiment, "ticket": {**dict(row.get("ticket") or {}), "experiment": experiment}}
+            for row in models["candidate_event"]
+            if row.get("structure") in {"long_call", "long_put"}
+        ]
+        if candidate:
+            models = {"option_paper_experiment": experiment_rows, "option_calibration": calibration}
         publication_id = repository.publish(
             run_id,
-            "options-radar",
+            scope,
             models,
             validation={
                 "feature_count": feature_count,
@@ -172,11 +231,19 @@ def refresh_options_radar(
                 "decisions": decision_count,
                 "publication_models": {key: len(value) for key, value in models.items()},
             },
-            strategy_root_key=STRATEGY_KEY,
+            strategy_root_key=None if candidate else STRATEGY_KEY,
         )
     except Exception as exc:
         repository.finish_run(run_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
         raise
+    observation_id = publication_id if candidate else repository.publish(
+        run_id, f"options-paper-incumbent:{strategy_id}", {"option_paper_experiment": experiment_rows},
+        validation={"observation_only": True, "version": experiment["version"]}, strategy_root_key=STRATEGY_KEY,
+    )
+    observation_scope = scope if candidate else f"options-paper-incumbent:{strategy_id}"
+    shadow_trades += seed_experiment_shadows(
+        runtime, repository.publication_rows(observation_scope, "option_paper_experiment"), publication_id=str(observation_id),
+    )
     return {
         "status": "ok",
         "analysis_run_id": str(run_id),
@@ -192,7 +259,7 @@ def refresh_options_radar(
         "event_studies": event_studies,
         "shadow_trades": shadow_trades,
         "discovery": discovery,
-        "actionable": len(models["option_radar_opportunity"]),
+        "actionable": actionable_count,
     }
 
 
@@ -540,18 +607,24 @@ def _insert_decisions(
             """,
             [run_id],
         )
-        retain_reject_sample(connection, run_id)
+        # The first opportunity of each symbol/structure/session remains in the
+        # prospective denominator even when every contract fails a gate.
+        retain_reject_sample(connection, run_id, prune=False)
+        # Candidate and incumbent revisions must expose the same contracts to
+        # expectancy scoring. Independent observations are selected afterwards.
         connection.execute(
             """
             WITH ranked AS (
                 SELECT id, row_number() OVER (
-                    PARTITION BY instrument_id ORDER BY (state = 'REJECTED'), score DESC NULLS LAST, id
-                ) AS symbol_rank
+                    PARTITION BY instrument_id ORDER BY (state = 'REJECTED'), score DESC NULLS LAST, decision_key
+                ) AS symbol_rank, row_number() OVER (
+                    PARTITION BY episode_key ORDER BY (state = 'REJECTED'), score DESC NULLS LAST, decision_key
+                ) AS episode_rank
                 FROM analysis.decision WHERE run_id = %s
             )
             DELETE FROM analysis.option_decision option_decision
             USING ranked WHERE option_decision.decision_id = ranked.id
-              AND ranked.symbol_rank > 12
+              AND ranked.symbol_rank > 12 AND ranked.episode_rank > 1
             """,
             [run_id],
         )
@@ -559,12 +632,14 @@ def _insert_decisions(
             """
             WITH ranked AS (
                 SELECT id, row_number() OVER (
-                    PARTITION BY instrument_id ORDER BY (state = 'REJECTED'), score DESC NULLS LAST, id
-                ) AS symbol_rank
+                    PARTITION BY instrument_id ORDER BY (state = 'REJECTED'), score DESC NULLS LAST, decision_key
+                ) AS symbol_rank, row_number() OVER (
+                    PARTITION BY episode_key ORDER BY (state = 'REJECTED'), score DESC NULLS LAST, decision_key
+                ) AS episode_rank
                 FROM analysis.decision WHERE run_id = %s
             )
             DELETE FROM analysis.decision decision
-            USING ranked WHERE decision.id = ranked.id AND ranked.symbol_rank > 12
+            USING ranked WHERE decision.id = ranked.id AND ranked.symbol_rank > 12 AND ranked.episode_rank > 1
             """,
             [run_id],
         )
@@ -614,6 +689,7 @@ def _ensure_shadow_trades(runtime: DatabaseRuntime, run_id: Any) -> int:
             FROM analysis.decision decision
             JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
             WHERE decision.run_id = %s AND decision.state IN ('WATCH', 'SETUP', 'READY')
+              AND option_decision.structure NOT IN ('long_call', 'long_put')
               AND COALESCE(option_decision.entry_price, option_decision.fill_assumption,
                            option_decision.premium_mid) > 0
             ON CONFLICT (decision_id) DO NOTHING

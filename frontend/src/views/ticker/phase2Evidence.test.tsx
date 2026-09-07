@@ -75,4 +75,15 @@ describe("Ticker decision usability", () => {
     expect(html).not.toContain("proposed impact");
     expect(html).not.toContain("Field unavailable:");
   });
+  it("shows uncited thesis assumptions apart from the countercase", () => {
+    const decision = { ...compactDecision, fundamental: { ...compactDecision.fundamental,
+      unsupported_assumptions: ["New products will support growth."],
+    } };
+    const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={decision} learning={{ disagreement: { strongest_bear_case: "Sales declined." } }} />);
+    expect(html).toContain("Assumptions needing evidence");
+    expect(html).toContain("New products will support growth.");
+    expect(html).toContain("Opposing evidence");
+    expect(html).toContain("Sales declined.");
+    expect(html).not.toContain("Unvalidated thesis condition");
+  });
 });

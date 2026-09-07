@@ -8,13 +8,13 @@ the pessimistic side of the market.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from math import floor
+from math import floor, isfinite
 from typing import Any, Iterable
 
 from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision import is_market_open
-from investment_panel.core.option_trade_ticket import execution_policy
+from investment_panel.core.option_trade_ticket import execution_policy, exit_reason
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.analysis import current_option_publication_answers
@@ -31,6 +31,8 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 GENERIC_LANES = frozenset({"radar", "qqq"})
 TERMINAL_STATUSES = frozenset({"exited", "invalidated", "unfilled", "rejected", "unmeasurable"})
+PAPER_MARK_KEY = "observed_liquidation_v1"
+ENTRY_CANCELLATION_KEY = "entry_remainder_cancellation_v1"
 
 
 class OptionsPaperExecutionRepository:
@@ -93,13 +95,22 @@ class OptionsPaperExecutionRepository:
         max_open_positions: int | None,
         now: datetime,
         limit: int,
+        experiment_publication_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Stage only current immutable tickets after lane-level gates pass."""
 
         enabled = set(enabled_lanes)
         radar_gate = None
         with self.runtime.read(JOB_PROFILE) as connection:
-            rows = current_option_publication_answers(connection, cutoff=now)
+            rows = (
+                [dict(row) for row in connection.execute(
+                    "SELECT publication.id::text AS publication_id, publication.scope, publication.published_at, item.payload, item.rank "
+                    "FROM app.publication publication JOIN app.publication_content_item item ON item.publication_id = publication.id "
+                    "WHERE publication.id = %s::uuid AND publication.status = 'published' AND item.model_name = 'option_paper_experiment'",
+                    [experiment_publication_id],
+                ).fetchall()]
+                if experiment_publication_id else current_option_publication_answers(connection, cutoff=now)
+            )
             rows.sort(
                 key=lambda row: (
                     row["published_at"] or datetime.min.replace(tzinfo=UTC),
@@ -107,6 +118,11 @@ class OptionsPaperExecutionRepository:
                 ),
                 reverse=True,
             )
+            if experiment_publication_id:
+                rows = [row for row in rows if (
+                    str(((row["payload"] or {}).get("ticket") or {}).get("state") or "").upper() == "READY"
+                    and not ((row["payload"] or {}).get("ticket") or {}).get("blockers")
+                )]
             rows = rows[:max(1, min(int(limit), 100))]
         result: list[dict[str, Any]] = []
         for source in rows:
@@ -129,7 +145,7 @@ class OptionsPaperExecutionRepository:
             if expires is None or expires <= now:
                 result.append({"decision_id": decision_id, "lane": lane, "status": "skipped", "reason": "ticket_expired"})
                 continue
-            if lane == "radar" and radar_gate is None:
+            if lane == "radar" and radar_gate is None and not experiment_publication_id:
                 radar_gate = self._radar_gate(now)
             if lane == "radar" and radar_gate is not None and radar_gate.get("status") != "READY_FOR_REVIEW":
                 result.append({
@@ -146,6 +162,8 @@ class OptionsPaperExecutionRepository:
                 continue
             entry_window = str(ticket.get("execution_ready_at") or ticket.get("expires_at"))
             key = f"{lane}:{decision_id}:v{version}:{entry_window}"
+            if experiment_publication_id:
+                key = f"experiment:{experiment_publication_id}:{key}"
             try:
                 staged = self.actions.stage_option_paper_entry(
                     decision_id=_uuid(decision_id),
@@ -156,6 +174,7 @@ class OptionsPaperExecutionRepository:
                     current_options_risk_sleeve_capital=sleeve_capital,
                     daily_loss_halt_pct=daily_loss_halt_pct,
                     max_open_positions=max_open_positions,
+                    **({"experiment_publication_id": _uuid(experiment_publication_id)} if experiment_publication_id else {}),
                 )
             except ValueError as exc:
                 result.append({"decision_id": decision_id, "lane": lane, "status": "rejected", "reason": str(exc)})
@@ -221,7 +240,7 @@ class OptionsPaperExecutionRepository:
                        paper.actual_fill_price, paper.filled_at, paper.submitted_at,
                        paper.filled_quantity, paper.exited_quantity, paper.fees,
                        paper.fill_evidence_at, paper.execution_quote, paper.contract_multiplier,
-                       paper.ticket_version, paper.ticket_snapshot, paper.structure,
+                       paper.ticket_version, paper.ticket_snapshot, paper.structure, paper.policy_result,
                        paper.created_at, instrument.symbol
                 FROM app.paper_order paper
                 JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
@@ -251,11 +270,29 @@ class OptionsPaperExecutionRepository:
             if not legs:
                 return self._terminal(connection, item, status="rejected", reason="immutable_ticket_legs_missing", now=now)
             status = str(item["status"])
-            if status in {"staged", "open"} and _quantity(item.get("filled_quantity")) < _quantity(item.get("quantity")):
+            expires = _timestamp(ticket.get("expires_at") or (ticket.get("entry") or {}).get("valid_until"))
+            entry_pending = status in {"staged", "open"} and _quantity(item.get("filled_quantity")) < _quantity(item.get("quantity"))
+            if entry_pending:
                 current, reason = self._current_ticket(connection, item, ticket, as_of=now)
                 if current is None:
-                    return self._terminal(connection, item, status="rejected", reason=reason, now=now)
-                expires = _timestamp(ticket.get("expires_at") or (ticket.get("entry") or {}).get("valid_until"))
+                    if _quantity(item.get("filled_quantity")) <= 0:
+                        return self._terminal(connection, item, status="rejected", reason=reason, now=now)
+                    # Cancel only the remainder when entry authority ends. The
+                    # filled quantity still needs its own holding-policy check.
+                    cancellation = {"status": "cancelled", "paper_order_id": str(item["id"]),
+                                    "cancelled_at": now.isoformat(), "reason": reason,
+                                    "requested_quantity": _quantity(item.get("quantity")),
+                                    "filled_quantity": _quantity(item.get("filled_quantity")),
+                                    "cancelled_quantity": _quantity(item.get("quantity")) - _quantity(item.get("filled_quantity"))}
+                    connection.execute(
+                        "UPDATE app.paper_order SET status = 'entered', unfilled_reason = %s, "
+                        "execution_quote = coalesce(execution_quote, '{}'::jsonb) || %s, updated_at = %s WHERE id = %s::uuid",
+                        [f"{reason}: unfilled_remainder_cancelled", Jsonb({ENTRY_CANCELLATION_KEY: cancellation}), now, paper_order_id],
+                    )
+                    item["status"] = "entered"
+                    item["execution_quote"] = {**dict(item.get("execution_quote") or {}), ENTRY_CANCELLATION_KEY: cancellation}
+                    entry_pending = False
+            if entry_pending:
                 if expires is None:
                     return self._terminal(connection, item, status="rejected", reason="ticket_expiry_missing", now=now)
                 thesis_reason = _thesis_blocker(connection, int(item["instrument_id"]), now)
@@ -263,7 +300,7 @@ class OptionsPaperExecutionRepository:
                     return self._terminal(connection, item, status="rejected", reason=thesis_reason, now=now)
                 if expires <= now:
                     return self._terminal(connection, item, status="unfilled", reason="ticket_expired_before_fill", now=now)
-                quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now)
+                quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now, **_experiment_quote_scope(ticket))
                 current_execution = execution_policy(
                     quoted,
                     structure=str(item.get("structure") or ticket.get("structure") or ""),
@@ -298,9 +335,11 @@ class OptionsPaperExecutionRepository:
                 if multiplier is None or multiplier <= 0:
                     return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "contract_multiplier_missing"}
                 quote_payload = {
+                    **dict(item.get("execution_quote") or {}),
                     "mid": _midpoint_package(quoted),
                     "spread": sum(float(leg["ask"]) - float(leg["bid"]) for leg in quoted),
                     "leg_count": len(quoted),
+                    **_experiment_quote_evidence(ticket, quoted),
                 }
                 connection.execute(
                     """
@@ -317,8 +356,14 @@ class OptionsPaperExecutionRepository:
                 _journal(
                     connection, item, action="paper_entry", quantity=fill_quantity,
                     price=fill_price, key=f"generic:{paper_order_id}:entry:{now.isoformat()}",
-                    details={"lane": item["lane"], "paper_order_id": paper_order_id, "slippage": slippage, "fees": fees},
+                    details={"lane": item["lane"], "paper_order_id": paper_order_id, "slippage": slippage, "fees": fees,
+                             **_experiment_quote_evidence(ticket, quoted)},
                 )
+                _record_liquidation_mark(connection, {
+                    **item, "filled_quantity": new_filled, "contract_multiplier": multiplier,
+                    "filled_at": item.get("filled_at") or now,
+                    "fees": float(item.get("fees") or 0) + fees,
+                }, quoted, now=now, execution_blockers=[])
                 self._record_phase4_fill(
                     connection, paper_order_id=paper_order_id, observed_at=now, status="entered" if new_filled >= _quantity(item["quantity"]) else "partial",
                 )
@@ -331,7 +376,7 @@ class OptionsPaperExecutionRepository:
             # publication is superseded or the global entry kill switch flips.
             # Those conditions block new entries and force an exit; they must
             # never relabel a live paper position as an unfilled ticket.
-            _current, current_reason = self._current_ticket(connection, item, ticket, as_of=now)
+            _current, current_reason = self._current_ticket(connection, item, ticket, as_of=now, for_entry=False)
             thesis_reason = _thesis_blocker(connection, int(item["instrument_id"]), now)
             return self._manage_open(
                 connection, item, ticket, legs, now,
@@ -388,7 +433,7 @@ class OptionsPaperExecutionRepository:
                 )
                 self._record_phase4_fill(connection, paper_order_id=str(order["id"]), observed_at=now, status="exited")
                 return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
-        quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now)
+        quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now, **_experiment_quote_scope(ticket))
         execution = execution_policy(
             quoted,
             structure=structure,
@@ -400,7 +445,8 @@ class OptionsPaperExecutionRepository:
         credit = is_credit_structure(structure)
         exit_price = package_price(quoted, phase="exit")
         policy_blockers = list(execution.get("blockers") or [])
-        trigger_reason = _exit_reason(
+        _record_liquidation_mark(connection, order, quoted, now=now, execution_blockers=policy_blockers)
+        trigger_reason = exit_reason(
             ticket=ticket, exits=exits, credit=credit, entry_price=_number(order.get("actual_fill_price")),
             exit_price=exit_price, execution_blockers=[], now=now,
         )
@@ -458,6 +504,7 @@ class OptionsPaperExecutionRepository:
             details={
                 "lane": order["lane"], "paper_order_id": str(order["id"]),
                 "net_pnl": round(net_pnl, 2), "slippage": slippage, "fees": fees,
+                **_experiment_quote_evidence(ticket, quoted),
             },
         )
         self._record_phase4_fill(
@@ -492,6 +539,7 @@ class OptionsPaperExecutionRepository:
         ticket: dict[str, Any],
         *,
         as_of: datetime,
+        for_entry: bool = True,
     ) -> tuple[dict[str, Any] | None, str]:
         decision_id = str(order.get("decision_id") or "")
         version = _integer(order.get("ticket_version"))
@@ -499,15 +547,27 @@ class OptionsPaperExecutionRepository:
         if not decision_id or version is None:
             return None, "paper_order_ticket_identity_missing"
         scope = "options-decision-system" if lane == "qqq" else "options-radar"
-        matches = [
-            row for row in current_option_publication_answers(connection, cutoff=as_of)
-            if row["scope"] == scope
-            if str(
-                (row["payload"] or {}).get("decision_id")
-                or (row["payload"] or {}).get("opportunity_id")
-                or ""
-            ) == decision_id
-        ]
+        if ticket.get("experiment"):
+            from investment_panel.database.options_experiments import experiment_publication_row
+
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", ["strategy:options-radar-core"])
+            try:
+                matches = [experiment_publication_row(
+                    connection, str((ticket.get("publication_lineage") or {}).get("publication_id") or ""),
+                    decision_id, as_of=as_of, allow_superseded=True, for_entry=for_entry,
+                )]
+            except ValueError as error:
+                return None, str(error)
+        else:
+            matches = [
+                row for row in current_option_publication_answers(connection, cutoff=as_of)
+                if row["scope"] == scope
+                if str(
+                    (row["payload"] or {}).get("decision_id")
+                    or (row["payload"] or {}).get("opportunity_id")
+                    or ""
+                ) == decision_id
+            ]
         if len(matches) != 1:
             return None, "ticket_no_longer_in_current_publication"
         row = matches[0]
@@ -521,7 +581,7 @@ class OptionsPaperExecutionRepository:
         expires_at = _timestamp(current_ticket.get("expires_at") or (current_ticket.get("entry") or {}).get("valid_until"))
         if execution_ready_at is None or execution_ready_at > as_of:
             return None, "ticket_not_yet_execution_ready"
-        if expires_at is None or expires_at <= as_of:
+        if for_entry and (expires_at is None or expires_at <= as_of):
             return None, "ticket_expired"
         lineage = dict(ticket.get("publication_lineage") or {})
         expected_publication = str(lineage.get("publication_id") or "")
@@ -550,6 +610,149 @@ class OptionsPaperExecutionRepository:
         return {"paper_order_id": str(order["id"]), "status": "closed" if status in {"exited", "invalidated"} else status, "reason": reason, "event_status": status if status in {"exited", "invalidated"} else None}
 
 
+def _record_liquidation_mark(
+    connection: Any, order: dict[str, Any], quotes: list[dict[str, Any]], *,
+    now: datetime, execution_blockers: list[str],
+) -> None:
+    """Measure the observed debit-paper wealth path; never authorize an exit."""
+    measured_at = max(now, datetime.now(UTC))
+    previous = dict((order.get("execution_quote") or {}).get(PAPER_MARK_KEY) or {})
+    mark = {**previous, "status": "unknown", "checked_at": measured_at.isoformat(),
+            "current_net_return": None, "max_drawdown": None, "coverage": "observed_executable_quotes_only"}
+    reason = None
+    filled, exited = _quantity(order.get("filled_quantity")), _quantity(order.get("exited_quantity"))
+    requested = _quantity(order.get("quantity"))
+    cancellation = dict((order.get("execution_quote") or {}).get(ENTRY_CANCELLATION_KEY) or {})
+    cancelled_at = _timestamp(cancellation.get("cancelled_at"))
+    remainder_cancelled = (
+        0 < filled < requested and str(order.get("status")) in {"entered", "partial_exited"}
+        and cancellation.get("status") == "cancelled" and cancellation.get("paper_order_id") == str(order["id"])
+        and cancelled_at is not None and cancelled_at <= now
+        and cancellation.get("requested_quantity") == requested and cancellation.get("filled_quantity") == filled
+        and cancellation.get("cancelled_quantity") == requested - filled
+    )
+    entry_quantity_fixed = filled == requested or remainder_cancelled
+    remaining = filled - exited
+    multiplier = _number(order.get("contract_multiplier"))
+    if is_credit_structure(str(order.get("structure") or "")):
+        reason = "credit_or_assignment_return_basis_unavailable"
+    elif filled <= 0 or filled > requested or remaining <= 0:
+        reason = "entry_fill_quantity_incomplete"
+    elif execution_blockers or not quotes or any(
+        not leg.get("quote_id") or leg.get("capture_complete") is not True
+        or not isinstance(leg.get("observed_at"), datetime) or not isinstance(leg.get("quote_time"), datetime)
+        or not leg["observed_at"] <= leg["quote_time"] <= measured_at for leg in quotes
+    ):
+        reason = "complete_fresh_executable_mark_unavailable"
+    elif multiplier is None or not isfinite(multiplier) or multiplier <= 0 or any(leg.get("multiplier") != multiplier for leg in quotes):
+        reason = "contract_multiplier_unverified"
+    elif _available_quantity(quotes, phase="exit", requested=remaining) < remaining:
+        reason = "full_remaining_liquidation_size_unavailable"
+    else:
+        fills = connection.execute(
+            """SELECT coalesce(sum(quantity) FILTER (WHERE action = 'paper_entry'), 0) AS entry_quantity,
+                      coalesce(sum(quantity) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_quantity,
+                      coalesce(sum(quantity * price) FILTER (WHERE action = 'paper_entry'), 0) AS entry_units,
+                      coalesce(sum(quantity * price) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_units,
+                      coalesce(sum((details->>'fees')::numeric)
+                          FILTER (WHERE details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS actual_fees,
+                      count(*) FILTER (WHERE NOT coalesce(details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)) AS missing_fees,
+                      array_agg(id::text ORDER BY created_at, id) AS journal_ids,
+                      array_agg(id::text ORDER BY created_at, id) FILTER (WHERE action = 'paper_entry') AS entry_journal_ids
+               FROM app.trade_journal
+               WHERE details->>'paper_order_id' = %s AND decision_id = %s::uuid
+                 AND (action IN ('paper_entry', 'paper_exit') OR action LIKE 'paper_exit:%%')
+                 AND quantity > 0 AND price IS NOT NULL AND created_at <= %s
+                 AND rationale = 'deterministic_options_paper_execution'""",
+            [str(order["id"]), order.get("decision_id"), measured_at],
+        ).fetchone()
+        if fills is None:
+            reason = "paper_fill_journal_missing"
+        else:
+            entry_cash = float(fills["entry_units"]) * multiplier
+            exit_cash = float(fills["exit_units"]) * multiplier
+            actual_fees = float(fills["actual_fees"])
+            price = package_price(quotes, phase="exit")
+            # Entry marks are provisional while another fill can change the
+            # capital basis. Retain their real quote tape if cancellation fixes
+            # that same basis; start again if a later entry added capital.
+            if previous.get("entry_quantity_fixed") is False and (
+                previous.get("entry_cash") != entry_cash or previous.get("entry_quantity") != filled
+            ):
+                previous = {}
+                mark = {"status": "unknown", "checked_at": measured_at.isoformat(),
+                        "current_net_return": None, "max_drawdown": None, "coverage": "observed_executable_quotes_only"}
+            if (float(fills["entry_quantity"]) != filled or float(fills["exit_quantity"]) != exited
+                or fills["missing_fees"] or entry_cash <= 0 or price is None
+                or any(not isfinite(value) for value in (entry_cash, exit_cash, actual_fees))
+                or abs(actual_fees - float(order.get("fees") or 0)) > 1e-6):
+                reason = "paper_fill_or_fee_journal_incomplete"
+            elif previous.get("entry_cash") is not None and abs(float(previous["entry_cash"]) - entry_cash) > 1e-6:
+                reason = "entry_capital_basis_changed"
+            else:
+                modeled_fees = _fees(len(quotes), remaining)
+                value = (exit_cash + remaining * price * multiplier - entry_cash - actual_fees - modeled_fees) / entry_cash
+                quote_ids = [str(leg["quote_id"]) for leg in quotes]
+                count = int(previous.get("mark_count") or 0) + int(quote_ids != previous.get("quote_ids"))
+                previous_peak = max(0.0, float(previous.get("peak_net_return") or 0))
+                peak = max(previous_peak, value)
+                new_quote_peak = value > previous_peak
+                initial_at = (_timestamp(order.get("filled_at")) or measured_at).isoformat()
+                peak_at = measured_at.isoformat() if new_quote_peak else previous.get("peak_at") or initial_at
+                evidence = [{key: item.isoformat() if isinstance(item, (datetime, date)) else item for key, item in leg.items()} for leg in quotes]
+                drawdown = min(0.0, (1 + value) / (1 + peak) - 1) if peak > -1 else None
+                observed_drawdown = min(float(previous.get("observed_max_drawdown") or 0), drawdown) if drawdown is not None else None
+                mark.update({
+                    "status": "observed", "reason": None, "measured_at": measured_at.isoformat(),
+                    "first_observed_at": previous.get("first_observed_at") or measured_at.isoformat(),
+                    "current_net_return": value, "peak_net_return": peak, "peak_at": peak_at,
+                    "mark_count": count, "max_drawdown": observed_drawdown if count >= 2 else None,
+                    "observed_max_drawdown": observed_drawdown,
+                    "drawdown_reason": None if count >= 2 and drawdown is not None else "two_distinct_marks_required",
+                    "quote_ids": quote_ids, "quotes": evidence, "journal_ids": fills["journal_ids"],
+                    "entry_quantity": filled, "exited_quantity": exited, "remaining_quantity": remaining,
+                    "entry_quantity_fixed": entry_quantity_fixed,
+                    "entry_quantity_basis": "cancelled_remainder" if remainder_cancelled else "filled_order" if entry_quantity_fixed else "pending_entry",
+                    "entry_cash": entry_cash, "exit_cash": exit_cash, "contract_multiplier": multiplier,
+                    "actual_fees": actual_fees, "modeled_remaining_exit_fees": modeled_fees,
+                    "capital_basis": "actual_entry_debit",
+                })
+                if new_quote_peak:
+                    mark.update({"peak_quotes": evidence, "peak_basis": "observed_liquidation", "peak_journal_ids": []})
+                elif not previous.get("peak_at"):
+                    mark.update({"peak_quotes": [], "peak_basis": "initial_entry_capital", "peak_journal_ids": fills["entry_journal_ids"]})
+                if drawdown is not None and drawdown <= float(previous.get("observed_max_drawdown") or 0):
+                    mark.update({"drawdown_peak_at": peak_at, "drawdown_trough_at": measured_at.isoformat(),
+                                 "drawdown_peak_basis": mark.get("peak_basis"), "drawdown_peak_journal_ids": mark.get("peak_journal_ids"),
+                                 "drawdown_peak_quotes": mark.get("peak_quotes"), "drawdown_trough_quotes": evidence})
+                if not entry_quantity_fixed:
+                    mark.update({"status": "unknown", "reason": "entry_fill_quantity_incomplete",
+                                 "current_net_return": None, "max_drawdown": None,
+                                 "drawdown_reason": "entry_quantity_not_fixed"})
+    if reason:
+        mark["reason"] = reason
+        mark["missing_mark_count"] = int(previous.get("missing_mark_count") or 0) + 1
+    connection.execute(
+        "UPDATE app.paper_order SET execution_quote = coalesce(execution_quote, '{}'::jsonb) || %s WHERE id = %s::uuid",
+        [Jsonb({PAPER_MARK_KEY: mark}), str(order["id"])],
+    )
+
+
+def _experiment_quote_scope(ticket: dict[str, Any]) -> dict[str, Any]:
+    if not ticket.get("experiment"):
+        return {}
+    return {"source_id": str((ticket.get("provenance") or {}).get("quote_source") or ""), "complete_capture_only": True}
+
+
+def _experiment_quote_evidence(ticket: dict[str, Any], legs: list[dict[str, Any]]) -> dict[str, Any]:
+    if not ticket.get("experiment"):
+        return {}
+    return {"experiment": ticket["experiment"], "quotes": [
+        {key: value.isoformat() if isinstance(value, (date, datetime)) else value for key, value in leg.items()}
+        for leg in legs
+    ]}
+
+
 def _available_quantity(legs: list[dict[str, Any]], *, phase: str, requested: float) -> float:
     sizes: list[int] = []
     for leg in legs:
@@ -560,41 +763,6 @@ def _available_quantity(legs: list[dict[str, Any]], *, phase: str, requested: fl
             return 0
         sizes.append(amount)
     return float(min(floor(requested), min(sizes))) if sizes else 0
-
-
-def _exit_reason(
-    *,
-    ticket: dict[str, Any],
-    exits: dict[str, Any],
-    credit: bool,
-    entry_price: float | None,
-    exit_price: float | None,
-    execution_blockers: list[str],
-    now: datetime,
-) -> str | None:
-    if _timestamp(ticket.get("expires_at")) and _timestamp(ticket.get("expires_at")) <= now:
-        return "ticket_expired"
-    expiration = _date(ticket.get("expiration"))
-    time_exit_dte = _integer(exits.get("time_exit_dte"))
-    if expiration is not None and time_exit_dte is not None and (expiration - now.date()).days <= time_exit_dte:
-        return "time_exit"
-    if execution_blockers:
-        return "liquidity_exit"
-    if entry_price is None or exit_price is None:
-        return None
-    profit = _number(exits.get("profit_price"))
-    loss = _number(exits.get("loss_price"))
-    if credit:
-        if profit is not None and exit_price <= profit:
-            return "profit_target"
-        if loss is not None and exit_price >= loss:
-            return "stop_loss"
-    else:
-        if profit is not None and exit_price >= profit:
-            return "profit_target"
-        if loss is not None and exit_price <= loss:
-            return "stop_loss"
-    return None
 
 
 def _thesis_blocker(connection: Any, instrument_id: int, now: datetime) -> str | None:
@@ -733,5 +901,4 @@ def _uuid(value: str):
 
 
 available_quantity = _available_quantity
-exit_reason = _exit_reason
 net_pnl = _net_pnl

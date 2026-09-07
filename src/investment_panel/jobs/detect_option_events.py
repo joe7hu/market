@@ -20,6 +20,7 @@ from investment_panel.core.job_policy import job_timeout_seconds
 from investment_panel.core.robinhood_options import RobinhoodClient, collect_robinhood_equity_quotes
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.options import register_option_source
 from investment_panel.database.option_events import OptionEventRepository
 from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository
 from investment_panel.database.options_recovery_cohorts import RecoveryCohortRepository
@@ -104,8 +105,8 @@ def run(
         return _failed(repository, reference, "provider_capacity_deferred")
     provider_run_id: str | None = None
     try:
-        ingestion.register_source(
-            "robinhood", name="Robinhood", family="broker", kind="market_data",
+        register_option_source(
+            ingestion, "robinhood",
             capabilities={"quotes": True, "option_quotes": True, "recovery_detector": True},
         )
         with ingestion.run("robinhood", "equity_quotes") as provider_run:

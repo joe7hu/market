@@ -435,3 +435,42 @@ it("renders stored brief and portfolio risk shapes with omitted optional analysi
   expect(markup).not.toContain('aria-label="Bullish"');
   expect(markup).not.toContain('aria-label="Bearish"');
 });
+
+it("shows published category totals and the same backend portfolio return as Portfolio", () => {
+  const data = emptyPanelData();
+  data.portfolioSummary = { count: 1, rows: [{ portfolio_value: 240, total_pnl: 40, total_pnl_pct: 20, as_of: "2026-09-04T20:00:00Z" }] };
+  const markup = renderToStaticMarkup(createElement(TodayPage, {
+    data, model: buildModel(data), lastRefresh: null,
+    actionQueue: { ...response,
+      brief_items: [{ stable_key: "catalyst:1", category: "catalysts", title: "Earnings release", days_until: 2,
+        score: 50, sentiment: "neutral", severity: "info", summary: "Review the earnings release." }],
+      brief_categories: [
+        { category: "catalysts", total_count: 11, shown_count: 1, coverage_status: "unknown", coverage_message: "Source coverage is unknown." },
+        { category: "whats_changed", total_count: 6, shown_count: 0, coverage_status: "unknown", coverage_message: "Source coverage is unknown." },
+      ],
+    }, actionQueueLoading: false, actionQueueError: null, loading: false,
+    onRefresh: () => {}, onOpenTicker: () => {},
+  }));
+  expect(markup).toContain("$40.00 (+20.00%)");
+  expect(markup).toContain("Return on invested capital");
+  expect(markup).toContain("1 of 11 shown");
+  expect(markup).toContain("0 of 6 shown");
+  expect(markup).toContain("Earnings release");
+});
+
+it("does not call an empty catalyst list a clear calendar without complete coverage", () => {
+  const data = emptyPanelData();
+  const props = {
+    data, model: buildModel(data), lastRefresh: null, actionQueueLoading: false,
+    actionQueueError: null, loading: false, onRefresh: () => {}, onOpenTicker: () => {},
+  };
+  const unknown = renderToStaticMarkup(createElement(TodayPage, { ...props, actionQueue: { ...response, brief_items: [] } }));
+  expect(unknown).toContain("Catalyst coverage is unavailable");
+  expect(unknown).not.toContain("Nothing scheduled");
+  expect(unknown).not.toContain("No catalysts found");
+  const complete = renderToStaticMarkup(createElement(TodayPage, { ...props, actionQueue: { ...response, brief_items: [], brief_categories: [
+    { category: "catalysts", total_count: 0, shown_count: 0, coverage_status: "complete", coverage_message: "Source coverage is complete." },
+  ] } }));
+  expect(complete).toContain("No catalysts found");
+  expect(complete).toContain("complete coverage");
+});

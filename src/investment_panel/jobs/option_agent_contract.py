@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from investment_panel.database.strategy_parameters import EVALUABLE_GATES
+
 
 THESIS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -82,30 +84,10 @@ POSTMORTEM_SCHEMA: dict[str, Any] = {
         "proposed_rule_change": {"type": "string"},
         "proposed_parameter_changes": {
             "type": "object", "additionalProperties": False,
-            "required": [
-                "delta_min", "delta_max", "dte_min", "dte_max", "max_spread_pct",
-                "reject_spread_pct", "min_open_interest", "min_volume",
-                "max_required_move_pct", "max_iv_percentile", "reject_iv_percentile",
-                "require_price_above_ma50", "require_rs_improving", "candidate_note",
-                "filter_reason", "setup_type",
-            ],
+            "required": sorted(EVALUABLE_GATES),
             "properties": {
-                "delta_min": {"type": ["number", "null"]},
-                "delta_max": {"type": ["number", "null"]},
-                "dte_min": {"type": ["number", "null"]},
-                "dte_max": {"type": ["number", "null"]},
-                "max_spread_pct": {"type": ["number", "null"]},
-                "reject_spread_pct": {"type": ["number", "null"]},
-                "min_open_interest": {"type": ["number", "null"]},
-                "min_volume": {"type": ["number", "null"]},
-                "max_required_move_pct": {"type": ["number", "null"]},
-                "max_iv_percentile": {"type": ["number", "null"]},
-                "reject_iv_percentile": {"type": ["number", "null"]},
-                "require_price_above_ma50": {"type": ["boolean", "null"]},
-                "require_rs_improving": {"type": ["boolean", "null"]},
-                "candidate_note": {"type": ["string", "null"]},
-                "filter_reason": {"type": ["string", "null"]},
-                "setup_type": {"type": ["string", "null"]},
+                name: {"type": ["number", "null"], "minimum": 0}
+                for name in sorted(EVALUABLE_GATES)
             },
         },
         "expected_effect": {"type": "string"},

@@ -351,12 +351,20 @@ def resolution_from_legacy(payload: Mapping[str, Any]) -> DecisionResolutionV2:
 def next_action_for(blocker: str | None) -> str:
     actions = {
         "current_price": "Refresh the confirmed current price.",
-        "portfolio_nav": "Refresh PostgreSQL account facts before sizing.",
+        "portfolio_nav": "Reconcile cash and holdings with the account statement and its effective date before sizing.",
         "invalidation": "Add a concrete thesis invalidation.",
         "entry_range": "Refresh the point-in-time entry range.",
         "target_range": "Refresh the point-in-time exit target.",
         "paper_assignment_permission_required": "Keep CSP assignment disabled until paper permission is explicit.",
         "fresh_postgres_account_facts_required": "Refresh PostgreSQL cash and buying-power facts.",
+        "cash_comparator": "Keep cash until a supported trade has a better return after costs and meets the risk limits.",
+        "forecast_missing": "Collect the required price history and matured stock outcomes, then rerun the forecast evaluation.",
+        "alpha_strategy_revision_missing": "Review the failed strategy gates in Research; validate a candidate before using its signal for a trade.",
+        "insufficient_history": "Collect the missing market sessions; imported history cannot replace required forward observations.",
+        "scenario_evidence_missing": "Collect portfolio stress observations and recalculate the loss scenarios before sizing.",
+        "stock_cash_comparator_missing": "Recalculate the stock return after costs against cash from the same decision date.",
+        "trade_plan_missing": "Refresh the ticker evidence and publish its trade plan.",
+        "risk_policy_blocked": "Reduce the proposed risk or keep cash; retain the configured risk limits.",
     }
     return actions.get(str(blocker or ""), "Refresh the required fact and recalculate the resolution.")
 

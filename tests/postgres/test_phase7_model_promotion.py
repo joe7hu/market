@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.core.decision.governance import TRACKED_METRICS
@@ -10,8 +11,10 @@ import investment_panel.database.strategy_governance as strategy_governance
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
 
 
+@pytest.mark.parametrize("paper_defect", [None, "missing_journal", "incomplete_exit", "repeated_episode", "missing_cost", "late_journal"])
 def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
     migrated_postgres_dsn: str,
+    paper_defect: str | None,
 ) -> None:
     """BIG-A15: real paper governance evidence is required before promotion."""
 
@@ -49,22 +52,33 @@ def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
             for index in range(30):
                 decision_id = connection.execute(
                     "INSERT INTO analysis.decision "
-                    "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) "
-                    "VALUES (%s, %s, %s, 'option', 'resolved', now(), %s, %s) RETURNING id",
-                    [run_id, instrument_id, f"phase7-{index}", "1" * 64, strategy_id],
+                    "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id, lane, episode_key) "
+                    "VALUES (%s, %s, %s, 'option', 'resolved', now() - interval '2 hours', %s, %s, 'ticker', %s) RETURNING id",
+                    [run_id, instrument_id, f"phase7-{index}", "1" * 64, strategy_id, f"episode-{index}"],
                 ).fetchone()["id"]
                 paper_order_id = connection.execute(
                     "INSERT INTO app.paper_order "
                     "(decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
                     "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, "
-                    "fees, entry_slippage, exit_slippage, lane) "
-                    "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now(), 100, now(), 110, 1, 1, 0.5, 0.1, 0.1, 'ticker') "
+                    "fees, entry_slippage, exit_slippage, lane, contract_multiplier) "
+                    "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now() - interval '1 hour', 100, now() - interval '30 minutes', 110, 1, 1, 0.5, 0.1, 0.1, 'ticker', 100) "
                     "RETURNING id",
                     [decision_id, instrument_id],
                 ).fetchone()["id"]
                 paper_order_ids.append(str(paper_order_id))
                 decision_ids.append(str(decision_id))
+                connection.cursor().executemany(
+                    """INSERT INTO app.trade_journal (decision_id, instrument_id, action, quantity, price, rationale, details)
+                       VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s)""",
+                    [(decision_id, instrument_id, action, price, Jsonb({"paper_order_id": str(paper_order_id)}))
+                     for action, price in (("paper_entry", 100), ("paper_exit:take_profit", 110))],
+                )
             for stage in ("walk_forward", "shadow", "execution_grade_paper"):
+                stage_metrics = dict(metrics)
+                if stage != "execution_grade_paper":
+                    stage_metrics.update({name: None for name in (
+                        "net_pnl_after_realized_costs", "turnover", "slippage", "capacity",
+                    )})
                 connection.execute(
                     """
                     INSERT INTO analysis.strategy_evaluation
@@ -74,7 +88,7 @@ def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
                             now(), 'pass', %s, %s)
                     """,
                     [
-                        strategy_id, stage, Jsonb(metrics),
+                        strategy_id, stage, Jsonb(stage_metrics),
                         Jsonb({
                             "sample_size": 30, "source": "analysis.option_outcome",
                             "method": "retained_actionable_decisions_forward_evaluation",
@@ -89,8 +103,20 @@ def test_promotion_requires_walk_forward_shadow_and_execution_grade_paper(
                         }),
                     ],
                 )
+        if paper_defect:
+            with runtime.transaction() as connection:
+                if paper_defect == "missing_journal":
+                    connection.execute("DELETE FROM app.trade_journal WHERE details->>'paper_order_id' = %s", [paper_order_ids[0]])
+                elif paper_defect == "incomplete_exit":
+                    connection.execute("UPDATE app.paper_order SET exited_quantity = .5 WHERE id = %s", [paper_order_ids[0]])
+                elif paper_defect == "missing_cost":
+                    connection.execute("UPDATE app.paper_order SET entry_slippage = NULL WHERE id = %s", [paper_order_ids[0]])
+                elif paper_defect == "late_journal":
+                    connection.execute("UPDATE app.trade_journal SET created_at = clock_timestamp() WHERE details->>'paper_order_id' = %s", [paper_order_ids[0]])
+                else:
+                    connection.execute("UPDATE analysis.decision SET episode_key = 'one-repeated-episode' WHERE strategy_revision_id = %s", [strategy_id])
         result = StrategyGovernanceRepository(runtime).promotion_readiness(strategy_id)
-        assert result["promotion_eligible"] is True
+        assert result["promotion_eligible"] is (paper_defect is None)
         assert result["paper_only"] is True
         assert result["live_eligibility"] == "unavailable"
     finally:

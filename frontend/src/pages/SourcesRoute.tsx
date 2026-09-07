@@ -11,6 +11,7 @@ import { rows, tickerSymbol } from "@/utils";
 import { displayField, numberField, textField, titleLabel, toneFromText } from "@/views/rowFormat";
 import { WorkspacePage } from "@/views/workspacePage";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
+import { ResearchSummary } from "@/views/researchSummary";
 
 type SourceFamily = "all" | "filing" | "transcript" | "podcast" | "blog" | "private_graph" | "market_data" | "other";
 type RankingMode = "discussed" | "bullish" | "bearish" | "conviction";
@@ -61,6 +62,7 @@ export function SourcesRoute() {
     >
 
       <ScopeStatusNotice status={scopeStatus?.sources} onRetry={() => void loadScope("sources", { force: true })} />
+      <ResearchSummary onOpenTicker={openTicker} />
       <div className="flex gap-2 overflow-x-auto pb-1">
         {RANKING_MODES.map((item) => {
           const Icon = item.icon;

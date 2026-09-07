@@ -66,7 +66,7 @@ def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dic
         blogs_enabled=config.research_sources.blogs.enabled,
         x_enabled=bool(config.research_sources.x.enabled and config.research_sources.x.list_id),
     )
-    known = _known_symbols(runtime)
+    known, company_names, provider_aliases = _content_catalog(runtime)
     runner = OpenCliRunner(
         command=config.data_sources.opencli.command,
         timeout_seconds=config.data_sources.opencli.timeout_seconds,
@@ -108,9 +108,13 @@ def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dic
             "kind": "social", "capability": "x_list", "key": x.list_id,
             "fetch": lambda: runner.read_json(["twitter", "list-tweets", str(x.list_id), "--limit", str(x.limit)]),
         })
-    results = [_run_source(config, runtime, known, spec) for spec in specs]
+    results = [
+        _run_source(config, runtime, known, spec, company_names=company_names, provider_aliases=provider_aliases)
+        for spec in specs
+    ]
     return {
         "status": _overall_status(results),
+        **{stage: _stage_status(results, stage) for stage in ("source_status", "linking_status", "publication_status")},
         "database": "postgresql",
         "items": sum(int(row.get("items") or 0) for row in results),
         "instrument_links": sum(int(row.get("instrument_links") or 0) for row in results),
@@ -132,7 +136,15 @@ def run_social(config_path: str | None = None) -> dict[str, Any]:
     return run(config_path, kinds={"social"})
 
 
-def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str, Any]) -> dict[str, Any]:
+def _run_source(
+    config: AppConfig,
+    runtime: Any,
+    known: set[str],
+    spec: dict[str, Any],
+    *,
+    company_names: dict[str, set[str]],
+    provider_aliases: dict[tuple[str, str, str], set[str]],
+) -> dict[str, Any]:
     repository = IngestionRepository(runtime)
     source_id = str(spec["source_id"])
     with runtime.read() as connection:
@@ -162,6 +174,8 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
                     "source_id": source_id,
                     "status": "rate_limited",
                     "source_status": "partial",
+                    "linking_status": "not_run",
+                    "publication_status": "not_run",
                     "downstream_status": "not_run",
                     "items": 0,
                     "instrument_links": 0,
@@ -173,6 +187,8 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
                     "source_id": source_id,
                     "status": "unavailable",
                     "source_status": "partial",
+                    "linking_status": "not_run",
+                    "publication_status": "not_run",
                     "downstream_status": "not_run",
                     "items": 0,
                     "instrument_links": 0,
@@ -181,8 +197,24 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
             raw_rows = ensure_list(payload)
             archive = _archive_payload(config, source_id, ingestion_run.id, payload)
             payload_id = repository.record_payload_file(ingestion_run.id, archive, source_key=str(spec["key"]))
-            rows = [_content_row(source_id, spec["kind"], row, known) for row in raw_rows]
+            rows = [
+                _content_row(
+                    source_id, spec["kind"], row, known, company_names=company_names,
+                    provider_aliases=provider_aliases,
+                    provider="twitter" if spec["kind"] == "social" else str(spec["key"]),
+                )
+                for row in raw_rows
+            ]
             rows = [row for row in rows if row is not None]
+            linked_items = sum(bool(row["symbols"]) for row in rows)
+            linking = {
+                "linking_status": "ok" if linked_items else ("unmatched" if rows else "empty"),
+                "linked_items": linked_items,
+                "unlinked_items": len(rows) - linked_items,
+                "unresolved_references": sum(
+                    len(row["metadata"].get("unresolved_instrument_references", [])) for row in rows
+                ),
+            }
             facts = SourceFactRepository(runtime)
             counts = facts.store_content_items(
                 ingestion_run.id, source_id, rows, payload_id=payload_id
@@ -192,6 +224,9 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
                 instrument_count=counts["instrument_links"],
                 summary={
                     "archive_uri": archive.resolve().as_uri(),
+                    "source_status": "ok",
+                    **linking,
+                    "publication_status": "pending",
                     "signals_pending": True,
                     "signal_version": SOURCE_SIGNAL_VERSION,
                 },
@@ -201,6 +236,8 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
             "source_id": source_id,
             "status": "failed",
             "source_status": "failed",
+            "linking_status": "not_run",
+            "publication_status": "not_run",
             "downstream_status": "not_run",
             "items": 0,
             "instrument_links": 0,
@@ -236,6 +273,7 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
             source_id,
             _content_signal_rows(source_id, rows),
         )
+        publication_status = "published" if signal_count else ("unchanged" if linked_items else "no_links")
         analysis.finish_run(
             analysis_run_id,
             "succeeded",
@@ -243,6 +281,8 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
                 "source_id": source_id,
                 "ingestion_run_id": str(ingestion_run.id),
                 "signals": signal_count,
+                **linking,
+                "publication_status": publication_status,
                 "signal_version": SOURCE_SIGNAL_VERSION,
             },
         )
@@ -260,6 +300,8 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
             "source_id": source_id,
             "status": "partial",
             "source_status": "ok",
+            **linking,
+            "publication_status": "failed",
             "downstream_status": "failed",
             "analysis_run_id": str(analysis_run_id) if analysis_run_id else None,
             "signals": 0,
@@ -270,6 +312,8 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
         "source_id": source_id,
         "status": "ok",
         "source_status": "ok",
+        **linking,
+        "publication_status": publication_status,
         "downstream_status": "ok",
         "analysis_run_id": str(analysis_run_id),
         "signals": signal_count,
@@ -277,7 +321,16 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
     }
 
 
-def _content_row(source_id: str, kind: str, row: dict[str, Any], known: set[str]) -> dict[str, Any] | None:
+def _content_row(
+    source_id: str,
+    kind: str,
+    row: dict[str, Any],
+    known: set[str],
+    *,
+    company_names: dict[str, set[str]] | None = None,
+    provider_aliases: dict[tuple[str, str, str], set[str]] | None = None,
+    provider: str = "",
+) -> dict[str, Any] | None:
     title = str(row.get("title") or row.get("headline") or row.get("text") or "").strip()
     if not title:
         return None
@@ -285,6 +338,10 @@ def _content_row(source_id: str, kind: str, row: dict[str, Any], known: set[str]
     summary = str(row.get("summary") or row.get("description") or row.get("text") or "").strip()
     source_key = str(row.get("id") or hashlib.sha256(f"{source_id}|{title}|{url}".encode()).hexdigest())
     published = row.get("published_at") or row.get("published") or row.get("created_at") or row.get("date")
+    symbols, unresolved = _resolve_symbols(
+        f"{title} {summary}", row, known, company_names or {}, provider_aliases or {},
+        providers={source_id.casefold(), provider.casefold()},
+    )
     return {
         "source_key": source_key,
         "kind": kind,
@@ -294,9 +351,12 @@ def _content_row(source_id: str, kind: str, row: dict[str, Any], known: set[str]
         "published_at": _timestamp(published),
         "observed_at": datetime.now(UTC),
         "summary": summary[:8000],
-        "symbols": _symbols(f"{title} {summary}", known),
+        "symbols": symbols,
         "license_status": "provider_link_only",
-        "metadata": {"provider": source_id},
+        "metadata": {
+            "provider": source_id,
+            **({"unresolved_instrument_references": unresolved} if unresolved else {}),
+        },
     }
 
 
@@ -378,9 +438,82 @@ def _content_hash(row: dict[str, Any]) -> str:
     return hashlib.sha256(digest_value.encode()).hexdigest() if digest_value else ""
 
 
-def _known_symbols(runtime: Any) -> set[str]:
+def _content_catalog(
+    runtime: Any,
+) -> tuple[set[str], dict[str, set[str]], dict[tuple[str, str, str], set[str]]]:
     with runtime.read() as connection:
-        return {str(row["symbol"]) for row in connection.execute("SELECT symbol FROM catalog.instrument").fetchall()}
+        instruments = connection.execute("SELECT symbol, name FROM catalog.instrument").fetchall()
+        aliases = connection.execute(
+            "SELECT instrument.symbol, alias.provider, alias.external_symbol, alias.exchange "
+            "FROM catalog.instrument_alias alias JOIN catalog.instrument instrument ON instrument.id = alias.instrument_id"
+        ).fetchall()
+    names: dict[str, set[str]] = {}
+    for row in instruments:
+        name = _name_key(row["name"] or "")
+        short = re.sub(r"(?:\s+(?:incorporated|corporation|limited|inc|corp|ltd|plc|llc))+$", "", name)
+        for alias in {name, short}:
+            if len(alias.replace(" ", "")) >= 4 and alias != str(row["symbol"]).casefold():
+                names.setdefault(alias, set()).add(str(row["symbol"]))
+    provider_aliases: dict[tuple[str, str, str], set[str]] = {}
+    for row in aliases:
+        for exchange in {"", str(row["exchange"] or "").upper()}:
+            key = (str(row["provider"]).casefold(), str(row["external_symbol"]).upper(), exchange)
+            provider_aliases.setdefault(key, set()).add(str(row["symbol"]))
+    return {str(row["symbol"]) for row in instruments}, names, provider_aliases
+
+
+def _name_key(value: str) -> str:
+    return re.sub(r"[^\w]+", " ", value.casefold()).strip()
+
+
+def _resolve_symbols(
+    text: str,
+    row: dict[str, Any],
+    known: set[str],
+    company_names: dict[str, set[str]],
+    provider_aliases: dict[tuple[str, str, str], set[str]],
+    *,
+    providers: set[str],
+) -> tuple[list[str], list[dict[str, str]]]:
+    found = set(_symbols(text, known))
+    unresolved: list[dict[str, str]] = []
+    for reference, exchange in _provider_references(row):
+        candidate_sets = [provider_aliases.get((provider, reference, exchange), set()) for provider in providers]
+        candidates = set().union(*candidate_sets)
+        has_alias = any((provider, reference, "") in provider_aliases for provider in providers)
+        if not has_alias and not exchange and reference in known:
+            candidates.add(reference)
+        if len(candidates) == 1:
+            found.update(candidates)
+        else:
+            unresolved.append({
+                "reference": reference, "exchange": exchange,
+                "reason": "ambiguous_provider_identifier" if len(candidates) > 1 else "unresolved_provider_identifier",
+            })
+    if company_names:
+        # Longest names win overlapping text; a collision also blocks its shorter alias.
+        pattern = r"\b(?:" + "|".join(re.escape(name) for name in sorted(company_names, key=lambda name: (-len(name), name))) + r")\b"
+        for match in re.finditer(pattern, _name_key(text)):
+            candidates = company_names[match.group()]
+            if len(candidates) == 1:
+                found.update(candidates)
+            else:
+                unresolved.append({"reference": match.group(), "reason": "ambiguous_company_name"})
+    return sorted(found), unresolved
+
+
+def _provider_references(row: dict[str, Any]) -> Iterable[tuple[str, str]]:
+    values = [row.get(key) for key in ("symbol", "symbols", "ticker", "tickers", "instruments", "instrument_id", "ric")]
+    if isinstance(row.get("entities"), dict):
+        values.append(row["entities"].get("symbols"))
+    for value in values:
+        for item in value if isinstance(value, list) else [value]:
+            exchange = str(row.get("exchange") or "").strip().upper()
+            if isinstance(item, dict):
+                exchange = str(item.get("exchange") or exchange).strip().upper()
+                item = next((item[key] for key in ("symbol", "ticker", "ric", "instrument_id", "external_symbol", "id", "text") if item.get(key)), None)
+            if isinstance(item, str) and item.strip():
+                yield item.strip().removeprefix("$").upper(), exchange
 
 
 def _symbols(text: str, known: set[str]) -> list[str]:
@@ -499,6 +632,11 @@ def _overall_status(rows: Iterable[dict[str, Any]]) -> str:
     if statuses == {"ok"}:
         return "ok"
     return "failed" if statuses == {"failed"} else "partial"
+
+
+def _stage_status(rows: Iterable[dict[str, Any]], stage: str) -> str:
+    statuses = {str(row.get(stage) or "not_run") for row in rows}
+    return next(iter(statuses)) if len(statuses) == 1 else ("partial" if statuses else "not_run")
 
 
 def main() -> None:

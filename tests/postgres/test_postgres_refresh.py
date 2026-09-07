@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from investment_panel.core.decision import MarketStateSnapshot
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime
@@ -20,6 +22,35 @@ from investment_panel.jobs import (
     update_phase2_sources,
 )
 from conftest import typed_config
+
+
+@pytest.mark.parametrize("entrypoint", ["learning_marks", "postgres_refresh"])
+@pytest.mark.parametrize("transition", ["automatic_promotions", "automatic_rollbacks", None])
+def test_policy_transition_recalculates_signals_with_actual_config(monkeypatch, entrypoint, transition) -> None:
+    from investment_panel.jobs import refresh_options_radar as job
+
+    config = typed_config(raw={"analysis": {"options_decision_system": {"options_risk_sleeve_capital": 12345}}})
+    runtime = object()
+    outcome_result = {"automatic_promotions": 0, "automatic_rollbacks": 0}
+    if transition:
+        outcome_result[transition] = 1
+    monkeypatch.setattr(job, "load_config", lambda _path=None: config)
+    monkeypatch.setattr(job, "runtime_for_config", lambda passed: runtime if passed is config else None)
+    monkeypatch.setattr(job.OutcomeRepository, "refresh", lambda _self, **_kwargs: outcome_result)
+    calls = []
+
+    def calculate(passed_runtime, **kwargs):
+        calls.append((passed_runtime, kwargs))
+        return {"publication_id": "fresh-policy-publication"}
+
+    monkeypatch.setattr(job, "refresh_options_radar", calculate)
+    result = job.run_learning_marks("actual-config.yaml") if entrypoint == "learning_marks" else postgres_refresh._refresh_option_outcomes(runtime, config)
+    if transition:
+        assert calls == [(runtime, {"config": config, "options_risk_sleeve_capital": 12345})]
+        assert result["policy_signal_refresh"] == {"publication_id": "fresh-policy-publication"}
+    else:
+        assert calls == []
+        assert "policy_signal_refresh" not in result
 
 
 def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypatch) -> None:

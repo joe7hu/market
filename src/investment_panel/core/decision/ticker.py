@@ -2078,6 +2078,7 @@ class HorizonDecision(BaseModel):
     expected_return_range: NumericRange | None = None
     evidence_for: list[EvidenceItem] = Field(default_factory=list)
     evidence_against: list[EvidenceItem] = Field(default_factory=list)
+    unsupported_assumptions: list[str] = Field(default_factory=list)
     fact_that_would_flip: EvidenceItem
     selected_instrument: ExpressionKind
     alternate_expression: ExpressionKind
@@ -5012,9 +5013,6 @@ def _restore_persisted_thesis_context(decision: TickerDecision) -> TickerDecisio
     thesis_rows = inputs.get("theses") if isinstance(inputs.get("theses"), list) else []
     thesis_row = next((row for row in thesis_rows if isinstance(row, Mapping)), {})
     thesis = thesis_row.get("thesis_json") if isinstance(thesis_row.get("thesis_json"), Mapping) else {}
-    if not thesis:
-        return decision
-
     revision = str(thesis_row.get("revision") or thesis_row.get("revision_id") or "") or None
     available_at = _parse_datetime(thesis_row.get("available_at"))
     raw_scenarios = thesis.get("scenarios") if isinstance(thesis.get("scenarios"), Mapping) else {}
@@ -5023,7 +5021,7 @@ def _restore_persisted_thesis_context(decision: TickerDecision) -> TickerDecisio
     rule = next((item for item in raw_rules if isinstance(item, Mapping)), None)
     rule_statement = str((rule or {}).get("text") or (rule or {}).get("event") or "").strip()
     supporting: list[EvidenceItem] = []
-    opposing: list[EvidenceItem] = []
+    unsupported: list[str] = []
     for pillar in raw_pillars:
         if not isinstance(pillar, Mapping):
             continue
@@ -5041,20 +5039,26 @@ def _restore_persisted_thesis_context(decision: TickerDecision) -> TickerDecisio
                 revision=revision,
             ) for reference in refs)
         else:
-            opposing.append(EvidenceItem(
-                statement=f"Unvalidated thesis condition: {statement}",
-                polarity=EvidencePolarity.AGAINST,
-                source="thesis",
-                available_at=available_at,
-                revision=revision,
-            ))
+            unsupported.append(statement)
 
     def restore_view(view: HorizonDecision) -> HorizonDecision:
         updates: dict[str, Any] = {}
         if not view.evidence_for and supporting:
             updates["evidence_for"] = supporting
-        if not view.evidence_against and opposing:
-            updates["evidence_against"] = opposing
+        # Old packets labeled uncited assumptions as opposition. Repair only
+        # that generated label; keep actual contrary evidence unchanged.
+        mislabeled = [item for item in view.evidence_against if (
+            item.source == "thesis" and not item.reference
+            and item.statement.startswith("Unvalidated thesis condition: ")
+        )]
+        if mislabeled:
+            updates["evidence_against"] = [item for item in view.evidence_against if item not in mislabeled]
+        assumptions = list(dict.fromkeys([
+            *view.unsupported_assumptions, *unsupported,
+            *(item.statement.removeprefix("Unvalidated thesis condition: ") for item in mislabeled),
+        ]))
+        if assumptions != view.unsupported_assumptions:
+            updates["unsupported_assumptions"] = assumptions
         if view.invalidation is None and rule_statement:
             updates["invalidation"] = Invalidation(kind="event", value=rule_statement, statement=rule_statement)
         if (

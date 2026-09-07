@@ -458,6 +458,26 @@ def test_current_funnel_query_does_not_select_full_market_snapshot() -> None:
     assert "jsonb_array_elements" not in captured["query"]
 
 
+def test_fast_cash_funnel_skips_market_load_without_accepting_bad_contracts(monkeypatch) -> None:
+    repository = TickerDecisionRepository(object())
+    monkeypatch.setattr(repository, "_current_funnel_publication_rows", lambda: ([], [], []))
+    compact = [_valid_compact_row(ticker) for ticker in ("AAA", "BBB")]
+    for row in compact:
+        row.update(funnel_fast_path=True, market_state_publication_id="market:large")
+    compact[1]["resolution"]["decision_revision"] = "wrong"
+    monkeypatch.setattr(repository, "_current_funnel_rows", lambda **_kwargs: compact)
+
+    def unexpected_load(*_args, **_kwargs):
+        raise AssertionError("CASH must not deserialize unused market evidence")
+
+    monkeypatch.setattr(AnalysisRepository, "publication_by_id", unexpected_load)
+    payload = repository.decision_funnel(now=NOW)
+    facts = next(stage for stage in payload["stages"] if stage["stage"] == "point_in_time_facts")
+    assert payload["total"] == 2
+    assert facts["count"] == 1
+    assert any(item["reason"] == "ticker_decision_contract_invalid" for item in facts["top_blockers"])
+
+
 def test_current_funnel_publication_query_projects_only_required_fields() -> None:
     captured: dict[str, object] = {}
 

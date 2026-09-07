@@ -38,6 +38,7 @@ from investment_panel.core.decision import (
     resolution_from_legacy,
     is_us_market_day,
     market_evidence_for_decision,
+    market_session_bounds,
     portfolio_impacts_from_persisted,
     portfolio_impact_from_persisted,
     trade_expression_identity,
@@ -47,6 +48,7 @@ from investment_panel.core.decision import (
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.options_paper_quotes import is_credit_structure, package_price
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
 from investment_panel.database.runtime import API_PROFILE, DatabaseRuntime, JOB_PROFILE
 
 
@@ -562,6 +564,7 @@ class TickerDecisionRepository:
         derived_action_queue: list[dict[str, Any]] = []
         decisions: list[dict[str, Any]] = []
         market_publications: dict[str, dict[str, Any] | None] = {}
+        market_snapshots: dict[tuple[str, datetime], MarketStateSnapshot | None] = {}
         for row in self._current_funnel_rows(reference=reference):
             ticker = str(row.get("ticker") or "").strip().upper()
             compact_contract_valid = True
@@ -770,16 +773,21 @@ class TickerDecisionRepository:
             market_publication_id = str(row.get("market_state_publication_id") or "") or None
             decision_cutoff = _parse_datetime(row.get("as_of"))
             snapshot = None
-            if market_publication_id and decision_cutoff is not None:
+            # A validated compact CASH row has no impact or market gate to check.
+            # Keep full snapshot validation for every other row, once per cutoff.
+            if market_publication_id and decision_cutoff is not None and not fast_cash:
                 if market_publication_id not in market_publications:
                     market_publications[market_publication_id] = analysis.publication_by_id(
                         "market", market_publication_id,
                     )
-                snapshot = _market_snapshot_from_exact_publication(
-                    market_publications[market_publication_id],
-                    publication_id=market_publication_id,
-                    decision_cutoff=decision_cutoff,
-                )
+                snapshot_key = (market_publication_id, decision_cutoff)
+                if snapshot_key not in market_snapshots:
+                    market_snapshots[snapshot_key] = _market_snapshot_from_exact_publication(
+                        market_publications[market_publication_id],
+                        publication_id=market_publication_id,
+                        decision_cutoff=decision_cutoff,
+                    )
+                snapshot = market_snapshots[snapshot_key]
             if (
                 stock_impact is not None
                 and snapshot is not None
@@ -1377,8 +1385,13 @@ class TickerDecisionRepository:
                        NULL::jsonb AS risk_policy_snapshot
                 FROM analysis.ticker_decision decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                LEFT JOIN LATERAL (
+                    SELECT max(outcome.updated_at) AS last_checked_at
+                    FROM analysis.ticker_outcome outcome
+                    WHERE outcome.ticker_decision_id = decision.id
+                ) outcome_check ON true
                 WHERE {" AND ".join(filters)}
-                ORDER BY decision.as_of, decision.id
+                ORDER BY outcome_check.last_checked_at ASC NULLS FIRST, decision.as_of, decision.id
                 LIMIT %s
                 """,
                 parameters,
@@ -1626,6 +1639,7 @@ class TickerDecisionRepository:
             "disagreement": {
                 "strongest_bull_case": _first_statement(fundamental.get("evidence_for")),
                 "strongest_bear_case": _first_statement(fundamental.get("evidence_against")),
+                "unsupported_assumptions": fundamental.get("unsupported_assumptions") or [],
                 "resolving_fact": (fundamental.get("fact_that_would_flip") or {}).get("statement"),
             },
             "expression_tournament": [
@@ -1702,6 +1716,9 @@ class TickerDecisionRepository:
                 )
 
     def _evaluate(self, decision: dict[str, Any], horizon: Horizon, sessions: int, reference: datetime) -> dict[str, Any]:
+        horizon_end = market_session_bounds(forward_trading_dates(
+            decision["as_of"], count=sessions,
+        )[-1])[1]
         with self.runtime.read(JOB_PROFILE) as connection:
             entry_quote = connection.execute(
                 """
@@ -1776,30 +1793,22 @@ class TickerDecisionRepository:
                 """,
                 [decision["as_of"]],
             ).fetchone()
-            marks = connection.execute(
-                """
-                SELECT close, available_at, observed_at, trading_date
-                FROM raw.confirmed_price_bar
-                WHERE instrument_id = %s AND interval = '1d'
-                  AND trading_date > %s::date AND available_at <= %s
-                  AND (%s::timestamptz IS NULL OR trading_date <= %s::date)
-                ORDER BY trading_date, available_at
-                LIMIT %s
-                """,
-                [
-                    decision["instrument_id"], decision["as_of"], reference,
-                    sector["delisted_at"] if sector else None,
-                    sector["delisted_at"] if sector else None,
-                    sessions,
-                ],
-            ).fetchall()
-            delisting_status = _delisting_status(sector, reference)
+            marks = confirmed_forward_bars(
+                connection, decision["instrument_id"], as_of=decision["as_of"],
+                cutoff=reference, sessions=sessions,
+            )
+            if sector and sector["delisted_at"] is not None:
+                marks = [row for row in marks if row["trading_date"] <= sector["delisted_at"].date()]
+            # Lifecycle events after this target's last session must not
+            # rewrite its fixed return or make its evidence unmeasurable.
+            delisting_status = _delisting_status(sector, min(_utc(reference), horizon_end))
             terminal_mark = _terminal_delisting_mark(
                 connection,
                 instrument_id=decision["instrument_id"],
                 lifecycle=sector,
                 as_of=decision["as_of"],
                 reference=reference,
+                horizon_end=horizon_end,
             )
             if terminal_mark is not None and delisting_status == "delisted":
                 delisting_status = "delisted_terminal"
@@ -1828,7 +1837,9 @@ class TickerDecisionRepository:
             }
         entry_price = float(entry_quote["price"]) if entry_quote is not None else float(entry["close"])
         entry_date = entry_quote["observed_at"].date() if entry_quote is not None else entry["observed_at"].date()
-        mark = terminal_mark or marks[-1]
+        mark = terminal_mark or {
+            **marks[-1], "available_at": max(row["available_at"] for row in marks),
+        }
         stock_return = float(mark["close"]) / entry_price - 1
         stock_cost_adjusted = _stock_cost_adjusted_return(stock_return)
         stock_mark = {
@@ -1844,6 +1855,7 @@ class TickerDecisionRepository:
             "entry_observed_at": entry["observed_at"],
             "entry_available_at": entry["available_at"],
             "observed_at": mark["observed_at"],
+            "bar_observed_at": mark.get("bar_observed_at", mark["observed_at"]),
             "available_at": mark["available_at"],
         }
         trend_return = None
@@ -2733,13 +2745,17 @@ def _terminal_delisting_mark(
     lifecycle: Any,
     as_of: datetime,
     reference: datetime,
+    horizon_end: datetime,
 ) -> dict[str, Any] | None:
-    """Return a point-in-time terminal mark for an explicitly delisted ticker."""
+    """Return a terminal mark only for a delisting within this fixed target.
+
+    Evidence can arrive after the target ends, but must be known at reference.
+    """
 
     if not lifecycle or lifecycle.get("delisted_at") is None:
         return None
     delisted_at = _utc(lifecycle["delisted_at"])
-    if delisted_at <= _utc(as_of) or delisted_at > _utc(reference):
+    if not _utc(as_of) < delisted_at <= min(_utc(reference), _utc(horizon_end)):
         return None
     price = _number(lifecycle.get("delisting_price"))
     available_at = lifecycle.get("delisting_available_at")

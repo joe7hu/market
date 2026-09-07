@@ -9,6 +9,7 @@ from investment_panel.core.config import AppConfig, public_config_payload
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.agent_experiments import AgentExperimentRepository
 from investment_panel.database.authority import database_url, runtime_for_config
+from investment_panel.database.research_summary import research_summary
 
 
 class AgentActions:
@@ -52,6 +53,11 @@ class AgentActions:
             "routing_changed": False,
             "message": "No paired DeepSeek/Luna experiment has been queued.",
         }
+
+    def research_results(self) -> dict[str, Any]:
+        """Return stored strategy evidence and explicit review feedback."""
+
+        return research_summary(self.repository.runtime, self.config)
 
 
 def _scheduler_agent_seconds(config: AppConfig) -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import isfinite
 from typing import Any, Mapping
 
 
@@ -54,6 +55,10 @@ def merge_strategy_parameters(base: Mapping[str, Any], changes: Mapping[str, Any
     for key, value in changes.items():
         canonical = canonical_gate_name(str(key))
         if canonical in EVALUABLE_GATES:
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isfinite(float(value)) or float(value) < 0:
+                raise ValueError(f"invalid strategy gate: {key}")
             gates[canonical] = value
         else:
             merged[str(key)] = value
@@ -69,3 +74,44 @@ def _stricter(gate: str, first: Any, second: Any) -> Any:
     if gate in MINIMUM_GATES:
         return first if left >= right else second
     return first if left <= right else second
+
+
+_METADATA_CHANGES = {"candidate_note", "filter_reason"}
+
+
+def mutation_capability(base: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    base_gates = normalize_gates(base)
+    unsupported: list[str] = []
+    loosened: list[str] = []
+    evaluated = 0
+    for key, value in changes.items():
+        if key in _METADATA_CHANGES:
+            continue
+        canonical = canonical_gate_name(key)
+        if canonical not in EVALUABLE_GATES:
+            unsupported.append(key)
+            continue
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isfinite(float(value)) or float(value) < 0:
+            raise ValueError(f"invalid strategy gate: {key}")
+        evaluated += 1
+        baseline = base_gates.get(canonical)
+        if baseline is None:
+            loosened.append(key)
+            continue
+        if canonical in MINIMUM_GATES and float(value) < float(baseline):
+            loosened.append(key)
+        if canonical in MAXIMUM_GATES and float(value) > float(baseline):
+            loosened.append(key)
+    if unsupported or evaluated == 0:
+        return {
+            "blocking_verdict": "unsupported_parameters",
+            "blocked_parameters": unsupported or sorted(changes),
+        }
+    if loosened:
+        return {
+            "blocking_verdict": "requires_rejected_or_shadow_outcomes",
+            "blocked_parameters": loosened,
+        }
+    return {"blocking_verdict": None, "blocked_parameters": []}

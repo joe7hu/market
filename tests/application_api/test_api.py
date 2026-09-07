@@ -240,6 +240,98 @@ def test_today_projects_named_context_contract_without_row_aliases(
     assert payload["preopen_brief"]["key_events"] == ["Payrolls"]
 
 
+def test_today_selects_each_brief_category_before_its_display_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "today-categories.json")
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_options_research,
+                        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}))
+    totals = {"decide_now": 12, "catalysts": 11, "whats_changed": 6, "portfolio_pulse": 5}
+    brief = [{"stable_key": f"{category}:{index}", "category": category, "headline": f"{category} {index}",
+              "days_until": count - index if category == "catalysts" else None}
+             for category, count in totals.items() for index in range(count)]
+    panel = PanelData(status=DataStatus(True, "loaded", "test"), tables={"daily_brief": brief})
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+
+    payload = TestClient(app).get("/api/today").json()
+
+    assert len(payload["brief_items"]) == 12
+    assert {item["category"]: item["shown_count"] for item in payload["brief_categories"]} == {
+        "decide_now": 4, "catalysts": 3, "whats_changed": 3, "portfolio_pulse": 2,
+    }
+    assert {item["category"]: item["total_count"] for item in payload["brief_categories"]} == totals
+    assert {item["coverage_status"] for item in payload["brief_categories"]} == {"unknown"}
+    assert [item["days_until"] for item in payload["brief_items"] if item["category"] == "catalysts"] == [1, 2, 3]
+    assert payload["count"] <= 10
+
+
+def test_today_requires_explicit_same_publication_coverage_for_an_empty_category(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "today-coverage.json")
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_options_research,
+                        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}))
+    panel = PanelData(status=DataStatus(True, "loaded", "test"), tables={"daily_brief": []})
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+    client = TestClient(app)
+
+    def catalyst_category():
+        panel_owner.invalidate_context_cache()
+        response = client.get("/api/today")
+        assert response.status_code == 200
+        return next(row for row in response.json()["brief_categories"] if row["category"] == "catalysts")
+
+    assert catalyst_category()["coverage_status"] == "unknown"
+    panel.tables["preopen_daily_brief"] = [{
+        "publication_id": "current",
+        "brief_coverage": {"catalysts": {"status": "complete", "message": "Event coverage checked."}},
+    }]
+    category = catalyst_category()
+    assert category["coverage_status"] == "complete"
+    assert category["total_count"] == 0
+    panel.tables["daily_brief"] = [{"publication_id": "different", "category": "decide_now"}]
+    assert catalyst_category()["coverage_status"] == "unknown"
+    panel.status = DataStatus(False, "failed", "test")
+    category = catalyst_category()
+    assert category["coverage_status"] == "unavailable"
+    assert category["total_count"] is None
+
+
+def test_today_replaces_a_legacy_refresh_hint_with_the_actual_blocker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+    from investment_panel.core.decision import (
+        bind_trade_plan, build_decision_resolution, build_ticker_decision, build_trade_plan,
+    )
+
+    _use_temp_api_db(monkeypatch, tmp_path / "today-next-step.json")
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_options_research,
+                        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}))
+    now = datetime(2026, 8, 23, 15, tzinfo=UTC)
+    decision = build_ticker_decision("ACME", {}, as_of=now)
+    resolution = build_decision_resolution(action="NO_TRADE", ticker="ACME",
+        decision_revision=decision.decision_revision, policy_version=decision.policy_version,
+        provenance={"as_of": now}, blockers=["cash_comparator", "forecast_missing"], blocked=True,
+    ).model_copy(update={"next_action": "Refresh the required fact and recalculate the resolution.",
+                         "primary_blocker": "cash_comparator"})
+    plan = build_trade_plan(decision=decision, rank=None, resolution=resolution)
+    published = bind_trade_plan(decision, plan).model_dump(mode="json")
+    panel = PanelData(status=DataStatus(True, "loaded", "test"), tables={"ticker_decisions": [published]})
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+    monkeypatch.setattr(loaders_owner, "today_plan_for_row", lambda *_args: plan)
+
+    response = TestClient(app).get("/api/today")
+
+    assert response.status_code == 200
+    action = response.json()["actions"][0]
+    assert "matured stock outcomes" in action["next_action"]
+    assert "matured stock outcomes" in action["resolution"]["next_action"]
+    assert "matured stock outcomes" in action["trade_plan"]["next_action"]
+    assert action["action"] == "NO_TRADE"
+    assert action["resolution"]["authorization_mode"] == "NONE"
+
+
 @pytest.mark.parametrize(
     ("reason", "availability_status"),
     (

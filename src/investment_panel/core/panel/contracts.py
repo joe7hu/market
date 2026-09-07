@@ -32,6 +32,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "opportunity_rank",
         "trade_plan",
         "portfolio",
+        "portfolio_summary",
         "preopen_daily_brief",
         "daily_brief",
         "portfolio_risk_cards",

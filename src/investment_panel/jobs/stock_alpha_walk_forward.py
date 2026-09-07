@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 import hmac
+from math import isfinite
 import os
 from statistics import fmean
 from typing import Any, Iterable, Mapping
@@ -15,23 +16,28 @@ from investment_panel.analysis.research_validation import validate_trial
 from investment_panel.analysis.research_validation import multiple_testing_metrics
 from investment_panel.analysis.stock_alpha import (
     COST_MODEL_VERSION,
+    CONTROL_STATISTIC_VERSION,
     FEATURE_VERSION,
     MODEL_VERSION,
+    TARGET_HORIZON_SESSIONS,
+    TARGET_VERSION,
     build_control_results,
     content_hash,
+    independent_observations,
     walk_forward,
 )
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.core.instruments import normalize_symbol
 from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.core.decision import build_strategy_forecast, opportunity_episode_id
+from investment_panel.database.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
+from investment_panel.core.decision import build_strategy_forecast, market_session_bounds, opportunity_episode_id
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE, activate_application_role
 
 
 STRATEGY_KEY = "ticker-stock-alpha"
 EVALUATOR_ID = "stock_alpha_walk_forward"
-EVALUATOR_CODE_VERSION = "stock_alpha_walk_forward.v2"
+EVALUATOR_CODE_VERSION = "stock_alpha_walk_forward.v3"
 
 
 def run(
@@ -41,6 +47,7 @@ def run(
     cutoff: datetime,
     promote: bool = False,
     authorization_mode: str | None = None,
+    promotion_cutoff: datetime | None = None,
     min_train: int = 20,
     fold_size: int = 10,
     min_cohort: int = 20,
@@ -51,16 +58,17 @@ def run(
     """Append one idempotent evaluation and promote only with explicit paper authority."""
 
     reference = _aware(cutoff)
-    source_rows = sorted(
-        (dict(row) for row in observations),
-        key=content_hash,
-    )
+    promotion_reference = _aware(promotion_cutoff) if promotion_cutoff is not None else reference
+    if promotion_cutoff is not None and not reference <= promotion_reference <= datetime.now(UTC):
+        raise ValueError("promotion cutoff must follow the input cutoff and cannot be in the future")
+    source_rows = independent_observations(observations, cutoff=reference)
     configurations = _trial_configurations(
         min_train=min_train, fold_size=fold_size, min_cohort=min_cohort,
         trial_plan=trial_plan,
     )
     input_hash = content_hash({"cutoff": reference, "observations": source_rows, "trial_plan": configurations})
     members = sorted({str(member).strip().upper() for member in universe_members or () if str(member).strip()})
+    dataset_hash = _dataset_hash(source_rows, members=members, configurations=configurations)
     raw_controls = dict(control_results or {})
     controls = {
         key: [float(value) for value in raw_controls.get(key, ())]
@@ -117,9 +125,12 @@ def run(
         "artifact_id": f"{STRATEGY_KEY}:{artifact['artifact_hash']}",
         "artifact_hash": artifact["artifact_hash"],
         "input_hash": input_hash,
+        "dataset_hash": dataset_hash,
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,
         "cost_model_version": COST_MODEL_VERSION,
+        "target_version": TARGET_VERSION,
+        "horizon_sessions": TARGET_HORIZON_SESSIONS,
         "target": artifact["target"],
         "cohort_id": "hierarchical-stock-alpha",
         "cohort_path": artifact["cohort_path"],
@@ -129,6 +140,8 @@ def run(
             "brier_score": metrics["brier_score"],
             "calibration_error": metrics["calibration_error"],
         },
+        "baseline_comparisons": artifact.get("baseline_comparisons") or {},
+        "sample_windows": artifact.get("sample_windows") or [],
         "lower_confidence_net_utility_after_costs": metrics[
             "lower_confidence_net_utility_after_costs"
         ],
@@ -141,9 +154,12 @@ def run(
         "artifact_id": evaluation_metrics["artifact_id"],
         "artifact_hash": artifact["artifact_hash"],
         "input_hash": input_hash,
+        "dataset_hash": dataset_hash,
         "model_version": MODEL_VERSION,
         "feature_version": FEATURE_VERSION,
         "cost_model_version": COST_MODEL_VERSION,
+        "target_version": TARGET_VERSION,
+        "horizon_sessions": TARGET_HORIZON_SESSIONS,
         "target": artifact["target"],
         "cohort_id": evaluation_metrics["cohort_id"],
         "calibration_state": "calibrated_hierarchical" if artifact["cohort_path"] else "not_calibrated",
@@ -207,7 +223,7 @@ def run(
 
         evaluation = connection.execute(
             """
-            SELECT id::text, verdict FROM analysis.strategy_evaluation
+            SELECT id::text, verdict, evaluated_at, available_at FROM analysis.strategy_evaluation
             WHERE strategy_revision_id = %s AND evaluation_type = 'out_of_sample'
               AND metrics->>'artifact_hash' = %s AND metrics->>'input_hash' = %s
             ORDER BY evaluated_at DESC, id DESC LIMIT 1
@@ -223,7 +239,7 @@ def run(
                     artifact_hash, input_hash, evaluation_type, evaluated_at,
                     period_start, period_end, verdict, metrics, evidence
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'out_of_sample', %s, %s, %s, %s, %s, %s)
-                RETURNING id::text, verdict
+                RETURNING id::text, verdict, evaluated_at, available_at
                 """,
                 [
                     strategy["id"], research_ids[0], research_ids[1], research_ids[2], dossier_id,
@@ -250,10 +266,12 @@ def run(
                FROM analysis.strategy_forecast
                WHERE strategy_revision_id = %s AND strategy_evaluation_id = %s
                  AND input_cutoff = %s""",
-            [reference, reference, strategy["id"], evaluation["id"], reference],
+            [promotion_reference, promotion_reference, strategy["id"], evaluation["id"], reference],
         ).fetchone()
         if complete and (forecast_pit["count"] != len(forecast_ids) or not forecast_pit["available_at_cutoff"]):
             promotion_blockers.append("forecast_evidence_not_available_at_cutoff")
+        if complete and (evaluation["evaluated_at"] > promotion_reference or evaluation["available_at"] > promotion_reference):
+            promotion_blockers.append("evaluation_evidence_not_available_at_cutoff")
         promotion_id = None
         if promote and complete and not promotion_blockers:
             promotion = connection.execute(
@@ -287,6 +305,7 @@ def run(
                             "artifact_hash": artifact["artifact_hash"],
                             "input_hash": input_hash,
                             "authorization_mode": mode,
+                            "promotion_cutoff": promotion_reference.isoformat(),
                         }),
                         Jsonb({"paper_only": True, "live_order_submission": False}),
                     ],
@@ -518,7 +537,10 @@ def _persist_research_evidence(
     path_returns = [float(value) for value in primary_artifact.get("validation_paths") or ()]
     p_values = [float((row.get("metrics") or {})["p_value"]) for row in path_records if (row.get("metrics") or {}).get("p_value") is not None]
     feature_rows = [
-        {key: row.get(key) for key in ("ticker", "horizon", "cohort_id", "as_of", "feature_available_at", "features")}
+        {key: row.get(key) for key in (
+            "ticker", "opportunity_episode_id", "horizon", "cohort_id", "as_of",
+            "sample_window_start", "sample_window_end", "feature_available_at", "features",
+        )}
         for row in observations
     ]
     feature_hash = content_hash(feature_rows)
@@ -769,10 +791,25 @@ def _trial_configurations(*, min_train: int, fold_size: int, min_cohort: int,
     return output
 
 
+def _dataset_hash(
+    observations: list[Mapping[str, Any]], *, members: list[str],
+    configurations: list[Mapping[str, Any]],
+) -> str:
+    """Separate new learning evidence from the time the scheduler checked it."""
+    return content_hash({
+        "observations": observations, "universe_members": members,
+        "trial_plan": configurations, "model_version": MODEL_VERSION,
+        "target_version": TARGET_VERSION, "feature_version": FEATURE_VERSION,
+        "cost_model_version": COST_MODEL_VERSION, "evaluator_version": EVALUATOR_CODE_VERSION,
+        "control_repeats": 8, "control_statistic_version": CONTROL_STATISTIC_VERSION,
+    })
+
+
 def _failed_artifact(cutoff: datetime, reason: str) -> dict[str, Any]:
     artifact = {
         "model_version": MODEL_VERSION, "feature_version": FEATURE_VERSION,
         "cost_model_version": COST_MODEL_VERSION, "target": "positive_return_after_costs",
+        "target_version": TARGET_VERSION, "horizon_sessions": TARGET_HORIZON_SESSIONS,
         "horizons": [], "oos_period_start": None, "oos_period_end": None,
         "calibration_metrics": {"brier_score": None, "calibration_error": None,
                                  "effective_sample_size": 0, "oos_sample_size": 0,
@@ -955,9 +992,14 @@ def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dic
     with runtime.read(JOB_PROFILE) as connection:
         rows = connection.execute(
             """
-            SELECT instrument.symbol AS ticker, outcome.horizon, decision.as_of,
+            SELECT instrument.id AS instrument_id, instrument.symbol AS ticker, outcome.horizon, outcome.horizon_sessions,
+                   instrument.delisted_at, instrument.delisting_price,
+                   instrument.delisting_available_at, instrument.delisting_source,
+                   decision.as_of, decision.opportunity_episode_id,
                    outcome.available_at AS outcome_available_at,
-                   outcome.selected_return AS realized_return,
+                   outcome.measured_through AS outcome_measured_through,
+                   outcome.stock_counterfactual_return AS realized_return,
+                   outcome.market_return, outcome.sector_return,
                    outcome.metadata,
                    feature.feature_version, feature.momentum_5d, feature.momentum_20d,
                    feature.relative_strength_20d, feature.relative_strength_60d,
@@ -988,18 +1030,26 @@ def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dic
             JOIN LATERAL (
                 SELECT membership_hash, exact_membership
                 FROM analysis.ticker_benchmark_snapshot candidate
-                WHERE candidate.as_of <= decision.as_of
+                WHERE candidate.benchmark_key = 'market-equity-etf'
+                  AND candidate.as_of <= decision.as_of
                   AND candidate.available_at <= decision.as_of
                 ORDER BY candidate.as_of DESC, candidate.id DESC LIMIT 1
             ) benchmark ON benchmark.exact_membership ? instrument.symbol
             WHERE outcome.state = 'resolved'
               AND outcome.available_at <= %s
               AND decision.as_of <= %s
-              AND outcome.selected_return IS NOT NULL
+              AND decision.published_at <= %s
+              AND outcome.horizon = 'TACTICAL'
+              AND outcome.horizon_sessions = %s
+              AND outcome.stock_counterfactual_return IS NOT NULL
             ORDER BY decision.as_of, instrument.symbol, outcome.horizon, outcome.horizon_sessions
             """,
-            [FEATURE_VERSION, cutoff, cutoff],
+            [FEATURE_VERSION, cutoff, cutoff, cutoff, TARGET_HORIZON_SESSIONS],
         ).fetchall()
+        rows = [
+            mature for row in rows
+            if (mature := _mature_stock_target(connection, row, cutoff=cutoff)) is not None
+        ]
     output: list[dict[str, Any]] = []
     for raw in rows:
         row = dict(raw)
@@ -1011,23 +1061,111 @@ def load_observations(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[dic
                 "relative_strength_20d", "relative_strength_60d", "kaufman_er_20d",
             )
         }
-        net_return = metadata.get("cost_adjusted_selected_return")
+        net_return = metadata.get("cost_adjusted_stock_counterfactual_return")
         if not features or net_return is None:
+            continue
+        try:
+            realized = float(row["realized_return"])
+            net_return = float(net_return)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not all(isfinite(value) for value in (realized, net_return)) or net_return > realized:
             continue
         output.append({
             "ticker": row["ticker"],
+            "opportunity_episode_id": row["opportunity_episode_id"] or opportunity_episode_id(row["ticker"]),
             "horizon": row["horizon"],
+            "horizon_sessions": row["horizon_sessions"],
+            "target_version": TARGET_VERSION,
             "cohort_id": f"{row['horizon']}:{metadata.get('sector_slice') or 'unknown'}:{metadata.get('regime_slice') or 'unknown'}",
             "as_of": row["as_of"],
             "outcome_available_at": row["outcome_available_at"],
+            "outcome_measured_through": row["outcome_measured_through"] if row["outcome_measured_through"] is not None else metadata.get("observed_through"),
             "feature_available_at": row["feature_available_at"],
-            "outcome": float(net_return) > 0,
-            "realized_return": float(row["realized_return"]),
-            "modeled_cost": float(row["realized_return"]) - float(net_return),
+            **({"terminal_evidence": row["terminal_evidence"]} if row.get("terminal_evidence") else {}),
+            "outcome": net_return > 0,
+            "realized_return": realized,
+            "modeled_cost": realized - net_return,
             "features": features,
             "benchmark_membership_hash": row["membership_hash"],
+            "baseline_returns": {
+                "cash": metadata.get("cost_adjusted_cash_return"),
+                "market": row["market_return"],
+                "sector": row["sector_return"],
+                "trend": metadata.get("trend_counterfactual_return"),
+            },
         })
-    return output
+    return independent_observations(output, cutoff=cutoff)
+
+
+def _mature_stock_target(
+    connection: Any, row: Mapping[str, Any], *, cutoff: datetime,
+) -> dict[str, Any] | None:
+    """Recheck legacy maturity against the canonical bars known at its clock."""
+
+    metadata = dict(row["metadata"] or {})
+    try:
+        measured = _aware(row["outcome_measured_through"] or metadata.get("observed_through"))
+    except (TypeError, ValueError):
+        return None
+    if not row["as_of"] < measured <= row["outcome_available_at"]:
+        return None
+    if metadata.get("delisting_status") == "delisted_terminal":
+        return _terminal_stock_target(row, measured=measured, cutoff=cutoff)
+    bars = confirmed_forward_bars(
+        connection, row["instrument_id"], as_of=row["as_of"],
+        cutoff=row["outcome_available_at"], sessions=TARGET_HORIZON_SESSIONS,
+    )
+    return dict(row) if (
+        len(bars) == TARGET_HORIZON_SESSIONS
+        and bars[-1]["observed_at"] == measured
+    ) else None
+
+
+def _terminal_stock_target(
+    row: Mapping[str, Any], *, measured: datetime, cutoff: datetime,
+) -> dict[str, Any] | None:
+    """Carry a verified terminal value to the original fixed-horizon boundary."""
+
+    metadata = dict(row["metadata"] or {})
+    mark = dict(dict(metadata.get("expression_marks") or {}).get("STOCK") or {})
+    try:
+        delisted_at = _aware(row["delisted_at"])
+        evidence_available = _aware(row["delisting_available_at"])
+        mark_observed = _aware(mark["observed_at"])
+        mark_available = _aware(mark["available_at"])
+        price, entry_price = float(row["delisting_price"]), float(mark["entry_price"])
+        mark_price, realized = float(mark["mark_price"]), float(row["realized_return"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    horizon_end = market_session_bounds(forward_trading_dates(
+        row["as_of"], count=TARGET_HORIZON_SESSIONS,
+    )[-1])[1].astimezone(UTC)
+    if (
+        mark.get("status") != "delisted_terminal"
+        or not str(row.get("delisting_source") or "").strip()
+        or not all(isfinite(value) for value in (price, entry_price, mark_price, realized))
+        or price < 0 or entry_price <= 0 or mark_price != price
+        or abs(realized - (price / entry_price - 1.0)) > 1e-10
+        or measured != delisted_at or mark_observed != delisted_at
+        or mark_available != evidence_available
+        or not row["as_of"] < delisted_at <= horizon_end <= _aware(cutoff)
+        or not delisted_at <= evidence_available <= row["outcome_available_at"]
+    ):
+        return None
+    return {
+        **row,
+        # The terminal cash value is final, but the target remains a full
+        # 20-session observation. Keep the original mark clock in lineage.
+        "outcome_measured_through": horizon_end,
+        "outcome_available_at": max(row["outcome_available_at"], horizon_end),
+        "terminal_evidence": {
+            "source_id": row["delisting_source"], "instrument_id": row["instrument_id"],
+            "observed_at": delisted_at, "available_at": evidence_available,
+            "price": price, "entry_price": entry_price,
+            "original_outcome_available_at": row["outcome_available_at"],
+        },
+    }
 
 
 def load_universe_members(runtime: DatabaseRuntime, *, cutoff: datetime) -> list[str]:
@@ -1081,16 +1219,56 @@ def main() -> None:
 def scheduled(config_path: str | None = None) -> dict[str, Any]:
     """Run the stock-alpha path on its scheduled, paper-only boundary."""
 
-    runtime = runtime_for_config(load_config(config_path))
+    config = load_config(config_path)
+    runtime = runtime_for_config(config)
     cutoff = datetime.now(UTC)
     observations = load_observations(runtime, cutoff=cutoff)
+    members = load_universe_members(runtime, cutoff=cutoff)
+    auto_promote = config.analysis.options_decision_system.strategy_auto_promotion_enabled
+    dataset_hash = _dataset_hash(
+        observations, members=members,
+        configurations=_trial_configurations(min_train=20, fold_size=10, min_cohort=20, trial_plan=None),
+    )
+    with runtime.read(JOB_PROFILE) as connection:
+        previous = connection.execute(
+            """SELECT strategy.id AS strategy_revision_id, strategy.revision AS strategy_revision,
+                      strategy.status, evaluation.id::text AS strategy_evaluation_id,
+                      evaluation.verdict, trial.input_cutoff
+               FROM analysis.strategy_revision strategy
+               JOIN analysis.strategy_evaluation evaluation ON evaluation.strategy_revision_id = strategy.id
+               JOIN analysis.research_trial trial ON trial.id = evaluation.research_trial_id
+               WHERE strategy.strategy_key = %s AND strategy.parameters->>'dataset_hash' = %s
+                 AND evaluation.evaluation_type = 'out_of_sample'
+               ORDER BY strategy.revision DESC, evaluation.evaluated_at DESC LIMIT 1""",
+            [STRATEGY_KEY, dataset_hash],
+        ).fetchone()
+    if previous and not (auto_promote and previous["verdict"] == "pass" and previous["status"] == "candidate"):
+        return {
+            "status": "ok" if previous["verdict"] == "pass" else "partial",
+            "reason": "no_new_stock_alpha_evidence", "skipped": True,
+            "observations": len(observations), "dataset_hash": dataset_hash,
+            "complete": previous["verdict"] == "pass",
+            "strategy_revision_id": previous["strategy_revision_id"],
+            "strategy_revision": previous["strategy_revision"],
+            "strategy_evaluation_id": previous["strategy_evaluation_id"],
+        }
+    if previous:
+        cutoff = previous["input_cutoff"]
     controls = build_control_results(observations, cutoff=cutoff)
     controls_missing = not controls["randomized_label_returns"] or not controls["white_noise_market_returns"]
     result = run(
         runtime, observations, cutoff=cutoff,
-        universe_members=load_universe_members(runtime, cutoff=cutoff),
+        universe_members=members,
         control_results=controls,
     )
+    if auto_promote and result["complete"]:
+        # Evaluation and publication finish before the separate PAPER authority
+        # clock. The replay keeps the original trial and actual forecast times.
+        result = run(
+            runtime, observations, cutoff=cutoff, promote=True,
+            authorization_mode="PAPER", promotion_cutoff=datetime.now(UTC),
+            universe_members=members, control_results=controls,
+        )
     return {
         "status": "partial" if controls_missing or not result["complete"] else "ok",
         "reason": "repeated_control_observations_unavailable" if controls_missing else None,

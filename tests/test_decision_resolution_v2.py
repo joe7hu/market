@@ -35,6 +35,20 @@ def test_blocked_resolution_has_one_safe_primary_blocker() -> None:
     assert capital_action_from_resolution(resolution).action == "AVOID"
 
 
+@pytest.mark.parametrize(("blocker", "next_step"), [
+    ("portfolio_nav", "Reconcile cash and holdings"),
+    ("forecast_missing", "matured stock outcomes"),
+    ("alpha_strategy_revision_missing", "failed strategy gates"),
+    ("insufficient_history", "missing market sessions"),
+])
+def test_blocked_resolution_names_the_actual_next_step(blocker: str, next_step: str) -> None:
+    resolution = build_decision_resolution(action="BUY", ticker="ACME", decision_revision="test",
+        policy_version="test", provenance={"as_of": NOW}, blockers=[blocker], blocked=True)
+    assert next_step in resolution.next_action
+    assert resolution.action == "NO_TRADE"
+    assert resolution.authorization_mode == "NONE"
+
+
 def test_blocked_and_actionable_invariants_are_fail_closed() -> None:
     with pytest.raises(ValueError, match="cannot contain an order action"):
         DecisionResolutionV2(

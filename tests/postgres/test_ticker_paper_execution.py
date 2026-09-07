@@ -1267,6 +1267,54 @@ def test_peer_return_materializes_large_confirmed_peer_set_once(
         runtime.close()
 
 
+def test_bounded_ticker_outcome_refresh_rotates_unchecked_then_least_recent_decisions(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = TickerDecisionRepository(runtime)
+        reference = datetime.now(UTC) + timedelta(minutes=1)
+        with runtime.transaction() as connection:
+            connection.execute(
+                """INSERT INTO catalog.instrument (symbol, name, asset_class)
+                   VALUES ('ROTOLD', 'Older rotation test', 'equity'),
+                          ('ROTNEW', 'Newer rotation test', 'equity')""",
+            )
+        decisions = [repository.publish(build_ticker_decision(
+            ticker, {}, as_of=reference - timedelta(days=age),
+        ))["ticker_decision_id"] for ticker, age in (("ROTOLD", 5), ("ROTNEW", 4))]
+
+        def checked():
+            with runtime.read() as connection:
+                rows = connection.execute(
+                    """SELECT ticker_decision_id::text AS decision_id,
+                              max(updated_at) AS last_checked_at, count(*) AS horizons
+                       FROM analysis.ticker_outcome
+                       WHERE ticker_decision_id = ANY(%s::uuid[]) GROUP BY ticker_decision_id""",
+                    [decisions],
+                ).fetchall()
+            return {row["decision_id"]: dict(row) for row in rows}
+
+        first = repository.refresh_outcomes(now=reference, limit=1, symbols={"ROTOLD", "ROTNEW"})
+        first_checks = checked()
+        assert first == {"evaluated": 1, "updated": 6, "resolved": 0}
+        assert set(first_checks) == {decisions[0]}
+        second = repository.refresh_outcomes(now=reference, limit=1, symbols={"ROTOLD", "ROTNEW"})
+        second_checks = checked()
+        assert second == first
+        assert set(second_checks) == set(decisions)
+        assert second_checks[decisions[0]] == first_checks[decisions[0]]
+        assert all(row["horizons"] == 6 for row in second_checks.values())
+        third = repository.refresh_outcomes(now=reference, limit=1, symbols={"ROTOLD", "ROTNEW"})
+        third_checks = checked()
+        assert third == first
+        assert third_checks[decisions[0]]["last_checked_at"] > second_checks[decisions[0]]["last_checked_at"]
+        assert third_checks[decisions[1]] == second_checks[decisions[1]]
+    finally:
+        runtime.close()
+
+
 def test_ticker_outcome_refresh_persists_costs_and_learning_metadata(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -1284,7 +1332,10 @@ def test_ticker_outcome_refresh_persists_costs_and_learning_metadata(
                 [ticker, "Outcome Test"],
             )
         source_id = "ticker-outcome-bars"
-        ingestion.register_source(source_id, name="Ticker outcome bars", family="test", kind="daily_bars")
+        ingestion.register_source(
+            source_id, name="Ticker outcome bars", family="test", kind="daily_bars",
+            operational_state="active", health_owner="test", freshness_seconds=86400,
+        )
         run_id = ingestion.start_run(source_id, "price_bars", started_at=available_at)
         rows = [{"symbol": ticker, "date": as_of.date().isoformat(), "close": 100}]
         cursor = as_of.date() + timedelta(days=1)
@@ -1292,25 +1343,30 @@ def test_ticker_outcome_refresh_persists_costs_and_learning_metadata(
             if cursor.weekday() < 5:
                 rows.append({"symbol": ticker, "date": cursor.isoformat(), "close": 100 + len(rows)})
             cursor += timedelta(days=1)
-        ingestion.store_price_bars(run_id, source_id, rows, asset_classes={ticker: "equity"})
-        ingestion.finish_run(run_id, "succeeded")
-        with runtime.transaction() as connection:
-            connection.execute(
-                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
-                [available_at, available_at, run_id],
-            )
-            connection.execute(
-                "UPDATE raw.price_bar SET available_at = %s WHERE ingest_run_id = %s",
-                [available_at, run_id],
-            )
-            connection.execute(
-                "UPDATE raw.price_bar_confirmation SET fact_available_at = %s WHERE ingest_run_id = %s",
-                [available_at, run_id],
-            )
-            connection.execute(
-                "UPDATE raw.price_bar_fact_availability SET fact_available_at = %s WHERE ingest_run_id = %s",
-                [available_at, run_id],
-            )
+        ingestion.store_price_bars(run_id, source_id, rows[:1], asset_classes={ticker: "equity"})
+        forward_run = ingestion.start_run(source_id, "price_bars", started_at=reference - timedelta(minutes=1))
+        ingestion.store_price_bars(forward_run, source_id, rows[1:], asset_classes={ticker: "equity"})
+        for price_run, confirmed_at in ((run_id, available_at), (forward_run, reference)):
+            ingestion.finish_run(price_run, "succeeded")
+            with runtime.transaction() as connection:
+                connection.execute(
+                    "UPDATE ingest.run SET finished_at = %s WHERE id = %s",
+                    [confirmed_at, price_run],
+                )
+                connection.execute(
+                    "UPDATE raw.price_bar SET available_at = observed_at + interval '1 minute' WHERE ingest_run_id = %s",
+                    [price_run],
+                )
+                connection.execute(
+                    """UPDATE raw.price_bar_confirmation confirmation SET fact_available_at = bar.available_at
+                       FROM raw.price_bar bar WHERE confirmation.fact_id = bar.id AND confirmation.ingest_run_id = %s""",
+                    [price_run],
+                )
+                connection.execute(
+                    """UPDATE raw.price_bar_fact_availability confirmation SET fact_available_at = bar.available_at
+                       FROM raw.price_bar bar WHERE confirmation.fact_id = bar.id AND confirmation.ingest_run_id = %s""",
+                    [price_run],
+                )
 
         decision = build_ticker_decision(
             ticker,
