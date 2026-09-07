@@ -8,7 +8,11 @@ from investment_panel.database import price_bar_ingestion
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import downgrade_database, upgrade_database
+from investment_panel.database.panel_watchlist import technical_rows
+from investment_panel.database.portfolio_intelligence import portfolio_performance_rows
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from conftest import typed_config
 from migrations.schema_contract import schema_contract
 
 
@@ -24,10 +28,10 @@ def price_ingestion(application_postgres_dsn):
         runtime.close()
 
 
-def _capture(ingestion, day):
+def _capture(ingestion, day, **values):
     run_id = ingestion.start_run("session-close-test", "price_bars")
     assert ingestion.store_price_bars(
-        run_id, "session-close-test", [{"symbol": "QQQ", "date": day.isoformat(), "close": 500}],
+        run_id, "session-close-test", [{"symbol": "QQQ", "date": day.isoformat(), "close": 500, **values}],
         asset_classes={"QQQ": "etf"},
     ) == 1
     ingestion.finish_run(run_id, "succeeded")
@@ -99,7 +103,7 @@ def test_daily_price_clock_reader_migration_is_exactly_reversible(postgres_dsn):
             "SELECT proowner, proacl, prosecdef, provolatile, proconfig, prorettype, proargtypes "
             "FROM pg_proc WHERE oid = 'raw.current_price_for_instruments(timestamptz,bigint[])'::regprocedure"
         ).fetchone()
-    upgrade_database(postgres_dsn)
+    upgrade_database(postgres_dsn, "20260907_0005")
     with psycopg.connect(postgres_dsn) as connection:
         after = schema_contract(connection)
         changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
@@ -111,7 +115,7 @@ def test_daily_price_clock_reader_migration_is_exactly_reversible(postgres_dsn):
     downgrade_database(postgres_dsn, "20260907_0004")
     with psycopg.connect(postgres_dsn) as connection:
         assert schema_contract(connection) == before
-    upgrade_database(postgres_dsn)
+    upgrade_database(postgres_dsn, "20260907_0005")
     with psycopg.connect(postgres_dsn) as connection:
         assert schema_contract(connection) == after
 
@@ -164,3 +168,103 @@ def test_existing_daily_quote_foreign_and_non_equity_clock_contracts_are_preserv
         instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [symbol]).fetchone()["id"]
         current = connection.execute("SELECT observed_at, price FROM raw.current_price_at(%s, ARRAY[%s::bigint])", [datetime.now(UTC), instrument_id]).fetchone()
         assert current == {"observed_at": datetime(2026, 1, 2, 16, tzinfo=ZoneInfo(expected_zone)), "price": 500}
+
+
+def test_corrected_early_close_values_reach_current_analytics_and_keep_old_cutoffs(price_ingestion, migrated_postgres_dsn, monkeypatch):
+    day = date(2025, 11, 28)
+    before = datetime.now(UTC)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(price_bar_ingestion, "market_session_bounds", lambda value: (
+            market_session_bounds(value)[0], datetime(value.year, value.month, value.day, 20, tzinfo=UTC),
+        ))
+        original_at = _capture(price_ingestion, day, open=490, high=510, low=480, volume=100)
+    corrected_at = _capture(price_ingestion, day, open=510, high=560, low=500, close=550, volume=200)
+    revised_at = _capture(price_ingestion, day, open=520, high=580, low=510, close=575, volume=300)
+    # Only the pre-existing portfolio position is seeded by its fixture owner.
+    # All source writes and current/historical reads use the application login.
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'QQQ'").fetchone()[0]
+        connection.execute(
+            """INSERT INTO app.portfolio_transaction
+               (instrument_id, transaction_type, quantity, price, amount, executed_at, idempotency_key)
+               VALUES (%s, 'opening_balance', 1, 400, 400, %s, 'clock-correction-holding')""",
+            [instrument_id, market_session_bounds(day)[0]],
+        )
+    with price_ingestion.runtime.read() as connection:
+        assert connection.execute("SELECT current_user AS role").fetchone()["role"] == "market_app"
+        for cutoff, expected in ((before, None), (original_at, 500), (corrected_at, 550), (revised_at, 575)):
+            bars = connection.execute("SELECT close FROM raw.confirmed_price_bar_at(%s, ARRAY[%s::bigint])", [cutoff, instrument_id]).fetchall()
+            quotes = connection.execute("SELECT price FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])", [cutoff, instrument_id]).fetchall()
+            assert [row["close"] for row in bars] == ([] if expected is None else [expected])
+            assert [row["price"] for row in quotes] == ([] if expected is None else [expected])
+        assert connection.execute("SELECT * FROM raw.confirmed_quote_at(%s, ARRAY[]::bigint[])", [revised_at]).fetchall() == []
+        assert connection.execute("SELECT close FROM raw.confirmed_price_bar").fetchall() == [{"close": 575}]
+        assert connection.execute("SELECT price FROM raw.confirmed_quote").fetchall() == [{"price": 575}]
+        for scope in (None, {"QQQ"}):
+            technical = technical_rows(connection, symbols=scope)
+            assert len(technical) == 1
+            assert technical[0]["price"] == technical[0]["sma_20"] == 575
+            assert technical[0]["as_of"] == market_session_bounds(day)[1]
+            assert technical[0]["chart_1y"] == [{"date": day.isoformat(), "close": 575}]
+            assert technical[0]["volume_1m_bars"] == [{"date": day.isoformat(), "value": 300}]
+        performance = portfolio_performance_rows(typed_config(), connection=connection)
+        assert performance[-1]["portfolio_value"] == 575
+        assert performance[-1]["total_pnl"] == 175
+    pending_run = price_ingestion.start_run("session-close-test", "price_bars")
+    price_ingestion.store_price_bars(pending_run, "session-close-test", [{"symbol": "QQQ", "date": day.isoformat(), "close": 800}])
+    with price_ingestion.runtime.read() as connection:
+        # A newer but unconfirmed correction cannot hide the last eligible version.
+        assert connection.execute("SELECT close FROM raw.confirmed_price_bar").fetchall() == [{"close": 575}]
+        assert connection.execute("SELECT price FROM raw.confirmed_quote").fetchall() == [{"price": 575}]
+    price_ingestion.finish_run(pending_run, "failed")
+
+
+def test_confirmed_price_identity_migration_preserves_view_authority_and_round_trips(postgres_dsn):
+    upgrade_database(postgres_dsn, "20260907_0005")
+    views = ["raw.confirmed_quote", "raw.confirmed_price_bar"]
+    metadata_query = "SELECT relname, relowner, relacl, reloptions FROM pg_class WHERE oid = ANY(%s::regclass[]) ORDER BY relname"
+    with psycopg.connect(postgres_dsn) as connection:
+        before = schema_contract(connection)
+        identity = connection.execute(metadata_query, [views]).fetchall()
+    upgrade_database(postgres_dsn, "20260907_0006")
+    with psycopg.connect(postgres_dsn) as connection:
+        after = schema_contract(connection)
+        changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
+        assert len(changed) == 6
+        assert changed == {key for key in changed if key.startswith((
+            "view:raw.confirmed_quote", "view:raw.confirmed_price_bar",
+            "function:raw.confirmed_quote_at(", "function:raw.confirmed_price_bar_at(",
+            "function_acl:raw.confirmed_quote_at(", "function_acl:raw.confirmed_price_bar_at(",
+        ))}
+        assert connection.execute(metadata_query, [views]).fetchall() == identity
+        for name in views:
+            signature = name + "_at(timestamptz,bigint[])"
+            assert connection.execute(
+                """SELECT NOT proc.prosecdef AND proc.proowner = relation.relowner
+                          AND has_function_privilege('market_app', proc.oid, 'EXECUTE')
+                          AND NOT EXISTS (SELECT 1 FROM aclexplode(proc.proacl) acl WHERE acl.grantee = 0)
+                   FROM pg_proc proc, pg_class relation
+                   WHERE proc.oid = %s::regprocedure AND relation.oid = %s::regclass""",
+                [signature, name],
+            ).fetchone()[0]
+    downgrade_database(postgres_dsn, "20260907_0005")
+    with psycopg.connect(postgres_dsn) as connection:
+        assert schema_contract(connection) == before
+    upgrade_database(postgres_dsn, "20260907_0006")
+    with psycopg.connect(postgres_dsn) as connection:
+        assert schema_contract(connection) == after
+
+
+def test_peer_return_keeps_entry_version_at_its_own_cutoff_after_correction(price_ingestion, monkeypatch):
+    entry_day, mark_day = date(2025, 11, 28), date(2025, 12, 1)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(price_bar_ingestion, "market_session_bounds", lambda value: (
+            market_session_bounds(value)[0], datetime(value.year, value.month, value.day, 20, tzinfo=UTC),
+        ))
+        entry_cutoff = _capture(price_ingestion, entry_day, close=500)
+    _capture(price_ingestion, entry_day, close=550)
+    mark_cutoff = _capture(price_ingestion, mark_day, close=600)
+    observed = TickerDecisionRepository(price_ingestion.runtime)._peer_return(
+        ["QQQ"], entry_day, mark_day, entry_cutoff, mark_cutoff,
+    )
+    assert observed == pytest.approx(600 / 500 - 1)

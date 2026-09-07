@@ -447,10 +447,9 @@ class OptionEventRepository(OptionEventFeed):
             if current_prices is None:
                 quote_join = """
                 LEFT JOIN LATERAL (
-                    SELECT price, observed_at FROM raw.confirmed_quote
-                    WHERE instrument_id = event.instrument_id
-                      AND observed_at <= %s
-                      AND available_at <= %s
+                    SELECT price, observed_at
+                    FROM raw.confirmed_quote_at(%s, ARRAY[event.instrument_id])
+                    WHERE observed_at <= %s
                     ORDER BY observed_at DESC, available_at DESC LIMIT 1
                 ) quote ON true
                 """

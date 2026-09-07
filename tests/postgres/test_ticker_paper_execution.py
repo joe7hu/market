@@ -1140,7 +1140,7 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         runtime.close()
 
 
-def test_peer_return_materializes_large_confirmed_peer_set_once(
+def test_peer_return_bounds_large_confirmed_peer_sets_at_each_cutoff(
     migrated_postgres_dsn: str,
     monkeypatch,
 ) -> None:
@@ -1158,8 +1158,7 @@ def test_peer_return_materializes_large_confirmed_peer_set_once(
         peer_count = 640
         entry_date = datetime(2026, 4, 1, tzinfo=UTC).date()
         mark_date = datetime(2026, 4, 3, tzinfo=UTC).date()
-        as_of = datetime(2026, 4, 1, 22, tzinfo=UTC)
-        reference = datetime(2026, 4, 4, 22, tzinfo=UTC)
+        as_of = reference = datetime.now(UTC)
         ingestion = IngestionRepository(runtime)
         ingestion.register_source(source_id, name="Ticker peer performance", family="test", kind="daily_bars")
         run_id = ingestion.start_run(source_id, "price_bars", started_at=as_of)
@@ -1222,6 +1221,12 @@ def test_peer_return_materializes_large_confirmed_peer_set_once(
                 ).fetchall()
             ]
         ingestion.finish_run(run_id, "succeeded")
+        with runtime.read() as connection:
+            # Historical bars become eligible only when this actual batch
+            # completes. PEER0001's later availability must still be excluded.
+            as_of = reference = connection.execute(
+                "SELECT finished_at FROM ingest.run WHERE id = %s", [run_id],
+            ).fetchone()["finished_at"]
 
         parameters = [symbols, entry_date, as_of, symbols, mark_date, reference]
         with runtime.read() as connection:

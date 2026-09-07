@@ -332,7 +332,7 @@ def _confirmed_daily_price_bars(
             WHERE fact.interval = '1d'
               {fact_date_filter}
         ), confirmed AS MATERIALIZED (
-            SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.observed_at)
+            SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.id)
                    fact.*
             FROM facts fact
             JOIN LATERAL (
@@ -346,8 +346,10 @@ def _confirmed_daily_price_bars(
               ON price_run.id = availability.ingest_run_id
              AND price_run.status IN ('succeeded', 'partial')
              AND price_run.finished_at IS NOT NULL
+             AND price_run.finished_at <= now()
+            WHERE fact.available_at <= now()
             ORDER BY fact.instrument_id, fact.source_id, fact.interval,
-                     fact.observed_at, fact.available_at DESC
+                     fact.id, fact.available_at DESC
         )
         SELECT DISTINCT ON (confirmed.instrument_id, confirmed.trading_date)
                confirmed.instrument_id, requested.symbol, confirmed.trading_date,

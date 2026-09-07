@@ -121,7 +121,7 @@ def technical_rows(connection: Any, *, symbols: set[str] | None = None) -> list[
                 JOIN candidate_instruments candidate ON candidate.id = fact.instrument_id
                 WHERE fact.interval = '1d' AND fact.close > 0
             ), confirmed_price_bars AS MATERIALIZED (
-                SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.observed_at)
+                SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.interval, fact.id)
                        fact.*
                 FROM facts fact
                 JOIN LATERAL (
@@ -135,8 +135,10 @@ def technical_rows(connection: Any, *, symbols: set[str] | None = None) -> list[
                   ON price_run.id = availability.ingest_run_id
                  AND price_run.status IN ('succeeded', 'partial')
                  AND price_run.finished_at IS NOT NULL
+                 AND price_run.finished_at <= now()
+                WHERE fact.available_at <= now()
                 ORDER BY fact.instrument_id, fact.source_id, fact.interval,
-                         fact.observed_at, fact.available_at DESC
+                         fact.id, fact.available_at DESC
             ), daily AS (""",
             1,
         ).replace(

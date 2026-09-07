@@ -214,30 +214,21 @@ def select_current_outcome_attributions(
 
 
 _PEER_RETURN_QUERY = """
-WITH peer_bars AS MATERIALIZED (
-    SELECT bar.instrument_id, bar.trading_date, bar.close, bar.available_at
-    FROM raw.confirmed_price_bar bar
-    WHERE bar.instrument_id = ANY(
-        ARRAY(
-            SELECT instrument.id
-            FROM catalog.instrument instrument
-            WHERE instrument.symbol = ANY(%s)
-        )
-    )
-      AND bar.interval = '1d'
+WITH peer_ids AS MATERIALIZED (
+    SELECT ARRAY(SELECT id FROM catalog.instrument WHERE symbol = ANY(%s)) AS ids
 ), entry_prices AS (
     SELECT DISTINCT ON (bar.instrument_id)
            bar.instrument_id, bar.close
-    FROM peer_bars bar
-    WHERE bar.trading_date <= %s
-      AND bar.available_at <= %s
+    FROM peer_ids
+    CROSS JOIN LATERAL raw.confirmed_price_bar_at(%s, peer_ids.ids) bar
+    WHERE bar.interval = '1d' AND bar.trading_date <= %s
     ORDER BY bar.instrument_id, bar.trading_date DESC, bar.available_at DESC
 ), mark_prices AS (
     SELECT DISTINCT ON (bar.instrument_id)
            bar.instrument_id, bar.close
-    FROM peer_bars bar
-    WHERE bar.trading_date = %s
-      AND bar.available_at <= %s
+    FROM peer_ids
+    CROSS JOIN LATERAL raw.confirmed_price_bar_at(%s, peer_ids.ids) bar
+    WHERE bar.interval = '1d' AND bar.trading_date = %s
     ORDER BY bar.instrument_id, bar.available_at DESC
 )
 SELECT avg(mark_prices.close / entry_prices.close - 1) AS return
@@ -1723,32 +1714,29 @@ class TickerDecisionRepository:
             entry_quote = connection.execute(
                 """
                 SELECT price, observed_at, available_at
-                FROM raw.confirmed_quote
-                WHERE instrument_id = %s
-                  AND observed_at <= %s AND available_at <= %s
+                FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
+                WHERE observed_at <= %s
                 ORDER BY observed_at DESC, available_at DESC
                 LIMIT 1
                 """,
-                [decision["instrument_id"], decision["as_of"], decision["as_of"]],
+                [decision["as_of"], decision["instrument_id"], decision["as_of"]],
             ).fetchone()
             entry = connection.execute(
                 """
                 SELECT close, available_at, observed_at
-                FROM raw.confirmed_price_bar
-                WHERE instrument_id = %s AND interval = '1d'
-                  AND trading_date <= %s::date AND available_at <= %s
+                FROM raw.confirmed_price_bar_at(%s, ARRAY[%s::bigint])
+                WHERE interval = '1d' AND trading_date <= %s::date
                 ORDER BY trading_date DESC, available_at DESC LIMIT 1
                 """,
-                [decision["instrument_id"], decision["as_of"], decision["as_of"]],
+                [decision["as_of"], decision["instrument_id"], decision["as_of"]],
             ).fetchone()
             trend_reference = connection.execute(
                 """
                 WITH one_bar_per_day AS (
                     SELECT DISTINCT ON (trading_date)
                            close, trading_date, observed_at, available_at, source_id
-                    FROM raw.confirmed_price_bar
-                    WHERE instrument_id = %s AND interval = '1d'
-                      AND trading_date <= %s::date AND available_at <= %s
+                    FROM raw.confirmed_price_bar_at(%s, ARRAY[%s::bigint])
+                    WHERE interval = '1d' AND trading_date <= %s::date
                     ORDER BY trading_date, available_at DESC, observed_at DESC, source_id
                 )
                 SELECT close, trading_date
@@ -1756,7 +1744,7 @@ class TickerDecisionRepository:
                 ORDER BY trading_date DESC
                 OFFSET 20 LIMIT 1
                 """,
-                [decision["instrument_id"], decision["as_of"], decision["as_of"]],
+                [decision["as_of"], decision["instrument_id"], decision["as_of"]],
             ).fetchone()
             sector = connection.execute(
                 """
@@ -2124,7 +2112,7 @@ class TickerDecisionRepository:
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute(
                 _PEER_RETURN_QUERY,
-                [symbols, entry_date, as_of, mark_date, reference],
+                [symbols, as_of, entry_date, reference, mark_date],
             ).fetchone()
         return _number(row["return"]) if row else None
 
@@ -2769,15 +2757,14 @@ def _terminal_delisting_mark(
     row = connection.execute(
         """
         SELECT close, available_at, observed_at, trading_date
-        FROM raw.confirmed_price_bar
-        WHERE instrument_id = %s AND interval = '1d'
+        FROM raw.confirmed_price_bar_at(%s, ARRAY[%s::bigint])
+        WHERE interval = '1d'
           AND trading_date > %s::date
           AND trading_date <= %s::date
-          AND available_at <= %s
         ORDER BY trading_date DESC, available_at DESC, observed_at DESC
         LIMIT 1
         """,
-        [instrument_id, as_of, delisted_at, reference],
+        [reference, instrument_id, as_of, delisted_at],
     ).fetchone()
     return dict(row) if row is not None else None
 

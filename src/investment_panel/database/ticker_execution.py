@@ -659,14 +659,12 @@ class TickerPaperExecutionRepository:
         quote = connection.execute(
             """
             SELECT price, observed_at, available_at
-            FROM raw.confirmed_quote
-            WHERE instrument_id = %s
-              AND observed_at <= %s
-              AND available_at <= %s
+            FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
+            WHERE observed_at <= %s
             ORDER BY observed_at DESC, available_at DESC
             LIMIT 1
             """,
-            [order["instrument_id"], now, now],
+            [now, order["instrument_id"], now],
         ).fetchone()
         if quote is None or _number(quote["price"]) is None:
             connection.execute(
@@ -832,14 +830,12 @@ class TickerPaperExecutionRepository:
         quote = connection.execute(
             """
             SELECT price, observed_at, available_at
-            FROM raw.confirmed_quote
-            WHERE instrument_id = %s
-              AND observed_at <= %s
-              AND available_at <= %s
+            FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
+            WHERE observed_at <= %s
             ORDER BY observed_at DESC, available_at DESC
             LIMIT 1
             """,
-            [order["instrument_id"], now, now],
+            [now, order["instrument_id"], now],
         ).fetchone()
         if quote is None or _number(quote["price"]) is None:
             return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "fresh_confirmed_quote_required_for_exit"}
@@ -876,11 +872,11 @@ class TickerPaperExecutionRepository:
         target = dict(selected.get("target_range") or {})
         quote = connection.execute(
             """
-            SELECT price FROM raw.confirmed_quote
-            WHERE instrument_id = %s AND observed_at <= %s AND available_at <= %s
+            SELECT price FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
+            WHERE observed_at <= %s
             ORDER BY observed_at DESC, available_at DESC LIMIT 1
             """,
-            [order["instrument_id"], now, now],
+            [now, order["instrument_id"], now],
         ).fetchone()
         underlying_price = _number(quote["price"]) if quote is not None else None
         invalidation_price = _number(invalidation.get("value")) if invalidation.get("kind") == "price" else None

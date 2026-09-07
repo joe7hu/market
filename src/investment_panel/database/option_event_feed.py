@@ -168,9 +168,8 @@ class OptionEventFeed:
                 JOIN catalog.instrument instrument ON instrument.id = universe.instrument_id
                 LEFT JOIN LATERAL (
                     SELECT price, observed_at, available_at, source_id
-                    FROM raw.confirmed_quote quote
-                    WHERE quote.instrument_id = instrument.id AND quote.source_id = 'robinhood'
-                      AND quote.observed_at <= %s AND quote.available_at <= %s
+                    FROM raw.confirmed_quote_at(%s, ARRAY[instrument.id]) quote
+                    WHERE quote.source_id = 'robinhood' AND quote.observed_at <= %s
                     ORDER BY observed_at DESC, available_at DESC LIMIT 1
                 ) quote ON true
                 """,

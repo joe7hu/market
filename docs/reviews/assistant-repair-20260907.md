@@ -437,3 +437,42 @@ existing ingestion and import checks. Root then passed all 18 application-login
 settlement variants against schema 0005 in 6.06 seconds. All changed Python files
 pass Ruff; diff checks pass. Independent acceptance and the full release gate
 remain pending. No production changes have occurred.
+
+## Ninth independent review
+
+Review v9 returned `patch is incorrect` for commit
+`ff268a24e17c8955afbecc3bea787b600a31f463`, tree
+`84c6e5f4a49dda4c921baee2e75e48275eca9edc`. The report is archived as
+`market-assistant-review-v9.json` with prior review history.
+
+| Finding | State | Required correction |
+|---|---|---|
+| R38 P2 | fixed; review pending | Select corrected versions by stable fact identity in remaining price readers, preserving old-cutoff availability |
+
+The exact ff268a2 restored app passed 18 HTTP and semantic checks on schema
+0005. Radar returned in 1.332 seconds with no integrity defect; Research took
+0.208 seconds and the funnel 0.622 seconds. The actual experiment job ran under
+the non-owner login and rejected all 47 unsupported candidates. Restored
+0004/0005 migration reversal was exact; only the intended current-price
+function changed. These proofs do not resolve the newly identified downstream
+archived-version defect. Full release gate and production deployment have not
+run. Final visual proof remains pending the locked Mac.
+
+R38 selects each confirmed version by stable fact identity after applying its
+availability and completed-ingestion cutoff. Migration 20260907_0006 adds two
+scoped invoker readers and updates the two current views without changing
+columns, owners or existing view privileges. Explicit historical callers use
+their exact cutoffs; the bounded watchlist and portfolio unions use the same
+stable identity rule. Existing current_price_at and confirmed_daily_bars have
+different source/price policies, so substituting them would change more than
+version selection. No separate framework or source policy was added.
+
+Seventy-six affected checks passed in 19.13 seconds. They include actual changed
+OHLCV reingestion through scoped/full watchlist technicals and portfolio prices,
+old-cutoff preservation, peer-return correction with two cutoffs, the 640-peer
+query under the unchanged 3000 ms limit, option-event detector and maintenance
+paths, and exact migration/owner/ACL reversal. An older peer fixture was aligned
+with its recorded completed-ingestion time; the future-availability exclusion
+remains intact. The schema delta is exactly two views, two functions and their
+two execute ACLs. Ruff and diff checks pass. Independent review and the full
+release gate remain pending.
