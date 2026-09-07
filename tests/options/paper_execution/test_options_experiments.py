@@ -1361,9 +1361,8 @@ def test_rollback_requires_twenty_independent_current_incumbent_losses(experimen
 def test_multiple_public_paper_orders_cannot_supply_one_selected_execution_sample(experiment_context, monkeypatch):
     from investment_panel.database import strategy_learning
     from investment_panel.database.options_experiments import seed_experiment_shadows
-    from investment_panel.database.strategy_governance import (
-        _quarantine_unverified_paper_evaluations, paper_provenance_is_database_backed,
-    )
+    from investment_panel.core.decision import promotion_readiness
+    from investment_panel.database.strategy_governance import StrategyGovernanceRepository, paper_provenance_is_database_backed
 
     runtime, ingestion, now, _parent, candidate = experiment_context
     ready = _ready_paper_publication(experiment_context, monkeypatch, sleeve_capital=50000)
@@ -1408,12 +1407,6 @@ def test_multiple_public_paper_orders_cannot_supply_one_selected_execution_sampl
             "paper_order_ids": [first["paper_order_id"]], "decision_ids": [str(ready.decision_id)],
         }
         assert paper_provenance_is_database_backed(connection, candidate, selected_winner, cutoff=cutoff) is False
-        # Previously stored evidence that lists only the winning order must
-        # also fail the current database proof, despite its old verified flag.
-        prior_evaluation = {"evaluation_type": "execution_grade_paper", "evaluated_at": cutoff,
-                            "available_at": cutoff, "evidence": {"paper_execution": selected_winner}}
-        _quarantine_unverified_paper_evaluations(connection, candidate, [prior_evaluation])
-        assert prior_evaluation["evidence"] == {}
         orders = connection.execute("SELECT id::text, created_at, actual_fill_price, exit_price FROM app.paper_order ORDER BY created_at, id").fetchall()
         assert orders[0]["exit_price"] > orders[0]["actual_fill_price"]
         assert orders[1]["exit_price"] < orders[1]["actual_fill_price"]
@@ -1425,3 +1418,27 @@ def test_multiple_public_paper_orders_cannot_supply_one_selected_execution_sampl
                 [order["created_at"], ready.decision_id],
             ).fetchone()
             assert counted["paper_order_count"] == index
+
+    # The public governance read must reject previously stored winner-only
+    # evidence even when its structure and old verified flag are valid.
+    evidence = {
+        "sample_size": 1, "source": "analysis.option_outcome",
+        "method": "retained_actionable_decisions_forward_evaluation",
+        "version": "phase7-governance-evidence-v1",
+        "uncertainty": {"lower_95_expectancy": .01},
+        "paper_execution": {**selected_winner, "source": "app.paper_order",
+                            "paper_only": True, "completed_orders": 1},
+    }
+    prior_evaluation = {"evaluation_type": "execution_grade_paper", "verdict": "pass",
+                        "evaluated_at": cutoff, "available_at": cutoff, "evidence": evidence}
+    blocker = "execution_grade_paper_evidence_not_real"
+    assert blocker not in promotion_readiness([prior_evaluation], now=cutoff)["blockers"]
+    with runtime.transaction() as connection:
+        connection.execute(
+            "INSERT INTO analysis.strategy_evaluation "
+            "(strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics, evidence) "
+            "VALUES (%s, 'execution_grade_paper', %s, %s, 'pass', '{}', %s)",
+            [candidate, cutoff, cutoff, Jsonb(evidence)],
+        )
+    readiness = StrategyGovernanceRepository(runtime).promotion_readiness(candidate, cutoff=cutoff)
+    assert blocker in readiness["blockers"] and readiness["promotion_eligible"] is False

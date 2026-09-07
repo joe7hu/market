@@ -476,3 +476,17 @@ with its recorded completed-ingestion time; the future-availability exclusion
 remains intact. The schema delta is exactly two views, two functions and their
 two execute ACLs. Ruff and diff checks pass. Independent review and the full
 release gate remain pending.
+
+## Independent acceptance and release-check correction
+
+Review v10 accepted clean commit `57e6af10655d842b243a0460af5a18442d738c3d`
+with no findings. The restored 0006 schema and all 18 API/semantic probes passed.
+The first full release-gate attempt stopped in architecture guards: the R28
+regression imported a private governance helper. The test now stores the
+winner-only evidence and reads the public governance readiness method. Its
+control verifies that the envelope is structurally real before database proof
+rejects it, so unrelated missing metrics cannot satisfy the assertion. Both the
+failed architecture node and affected regression pass (2 tests, 2.01 seconds).
+Only this test and the repair record changed; production source and migrations
+remain identical to the independently accepted candidate. The remaining release
+gate has not completed and production is unchanged.
