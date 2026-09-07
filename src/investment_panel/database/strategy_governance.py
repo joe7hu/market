@@ -259,24 +259,29 @@ class StrategyGovernanceRepository:
                 [active["id"], active["id"], active["promoted_at"]],
             ).fetchall()
             trailing = [dict(row) for row in trailing]
+            verified_paper = []
+            for row in measured:
+                realized = paper_realized_return(row)
+                if realized is not None:
+                    verified_paper.append({**row, "current_return": realized,
+                                           "observed_through": row["exit_at"], "paper_verified": True})
+            verified_keys = {(row["lane"], row["episode_key"]) for row in verified_paper}
             ambiguous = {}
             for row in [*trailing, *observations, *measured]:
-                if has_multiple_paper_orders(row):
-                    key = (row["lane"], row["episode_key"])
+                key = (row["lane"], row["episode_key"])
+                if (has_multiple_paper_orders(row)
+                    or (row.get("paper_order_count") != 0 and key not in verified_keys)):
                     through = row.get("observed_through") or row.get("exit_at") or row.get("first_paper_at") or row["as_of"]
                     if key not in ambiguous or through > ambiguous[key]["observed_through"]:
                         ambiguous[key] = {**row, "current_return": None, "observed_through": through}
             # Keep unresolved exposure in the trailing window. Do not replace
             # it with a selected paper winner, a shadow, or an older episode.
             trailing = [row for row in trailing if (row["lane"], row["episode_key"]) not in ambiguous]
+            trailing.extend(row for row in verified_paper if (row["lane"], row["episode_key"]) not in ambiguous)
             for row in measured:
-                if (row["lane"], row["episode_key"]) in ambiguous:
-                    continue
-                realized = paper_realized_return(row)
-                if realized is not None:
-                    trailing.append({**row, "current_return": realized,
-                                     "observed_through": row["exit_at"], "paper_verified": True})
-                elif row["decision_id"] in closed and row["current_return"] is not None:
+                if (row.get("paper_order_count") == 0 and row["decision_id"] in closed
+                    and row["current_return"] is not None
+                    and (row["lane"], row["episode_key"]) not in ambiguous):
                     trailing.append(dict(row))
             trailing.extend(ambiguous.values())
             # One economic episode has one return. Prefer its verified journal

@@ -269,3 +269,46 @@ Rollback retains unknown exposure within its trailing twenty, with no older
 loss substituted. Order counts are bound to each evidence cutoff. Multi-order
 return and drawdown aggregation are deliberately unsupported; no staging or
 risk policy changed. All repair owners are now frozen for review v5.
+
+## Fifth independent review
+
+Review v5 returned `patch is incorrect` for commit
+`cce766b754b7833250b809f41ce8c5acf3e1df52`, tree
+`6584975364de4fa64197cd92f5d4e092d683b723`. The complete report is preserved in
+`/Users/joehu/.codex/artifacts/market-assistant-repair-20260907/market-assistant-review-v5.json`.
+
+| Finding | State | Required correction |
+|---|---|---|
+| R30 P1 | fixed; review pending | Grant the production application role only the shadow lifecycle updates it needs; prove the scheduled writer with a non-owner login |
+| R31 P2 | fixed; review pending | Keep a single incomplete paper execution unknown during rollback; do not substitute its closed shadow or an older episode |
+
+The exact cce766b restored app passed 18 HTTP reads and semantic release/schema
+checks. Radar returned in 1.566 seconds, with no data-health defects,
+`COLLECTING`, zero resolved episodes and null expectancy. Research took 0.203
+seconds; the funnel took 0.622 seconds. This read proof does not cover the
+missing writer privilege identified by the reviewer. The full release gate,
+landing and production deployment have not run.
+
+R31 passed 14 PostgreSQL cases. Open orders, partial exits and missing exit
+journal evidence stay unknown within the trailing twenty, with no older-loss
+backfill; complete actual returns retain priority and zero-order shadow losses
+still trigger rollback at the unchanged threshold.
+
+R30 application-login execution reproduced the shadow lock/update denial.
+After only the eight shadow column grants, the complete shadow producer/fill/
+exit path passed and exposed a second denial at the existing paper-order
+INSERT. The repair therefore includes only the insert/update columns used by
+the current shared paper staging and management owners. Immutable intent updates,
+deletion, ownership, protected policy authority and assignment/recovery
+permissions remain unchanged. A complete application-login paper exit is
+required before this writer repair can be accepted.
+
+R30 passed 76 experiment, paper, migration and application-workflow checks.
+Migration 0004 adds only eight shadow UPDATE, fifteen paper INSERT, thirteen
+leg INSERT and eighteen paper lifecycle UPDATE column privileges. It grants
+no table-wide writer privilege. A non-owner application login completes real
+incumbent/candidate shadow advancement, paper staging/legs/entry/profit exit,
+and partial fill/thesis invalidation/exit with actual journal fees. The API
+statement timeout remains three seconds. The migration round-trip preserves
+the exact schema contract, and protected mutations remain denied. All owners
+are frozen for review v6 and restored migration validation.

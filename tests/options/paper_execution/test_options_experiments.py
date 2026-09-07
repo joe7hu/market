@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from psycopg.types.json import Jsonb
 
+from conftest import typed_config
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.analysis import AnalysisRepository, current_option_publication_answers
@@ -77,6 +78,43 @@ def _capture(runtime, ingestion, at, *, bid=0.48, ask=0.50, complete=True, avail
         connection.execute("UPDATE raw.option_snapshot SET capture_state = %s WHERE id = %s", ["complete" if complete else "partial", snapshot["snapshot_id"]])
         connection.execute("UPDATE raw.option_quote SET available_at = %s WHERE snapshot_id = %s", [available_at or at, snapshot["snapshot_id"]])
     return snapshot
+
+
+def test_application_login_produces_and_advances_experiment_shadows(experiment_context, application_postgres_dsn):
+    owner, ingestion, now, _parent, candidate = experiment_context
+    application = DatabaseRuntime(application_postgres_dsn)
+    application.open()
+    try:
+        with application.read() as connection:
+            identity = connection.execute(
+                "SELECT current_user, session_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+            ).fetchone()
+            assert identity["current_user"] == identity["session_user"] == "market_app"
+            assert identity["rolsuper"] is False and identity["rolbypassrls"] is False
+            assert connection.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "3s"
+            assert connection.execute("SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = 'analysis.shadow_trade'::regclass").fetchone()["owner"] != "market_app"
+        _capture(owner, ingestion, now)
+        incumbent = refresh_options_radar(application, source_id="test-experiment", code_version="application-producer")
+        assert incumbent["shadow_trades"] == 1
+        enabled = typed_config(application_postgres_dsn, raw={"analysis": {"options_decision_system": {"strategy_auto_promotion_enabled": True}}})
+        candidate_run = run_experiments(application, enabled)
+        assert candidate_run["status"] == "ok" and candidate_run["candidate_revision_id"] == candidate
+        assert candidate_run["publication"]["shadow_trades"] == 1
+        _capture(owner, ingestion, now + timedelta(seconds=20))
+        assert advance_experiment_shadows(application, now=now + timedelta(seconds=21))["entered"] == 2
+        _capture(owner, ingestion, now + timedelta(seconds=40), bid=1.1, ask=1.12)
+        completed = run_experiments(application, typed_config(application_postgres_dsn), now=now + timedelta(seconds=41))
+        assert completed["status"] == "disabled" and completed["observations"]["closed"] == 2
+        with application.read() as connection:
+            outcomes = connection.execute(
+                "SELECT shadow.status, shadow.entry_at, shadow.exit_at, outcome.objective_version, outcome.sample_eligible "
+                "FROM analysis.shadow_trade shadow JOIN analysis.option_outcome outcome ON outcome.shadow_trade_id = shadow.id"
+            ).fetchall()
+            assert len(outcomes) == 2
+            assert all(row["status"] == "closed" and row["entry_at"] < row["exit_at"] and row["sample_eligible"]
+                       and row["objective_version"] == EXPERIMENT_VERSION for row in outcomes)
+    finally:
+        application.close()
 
 
 def test_incumbent_and_candidate_gain_real_forward_calibration_before_promotion(experiment_context):
@@ -425,7 +463,7 @@ def test_shadow_drawdown_measures_a_decline_from_peak_wealth(experiment_context)
         assert outcome["max_drawdown"] == pytest.approx(.374 / 1.8 - 1)
 
 
-def _ready_paper_publication(experiment_context, monkeypatch, *, experimental=True, sleeve_capital=25000):
+def _ready_paper_publication(experiment_context, monkeypatch, *, experimental=True, sleeve_capital=25000, analysis_runtime=None):
     runtime, ingestion, now, parent, candidate = experiment_context
     monkeypatch.setattr("investment_panel.database.actions.is_market_open", lambda _: True)
     monkeypatch.setattr("investment_panel.database.options_paper_execution.is_market_open", lambda _: True)
@@ -447,7 +485,7 @@ def _ready_paper_publication(experiment_context, monkeypatch, *, experimental=Tr
         )
     with runtime.read() as connection:
         context = experiment_candidate(connection, candidate, as_of=datetime.now(UTC), require_shadow=True) if experimental else None
-    analysis = AnalysisRepository(runtime)
+    analysis = AnalysisRepository(analysis_runtime or runtime)
     run_id = analysis.start_run("options-paper-experiment" if experimental else "options-radar", input_cutoff=now, code_version="ready-fixture",
                                 inputs={"experiment": experiment_identity(context)} if experimental else {}, strategy_revision_id=candidate if experimental else parent)
     decision_id = analysis.store_option_decision(
@@ -477,6 +515,42 @@ def _ready_paper_publication(experiment_context, monkeypatch, *, experimental=Tr
                                       {"option_paper_experiment" if experimental else "option_radar_opportunity": [payload]}, complete_run_summary={})
     return SimpleNamespace(analysis=analysis, ticket=ticket, payload=payload, run_id=run_id,
                            publication_id=publication_id, decision_id=decision_id, quote=quote)
+
+
+@pytest.mark.parametrize("partial_thesis", [False, True])
+def test_application_login_stages_and_manages_candidate_paper(experiment_context, application_postgres_dsn, monkeypatch, partial_thesis):
+    owner, ingestion, now, _parent, _candidate = experiment_context
+    application = DatabaseRuntime(application_postgres_dsn)
+    application.open()
+    try:
+        capital, quantity = (50000, 2) if partial_thesis else (25000, 1)
+        ready = _ready_paper_publication(experiment_context, monkeypatch, sleeve_capital=capital, analysis_runtime=application)
+        staged = ActionRepository(application).stage_option_paper_entry(
+            decision_id=ready.decision_id, idempotency_key="application-paper", ticket_version=1,
+            quantity=quantity, limit_price=.5, current_options_risk_sleeve_capital=capital,
+            experiment_publication_id=ready.publication_id,
+        )
+        execution = OptionsPaperExecutionRepository(application)
+        _capture(owner, ingestion, now + timedelta(seconds=10), ask_size=1)
+        filled = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=11))
+        assert filled["status"] == "filled" and filled["filled_quantity"] == 1
+        if partial_thesis:
+            with owner.transaction() as connection:
+                connection.execute("INSERT INTO app.thesis (instrument_id, revision, status, thesis, updated_at) VALUES (%s, 1, 'current', %s, %s)",
+                                   [ready.quote["instrument_id"], Jsonb({"lifecycle_status": "invalidated"}), now + timedelta(seconds=20)])
+        _capture(owner, ingestion, now + timedelta(seconds=20), bid=1.1, ask=1.12)
+        exited = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=21))
+        assert exited["status"] == "closed" and exited["exit_quantity"] == 1
+        assert exited["reason"] == ("thesis_invalidated_or_closed" if partial_thesis else "profit_target")
+        with application.read() as connection:
+            paper = connection.execute("SELECT quantity, filled_quantity, exited_quantity, fees, ticket_snapshot FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()
+            assert paper["quantity"] == quantity and paper["filled_quantity"] == paper["exited_quantity"] == 1
+            assert float(paper["fees"]) == pytest.approx(1.3)
+            assert paper["ticket_snapshot"]["experiment"] == ready.ticket["experiment"]
+            journal = connection.execute("SELECT action, quantity FROM app.trade_journal WHERE decision_id = %s ORDER BY created_at", [ready.decision_id]).fetchall()
+            assert [(row["action"], row["quantity"]) for row in journal] == [("paper_entry", 1), (f"paper_exit:{exited['reason']}", 1)]
+    finally:
+        application.close()
 
 
 @pytest.mark.parametrize("rollback", [False, True])
@@ -716,7 +790,7 @@ def test_candidate_paper_uses_same_risk_checks_and_immutable_experiment_provenan
 @pytest.mark.parametrize("cohort", [
     "losers", "duplicate_episode", "before_promotion", "invalid_lineage", "paper_winners",
     "paper_incomplete_quarantined", "paper_complete_quarantined", "paper_incomplete_nan_fee", "score_rejected",
-    "multiple_paper_orders",
+    "multiple_paper_orders", "paper_open", "paper_partial_exit", "paper_missing_journal",
 ])
 def test_rollback_requires_twenty_independent_current_incumbent_losses(experiment_context, monkeypatch, cohort):
     from investment_panel.database import strategy_learning
@@ -727,7 +801,8 @@ def test_rollback_requires_twenty_independent_current_incumbent_losses(experimen
         connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [parent])
         connection.execute("UPDATE analysis.strategy_revision SET status = 'active', promoted_at = %s WHERE id = %s",
                            [now - timedelta(seconds=1), active])
-    count = 19 if cohort == "duplicate_episode" else 21 if cohort == "multiple_paper_orders" else 20
+    unresolved_paper = cohort in {"paper_open", "paper_partial_exit", "paper_missing_journal"}
+    count = 19 if cohort == "duplicate_episode" else 21 if cohort == "multiple_paper_orders" or unresolved_paper else 20
     symbols = tuple(f"OBSA{chr(65 + index)}" for index in range(count))
     _capture(runtime, ingestion, now, symbols=symbols)
     first = refresh_options_radar(runtime, source_id="test-experiment", code_version="rollback-test")
@@ -762,32 +837,41 @@ def test_rollback_requires_twenty_independent_current_incumbent_losses(experimen
             connection.execute("UPDATE analysis.shadow_trade SET metrics = jsonb_set(metrics, '{experiment,run_id}', '\"wrong-run\"') WHERE id = (SELECT id FROM analysis.shadow_trade LIMIT 1)")
         elif cohort == "score_rejected":
             connection.execute("UPDATE analysis.decision SET state = 'REJECTED', score = 0 WHERE strategy_revision_id = %s", [active])
-        elif cohort in {"paper_winners", "paper_incomplete_quarantined", "paper_complete_quarantined", "paper_incomplete_nan_fee", "multiple_paper_orders"}:
+        elif cohort in {"paper_winners", "paper_incomplete_quarantined", "paper_complete_quarantined", "paper_incomplete_nan_fee", "multiple_paper_orders"} or unresolved_paper:
             if cohort.endswith("quarantined"):
                 connection.execute("UPDATE analysis.option_outcome SET quarantine_reason = 'test_rejected_shadow'")
             elif cohort.endswith("nan_fee"):
                 connection.execute("UPDATE analysis.option_outcome SET fee_total = 'NaN'::numeric")
-            decisions = connection.execute("SELECT decision_id, decision.instrument_id FROM analysis.shadow_trade shadow JOIN analysis.decision decision ON decision.id = shadow.decision_id").fetchall()
+            decisions = connection.execute("SELECT decision_id, decision.instrument_id FROM analysis.shadow_trade shadow JOIN analysis.decision decision ON decision.id = shadow.decision_id ORDER BY decision.id DESC").fetchall()
             if cohort == "multiple_paper_orders":
                 # This most recent episode must remain in the trailing 20 as
                 # unknown, rather than selecting its winner or an older loss.
                 decisions = [decisions[0], decisions[0]]
+            elif unresolved_paper:
+                # Put unresolved exposure inside the trailing 20 while leaving
+                # one extra valid loss that must not backfill the unknown.
+                decisions = decisions[:1]
             for index, row in enumerate(decisions):
                 exit_price = .2 if cohort == "multiple_paper_orders" and index == 1 else .7
                 exit_at = now + timedelta(seconds=44 if cohort == "multiple_paper_orders" else 40)
+                status = "entered" if cohort == "paper_open" else "partial_exited" if cohort == "paper_partial_exit" else "exited"
+                exited_quantity = 0 if cohort == "paper_open" else .5 if cohort == "paper_partial_exit" else 1
+                if cohort == "paper_open":
+                    exit_at, exit_price = None, None
                 paper = connection.execute(
                     "INSERT INTO app.paper_order (decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
                     "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, fees, entry_slippage, exit_slippage, lane, contract_multiplier) "
-                    "VALUES (%s, %s, 'buy', 1, .5, 'exited', true, %s, .5, %s, %s, 1, 1, 1.3, .01, .01, 'radar', 100) RETURNING id",
-                    [row["decision_id"], row["instrument_id"], now + timedelta(seconds=22), exit_at, exit_price],
+                    "VALUES (%s, %s, 'buy', 1, .5, %s, true, %s, .5, %s, %s, 1, %s, 1.3, .01, .01, 'radar', 100) RETURNING id",
+                    [row["decision_id"], row["instrument_id"], status, now + timedelta(seconds=22), exit_at, exit_price, exited_quantity],
                 ).fetchone()["id"]
-                for action, price in (("paper_entry", .5), ("paper_exit:profit" if exit_price > .5 else "paper_exit:stop_loss", exit_price)):
-                    if cohort.startswith("paper_incomplete_") and action.startswith("paper_exit:"):
+                for action, price in (("paper_entry", .5), ("paper_exit:stop_loss" if exit_price is not None and exit_price < .5 else "paper_exit:profit", exit_price)):
+                    if action.startswith("paper_exit:") and (cohort.startswith("paper_incomplete_") or cohort in {"paper_open", "paper_missing_journal"}):
                         continue
                     connection.execute(
                         "INSERT INTO app.trade_journal (decision_id, instrument_id, action, quantity, price, rationale, details) "
-                        "VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s)",
-                        [row["decision_id"], row["instrument_id"], action, price, Jsonb({"paper_order_id": str(paper), "fees": .65})],
+                        "VALUES (%s, %s, %s, %s, %s, 'deterministic_options_paper_execution', %s)",
+                        [row["decision_id"], row["instrument_id"], action, 1 if action == "paper_entry" else exited_quantity,
+                         price, Jsonb({"paper_order_id": str(paper), "fees": .65})],
                     )
     # Use the fixture's forward clock without waiting or rewriting recorded timestamps.
     measured_at = now + timedelta(seconds=45)
