@@ -110,17 +110,24 @@ def test_paper_exit_uses_profit_stop_time_and_liquidity_gates() -> None:
     ) == "time_exit"
 
 
-@pytest.mark.parametrize("entry_blocker", ["ticket_expired", "candidate entry blocked_terminal_evidence"])
+@pytest.mark.parametrize("entry_blocker", [
+    "ticket_expired", "candidate entry blocked_terminal_evidence", "ticket_expiry_missing",
+    "ticket_expired_before_fill", "immutable_ticket_legs_missing", "thesis_invalidated_or_closed",
+])
 def test_blocked_partial_entry_keeps_the_filled_quantity_in_holding_management(monkeypatch, entry_blocker) -> None:
     order = {**_open_order(filled_quantity=1), "quantity": 2, "status": "open",
-             "ticket_snapshot": {"expires_at": (NOW - timedelta(seconds=1)).isoformat()}}
+             "ticket_snapshot": {"expires_at": (NOW + timedelta(seconds=60)).isoformat()}}
+    if entry_blocker == "ticket_expiry_missing":
+        order["ticket_snapshot"] = {}
+    elif entry_blocker == "ticket_expired_before_fill":
+        order["ticket_snapshot"]["expires_at"] = (NOW - timedelta(seconds=1)).isoformat()
 
     class Connection(_RecordingConnection):
         def execute(self, statement, parameters=None):
             if "FOR UPDATE OF paper" in statement:
                 return _Result(order)
             if "FROM app.paper_order_leg" in statement:
-                return SimpleNamespace(fetchall=lambda: [{"contract_id": 1}])
+                return SimpleNamespace(fetchall=lambda: [] if entry_blocker == "immutable_ticket_legs_missing" else [{"contract_id": 1}])
             return super().execute(statement, parameters)
 
     connection = Connection()
@@ -133,7 +140,7 @@ def test_blocked_partial_entry_keeps_the_filled_quantity_in_holding_management(m
     repository.runtime = SimpleNamespace(transaction=transaction)
 
     def current_ticket(_connection, _order, ticket, **kwargs):
-        if kwargs.get("for_entry", True):
+        if kwargs.get("for_entry", True) and entry_blocker in {"ticket_expired", "candidate entry blocked_terminal_evidence"}:
             return None, entry_blocker
         return ticket, ""
 
@@ -142,12 +149,12 @@ def test_blocked_partial_entry_keeps_the_filled_quantity_in_holding_management(m
         cancelled = item["execution_quote"][paper_execution_database.ENTRY_CANCELLATION_KEY]
         assert cancelled == {"status": "cancelled", "paper_order_id": "paper-order-1", "cancelled_at": NOW.isoformat(),
                              "reason": entry_blocker, "requested_quantity": 2, "filled_quantity": 1, "cancelled_quantity": 1}
-        assert kwargs["forced_exit_reason"] is None
+        assert kwargs["forced_exit_reason"] == (entry_blocker if entry_blocker in {"immutable_ticket_legs_missing", "thesis_invalidated_or_closed"} else None)
         return {"status": "filled", "reason": "exit_not_triggered"}
 
     monkeypatch.setattr(repository, "_current_ticket", current_ticket)
     monkeypatch.setattr(repository, "_manage_open", manage_open)
-    monkeypatch.setattr(paper_execution_database, "_thesis_blocker", lambda *_args: None)
+    monkeypatch.setattr(paper_execution_database, "_thesis_blocker", lambda *_args: entry_blocker if entry_blocker == "thesis_invalidated_or_closed" else None)
     result = repository._manage_one("paper-order-1", NOW)
     assert result["reason"] == "exit_not_triggered"
     assert any(parameters[0] == f"{entry_blocker}: unfilled_remainder_cancelled"

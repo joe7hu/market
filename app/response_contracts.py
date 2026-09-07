@@ -586,6 +586,8 @@ class StaticArbitrageVerificationResponse(FlexibleResponse):
 class OpportunityScorecardResponse(FlexibleResponse):
     lane: str | None = None
     window_days: int | None = None
+    excluded_legacy_observation_count: int = 0
+    excluded_legacy_independent_episode_count: int = 0
 
 
 class AgentOverviewResponse(FlexibleResponse):

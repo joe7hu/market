@@ -24,7 +24,7 @@ SHADOW_SOURCE = "options_paper_experiment"
 def experiment_candidate(connection: Any, candidate_id: int, *, as_of: datetime, require_shadow: bool = False, for_entry: bool = True) -> dict[str, Any]:
     row = connection.execute(
         """SELECT candidate.id, candidate.parameters, candidate.created_at, candidate.supersedes_id,
-                  candidate.status, candidate.authority_group, parent.parameters AS parent_parameters,
+                  candidate.status, candidate.promoted_at, candidate.authority_group, parent.parameters AS parent_parameters,
                   parent.status AS parent_status, parent.authority_group AS parent_authority_group,
                   proposal.id AS proposal_id, proposal.created_at AS proposal_created_at, proposal.result,
                   (SELECT count(*) FROM analysis.strategy_revision
@@ -40,9 +40,12 @@ def experiment_candidate(connection: Any, candidate_id: int, *, as_of: datetime,
            WHERE candidate.id = %s AND candidate.created_at <= %s""",
         [as_of, candidate_id, as_of],
     ).fetchone()
-    if row is None or row["authority_group"] != "options-radar-core" or row["status"] not in {"candidate", "testing", "approved"}:
+    promoted_holding = bool(row and not for_entry and row["status"] == "active"
+                            and row["promoted_at"] is not None and row["promoted_at"] <= as_of
+                            and row["parent_status"] == "superseded" and row["active_count"] == 1)
+    if row is None or row["authority_group"] != "options-radar-core" or (row["status"] not in {"candidate", "testing", "approved"} and not promoted_holding):
         raise ValueError("core candidate proposal required")
-    if row["parent_status"] != "active" or row["parent_authority_group"] != "options-radar-core" or row["active_count"] != 1:
+    if (row["parent_status"] != "active" and not promoted_holding) or row["parent_authority_group"] != "options-radar-core" or row["active_count"] != 1:
         raise ValueError("candidate parent is no longer the unique active strategy")
     base = dict(row["parent_parameters"] or {})
     changes = dict((row["result"] or {}).get("proposed_parameter_changes") or {})

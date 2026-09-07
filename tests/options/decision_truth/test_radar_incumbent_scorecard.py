@@ -3,8 +3,12 @@ from types import SimpleNamespace
 
 import psycopg
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
+from app.dependencies import get_options_research
+from app.routers.options import router as options_router
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
@@ -44,13 +48,15 @@ def radar_history(migrated_postgres_dsn, application_postgres_dsn):
             """, [f"scorecard-{name}", name, status, inception, inception]).fetchone()["id"]
     analysis = AnalysisRepository(runtime)
 
-    def observe(episode, at, *, policy="incumbent", retained=True, outcome=True, ticket=None):
+    def observe(episode, at, *, policy="incumbent", retained=True, outcome=True, ticket=None, legacy=False):
         revision = revisions[policy]
         kind = "options-paper-experiment" if policy == "candidate" else "options-radar"
         identity = incumbent_identity(revision)
+        cohort = None if legacy else "option-scorecard-truth-v1:radar"
         run_id = analysis.start_run(
             kind, input_cutoff=at, code_version="scorecard-test", strategy_revision_id=revision,
-            inputs={"observation": identity, "cutoff": at.isoformat(), "episode": episode},
+            inputs={**({} if legacy else {"observation": identity}), "cutoff": at.isoformat(),
+                    "episode": episode, "ticket": ticket},
         )
         identity = incumbent_identity(revision, str(run_id))
         with runtime.transaction() as connection:
@@ -59,9 +65,9 @@ def radar_history(migrated_postgres_dsn, application_postgres_dsn):
                     (run_id, instrument_id, decision_key, kind, state, as_of, input_hash,
                      strategy_revision_id, lane, episode_key, sample_eligible, calibration_cohort)
                 VALUES (%s, %s, %s, 'option', 'WATCH', %s, %s, %s, 'radar', %s,
-                        true, 'option-scorecard-truth-v1:radar') RETURNING id
+                        true, %s) RETURNING id
             """, [run_id, contract["underlying_instrument_id"], f"{episode}-{run_id}", at,
-                "a" * 64, revision, episode]).fetchone()["id"]
+                "a" * 64, revision, episode, cohort]).fetchone()["id"]
             connection.execute("""
                 INSERT INTO analysis.option_decision
                     (decision_id, contract_id, snapshot_id, quote_observed_at, probability_profit, structure)
@@ -95,9 +101,9 @@ def radar_history(migrated_postgres_dsn, application_postgres_dsn):
                          shadow_trade_id, entry_fill_at, entry_fill_price, exit_fill_at, exit_fill_price,
                          fee_total, slippage_total, lane, episode_key, calibration_cohort)
                     VALUES (%s, 'mature', %s, .2, .2, 'captured', %s, false, %s, %s,
-                            %s, 1, %s, 1.213, 1.3, .1, 'radar', %s, 'option-scorecard-truth-v1:radar')
+                            %s, 1, %s, 1.213, 1.3, .1, 'radar', %s, %s)
                 """, [decision_id, at + timedelta(hours=1), EXPERIMENT_VERSION if retained else "legacy",
-                    retained, shadow_id, at + timedelta(minutes=1), at + timedelta(hours=1), episode])
+                    retained, shadow_id, at + timedelta(minutes=1), at + timedelta(hours=1), episode, cohort])
         return {"decision_id": decision_id, "run_id": run_id, "shadow_id": shadow_id,
                 "publication_id": publication_id, "strategy_revision_id": revision}
 
@@ -107,7 +113,7 @@ def radar_history(migrated_postgres_dsn, application_postgres_dsn):
         runtime.close()
 
 
-def test_retained_incumbent_outcomes_unlock_the_actual_radar_entry_gate(radar_history):
+def test_retained_incumbent_outcomes_unlock_the_actual_radar_entry_gate(radar_history, migrated_postgres_dsn):
     runtime, reference, _revisions, observe = radar_history
     dates = [reference - timedelta(days=days) for days in range(90, 1, -1)
              if (reference - timedelta(days=days)).weekday() < 5][:30]
@@ -119,9 +125,20 @@ def test_retained_incumbent_outcomes_unlock_the_actual_radar_entry_gate(radar_hi
         observe(episode, at + timedelta(hours=2), retained=False)
         observe(episode, at + timedelta(hours=3), policy="candidate")
         observe(episode, at + timedelta(hours=4), policy="old")
+    for hours in (0, 1):
+        observe("radar:legacy", dates[0] + timedelta(hours=hours), retained=False, legacy=True)
+    sizing = observe("radar:sizing", dates[0], retained=False)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("""UPDATE analysis.decision SET quality_status = 'sizing_blocked',
+            sample_eligible = false, quarantine_reason = 'quality_status_sizing_blocked',
+            blockers = ARRAY['missing_cash_context'] WHERE id = %s""", [sizing["decision_id"]])
     score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
-    assert score["raw_observation_count"] == 60
-    assert score["independent_episode_count"] == score["resolved_independent_episode_count"] == 30
+    assert score["raw_observation_count"] == 63
+    assert score["excluded_legacy_observation_count"] == 2
+    assert score["excluded_legacy_independent_episode_count"] == 1
+    assert score["quarantined_independent_episode_count"] == 0 and score["data_health_defects"] == {}
+    assert score["independent_episode_count"] == 31
+    assert score["resolved_independent_episode_count"] == 30
     assert score["status"] == "READY_FOR_REVIEW" and score["gaps"] == []
     assert score["expectancy"] == pytest.approx(.2)
     assert score["funnel"]["filled"] == score["funnel"]["closed"] == 0
@@ -150,10 +167,24 @@ def test_retained_incumbent_outcomes_unlock_the_actual_radar_entry_gate(radar_hi
     assert staged[0]["current_options_risk_sleeve_capital"] == 25000
     assert staged[0]["daily_loss_halt_pct"] == .02 and staged[0]["max_open_positions"] == 3
 
+    # A missing marker from the current writer is a defect even though the
+    # complete historical sample remains sufficient and old rows are excluded.
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("UPDATE analysis.decision SET calibration_cohort = NULL WHERE id = %s", [ready["decision_id"]])
+    score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
+    assert score["resolved_independent_episode_count"] == 30 and score["status"] == "INVALID"
+    assert score["data_health_defects"] == {"current_observation_truth_contract_missing": 1}
+    assert score["excluded_legacy_observation_count"] == 2
+    blocked = paper.stage_current_ready(
+        enabled_lanes=["radar"], sleeve_capital=25000, daily_loss_halt_pct=.02,
+        max_open_positions=3, now=reference, limit=1,
+    )
+    assert blocked[0]["reason"] == "radar_independent_episode_gate" and len(staged) == 1
+
 
 @pytest.mark.parametrize("defect", [
     "wrong_identity", "wrong_ticket", "future_publication", "future_run", "wrong_episode",
-    "ineligible", "nan_cost", "future_outcome", "rejected",
+    "ineligible", "nan_cost", "future_outcome", "rejected", "missing_truth",
 ])
 def test_invalid_retained_outcome_cannot_fall_back_to_a_later_generic_mark(radar_history, migrated_postgres_dsn, defect):
     runtime, reference, revisions, observe = radar_history
@@ -173,6 +204,8 @@ def test_invalid_retained_outcome_cannot_fall_back_to_a_later_generic_mark(radar
             connection.execute("UPDATE analysis.run SET input_cutoff = %s WHERE id = %s", [reference + timedelta(days=1), retained["run_id"]])
         elif defect == "rejected":
             connection.execute("UPDATE analysis.decision SET state = 'REJECTED' WHERE id = %s", [retained["decision_id"]])
+        elif defect == "missing_truth":
+            connection.execute("UPDATE analysis.decision SET calibration_cohort = NULL WHERE id = %s", [retained["decision_id"]])
         else:
             updates = {
                 "wrong_episode": ("episode_key", "radar:other"), "ineligible": ("sample_eligible", False),
@@ -181,8 +214,13 @@ def test_invalid_retained_outcome_cannot_fall_back_to_a_later_generic_mark(radar
             column, value = updates[defect]
             connection.execute(f"UPDATE analysis.option_outcome SET {column} = %s WHERE decision_id = %s", [value, retained["decision_id"]])
     score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
-    assert score["independent_episode_count"] == 1 and score["resolved_independent_episode_count"] == 0
+    assert score["independent_episode_count"] == (0 if defect == "missing_truth" else 1)
+    assert score["resolved_independent_episode_count"] == 0
     assert score["status"] != "READY_FOR_REVIEW" and score["expectancy"] is None
+    if defect == "missing_truth":
+        assert score["data_health_defects"] == {"current_observation_truth_contract_missing": 1}
+        assert score["quarantined_independent_episode_count"] == 1
+        assert score["excluded_legacy_observation_count"] == 0
 
 
 def test_candidate_only_and_unobserved_incumbent_marks_cannot_qualify_radar(radar_history):
@@ -196,3 +234,78 @@ def test_candidate_only_and_unobserved_incumbent_marks_cannot_qualify_radar(rada
     score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
     assert score["raw_observation_count"] == score["independent_episode_count"] == 1
     assert score["resolved_independent_episode_count"] == 0 and score["status"] == "COLLECTING"
+
+
+def test_legacy_only_history_is_explicitly_excluded_and_has_no_returns(radar_history):
+    runtime, reference, _revisions, observe = radar_history
+    for hours in (0, 1):
+        observe("radar:legacy", reference - timedelta(days=2, hours=hours), retained=False, legacy=True)
+    score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
+    assert score["raw_observation_count"] == score["excluded_legacy_observation_count"] == 2
+    assert score["excluded_legacy_independent_episode_count"] == 1
+    assert score["independent_episode_count"] == score["resolved_independent_episode_count"] == 0
+    assert score["quarantined_independent_episode_count"] == 0 and score["data_health_defects"] == {}
+    assert score["status"] == "COLLECTING" and score["expectancy"] is score["lower_95_expectancy"] is None
+
+    api = FastAPI()
+    api.include_router(options_router)
+    api.dependency_overrides[get_options_research] = lambda: SimpleNamespace(
+        opportunity_scorecard=lambda **kwargs: OpportunityScorecardRepository(runtime).scorecard(as_of=reference, **kwargs),
+    )
+    response = TestClient(api).get("/api/opportunity-scorecard?lane=radar&window=120")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["excluded_legacy_observation_count"] == 2
+    assert payload["excluded_legacy_independent_episode_count"] == 1
+    assert payload["status"] == "COLLECTING" and payload["expectancy"] is None
+
+
+def test_retained_shadow_without_truth_or_run_marker_is_still_a_current_defect(radar_history):
+    runtime, reference, _revisions, observe = radar_history
+    observe("radar:missing-truth", reference - timedelta(days=2), legacy=True)
+    score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
+    assert score["status"] == "INVALID" and score["resolved_independent_episode_count"] == 0
+    assert score["data_health_defects"] == {"current_observation_truth_contract_missing": 1}
+    assert score["quarantined_independent_episode_count"] == 1
+    assert score["excluded_legacy_observation_count"] == 0 and score["expectancy"] is None
+
+
+def test_missing_cash_sizing_remains_excluded_without_returns_or_entry_readiness(radar_history, migrated_postgres_dsn):
+    runtime, reference, _revisions, observe = radar_history
+    sizing = observe("radar:sizing-only", reference - timedelta(days=2), retained=False)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("""UPDATE analysis.decision SET quality_status = 'sizing_blocked',
+            sample_eligible = false, quarantine_reason = 'quality_status_sizing_blocked',
+            blockers = ARRAY['missing_cash_context'] WHERE id = %s""", [sizing["decision_id"]])
+    score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
+    assert score["status"] == "COLLECTING" and score["data_health_defects"] == {}
+    assert score["independent_episode_count"] == 1 and score["resolved_independent_episode_count"] == 0
+    assert score["expectancy"] is score["lower_95_expectancy"] is None
+    with runtime.read() as connection:
+        decision = connection.execute("SELECT sample_eligible, blockers FROM analysis.decision WHERE id = %s", [sizing["decision_id"]]).fetchone()
+    assert decision["sample_eligible"] is False and decision["blockers"] == ["missing_cash_context"]
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_null_episode_stays_visible_as_an_integrity_defect(radar_history, retained):
+    runtime, reference, _revisions, observe = radar_history
+    observe(None, reference - timedelta(days=2), retained=retained)
+    score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
+    assert score["status"] == "INVALID" and score["missing_episode_key_count"] == 1
+    assert score["data_health_defects"]["missing_episode_key"] == 1
+    assert score["independent_episode_count"] == score["resolved_independent_episode_count"] == 0
+
+
+def test_latest_id_breaks_equal_capture_time_ties_before_outcome_selection(radar_history, migrated_postgres_dsn):
+    runtime, reference, _revisions, observe = radar_history
+    at = reference - timedelta(days=2)
+    first = observe("radar:tie", at, retained=False)
+    # A separate input identity produces another immutable run at the same
+    # market cutoff, as repeated production captures do.
+    second = observe("radar:tie", at, retained=False, ticket={"state": "SETUP"})
+    older = min(first["decision_id"], second["decision_id"])
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute("UPDATE analysis.option_outcome SET sample_eligible = true, promotion_eligible = true WHERE decision_id = %s", [older])
+    score = OpportunityScorecardRepository(runtime).scorecard(lane="radar", as_of=reference)
+    assert score["independent_episode_count"] == 1 and score["resolved_independent_episode_count"] == 0
+    assert score["status"] == "COLLECTING" and score["expectancy"] is None

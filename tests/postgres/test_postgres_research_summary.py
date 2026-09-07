@@ -36,7 +36,7 @@ def test_research_summary_reads_latest_evidence_and_feedback_separately(
                         (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics, evidence)
                     VALUES (%s, 'out_of_sample', %s, %s, 'incomplete', %s, %s)
                 """, [strategy_id, now + timedelta(minutes=offset), now + timedelta(minutes=offset),
-                    Jsonb({"target_version": TARGET_VERSION, "effective_sample_size": sample,
+                    Jsonb({"target_version": TARGET_VERSION, "effective_sample_size": 120, "oos_sample_size": sample,
                         "lower_confidence_net_utility_after_costs": 0.04,
                         "validation": {"gates": {"sample_size": {"passed": False}}}}),
                     Jsonb({"walk_forward": True, "purge_embargo": True})])

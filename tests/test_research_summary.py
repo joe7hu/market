@@ -17,12 +17,12 @@ def _evaluation(**metrics):
 
 def test_research_reports_only_current_independent_stock_outcomes():
     row = _evaluation(
-        effective_sample_size=22, lower_confidence_net_utility_after_costs=0.03,
+        effective_sample_size=22, oos_sample_size=7, lower_confidence_net_utility_after_costs=0.03,
         calibration_metrics={"brier_score": 0.18},
         validation={"gates": {"sample_size": {"passed": False}, "costs": {"passed": True}}},
     )
     summary = evaluation_summary(row)
-    assert summary["independent_sample_count"] == 22
+    assert summary["independent_sample_count"] == 7
     assert summary["net_return_lower_bound"] == 0.03
     assert summary["brier_score"] == 0.18
     assert summary["failed_gates"] == ["sample_size"]
@@ -34,7 +34,7 @@ def test_research_reports_only_current_independent_stock_outcomes():
     ({"purge_embargo": False}, "independence_unconfirmed"),
 ])
 def test_legacy_or_unconfirmed_samples_do_not_become_performance(change, basis):
-    row = _evaluation(effective_sample_size=400, lower_confidence_net_utility_after_costs=0)
+    row = _evaluation(effective_sample_size=400, oos_sample_size=100, lower_confidence_net_utility_after_costs=0)
     if "target_version" in change:
         row["metrics"].update(change)
     else:
@@ -48,14 +48,24 @@ def test_legacy_or_unconfirmed_samples_do_not_become_performance(change, basis):
 
 @pytest.mark.parametrize("sample", [None, True, -1, 0.5, "NaN", float("inf")])
 def test_invalid_sample_counts_stay_unknown(sample):
-    summary = evaluation_summary(_evaluation(effective_sample_size=sample))
+    summary = evaluation_summary(_evaluation(effective_sample_size=22, oos_sample_size=sample))
     assert summary["independent_sample_count"] is None
     assert summary["net_return_lower_bound"] is None
 
 
+def test_training_size_does_not_fill_in_an_unknown_stock_test_count():
+    summary = evaluation_summary(_evaluation(
+        effective_sample_size=400, lower_confidence_net_utility_after_costs=.03,
+        calibration_metrics={"brier_score": .1},
+    ))
+    assert summary["independent_sample_count"] is None
+    assert summary["net_return_lower_bound"] is None
+    assert summary["brier_score"] is None
+
+
 def test_zero_observations_do_not_show_zero_returns():
     summary = evaluation_summary(_evaluation(
-        effective_sample_size=0, lower_confidence_net_utility_after_costs=0,
+        effective_sample_size=22, oos_sample_size=0, lower_confidence_net_utility_after_costs=0,
         calibration_metrics={"brier_score": 0},
     ))
     assert summary["independent_sample_count"] == 0
@@ -66,7 +76,7 @@ def test_zero_observations_do_not_show_zero_returns():
 @pytest.mark.parametrize("score", [-0.1, 1.1, True, "NaN"])
 def test_invalid_probability_error_stays_unknown(score):
     summary = evaluation_summary(_evaluation(
-        effective_sample_size=10, calibration_metrics={"brier_score": score},
+        effective_sample_size=22, oos_sample_size=10, calibration_metrics={"brier_score": score},
     ))
     assert summary["brier_score"] is None
 

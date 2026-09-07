@@ -17,7 +17,7 @@ from investment_panel.core.decision import is_market_open
 from investment_panel.core.option_trade_ticket import execution_policy, exit_reason
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.actions import ActionRepository
-from investment_panel.database.analysis import current_option_publication_answers
+from investment_panel.database.analysis import current_option_publication_answers, current_option_publication_rows
 from investment_panel.database.decision_inbox import DecisionInboxRepository
 from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
 from investment_panel.database.options_paper_ledger import acquire_shared_sleeve_lock
@@ -267,39 +267,35 @@ class OptionsPaperExecutionRepository:
                 """,
                 [paper_order_id],
             ).fetchall()]
-            if not legs:
-                return self._terminal(connection, item, status="rejected", reason="immutable_ticket_legs_missing", now=now)
             status = str(item["status"])
             expires = _timestamp(ticket.get("expires_at") or (ticket.get("entry") or {}).get("valid_until"))
+            thesis_reason = _thesis_blocker(connection, int(item["instrument_id"]), now)
+            missing_legs = "immutable_ticket_legs_missing" if not legs else None
             entry_pending = status in {"staged", "open"} and _quantity(item.get("filled_quantity")) < _quantity(item.get("quantity"))
             if entry_pending:
                 current, reason = self._current_ticket(connection, item, ticket, as_of=now)
-                if current is None:
+                entry_blocker = missing_legs or (reason if current is None else None) or thesis_reason
+                if not entry_blocker:
+                    entry_blocker = "ticket_expiry_missing" if expires is None else "ticket_expired_before_fill" if expires <= now else None
+                if entry_blocker:
                     if _quantity(item.get("filled_quantity")) <= 0:
-                        return self._terminal(connection, item, status="rejected", reason=reason, now=now)
+                        return self._terminal(connection, item, status="unfilled" if entry_blocker == "ticket_expired_before_fill" else "rejected", reason=entry_blocker, now=now)
                     # Cancel only the remainder when entry authority ends. The
                     # filled quantity still needs its own holding-policy check.
                     cancellation = {"status": "cancelled", "paper_order_id": str(item["id"]),
-                                    "cancelled_at": now.isoformat(), "reason": reason,
+                                    "cancelled_at": now.isoformat(), "reason": entry_blocker,
                                     "requested_quantity": _quantity(item.get("quantity")),
                                     "filled_quantity": _quantity(item.get("filled_quantity")),
                                     "cancelled_quantity": _quantity(item.get("quantity")) - _quantity(item.get("filled_quantity"))}
                     connection.execute(
                         "UPDATE app.paper_order SET status = 'entered', unfilled_reason = %s, "
                         "execution_quote = coalesce(execution_quote, '{}'::jsonb) || %s, updated_at = %s WHERE id = %s::uuid",
-                        [f"{reason}: unfilled_remainder_cancelled", Jsonb({ENTRY_CANCELLATION_KEY: cancellation}), now, paper_order_id],
+                        [f"{entry_blocker}: unfilled_remainder_cancelled", Jsonb({ENTRY_CANCELLATION_KEY: cancellation}), now, paper_order_id],
                     )
                     item["status"] = "entered"
                     item["execution_quote"] = {**dict(item.get("execution_quote") or {}), ENTRY_CANCELLATION_KEY: cancellation}
                     entry_pending = False
             if entry_pending:
-                if expires is None:
-                    return self._terminal(connection, item, status="rejected", reason="ticket_expiry_missing", now=now)
-                thesis_reason = _thesis_blocker(connection, int(item["instrument_id"]), now)
-                if thesis_reason:
-                    return self._terminal(connection, item, status="rejected", reason=thesis_reason, now=now)
-                if expires <= now:
-                    return self._terminal(connection, item, status="unfilled", reason="ticket_expired_before_fill", now=now)
                 quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now, **_experiment_quote_scope(ticket))
                 current_execution = execution_policy(
                     quoted,
@@ -372,15 +368,12 @@ class OptionsPaperExecutionRepository:
                     "event_status": "entered" if new_filled >= _quantity(item["quantity"]) else None, "filled_quantity": new_filled,
                     "fill_price": fill_price, "fees": fees,
                 }
-            # A filled position must retain a safe exit path even after its
-            # publication is superseded or the global entry kill switch flips.
-            # Those conditions block new entries and force an exit; they must
-            # never relabel a live paper position as an unfilled ticket.
+            # Publication refresh and entry expiry do not change the holding
+            # policy. Real thesis/strategy invalidation still requests an exit.
             _current, current_reason = self._current_ticket(connection, item, ticket, as_of=now, for_entry=False)
-            thesis_reason = _thesis_blocker(connection, int(item["instrument_id"]), now)
             return self._manage_open(
                 connection, item, ticket, legs, now,
-                forced_exit_reason=thesis_reason or (current_reason if _current is None else None),
+                forced_exit_reason=missing_legs or thesis_reason or (current_reason if _current is None else None),
             )
 
     def _manage_open(
@@ -547,17 +540,40 @@ class OptionsPaperExecutionRepository:
         if not decision_id or version is None:
             return None, "paper_order_ticket_identity_missing"
         scope = "options-decision-system" if lane == "qqq" else "options-radar"
+        lineage = dict(ticket.get("publication_lineage") or {})
+        expected_publication = str(lineage.get("publication_id") or "")
+        try:
+            publication_id = _uuid(expected_publication)
+        except (ValueError, TypeError, AttributeError):
+            return None, "ticket_publication_identity_missing"
         if ticket.get("experiment"):
             from investment_panel.database.options_experiments import experiment_publication_row
 
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", ["strategy:options-radar-core"])
             try:
                 matches = [experiment_publication_row(
-                    connection, str((ticket.get("publication_lineage") or {}).get("publication_id") or ""),
-                    decision_id, as_of=as_of, allow_superseded=True, for_entry=for_entry,
+                    connection, str(publication_id), decision_id, as_of=as_of,
+                    allow_superseded=not for_entry, for_entry=for_entry,
                 )]
             except ValueError as error:
                 return None, str(error)
+        elif not for_entry:
+            authority = connection.execute(
+                """SELECT revision.status, revision.authority_group,
+                          (SELECT count(*) FROM analysis.strategy_revision active
+                           WHERE active.authority_group = revision.authority_group AND active.status = 'active') AS active_count
+                   FROM analysis.decision decision
+                   JOIN analysis.run run ON run.id = decision.run_id AND run.status = 'succeeded'
+                        AND run.strategy_revision_id = decision.strategy_revision_id AND run.input_cutoff <= %s
+                   JOIN analysis.strategy_revision revision ON revision.id = decision.strategy_revision_id
+                   WHERE decision.id = %s::uuid FOR SHARE OF revision""", [as_of, decision_id],
+            ).fetchone()
+            if authority is None or authority["status"] != "active" or authority["active_count"] != 1:
+                return None, "holding_strategy_authority_invalid"
+            model_name = "options_decision_candidate" if lane == "qqq" else "option_radar_opportunity"
+            matches = [row for row in current_option_publication_rows(
+                connection, scope=scope, model_name=model_name, cutoff=as_of, publication_id=publication_id,
+            ) if row["authoritative_decision_id"] == decision_id]
         else:
             matches = [
                 row for row in current_option_publication_answers(connection, cutoff=as_of)
@@ -583,8 +599,6 @@ class OptionsPaperExecutionRepository:
             return None, "ticket_not_yet_execution_ready"
         if for_entry and (expires_at is None or expires_at <= as_of):
             return None, "ticket_expired"
-        lineage = dict(ticket.get("publication_lineage") or {})
-        expected_publication = str(lineage.get("publication_id") or "")
         if not expected_publication or expected_publication != str(row["publication_id"]):
             return None, "ticket_publication_superseded"
         return current_ticket, ""

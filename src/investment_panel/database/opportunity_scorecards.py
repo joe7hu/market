@@ -26,9 +26,10 @@ from investment_panel.database.runtime import API_PROFILE, DatabaseRuntime
 LANES = frozenset({"radar", "qqq", "recovery"})
 MIN_RESOLVED_EPISODES = 30
 MIN_TRADING_DAYS = 20
+CURRENT_TRUTH_DEFECT = "current_observation_truth_contract_missing"
 NON_DEFECT_QUARANTINE_REASONS = frozenset({
     "quality_gated", "promotion_ineligible", "generic_mark_not_execution_grade",
-    "outcome_not_resolved_execution_grade",
+    "outcome_not_resolved_execution_grade", "quality_status_sizing_blocked",
 })
 
 
@@ -63,11 +64,15 @@ class OpportunityScorecardRepository:
                 {
                     **({"legacy_or_unversioned_truth_contract": scope["quarantined"]}
                        if scope["quarantined"] else {}),
+                    **({CURRENT_TRUTH_DEFECT: scope["current_truth_missing"]}
+                       if scope.get("current_truth_missing") else {}),
                     **query_defects,
                 }
                 or None
             ),
             externally_quarantined_episode_count=scope["quarantined"],
+            excluded_legacy_observation_count=scope.get("excluded_legacy_observations", 0),
+            excluded_legacy_independent_episode_count=scope.get("excluded_legacy_episodes", 0),
         )
 
     def _scope_counts(self, lane: str, since: datetime, reference: datetime) -> dict[str, int]:
@@ -78,6 +83,8 @@ class OpportunityScorecardRepository:
         the large legacy cohort while new versioned writes use the exact join.
         """
 
+        if lane == "radar":
+            return self._radar_scope_counts(since, reference)
         if lane == "recovery":
             relation = "analysis.option_opportunity_observation"
             available_at = "available_at"
@@ -89,17 +96,6 @@ class OpportunityScorecardRepository:
         parameters: list[Any] = [since, reference]
         if lane != "recovery":
             parameters.insert(0, lane)
-        if lane == "radar":
-            lane_clause += """
-                AND strategy_revision_id = (
-                    SELECT id FROM analysis.strategy_revision
-                    WHERE authority_group = 'options-radar-core' AND status = 'active'
-                      AND created_at <= %s AND promoted_at <= %s
-                )
-                AND EXISTS (SELECT 1 FROM analysis.run run WHERE run.id = analysis.decision.run_id
-                            AND run.run_type = 'options-radar')
-            """
-            parameters[1:1] = [reference, reference]
         with self.runtime.read(API_PROFILE) as connection:
             row = connection.execute(
                 f"""
@@ -116,6 +112,49 @@ class OpportunityScorecardRepository:
                 parameters,
             ).fetchone()
         return {"observed": int(row["observed"] or 0), "quarantined": int(row["quarantined"] or 0)}
+
+    def _radar_scope_counts(self, since: datetime, reference: datetime) -> dict[str, int]:
+        """Keep excluded history separate from defects in the current writer.
+
+        A new observation that loses its truth marker is still a current
+        defect when its run or retained shadow identifies the experiment.
+        """
+        with self.runtime.read(API_PROFILE) as connection:
+            row = connection.execute(
+                """
+                WITH retained AS MATERIALIZED (
+                    SELECT decision_id FROM analysis.shadow_trade
+                    WHERE source_kind = 'options_paper_experiment' AND created_at <= %(reference)s
+                ), runs AS MATERIALIZED (
+                    SELECT id, coalesce(inputs ? 'observation', false) AS current_observation
+                    FROM analysis.run WHERE run_type = 'options-radar'
+                ), scoped AS NOT MATERIALIZED (
+                    SELECT decision.episode_key,
+                           (decision.calibration_cohort IS NULL OR decision.calibration_cohort
+                               NOT LIKE 'option-scorecard-truth-v1:%%') AS missing_truth,
+                           (run.current_observation OR retained.decision_id IS NOT NULL) AS current_observation
+                    FROM analysis.decision decision
+                    JOIN runs run ON run.id = decision.run_id
+                    LEFT JOIN retained ON retained.decision_id = decision.id
+                    WHERE decision.kind = 'option' AND decision.lane = 'radar'
+                      AND decision.as_of BETWEEN %(since)s AND %(reference)s
+                      AND decision.strategy_revision_id = (
+                          SELECT id FROM analysis.strategy_revision
+                          WHERE authority_group = 'options-radar-core' AND status = 'active'
+                            AND created_at <= %(reference)s AND promoted_at <= %(reference)s
+                      )
+                )
+                SELECT count(*) AS observed,
+                       count(*) FILTER (WHERE missing_truth AND NOT current_observation) AS excluded_legacy_observations,
+                       -- Sort only excluded keys, not the full capture history.
+                       (SELECT count(DISTINCT episode_key) FROM scoped
+                        WHERE missing_truth AND NOT current_observation) AS excluded_legacy_episodes,
+                       count(*) FILTER (WHERE missing_truth AND current_observation) AS current_truth_missing
+                FROM scoped
+                """,
+                {"since": since, "reference": reference},
+            ).fetchone()
+        return {"quarantined": 0, **{key: int(value or 0) for key, value in row.items()}}
 
     def _recovery_rows(self, since: datetime, reference: datetime) -> list[dict[str, Any]]:
         with self.runtime.read(API_PROFILE) as connection:
@@ -244,26 +283,70 @@ class OpportunityScorecardRepository:
                     SELECT id FROM analysis.strategy_revision
                     WHERE authority_group = 'options-radar-core' AND status = 'active'
                       AND created_at <= %(reference)s AND promoted_at <= %(reference)s
-                ), canonical_decisions AS MATERIALIZED (
+                ), episode_keys AS MATERIALIZED (
+                    -- Group narrow keys before any run, shadow, or payload join.
+                    -- Repeated captures must not require a wide per-capture sort.
+                    SELECT episode_key FROM analysis.decision
+                    WHERE strategy_revision_id = (SELECT id FROM active_revision)
+                      AND kind = 'option' AND lane = 'radar'
+                      AND as_of BETWEEN %(since)s AND %(reference)s
+                      AND calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
+                    GROUP BY episode_key
+                ), latest_ids AS MATERIALIZED (
+                    SELECT latest.id, keys.episode_key FROM episode_keys keys
+                    JOIN LATERAL (
+                        SELECT decision.id FROM analysis.decision decision
+                        WHERE decision.strategy_revision_id = (SELECT id FROM active_revision)
+                          AND decision.kind = 'option' AND decision.lane = 'radar'
+                          AND decision.as_of BETWEEN %(since)s AND %(reference)s
+                          AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
+                          AND decision.episode_key = keys.episode_key
+                          AND EXISTS (SELECT 1 FROM analysis.run run WHERE run.id = decision.run_id
+                              AND run.strategy_revision_id = decision.strategy_revision_id
+                              AND run.run_type = 'options-radar')
+                        ORDER BY decision.as_of DESC, decision.id DESC LIMIT 1
+                    ) latest ON true WHERE keys.episode_key IS NOT NULL
+                    UNION ALL
+                    -- Keep a malformed null key visible to the integrity gate.
+                    (SELECT decision.id, decision.episode_key FROM analysis.decision decision
+                     WHERE decision.strategy_revision_id = (SELECT id FROM active_revision)
+                       AND decision.kind = 'option' AND decision.lane = 'radar'
+                       AND decision.as_of BETWEEN %(since)s AND %(reference)s
+                       AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
+                       AND decision.episode_key IS NULL
+                       AND EXISTS (SELECT 1 FROM analysis.run run WHERE run.id = decision.run_id
+                           AND run.strategy_revision_id = decision.strategy_revision_id
+                           AND run.run_type = 'options-radar')
+                     ORDER BY decision.as_of DESC, decision.id DESC LIMIT 1)
+                ), retained_ids AS MATERIALIZED (
                     SELECT DISTINCT ON (decision.episode_key)
-                           decision.id, decision.run_id, decision.episode_key, decision.lane,
+                           decision.id, decision.episode_key, shadow.id AS retained_shadow_id
+                    FROM analysis.shadow_trade shadow
+                    JOIN analysis.decision decision ON decision.id = shadow.decision_id
+                    WHERE decision.strategy_revision_id = (SELECT id FROM active_revision)
+                      AND shadow.source_kind = 'options_paper_experiment'
+                      AND shadow.created_at <= %(reference)s
+                      AND decision.kind = 'option' AND decision.lane = 'radar'
+                      AND decision.as_of BETWEEN %(since)s AND %(reference)s
+                      AND EXISTS (SELECT 1 FROM analysis.run run WHERE run.id = decision.run_id
+                          AND run.strategy_revision_id = decision.strategy_revision_id
+                          AND run.run_type = 'options-radar')
+                    -- Retain even a missing truth marker; never replace that
+                    -- current defect with a later apparently valid capture.
+                    ORDER BY decision.episode_key, decision.as_of, decision.id DESC
+                ), canonical_ids AS MATERIALIZED (
+                    SELECT id, retained_shadow_id FROM retained_ids
+                    UNION ALL
+                    SELECT latest.id, NULL::uuid FROM latest_ids latest
+                    WHERE NOT EXISTS (SELECT 1 FROM retained_ids retained
+                        WHERE retained.episode_key IS NOT DISTINCT FROM latest.episode_key)
+                ), canonical_decisions AS MATERIALIZED (
+                    SELECT decision.id, decision.run_id, decision.episode_key, decision.lane,
                            decision.as_of, decision.state, decision.strategy_revision_id,
                            decision.sample_eligible, decision.quarantine_reason, decision.calibration_cohort,
-                           shadow.id AS retained_shadow_id
-                    FROM analysis.decision decision
-                    JOIN active_revision active ON active.id = decision.strategy_revision_id
-                    JOIN analysis.run run ON run.id = decision.run_id
-                         AND run.strategy_revision_id = decision.strategy_revision_id
-                         AND run.run_type = 'options-radar'
-                    LEFT JOIN analysis.shadow_trade shadow ON shadow.decision_id = decision.id
-                         AND shadow.source_kind = 'options_paper_experiment'
-                         AND shadow.created_at <= %(reference)s
-                    WHERE decision.kind = 'option' AND decision.lane = 'radar'
-                      AND decision.as_of BETWEEN %(since)s AND %(reference)s
-                      AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
-                    ORDER BY decision.episode_key, (shadow.id IS NULL),
-                             CASE WHEN shadow.id IS NOT NULL THEN decision.as_of END,
-                             decision.as_of DESC, decision.id DESC
+                           canonical.retained_shadow_id
+                    FROM canonical_ids canonical
+                    JOIN analysis.decision decision ON decision.id = canonical.id
                 )
                 SELECT decision.id::text AS decision_id, decision.episode_key,
                        decision.as_of AS available_at, decision.state, decision.strategy_revision_id,
@@ -358,6 +441,9 @@ class OpportunityScorecardRepository:
                 if not valid:
                     item["outcome_sample_eligible"] = False
                     item["outcome_quarantine_reason"] = "incumbent_observation_lineage_invalid"
+                if not has_current_scorecard_truth(item.get("calibration_cohort")):
+                    item["outcome_sample_eligible"] = False
+                    item["outcome_quarantine_reason"] = CURRENT_TRUTH_DEFECT
             item["outcome_sample_eligible"] = bool(item["outcome_sample_eligible"])
             if not item["outcome_sample_eligible"]:
                 item["realized_return"] = None
@@ -415,6 +501,8 @@ def _scorecard(
     episodes: list[dict[str, Any]],
     external_defects: dict[str, int] | None = None,
     externally_quarantined_episode_count: int = 0,
+    excluded_legacy_observation_count: int = 0,
+    excluded_legacy_independent_episode_count: int = 0,
 ) -> dict[str, Any]:
     # Keep the public computation safe if a future caller supplies raw rows.
     # The repository already does this reduction, but a scorecard must never
@@ -431,8 +519,12 @@ def _scorecard(
         if has_current_scorecard_truth(row.get("calibration_cohort")):
             trusted_episodes.append(row)
         else:
-            reason = "legacy_or_unversioned_truth_contract"
-            defects[reason] = defects.get(reason, 0) + 1
+            reason = (CURRENT_TRUTH_DEFECT if row.get("quarantine_reason") == CURRENT_TRUTH_DEFECT
+                      else "legacy_or_unversioned_truth_contract")
+            # The scope count includes all malformed current captures, including
+            # this retained row; do not count it twice after episode reduction.
+            if reason != CURRENT_TRUTH_DEFECT or reason not in (external_defects or {}):
+                defects[reason] = defects.get(reason, 0) + 1
     episodes = trusted_episodes
     stages = {
         "observed_universe": len(episodes),
@@ -514,6 +606,8 @@ def _scorecard(
         "quarantined_independent_episode_count": (
             all_independent_episodes - len(episodes) + externally_quarantined_episode_count
         ),
+        "excluded_legacy_observation_count": excluded_legacy_observation_count,
+        "excluded_legacy_independent_episode_count": excluded_legacy_independent_episode_count,
         "missing_episode_key_count": missing_episode_key_count,
         "resolved_independent_episode_count": len(resolved_returns),
         "trading_day_count": trading_days,

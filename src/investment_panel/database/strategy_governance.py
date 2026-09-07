@@ -184,7 +184,8 @@ class StrategyGovernanceRepository:
     def rollback_regressing_active(self) -> int:
         """Restore the parent after 20 independent negative trailing outcomes."""
         from investment_panel.database.strategy_learning import (
-            OBSERVATION_QUERY, OUTCOME_QUERY, observation_lineage_matches, paper_realized_return,
+            OBSERVATION_QUERY, OUTCOME_QUERY, PAPER_EPISODE_ORDERS_SQL,
+            has_multiple_paper_orders, observation_lineage_matches, paper_realized_return,
         )
 
         with self.runtime.transaction(JOB_PROFILE) as connection:
@@ -210,14 +211,16 @@ class StrategyGovernanceRepository:
             if parent is None:
                 return 0
             trailing = connection.execute(
-                """
+                f"""
                 WITH independent_outcomes AS (
                     SELECT DISTINCT ON (decision.lane, decision.episode_key)
                            outcome.current_return, outcome.observed_through,
                            decision.as_of, decision.id::text AS decision_id,
-                           decision.lane, decision.episode_key
+                           decision.lane, decision.episode_key,
+                           paper_episode.paper_order_count, paper_episode.first_paper_at
                     FROM analysis.option_outcome outcome
                     JOIN analysis.decision decision ON decision.id = outcome.decision_id
+                    LEFT JOIN LATERAL ({PAPER_EPISODE_ORDERS_SQL}) paper_episode ON TRUE
                     WHERE decision.strategy_revision_id = %s
                       AND decision.as_of >= %s
                       AND outcome.current_return > '-Infinity'::double precision
@@ -256,13 +259,26 @@ class StrategyGovernanceRepository:
                 [active["id"], active["id"], active["promoted_at"]],
             ).fetchall()
             trailing = [dict(row) for row in trailing]
+            ambiguous = {}
+            for row in [*trailing, *observations, *measured]:
+                if has_multiple_paper_orders(row):
+                    key = (row["lane"], row["episode_key"])
+                    through = row.get("observed_through") or row.get("exit_at") or row.get("first_paper_at") or row["as_of"]
+                    if key not in ambiguous or through > ambiguous[key]["observed_through"]:
+                        ambiguous[key] = {**row, "current_return": None, "observed_through": through}
+            # Keep unresolved exposure in the trailing window. Do not replace
+            # it with a selected paper winner, a shadow, or an older episode.
+            trailing = [row for row in trailing if (row["lane"], row["episode_key"]) not in ambiguous]
             for row in measured:
+                if (row["lane"], row["episode_key"]) in ambiguous:
+                    continue
                 realized = paper_realized_return(row)
                 if realized is not None:
                     trailing.append({**row, "current_return": realized,
                                      "observed_through": row["exit_at"], "paper_verified": True})
                 elif row["decision_id"] in closed and row["current_return"] is not None:
                     trailing.append(dict(row))
+            trailing.extend(ambiguous.values())
             # One economic episode has one return. Prefer its verified journal
             # over shadow marks, then the earliest decision, irrespective of P&L.
             independent = {}
@@ -273,7 +289,8 @@ class StrategyGovernanceRepository:
             trailing = sorted(independent.values(), key=lambda item: (
                 item["observed_through"], item["as_of"], item["decision_id"],
             ), reverse=True)[:20]
-            if len(trailing) < 20 or sum(float(row["current_return"]) for row in trailing) / len(trailing) >= 0:
+            if (len(trailing) < 20 or any(row["current_return"] is None for row in trailing)
+                or sum(float(row["current_return"]) for row in trailing) / len(trailing) >= 0):
                 return 0
             connection.execute(
                 "UPDATE analysis.strategy_revision SET status = 'rolled_back' WHERE id = %s",
@@ -323,7 +340,7 @@ def _quarantine_unverified_paper_evaluations(
 def paper_provenance_is_database_backed(
     connection: Any, strategy_revision_id: int, paper: Any, *, cutoff: datetime | None = None,
 ) -> bool:
-    from investment_panel.database.strategy_learning import paper_execution_complete
+    from investment_panel.database.strategy_learning import PAPER_EPISODE_ORDERS_SQL, paper_execution_complete
 
     if not isinstance(paper, dict):
         return False
@@ -344,18 +361,20 @@ def paper_provenance_is_database_backed(
         or len(set(decision_ids)) != sample_size
     ):
         return False
+    episode_orders = PAPER_EPISODE_ORDERS_SQL.replace("now()", "COALESCE(%s::timestamptz, clock_timestamp())")
     try:
         matched = connection.execute(
-            """
+            f"""
             SELECT paper.id::text AS paper_order_id, paper.paper_only,
                    paper.status AS paper_status, paper.filled_at, paper.exit_at,
                    paper.filled_quantity, paper.exited_quantity, paper.fees,
                    paper.entry_slippage, paper.exit_slippage, paper.contract_multiplier,
                    decision.id::text AS decision_id, decision.as_of, decision.lane, decision.episode_key,
                    fills.entry_price AS actual_fill_price, fills.exit_price,
-                   fills.entry_quantity, fills.exit_quantity
+                   fills.entry_quantity, fills.exit_quantity, paper_episode.paper_order_count
             FROM app.paper_order paper
             JOIN analysis.decision decision ON decision.id = paper.decision_id
+            LEFT JOIN LATERAL ({episode_orders}) paper_episode ON TRUE
             LEFT JOIN LATERAL (
                 SELECT sum(quantity * price) FILTER (WHERE action = 'paper_entry')
                            / nullif(sum(quantity) FILTER (WHERE action = 'paper_entry'), 0) AS entry_price,
@@ -378,7 +397,7 @@ def paper_provenance_is_database_backed(
               AND decision.lane = paper.lane
               AND nullif(btrim(decision.episode_key), '') IS NOT NULL
             """,
-            [cutoff, strategy_revision_id, decision_ids, paper_ids, cutoff],
+            [cutoff, cutoff, strategy_revision_id, decision_ids, paper_ids, cutoff],
         ).fetchall()
     except Exception:
         return False

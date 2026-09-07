@@ -16,7 +16,8 @@ def _observation(revision, index, day, state="closed", reason=None):
         kind, scope, input_key = "options-radar", "options-paper-incumbent:1", "observation"
     return {
         "decision_id": f"decision-{revision}-{index}", "strategy_revision_id": revision,
-        "episode_key": f"episode-{index}", "as_of": datetime(2020, 1, 2, 15, tzinfo=UTC) + timedelta(days=day),
+        "episode_key": f"episode-{index}", "paper_order_count": 0,
+        "as_of": datetime(2020, 1, 2, 15, tzinfo=UTC) + timedelta(days=day),
         "shadow_status": state, "state": "REJECTED" if state == "rejected" else "WATCH",
         "pending_entry_reason": reason or ("candidate_gate_rejected" if state == "rejected" else None),
         "entry_at": None, "entry_price": None, "exit_at": None, "exit_price": None,
@@ -119,7 +120,7 @@ def test_parent_paper_orders_cannot_supply_candidate_execution_measurements():
 def test_paper_drawdown_requires_its_own_observed_marks_not_shadow_drawdown():
     at = datetime(2020, 1, 1, tzinfo=UTC)
     row = {
-        "as_of": at, "paper_order_id": "paper", "paper_only": True, "paper_status": "exited",
+        "as_of": at, "paper_order_id": "paper", "paper_only": True, "paper_status": "exited", "paper_order_count": 1,
         "filled_at": at + timedelta(hours=1), "exit_at": at + timedelta(hours=2),
         "actual_fill_price": .5, "exit_price": .7, "filled_quantity": 1, "exited_quantity": 1,
         "entry_quantity": 1, "exit_quantity": 1, "contract_multiplier": 100,
@@ -196,3 +197,77 @@ def test_closed_score_rejected_trade_cannot_supply_a_qualification_return():
     assert result["unmatched_episodes"] == 1
     assert result["candidate_net_on_comparison_universe"] is None
     assert result["comparison_lower_95"] is None
+
+
+def _paper(row, losing=False):
+    at = row["as_of"] + timedelta(hours=1)
+    return {
+        **row, "decision_id": row["decision_id"] + "-later-ready", "as_of": at,
+        "paper_order_id": row["decision_id"], "paper_only": True, "paper_status": "exited", "paper_order_count": 1,
+        "filled_at": at + timedelta(minutes=1), "exit_at": at + timedelta(hours=1),
+        "actual_fill_price": 1, "exit_price": .5 if losing else 1.2,
+        "filled_quantity": 1, "exited_quantity": 1, "entry_quantity": 1, "exit_quantity": 1,
+        "contract_multiplier": 100, "fees": 0, "entry_slippage": 0, "exit_slippage": 0,
+        "structure": "long_call",
+    }
+
+
+@pytest.mark.parametrize("completed", [True, False])
+def test_later_paper_execution_overrides_first_rejected_observation(completed):
+    observations, baseline, proposed = _cohort()
+    for row in observations:
+        if row["shadow_status"] != "rejected":
+            row["first_paper_at"] = row["as_of"] + timedelta(minutes=1)
+            row["paper_order_count"] = 1
+    rejected = next(row for row in observations if row["decision_id"] == "decision-2-1")
+    rejected["first_paper_at"] = rejected["as_of"] + timedelta(hours=1)
+    rejected["paper_order_count"] = 1
+
+    baseline = measured_rows([_paper(row) for row in baseline])
+    proposed = measured_rows([_paper(row) for row in proposed] + ([_paper(rejected, losing=True)] if completed else []))
+    parent, candidate, context = forward_cohort(
+        observations, baseline, proposed, candidate_id=2, parent_id=1, proposal_id="proposal",
+        span_days=30, execution_grade=True,
+    )
+    result = evaluate_comparison(parent, candidate, minimum=2, require_span_days=30, paired=True, **context)
+    assert result["comparison_denominator"] == 6
+    assert result["confirmed_cash"]["proposed"] == 3
+    assert result["cohort"]["period_end"] == "2020-02-02"
+    if completed:
+        assert result["proposed"]["sample_size"] == 3
+        assert result["candidate_net_on_comparison_universe"] == pytest.approx(-.1 / 6)
+        assert result["unmatched_episodes"] == 0
+    else:
+        assert result["proposed"]["sample_size"] == 2
+        assert result["candidate_net_on_comparison_universe"] is None
+        assert result["comparison_lower_95"] is None
+        assert result["unmatched_episodes"] == 1
+    # Execution evidence must not change the separate shadow experiment.
+    assert _compare(*_cohort())["confirmed_cash"]["proposed"] == 4
+
+
+@pytest.mark.parametrize("first_complete", [True, False])
+def test_multiple_paper_orders_keep_episode_unknown_even_with_a_completed_winner(first_complete):
+    observations, baseline, proposed = _cohort()
+    for row in observations:
+        if row["shadow_status"] != "rejected":
+            row.update(first_paper_at=row["as_of"] + timedelta(minutes=1), paper_order_count=1)
+    rejected = next(row for row in observations if row["decision_id"] == "decision-2-1")
+    rejected.update(first_paper_at=rejected["as_of"] + timedelta(hours=1), paper_order_count=2)
+    first = {**_paper(rejected), "paper_order_count": 2, "current_return": .9, "peak_return": .9}
+    if not first_complete:
+        first.update(paper_status="entered", exit_at=None, exit_price=None, exited_quantity=0, exit_quantity=None)
+    second = {**_paper(rejected, losing=first_complete), "paper_order_id": "second-order",
+              "decision_id": "another-decision-in-same-episode", "paper_order_count": 2}
+    parent, candidate, context = forward_cohort(
+        observations, measured_rows([_paper(row) for row in baseline]),
+        measured_rows([_paper(row) for row in proposed] + [first, second]),
+        candidate_id=2, parent_id=1, proposal_id="proposal", span_days=30, execution_grade=True,
+    )
+    result = evaluate_comparison(parent, candidate, minimum=2, require_span_days=30, paired=True, **context)
+    assert result["comparison_denominator"] == 6 and result["unmatched_episodes"] == 1
+    assert result["proposed"]["sample_size"] == 2 and result["confirmed_cash"]["proposed"] == 3
+    assert result["candidate_net_on_comparison_universe"] is None and result["comparison_lower_95"] is None
+    assert result["cohort"]["multiple_paper_order_episodes"] == 1
+    assert result["cohort"]["multiple_paper_order_episode_keys"] == [{"strategy_revision_id": 2, "episode_key": "episode-1"}]
+    assert _compare(*_cohort())["confirmed_cash"]["proposed"] == 4

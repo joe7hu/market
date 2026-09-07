@@ -235,7 +235,7 @@ def test_strategy_learning_does_not_reuse_parent_paper_execution_for_candidate()
         "open_interest": 100, "volume": 100, "peak_return": 0.1,
         "current_return": 0.1, "max_drawdown": -0.1, "probability_profit": 0.6,
         "ticker": "QQQ", "decision_id": "parent-decision", "strategy_revision_id": 42,
-        "paper_order_id": "parent-paper", "paper_only": True, "paper_status": "exited",
+        "paper_order_id": "parent-paper", "paper_only": True, "paper_status": "exited", "paper_order_count": 1,
         "filled_at": now - timedelta(days=1), "exit_at": now, "actual_fill_price": 100,
         "exit_price": 110, "filled_quantity": 1, "exited_quantity": 1,
         "entry_slippage": 0.1, "exit_slippage": 0.1, "fees": 0.5,
@@ -291,7 +291,7 @@ def test_paper_return_requires_complete_quantity_and_uses_multiplier_and_credit_
     row = {
         "as_of": datetime(2026, 8, 1, tzinfo=UTC), "filled_at": datetime(2026, 8, 2, tzinfo=UTC),
         "exit_at": datetime(2026, 8, 3, tzinfo=UTC), "paper_only": True, "paper_status": "exited",
-        "paper_order_id": "order", "actual_fill_price": 2.5, "exit_price": 3.0,
+        "paper_order_id": "order", "paper_order_count": 1, "actual_fill_price": 2.5, "exit_price": 3.0,
         "filled_quantity": 2, "exited_quantity": 2, "entry_quantity": 2, "exit_quantity": 2,
         "contract_multiplier": 100, "fees": 2.6, "entry_slippage": .1, "exit_slippage": .1,
         "structure": "long_call",
@@ -300,5 +300,7 @@ def test_paper_return_requires_complete_quantity_and_uses_multiplier_and_credit_
     assert paper_realized_return({**row, "exit_quantity": 1}) is None
     assert paper_realized_return({**row, "contract_multiplier": None}) is None
     assert paper_realized_return({**row, "entry_slippage": None}) is None
+    for count in (None, 0, 2, True):
+        assert paper_realized_return({**row, "paper_order_count": count}) is None
     credit = {**row, "structure": "cash_secured_put", "exit_price": 0, "reserved_collateral": 10_000}
     assert abs(paper_realized_return(credit) - .04974) < 1e-9

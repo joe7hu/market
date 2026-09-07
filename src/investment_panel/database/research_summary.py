@@ -190,7 +190,9 @@ def evaluation_summary(row: dict[str, Any]) -> dict[str, Any]:
     basis = "obsolete_stock_target" if stock and metrics.get("target_version") != TARGET_VERSION else "independence_unconfirmed"
     if independent_stock:
         basis = "independent_stock_episodes"
-        sample = _count(metrics.get("effective_sample_size"))
+        # Calibration training size is not the denominator of these OOS
+        # returns and probability errors. Older missing counts stay unknown.
+        sample = _count(metrics.get("oos_sample_size"))
         if sample:
             lower = _number(metrics.get("lower_confidence_net_utility_after_costs"))
             brier = _number(_mapping(metrics.get("calibration_metrics")).get("brier_score"))

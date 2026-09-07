@@ -4836,6 +4836,16 @@
       "OpportunityScorecardResponse": {
         "additionalProperties": true,
         "properties": {
+          "excluded_legacy_independent_episode_count": {
+            "default": 0,
+            "title": "Excluded Legacy Independent Episode Count",
+            "type": "integer"
+          },
+          "excluded_legacy_observation_count": {
+            "default": 0,
+            "title": "Excluded Legacy Observation Count",
+            "type": "integer"
+          },
           "lane": {
             "anyOf": [
               {

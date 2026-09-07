@@ -3261,6 +3261,16 @@ export interface components {
         };
         /** OpportunityScorecardResponse */
         OpportunityScorecardResponse: {
+            /**
+             * Excluded Legacy Independent Episode Count
+             * @default 0
+             */
+            excluded_legacy_independent_episode_count: number;
+            /**
+             * Excluded Legacy Observation Count
+             * @default 0
+             */
+            excluded_legacy_observation_count: number;
             /** Lane */
             lane?: string | null;
             /** Window Days */

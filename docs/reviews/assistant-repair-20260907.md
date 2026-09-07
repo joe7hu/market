@@ -199,3 +199,73 @@ additional rejected-closure reader regression and transition checks passed
 frozen for the fourth whole-branch independent review. Final acceptance and
 release evidence will be recorded in the additive GBrain repair page and
 release artifacts rather than inferred from this pre-release ledger.
+
+## Fourth independent review and production query diagnosis
+
+The fourth review returned `patch is incorrect` for commit
+`fc3f62f96d69a5c1a6e360d5e59494937184710a` (tree
+`9e60d45bc7c1dadb0e3ea8883986e1092ff011d8`). Its report is preserved at
+`/Users/joehu/.codex/artifacts/market-assistant-repair-20260907/market-assistant-review-v4.json`.
+The branch was reopened for the following repairs. No acceptance or deployment
+is implied by the first candidate commit.
+
+| Finding | State | Required correction |
+|---|---|---|
+| R21 P1 | fixed; review pending | Use exact historical publication authority for both candidate and incumbent holdings; keep current publication required for new entries |
+| R22 P1 | fixed; review pending | Include later actual paper losses in the fixed episode comparison; attempted but incomplete paper remains unknown |
+| R23 P2 | fixed; review pending | Cancel all blocked partial-entry remainders and continue managing the actual filled holding |
+| R24 P2 | fixed; review pending | Persist and display actual stock OOS sample count; preserve training count separately and missing OOS as unknown |
+| R25 runtime | fixed; review pending | Select incumbent episode IDs with existing indexes before payload joins, within the unchanged three-second statement limit |
+| R26 evidence | fixed; review pending | Exclude genuinely legacy observations from current cohort qualification; expose raw and independent excluded counts separately |
+| R27 lifecycle | fixed; review pending | Preserve exact existing candidate holdings and entered shadows after successful promotion of that revision |
+| R28 accounting | fixed; review pending | Keep episodes with multiple paper orders unknown rather than omit other losses or incomplete exposure behind one completed order |
+| R29 classification | fixed; review pending | Treat the known cash-secured-put sizing exclusion as ineligible evidence, without turning missing cash into a global scorecard integrity defect |
+
+The restored fc3f62f app returned HTTP 200 on all 18 probes, but Radar reported
+`scorecard_query_timeout` and INVALID. This is a failed semantic check. A
+read-only production check also reproduced the timeout with the application
+role and unchanged 3,000 ms statement limit. The episode-key query repair
+prototype returned the identical 2,044 rows in 0.443 seconds under that limit.
+Exact query, plan and parity evidence are in
+`/tmp/market-assistant-scorecard-diagnosis-fc3f62f/`.
+
+R22 passed 16 fixed-cohort checks, including a later losing paper execution
+after an initial rejection and an incomplete execution that remains unknown.
+R24 passed 72 focused producer, PostgreSQL, Research and API checks. The actual
+stock producer test verifies different training and OOS counts and recomputes
+the reported Brier score and return bound from OOS predictions.
+
+R21/R23/R27 passed 66 experiment/paper checks and 93 related ticket,
+PostgreSQL publication and architecture checks. All six partial-entry blockers
+retain filled quantities; exact promotion, rollback, future promotion and other
+successor cases are covered. Independent R22 follow-up found R28 through the
+real public staging owner: two orders are permitted within a ticket's quantity
+limit, while the current measurement selects only one. A +20% selected return
+could omit a second -80% loss or an earlier incomplete holding. The repair must
+preserve the full denominator and mark that unsupported combined exposure
+unknown; it must not change staging limits or invent an aggregated drawdown.
+
+The implemented R25 read, including scope counts, took 0.783 seconds under the
+production read-only application role and unchanged timeout. It retains 2,044
+current episodes and separately reports 71,263 excluded legacy captures across
+14,353 episodes. No legacy return is used. The remaining 136
+`quality_status_sizing_blocked` rows were traced to the cash-secured-put producer:
+all had `sample_eligible=false` and `missing_cash_context`. R29 keeps these
+expected sizing exclusions out of return samples without treating them as a
+global integrity failure. Actual cash, sizing and execution gates remain intact.
+
+R25/R26/R29 passed 24 focused scorecard checks and five architecture checks.
+The final read-only production scorecard took 0.766 seconds: `COLLECTING`, zero
+resolved episodes, null expectancy, and explicit excluded legacy counts. R24
+also received a bounded independent review with no actionable findings; 65
+Research, producer and scheduler checks passed in that review. The complete
+candidate still requires independent acceptance and the full release gate.
+
+R28 passed 47 unit checks, 11 public staging/rollback PostgreSQL cases and six
+final staging/promotion/action checks. The real staging owner creates two
+permitted orders and fills/exits a winner and loser. The episode remains
+unknown with its original denominator; cached winner-only evidence is rejected.
+Rollback retains unknown exposure within its trailing twenty, with no older
+loss substituted. Order counts are bound to each evidence cutoff. Multi-order
+return and drawdown aggregation are deliberately unsupported; no staging or
+risk policy changed. All repair owners are now frozen for review v5.

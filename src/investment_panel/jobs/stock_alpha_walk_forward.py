@@ -136,6 +136,7 @@ def run(
         "cohort_path": artifact["cohort_path"],
         "fallback_parent": artifact["fallback_parent"],
         "effective_sample_size": metrics["effective_sample_size"],
+        "oos_sample_size": metrics.get("oos_sample_size"),
         "calibration_metrics": {
             "brier_score": metrics["brier_score"],
             "calibration_error": metrics["calibration_error"],

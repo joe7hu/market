@@ -299,7 +299,16 @@ class StrategyLearningRepository:
         )
 
 
-OUTCOME_QUERY = """
+PAPER_EPISODE_ORDERS_SQL = """
+    SELECT count(*) AS paper_order_count, min(paper.created_at) AS first_paper_at
+    FROM app.paper_order paper JOIN analysis.decision original ON original.id = paper.decision_id
+    WHERE original.strategy_revision_id = decision.strategy_revision_id
+      AND original.episode_key = decision.episode_key AND original.lane = decision.lane
+      AND paper.paper_only IS TRUE AND paper.created_at <= now()
+"""
+
+
+OUTCOME_QUERY = f"""
     WITH qualified_outcomes AS (
         SELECT outcome.*
         FROM analysis.option_outcome outcome
@@ -353,7 +362,8 @@ OUTCOME_QUERY = """
            fills.exit_price, paper.filled_quantity, paper.exited_quantity,
            paper.entry_slippage, paper.exit_slippage, paper.fees, paper.contract_multiplier,
            paper.execution_quote->'observed_liquidation_v1' AS paper_marks,
-           paper.reserved_collateral, fills.entry_quantity, fills.exit_quantity
+           paper.reserved_collateral, fills.entry_quantity, fills.exit_quantity,
+           paper_episode.paper_order_count, paper_episode.first_paper_at
     FROM eligible
     JOIN analysis.decision decision ON decision.id = eligible.decision_id
     JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
@@ -365,9 +375,11 @@ OUTCOME_QUERY = """
      AND quote.observed_at = option_decision.quote_observed_at
     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
     LEFT JOIN qualified_outcomes outcome ON outcome.decision_id = decision.id
+    LEFT JOIN LATERAL ({PAPER_EPISODE_ORDERS_SQL}) paper_episode ON TRUE
     LEFT JOIN LATERAL (
         SELECT paper.* FROM app.paper_order paper
         WHERE paper.decision_id = decision.id AND paper.paper_only IS TRUE
+          AND paper.created_at <= now()
         ORDER BY paper.created_at, paper.id LIMIT 1
     ) paper ON TRUE
     LEFT JOIN LATERAL (
@@ -389,13 +401,13 @@ OUTCOME_QUERY = """
 """
 
 
-OBSERVATION_QUERY = """
+OBSERVATION_QUERY = f"""
     SELECT decision.id::text AS decision_id, decision.strategy_revision_id,
-           decision.episode_key, decision.as_of, decision.state, shadow.status AS shadow_status,
+           decision.episode_key, decision.lane, decision.as_of, decision.state, shadow.status AS shadow_status,
            shadow.pending_entry_reason, shadow.entry_at, shadow.entry_price,
            shadow.exit_at, shadow.exit_price, shadow.metrics,
            run.inputs, run.run_type, run.id::text AS run_id,
-           publication.scope, item.payload, paper.created_at AS first_paper_at
+           publication.scope, item.payload, paper.paper_order_count, paper.first_paper_at
     FROM analysis.shadow_trade shadow
     JOIN analysis.decision decision ON decision.id = shadow.decision_id
     JOIN analysis.run run ON run.id = decision.run_id AND run.strategy_revision_id = decision.strategy_revision_id
@@ -403,13 +415,7 @@ OBSERVATION_QUERY = """
          AND publication.analysis_run_id = run.id AND publication.published_at <= now()
     LEFT JOIN app.publication_content_item item ON item.publication_id = publication.id
          AND item.model_name = 'option_paper_experiment' AND item.payload->>'decision_id' = decision.id::text
-    LEFT JOIN LATERAL (
-        SELECT min(paper.created_at) AS created_at
-        FROM app.paper_order paper JOIN analysis.decision original ON original.id = paper.decision_id
-        WHERE original.strategy_revision_id = decision.strategy_revision_id
-          AND original.episode_key = decision.episode_key AND paper.paper_only IS TRUE
-          AND paper.created_at <= now()
-    ) paper ON true
+    LEFT JOIN LATERAL ({PAPER_EPISODE_ORDERS_SQL}) paper ON true
     WHERE shadow.source_kind = 'options_paper_experiment'
       AND decision.strategy_revision_id = ANY(%s::bigint[])
       AND decision.as_of >= %s AND decision.as_of <= now() AND shadow.created_at <= now()
@@ -474,6 +480,7 @@ def forward_cohort(
     measured: dict[int, list[dict[str, Any]]] = {parent_id: [], candidate_id: []}
     states: dict[str, int] = {}
     terminal_unknown: set[tuple[int, Any]] = set()
+    multiple_paper_episodes: set[tuple[int, Any]] = set()
     for revision, source in ((parent_id, baseline), (candidate_id, proposed)):
         own = [row for row in scoped if row["strategy_revision_id"] == revision]
         by_id = {row["decision_id"]: row for row in source}
@@ -488,9 +495,14 @@ def forward_cohort(
             )
             state = str(row["shadow_status"]) if valid else "invalid_lineage"
             states[f"{revision}:{state}"] = states.get(f"{revision}:{state}", 0) + 1
+            if execution_grade and has_multiple_paper_orders(row):
+                # One order cannot represent the capital or unresolved exposure
+                # of several executions. Keep this episode in the denominator.
+                multiple_paper_episodes.add((revision, key))
+                continue
             observed = paper.get(key) if execution_grade else by_id.get(row["decision_id"])
-            if (valid and row["state"] in {"WATCH", "SETUP", "READY"}
-                and observed is not None and (execution_grade or state == "closed")):
+            if (valid and observed is not None
+                and (execution_grade or (row["state"] in {"WATCH", "SETUP", "READY"} and state == "closed"))):
                 if not execution_grade and "shadow_current_return" in observed:
                     observed = {**observed, "current_return": observed["shadow_current_return"],
                                 "peak_return": observed["shadow_peak_return"], "max_drawdown": observed["shadow_max_drawdown"]}
@@ -498,6 +510,7 @@ def forward_cohort(
                     measured[revision].append(observed)
             elif (valid and state == "rejected" and row["state"] == "REJECTED"
                   and row["pending_entry_reason"] == "candidate_gate_rejected"
+                  and (not execution_grade or (row.get("paper_order_count") == 0 and row.get("first_paper_at") is None))
                   and all(row.get(name) is None for name in ("entry_at", "entry_price", "exit_at", "exit_price"))):
                 cash[revision].add(key)
             elif valid and not execution_grade and state in {"unfilled", "unmeasurable"}:
@@ -511,11 +524,24 @@ def forward_cohort(
         "window_complete": end is not None and end < datetime.now(UTC).astimezone(MARKET_TZ).date(),
         "cohort_metadata": {"period_start": start.isoformat() if start else None,
                             "period_end": end.isoformat() if end else None, "observation_states": states,
+                            "multiple_paper_order_episodes": len(multiple_paper_episodes),
+                            "multiple_paper_order_episode_keys": [
+                                {"strategy_revision_id": revision, "episode_key": key}
+                                for revision, key in sorted(multiple_paper_episodes, key=str)
+                            ],
                             "terminal_unmatched_episodes": len(terminal_unknown)},
     }
 
+
+def has_multiple_paper_orders(row: Mapping[str, Any]) -> bool:
+    count = row.get("paper_order_count")
+    return type(count) is int and count > 1
+
+
 def paper_execution_complete(row: Mapping[str, Any]) -> bool:
-    if row.get("paper_only") is not True or row.get("paper_status") not in {"exited", "closed"}:
+    """Require one fully journaled order for an independent paper sample."""
+    if (row.get("paper_only") is not True or row.get("paper_status") not in {"exited", "closed"}
+        or type(row.get("paper_order_count")) is not int or row["paper_order_count"] != 1):
         return False
     required = (
         row.get("paper_order_id"), row.get("filled_at"), row.get("exit_at"),

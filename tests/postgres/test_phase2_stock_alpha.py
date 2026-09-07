@@ -1183,6 +1183,9 @@ def test_scheduled_stock_experiment_skips_unchanged_evidence(
 def test_scheduled_stock_qualifies_with_its_real_prediction_controls(
     migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from statistics import fmean, stdev
+
+    from investment_panel.database.research_summary import research_summary
     from investment_panel.jobs import stock_alpha_walk_forward as job
 
     runtime = _production_runtime(migrated_postgres_dsn)
@@ -1229,6 +1232,24 @@ def test_scheduled_stock_qualifies_with_its_real_prediction_controls(
         assert control["white_noise_edge"] <= 0
         assert control["control_metadata"]["randomized_label"]["runs"] == 8
         assert all(gate["passed"] for gate in metrics["validation"]["gates"].values())
+
+        predictions = result["artifact"]["predictions"]
+        test_count = len(predictions)
+        training_count = min(row["effective_sample_size"] for row in predictions)
+        assert test_count != training_count
+        assert metrics["effective_sample_size"] == training_count
+        assert metrics["oos_sample_size"] == test_count
+        summary = research_summary(runtime, config)
+        strategy = next(row for row in summary["strategies"] if row["strategy_revision_id"] == result["strategy_revision_id"])
+        displayed = next(row for row in strategy["evaluations"] if row["stage"] == "out_of_sample")
+        assert displayed["independent_sample_count"] == test_count
+        assert displayed["brier_score"] == pytest.approx(round(sum(
+            (row["calibrated_probability"] - row["outcome"]) ** 2 for row in predictions
+        ) / test_count, 6))
+        net_returns = [row["net_utility_after_costs"] for row in predictions]
+        assert stdev(net_returns) > 0
+        expected_bound = fmean(net_returns) - 1.96 * stdev(net_returns) / test_count ** .5
+        assert displayed["net_return_lower_bound"] == pytest.approx(round(expected_bound, 8))
     finally:
         runtime.close()
 

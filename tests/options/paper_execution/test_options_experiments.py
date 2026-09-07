@@ -58,14 +58,14 @@ def experiment_context(migrated_postgres_dsn, monkeypatch):
         runtime.close()
 
 
-def _capture(runtime, ingestion, at, *, bid=0.48, ask=0.50, complete=True, available_at=None, open_interest=1000, include_put=False, bid_size=10, symbols=("NVDA",), contracts=()):
+def _capture(runtime, ingestion, at, *, bid=0.48, ask=0.50, complete=True, available_at=None, open_interest=1000, include_put=False, bid_size=10, ask_size=10, symbols=("NVDA",), contracts=()):
     with ingestion.run("test-experiment", "option_quotes", started_at=at) as run:
         snapshot = ingestion.store_option_snapshot(
             run.id, source_id="test-experiment", observed_at=at, market_session="regular", universe="test",
             rows=[{
                 "symbol": symbol, "expiration": (at.date() + timedelta(days=40)).isoformat(),
                 "strike": 160, "option_type": option_type, "underlying_price": 155,
-                "bid": bid, "ask": ask, "mid": (bid + ask) / 2, "bid_size": bid_size, "ask_size": 10,
+                "bid": bid, "ask": ask, "mid": (bid + ask) / 2, "bid_size": bid_size, "ask_size": ask_size,
                 "volume": 1000, "open_interest": open_interest, "iv": 0.3, "delta": 0.4,
                 "last_trade_at": at, "captured_at": at, "market_data_status": "live",
                 "style": "american", "settlement": "physical", "deliverable_key": f"{symbol.lower()}-standard",
@@ -425,11 +425,7 @@ def test_shadow_drawdown_measures_a_decline_from_peak_wealth(experiment_context)
         assert outcome["max_drawdown"] == pytest.approx(.374 / 1.8 - 1)
 
 
-@pytest.mark.parametrize("observe_gap,exit_bid,entry_window", [
-    (False, .6, "current"), (True, .6, "current"), (False, .4, "current"),
-    (False, 1.1, "holding"), (False, .6, "expired_unfilled"), (False, 1.1, "terminal_blocked_holding"),
-])
-def test_candidate_paper_uses_same_risk_checks_and_immutable_experiment_provenance(experiment_context, monkeypatch, observe_gap, exit_bid, entry_window):
+def _ready_paper_publication(experiment_context, monkeypatch, *, experimental=True, sleeve_capital=25000):
     runtime, ingestion, now, parent, candidate = experiment_context
     monkeypatch.setattr("investment_panel.database.actions.is_market_open", lambda _: True)
     monkeypatch.setattr("investment_panel.database.options_paper_execution.is_market_open", lambda _: True)
@@ -450,14 +446,14 @@ def test_candidate_paper_uses_same_risk_checks_and_immutable_experiment_provenan
             [quote["ingest_run_id"], now],
         )
     with runtime.read() as connection:
-        context = experiment_candidate(connection, candidate, as_of=datetime.now(UTC), require_shadow=True)
+        context = experiment_candidate(connection, candidate, as_of=datetime.now(UTC), require_shadow=True) if experimental else None
     analysis = AnalysisRepository(runtime)
-    run_id = analysis.start_run("options-paper-experiment", input_cutoff=now, code_version="ready-fixture",
-                                inputs={"experiment": experiment_identity(context)}, strategy_revision_id=candidate)
+    run_id = analysis.start_run("options-paper-experiment" if experimental else "options-radar", input_cutoff=now, code_version="ready-fixture",
+                                inputs={"experiment": experiment_identity(context)} if experimental else {}, strategy_revision_id=candidate if experimental else parent)
     decision_id = analysis.store_option_decision(
         run_id, decision_key="paper-fixture", instrument_id=quote["instrument_id"], contract_id=quote["contract_id"],
         snapshot_id=quote["snapshot_id"], quote_observed_at=now, state="READY", score=90, rank=1,
-        inputs={}, strategy_revision_id=candidate, lane="radar",
+        inputs={}, strategy_revision_id=candidate if experimental else parent, lane="radar",
         details={"structure": "long_call", "entry_price": .5, "max_loss": 50, "quality_status": "complete"},
     )
     ticket = build_option_trade_ticket(
@@ -465,19 +461,168 @@ def test_candidate_paper_uses_same_risk_checks_and_immutable_experiment_provenan
         legs=[{"contract_id": quote["contract_id"], "option_type": "call", "side": "buy", "strike": 160,
                "bid": .48, "ask": .5, "bid_size": 10, "ask_size": 10, "open_interest": 1000, "quote_time": now}],
         entry_price=.5, one_unit_max_loss=50, state="READY", evaluated_at=now, market_session="regular",
-        sleeve_capital=25000, broker_available_capital=100000,
+        sleeve_capital=sleeve_capital, broker_available_capital=100000,
         thesis={"direction": "long", "invalidation": "Exit below the stated thesis level"},
         forecast={"probability_semantics": "calibrated_exact_cohort", "probability_profit": .7,
                   "effective_sample_size": 42, "lower_95_expected_value": 10},
         provenance={"quote_source": "test-experiment"}, lane="radar",
     )
     assert ticket["state"] == "READY"
-    ticket["experiment"] = experiment_identity(context, str(run_id))
-    payload = {"decision_id": str(decision_id), "ticket": ticket, "experiment": ticket["experiment"],
+    if experimental:
+        ticket["experiment"] = experiment_identity(context, str(run_id))
+    payload = {"decision_id": str(decision_id), "ticket": ticket, **({"experiment": ticket["experiment"]} if experimental else {}),
                "data_source": "test-experiment", "structure": "long_call", "captured_at": now,
                "last_trade_at": now, "bid_size": 10, "ask_size": 10, "execution_ready": True}
-    publication_id = analysis.publish(run_id, f"options-paper-experiment:{candidate}",
-                                      {"option_paper_experiment": [payload]}, complete_run_summary={})
+    publication_id = analysis.publish(run_id, f"options-paper-experiment:{candidate}" if experimental else "options-radar",
+                                      {"option_paper_experiment" if experimental else "option_radar_opportunity": [payload]}, complete_run_summary={})
+    return SimpleNamespace(analysis=analysis, ticket=ticket, payload=payload, run_id=run_id,
+                           publication_id=publication_id, decision_id=decision_id, quote=quote)
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_incumbent_paper_holds_original_publication_until_holding_policy_exits(experiment_context, monkeypatch, rollback):
+    runtime, ingestion, now, parent, candidate = experiment_context
+    ready = _ready_paper_publication(experiment_context, monkeypatch, experimental=False)
+    staged = ActionRepository(runtime).stage_option_paper_entry(
+        decision_id=ready.decision_id, idempotency_key="incumbent-holding", ticket_version=1,
+        quantity=1, limit_price=.5, current_options_risk_sleeve_capital=25000,
+    )
+    execution = OptionsPaperExecutionRepository(runtime)
+    _capture(runtime, ingestion, now + timedelta(seconds=10))
+    assert execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=11))["status"] == "filled"
+    _capture(runtime, ingestion, now + timedelta(seconds=20), bid=.6, ask=.62)
+    refreshed = refresh_options_radar(runtime, source_id="test-experiment", code_version="routine-refresh")
+    with runtime.transaction() as connection:
+        order = dict(connection.execute("SELECT * FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone())
+        ticket = dict(order["ticket_snapshot"])
+        assert execution._current_ticket(connection, order, ticket, as_of=now + timedelta(seconds=21))[0] is None
+        assert execution._current_ticket(connection, order, ticket, as_of=now + timedelta(seconds=21), for_entry=False)[0]
+        wrong = {**ticket, "publication_lineage": {**ticket["publication_lineage"], "publication_id": refreshed["publication_id"]}}
+        assert execution._current_ticket(connection, order, wrong, as_of=now + timedelta(seconds=21), for_entry=False)[0] is None
+        if rollback:
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'rolled_back' WHERE id = %s", [parent])
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'active', promoted_at = %s WHERE id = %s", [now + timedelta(seconds=20), candidate])
+    held = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=21))
+    if rollback:
+        assert held["status"] == "closed" and held["reason"] == "holding_strategy_authority_invalid"
+    else:
+        assert held["status"] == "filled" and held["reason"] == "exit_not_triggered"
+        _capture(runtime, ingestion, now + timedelta(seconds=40), bid=.2, ask=.22)
+        exited = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=41))
+        assert exited["status"] == "closed" and exited["reason"] == "stop_loss"
+    with runtime.read() as connection:
+        paper = connection.execute("SELECT status, ticket_snapshot, filled_quantity, exited_quantity FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()
+        assert paper["status"] == "exited" and paper["filled_quantity"] == paper["exited_quantity"] == 1
+        assert paper["ticket_snapshot"] == ticket and paper["ticket_snapshot"]["publication_lineage"]["publication_id"] == str(ready.publication_id)
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_candidate_paper_survives_its_promotion_but_not_rollback(experiment_context, monkeypatch, rollback):
+    runtime, ingestion, now, parent, candidate = experiment_context
+    ready = _ready_paper_publication(experiment_context, monkeypatch)
+    staged = ActionRepository(runtime).stage_option_paper_entry(
+        decision_id=ready.decision_id, idempotency_key="promotion-holding", ticket_version=1,
+        quantity=1, limit_price=.5, current_options_risk_sleeve_capital=25000, experiment_publication_id=ready.publication_id,
+    )
+    execution = OptionsPaperExecutionRepository(runtime)
+    _capture(runtime, ingestion, now + timedelta(seconds=10))
+    assert execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=11))["status"] == "filled"
+    with runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [parent])
+        connection.execute("UPDATE analysis.strategy_revision SET status = 'active', promoted_at = %s WHERE id = %s", [now + timedelta(seconds=20), candidate])
+    _capture(runtime, ingestion, now + timedelta(seconds=30), bid=.6, ask=.62)
+    held = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=31))
+    assert held["status"] == "filled" and held["reason"] == "exit_not_triggered"
+    with runtime.transaction() as connection:
+        with pytest.raises(ValueError, match="core candidate proposal required"):
+            experiment_publication_row(connection, str(ready.publication_id), str(ready.decision_id), as_of=now + timedelta(seconds=31))
+        if rollback:
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'rolled_back' WHERE id = %s", [candidate])
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'active' WHERE id = %s", [parent])
+    _capture(runtime, ingestion, now + timedelta(seconds=40), bid=.6 if rollback else 1.1, ask=.62 if rollback else 1.12)
+    exited = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=41))
+    assert exited["status"] == "closed"
+    assert exited["reason"] == ("core candidate proposal required" if rollback else "profit_target")
+    with runtime.read() as connection:
+        paper = connection.execute("SELECT decision_id, ticket_snapshot, filled_quantity, exited_quantity FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()
+        assert paper["decision_id"] == ready.decision_id and paper["filled_quantity"] == paper["exited_quantity"] == 1
+        assert paper["ticket_snapshot"]["experiment"] == ready.ticket["experiment"]
+
+
+@pytest.mark.parametrize("promotion", ["valid", "future", "rolled_back", "other_successor"])
+def test_only_exact_promoted_candidate_keeps_entered_shadow(experiment_context, promotion):
+    runtime, ingestion, now, parent, candidate = experiment_context
+    _capture(runtime, ingestion, now, symbols=("NVDA", "AMD"))
+    refresh_options_radar(runtime, source_id="test-experiment", code_version="promotion-shadow", candidate_revision_id=candidate)
+    _capture(runtime, ingestion, now + timedelta(seconds=20))
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))["entered"] == 1
+    with runtime.transaction() as connection:
+        if promotion == "rolled_back":
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'rolled_back' WHERE id = %s", [candidate])
+        else:
+            connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [parent])
+            if promotion == "other_successor":
+                connection.execute(
+                    "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, supersedes_id, promoted_at) "
+                    "VALUES ('other-successor', 1, 'Other successor', 'active', %s, 'options-radar-core', %s, %s)",
+                    [Jsonb(DEFAULT_PARAMETERS), parent, now + timedelta(seconds=30)],
+                )
+            else:
+                connection.execute("UPDATE analysis.strategy_revision SET status = 'active', promoted_at = %s WHERE id = %s",
+                                   [now + timedelta(seconds=300 if promotion == "future" else 30), candidate])
+    _capture(runtime, ingestion, now + timedelta(seconds=40), symbols=("NVDA", "AMD"))
+    result = advance_experiment_shadows(runtime, now=now + timedelta(seconds=41))
+    assert result["unfilled"] == 1 and result["entered"] == result["closed"] == 0
+    assert result["unmeasurable"] == (0 if promotion == "valid" else 1)
+    if promotion == "valid":
+        _capture(runtime, ingestion, now + timedelta(seconds=60), bid=1.1, ask=1.12)
+        assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=61))["closed"] == 1
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM analysis.option_outcome").fetchone()["count"] == 1
+
+
+@pytest.mark.parametrize("exit_quote_available", [True, False])
+def test_thesis_invalidation_cancels_partial_remainder_and_exits_actual_holding(experiment_context, monkeypatch, exit_quote_available):
+    runtime, ingestion, now, _parent, _candidate = experiment_context
+    ready = _ready_paper_publication(experiment_context, monkeypatch, sleeve_capital=50000)
+    assert ready.ticket["risk"]["recommended_quantity"] == 2
+    staged = ActionRepository(runtime).stage_option_paper_entry(
+        decision_id=ready.decision_id, idempotency_key="partial-thesis", ticket_version=1,
+        quantity=2, limit_price=.5, current_options_risk_sleeve_capital=50000, experiment_publication_id=ready.publication_id,
+    )
+    execution = OptionsPaperExecutionRepository(runtime)
+    _capture(runtime, ingestion, now + timedelta(seconds=10), ask_size=1)
+    filled = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=11))
+    assert filled["status"] == "filled" and filled["filled_quantity"] == 1
+    with runtime.transaction() as connection:
+        connection.execute("INSERT INTO app.thesis (instrument_id, revision, status, thesis, updated_at) VALUES (%s, 1, 'current', %s, %s)",
+                           [ready.quote["instrument_id"], Jsonb({"lifecycle_status": "invalidated"}), now + timedelta(seconds=20)])
+    _capture(runtime, ingestion, now + timedelta(seconds=20), bid_size=10 if exit_quote_available else 0)
+    result = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=21))
+    if not exit_quote_available:
+        assert result["status"] == "filled" and "pending_executable_quote" in result["reason"]
+        with runtime.read() as connection:
+            paper = connection.execute("SELECT status, filled_quantity, exited_quantity FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()
+            assert paper["status"] == "entered" and paper["filled_quantity"] == 1 and not paper["exited_quantity"]
+        _capture(runtime, ingestion, now + timedelta(seconds=30))
+        result = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=31))
+    assert result["status"] == "closed" and result["reason"] == "thesis_invalidated_or_closed" and result["exit_quantity"] == 1
+    with runtime.read() as connection:
+        paper = connection.execute("SELECT status, quantity, filled_quantity, exited_quantity, execution_quote FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()
+        assert paper["status"] == "exited" and paper["quantity"] == 2 and paper["filled_quantity"] == paper["exited_quantity"] == 1
+        assert paper["execution_quote"]["entry_remainder_cancellation_v1"]["reason"] == "thesis_invalidated_or_closed"
+        journal = connection.execute("SELECT action, quantity FROM app.trade_journal WHERE decision_id = %s ORDER BY created_at", [ready.decision_id]).fetchall()
+        assert [(row["action"], row["quantity"]) for row in journal] == [("paper_entry", 1), ("paper_exit:thesis_invalidated_or_closed", 1)]
+
+
+@pytest.mark.parametrize("observe_gap,exit_bid,entry_window", [
+    (False, .6, "current"), (True, .6, "current"), (False, .4, "current"),
+    (False, 1.1, "holding"), (False, .6, "expired_unfilled"), (False, 1.1, "terminal_blocked_holding"),
+])
+def test_candidate_paper_uses_same_risk_checks_and_immutable_experiment_provenance(experiment_context, monkeypatch, observe_gap, exit_bid, entry_window):
+    ready = _ready_paper_publication(experiment_context, monkeypatch)
+    runtime, ingestion, now, parent, candidate = experiment_context
+    ticket, publication_id, decision_id = ready.ticket, ready.publication_id, ready.decision_id
     arguments = dict(decision_id=decision_id, idempotency_key="experiment-risk", ticket_version=1, quantity=1,
                      limit_price=.5, current_options_risk_sleeve_capital=25000, experiment_publication_id=publication_id)
     actions = ActionRepository(runtime)
@@ -571,6 +716,7 @@ def test_candidate_paper_uses_same_risk_checks_and_immutable_experiment_provenan
 @pytest.mark.parametrize("cohort", [
     "losers", "duplicate_episode", "before_promotion", "invalid_lineage", "paper_winners",
     "paper_incomplete_quarantined", "paper_complete_quarantined", "paper_incomplete_nan_fee", "score_rejected",
+    "multiple_paper_orders",
 ])
 def test_rollback_requires_twenty_independent_current_incumbent_losses(experiment_context, monkeypatch, cohort):
     from investment_panel.database import strategy_learning
@@ -581,7 +727,8 @@ def test_rollback_requires_twenty_independent_current_incumbent_losses(experimen
         connection.execute("UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s", [parent])
         connection.execute("UPDATE analysis.strategy_revision SET status = 'active', promoted_at = %s WHERE id = %s",
                            [now - timedelta(seconds=1), active])
-    symbols = tuple(f"OBSA{chr(65 + index)}" for index in range(19 if cohort == "duplicate_episode" else 20))
+    count = 19 if cohort == "duplicate_episode" else 21 if cohort == "multiple_paper_orders" else 20
+    symbols = tuple(f"OBSA{chr(65 + index)}" for index in range(count))
     _capture(runtime, ingestion, now, symbols=symbols)
     first = refresh_options_radar(runtime, source_id="test-experiment", code_version="rollback-test")
     assert first["shadow_trades"] == len(symbols)
@@ -604,9 +751,10 @@ def test_rollback_requires_twenty_independent_current_incumbent_losses(experimen
                 [row["payload"]["decision_id"], Jsonb(metrics)],
             )
     _capture(runtime, ingestion, now + timedelta(seconds=20), symbols=symbols)
-    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))["entered"] == 20
+    observations = 20 if cohort == "duplicate_episode" else count
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))["entered"] == observations
     _capture(runtime, ingestion, now + timedelta(seconds=40), bid=.2, ask=.22, symbols=symbols)
-    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=41))["closed"] == 20
+    assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=41))["closed"] == observations
     with runtime.transaction() as connection:
         if cohort == "before_promotion":
             connection.execute("UPDATE analysis.strategy_revision SET promoted_at = %s WHERE id = %s", [now + timedelta(seconds=10), active])
@@ -614,20 +762,26 @@ def test_rollback_requires_twenty_independent_current_incumbent_losses(experimen
             connection.execute("UPDATE analysis.shadow_trade SET metrics = jsonb_set(metrics, '{experiment,run_id}', '\"wrong-run\"') WHERE id = (SELECT id FROM analysis.shadow_trade LIMIT 1)")
         elif cohort == "score_rejected":
             connection.execute("UPDATE analysis.decision SET state = 'REJECTED', score = 0 WHERE strategy_revision_id = %s", [active])
-        elif cohort in {"paper_winners", "paper_incomplete_quarantined", "paper_complete_quarantined", "paper_incomplete_nan_fee"}:
+        elif cohort in {"paper_winners", "paper_incomplete_quarantined", "paper_complete_quarantined", "paper_incomplete_nan_fee", "multiple_paper_orders"}:
             if cohort.endswith("quarantined"):
                 connection.execute("UPDATE analysis.option_outcome SET quarantine_reason = 'test_rejected_shadow'")
             elif cohort.endswith("nan_fee"):
                 connection.execute("UPDATE analysis.option_outcome SET fee_total = 'NaN'::numeric")
             decisions = connection.execute("SELECT decision_id, decision.instrument_id FROM analysis.shadow_trade shadow JOIN analysis.decision decision ON decision.id = shadow.decision_id").fetchall()
-            for row in decisions:
+            if cohort == "multiple_paper_orders":
+                # This most recent episode must remain in the trailing 20 as
+                # unknown, rather than selecting its winner or an older loss.
+                decisions = [decisions[0], decisions[0]]
+            for index, row in enumerate(decisions):
+                exit_price = .2 if cohort == "multiple_paper_orders" and index == 1 else .7
+                exit_at = now + timedelta(seconds=44 if cohort == "multiple_paper_orders" else 40)
                 paper = connection.execute(
                     "INSERT INTO app.paper_order (decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
                     "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, fees, entry_slippage, exit_slippage, lane, contract_multiplier) "
-                    "VALUES (%s, %s, 'buy', 1, .5, 'exited', true, %s, .5, %s, .7, 1, 1, 1.3, .01, .01, 'radar', 100) RETURNING id",
-                    [row["decision_id"], row["instrument_id"], now + timedelta(seconds=22), now + timedelta(seconds=40)],
+                    "VALUES (%s, %s, 'buy', 1, .5, 'exited', true, %s, .5, %s, %s, 1, 1, 1.3, .01, .01, 'radar', 100) RETURNING id",
+                    [row["decision_id"], row["instrument_id"], now + timedelta(seconds=22), exit_at, exit_price],
                 ).fetchone()["id"]
-                for action, price in (("paper_entry", .5), ("paper_exit:profit", .7)):
+                for action, price in (("paper_entry", .5), ("paper_exit:profit" if exit_price > .5 else "paper_exit:stop_loss", exit_price)):
                     if cohort.startswith("paper_incomplete_") and action.startswith("paper_exit:"):
                         continue
                     connection.execute(
@@ -663,3 +817,72 @@ def test_rollback_requires_twenty_independent_current_incumbent_losses(experimen
     with runtime.read() as connection:
         actual = connection.execute("SELECT id FROM analysis.strategy_revision WHERE authority_group = 'options-radar-core' AND status = 'active'").fetchone()["id"]
         assert actual == (parent if cohort == "losers" else active)
+
+
+def test_multiple_public_paper_orders_cannot_supply_one_selected_execution_sample(experiment_context, monkeypatch):
+    from investment_panel.database import strategy_learning
+    from investment_panel.database.options_experiments import seed_experiment_shadows
+    from investment_panel.database.strategy_governance import (
+        _quarantine_unverified_paper_evaluations, paper_provenance_is_database_backed,
+    )
+
+    runtime, ingestion, now, _parent, candidate = experiment_context
+    ready = _ready_paper_publication(experiment_context, monkeypatch, sleeve_capital=50000)
+    ready.analysis.store_option_feature(
+        ready.run_id, snapshot_id=ready.quote["snapshot_id"], contract_id=ready.quote["contract_id"],
+        quote_observed_at=now, feature_version=FEATURE_VERSION, values={"dte": 40, "spread_pct": .04},
+    )
+    assert seed_experiment_shadows(runtime, [ready.payload], publication_id=str(ready.publication_id)) == 1
+    arguments = dict(decision_id=ready.decision_id, ticket_version=1, quantity=1, limit_price=.5,
+                     current_options_risk_sleeve_capital=50000, experiment_publication_id=ready.publication_id)
+    actions = ActionRepository(runtime)
+    first = actions.stage_option_paper_entry(**arguments, idempotency_key="episode-first-part")
+    second = actions.stage_option_paper_entry(**arguments, idempotency_key="episode-second-part")
+    assert first["status"] == second["status"] == "staged" and ready.ticket["risk"]["recommended_quantity"] == 2
+    execution = OptionsPaperExecutionRepository(runtime)
+    for order, entry_second, exit_second, exit_bid in ((first, 10, 20, 1.1), (second, 30, 40, .2)):
+        _capture(runtime, ingestion, now + timedelta(seconds=entry_second))
+        assert execution._manage_one(order["paper_order_id"], now + timedelta(seconds=entry_second + 1))["status"] == "filled"
+        _capture(runtime, ingestion, now + timedelta(seconds=exit_second), bid=exit_bid, ask=exit_bid + .02)
+        assert execution._manage_one(order["paper_order_id"], now + timedelta(seconds=exit_second + 1))["status"] == "closed"
+    cutoff = now + timedelta(seconds=45)
+
+    class ObservationClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cutoff if tz else cutoff.replace(tzinfo=None)
+
+    monkeypatch.setattr(strategy_learning, "datetime", ObservationClock)
+    with runtime.read() as connection:
+        rows = connection.execute(
+            strategy_learning.OUTCOME_QUERY.replace("now()", f"TIMESTAMPTZ '{cutoff.isoformat()}'"), [candidate, candidate],
+        ).fetchall()
+        observations = connection.execute(
+            strategy_learning.OBSERVATION_QUERY.replace("now()", f"TIMESTAMPTZ '{cutoff.isoformat()}'"),
+            [[candidate], now - timedelta(hours=1)],
+        ).fetchall()
+        assert len(rows) == len(observations) == 1
+        assert rows[0]["paper_order_count"] == observations[0]["paper_order_count"] == 2
+        assert strategy_learning.measured_rows([dict(row) for row in rows]) == []
+        selected_winner = {
+            "strategy_revision_id": candidate, "database_verified": True, "sample_size": 1,
+            "paper_order_ids": [first["paper_order_id"]], "decision_ids": [str(ready.decision_id)],
+        }
+        assert paper_provenance_is_database_backed(connection, candidate, selected_winner, cutoff=cutoff) is False
+        # Previously stored evidence that lists only the winning order must
+        # also fail the current database proof, despite its old verified flag.
+        prior_evaluation = {"evaluation_type": "execution_grade_paper", "evaluated_at": cutoff,
+                            "available_at": cutoff, "evidence": {"paper_execution": selected_winner}}
+        _quarantine_unverified_paper_evaluations(connection, candidate, [prior_evaluation])
+        assert prior_evaluation["evidence"] == {}
+        orders = connection.execute("SELECT id::text, created_at, actual_fill_price, exit_price FROM app.paper_order ORDER BY created_at, id").fetchall()
+        assert orders[0]["exit_price"] > orders[0]["actual_fill_price"]
+        assert orders[1]["exit_price"] < orders[1]["actual_fill_price"]
+        # The count includes only orders that existed at the requested clock.
+        episode_sql = strategy_learning.PAPER_EPISODE_ORDERS_SQL.replace("now()", "%s::timestamptz")
+        for index, order in enumerate(orders, start=1):
+            counted = connection.execute(
+                f"SELECT episode.* FROM analysis.decision decision CROSS JOIN LATERAL ({episode_sql}) episode WHERE decision.id = %s",
+                [order["created_at"], ready.decision_id],
+            ).fetchone()
+            assert counted["paper_order_count"] == index
