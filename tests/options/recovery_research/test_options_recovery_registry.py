@@ -180,11 +180,21 @@ def test_typed_policy_changes_ticket_limits_and_rejects_incoherent_settings() ->
 
 
 class _StageResult:
-    def __init__(self, row: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        row: dict[str, object] | None = None,
+        *,
+        rows: list[dict[str, object]] | None = None,
+    ) -> None:
         self.row = row
+        self.rows = rows
 
     def fetchone(self) -> dict[str, object] | None:
         return self.row
+
+    def fetchall(self) -> list[dict[str, object]]:
+        assert self.rows is not None, "fixture must declare the requested row collection"
+        return self.rows
 
 
 class _StageConnection:
@@ -205,6 +215,10 @@ class _StageConnection:
             return _StageResult()
         if "FROM analysis.option_event_signal signal" in statement:
             return _StageResult({"stageable": True})
+        if "FROM app.trade_journal journal" in statement:
+            # This first-stage fixture has no prior exits. The shared loss
+            # owner still reads its journal; missing-cost exits are not faked.
+            return _StageResult(rows=[])
         if "INSERT INTO app.paper_order" in statement:
             return _StageResult({"id": "paper-order-1"})
         return _StageResult()

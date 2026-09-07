@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
 from app.data_access.loaders import load_table_panel_data
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.options_analysis import refresh_options_radar
+from investment_panel.database.options_analysis import DEFAULT_PARAMETERS, refresh_options_radar
 from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
@@ -23,13 +23,42 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
     ingestion = IngestionRepository(runtime)
     ingestion.register_source("outcome-test", name="Outcome", family="test", kind="option_chain")
     try:
-        _snapshot(ingestion, datetime(2026, 7, 11, 12, tzinfo=UTC), 5.0)
-        radar = refresh_options_radar(runtime, source_id="outcome-test", code_version="outcome-test")
-        assert radar["decisions"] == 1
-        _snapshot(ingestion, datetime(2026, 7, 12, 12, tzinfo=UTC), 6.0)
-        _snapshot(ingestion, datetime(2026, 7, 16, 12, tzinfo=UTC), 10.0)
+        entry_at = (datetime.now(UTC) - timedelta(days=8)).replace(hour=15, minute=0, second=0, microsecond=0)
+        entry_at -= timedelta(days=(entry_at.weekday() - 2) % 7)
+        expiration = (entry_at + timedelta(days=44)).date()
+        snapshot = _snapshot(ingestion, entry_at, 5.0, expiration=expiration)
+        # This tests the retained generic-mark owner. Modern Radar decisions
+        # have a prospective experiment shadow and must not enter this owner.
+        with runtime.transaction() as connection:
+            ids = connection.execute(
+                """SELECT contract.underlying_instrument_id AS instrument_id, quote.contract_id
+                   FROM raw.option_quote quote JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+                   WHERE quote.snapshot_id = %s""", [snapshot["snapshot_id"]],
+            ).fetchone()
+            strategy_id = connection.execute(
+                """INSERT INTO analysis.strategy_revision
+                   (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
+                   VALUES ('options-radar-core', 1, 'Core fixture', 'active', %s, 'options-radar-core', now())
+                   RETURNING id""", [Jsonb(DEFAULT_PARAMETERS)],
+            ).fetchone()["id"]
+        analysis = AnalysisRepository(runtime)
+        run_id = analysis.start_run(
+            "options_radar", input_cutoff=datetime.now(UTC), code_version="legacy-generic-outcome-test",
+            inputs={"fixture": "generic_mark_history"},
+            feature_versions={"option": "option-professional-v3-ticket"}, strategy_revision_id=strategy_id,
+        )
+        analysis.store_option_decision(
+            run_id, decision_key="generic-outcome", instrument_id=ids["instrument_id"],
+            contract_id=ids["contract_id"], snapshot_id=snapshot["snapshot_id"], quote_observed_at=entry_at,
+            state="WATCH", score=70, rank=1, inputs={"fixture": "generic_mark_history"},
+            details={"structure": "long_call", "premium_mid": 5.0, "quality_status": "ok"},
+            strategy_revision_id=strategy_id,
+        )
+        analysis.finish_run(run_id, "succeeded")
+        _snapshot(ingestion, entry_at + timedelta(days=1), 6.0, expiration=expiration)
+        _snapshot(ingestion, entry_at + timedelta(days=5), 10.0, expiration=expiration)
 
-        first = OutcomeRepository(runtime).refresh(now=datetime(2026, 7, 17, 12, tzinfo=UTC))
+        first = OutcomeRepository(runtime).refresh(now=datetime.now(UTC))
         assert first["outcomes_updated"] == 1
         with runtime.read() as connection:
             outcome = connection.execute("SELECT * FROM analysis.option_outcome").fetchone()
@@ -37,6 +66,7 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
         assert outcome["return_5d"] == pytest.approx(1.0)
         assert outcome["peak_return"] == pytest.approx(1.0)
         assert outcome["time_to_2x_days"] == 5
+        assert outcome["sample_eligible"] is False
         with runtime.transaction() as connection:
             decision_id = connection.execute("SELECT id FROM analysis.decision").fetchone()["id"]
             postmortem_id = connection.execute(
@@ -54,8 +84,8 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
             ).fetchone()
         assert evaluation["metrics"]["baseline"]["sample_size"] == 0
 
-        _snapshot(ingestion, datetime(2026, 7, 18, 12, tzinfo=UTC), 15.0)
-        OutcomeRepository(runtime).refresh(now=datetime(2026, 7, 18, 13, tzinfo=UTC))
+        _snapshot(ingestion, entry_at + timedelta(days=7), 15.0, expiration=expiration)
+        OutcomeRepository(runtime).refresh(now=datetime.now(UTC))
         with runtime.read() as connection:
             outcome = connection.execute("SELECT * FROM analysis.option_outcome").fetchone()
             counts = connection.execute(
@@ -207,17 +237,24 @@ def test_rejected_contracts_are_aggregated_and_near_misses_retained(migrated_pos
         runtime.close()
 
 
-def _snapshot(repository: IngestionRepository, observed_at: datetime, mid: float, *, source_id: str = "outcome-test") -> None:
+def _snapshot(
+    repository: IngestionRepository, observed_at: datetime, mid: float, *,
+    source_id: str = "outcome-test", expiration: date | None = None,
+) -> dict[str, object]:
     run_id = repository.start_run(source_id, "option_quotes")
-    repository.store_option_snapshot(
+    row = _row(mid, bid=mid - 0.2, ask=mid + 0.2, open_interest=1500)
+    if expiration is not None:
+        row.update(expiration=expiration.isoformat(), contract_symbol=f"NVDA{expiration:%y%m%d}C00180000")
+    snapshot = repository.store_option_snapshot(
         run_id,
         source_id=source_id,
         observed_at=observed_at,
         market_session="regular",
         universe="test",
-        rows=[_row(mid, bid=mid - 0.2, ask=mid + 0.2, open_interest=1500)],
+        rows=[row],
     )
     repository.finish_run(run_id, "succeeded")
+    return snapshot
 
 
 def _row(mid: float, *, bid: float, ask: float, open_interest: int) -> dict[str, object]:

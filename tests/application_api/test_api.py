@@ -50,10 +50,17 @@ def _use_postgres_api(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
 
 
 def _seed_phase7_paper_provenance(connection: Any, candidate_id: int, instrument_id: int, sample: int = 30) -> tuple[list[str], list[str]]:
+    # Retained paper observations follow the candidate's creation and precede
+    # the evaluation cutoff. Each episode has one complete execution journal.
+    connection.execute(
+        "UPDATE analysis.strategy_revision SET created_at = least(created_at, now() - interval '4 hours') WHERE id = %s",
+        [candidate_id],
+    )
     run_id = connection.execute(
         "INSERT INTO analysis.run "
         "(run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status, strategy_revision_id) "
-        "VALUES ('phase7-evidence', now(), 'test', %s, now(), now(), 'succeeded', %s) RETURNING id",
+        "VALUES ('phase7-evidence', now() - interval '3 hours', 'test', %s, now() - interval '3 hours', "
+        "now() - interval '2 hours 1 minute', 'succeeded', %s) RETURNING id",
         ["0" * 64, candidate_id],
     ).fetchone()["id"]
     paper_order_ids: list[str] = []
@@ -61,21 +68,34 @@ def _seed_phase7_paper_provenance(connection: Any, candidate_id: int, instrument
     for index in range(sample):
         decision_id = connection.execute(
             "INSERT INTO analysis.decision "
-            "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) "
-            "VALUES (%s, %s, %s, 'option', 'resolved', now(), %s, %s) RETURNING id",
-            [run_id, instrument_id, f"phase7-api-{uuid4().hex}-{index}", "1" * 64, candidate_id],
+            "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id, lane, episode_key) "
+            "VALUES (%s, %s, %s, 'option', 'resolved', now() - interval '2 hours', %s, %s, 'radar', %s) RETURNING id",
+            [run_id, instrument_id, f"phase7-api-{uuid4().hex}-{index}", "1" * 64, candidate_id, f"phase7-api-episode-{uuid4().hex}"],
         ).fetchone()["id"]
         paper_order_id = connection.execute(
             "INSERT INTO app.paper_order "
-            "(decision_id, instrument_id, side, quantity, limit_price, status, paper_only, "
+            "(decision_id, instrument_id, created_at, updated_at, side, quantity, limit_price, status, paper_only, "
             "filled_at, actual_fill_price, exit_at, exit_price, filled_quantity, exited_quantity, "
-            "fees, entry_slippage, exit_slippage, lane) "
-            "VALUES (%s, %s, 'buy', 1, 100, 'exited', TRUE, now(), 100, now(), 110, 1, 1, 0.5, 0.1, 0.1, 'ticker') "
+            "fees, entry_fees, exit_fees, entry_slippage, exit_slippage, lane, structure, contract_multiplier) "
+            "VALUES (%s, %s, now() - interval '90 minutes', now() - interval '30 minutes', 'buy', 1, 100, 'exited', TRUE, "
+            "now() - interval '1 hour', 100, now() - interval '30 minutes', 110, 1, 1, 0.5, 0.25, 0.25, 0.1, 0.1, 'radar', 'long_call', 100) "
             "RETURNING id",
             [decision_id, instrument_id],
         ).fetchone()["id"]
         paper_order_ids.append(str(paper_order_id))
         decision_ids.append(str(decision_id))
+        connection.cursor().executemany(
+            "INSERT INTO app.trade_journal (decision_id, instrument_id, action, quantity, price, rationale, details, created_at) "
+            "VALUES (%s, %s, %s, 1, %s, 'deterministic_options_paper_execution', %s, now() - make_interval(mins => %s))",
+            [(decision_id, instrument_id, action, price, Jsonb({
+                "paper_order_id": str(paper_order_id), "fees": .25, "slippage": .1,
+                "idempotency_key": f"phase7-api:{paper_order_id}:{action}",
+                **({"contract_multiplier": 100} if action == "paper_entry" else {
+                    "entry_contract_multiplier": 100, "exit_contract_multiplier": 100,
+                    "net_pnl": 999.5, "net_pnl_basis": "journal_entry_vwap_and_paid_fees",
+                }),
+            }), minutes) for action, price, minutes in (("paper_entry", 100, 60), ("paper_exit:take_profit", 110, 30))],
+        )
     return paper_order_ids, decision_ids
 
 

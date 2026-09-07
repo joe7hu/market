@@ -23,7 +23,7 @@ from conftest import typed_config
 
 
 def _confirm_price_facts(connection: psycopg.Connection, run_id: object) -> None:
-    connection.execute("UPDATE ingest.run SET finished_at = now() WHERE id = %s", [run_id])
+    connection.execute("UPDATE ingest.run SET finished_at = clock_timestamp() WHERE id = %s", [run_id])
     connection.execute(
         """
         INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id)

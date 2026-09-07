@@ -490,3 +490,32 @@ failed architecture node and affected regression pass (2 tests, 2.01 seconds).
 Only this test and the repair record changed; production source and migrations
 remain identical to the independently accepted candidate. The remaining release
 gate has not completed and production is unchanged.
+
+The bounded independent follow-up accepted `ae5eeabf58d2719c5869cee00d026a6457a6c390`
+against v10's accepted source. The next full release gate completed with 1,803
+backend passes, 26 failures and 82.00% coverage in 793.15 seconds. Contracts,
+26 guards, Ruff, 111 frontend tests, typecheck and build passed. The failures
+were obsolete test fixtures; no application changes were needed:
+
+- Promotion API evidence now has independent episodes, ordered clocks and
+  complete entry/exit journals with fees and multipliers; both API tests pass.
+- The recovery staging double explicitly supports the shared exit-row read;
+  the journal assertion remains and its test passes.
+- Stock lane fixtures use the current 20-session tactical target and complete
+  lineage; positive qualification and late-OOS rejection pass (three tests).
+- The generic outcome test uses the legacy generic producer it is intended to
+  test, with actual post-capture availability; portfolio fixtures complete
+  ingestion after writing facts. All three outcome/price tests pass.
+- Baseline/adoption tests create the explicit baseline from a raw database,
+  then compare adoption with the current migrated schema. Drift/permission
+  refusal, rollback and secret preservation remain checked (22 tests pass).
+
+All six changed test files pass Ruff and diff checks. The exact application and
+migration source remains that accepted in review v10. These corrected fixtures
+need independent follow-up and a complete passing release gate before release.
+Fresh production backup was completed and its TOC/checksum verified at
+2026-09-07T08:52:51Z:
+`/Volumes/agent/data-sources/market-mini/postgres-backups/market-before-assistant-release-ae5eeab-20260907.dump`,
+SHA256 `ebe48bcc14835f50cf5f40cc82e533f87a031cb0c1d5277e8276719edff638f3`.
+The original backup and all failed-gate logs remain preserved. Production is
+unchanged; no cash, outcome, qualification or trading session was invented.

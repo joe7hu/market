@@ -9,6 +9,7 @@ import pytest
 from psycopg.errors import RaiseException
 from psycopg.types.json import Jsonb
 
+from investment_panel.analysis.stock_alpha import COST_MODEL_VERSION, FEATURE_VERSION, MODEL_VERSION, TARGET_HORIZON_SESSIONS, TARGET_VERSION
 from investment_panel.core.decision import (
     AvailabilityStatus,
     CoverageMatrix,
@@ -52,17 +53,19 @@ def _qualified_artifact(
 ) -> tuple[int, dict[str, object]]:
     repository = AnalysisRepository(runtime)
     parameters = {
-        "artifact_id": "ticker-stock-alpha:v1",
-        "model_version": "ticker-stock-alpha.v1",
-        "feature_version": "daily-trend-v1",
+        "artifact_id": f"ticker-stock-alpha:{'a' * 64}",
+        "model_version": MODEL_VERSION,
+        "feature_version": FEATURE_VERSION,
         "artifact_hash": "a" * 64,
         "input_hash": "b" * 64,
-        "cost_model_version": "stock-cost-slippage.v1",
-        "target": "expected_return",
+        "cost_model_version": COST_MODEL_VERSION,
+        "target_version": TARGET_VERSION,
+        "horizon_sessions": TARGET_HORIZON_SESSIONS,
+        "target": "positive_return_after_costs",
         "cohort_id": "stock-oos-exact-v1",
         "calibration_state": "calibrated_exact_cohort",
         "expression_kind": "STOCK",
-        "horizons": ["TACTICAL", "FUNDAMENTAL"],
+        "horizons": ["TACTICAL"],
     }
     revision_id = repository.register_strategy(
         "ticker-stock-alpha",
@@ -77,18 +80,21 @@ def _qualified_artifact(
         "cohort_id": parameters["cohort_id"],
         "feature_version": parameters["feature_version"],
         "cost_model_version": parameters["cost_model_version"],
+        "target_version": parameters["target_version"],
+        "horizon_sessions": parameters["horizon_sessions"],
+        "target": parameters["target"],
         "artifact_hash": "a" * 64,
         "input_hash": "b" * 64,
         "cohort_path": ["cohort:stock-oos-exact-v1"],
         "fallback_parent": "horizon:TACTICAL",
         "effective_sample_size": 40,
+        "oos_sample_size": 40,
         "calibration_metrics": {"brier_score": 0.2, "calibration_error": 0.1},
         "lower_confidence_net_utility_after_costs": 0.02,
         "valid_through": (cutoff + timedelta(days=30)).isoformat(),
-        "forecast": {"horizon": "TACTICAL", "forecast_value": 0.10, "forecast_distribution": {"positive": 0.10, "negative": 0.90}, "probability_semantics": "P(positive)"},
+        "forecast": {"horizon": "TACTICAL", "forecast_value": 0.70, "forecast_distribution": {"positive_return_after_costs": 0.70, "non_positive_return_after_costs": 0.30}, "probability_semantics": "P(positive_return_after_costs)"},
         "forecasts": [
-            {"horizon": "TACTICAL", "forecast_value": 0.10, "forecast_distribution": {"positive": 0.10, "negative": 0.90}, "probability_semantics": "P(positive)"},
-            {"horizon": "FUNDAMENTAL", "forecast_value": 0.11, "forecast_distribution": {"positive": 0.11, "negative": 0.89}, "probability_semantics": "P(positive)"},
+            {"horizon": "TACTICAL", "forecast_value": 0.70, "forecast_distribution": {"positive_return_after_costs": 0.70, "non_positive_return_after_costs": 0.30}, "probability_semantics": "P(positive_return_after_costs)"},
         ],
     }
     metrics.update(metrics_update or {})
@@ -120,7 +126,7 @@ def _qualified_artifact(
         for forecast_item in metrics["forecasts"]:
             forecast = build_strategy_forecast(
                 ticker="LANE", opportunity_episode_id=opportunity_episode_id("LANE"), strategy_revision_id=revision_id,
-                strategy_evaluation_id=evaluation_id, target="expected_return",
+                strategy_evaluation_id=evaluation_id, target=parameters["target"],
                 horizon=forecast_item["horizon"], forecast_value=forecast_item["forecast_value"],
                 forecast_distribution=forecast_item["forecast_distribution"],
                 probability_semantics=forecast_item["probability_semantics"],
@@ -255,11 +261,15 @@ def _tables(symbol: str, cutoff: datetime) -> dict[str, list[dict[str, object]]]
         "decision_queue": [{
             **common,
             "stance": "BULLISH",
+            "tactical_stance": "BULLISH",
+            "fundamental_stance": "NEUTRAL",
             "action": "BUY",
             "entry_low": 99.0,
             "entry_high": 101.0,
             "target_low": 120.0,
             "target_high": 125.0,
+            "expected_return_low": 0.20,
+            "expected_return_high": 0.25,
             "invalidation_price": 90.0,
             "conviction_tier": "STANDARD",
             "scenarios": {
@@ -418,6 +428,7 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
             decision.portfolio_impacts[ExpressionKind.STOCK].blockers,
         )
         assert decision.market_state_publication_id == market_publication_id
+        assert decision.selected_expression.horizon is Horizon.TACTICAL
         assert decision.trade_plan is not None
         assert decision.trade_plan.eligibility == "ACTIONABLE"
         assert decision.trade_plan.authorization_mode in {"ADVISORY", "PAPER"}
@@ -557,7 +568,7 @@ def test_late_backdated_oos_evaluation_cannot_authorize_historical_decision(
     runtime.open()
     try:
         qualification_cutoff = datetime.now(UTC) + timedelta(seconds=5)
-        revision_id, original = _qualified_artifact(runtime, qualification_cutoff)
+        _revision_id, original = _qualified_artifact(runtime, qualification_cutoff)
         failed_evaluated_at = datetime.now(UTC) - timedelta(seconds=2)
         with runtime.transaction() as connection:
             failed = connection.execute(
@@ -581,22 +592,16 @@ def test_late_backdated_oos_evaluation_cannot_authorize_historical_decision(
                 INSERT INTO analysis.strategy_evaluation (
                     strategy_revision_id, evaluation_type, evaluated_at, available_at,
                     period_start, period_end, verdict, metrics, evidence
-                ) VALUES (%s, 'out_of_sample', %s, %s, %s, %s, 'pass', %s, '[]'::jsonb)
+                )
+                SELECT strategy_revision_id, 'out_of_sample', %s, %s,
+                       period_start, period_end, 'pass', metrics, evidence
+                FROM analysis.strategy_evaluation WHERE id = %s::uuid
                 RETURNING id::text, available_at
                 """,
                 [
-                    revision_id,
                     decision_cutoff - timedelta(seconds=1),
                     decision_cutoff - timedelta(seconds=1),
-                    decision_cutoff - timedelta(days=30),
-                    decision_cutoff - timedelta(seconds=1),
-                    Jsonb({
-                        "artifact_id": "ticker-stock-alpha:v1",
-                        "model_version": "ticker-stock-alpha.v1",
-                        "cohort_id": "stock-oos-exact-v1",
-                        "exact_cohort": True,
-                        "valid_through": (decision_cutoff + timedelta(days=30)).isoformat(),
-                    }),
+                    original["strategy_evaluation_id"],
                 ],
             ).fetchone()
         assert late["available_at"] > decision_cutoff
@@ -929,20 +934,20 @@ def _rank_candidate(cutoff: datetime, *, gross: float = 100.0, costs: float = 10
         instrument_state_snapshot_id="instrument:lane",
         as_of=cutoff,
         input_lineage=(lineage,),
-        target="expected_return",
+        target="positive_return_after_costs",
         horizon="TACTICAL",
         direction="BULLISH",
-        forecast_value=0.10,
+        forecast_value=0.70,
         cohort_id="stock-oos-exact-v1",
         calibration_state="calibrated_exact_cohort",
-        model_version="ticker-stock-alpha.v1",
-        feature_version="stock-features.v1",
+        model_version=MODEL_VERSION,
+        feature_version=FEATURE_VERSION,
         evaluation_stage="out_of_sample",
         availability_status=AvailabilityStatus.AVAILABLE,
         strategy_key="ticker-stock-alpha",
         strategy_revision_id=1,
         strategy_forecast_id="forecast:phase0-fixture",
-        model_artifact_id="ticker-stock-alpha:v1",
+        model_artifact_id=f"ticker-stock-alpha:{'a' * 64}",
         strategy_evaluation_id="evaluation:lane",
         artifact_published_at=cutoff - timedelta(minutes=2),
         evaluation_evaluated_at=cutoff - timedelta(minutes=1),
@@ -954,7 +959,7 @@ def _rank_candidate(cutoff: datetime, *, gross: float = 100.0, costs: float = 10
         effective_sample_size=40,
         calibration_metrics={"brier_score": 0.2, "calibration_error": 0.1},
         research_score=0.5,
-        cost_model_version="stock-cost-slippage.v1",
+        cost_model_version=COST_MODEL_VERSION,
         promotion_stage="advisory",
         lower_confidence_net_utility_after_costs=0.02,
     )
