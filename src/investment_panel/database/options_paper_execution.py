@@ -238,7 +238,7 @@ class OptionsPaperExecutionRepository:
                 SELECT paper.id::text, paper.decision_id::text, paper.instrument_id,
                        paper.lane, paper.status, paper.quantity, paper.limit_price,
                        paper.actual_fill_price, paper.filled_at, paper.submitted_at,
-                       paper.filled_quantity, paper.exited_quantity, paper.fees,
+                       paper.filled_quantity, paper.exited_quantity, paper.fees, paper.entry_fees,
                        paper.fill_evidence_at, paper.execution_quote, paper.contract_multiplier,
                        paper.ticket_version, paper.ticket_snapshot, paper.structure, paper.policy_result,
                        paper.created_at, instrument.symbol
@@ -407,22 +407,33 @@ class OptionsPaperExecutionRepository:
                 if multiplier is None or multiplier <= 0:
                     return {"paper_order_id": str(order["id"]), "status": "filled", "reason": "assignment_multiplier_missing"}
                 assignment_fee = _fees(len(legs), remaining)
-                policy = dict(order.get("policy_result") or {})
-                policy["assignment"] = {
+                accounting = _exit_accounting(
+                    connection, order, now=now, credit=True, exit_price=strike - underlying_price,
+                    quantity=remaining, multiplier=multiplier, exit_fees=assignment_fee,
+                )
+                assignment = {
                     "status": "assigned", "strike": strike, "underlying_price": underlying_price,
                     "multiplier": multiplier, "contract_count": remaining,
                     "settlement_value": (strike - underlying_price) * multiplier * remaining,
-                    "settled_at": now, "assignment_fee": assignment_fee,
+                    "settled_at": now.isoformat(), "assignment_fee": assignment_fee,
+                    **accounting,
                 }
                 connection.execute(
                     """UPDATE app.paper_order
                        SET status = 'exited', exited_quantity = %s, exit_price = %s, exit_at = %s,
                            contract_multiplier = %s, fees = coalesce(fees, 0) + %s,
-                           exit_fees = coalesce(exit_fees, 0) + %s, policy_result = %s,
+                           exit_fees = coalesce(exit_fees, 0) + %s,
+                           execution_quote = coalesce(execution_quote, '{}'::jsonb) || %s,
                            unfilled_reason = 'assigned_at_expiration', updated_at = %s
                        WHERE id = %s::uuid""",
                     [exited_quantity + remaining, max(strike - underlying_price, 0.0), now,
-                     multiplier, assignment_fee, assignment_fee, Jsonb(policy), now, order["id"]],
+                     multiplier, assignment_fee, assignment_fee, Jsonb({"assignment": assignment}), now, order["id"]],
+                )
+                _journal(
+                    connection, order, action="paper_exit:assignment", quantity=remaining,
+                    price=max(strike - underlying_price, 0.0), key=f"generic:{order['id']}:exit:{now.isoformat()}:assignment",
+                    details={"lane": order["lane"], "paper_order_id": str(order["id"]), "fees": assignment_fee,
+                             **accounting, "assignment": assignment},
                 )
                 self._record_phase4_fill(connection, paper_order_id=str(order["id"]), observed_at=now, status="exited")
                 return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
@@ -476,10 +487,9 @@ class OptionsPaperExecutionRepository:
         status = "exited" if terminal else "partial_exited"
         fees = _fees(len(quoted), exit_quantity)
         slippage = _exit_slippage(quoted, exit_price, credit)
-        entry_price = _number(order.get("actual_fill_price")) or 0.0
-        net_pnl = _net_pnl(
-            credit=credit, entry_price=entry_price, exit_price=exit_price,
-            quantity=exit_quantity, leg_count=len(quoted),
+        accounting = _exit_accounting(
+            connection, order, now=now, credit=credit, exit_price=exit_price,
+            quantity=exit_quantity, multiplier=_number(quoted[0].get("multiplier")), exit_fees=fees,
         )
         connection.execute(
             """
@@ -496,7 +506,7 @@ class OptionsPaperExecutionRepository:
             price=exit_price, key=f"generic:{order['id']}:exit:{now.isoformat()}:{reason}",
             details={
                 "lane": order["lane"], "paper_order_id": str(order["id"]),
-                "net_pnl": round(net_pnl, 2), "slippage": slippage, "fees": fees,
+                **accounting, "slippage": slippage, "fees": fees,
                 **_experiment_quote_evidence(ticket, quoted),
             },
         )
@@ -508,7 +518,7 @@ class OptionsPaperExecutionRepository:
             "status": "closed" if terminal else "filled",
             "event_status": status if terminal else None,
             "reason": reason, "exit_quantity": exit_quantity,
-            "exit_price": exit_price, "net_pnl": round(net_pnl, 2),
+            "exit_price": exit_price, "net_pnl": accounting["net_pnl"],
         }
 
     def _record_phase4_fill(
@@ -624,6 +634,61 @@ class OptionsPaperExecutionRepository:
         return {"paper_order_id": str(order["id"]), "status": "closed" if status in {"exited", "invalidated"} else status, "reason": reason, "event_status": status if status in {"exited", "invalidated"} else None}
 
 
+def _paper_fill_totals(connection: Any, order: dict[str, Any], *, as_of: datetime) -> dict[str, Any] | None:
+    """Read only this order's journal cash flows, including prior partial exits."""
+    return connection.execute(
+        """SELECT coalesce(sum(quantity) FILTER (WHERE action = 'paper_entry'), 0) AS entry_quantity,
+                  coalesce(sum(quantity) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_quantity,
+                  coalesce(sum(quantity * price) FILTER (WHERE action = 'paper_entry'), 0) AS entry_units,
+                  coalesce(sum(quantity * price) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_units,
+                  coalesce(sum((details->>'fees')::numeric)
+                      FILTER (WHERE details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS actual_fees,
+                  coalesce(sum((details->>'fees')::numeric)
+                      FILTER (WHERE action = 'paper_entry' AND details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS entry_fees,
+                  count(*) FILTER (WHERE NOT coalesce(details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)) AS missing_fees,
+                  count(*) FILTER (WHERE NOT coalesce(
+                      quantity > 0 AND quantity < 'Infinity'::numeric
+                      AND price >= 0 AND price < 'Infinity'::numeric
+                      AND (action <> 'paper_entry' OR price > 0), false)) AS invalid_fills,
+                  array_agg(id::text ORDER BY created_at, id) AS journal_ids,
+                  array_agg(id::text ORDER BY created_at, id) FILTER (WHERE action = 'paper_entry') AS entry_journal_ids
+           FROM app.trade_journal
+           WHERE details->>'paper_order_id' = %s AND decision_id = %s::uuid
+             AND (action IN ('paper_entry', 'paper_exit') OR action LIKE 'paper_exit:%%')
+             AND created_at <= %s AND rationale = 'deterministic_options_paper_execution'""",
+        [str(order["id"]), order.get("decision_id"), as_of],
+    ).fetchone()
+
+
+def _exit_accounting(
+    connection: Any, order: dict[str, Any], *, now: datetime, credit: bool,
+    exit_price: float, quantity: float, multiplier: float | None, exit_fees: float,
+) -> dict[str, Any]:
+    """Allocate actual entry cost to this exit; never substitute the first fill."""
+    result = {"net_pnl": None, "allocated_entry_fees": None, "entry_journal_ids": [],
+              "net_pnl_basis": "paper_fill_or_fee_journal_incomplete"}
+    fills = _paper_fill_totals(connection, order, as_of=now)
+    if not fills or fills["missing_fees"] or fills["invalid_fills"]:
+        return result
+    values = {key: _number(fills[key]) for key in ("entry_quantity", "exit_quantity", "entry_units", "entry_fees", "actual_fees")}
+    filled, exited = _number(order.get("filled_quantity")), _number(order.get("exited_quantity"))
+    paid_entry_fees, paid_fees = _number(order.get("entry_fees")), _number(order.get("fees"))
+    numbers = [*values.values(), filled, exited, paid_entry_fees, paid_fees, multiplier, exit_price, quantity, exit_fees]
+    if any(value is None or not isfinite(value) for value in numbers):
+        return result
+    if (filled <= 0 or values["entry_quantity"] != filled or values["exit_quantity"] != exited
+        or values["entry_units"] <= 0 or not 0 < quantity <= filled - exited
+        or multiplier <= 0 or multiplier != _number(order.get("contract_multiplier")) or exit_price < 0 or exit_fees < 0
+        or abs(values["entry_fees"] - paid_entry_fees) > 1e-6 or abs(values["actual_fees"] - paid_fees) > 1e-6):
+        return result
+    allocated_entry_fees = values["entry_fees"] * quantity / filled
+    entry_vwap = values["entry_units"] / filled
+    gross = (entry_vwap - exit_price if credit else exit_price - entry_vwap) * multiplier * quantity
+    return {"net_pnl": round(gross - allocated_entry_fees - exit_fees, 2),
+            "allocated_entry_fees": allocated_entry_fees, "entry_journal_ids": fills["entry_journal_ids"],
+            "net_pnl_basis": "journal_entry_vwap_and_paid_fees"}
+
+
 def _record_liquidation_mark(
     connection: Any, order: dict[str, Any], quotes: list[dict[str, Any]], *,
     now: datetime, execution_blockers: list[str],
@@ -663,23 +728,7 @@ def _record_liquidation_mark(
     elif _available_quantity(quotes, phase="exit", requested=remaining) < remaining:
         reason = "full_remaining_liquidation_size_unavailable"
     else:
-        fills = connection.execute(
-            """SELECT coalesce(sum(quantity) FILTER (WHERE action = 'paper_entry'), 0) AS entry_quantity,
-                      coalesce(sum(quantity) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_quantity,
-                      coalesce(sum(quantity * price) FILTER (WHERE action = 'paper_entry'), 0) AS entry_units,
-                      coalesce(sum(quantity * price) FILTER (WHERE action <> 'paper_entry'), 0) AS exit_units,
-                      coalesce(sum((details->>'fees')::numeric)
-                          FILTER (WHERE details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS actual_fees,
-                      count(*) FILTER (WHERE NOT coalesce(details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)) AS missing_fees,
-                      array_agg(id::text ORDER BY created_at, id) AS journal_ids,
-                      array_agg(id::text ORDER BY created_at, id) FILTER (WHERE action = 'paper_entry') AS entry_journal_ids
-               FROM app.trade_journal
-               WHERE details->>'paper_order_id' = %s AND decision_id = %s::uuid
-                 AND (action IN ('paper_entry', 'paper_exit') OR action LIKE 'paper_exit:%%')
-                 AND quantity > 0 AND price IS NOT NULL AND created_at <= %s
-                 AND rationale = 'deterministic_options_paper_execution'""",
-            [str(order["id"]), order.get("decision_id"), measured_at],
-        ).fetchone()
+        fills = _paper_fill_totals(connection, order, as_of=measured_at)
         if fills is None:
             reason = "paper_fill_journal_missing"
         else:
@@ -697,7 +746,7 @@ def _record_liquidation_mark(
                 mark = {"status": "unknown", "checked_at": measured_at.isoformat(),
                         "current_net_return": None, "max_drawdown": None, "coverage": "observed_executable_quotes_only"}
             if (float(fills["entry_quantity"]) != filled or float(fills["exit_quantity"]) != exited
-                or fills["missing_fees"] or entry_cash <= 0 or price is None
+                or fills["missing_fees"] or fills["invalid_fills"] or entry_cash <= 0 or price is None
                 or any(not isfinite(value) for value in (entry_cash, exit_cash, actual_fees))
                 or abs(actual_fees - float(order.get("fees") or 0)) > 1e-6):
                 reason = "paper_fill_or_fee_journal_incomplete"
@@ -855,11 +904,6 @@ def _midpoint_package(legs: list[dict[str, Any]]) -> float | None:
     return abs(signed)
 
 
-def _net_pnl(*, credit: bool, entry_price: float, exit_price: float, quantity: float, leg_count: int) -> float:
-    gross = (entry_price - exit_price) if credit else (exit_price - entry_price)
-    return gross * 100 * quantity - _fees(leg_count, quantity) * 2
-
-
 def _utc(value: datetime | None) -> datetime:
     current = value or datetime.now(UTC)
     return current.astimezone(UTC) if current.tzinfo is not None else current.replace(tzinfo=UTC)
@@ -915,4 +959,3 @@ def _uuid(value: str):
 
 
 available_quantity = _available_quantity
-net_pnl = _net_pnl

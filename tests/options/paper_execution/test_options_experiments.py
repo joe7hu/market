@@ -8,12 +8,14 @@ from psycopg.types.json import Jsonb
 
 from conftest import typed_config
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket
+from investment_panel.core.risk_policy import PortfolioAssignmentPolicy, RiskPolicySnapshot
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.analysis import AnalysisRepository, current_option_publication_answers
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_analysis import DEFAULT_PARAMETERS, FEATURE_VERSION, refresh_options_radar
 from investment_panel.database.options_calibration import calibration_profiles
 from investment_panel.database.options_paper_execution import PAPER_MARK_KEY, OptionsPaperExecutionRepository
+from investment_panel.database.options_paper_ledger import shared_sleeve_blockers
 from investment_panel.database.options_experiments import (
     EXPERIMENT_VERSION, advance_experiment_shadows, experiment_candidate, experiment_publication_row,
     experiment_identity,
@@ -549,6 +551,201 @@ def test_application_login_stages_and_manages_candidate_paper(experiment_context
             assert paper["ticket_snapshot"]["experiment"] == ready.ticket["experiment"]
             journal = connection.execute("SELECT action, quantity FROM app.trade_journal WHERE decision_id = %s ORDER BY created_at", [ready.decision_id]).fetchall()
             assert [(row["action"], row["quantity"]) for row in journal] == [("paper_entry", 1), (f"paper_exit:{exited['reason']}", 1)]
+    finally:
+        application.close()
+
+
+@pytest.mark.parametrize("future_entry_journal", [False, True])
+def test_application_login_exits_use_all_partial_entry_prices_and_paid_fees(experiment_context, application_postgres_dsn, monkeypatch, future_entry_journal):
+    owner, ingestion, now, _parent, _candidate = experiment_context
+    application = DatabaseRuntime(application_postgres_dsn)
+    application.open()
+    try:
+        ready = _ready_paper_publication(experiment_context, monkeypatch, sleeve_capital=50000)
+        staged = ActionRepository(application).stage_option_paper_entry(
+            decision_id=ready.decision_id, idempotency_key="different-entry-prices", ticket_version=1,
+            quantity=2, limit_price=.5, current_options_risk_sleeve_capital=50000,
+            experiment_publication_id=ready.publication_id,
+        )
+        execution = OptionsPaperExecutionRepository(application)
+        for seconds, bid, ask in [(10, .48, .5), (20, .38, .4)]:
+            _capture(owner, ingestion, now + timedelta(seconds=seconds), bid=bid, ask=ask, ask_size=1)
+            filled = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=seconds + 1))
+            assert filled["status"] == "filled" and filled["fill_price"] == ask
+        if future_entry_journal:
+            with owner.transaction() as connection:
+                connection.execute(
+                    "UPDATE app.trade_journal SET created_at = %s WHERE details->>'paper_order_id' = %s AND action = 'paper_entry' AND price = .4",
+                    [now + timedelta(days=1), staged["paper_order_id"]],
+                )
+        for seconds, bid, ask, expected_status, expected_pnl in [(30, .2, .22, "filled", -26.3), (40, .1, .11, "closed", -36.3)]:
+            _capture(owner, ingestion, now + timedelta(seconds=seconds), bid=bid, ask=ask, bid_size=1)
+            exited = execution._manage_one(staged["paper_order_id"], now + timedelta(seconds=seconds + 1))
+            assert exited["status"] == expected_status and exited["exit_quantity"] == 1
+            assert exited["net_pnl"] is None if future_entry_journal else exited["net_pnl"] == pytest.approx(expected_pnl)
+        with application.read() as connection:
+            paper = connection.execute("SELECT * FROM app.paper_order WHERE id = %s", [staged["paper_order_id"]]).fetchone()
+            assert paper["actual_fill_price"] == .5  # This snapshot is the first fill, not the cash basis.
+            assert paper["filled_quantity"] == paper["exited_quantity"] == 2
+            assert float(paper["entry_fees"]) == float(paper["exit_fees"]) == pytest.approx(1.3)
+            journal = connection.execute(
+                "SELECT action, quantity, price, details FROM app.trade_journal WHERE details->>'paper_order_id' = %s ORDER BY created_at, id",
+                [staged["paper_order_id"]],
+            ).fetchall()
+            assert [float(row["price"]) for row in journal if row["action"] == "paper_entry"] == [.5, .4]
+            assert [float(row["price"]) for row in journal if row["action"].startswith("paper_exit:")] == [.2, .1]
+            assert all(row["quantity"] == 1 for row in journal)
+            exits = [row["details"] for row in journal if row["action"].startswith("paper_exit:")]
+            if future_entry_journal:
+                assert all(row["net_pnl"] is None and row["allocated_entry_fees"] is None for row in exits)
+                assert all(row["net_pnl_basis"] == "paper_fill_or_fee_journal_incomplete" for row in exits)
+            else:
+                assert sum(row["net_pnl"] for row in exits) == pytest.approx(-62.6)
+                assert all(row["allocated_entry_fees"] == .65 and len(row["entry_journal_ids"]) == 2 for row in exits)
+                assert all(row["net_pnl_basis"] == "journal_entry_vwap_and_paid_fees" for row in exits)
+                assert "shared_daily_loss_halt" in shared_sleeve_blockers(
+                    connection, now=now + timedelta(seconds=41), lane="radar", sleeve_capital=3000,
+                    daily_loss_halt_pct=.02, max_open_positions=None,
+                )
+    finally:
+        application.close()
+
+
+@pytest.mark.parametrize("previously_exited,entry_journal_complete", [(0, True), (1, True), (0, False)])
+def test_application_login_settles_preauthorized_csp_without_changing_policy(experiment_context, application_postgres_dsn, monkeypatch, previously_exited, entry_journal_complete):
+    owner, ingestion, now, parent, _candidate = experiment_context
+    application = DatabaseRuntime(application_postgres_dsn)
+    application.open()
+    try:
+        # This separate holding must still be managed after the assigned order.
+        ready = _ready_paper_publication(experiment_context, monkeypatch, experimental=False)
+        other = ActionRepository(application).stage_option_paper_entry(
+            decision_id=ready.decision_id, idempotency_key="after-assignment", ticket_version=1,
+            quantity=1, limit_price=.5, current_options_risk_sleeve_capital=25000,
+        )
+        execution = OptionsPaperExecutionRepository(application)
+        _capture(owner, ingestion, now + timedelta(seconds=10))
+        assert execution._manage_one(other["paper_order_id"], now + timedelta(seconds=11))["status"] == "filled"
+        entry_at = now - timedelta(days=2)
+        historical = _capture(owner, ingestion, entry_at, bid=.5, ask=.52, contracts=(
+            {"strike": 10, "option_type": "put", "expiration": now.date().isoformat(), "underlying_price": 12},
+        ))
+        with owner.read() as connection:
+            contract_id = connection.execute(
+                "SELECT contract_id FROM raw.option_quote WHERE snapshot_id = %s", [historical["snapshot_id"]],
+            ).fetchone()["contract_id"]
+        analysis = AnalysisRepository(owner)
+        run_id = analysis.start_run("options-radar", input_cutoff=entry_at, code_version="preauthorized-csp-fixture", strategy_revision_id=parent, inputs={})
+        decision_id = analysis.store_option_decision(
+            run_id, decision_key="preauthorized-csp", instrument_id=ready.quote["instrument_id"], contract_id=contract_id,
+            snapshot_id=historical["snapshot_id"], quote_observed_at=entry_at,
+            state="READY", score=90, rank=1, strategy_revision_id=parent, lane="radar", inputs={},
+            details={"structure": "cash_secured_put", "entry_price": .5, "quality_status": "complete"},
+        )
+        risk = RiskPolicySnapshot(policy_version="risk-policy.v2:preauthorized-csp-fixture", sleeve_capital=100000, broker_available_capital=100000,
+                                  cash_balance=100000, buying_power=100000, account_observed_at=entry_at)
+        assignment_policy = PortfolioAssignmentPolicy(
+            paper_assignment_allowed=True, risk_policy_version=risk.policy_version, thesis_direction="bullish",
+            thesis_as_of=entry_at, thesis_preferred_structures=("cash_secured_put",), account_as_of=entry_at,
+            account_source="postgresql", cash_balance=100000, buying_power=100000,
+            required_cash=1000, symbol_limit=5000, aggregate_limit=15000, evaluated_at=entry_at,
+        )
+        ticket = build_option_trade_ticket(
+            decision_id=str(decision_id), symbol="NVDA", structure="cash_secured_put", expiration=now.date(),
+            legs=[{"contract_id": contract_id, "option_type": "put", "side": "sell", "strike": 10,
+                   "bid": .5, "ask": .52, "bid_size": 10, "ask_size": 10, "open_interest": 1000, "quote_time": entry_at}],
+            entry_price=.5, one_unit_max_loss=None, secured_cash=1000, state="READY", evaluated_at=entry_at,
+            market_session="regular", sleeve_capital=100000, risk_policy_snapshot=risk,
+            assignment_policy=assignment_policy, lane="radar",
+            thesis={"direction": "bullish", "invalidation": "Preauthorized paper assignment fixture"},
+            forecast={"probability_semantics": "calibrated_exact_cohort", "probability_profit": .7,
+                      "effective_sample_size": 42, "lower_95_expected_value": 10},
+        )
+        assert ticket["state"] == "READY", ticket["blockers"]
+        assert ticket["assignment_policy"]["eligible"] is True
+        assert ticket["risk"]["recommended_quantity"] >= 2
+        publication_id = analysis.publish(run_id, "options-radar", {"option_radar_opportunity": [{"decision_id": str(decision_id), "ticket": ticket}]}, complete_run_summary={})
+        ticket["publication_lineage"] = {"publication_id": str(publication_id), "publication_scope": "options-radar"}
+        policy = {"live_order_submission": False, "assignment_policy": ticket["assignment_policy"], "ticket_version": 1}
+        prior_quotes = {"mid": .51, "spread": .02, "entry_quote_identity": "preauthorized-paper-fill",
+                        PAPER_MARK_KEY: {"status": "unknown", "reason": "credit_or_assignment_return_basis_unavailable"}}
+        with owner.transaction() as connection:
+            paper_id = connection.execute(
+                "INSERT INTO app.paper_order (decision_id, instrument_id, created_at, side, quantity, limit_price, status, "
+                "policy_result, policy_snapshot, ticket_version, ticket_snapshot, lane, structure, reserved_collateral, "
+                "actual_fill_price, filled_at, filled_quantity, exited_quantity, fees, entry_fees, exit_fees, contract_multiplier, execution_quote) "
+                "VALUES (%s, %s, %s, 'sell', 2, .5, %s, %s, %s, 1, %s, 'radar', 'cash_secured_put', 2000, .5, %s, 2, %s, %s, 1.3, %s, 100, %s) RETURNING id",
+                [decision_id, ready.quote["instrument_id"], entry_at, "partial_exited" if previously_exited else "entered",
+                 Jsonb(policy), Jsonb(policy), Jsonb(ticket), entry_at, previously_exited, 1.3 + .65 * previously_exited,
+                 .65 * previously_exited, Jsonb(prior_quotes)],
+            ).fetchone()["id"]
+            leg = ticket["legs"][0]
+            connection.execute(
+                "INSERT INTO app.paper_order_leg (paper_order_id, leg_index, contract_id, option_type, side, strike, bid, ask, bid_size, ask_size, quote_time, open_interest, volume) "
+                "VALUES (%s, 0, %s, 'put', 'sell', 10, .5, .52, 10, 10, %s, 1000, %s)",
+                [paper_id, contract_id, leg["quote_time"], leg.get("volume")],
+            )
+            entry_journal_ids = []
+            if entry_journal_complete:
+                entry_journal_ids.append(str(connection.execute(
+                    "INSERT INTO app.trade_journal (decision_id, instrument_id, created_at, action, quantity, price, rationale, details) "
+                    "VALUES (%s, %s, %s, 'paper_entry', 2, .5, 'deterministic_options_paper_execution', %s) RETURNING id",
+                    [decision_id, ready.quote["instrument_id"], entry_at,
+                     Jsonb({"paper_order_id": str(paper_id), "fees": 1.3, "idempotency_key": "preauthorized-entry"})],
+                ).fetchone()["id"]))
+            if previously_exited:
+                connection.execute(
+                    "INSERT INTO app.trade_journal (decision_id, instrument_id, created_at, action, quantity, price, rationale, details) "
+                    "VALUES (%s, %s, %s, 'paper_exit:profit_target', 1, .25, 'deterministic_options_paper_execution', %s)",
+                    [decision_id, ready.quote["instrument_id"], now,
+                     Jsonb({"paper_order_id": str(paper_id), "fees": .65, "net_pnl": 23.7, "idempotency_key": "preauthorized-partial-exit"})],
+                )
+        with ingestion.run("test-experiment", "assignment-quote") as run:
+            ingestion.store_quotes(run.id, "test-experiment", [{"symbol": "NVDA", "price": 8, "observed_at": now + timedelta(seconds=20)}])
+        _capture(owner, ingestion, now + timedelta(seconds=20), bid=.6, ask=.62)
+        settlement_at = now + timedelta(seconds=21)
+        managed = execution.manage_orders(lanes=["radar"], decision_inbox_enabled=False, now=settlement_at, limit=10)
+        assert [(row["paper_order_id"], row["reason"]) for row in managed] == [(str(paper_id), "assignment"), (other["paper_order_id"], "exit_not_triggered")]
+        with application.read() as connection:
+            paper = connection.execute("SELECT * FROM app.paper_order WHERE id = %s", [paper_id]).fetchone()
+            assert paper["policy_result"] == paper["policy_snapshot"] == policy and paper["ticket_snapshot"] == ticket
+            assert paper["status"] == "exited" and paper["filled_quantity"] == paper["exited_quantity"] == 2
+            assert paper["exit_price"] == 2 and paper["contract_multiplier"] == 100 and float(paper["fees"]) == pytest.approx(2.6)
+            assert {key: paper["execution_quote"][key] for key in prior_quotes} == prior_quotes
+            assert paper["execution_quote"]["assignment"] == {
+                "status": "assigned", "strike": 10, "underlying_price": 8, "multiplier": 100,
+                "contract_count": 2 - previously_exited, "settlement_value": 200 * (2 - previously_exited),
+                "settled_at": settlement_at.isoformat(), "assignment_fee": .65 * (2 - previously_exited),
+                "allocated_entry_fees": .65 * (2 - previously_exited) if entry_journal_complete else None,
+                "net_pnl": -151.3 * (2 - previously_exited) if entry_journal_complete else None,
+                "entry_journal_ids": entry_journal_ids,
+                "net_pnl_basis": "journal_entry_vwap_and_paid_fees" if entry_journal_complete else "paper_fill_or_fee_journal_incomplete",
+            }
+            journal = connection.execute(
+                "SELECT action, quantity, price, details FROM app.trade_journal WHERE details->>'paper_order_id' = %s "
+                "AND action LIKE 'paper_exit:%%' ORDER BY created_at, id", [str(paper_id)],
+            ).fetchall()
+            assert sum(row["quantity"] for row in journal) == 2
+            assert sum(row["details"]["fees"] for row in journal) == pytest.approx(1.3)
+            assert journal[-1]["action"] == "paper_exit:assignment" and journal[-1]["price"] == 2
+            assert journal[-1]["quantity"] == 2 - previously_exited
+            if entry_journal_complete:
+                assert sum(row["details"]["net_pnl"] for row in journal) == pytest.approx(-127.6 if previously_exited else -302.6)
+                assert "shared_daily_loss_halt" in shared_sleeve_blockers(
+                    connection, now=settlement_at, lane="radar", sleeve_capital=5000,
+                    daily_loss_halt_pct=.02, max_open_positions=None,
+                )
+            else:
+                assert journal[-1]["details"]["net_pnl"] is None
+            assert not connection.execute("SELECT has_column_privilege(current_user, 'app.paper_order', 'policy_result', 'UPDATE') AS allowed").fetchone()["allowed"]
+        again = execution.manage_orders(lanes=["radar"], decision_inbox_enabled=False, now=now + timedelta(seconds=22), limit=10)
+        assert len(again) == 1 and again[0]["paper_order_id"] == other["paper_order_id"]
+        with application.read() as connection:
+            assert connection.execute(
+                "SELECT count(*) AS count FROM app.trade_journal WHERE details->>'paper_order_id' = %s AND action = 'paper_exit:assignment'",
+                [str(paper_id)],
+            ).fetchone()["count"] == 1
+            assert float(connection.execute("SELECT fees FROM app.paper_order WHERE id = %s", [paper_id]).fetchone()["fees"]) == pytest.approx(2.6)
     finally:
         application.close()
 

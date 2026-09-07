@@ -312,3 +312,42 @@ and partial fill/thesis invalidation/exit with actual journal fees. The API
 statement timeout remains three seconds. The migration round-trip preserves
 the exact schema contract, and protected mutations remain denied. All owners
 are frozen for review v6 and restored migration validation.
+
+## Sixth independent review
+
+Review v6 returned `patch is incorrect` for commit
+`e2e66832f740a3c419aab35c7e65c159137aad59`, tree
+`4e68bc2f669878d67aa767a3f57546c3d76bb96c`. Its report is preserved in the same
+artifact archive as `market-assistant-review-v6.json`.
+
+| Finding | State | Required correction |
+|---|---|---|
+| R32 P2 | fixed; review pending | Order unresolved rollback exposure by its actual paper-attempt clock, including a later order after an older shadow closed |
+| R33 P2 | fixed; review pending | Write existing paper assignment facts to mutable lifecycle evidence; keep immutable policy and current assignment permissions unchanged |
+
+The exact e2e6683 restored database passed migration 0003→0004→0003→0004
+with exact schema equality after reversal, and retained denied intent updates
+and deletion. Its rebuilt app passed 18 HTTP reads and semantic checks on
+schema 0004 with all release labels matching. Radar took 1.385 seconds,
+Research 0.194 seconds and the funnel 0.557 seconds. The two review findings
+remain software release blockers; no full gate or production deployment ran.
+
+R32 preserves the first paper-attempt clock and adds the latest attempt clock
+under the same evidence cutoff. Unknown rollback exposure uses the maximum
+relevant evidence clock. Eighteen cohort checks, fifteen existing PostgreSQL
+cases and two new later-order PostgreSQL cases passed. An old shadow followed
+by twenty completed episodes and a later open order remains unknown in the
+trailing window; a future-at-cutoff order does not enter the count or clocks.
+The denominator, first-window rule and rollback threshold are unchanged.
+
+R33 stores assignment facts in `execution_quote.assignment`, preserving all
+prior quote/mark evidence and immutable policy. The remaining assigned quantity
+gets one journal exit with intrinsic settlement and actual costs. Tracing that
+loss exposed the same entry-price issue in ordinary exits after fills at
+different prices. Both exits now reuse the existing journal-totals owner with
+liquidation marks; paid entry fees are allocated by exited quantity. Missing
+or future-at-cutoff journal evidence leaves P&L unknown. The obsolete fixed-fee
+arithmetic helper is removed. Eighty option, execution and writer-privilege
+checks passed, including application-login full/partial assignment, later batch
+management, mixed-price entry fills, repeat idempotency and the shared loss
+halt. No privilege, assignment configuration or recovery authority changed.

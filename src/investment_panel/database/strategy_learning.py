@@ -300,7 +300,8 @@ class StrategyLearningRepository:
 
 
 PAPER_EPISODE_ORDERS_SQL = """
-    SELECT count(*) AS paper_order_count, min(paper.created_at) AS first_paper_at
+    SELECT count(*) AS paper_order_count, min(paper.created_at) AS first_paper_at,
+           max(paper.created_at) AS last_paper_at
     FROM app.paper_order paper JOIN analysis.decision original ON original.id = paper.decision_id
     WHERE original.strategy_revision_id = decision.strategy_revision_id
       AND original.episode_key = decision.episode_key AND original.lane = decision.lane
@@ -363,7 +364,7 @@ OUTCOME_QUERY = f"""
            paper.entry_slippage, paper.exit_slippage, paper.fees, paper.contract_multiplier,
            paper.execution_quote->'observed_liquidation_v1' AS paper_marks,
            paper.reserved_collateral, fills.entry_quantity, fills.exit_quantity,
-           paper_episode.paper_order_count, paper_episode.first_paper_at
+           paper_episode.paper_order_count, paper_episode.first_paper_at, paper_episode.last_paper_at
     FROM eligible
     JOIN analysis.decision decision ON decision.id = eligible.decision_id
     JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
@@ -407,7 +408,7 @@ OBSERVATION_QUERY = f"""
            shadow.pending_entry_reason, shadow.entry_at, shadow.entry_price,
            shadow.exit_at, shadow.exit_price, shadow.metrics,
            run.inputs, run.run_type, run.id::text AS run_id,
-           publication.scope, item.payload, paper.paper_order_count, paper.first_paper_at
+           publication.scope, item.payload, paper.paper_order_count, paper.first_paper_at, paper.last_paper_at
     FROM analysis.shadow_trade shadow
     JOIN analysis.decision decision ON decision.id = shadow.decision_id
     JOIN analysis.run run ON run.id = decision.run_id AND run.strategy_revision_id = decision.strategy_revision_id

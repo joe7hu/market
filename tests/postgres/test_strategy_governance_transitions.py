@@ -139,3 +139,115 @@ def test_rollback_counts_independent_episodes_and_preserves_publication_history(
             assert connection.execute("SELECT count(*) AS count FROM app.alert WHERE alert_type = 'strategy_rollback'").fetchone()["count"] == 1
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("earlier_attempt", [False, True])
+def test_later_paper_attempt_keeps_old_shadow_episode_inside_rollback_window(
+    migrated_postgres_dsn: str, earlier_attempt: bool,
+) -> None:
+    from investment_panel.database.strategy_learning import OUTCOME_QUERY, PAPER_EPISODE_ORDERS_SQL
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        clock = datetime(2026, 9, 4, 18, tzinfo=UTC)
+        old_as_of, old_close = clock - timedelta(hours=3), clock - timedelta(hours=2)
+        later_as_of, later_attempt = clock - timedelta(minutes=5), clock - timedelta(minutes=4)
+        with runtime.transaction() as connection:
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('LATE', 'Late attempt', 'equity') RETURNING id",
+            ).fetchone()["id"]
+            parent = connection.execute(
+                """INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, authority_group, parameters)
+                   VALUES ('late-parent', 1, 'Parent', 'superseded', 'options-radar-core', %s) RETURNING id""",
+                [Jsonb({"contract_version": 3, "gates": {"max_spread_pct": .25}})],
+            ).fetchone()["id"]
+            active = connection.execute(
+                """INSERT INTO analysis.strategy_revision
+                   (strategy_key, revision, name, status, authority_group, supersedes_id, promoted_at, parameters)
+                   VALUES ('late-active', 1, 'Active', 'active', 'options-radar-core', %s, %s, %s) RETURNING id""",
+                [parent, old_as_of - timedelta(minutes=1), Jsonb({"contract_version": 3, "gates": {"max_spread_pct": .20}})],
+            ).fetchone()["id"]
+
+            def decision(key, episode, as_of, closed_at=None):
+                run_id = connection.execute(
+                    """INSERT INTO analysis.run
+                       (run_type, input_cutoff, code_version, input_hash, started_at, status, strategy_revision_id)
+                       VALUES ('options-radar', %s, 'clock-regression', %s, %s, 'succeeded', %s) RETURNING id""",
+                    [as_of, "0" * 64, as_of, active],
+                ).fetchone()["id"]
+                decision_id = connection.execute(
+                    """INSERT INTO analysis.decision
+                       (run_id, instrument_id, decision_key, kind, state, as_of, input_hash,
+                        strategy_revision_id, lane, episode_key, sample_eligible, calibration_cohort)
+                       VALUES (%s, %s, %s, 'option', 'READY', %s, %s, %s, 'radar', %s, true,
+                               'option-scorecard-truth-v1:radar') RETURNING id""",
+                    [run_id, instrument_id, key, as_of, "1" * 64, active, episode],
+                ).fetchone()["id"]
+                if closed_at is not None:
+                    shadow_id = connection.execute(
+                        """INSERT INTO analysis.shadow_trade
+                           (decision_id, status, source_kind, structure, entry_at, entry_price, exit_at, exit_price)
+                           VALUES (%s, 'closed', 'system', 'long_call', %s, .5, %s, .45) RETURNING id""",
+                        [decision_id, as_of + timedelta(seconds=1), closed_at],
+                    ).fetchone()["id"]
+                    connection.execute(
+                        """INSERT INTO analysis.option_outcome
+                           (decision_id, shadow_trade_id, maturity_state, observed_through, current_return,
+                            promotion_eligible, outcome_classification, lane, episode_key, sample_eligible, calibration_cohort)
+                           VALUES (%s, %s, 'mature', %s, -.10, true, 'captured', 'radar', %s,
+                                   true, 'option-scorecard-truth-v1:radar')""",
+                        [decision_id, shadow_id, closed_at, episode],
+                    )
+                return decision_id
+
+            old = decision("old-shadow", "old-episode", old_as_of, old_close)
+            for index in range(20):
+                decision(f"intervening-{index}", f"episode-{index}",
+                         clock - timedelta(minutes=100 - index), clock - timedelta(minutes=60 - index))
+            late = decision("later-publication", "old-episode", later_as_of)
+            if earlier_attempt:
+                connection.execute(
+                    """INSERT INTO app.paper_order
+                       (decision_id, instrument_id, side, quantity, limit_price, status, paper_only, lane, created_at)
+                       VALUES (%s, %s, 'buy', 1, .5, 'unfilled', true, 'radar', %s)""",
+                    [old, instrument_id, old_as_of + timedelta(minutes=1)],
+                )
+            paper_id = connection.execute(
+                """INSERT INTO app.paper_order
+                   (decision_id, instrument_id, side, quantity, limit_price, status, paper_only, lane,
+                    created_at, filled_at, actual_fill_price, filled_quantity, fees, entry_slippage, contract_multiplier)
+                   VALUES (%s, %s, 'buy', 1, .5, 'entered', true, 'radar', %s, %s, .5, 1, .65, .01, 100) RETURNING id""",
+                [late, instrument_id, later_attempt, later_attempt + timedelta(seconds=30)],
+            ).fetchone()["id"]
+            connection.execute(
+                """INSERT INTO app.trade_journal
+                   (decision_id, instrument_id, action, quantity, price, rationale, details, created_at)
+                   VALUES (%s, %s, 'paper_entry', 1, .5, 'deterministic_options_paper_execution', %s, %s)""",
+                [late, instrument_id, Jsonb({"paper_order_id": str(paper_id)}), later_attempt + timedelta(seconds=30)],
+            )
+        with runtime.read() as connection:
+            # The open later decision has neither a completed paper outcome nor
+            # a closed shadow. The old episode must carry its attempt clock.
+            assert all(row["decision_id"] != str(late) for row in connection.execute(OUTCOME_QUERY, [active, active]).fetchall())
+            counts = connection.execute(
+                f"SELECT episode.* FROM analysis.decision decision CROSS JOIN LATERAL ({PAPER_EPISODE_ORDERS_SQL}) episode WHERE decision.id = %s",
+                [old],
+            ).fetchone()
+            assert counts["paper_order_count"] == 1 + int(earlier_attempt)
+            assert counts["first_paper_at"] == (old_as_of + timedelta(minutes=1) if earlier_attempt else later_attempt)
+            assert counts["last_paper_at"] == later_attempt
+            historical_sql = PAPER_EPISODE_ORDERS_SQL.replace("now()", "%s::timestamptz")
+            before = connection.execute(
+                f"SELECT episode.* FROM analysis.decision decision CROSS JOIN LATERAL ({historical_sql}) episode WHERE decision.id = %s",
+                [later_attempt - timedelta(seconds=1), old],
+            ).fetchone()
+            assert before["paper_order_count"] == int(earlier_attempt)
+            assert before["last_paper_at"] == (old_as_of + timedelta(minutes=1) if earlier_attempt else None)
+        governance = StrategyGovernanceRepository(runtime)
+        assert governance.rollback_regressing_active() == 0
+        assert governance.rollback_regressing_active() == 0
+        with runtime.read() as connection:
+            assert connection.execute("SELECT status FROM analysis.strategy_revision WHERE id = %s", [active]).fetchone()["status"] == "active"
+    finally:
+        runtime.close()

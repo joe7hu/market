@@ -16,10 +16,7 @@ from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.options_paper_execution import GENERIC_LANES, OptionsPaperExecutionRepository
 from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
 from investment_panel.database.options_paper_ledger import active_paper_exposure
-from investment_panel.database.options_paper_execution import (
-    available_quantity,
-    net_pnl,
-)
+from investment_panel.database.options_paper_execution import available_quantity
 from investment_panel.database.options_paper_quotes import package_price
 
 
@@ -162,11 +159,6 @@ def test_blocked_partial_entry_keeps_the_filled_quantity_in_holding_management(m
     assert not any("app.trade_journal" in statement for statement, _ in connection.statements)
 
 
-def test_paper_net_pnl_includes_both_sides_of_conservative_fees() -> None:
-    # One long contract bought at 1.20 and sold at 2.00: 80 gross less 1.30 fees.
-    assert net_pnl(credit=False, entry_price=1.2, exit_price=2.0, quantity=1, leg_count=1) == 78.7
-
-
 def test_phase4_option_execution_math_and_coercion_are_conservative() -> None:
     legs = [{"side": "sell", "bid": 1.0, "ask": 1.2}, {"side": "buy", "bid": 0.2, "ask": 0.4}]
     assert paper_execution_database._midpoint_package(legs) == 0.8
@@ -178,7 +170,6 @@ def test_phase4_option_execution_math_and_coercion_are_conservative() -> None:
     assert paper_execution_database._entry_slippage([{"bid": 0, "ask": 1}], 1, True) is None
     assert paper_execution_database._exit_slippage([{"bid": 0, "ask": 1}], 1, False) is None
     assert paper_execution_database._fees(2, 3) == 3.9
-    assert paper_execution_database._net_pnl(credit=False, entry_price=1.0, exit_price=2.0, quantity=2, leg_count=1) == 197.4
     assert paper_execution_database._timestamp(NOW.isoformat()) == NOW
     assert paper_execution_database._timestamp(NOW.replace(tzinfo=None)) == NOW
     assert paper_execution_database._timestamp("bad") is None
@@ -421,7 +412,7 @@ def test_paper_liquidation_mark_uses_all_entry_fills_and_partial_exit_cash() -> 
             if "AS entry_quantity" in statement:
                 # Two entries at .80 and 1.00; one prior exit at 1.20.
                 return _Result({"entry_quantity": 2, "exit_quantity": 1, "entry_units": 1.8,
-                                "exit_units": 1.2, "actual_fees": 1.95, "missing_fees": 0,
+                                "exit_units": 1.2, "actual_fees": 1.95, "missing_fees": 0, "invalid_fills": 0,
                                 "journal_ids": ["entry-a", "entry-b", "exit-a"]})
             return super().execute(statement, parameters)
 
@@ -450,7 +441,7 @@ def test_cancelled_partial_holding_measures_its_exact_filled_basis(monkeypatch, 
         def execute(self, statement, parameters=None):
             if "AS entry_quantity" in statement:
                 return _Result({"entry_quantity": 1, "exit_quantity": 0, "entry_units": .5, "exit_units": 0,
-                                "actual_fees": .65, "missing_fees": 0,
+                                "actual_fees": .65, "entry_fees": .65, "missing_fees": 0, "invalid_fills": 0,
                                 "journal_ids": ["actual-entry"], "entry_journal_ids": ["actual-entry"]})
             return super().execute(statement, parameters)
 

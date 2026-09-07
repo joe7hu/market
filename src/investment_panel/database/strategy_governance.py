@@ -217,7 +217,7 @@ class StrategyGovernanceRepository:
                            outcome.current_return, outcome.observed_through,
                            decision.as_of, decision.id::text AS decision_id,
                            decision.lane, decision.episode_key,
-                           paper_episode.paper_order_count, paper_episode.first_paper_at
+                           paper_episode.paper_order_count, paper_episode.first_paper_at, paper_episode.last_paper_at
                     FROM analysis.option_outcome outcome
                     JOIN analysis.decision decision ON decision.id = outcome.decision_id
                     LEFT JOIN LATERAL ({PAPER_EPISODE_ORDERS_SQL}) paper_episode ON TRUE
@@ -271,7 +271,12 @@ class StrategyGovernanceRepository:
                 key = (row["lane"], row["episode_key"])
                 if (has_multiple_paper_orders(row)
                     or (row.get("paper_order_count") != 0 and key not in verified_keys)):
-                    through = row.get("observed_through") or row.get("exit_at") or row.get("first_paper_at") or row["as_of"]
+                    # A later attempt can share an already-closed shadow's
+                    # episode. Keep its actual clock in the trailing window.
+                    through = max(value for value in (
+                        row.get("observed_through"), row.get("exit_at"), row.get("first_paper_at"),
+                        row.get("last_paper_at"), row["as_of"],
+                    ) if value is not None)
                     if key not in ambiguous or through > ambiguous[key]["observed_through"]:
                         ambiguous[key] = {**row, "current_return": None, "observed_through": through}
             # Keep unresolved exposure in the trailing window. Do not replace
