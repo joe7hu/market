@@ -77,7 +77,10 @@ def test_migrations_directory_has_one_latest_snapshot():
     root = Path(__file__).resolve().parents[2]
     versions = sorted((root / 'migrations' / 'versions').glob('*.py'))
     assert [path.name for path in versions] == ['20260907_0006_baseline.py']
-    sql = (root / 'migrations' / 'baseline.sql').read_text()
+    sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
+    assert len(sql_files) == 27
+    assert max(path.read_text().count('\n') for path in sql_files) < 1500
+    sql = '\n'.join(path.read_text() for path in sql_files)
     assert 'ADD COLUMN' not in sql
     assert 'DROP COLUMN' not in sql
     assert 'ALTER COLUMN' not in sql

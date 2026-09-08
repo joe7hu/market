@@ -452,8 +452,10 @@ def final_architecture_inventory() -> dict[str, Any]:
             text = path.read_text(encoding="utf-8", errors="replace")
             for marker in counts:
                 counts[marker] += int(marker.casefold() in text.casefold())
-    current_selector = (ROOT / "migrations" / "baseline.sql").read_text(
-        encoding="utf-8", errors="replace"
+    baseline_dir = ROOT / "migrations" / "baseline"
+    current_selector = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in sorted(baseline_dir.glob("*.sql"))
     )
     return {
         **FINAL_ARCHITECTURE_INVARIANTS,

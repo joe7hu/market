@@ -1,4 +1,4 @@
-"""Create the latest PostgreSQL schema from one data-free snapshot."""
+"""Create the latest PostgreSQL schema from ordered data-free SQL modules."""
 
 from pathlib import Path
 
@@ -20,7 +20,8 @@ def upgrade() -> None:
     prepare_roles(connection)
     root = Path(__file__).resolve().parents[1]
     driver = connection.connection.driver_connection
-    driver.execute((root / "baseline.sql").read_text())
+    for path in sorted((root / "baseline").glob("*.sql")):
+        driver.execute(path.read_text())
     driver.execute((root / "baseline_seed.sql").read_text())
     driver.execute("GRANT SELECT ON public.alembic_version TO market_app")
     driver.execute("""

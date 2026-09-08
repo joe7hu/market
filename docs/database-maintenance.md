@@ -1,8 +1,9 @@
 # Database maintenance
 
 Market uses one PostgreSQL baseline (`20260907_0006`). It is a current-state,
-data-free schema snapshot. It does not replay historical migrations and it does
-not delete data. Older migration files remain in Git history for audit only.
+data-free schema snapshot split into ordered SQL modules under
+`migrations/baseline/`. It does not replay historical migrations and it does not
+delete data. Older migration files remain in Git history for audit only.
 
 ## Apply a schema change
 
@@ -32,11 +33,14 @@ Configure signing keys through the existing secret settings when required.
 ## Keep future snapshots small
 
 When the schema changes, apply the required data-preserving maintenance SQL to
-existing databases, then regenerate the one snapshot from a verified current
-schema and update the revision marker. Do not add historical `ALTER` statements
-to the snapshot. The snapshot is for empty databases and cannot safely update
-an older nonempty schema by itself. Keep one definition of each fact; reference
-it from derived records. Preserve history needed to explain decisions.
+existing databases, then regenerate the ordered snapshot modules from a verified
+current schema and update the revision marker. Keep the module order: prelude,
+functions, dependency-ordered tables, constraints, raw functions, views,
+indexes, triggers, owners, and privileges. Do not add historical `ALTER`
+statements to the snapshot. The snapshot is for empty databases and cannot
+safely update an older nonempty schema by itself. Keep one definition of each
+fact; reference it from derived records. Preserve history needed to explain
+decisions.
 
 Review lists use bounded keyset pages with a creation cutoff and expiring
 cursors. Values can change between pages. Options reads select the latest
