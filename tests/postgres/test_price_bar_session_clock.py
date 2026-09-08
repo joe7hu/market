@@ -7,13 +7,11 @@ from investment_panel.core.decision import market_session_bounds
 from investment_panel.database import price_bar_ingestion
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.migrations import downgrade_database, upgrade_database
 from investment_panel.database.panel_watchlist import technical_rows
 from investment_panel.database.portfolio_intelligence import portfolio_performance_rows
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 from conftest import typed_config
-from migrations.schema_contract import schema_contract
 
 
 @pytest.fixture
@@ -93,31 +91,6 @@ def test_reingestion_versions_a_legacy_daily_clock_without_backdating(price_inge
         assert connection.execute("SELECT available_at FROM raw.quote").fetchone()["available_at"] == corrected_quote["available_at"]
         counts = connection.execute("SELECT (SELECT count(*) FROM raw.price_bar_history) AS bars, (SELECT count(*) FROM raw.quote_history) AS quotes").fetchone()
         assert counts == {"bars": 1, "quotes": 1}
-
-
-def test_daily_price_clock_reader_migration_is_exactly_reversible(postgres_dsn):
-    upgrade_database(postgres_dsn, "20260907_0004")
-    with psycopg.connect(postgres_dsn) as connection:
-        before = schema_contract(connection)
-        identity = connection.execute(
-            "SELECT proowner, proacl, prosecdef, provolatile, proconfig, prorettype, proargtypes "
-            "FROM pg_proc WHERE oid = 'raw.current_price_for_instruments(timestamptz,bigint[])'::regprocedure"
-        ).fetchone()
-    upgrade_database(postgres_dsn, "20260907_0005")
-    with psycopg.connect(postgres_dsn) as connection:
-        after = schema_contract(connection)
-        changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
-        assert len(changed) == 1 and next(iter(changed)).startswith("function:raw.current_price_for_instruments(")
-        assert connection.execute(
-            "SELECT proowner, proacl, prosecdef, provolatile, proconfig, prorettype, proargtypes "
-            "FROM pg_proc WHERE oid = 'raw.current_price_for_instruments(timestamptz,bigint[])'::regprocedure"
-        ).fetchone() == identity
-    downgrade_database(postgres_dsn, "20260907_0004")
-    with psycopg.connect(postgres_dsn) as connection:
-        assert schema_contract(connection) == before
-    upgrade_database(postgres_dsn, "20260907_0005")
-    with psycopg.connect(postgres_dsn) as connection:
-        assert schema_contract(connection) == after
 
 
 @pytest.mark.parametrize("day,legacy_hour", [(date(2026, 1, 2), 20), (date(2026, 8, 12), 17)])
@@ -217,42 +190,6 @@ def test_corrected_early_close_values_reach_current_analytics_and_keep_old_cutof
         assert connection.execute("SELECT close FROM raw.confirmed_price_bar").fetchall() == [{"close": 575}]
         assert connection.execute("SELECT price FROM raw.confirmed_quote").fetchall() == [{"price": 575}]
     price_ingestion.finish_run(pending_run, "failed")
-
-
-def test_confirmed_price_identity_migration_preserves_view_authority_and_round_trips(postgres_dsn):
-    upgrade_database(postgres_dsn, "20260907_0005")
-    views = ["raw.confirmed_quote", "raw.confirmed_price_bar"]
-    metadata_query = "SELECT relname, relowner, relacl, reloptions FROM pg_class WHERE oid = ANY(%s::regclass[]) ORDER BY relname"
-    with psycopg.connect(postgres_dsn) as connection:
-        before = schema_contract(connection)
-        identity = connection.execute(metadata_query, [views]).fetchall()
-    upgrade_database(postgres_dsn, "20260907_0006")
-    with psycopg.connect(postgres_dsn) as connection:
-        after = schema_contract(connection)
-        changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
-        assert len(changed) == 6
-        assert changed == {key for key in changed if key.startswith((
-            "view:raw.confirmed_quote", "view:raw.confirmed_price_bar",
-            "function:raw.confirmed_quote_at(", "function:raw.confirmed_price_bar_at(",
-            "function_acl:raw.confirmed_quote_at(", "function_acl:raw.confirmed_price_bar_at(",
-        ))}
-        assert connection.execute(metadata_query, [views]).fetchall() == identity
-        for name in views:
-            signature = name + "_at(timestamptz,bigint[])"
-            assert connection.execute(
-                """SELECT NOT proc.prosecdef AND proc.proowner = relation.relowner
-                          AND has_function_privilege('market_app', proc.oid, 'EXECUTE')
-                          AND NOT EXISTS (SELECT 1 FROM aclexplode(proc.proacl) acl WHERE acl.grantee = 0)
-                   FROM pg_proc proc, pg_class relation
-                   WHERE proc.oid = %s::regprocedure AND relation.oid = %s::regclass""",
-                [signature, name],
-            ).fetchone()[0]
-    downgrade_database(postgres_dsn, "20260907_0005")
-    with psycopg.connect(postgres_dsn) as connection:
-        assert schema_contract(connection) == before
-    upgrade_database(postgres_dsn, "20260907_0006")
-    with psycopg.connect(postgres_dsn) as connection:
-        assert schema_contract(connection) == after
 
 
 def test_peer_return_keeps_entry_version_at_its_own_cutoff_after_correction(price_ingestion, monkeypatch):

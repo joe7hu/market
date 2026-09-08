@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
 HEAD_REVISION = "20260907_0006"
+_MIGRATION_LOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended('market-schema-migration',0))"
 
 
 def alembic_config(dsn: str) -> Config:
@@ -32,11 +33,7 @@ def downgrade_database(dsn: str, revision: str = "base") -> None:
 
 def _migrate(dsn: str, revision: str, *, downgrade: bool) -> None:
     # Runtime readers only need HEAD_REVISION; migration assets live in the checkout.
-    from migrations.baseline_contract import (
-        BASELINE_REVISION, BASELINE_SCHEMA_HASHES, LEGACY_REVISION, LEGACY_SCHEMA_HASHES,
-    )
-    from migrations.baseline_support import repair_legacy_schema, validate_roles
-    from migrations.schema_contract import schema_hash
+    from migrations.baseline_contract import BASELINE_REVISION
 
     config = alembic_config(dsn)
     engine = create_engine(config.get_main_option("sqlalchemy.url"), poolclass=NullPool)
@@ -53,27 +50,31 @@ def _migrate(dsn: str, revision: str, *, downgrade: bool) -> None:
             connection.commit()
             if not acquired:
                 raise RuntimeError("another Market schema migration is running")
-            connection.exec_driver_sql("SET lock_timeout='2s'; SET statement_timeout='120s'")
-            connection.commit()
-            config.attributes["connection"] = connection
-            if not downgrade:
+            try:
+                connection.exec_driver_sql("SET lock_timeout='2s'; SET statement_timeout='120s'")
+                connection.commit()
+                config.attributes["connection"] = connection
                 with connection.begin():
                     exists = connection.execute(text("SELECT to_regclass('public.alembic_version')")).scalar()
                     versions = connection.execute(text("SELECT version_num FROM public.alembic_version")).scalars().all() if exists else []
-                    if versions == [LEGACY_REVISION]:
-                        validate_roles(connection)
-                        if revision not in ("head", HEAD_REVISION):
-                            raise RuntimeError("historical migrations are archived in Git; upgrade to the baseline")
-                        if schema_hash(connection.connection.driver_connection) not in LEGACY_SCHEMA_HASHES:
-                            raise RuntimeError("legacy schema differs from the verified baseline contract; adoption refused")
-                        repair_legacy_schema(connection)
-                        if schema_hash(connection.connection.driver_connection) not in BASELINE_SCHEMA_HASHES:
-                            raise RuntimeError("repaired schema failed baseline verification; adoption rolled back")
-                        connection.execute(text("UPDATE public.alembic_version SET version_num=:revision"), {"revision": BASELINE_REVISION})
-            operation = command.downgrade if downgrade else command.upgrade
-            operation(config, revision)
+                    if versions and versions != [BASELINE_REVISION]:
+                        raise RuntimeError(
+                            "database uses an archived migration revision; use the matching old checkout before switching to the single snapshot"
+                        )
+                operation = command.downgrade if downgrade else command.upgrade
+                operation(config, revision)
+            except BaseException:
+                # Raw psycopg execution can outlive SQLAlchemy's transaction wrapper on errors.
+                connection.rollback()
+                raise
+            finally:
+                try:
+                    connection.exec_driver_sql(_MIGRATION_LOCK_SQL)
+                    connection.commit()
+                except Exception:
+                    connection.invalidate()
     finally:
-        # NullPool closes the session, releasing the migration lock on all exits.
+        # NullPool closes the session; explicit unlock above covers failed raw DDL execution.
         engine.dispose()
 
 

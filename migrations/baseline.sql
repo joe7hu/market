@@ -1,5 +1,6 @@
--- Verified PostgreSQL 18 baseline. Edit through a future forward migration.
+-- Latest PostgreSQL 18 schema snapshot. No data or migration history.
 SET LOCAL check_function_bodies = false;
+
 CREATE SCHEMA analysis;
 
 CREATE SCHEMA app;
@@ -1340,8 +1341,6 @@ CREATE FUNCTION analysis.enforce_research_evaluator_output() RETURNS trigger
         END;
         $_$;
 
-ALTER FUNCTION analysis.enforce_research_evaluator_output() OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.enforce_research_evidence_manifest() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'analysis'
@@ -1409,8 +1408,6 @@ CREATE FUNCTION analysis.enforce_research_evidence_manifest() RETURNS trigger
         END;
         $$;
 
-ALTER FUNCTION analysis.enforce_research_evidence_manifest() OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.enforce_research_gate_actual_availability() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'analysis', 'public'
@@ -1422,8 +1419,6 @@ CREATE FUNCTION analysis.enforce_research_gate_actual_availability() RETURNS tri
             RETURN NEW;
         END;
         $$;
-
-ALTER FUNCTION analysis.enforce_research_gate_actual_availability() OWNER TO market_research_signer;
 
 CREATE FUNCTION analysis.enforce_research_gate_pit() RETURNS trigger
     LANGUAGE plpgsql
@@ -1444,14 +1439,40 @@ CREATE FUNCTION analysis.enforce_research_gate_pit() RETURNS trigger
 CREATE FUNCTION analysis.enforce_research_gate_promotion_clock() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
+        DECLARE promotion_decision_cutoff TIMESTAMPTZ;
         BEGIN
+
+            IF NEW.status = 'active' THEN
+            SELECT (promotion.metrics->>'promotion_cutoff')::timestamptz
+              INTO promotion_decision_cutoff
+            FROM analysis.strategy_evaluation promotion
+            WHERE NEW.strategy_key = 'ticker-stock-alpha'
+              AND NEW.parameters->>'model_version' = 'ticker-stock-alpha.v3'
+              AND NEW.parameters->>'target_version' = 'stock-counterfactual-20-session-net.v1'
+              AND promotion.strategy_revision_id = NEW.id
+              AND promotion.evaluation_type = 'paper_advisory_promotion'
+              AND promotion.verdict = 'pass'
+              AND promotion.artifact_id = NEW.artifact_id
+              AND promotion.artifact_hash = NEW.artifact_hash
+              AND promotion.input_hash = NEW.parameters->>'input_hash'
+              AND promotion.metrics->>'authorization_mode' = 'PAPER'
+              AND promotion.metrics->>'artifact_hash' = NEW.artifact_hash
+              AND promotion.metrics->>'input_hash' = NEW.parameters->>'input_hash'
+              AND promotion.evaluated_at <= clock_timestamp()
+              AND promotion.available_at <= clock_timestamp()
+            ORDER BY promotion.evaluated_at DESC, promotion.id DESC LIMIT 1;
+            IF promotion_decision_cutoff > clock_timestamp() THEN
+                RAISE EXCEPTION 'paper promotion cutoff cannot be future-dated';
+            END IF;
+            END IF;
+
             IF NEW.status = 'active' AND (NEW.research_required OR NEW.hypothesis_id IS NOT NULL OR NEW.experiment_family_id IS NOT NULL) AND EXISTS (
                 SELECT 1
                 FROM analysis.validation_dossier dossier
                 JOIN analysis.research_trial trial ON trial.id = dossier.research_trial_id
                 JOIN analysis.validation_gate_result gate ON gate.dossier_id = dossier.id
                 WHERE dossier.strategy_revision_id = NEW.id
-                  AND (gate.evaluated_at > trial.input_cutoff OR gate.available_at > trial.input_cutoff)
+                  AND (gate.evaluated_at > COALESCE(promotion_decision_cutoff, trial.input_cutoff) OR gate.available_at > COALESCE(promotion_decision_cutoff, trial.input_cutoff))
             ) THEN
                 RAISE EXCEPTION 'promotion requires database-authoritative gate timestamps at or before trial cutoff';
             END IF;
@@ -1484,8 +1505,6 @@ CREATE FUNCTION analysis.enforce_research_result_actual_availability() RETURNS t
         END;
         $$;
 
-ALTER FUNCTION analysis.enforce_research_result_actual_availability() OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.enforce_research_result_pit() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1503,7 +1522,33 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'analysis', 'public'
     AS $$
+        DECLARE promotion_decision_cutoff TIMESTAMPTZ;
         BEGIN
+
+            IF NEW.status = 'active' THEN
+            SELECT (promotion.metrics->>'promotion_cutoff')::timestamptz
+              INTO promotion_decision_cutoff
+            FROM analysis.strategy_evaluation promotion
+            WHERE NEW.strategy_key = 'ticker-stock-alpha'
+              AND NEW.parameters->>'model_version' = 'ticker-stock-alpha.v3'
+              AND NEW.parameters->>'target_version' = 'stock-counterfactual-20-session-net.v1'
+              AND promotion.strategy_revision_id = NEW.id
+              AND promotion.evaluation_type = 'paper_advisory_promotion'
+              AND promotion.verdict = 'pass'
+              AND promotion.artifact_id = NEW.artifact_id
+              AND promotion.artifact_hash = NEW.artifact_hash
+              AND promotion.input_hash = NEW.parameters->>'input_hash'
+              AND promotion.metrics->>'authorization_mode' = 'PAPER'
+              AND promotion.metrics->>'artifact_hash' = NEW.artifact_hash
+              AND promotion.metrics->>'input_hash' = NEW.parameters->>'input_hash'
+              AND promotion.evaluated_at <= clock_timestamp()
+              AND promotion.available_at <= clock_timestamp()
+            ORDER BY promotion.evaluated_at DESC, promotion.id DESC LIMIT 1;
+            IF promotion_decision_cutoff > clock_timestamp() THEN
+                RAISE EXCEPTION 'paper promotion cutoff cannot be future-dated';
+            END IF;
+            END IF;
+
             IF NEW.status = 'active' AND (
                 NEW.research_required OR NEW.hypothesis_id IS NOT NULL OR
                 NEW.experiment_family_id IS NOT NULL
@@ -1529,7 +1574,7 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
                      AND evaluation.artifact_id = NEW.artifact_id
                      AND evaluation.artifact_hash = NEW.artifact_hash
                       AND evaluation.input_hash = NEW.parameters->>'input_hash'
-                      AND evaluation.evaluated_at <= trial.input_cutoff
+                      AND evaluation.evaluated_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
                     WHERE dossier.strategy_revision_id = NEW.id
                       AND dossier.status = 'sealed'
                       AND trial.status = 'succeeded'
@@ -1537,9 +1582,9 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
                       AND dossier.artifact_id = NEW.artifact_id
                       AND dossier.artifact_hash = NEW.artifact_hash
                       AND dossier.compiled_policy->>'paper_only' = 'true'
-                      AND trial.available_at <= trial.input_cutoff
-                      AND dossier.sealed_at <= trial.input_cutoff
-                      AND experiment_manifest.available_at <= trial.input_cutoff
+                      AND trial.available_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
+                      AND dossier.sealed_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
+                      AND experiment_manifest.available_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
                       AND lower(experiment_manifest.manifest_hash) = encode(
                           digest(replace(experiment_manifest.expected_trial_keys::text, ' ', ''), 'sha256'), 'hex'
                       )
@@ -1550,15 +1595,15 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
                             ON family_result.research_trial_id = family_trial.id
                            AND family_result.result_kind = 'validation'
                           WHERE family_trial.experiment_family_id = trial.experiment_family_id
-                            AND (family_trial.available_at > trial.input_cutoff
-                                 OR family_trial.finished_at > trial.input_cutoff
-                                 OR family_result.available_at > trial.input_cutoff)
+                            AND (family_trial.available_at > COALESCE(promotion_decision_cutoff, trial.input_cutoff)
+                                 OR family_trial.finished_at > COALESCE(promotion_decision_cutoff, trial.input_cutoff)
+                                 OR family_result.available_at > COALESCE(promotion_decision_cutoff, trial.input_cutoff))
                       )
                       AND analysis.research_trial_universe_complete(trial.id)
                       AND NOT EXISTS (
                           SELECT 1 FROM analysis.trial_universe_manifest manifest
                           WHERE manifest.research_trial_id = trial.id
-                            AND (manifest.available_at > trial.input_cutoff
+                            AND (manifest.available_at > COALESCE(promotion_decision_cutoff, trial.input_cutoff)
                                  OR lower(manifest.manifest_hash) <> encode(
                                      digest(replace(manifest.expected_members::text, ' ', ''), 'sha256'), 'hex'
                                  ))
@@ -1566,7 +1611,7 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
                       AND NOT EXISTS (
                           SELECT 1 FROM analysis.universe_observation observation
                           WHERE observation.research_trial_id = trial.id
-                            AND observation.available_at > trial.input_cutoff
+                            AND observation.available_at > COALESCE(promotion_decision_cutoff, trial.input_cutoff)
                       )
                       AND EXISTS (
                           SELECT 1 FROM analysis.trial_result result
@@ -1575,7 +1620,7 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
                               WHERE candidate.research_trial_id = trial.id AND candidate.result_kind = 'validation'
                               ORDER BY candidate.result_version DESC LIMIT 1
                           )
-                            AND result.available_at <= trial.input_cutoff
+                            AND result.available_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
                             AND result.outcome->>'passed' = 'true'
                             AND analysis.research_validation_evidence_complete(result.id, experiment_manifest.expected_trial_count)
                             AND result.outcome->'checks' ? 'multiple_testing'
@@ -1616,7 +1661,7 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
                                  WHEN 'economic_promotability' THEN gate.metrics->'checks' ?& ARRAY['cost_capacity', 'neutralization']
                                  ELSE false
                              END
-                             AND gate.available_at <= trial.input_cutoff
+                             AND gate.available_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
                              AND gate.evidence->>'trial_result_id' = (
                                  SELECT result.id::text FROM analysis.trial_result result
                                  WHERE result.research_trial_id = trial.id AND result.result_kind = 'validation'
@@ -1634,8 +1679,8 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
                             AND forecast.target = evaluation.metrics->>'target'
                             AND forecast.artifact_hash = NEW.artifact_hash
                             AND forecast.input_hash = evaluation.input_hash
-                            AND forecast.generated_at <= trial.input_cutoff
-                            AND forecast.available_at <= trial.input_cutoff
+                            AND forecast.generated_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
+                            AND forecast.available_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
                             AND forecast.forecast_distribution IS NOT NULL
                             AND EXISTS (
                                 SELECT 1 FROM jsonb_array_elements(evaluation.metrics->'forecasts') item
@@ -1700,14 +1745,37 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion() RETURNS trigger
         END;
         $$;
 
-ALTER FUNCTION analysis.enforce_research_revision_promotion() OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.enforce_research_revision_promotion_hardened() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'analysis', 'public'
     AS $$
-        DECLARE trial_cutoff TIMESTAMPTZ; dossier_id UUID; evaluation_id UUID; result_id UUID; expected_members INTEGER; forecast_count INTEGER;
+        DECLARE promotion_decision_cutoff TIMESTAMPTZ; trial_cutoff TIMESTAMPTZ; dossier_id UUID; evaluation_id UUID; result_id UUID; expected_members INTEGER; forecast_count INTEGER;
         BEGIN
+
+            IF NEW.status = 'active' THEN
+            SELECT (promotion.metrics->>'promotion_cutoff')::timestamptz
+              INTO promotion_decision_cutoff
+            FROM analysis.strategy_evaluation promotion
+            WHERE NEW.strategy_key = 'ticker-stock-alpha'
+              AND NEW.parameters->>'model_version' = 'ticker-stock-alpha.v3'
+              AND NEW.parameters->>'target_version' = 'stock-counterfactual-20-session-net.v1'
+              AND promotion.strategy_revision_id = NEW.id
+              AND promotion.evaluation_type = 'paper_advisory_promotion'
+              AND promotion.verdict = 'pass'
+              AND promotion.artifact_id = NEW.artifact_id
+              AND promotion.artifact_hash = NEW.artifact_hash
+              AND promotion.input_hash = NEW.parameters->>'input_hash'
+              AND promotion.metrics->>'authorization_mode' = 'PAPER'
+              AND promotion.metrics->>'artifact_hash' = NEW.artifact_hash
+              AND promotion.metrics->>'input_hash' = NEW.parameters->>'input_hash'
+              AND promotion.evaluated_at <= clock_timestamp()
+              AND promotion.available_at <= clock_timestamp()
+            ORDER BY promotion.evaluated_at DESC, promotion.id DESC LIMIT 1;
+            IF promotion_decision_cutoff > clock_timestamp() THEN
+                RAISE EXCEPTION 'paper promotion cutoff cannot be future-dated';
+            END IF;
+            END IF;
+
             IF NEW.status <> 'active' OR NOT (NEW.research_required OR NEW.hypothesis_id IS NOT NULL OR NEW.experiment_family_id IS NOT NULL) THEN
                 RETURN NEW;
             END IF;
@@ -1730,9 +1798,9 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion_hardened() RETURNS 
               AND evaluation.input_hash = NEW.parameters->>'input_hash'
               AND dossier.artifact_id = evaluation.artifact_id
               AND dossier.artifact_hash = evaluation.artifact_hash
-              AND dossier.sealed_at <= trial.input_cutoff
-              AND trial.available_at <= trial.input_cutoff
-              AND result.available_at <= trial.input_cutoff
+              AND dossier.sealed_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
+              AND trial.available_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
+              AND result.available_at <= COALESCE(promotion_decision_cutoff, trial.input_cutoff)
             ORDER BY result.result_version DESC LIMIT 1;
             IF dossier_id IS NULL
                OR NOT analysis.research_validation_evidence_complete(result_id, (SELECT expected_trial_count FROM analysis.experiment_manifest manifest JOIN analysis.research_trial trial ON trial.experiment_family_id = manifest.experiment_family_id WHERE trial.id = (SELECT research_trial_id FROM analysis.validation_dossier WHERE id = dossier_id)))
@@ -1749,8 +1817,8 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion_hardened() RETURNS 
               AND forecast.status = 'available'
               AND forecast.input_cutoff = trial_cutoff
               AND forecast.as_of = trial_cutoff
-              AND forecast.generated_at <= trial_cutoff
-              AND forecast.available_at <= trial_cutoff
+              AND forecast.generated_at <= COALESCE(promotion_decision_cutoff, trial_cutoff)
+              AND forecast.available_at <= COALESCE(promotion_decision_cutoff, trial_cutoff)
               AND forecast.artifact_hash = NEW.artifact_hash
               AND forecast.model_artifact_id = NEW.artifact_id
               AND forecast.input_hash = (SELECT input_hash FROM analysis.strategy_evaluation WHERE id = evaluation_id)
@@ -1761,8 +1829,6 @@ CREATE FUNCTION analysis.enforce_research_revision_promotion_hardened() RETURNS 
             RETURN NEW;
         END;
         $$;
-
-ALTER FUNCTION analysis.enforce_research_revision_promotion_hardened() OWNER TO market_research_signer;
 
 CREATE FUNCTION analysis.enforce_research_rows_immutable() RETURNS trigger
     LANGUAGE plpgsql
@@ -1830,8 +1896,6 @@ CREATE FUNCTION analysis.enforce_research_trial_terminal_immutability() RETURNS 
         END;
         $$;
 
-ALTER FUNCTION analysis.enforce_research_trial_terminal_immutability() OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.enforce_research_universe_actual_availability() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'analysis', 'public'
@@ -1846,8 +1910,6 @@ CREATE FUNCTION analysis.enforce_research_universe_actual_availability() RETURNS
             RETURN NEW;
         END;
         $$;
-
-ALTER FUNCTION analysis.enforce_research_universe_actual_availability() OWNER TO market_research_signer;
 
 CREATE FUNCTION analysis.enforce_research_universe_pit() RETURNS trigger
     LANGUAGE plpgsql
@@ -1928,8 +1990,6 @@ CREATE FUNCTION analysis.enforce_strategy_forecast_authority() RETURNS trigger
         END;
         $_$;
 
-ALTER FUNCTION analysis.enforce_strategy_forecast_authority() OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.enforce_strategy_revision_parameters_immutable() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1988,8 +2048,6 @@ CREATE FUNCTION analysis.enforce_validation_dossier_seal() RETURNS trigger
             RETURN NEW;
         END;
         $$;
-
-ALTER FUNCTION analysis.enforce_validation_dossier_seal() OWNER TO market_research_signer;
 
 CREATE FUNCTION analysis.insert_phase4_allocation_item(p jsonb) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
@@ -2528,8 +2586,6 @@ CREATE FUNCTION analysis.research_evaluator_authorization_payload(trial_id uuid,
             );
         $$;
 
-ALTER FUNCTION analysis.research_evaluator_authorization_payload(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output jsonb) OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.research_evaluator_output_hash(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output jsonb) RETURNS text
     LANGUAGE sql IMMUTABLE
     AS $$
@@ -2571,8 +2627,6 @@ CREATE FUNCTION analysis.research_evaluator_output_hash_v2(trial_id uuid, result
             )::TEXT, 'sha256'), 'hex');
         $$;
 
-ALTER FUNCTION analysis.research_evaluator_output_hash_v2(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output jsonb, available timestamp with time zone) OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.research_evaluator_signature_payload(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output_digest text, available timestamp with time zone) RETURNS text
     LANGUAGE sql IMMUTABLE
     AS $$
@@ -2585,8 +2639,6 @@ CREATE FUNCTION analysis.research_evaluator_signature_payload(trial_id uuid, res
             );
         $$;
 
-ALTER FUNCTION analysis.research_evaluator_signature_payload(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output_digest text, available timestamp with time zone) OWNER TO market_research_signer;
-
 CREATE FUNCTION analysis.research_evaluator_signing_key() RETURNS text
     LANGUAGE sql STABLE SECURITY DEFINER
     SET search_path TO 'pg_catalog', 'analysis'
@@ -2595,8 +2647,6 @@ CREATE FUNCTION analysis.research_evaluator_signing_key() RETURNS text
             FROM analysis.research_evaluator_signing_secret
             WHERE singleton
         $$;
-
-ALTER FUNCTION analysis.research_evaluator_signing_key() OWNER TO market_research_signer;
 
 CREATE FUNCTION analysis.research_evidence_complete(result_uuid uuid) RETURNS boolean
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -2632,8 +2682,6 @@ CREATE FUNCTION analysis.research_evidence_complete(result_uuid uuid) RETURNS bo
             LEFT JOIN analysis.research_evaluator_output source ON source.id = manifest.evaluator_output_id
             WHERE manifest.trial_result_id = result_uuid;
         $$;
-
-ALTER FUNCTION analysis.research_evidence_complete(result_uuid uuid) OWNER TO market_research_signer;
 
 CREATE FUNCTION analysis.research_evidence_hash(trial_id uuid, result_id uuid, kind text, evaluator text, samples integer, valid boolean, evidence jsonb) RETURNS text
     LANGUAGE sql IMMUTABLE
@@ -2837,8 +2885,6 @@ CREATE FUNCTION analysis.research_validation_evidence_complete(result_uuid uuid,
                   AND analysis.research_evidence_complete(result.id)
             );
         $$;
-
-ALTER FUNCTION analysis.research_validation_evidence_complete(result_uuid uuid, expected_attempt_count integer) OWNER TO market_research_signer;
 
 CREATE FUNCTION analysis.stamp_agent_task_payload_availability() RETURNS trigger
     LANGUAGE plpgsql
@@ -3288,8 +3334,6 @@ CREATE FUNCTION analysis.write_research_evaluator_output(p_trial_id uuid, p_resu
         END;
         $$;
 
-ALTER FUNCTION analysis.write_research_evaluator_output(p_trial_id uuid, p_result_id uuid, p_run_id uuid, p_kind text, p_evaluator text, p_code_version text, p_input_digest text, p_universe_digest text, p_feature_digest text, p_samples integer, p_valid boolean, p_output jsonb, p_authorization_signature text) OWNER TO market_research_signer;
-
 CREATE FUNCTION app.capture_portfolio_transaction_sector() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3433,8 +3477,6 @@ CREATE FUNCTION ingest.record_source_lifecycle() RETURNS trigger
             RETURN NEW;
         END; $$;
 
-ALTER FUNCTION ingest.record_source_lifecycle() OWNER TO market_migrator;
-
 CREATE FUNCTION ingest.reject_identity_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3462,6 +3504,3433 @@ CREATE FUNCTION ingest.reject_identity_update() RETURNS trigger
             RETURN NEW;
         END; $$;
 
+CREATE TABLE analysis.agent_experiment (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    experiment_key text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    champion_provider text NOT NULL,
+    champion_model text NOT NULL,
+    challenger_provider text NOT NULL,
+    challenger_model text NOT NULL,
+    max_pairs_per_trading_day integer DEFAULT 12 NOT NULL,
+    advisory_only boolean DEFAULT true NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone,
+    parameters jsonb DEFAULT '{}'::jsonb NOT NULL,
+    immutable_report jsonb,
+    report_sealed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT agent_experiment_check CHECK (((status <> 'completed'::text) OR (immutable_report IS NOT NULL))),
+    CONSTRAINT agent_experiment_max_pairs_per_trading_day_check CHECK (((max_pairs_per_trading_day >= 1) AND (max_pairs_per_trading_day <= 12))),
+    CONSTRAINT agent_experiment_status_check CHECK ((status = ANY (ARRAY['active'::text, 'completed'::text, 'archived'::text]))),
+    CONSTRAINT agent_experiment_experiment_key_key UNIQUE (experiment_key),
+    CONSTRAINT agent_experiment_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE analysis.event_decision_packet (
+    event_id text NOT NULL,
+    symbol text NOT NULL,
+    event_kind text NOT NULL,
+    trigger_type text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    publication_id text,
+    headline text,
+    market_tape jsonb DEFAULT '{}'::jsonb NOT NULL,
+    positioning jsonb DEFAULT '{}'::jsonb NOT NULL,
+    event_fundamentals jsonb DEFAULT '{}'::jsonb NOT NULL,
+    platform_optionality jsonb DEFAULT '{}'::jsonb NOT NULL,
+    historical_cases jsonb DEFAULT '{}'::jsonb NOT NULL,
+    tactical_decision jsonb DEFAULT '{}'::jsonb NOT NULL,
+    fundamental_decision jsonb DEFAULT '{}'::jsonb NOT NULL,
+    decision_truth jsonb DEFAULT '{}'::jsonb NOT NULL,
+    evidence_refs jsonb DEFAULT '[]'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ck_event_decision_packet_json_objects CHECK (((jsonb_typeof(market_tape) = 'object'::text) AND (jsonb_typeof(positioning) = 'object'::text) AND (jsonb_typeof(event_fundamentals) = 'object'::text) AND (jsonb_typeof(platform_optionality) = 'object'::text) AND (jsonb_typeof(tactical_decision) = 'object'::text) AND (jsonb_typeof(fundamental_decision) = 'object'::text) AND (jsonb_typeof(decision_truth) = 'object'::text))),
+    CONSTRAINT event_decision_packet_pkey PRIMARY KEY (event_id)
+);
+
+CREATE TABLE analysis.hypothesis (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    hypothesis_key text NOT NULL,
+    statement text NOT NULL,
+    mechanism_class text NOT NULL,
+    falsification text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    input_hash character(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    available_at timestamp with time zone DEFAULT now() NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT hypothesis_check CHECK ((available_at >= created_at)),
+    CONSTRAINT hypothesis_hypothesis_key_key UNIQUE (hypothesis_key),
+    CONSTRAINT hypothesis_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE analysis.market_coverage_vector (
+    vector_id text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    payload jsonb NOT NULL,
+    ingest_run_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    input_content_hash text NOT NULL,
+    parent_snapshot_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT market_coverage_vector_pkey PRIMARY KEY (vector_id)
+);
+
+CREATE TABLE analysis.market_scenario_path (
+    scenario_hash text NOT NULL,
+    snapshot_id text NOT NULL,
+    parent_snapshot_id text NOT NULL,
+    posterior_id text NOT NULL,
+    model_version text NOT NULL,
+    ingest_run_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    input_content_hash text NOT NULL,
+    path jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT market_scenario_path_pkey PRIMARY KEY (scenario_hash)
+);
+
+CREATE TABLE analysis.market_state_posterior (
+    posterior_id text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    model_version text NOT NULL,
+    status text NOT NULL,
+    payload jsonb NOT NULL,
+    ingest_run_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    input_content_hash text NOT NULL,
+    parent_snapshot_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT market_state_posterior_pkey PRIMARY KEY (posterior_id)
+);
+
+CREATE TABLE analysis.option_history_canary (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.option_history_canary_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    model_revision text NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT option_history_canary_model_revision_started_at_key UNIQUE (model_revision, started_at),
+    CONSTRAINT option_history_canary_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE analysis.option_recovery_cohort (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    objective_version text NOT NULL,
+    code_version text NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    status text DEFAULT 'collecting'::text NOT NULL,
+    required_qualified_dates integer DEFAULT 5 NOT NULL,
+    qualified_at timestamp with time zone,
+    blockers jsonb DEFAULT '[]'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ck_option_recovery_cohort_required_dates CHECK ((required_qualified_dates > 0)),
+    CONSTRAINT ck_option_recovery_cohort_status CHECK ((status = ANY (ARRAY['collecting'::text, 'qualified'::text, 'retired'::text]))),
+    CONSTRAINT option_recovery_cohort_objective_version_code_version_key UNIQUE (objective_version, code_version),
+    CONSTRAINT option_recovery_cohort_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE analysis.phase4_allocation_signing_secret (
+    singleton boolean DEFAULT true NOT NULL,
+    secret bytea NOT NULL,
+    installed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT phase4_allocation_signing_secret_secret_check CHECK ((length(secret) >= 16)),
+    CONSTRAINT phase4_allocation_signing_secret_singleton_check CHECK (singleton),
+    CONSTRAINT phase4_allocation_signing_secret_pkey PRIMARY KEY (singleton)
+);
+
+CREATE TABLE analysis.portfolio_allocation_snapshot (
+    allocation_id text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    status text NOT NULL,
+    cash_hurdle double precision,
+    forecast_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    action_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    strategy_registry_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    input_hash character(64) NOT NULL,
+    content_hash character(64) NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT portfolio_allocation_snapshot_action_ids_check CHECK ((jsonb_typeof(action_ids) = 'array'::text)),
+    CONSTRAINT portfolio_allocation_snapshot_cash_hurdle_check CHECK (((cash_hurdle IS NULL) OR ((cash_hurdle < 'Infinity'::double precision) AND (cash_hurdle > '-Infinity'::double precision) AND (cash_hurdle >= (0)::double precision)))),
+    CONSTRAINT portfolio_allocation_snapshot_check CHECK ((as_of = input_cutoff)),
+    CONSTRAINT portfolio_allocation_snapshot_check1 CHECK (((status <> 'available'::text) OR (cash_hurdle > (0)::double precision))),
+    CONSTRAINT portfolio_allocation_snapshot_check2 CHECK ((allocation_id = ('allocation:'::text || (input_hash)::text))),
+    CONSTRAINT portfolio_allocation_snapshot_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
+    CONSTRAINT portfolio_allocation_snapshot_forecast_ids_check CHECK ((jsonb_typeof(forecast_ids) = 'array'::text)),
+    CONSTRAINT portfolio_allocation_snapshot_input_hash_check CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)))),
+    CONSTRAINT portfolio_allocation_snapshot_status_check CHECK ((status = ANY (ARRAY['available'::text, 'cash_only'::text, 'unavailable'::text]))),
+    CONSTRAINT portfolio_allocation_snapshot_strategy_registry_ids_check CHECK ((jsonb_typeof(strategy_registry_ids) = 'array'::text)),
+    CONSTRAINT portfolio_allocation_snapshot_pkey PRIMARY KEY (allocation_id)
+);
+
+CREATE TABLE analysis.research_evaluator_signing_secret (
+    singleton boolean DEFAULT true NOT NULL,
+    secret bytea NOT NULL,
+    installed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT research_evaluator_signing_secret_secret_check CHECK ((length(secret) >= 16)),
+    CONSTRAINT research_evaluator_signing_secret_singleton_check CHECK (singleton),
+    CONSTRAINT research_evaluator_signing_secret_pkey PRIMARY KEY (singleton)
+);
+
+CREATE TABLE analysis.ticker_benchmark_snapshot (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    benchmark_key text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    membership_hash character(64) NOT NULL,
+    member_count integer NOT NULL,
+    source_id text NOT NULL,
+    source_version text,
+    exact_membership jsonb DEFAULT '[]'::jsonb NOT NULL,
+    coverage jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ticker_benchmark_snapshot_member_count_check CHECK ((member_count >= 0)),
+    CONSTRAINT ticker_benchmark_snapshot_benchmark_key_as_of_key UNIQUE (benchmark_key, as_of),
+    CONSTRAINT ticker_benchmark_snapshot_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE app.decision_inbox_sync_state (
+    state_key text NOT NULL,
+    activated_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT decision_inbox_sync_state_pkey PRIMARY KEY (state_key)
+);
+
+CREATE TABLE app.manual_account_snapshot (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME app.manual_account_snapshot_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    account_key text DEFAULT 'manual'::text NOT NULL,
+    currency text DEFAULT 'USD'::text NOT NULL,
+    effective_at timestamp with time zone NOT NULL,
+    recorded_at timestamp with time zone DEFAULT now() NOT NULL,
+    cash_balance numeric(20,4) NOT NULL,
+    net_liquidation numeric(20,4),
+    reconciliation_state text NOT NULL,
+    reconciliation_version integer NOT NULL,
+    ledger_book_identity text NOT NULL,
+    idempotency_key text NOT NULL,
+    notes text DEFAULT ''::text NOT NULL,
+    CONSTRAINT manual_account_snapshot_cash_balance_check CHECK ((cash_balance >= (0)::numeric)),
+    CONSTRAINT manual_account_snapshot_currency_check CHECK ((currency = 'USD'::text)),
+    CONSTRAINT manual_account_snapshot_net_liquidation_check CHECK ((net_liquidation >= (0)::numeric)),
+    CONSTRAINT manual_account_snapshot_reconciliation_state_check CHECK ((reconciliation_state = ANY (ARRAY['pending'::text, 'reconciled'::text]))),
+    CONSTRAINT manual_account_snapshot_reconciliation_version_check CHECK ((reconciliation_version > 0)),
+    CONSTRAINT manual_account_snapshot_idempotency_key_key UNIQUE (idempotency_key),
+    CONSTRAINT manual_account_snapshot_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE app.publication_bundle (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    scope text NOT NULL,
+    bundle_hash character(64) NOT NULL,
+    item_count integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT publication_bundle_item_count_check CHECK ((item_count >= 0)),
+    CONSTRAINT publication_bundle_pkey PRIMARY KEY (id),
+    CONSTRAINT publication_bundle_scope_bundle_hash_key UNIQUE (scope, bundle_hash)
+);
+
+CREATE TABLE app.publication_payload (
+    content_hash character(64) NOT NULL,
+    payload jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT publication_payload_pkey PRIMARY KEY (content_hash)
+);
+
+CREATE TABLE app.setting (
+    key text NOT NULL,
+    value jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT setting_pkey PRIMARY KEY (key)
+);
+
+CREATE TABLE catalog.instrument (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME catalog.instrument_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    symbol text NOT NULL,
+    name text,
+    asset_class text NOT NULL,
+    sector text,
+    industry text,
+    category text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    market_timezone text DEFAULT 'America/New_York'::text NOT NULL,
+    delisted_at timestamp with time zone,
+    delisting_price double precision,
+    delisting_available_at timestamp with time zone,
+    delisting_source text,
+    CONSTRAINT ck_instrument_delisting_availability CHECK (((delisting_available_at IS NULL) OR (delisted_at IS NOT NULL))),
+    CONSTRAINT ck_instrument_delisting_price CHECK (((delisting_price IS NULL) OR (delisting_price > (0)::double precision))),
+    CONSTRAINT instrument_pkey PRIMARY KEY (id),
+    CONSTRAINT instrument_symbol_key UNIQUE (symbol)
+);
+
+CREATE TABLE ingest.source (
+    id text NOT NULL,
+    name text NOT NULL,
+    family text NOT NULL,
+    kind text NOT NULL,
+    origin text,
+    enabled boolean DEFAULT true NOT NULL,
+    ingestion_mode text,
+    source_url text,
+    capabilities jsonb DEFAULT '{}'::jsonb NOT NULL,
+    config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    operational_state text DEFAULT 'archived'::text NOT NULL,
+    health_owner text,
+    freshness_seconds integer,
+    CONSTRAINT ck_ingest_source_active_health_contract CHECK (((operational_state <> 'active'::text) OR ((health_owner IS NOT NULL) AND (freshness_seconds IS NOT NULL)))),
+    CONSTRAINT ck_ingest_source_freshness_seconds CHECK (((freshness_seconds IS NULL) OR (freshness_seconds > 0))),
+    CONSTRAINT ck_ingest_source_operational_state CHECK ((operational_state = ANY (ARRAY['active'::text, 'standby'::text, 'archived'::text]))),
+    CONSTRAINT source_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE ops.job_run (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    job_name text NOT NULL,
+    status text NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    finished_at timestamp with time zone,
+    error text,
+    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
+    heartbeat_at timestamp with time zone DEFAULT now() NOT NULL,
+    scheduled_due_at timestamp with time zone,
+    dispatched_at timestamp with time zone,
+    source_status text,
+    downstream_status text,
+    CONSTRAINT job_run_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text, 'skipped'::text]))),
+    CONSTRAINT job_run_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE ops.option_quote_partition_policy (
+    policy_key text NOT NULL,
+    daily_start date NOT NULL,
+    hot_retention_days integer DEFAULT 7 NOT NULL,
+    archive_retention_days integer DEFAULT 730 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT option_quote_partition_policy_pkey PRIMARY KEY (policy_key)
+);
+
+CREATE TABLE ops.provider_lease (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME ops.provider_lease_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    provider text NOT NULL,
+    workload text NOT NULL,
+    symbol text NOT NULL,
+    owner text NOT NULL,
+    heartbeat_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    acquired_at timestamp with time zone DEFAULT now() NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT provider_lease_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE ops.storage_archive_checkpoint (
+    checkpoint_key text NOT NULL,
+    archive_kind text NOT NULL,
+    source_relation text NOT NULL,
+    cursor jsonb DEFAULT '{}'::jsonb NOT NULL,
+    run_status text DEFAULT 'idle'::text NOT NULL,
+    counts jsonb DEFAULT '{}'::jsonb NOT NULL,
+    error_detail text,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT storage_archive_checkpoint_run_status_check CHECK ((run_status = ANY (ARRAY['idle'::text, 'running'::text, 'paused'::text, 'succeeded'::text, 'failed'::text]))),
+    CONSTRAINT storage_archive_checkpoint_pkey PRIMARY KEY (checkpoint_key)
+);
+
+CREATE TABLE ops.storage_archive_manifest (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME ops.storage_archive_manifest_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    archive_kind text NOT NULL,
+    source_relation text NOT NULL,
+    nas_uri text NOT NULL,
+    sha256 character(64) NOT NULL,
+    format text NOT NULL,
+    row_count bigint DEFAULT 0 NOT NULL,
+    range_start timestamp with time zone,
+    range_end timestamp with time zone,
+    schema_revision text NOT NULL,
+    verification_status text DEFAULT 'pending'::text NOT NULL,
+    verified_at timestamp with time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT storage_archive_manifest_row_count_check CHECK ((row_count >= 0)),
+    CONSTRAINT storage_archive_manifest_verification_status_check CHECK ((verification_status = ANY (ARRAY['pending'::text, 'written'::text, 'verified'::text, 'failed'::text, 'restored'::text]))),
+    CONSTRAINT storage_archive_manifest_archive_kind_sha256_key UNIQUE (archive_kind, sha256),
+    CONSTRAINT storage_archive_manifest_nas_uri_key UNIQUE (nas_uri),
+    CONSTRAINT storage_archive_manifest_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE raw.price_bar_history (
+    id bigint CONSTRAINT price_bar_id_not_null NOT NULL,
+    instrument_id bigint CONSTRAINT price_bar_instrument_id_not_null NOT NULL,
+    source_id text CONSTRAINT price_bar_source_id_not_null NOT NULL,
+    ingest_run_id uuid CONSTRAINT price_bar_ingest_run_id_not_null NOT NULL,
+    payload_id bigint,
+    "interval" text DEFAULT '1d'::text CONSTRAINT price_bar_interval_not_null NOT NULL,
+    trading_date date CONSTRAINT price_bar_trading_date_not_null NOT NULL,
+    observed_at timestamp with time zone CONSTRAINT price_bar_observed_at_not_null NOT NULL,
+    open double precision,
+    high double precision,
+    low double precision,
+    close double precision CONSTRAINT price_bar_close_not_null NOT NULL,
+    volume double precision,
+    currency text,
+    available_at timestamp with time zone DEFAULT clock_timestamp() CONSTRAINT price_bar_available_at_not_null NOT NULL
+);
+
+CREATE TABLE raw.quote_history (
+    id bigint CONSTRAINT quote_id_not_null NOT NULL,
+    instrument_id bigint CONSTRAINT quote_instrument_id_not_null NOT NULL,
+    source_id text CONSTRAINT quote_source_id_not_null NOT NULL,
+    ingest_run_id uuid CONSTRAINT quote_ingest_run_id_not_null NOT NULL,
+    payload_id bigint,
+    observed_at timestamp with time zone CONSTRAINT quote_observed_at_not_null NOT NULL,
+    price double precision CONSTRAINT quote_price_not_null NOT NULL,
+    change_abs double precision,
+    change_pct double precision,
+    currency text,
+    available_at timestamp with time zone DEFAULT clock_timestamp() CONSTRAINT quote_available_at_not_null NOT NULL
+);
+
+CREATE TABLE analysis.agent_run (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    provider text NOT NULL,
+    model text NOT NULL,
+    trigger text NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    finished_at timestamp with time zone,
+    input_tokens bigint,
+    output_tokens bigint,
+    cost_usd numeric(14,6),
+    status text NOT NULL,
+    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
+    experiment_id uuid,
+    arm text,
+    evidence_fingerprint text,
+    prompt_version text,
+    schema_version text,
+    baseline_version text,
+    validation_status text,
+    validation_detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+    latency_ms integer,
+    CONSTRAINT agent_run_pkey PRIMARY KEY (id),
+    CONSTRAINT agent_run_experiment_id_fkey FOREIGN KEY (experiment_id) REFERENCES analysis.agent_experiment(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.event_scout_event (
+    event_id text NOT NULL,
+    symbol text NOT NULL,
+    trigger_type text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    source_url text,
+    source_kind text,
+    status text NOT NULL,
+    cooldown_until timestamp with time zone,
+    collection_status jsonb DEFAULT '{}'::jsonb NOT NULL,
+    raw jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT event_scout_event_pkey PRIMARY KEY (event_id),
+    CONSTRAINT event_scout_event_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.event_decision_packet(event_id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.execution_model_snapshot (
+    execution_model_snapshot_id text NOT NULL,
+    allocation_id text NOT NULL,
+    model_version text NOT NULL,
+    calibration_status text NOT NULL,
+    sample_count integer NOT NULL,
+    fill_probability double precision,
+    spread_bps double precision,
+    latency_ms double precision,
+    impact_bps double precision,
+    input_cutoff timestamp with time zone NOT NULL,
+    input_hash character(64) NOT NULL,
+    content_hash character(64) NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT execution_model_snapshot_calibration_status_check CHECK ((calibration_status = ANY (ARRAY['calibrated'::text, 'calibration_pending'::text, 'unavailable'::text]))),
+    CONSTRAINT execution_model_snapshot_check CHECK (((calibration_status <> 'calibrated'::text) OR (sample_count > 0))),
+    CONSTRAINT execution_model_snapshot_check1 CHECK ((execution_model_snapshot_id = ('execution:'::text || (input_hash)::text))),
+    CONSTRAINT execution_model_snapshot_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
+    CONSTRAINT execution_model_snapshot_fill_probability_check CHECK (((fill_probability IS NULL) OR ((fill_probability < 'Infinity'::double precision) AND (fill_probability > '-Infinity'::double precision) AND ((fill_probability >= (0)::double precision) AND (fill_probability <= (1)::double precision))))),
+    CONSTRAINT execution_model_snapshot_impact_bps_check CHECK (((impact_bps IS NULL) OR ((impact_bps < 'Infinity'::double precision) AND (impact_bps > '-Infinity'::double precision) AND (impact_bps >= (0)::double precision)))),
+    CONSTRAINT execution_model_snapshot_input_hash_check CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)))),
+    CONSTRAINT execution_model_snapshot_latency_ms_check CHECK (((latency_ms IS NULL) OR ((latency_ms < 'Infinity'::double precision) AND (latency_ms > '-Infinity'::double precision) AND (latency_ms >= (0)::double precision)))),
+    CONSTRAINT execution_model_snapshot_sample_count_check CHECK ((sample_count >= 0)),
+    CONSTRAINT execution_model_snapshot_spread_bps_check CHECK (((spread_bps IS NULL) OR ((spread_bps < 'Infinity'::double precision) AND (spread_bps > '-Infinity'::double precision) AND (spread_bps >= (0)::double precision)))),
+    CONSTRAINT execution_model_snapshot_pkey PRIMARY KEY (execution_model_snapshot_id),
+    CONSTRAINT execution_model_snapshot_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id)
+);
+
+CREATE TABLE analysis.experiment_family (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    hypothesis_id uuid NOT NULL,
+    family_key text NOT NULL,
+    name text NOT NULL,
+    design jsonb DEFAULT '{}'::jsonb NOT NULL,
+    controls jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    input_hash character(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    available_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT experiment_family_family_key_key UNIQUE (family_key),
+    CONSTRAINT experiment_family_hypothesis_id_name_key UNIQUE (hypothesis_id, name),
+    CONSTRAINT experiment_family_pkey PRIMARY KEY (id),
+    CONSTRAINT experiment_family_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id)
+);
+
+CREATE TABLE analysis.option_event (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    instrument_id bigint NOT NULL,
+    objective_version text DEFAULT 'short_horizon_convex_v1'::text NOT NULL,
+    event_type text DEFAULT 'selloff'::text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    detected_at timestamp with time zone NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    reference_price double precision NOT NULL,
+    event_low double precision NOT NULL,
+    trigger_intraday_pct double precision,
+    trigger_one_day_pct double precision,
+    trigger_three_session_pct double precision,
+    severity_score double precision NOT NULL,
+    event_rank integer,
+    material_evidence_count integer DEFAULT 0 NOT NULL,
+    enrolled_at timestamp with time zone,
+    last_signal_at timestamp with time zone,
+    no_active_signal_sessions integer DEFAULT 0 NOT NULL,
+    closed_at timestamp with time zone,
+    close_reason text,
+    provenance jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    cohort_id uuid NOT NULL,
+    data_quality_status text DEFAULT 'valid'::text NOT NULL,
+    trigger_reason text,
+    quote_age_minutes double precision,
+    reference_trading_date date,
+    reference_source_id text,
+    reference_available_at timestamp with time zone,
+    invalidated_at timestamp with time zone,
+    invalidation_reason text,
+    priority_components jsonb DEFAULT '{}'::jsonb NOT NULL,
+    capacity_defer_reason text,
+    CONSTRAINT ck_option_event_data_quality_status CHECK ((data_quality_status = ANY (ARRAY['valid'::text, 'invalid_reference_bar'::text, 'stale_quote'::text, 'missing_reference'::text, 'lookahead_blocked'::text, 'provider_unconfirmed'::text]))),
+    CONSTRAINT ck_option_event_low CHECK (((event_low > (0)::double precision) AND (reference_price > (0)::double precision))),
+    CONSTRAINT ck_option_event_status CHECK ((status = ANY (ARRAY['active'::text, 'deferred_capacity'::text, 'closed'::text, 'invalidated'::text]))),
+    CONSTRAINT ck_option_event_type CHECK ((event_type = 'selloff'::text)),
+    CONSTRAINT option_event_pkey PRIMARY KEY (id),
+    CONSTRAINT option_event_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT,
+    CONSTRAINT option_event_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.option_recovery_program_session (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    cohort_id uuid NOT NULL,
+    trading_date date NOT NULL,
+    active_event_count integer DEFAULT 0 NOT NULL,
+    detector_scheduled_runs integer DEFAULT 0 CONSTRAINT option_recovery_program_sessio_detector_scheduled_runs_not_null NOT NULL,
+    detector_succeeded_runs integer DEFAULT 0 CONSTRAINT option_recovery_program_sessio_detector_succeeded_runs_not_null NOT NULL,
+    provider_expected_symbols integer DEFAULT 0 CONSTRAINT option_recovery_program_sess_provider_expected_symbols_not_null NOT NULL,
+    provider_received_symbols integer DEFAULT 0 CONSTRAINT option_recovery_program_sess_provider_received_symbols_not_null NOT NULL,
+    fresh_event_trigger_quotes integer DEFAULT 0 CONSTRAINT option_recovery_program_ses_fresh_event_trigger_quotes_not_null NOT NULL,
+    quote_age_p95_minutes double precision,
+    event_scheduled_slots integer DEFAULT 0 NOT NULL,
+    event_usable_slots integer DEFAULT 0 NOT NULL,
+    contract_completeness double precision,
+    canonical_continuity double precision,
+    original_continuity double precision,
+    capture_p95_latency_minutes double precision,
+    critical_defects jsonb DEFAULT '[]'::jsonb NOT NULL,
+    qualification_result boolean DEFAULT false NOT NULL,
+    qualification_reasons jsonb DEFAULT '[]'::jsonb NOT NULL,
+    policy_version text NOT NULL,
+    computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT option_recovery_program_session_cohort_id_trading_date_key UNIQUE (cohort_id, trading_date),
+    CONSTRAINT option_recovery_program_session_pkey PRIMARY KEY (id),
+    CONSTRAINT option_recovery_program_session_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.probabilistic_portfolio_scenario_artifact (
+    scenario_artifact_id text CONSTRAINT probabilistic_portfolio_scenario__scenario_artifact_id_not_null NOT NULL,
+    allocation_id text CONSTRAINT probabilistic_portfolio_scenario_artifac_allocation_id_not_null NOT NULL,
+    model_version text CONSTRAINT probabilistic_portfolio_scenario_artifac_model_version_not_null NOT NULL,
+    probability_semantics text CONSTRAINT probabilistic_portfolio_scenario_probability_semantics_not_null NOT NULL,
+    scenarios jsonb NOT NULL,
+    tail_dependence jsonb CONSTRAINT probabilistic_portfolio_scenario_artif_tail_dependence_not_null NOT NULL,
+    simultaneous_unwind jsonb CONSTRAINT probabilistic_portfolio_scenario_a_simultaneous_unwind_not_null NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    input_hash character(64) NOT NULL,
+    content_hash character(64) NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT probabilistic_portfolio_scenario_arti_simultaneous_unwind_check CHECK (((jsonb_typeof(simultaneous_unwind) = 'object'::text) AND (simultaneous_unwind <> '{}'::jsonb))),
+    CONSTRAINT probabilistic_portfolio_scenario_artifact_check CHECK ((scenario_artifact_id = ('scenario:'::text || (input_hash)::text))),
+    CONSTRAINT probabilistic_portfolio_scenario_artifact_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
+    CONSTRAINT probabilistic_portfolio_scenario_artifact_input_hash_check CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)))),
+    CONSTRAINT probabilistic_portfolio_scenario_artifact_scenarios_check CHECK (((jsonb_typeof(scenarios) = 'array'::text) AND (jsonb_array_length(scenarios) > 0))),
+    CONSTRAINT probabilistic_portfolio_scenario_artifact_tail_dependence_check CHECK (((jsonb_typeof(tail_dependence) = 'object'::text) AND (tail_dependence <> '{}'::jsonb))),
+    CONSTRAINT probabilistic_portfolio_scenario_artifact_pkey PRIMARY KEY (scenario_artifact_id),
+    CONSTRAINT probabilistic_portfolio_scenario_artifact_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id)
+);
+
+CREATE TABLE app.decision_truth (
+    symbol text NOT NULL,
+    lane text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    publication_id text,
+    candidate_state text,
+    route_verdict text,
+    readiness_state text,
+    execution_state text,
+    primary_blocker text,
+    blockers jsonb DEFAULT '[]'::jsonb NOT NULL,
+    next_action text,
+    route_version text,
+    evidence_refs jsonb DEFAULT '[]'::jsonb NOT NULL,
+    event_id text,
+    raw jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ck_decision_truth_json_arrays CHECK (((jsonb_typeof(blockers) = 'array'::text) AND (jsonb_typeof(evidence_refs) = 'array'::text))),
+    CONSTRAINT decision_truth_pkey PRIMARY KEY (symbol, lane),
+    CONSTRAINT decision_truth_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.event_decision_packet(event_id) ON DELETE SET NULL
+);
+
+CREATE TABLE app.portfolio_position (
+    instrument_id bigint NOT NULL,
+    quantity numeric(24,8) NOT NULL,
+    average_cost numeric(20,6),
+    purchase_date date,
+    notes text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT portfolio_position_pkey PRIMARY KEY (instrument_id),
+    CONSTRAINT portfolio_position_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE app.portfolio_transaction (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    instrument_id bigint,
+    transaction_type text NOT NULL,
+    quantity numeric(24,8),
+    price numeric(20,6),
+    amount numeric(20,6),
+    fees numeric(20,6) DEFAULT '0'::numeric NOT NULL,
+    realized_pnl numeric(20,6) DEFAULT '0'::numeric NOT NULL,
+    currency text DEFAULT 'USD'::text NOT NULL,
+    account text DEFAULT 'manual'::text NOT NULL,
+    executed_at timestamp with time zone NOT NULL,
+    notes text DEFAULT ''::text NOT NULL,
+    idempotency_key text NOT NULL,
+    reverses_transaction_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    instrument_sector text,
+    CONSTRAINT ck_portfolio_transaction_fees_nonnegative CHECK ((fees >= (0)::numeric)),
+    CONSTRAINT ck_portfolio_transaction_type CHECK ((transaction_type = ANY (ARRAY['opening_balance'::text, 'buy'::text, 'sell'::text, 'dividend'::text, 'fee'::text, 'split'::text, 'transfer_in'::text, 'transfer_out'::text, 'cash_deposit'::text, 'cash_withdrawal'::text]))),
+    CONSTRAINT portfolio_transaction_idempotency_key_key UNIQUE (idempotency_key),
+    CONSTRAINT portfolio_transaction_pkey PRIMARY KEY (id),
+    CONSTRAINT portfolio_transaction_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT portfolio_transaction_reverses_transaction_id_fkey FOREIGN KEY (reverses_transaction_id) REFERENCES app.portfolio_transaction(id)
+);
+
+CREATE TABLE app.publication_bundle_item (
+    bundle_id uuid NOT NULL,
+    model_name text NOT NULL,
+    stable_key text NOT NULL,
+    rank integer NOT NULL,
+    instrument_id bigint,
+    content_hash character(64) NOT NULL,
+    CONSTRAINT publication_bundle_item_pkey PRIMARY KEY (bundle_id, model_name, stable_key),
+    CONSTRAINT publication_bundle_item_bundle_id_fkey FOREIGN KEY (bundle_id) REFERENCES app.publication_bundle(id) ON DELETE CASCADE,
+    CONSTRAINT publication_bundle_item_content_hash_fkey FOREIGN KEY (content_hash) REFERENCES app.publication_payload(content_hash) ON DELETE RESTRICT,
+    CONSTRAINT publication_bundle_item_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE app.research_report (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    instrument_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    report_type text NOT NULL,
+    markdown text,
+    report jsonb NOT NULL,
+    evidence jsonb DEFAULT '[]'::jsonb NOT NULL,
+    CONSTRAINT research_report_pkey PRIMARY KEY (id),
+    CONSTRAINT research_report_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE app.thesis_automation_run (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    instrument_id bigint,
+    run_kind text DEFAULT 'assessment'::text NOT NULL,
+    trigger text DEFAULT 'manual'::text NOT NULL,
+    model text,
+    reasoning_effort text,
+    prompt_version text DEFAULT 'thesis_v3_20260725'::text NOT NULL,
+    evidence_fingerprint text,
+    evidence_snapshot jsonb DEFAULT '[]'::jsonb NOT NULL,
+    input_symbol text,
+    input_tokens integer,
+    output_tokens integer,
+    cost_usd numeric(12,6),
+    status text NOT NULL,
+    error text,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    finished_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT thesis_automation_run_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'succeeded'::text, 'failed'::text, 'timeout'::text, 'skipped'::text]))),
+    CONSTRAINT thesis_automation_run_pkey PRIMARY KEY (id),
+    CONSTRAINT thesis_automation_run_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE app.watchlist_item (
+    instrument_id bigint NOT NULL,
+    watch_state text NOT NULL,
+    notes text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT watchlist_item_pkey PRIMARY KEY (instrument_id),
+    CONSTRAINT watchlist_item_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE catalog.instrument_alias (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME catalog.instrument_alias_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    instrument_id bigint NOT NULL,
+    provider text NOT NULL,
+    external_symbol text NOT NULL,
+    exchange text DEFAULT ''::text NOT NULL,
+    currency text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT instrument_alias_pkey PRIMARY KEY (id),
+    CONSTRAINT instrument_alias_provider_external_symbol_exchange_key UNIQUE (provider, external_symbol, exchange),
+    CONSTRAINT instrument_alias_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE CASCADE
+);
+
+CREATE TABLE catalog.option_contract (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME catalog.option_contract_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    underlying_instrument_id bigint NOT NULL,
+    expiration date NOT NULL,
+    strike numeric(20,6) NOT NULL,
+    option_type text NOT NULL,
+    multiplier integer DEFAULT 100 NOT NULL,
+    style text,
+    settlement text,
+    provider_symbols jsonb DEFAULT '{}'::jsonb NOT NULL,
+    deliverable_key text NOT NULL,
+    standard_contract_verified boolean DEFAULT false NOT NULL,
+    CONSTRAINT ck_option_contract_standard_terms CHECK (((NOT standard_contract_verified) OR ((style = 'american'::text) AND (settlement = 'physical'::text) AND (deliverable_key IS NOT NULL)))),
+    CONSTRAINT option_contract_multiplier_check CHECK ((multiplier > 0)),
+    CONSTRAINT option_contract_option_type_check CHECK ((option_type = ANY (ARRAY['call'::text, 'put'::text]))),
+    CONSTRAINT option_contract_pkey PRIMARY KEY (id),
+    CONSTRAINT uq_option_contract_deliverable UNIQUE (underlying_instrument_id, expiration, strike, option_type, multiplier, deliverable_key),
+    CONSTRAINT option_contract_underlying_instrument_id_fkey FOREIGN KEY (underlying_instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE ingest.run (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    source_id text NOT NULL,
+    source_run_key text,
+    capability text NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    finished_at timestamp with time zone,
+    status text NOT NULL,
+    item_count integer DEFAULT 0 NOT NULL,
+    instrument_count integer DEFAULT 0 NOT NULL,
+    failure_detail text,
+    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT run_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text, 'skipped'::text]))),
+    CONSTRAINT run_pkey PRIMARY KEY (id),
+    CONSTRAINT run_source_id_source_run_key_key UNIQUE (source_id, source_run_key),
+    CONSTRAINT run_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE ingest.source_lifecycle_history (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME ingest.source_lifecycle_history_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    source_id text NOT NULL,
+    effective_at timestamp with time zone NOT NULL,
+    enabled boolean NOT NULL,
+    operational_state text NOT NULL,
+    recorded_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT source_lifecycle_history_pkey PRIMARY KEY (id),
+    CONSTRAINT source_lifecycle_history_source_id_effective_at_enabled_ope_key UNIQUE (source_id, effective_at, enabled, operational_state),
+    CONSTRAINT source_lifecycle_history_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE ops.storage_archive_manifest_reference (
+    manifest_id bigint NOT NULL,
+    source_relation text NOT NULL,
+    source_row_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    source_ingest_run_id uuid,
+    CONSTRAINT storage_archive_manifest_refe_source_relation_source_row_id_key UNIQUE (source_relation, source_row_id),
+    CONSTRAINT storage_archive_manifest_reference_pkey PRIMARY KEY (manifest_id, source_relation, source_row_id),
+    CONSTRAINT storage_archive_manifest_reference_manifest_id_fkey FOREIGN KEY (manifest_id) REFERENCES ops.storage_archive_manifest(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.experiment_manifest (
+    experiment_family_id uuid NOT NULL,
+    expected_trial_count integer NOT NULL,
+    expected_trial_keys jsonb NOT NULL,
+    manifest_hash character(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    available_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT experiment_manifest_expected_trial_count_check CHECK (((expected_trial_count >= 1) AND (expected_trial_count <= 10000))),
+    CONSTRAINT experiment_manifest_expected_trial_keys_check CHECK ((jsonb_typeof(expected_trial_keys) = 'array'::text)),
+    CONSTRAINT experiment_manifest_pkey PRIMARY KEY (experiment_family_id),
+    CONSTRAINT experiment_manifest_experiment_family_id_fkey FOREIGN KEY (experiment_family_id) REFERENCES analysis.experiment_family(id)
+);
+
+CREATE TABLE analysis.option_event_detector_run (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    cohort_id uuid NOT NULL,
+    scheduled_at timestamp with time zone NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    finished_at timestamp with time zone,
+    expected_symbols integer DEFAULT 0 NOT NULL,
+    received_symbols integer DEFAULT 0 NOT NULL,
+    fresh_symbols integer DEFAULT 0 NOT NULL,
+    quote_age_p95_minutes double precision,
+    provider_run_id uuid,
+    status text NOT NULL,
+    failure_reasons jsonb DEFAULT '[]'::jsonb NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ck_option_event_detector_run_counts CHECK (((expected_symbols >= 0) AND (received_symbols >= 0) AND (fresh_symbols >= 0))),
+    CONSTRAINT ck_option_event_detector_run_status CHECK ((status = ANY (ARRAY['succeeded'::text, 'failed'::text, 'skipped'::text]))),
+    CONSTRAINT option_event_detector_run_cohort_id_scheduled_at_key UNIQUE (cohort_id, scheduled_at),
+    CONSTRAINT option_event_detector_run_pkey PRIMARY KEY (id),
+    CONSTRAINT option_event_detector_run_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT,
+    CONSTRAINT option_event_detector_run_provider_run_id_fkey FOREIGN KEY (provider_run_id) REFERENCES ingest.run(id) ON DELETE SET NULL
+);
+
+CREATE TABLE analysis.option_event_spot (
+    event_id uuid NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    price double precision NOT NULL,
+    source_id text,
+    one_day_pct double precision,
+    three_session_pct double precision,
+    CONSTRAINT option_event_spot_pkey PRIMARY KEY (event_id, observed_at),
+    CONSTRAINT option_event_spot_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.option_recovery_event_session_quality (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    cohort_id uuid NOT NULL,
+    event_id uuid NOT NULL,
+    trading_date date NOT NULL,
+    scheduled_slots integer DEFAULT 0 NOT NULL,
+    usable_slots integer DEFAULT 0 NOT NULL,
+    complete_slots integer DEFAULT 0 NOT NULL,
+    contract_completeness double precision,
+    canonical_continuity double precision,
+    original_continuity double precision,
+    capture_p95_latency_minutes double precision,
+    data_defects jsonb DEFAULT '[]'::jsonb NOT NULL,
+    qualification_result boolean DEFAULT false CONSTRAINT option_recovery_event_session_qua_qualification_result_not_null NOT NULL,
+    qualification_reasons jsonb DEFAULT '[]'::jsonb CONSTRAINT option_recovery_event_session_qu_qualification_reasons_not_null NOT NULL,
+    computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT option_recovery_event_session_quality_event_id_trading_date_key UNIQUE (event_id, trading_date),
+    CONSTRAINT option_recovery_event_session_quality_pkey PRIMARY KEY (id),
+    CONSTRAINT option_recovery_event_session_quality_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT,
+    CONSTRAINT option_recovery_event_session_quality_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.research_trial (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    experiment_family_id uuid NOT NULL,
+    trial_key text NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    code_version text NOT NULL,
+    input_hash character(64) NOT NULL,
+    parameters jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status text DEFAULT 'running'::text NOT NULL,
+    failure_reason text,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    finished_at timestamp with time zone,
+    available_at timestamp with time zone DEFAULT now() NOT NULL,
+    outcome jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT research_trial_check CHECK (((finished_at IS NULL) OR (finished_at >= started_at))),
+    CONSTRAINT research_trial_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'failed'::text, 'rejected'::text]))),
+    CONSTRAINT research_trial_experiment_family_id_trial_key_key UNIQUE (experiment_family_id, trial_key),
+    CONSTRAINT research_trial_pkey PRIMARY KEY (id),
+    CONSTRAINT research_trial_experiment_family_id_fkey FOREIGN KEY (experiment_family_id) REFERENCES analysis.experiment_family(id)
+);
+
+CREATE TABLE analysis.strategy_revision (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.strategy_revision_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    strategy_key text NOT NULL,
+    revision integer NOT NULL,
+    name text NOT NULL,
+    status text NOT NULL,
+    parameters jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    promoted_at timestamp with time zone,
+    supersedes_id bigint,
+    authority_group text NOT NULL,
+    hypothesis_id uuid,
+    experiment_family_id uuid,
+    artifact_id text,
+    artifact_hash character(64),
+    research_required boolean DEFAULT false NOT NULL,
+    mechanism_class text,
+    economic_mechanism text,
+    falsification_rule text,
+    source_definition_version text,
+    strategy_family text DEFAULT 'legacy'::text NOT NULL,
+    promotability text DEFAULT 'standard'::text NOT NULL,
+    actionability text DEFAULT 'daily_research'::text NOT NULL,
+    p3_enabled boolean DEFAULT false NOT NULL,
+    CONSTRAINT strategy_revision_actionability_check CHECK ((actionability = ANY (ARRAY['daily_research'::text, 'shadow_only'::text, 'research_only'::text, 'registration_only'::text]))),
+    CONSTRAINT strategy_revision_family_check CHECK ((strategy_family <> ''::text)),
+    CONSTRAINT strategy_revision_promotability_check CHECK ((promotability = ANY (ARRAY['standard'::text, 'negative_control'::text, 'registration_only'::text, 'exposure_sleeve'::text]))),
+    CONSTRAINT strategy_revision_pkey PRIMARY KEY (id),
+    CONSTRAINT strategy_revision_strategy_key_revision_key UNIQUE (strategy_key, revision),
+    CONSTRAINT strategy_revision_experiment_family_id_fkey FOREIGN KEY (experiment_family_id) REFERENCES analysis.experiment_family(id),
+    CONSTRAINT strategy_revision_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id),
+    CONSTRAINT strategy_revision_supersedes_id_fkey FOREIGN KEY (supersedes_id) REFERENCES analysis.strategy_revision(id)
+);
+
+CREATE TABLE app.option_history_policy (
+    instrument_id bigint NOT NULL,
+    requested_state text DEFAULT 'off'::text NOT NULL,
+    effective_state text DEFAULT 'disabled'::text NOT NULL,
+    collection_tier text DEFAULT 'standard'::text NOT NULL,
+    cadence_minutes integer DEFAULT 60 NOT NULL,
+    publication_cap text DEFAULT 'WATCH'::text NOT NULL,
+    provider text DEFAULT 'robinhood'::text NOT NULL,
+    normalized_retention_days integer DEFAULT 730 NOT NULL,
+    derived_retention_days integer DEFAULT 30 NOT NULL,
+    provider_payload_retention_days integer DEFAULT 90 NOT NULL,
+    policy_revision text DEFAULT 'options-chain-reliability-20260722'::text NOT NULL,
+    lock_version integer DEFAULT 0 NOT NULL,
+    reason text,
+    activated_at timestamp with time zone,
+    paused_at timestamp with time zone,
+    requested_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    profile text DEFAULT 'history_full'::text NOT NULL,
+    activation_reason text,
+    event_id uuid,
+    expires_at timestamp with time zone,
+    hot_retention_days integer DEFAULT 7 NOT NULL,
+    archive_retention_days integer DEFAULT 730 NOT NULL,
+    CONSTRAINT ck_option_history_policy_cadence CHECK ((cadence_minutes = ANY (ARRAY[15, 60]))),
+    CONSTRAINT ck_option_history_policy_cap CHECK ((publication_cap = ANY (ARRAY['WATCH'::text, 'PAPER_READY'::text]))),
+    CONSTRAINT ck_option_history_policy_effective CHECK ((effective_state = ANY (ARRAY['disabled'::text, 'pending_gate'::text, 'shadow'::text, 'active'::text, 'paused'::text]))),
+    CONSTRAINT ck_option_history_policy_profile CHECK ((profile = ANY (ARRAY['history_full'::text, 'event_strip'::text]))),
+    CONSTRAINT ck_option_history_policy_requested CHECK ((requested_state = ANY (ARRAY['on'::text, 'off'::text]))),
+    CONSTRAINT ck_option_history_policy_retention CHECK ((((profile = 'history_full'::text) AND (normalized_retention_days = 730) AND (derived_retention_days = 30) AND (provider_payload_retention_days = 90) AND (event_id IS NULL)) OR ((profile = 'event_strip'::text) AND (normalized_retention_days = 365) AND (derived_retention_days = 30) AND (provider_payload_retention_days = 30) AND (event_id IS NOT NULL)))),
+    CONSTRAINT ck_option_history_policy_tier CHECK ((collection_tier = ANY (ARRAY['core'::text, 'standard'::text, 'event'::text]))),
+    CONSTRAINT option_history_policy_archive_retention_days_check CHECK ((archive_retention_days >= 0)),
+    CONSTRAINT option_history_policy_hot_retention_days_check CHECK ((hot_retention_days >= 0)),
+    CONSTRAINT option_history_policy_pkey PRIMARY KEY (instrument_id, profile),
+    CONSTRAINT fk_option_history_policy_event FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE SET NULL,
+    CONSTRAINT option_history_policy_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE ingest.payload (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME ingest.payload_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    run_id uuid NOT NULL,
+    archive_uri text NOT NULL,
+    sha256 character(64) NOT NULL,
+    encoding text NOT NULL,
+    byte_count bigint NOT NULL,
+    schema_version text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT payload_byte_count_check CHECK ((byte_count >= 0)),
+    CONSTRAINT payload_pkey PRIMARY KEY (id),
+    CONSTRAINT payload_sha256_key UNIQUE (sha256),
+    CONSTRAINT payload_run_id_fkey FOREIGN KEY (run_id) REFERENCES ingest.run(id) ON DELETE CASCADE
+);
+
+CREATE TABLE raw.broker_account_snapshot (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.broker_account_snapshot_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    account_key text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    currency text,
+    net_liquidation numeric(20,4),
+    buying_power numeric(20,4),
+    cash_balance numeric(20,4),
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT broker_account_snapshot_pkey PRIMARY KEY (id),
+    CONSTRAINT broker_account_snapshot_source_id_account_key_observed_at_key UNIQUE (source_id, account_key, observed_at),
+    CONSTRAINT broker_account_snapshot_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT broker_account_snapshot_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.broker_activity (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.broker_activity_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    account_key text NOT NULL,
+    activity_key text NOT NULL,
+    activity_type text NOT NULL,
+    instrument_id bigint,
+    occurred_at timestamp with time zone NOT NULL,
+    side text,
+    quantity numeric(24,8),
+    price numeric(20,6),
+    status text,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT broker_activity_activity_type_check CHECK ((activity_type = ANY (ARRAY['order'::text, 'fill'::text]))),
+    CONSTRAINT broker_activity_pkey PRIMARY KEY (id),
+    CONSTRAINT broker_activity_source_id_activity_key_activity_type_key UNIQUE (source_id, activity_key, activity_type),
+    CONSTRAINT broker_activity_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT broker_activity_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT broker_activity_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.option_capture_generation (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.option_capture_generation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    snapshot_id bigint NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    generation integer NOT NULL,
+    capture_state text NOT NULL,
+    expected_contract_count integer DEFAULT 0 NOT NULL,
+    received_contract_count integer DEFAULT 0 NOT NULL,
+    completeness double precision DEFAULT 0 NOT NULL,
+    capture_started_at timestamp with time zone DEFAULT now() NOT NULL,
+    capture_finished_at timestamp with time zone,
+    terminal_error text,
+    diagnostics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT option_capture_generation_capture_state_check CHECK ((capture_state = ANY (ARRAY['running'::text, 'complete'::text, 'partial'::text, 'failed'::text, 'deferred'::text]))),
+    CONSTRAINT option_capture_generation_completeness_check CHECK (((completeness >= (0)::double precision) AND (completeness <= (1)::double precision))),
+    CONSTRAINT option_capture_generation_pkey PRIMARY KEY (id),
+    CONSTRAINT option_capture_generation_snapshot_id_generation_key UNIQUE (snapshot_id, generation),
+    CONSTRAINT option_capture_generation_snapshot_id_ingest_run_id_key UNIQUE (snapshot_id, ingest_run_id),
+    CONSTRAINT option_capture_generation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id)
+);
+
+CREATE TABLE raw.price_bar_confirmation (
+    fact_id bigint NOT NULL,
+    fact_available_at timestamp with time zone NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    confirmed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT price_bar_confirmation_pkey PRIMARY KEY (fact_id, fact_available_at, ingest_run_id),
+    CONSTRAINT price_bar_confirmation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id)
+);
+
+CREATE TABLE raw.price_bar_fact_availability (
+    fact_id bigint NOT NULL,
+    fact_available_at timestamp with time zone NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    CONSTRAINT price_bar_fact_availability_pkey PRIMARY KEY (fact_id, fact_available_at),
+    CONSTRAINT price_bar_fact_availability_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id)
+);
+
+CREATE TABLE raw.quote_confirmation (
+    fact_id bigint NOT NULL,
+    fact_available_at timestamp with time zone NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    confirmed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT quote_confirmation_pkey PRIMARY KEY (fact_id, fact_available_at, ingest_run_id),
+    CONSTRAINT quote_confirmation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id)
+);
+
+CREATE TABLE raw.quote_fact_availability (
+    fact_id bigint NOT NULL,
+    fact_available_at timestamp with time zone NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    CONSTRAINT quote_fact_availability_pkey PRIMARY KEY (fact_id, fact_available_at),
+    CONSTRAINT quote_fact_availability_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id)
+);
+
+CREATE TABLE raw.price_bar (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.price_bar_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) CONSTRAINT price_bar_id_not_null NOT NULL,
+    instrument_id bigint CONSTRAINT price_bar_instrument_id_not_null NOT NULL,
+    source_id text CONSTRAINT price_bar_source_id_not_null NOT NULL,
+    ingest_run_id uuid CONSTRAINT price_bar_ingest_run_id_not_null NOT NULL,
+    payload_id bigint,
+    "interval" text DEFAULT '1d'::text CONSTRAINT price_bar_interval_not_null NOT NULL,
+    trading_date date CONSTRAINT price_bar_trading_date_not_null NOT NULL,
+    observed_at timestamp with time zone CONSTRAINT price_bar_observed_at_not_null NOT NULL,
+    open double precision,
+    high double precision,
+    low double precision,
+    close double precision CONSTRAINT price_bar_close_not_null NOT NULL,
+    volume double precision,
+    currency text,
+    available_at timestamp with time zone DEFAULT clock_timestamp() CONSTRAINT price_bar_available_at_not_null NOT NULL,
+    CONSTRAINT price_bar_instrument_id_source_id_interval_observed_at_key UNIQUE (instrument_id, source_id, "interval", observed_at),
+    CONSTRAINT price_bar_pkey PRIMARY KEY (id),
+    CONSTRAINT price_bar_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT price_bar_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT price_bar_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT price_bar_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.quote (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.quote_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) CONSTRAINT quote_id_not_null NOT NULL,
+    instrument_id bigint CONSTRAINT quote_instrument_id_not_null NOT NULL,
+    source_id text CONSTRAINT quote_source_id_not_null NOT NULL,
+    ingest_run_id uuid CONSTRAINT quote_ingest_run_id_not_null NOT NULL,
+    payload_id bigint,
+    observed_at timestamp with time zone CONSTRAINT quote_observed_at_not_null NOT NULL,
+    price double precision CONSTRAINT quote_price_not_null NOT NULL,
+    change_abs double precision,
+    change_pct double precision,
+    currency text,
+    available_at timestamp with time zone DEFAULT clock_timestamp() CONSTRAINT quote_available_at_not_null NOT NULL,
+    CONSTRAINT quote_instrument_id_source_id_observed_at_key UNIQUE (instrument_id, source_id, observed_at),
+    CONSTRAINT quote_pkey PRIMARY KEY (id),
+    CONSTRAINT quote_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT quote_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT quote_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT quote_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE analysis.option_event_contract (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.option_event_contract_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    event_id uuid NOT NULL,
+    contract_id bigint,
+    contract_key text NOT NULL,
+    option_type text NOT NULL,
+    expiration date NOT NULL,
+    target_delta double precision NOT NULL,
+    is_initial boolean DEFAULT false NOT NULL,
+    replaces_contract_id bigint,
+    initial_capture_generation_id bigint,
+    added_at timestamp with time zone DEFAULT now() NOT NULL,
+    retired_at timestamp with time zone,
+    reason text,
+    ladder_slot_key text NOT NULL,
+    retired_reason text,
+    CONSTRAINT ck_option_event_contract_type CHECK ((option_type = ANY (ARRAY['call'::text, 'put'::text]))),
+    CONSTRAINT option_event_contract_event_id_contract_key_key UNIQUE (event_id, contract_key),
+    CONSTRAINT option_event_contract_pkey PRIMARY KEY (id),
+    CONSTRAINT option_event_contract_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id) ON DELETE RESTRICT,
+    CONSTRAINT option_event_contract_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE,
+    CONSTRAINT option_event_contract_initial_capture_generation_id_fkey FOREIGN KEY (initial_capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE SET NULL,
+    CONSTRAINT option_event_contract_replaces_contract_id_fkey FOREIGN KEY (replaces_contract_id) REFERENCES analysis.option_event_contract(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.option_liquidity_sla (
+    sla_id text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    payload_hash text NOT NULL,
+    parent_snapshot_id text,
+    payload jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    payload_id bigint NOT NULL,
+    CONSTRAINT option_liquidity_sla_pkey PRIMARY KEY (sla_id),
+    CONSTRAINT option_liquidity_sla_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT option_liquidity_sla_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT option_liquidity_sla_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE analysis.run (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    run_type text NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    code_version text NOT NULL,
+    feature_versions jsonb DEFAULT '{}'::jsonb NOT NULL,
+    strategy_revision_id bigint,
+    input_hash character(64) NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    finished_at timestamp with time zone,
+    status text NOT NULL,
+    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inputs jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT run_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text]))),
+    CONSTRAINT run_pkey PRIMARY KEY (id),
+    CONSTRAINT run_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id)
+);
+
+CREATE TABLE analysis.strategy_manifest (
+    strategy_revision_id bigint NOT NULL,
+    source_definition_version text NOT NULL,
+    source_manifest jsonb NOT NULL,
+    data_manifest jsonb NOT NULL,
+    cost_manifest jsonb NOT NULL,
+    capacity_manifest jsonb NOT NULL,
+    failure_manifest jsonb NOT NULL,
+    manifest_hash character(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT strategy_manifest_capacity_manifest_check CHECK (((jsonb_typeof(capacity_manifest) = 'object'::text) AND (capacity_manifest <> '{}'::jsonb))),
+    CONSTRAINT strategy_manifest_cost_manifest_check CHECK (((jsonb_typeof(cost_manifest) = 'object'::text) AND (cost_manifest <> '{}'::jsonb))),
+    CONSTRAINT strategy_manifest_data_manifest_check CHECK (((jsonb_typeof(data_manifest) = 'object'::text) AND (data_manifest <> '{}'::jsonb))),
+    CONSTRAINT strategy_manifest_failure_manifest_check CHECK (((jsonb_typeof(failure_manifest) = 'object'::text) AND (failure_manifest <> '{}'::jsonb))),
+    CONSTRAINT strategy_manifest_manifest_hash_check CHECK ((manifest_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT strategy_manifest_source_manifest_check CHECK (((jsonb_typeof(source_manifest) = 'object'::text) AND (source_manifest <> '{}'::jsonb))),
+    CONSTRAINT strategy_manifest_pkey PRIMARY KEY (strategy_revision_id),
+    CONSTRAINT strategy_manifest_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id)
+);
+
+CREATE TABLE analysis.trial_result (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    research_trial_id uuid NOT NULL,
+    result_kind text NOT NULL,
+    result_version integer DEFAULT 1 NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    outcome jsonb DEFAULT '{}'::jsonb NOT NULL,
+    input_hash character(64) NOT NULL,
+    CONSTRAINT trial_result_check CHECK ((available_at <= observed_at)),
+    CONSTRAINT trial_result_result_version_check CHECK ((result_version > 0)),
+    CONSTRAINT trial_result_pkey PRIMARY KEY (id),
+    CONSTRAINT trial_result_research_trial_id_result_kind_result_version_key UNIQUE (research_trial_id, result_kind, result_version),
+    CONSTRAINT trial_result_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id)
+);
+
+CREATE TABLE analysis.trial_universe_manifest (
+    research_trial_id uuid NOT NULL,
+    cutoff timestamp with time zone NOT NULL,
+    expected_member_count integer NOT NULL,
+    expected_members jsonb NOT NULL,
+    manifest_hash character(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    available_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT trial_universe_manifest_expected_member_count_check CHECK (((expected_member_count >= 0) AND (expected_member_count <= 10000))),
+    CONSTRAINT trial_universe_manifest_expected_members_check CHECK ((jsonb_typeof(expected_members) = 'array'::text)),
+    CONSTRAINT trial_universe_manifest_pkey PRIMARY KEY (research_trial_id),
+    CONSTRAINT trial_universe_manifest_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id)
+);
+
+CREATE TABLE analysis.universe_observation (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    research_trial_id uuid NOT NULL,
+    instrument_id bigint NOT NULL,
+    cutoff timestamp with time zone NOT NULL,
+    eligible boolean NOT NULL,
+    rank integer,
+    candidate_score double precision,
+    exclusion_reason text,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    input_hash character(64) NOT NULL,
+    outcome jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT universe_observation_check CHECK ((eligible OR (exclusion_reason IS NOT NULL))),
+    CONSTRAINT universe_observation_rank_check CHECK (((rank IS NULL) OR (rank > 0))),
+    CONSTRAINT universe_observation_pkey PRIMARY KEY (id),
+    CONSTRAINT universe_observation_research_trial_id_cutoff_instrument_id_key UNIQUE (research_trial_id, cutoff, instrument_id),
+    CONSTRAINT universe_observation_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT universe_observation_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id)
+);
+
+CREATE TABLE analysis.validation_dossier (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    strategy_revision_id bigint NOT NULL,
+    research_trial_id uuid,
+    status text DEFAULT 'draft'::text NOT NULL,
+    sections jsonb DEFAULT '{}'::jsonb NOT NULL,
+    compiled_policy jsonb DEFAULT '{}'::jsonb NOT NULL,
+    artifact_id text,
+    artifact_hash character(64),
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    sealed_at timestamp with time zone,
+    CONSTRAINT validation_dossier_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'sealed'::text, 'rejected'::text]))),
+    CONSTRAINT validation_dossier_pkey PRIMARY KEY (id),
+    CONSTRAINT validation_dossier_strategy_revision_id_key UNIQUE (strategy_revision_id),
+    CONSTRAINT validation_dossier_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id),
+    CONSTRAINT validation_dossier_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id)
+);
+
+CREATE TABLE raw.broker_position_snapshot (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.broker_position_snapshot_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    account_snapshot_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    quantity numeric(24,8) NOT NULL,
+    average_cost numeric(20,6),
+    market_price numeric(20,6),
+    market_value numeric(24,4),
+    unrealized_pnl numeric(24,4),
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT broker_position_snapshot_account_snapshot_id_instrument_id_key UNIQUE (account_snapshot_id, instrument_id),
+    CONSTRAINT broker_position_snapshot_pkey PRIMARY KEY (id),
+    CONSTRAINT broker_position_snapshot_account_snapshot_id_fkey FOREIGN KEY (account_snapshot_id) REFERENCES raw.broker_account_snapshot(id) ON DELETE CASCADE,
+    CONSTRAINT broker_position_snapshot_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE raw.content_item (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.content_item_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    payload_id bigint,
+    source_key text NOT NULL,
+    kind text NOT NULL,
+    title text,
+    url text,
+    author text,
+    published_at timestamp with time zone,
+    observed_at timestamp with time zone NOT NULL,
+    summary text,
+    content_hash character(64),
+    license_status text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT content_item_pkey PRIMARY KEY (id),
+    CONSTRAINT content_item_source_id_source_key_key UNIQUE (source_id, source_key),
+    CONSTRAINT content_item_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT content_item_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT content_item_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.disclosure (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.disclosure_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    instrument_id bigint,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    payload_id bigint,
+    source_key text NOT NULL,
+    source_type text NOT NULL,
+    trader_name text,
+    filer_name text,
+    event_date date,
+    filed_date date,
+    action text,
+    amount_text text,
+    source_url text,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT disclosure_pkey PRIMARY KEY (id),
+    CONSTRAINT disclosure_source_id_source_key_key UNIQUE (source_id, source_key),
+    CONSTRAINT disclosure_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT disclosure_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT disclosure_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT disclosure_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.fundamental_observation (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.fundamental_observation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    instrument_id bigint NOT NULL,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    payload_id bigint,
+    metric_set text NOT NULL,
+    period_end date,
+    filed_at timestamp with time zone,
+    observed_at timestamp with time zone NOT NULL,
+    "values" jsonb NOT NULL,
+    period_start date,
+    CONSTRAINT fundamental_observation_pkey PRIMARY KEY (id),
+    CONSTRAINT fundamental_observation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT fundamental_observation_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT fundamental_observation_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT fundamental_observation_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.market_event (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.market_event_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    instrument_id bigint,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    payload_id bigint,
+    source_key text NOT NULL,
+    event_scope text NOT NULL,
+    event_kind text NOT NULL,
+    title text NOT NULL,
+    starts_at timestamp with time zone NOT NULL,
+    ends_at timestamp with time zone,
+    importance text,
+    verification_status text,
+    source_url text,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT market_event_pkey PRIMARY KEY (id),
+    CONSTRAINT market_event_source_id_source_key_key UNIQUE (source_id, source_key),
+    CONSTRAINT market_event_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT market_event_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT market_event_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT market_event_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.market_observation (
+    observation_id text NOT NULL,
+    field_name text NOT NULL,
+    dimension text NOT NULL,
+    asset_class text NOT NULL,
+    source_id text NOT NULL,
+    source_version text NOT NULL,
+    value jsonb,
+    unit text,
+    ingest_run_id uuid NOT NULL,
+    payload_id bigint NOT NULL,
+    content_hash text NOT NULL,
+    parent_snapshot_id text,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    publication_at timestamp with time zone,
+    release_at timestamp with time zone,
+    vintage_at timestamp with time zone,
+    actual double precision,
+    consensus double precision,
+    surprise double precision,
+    revision double precision,
+    status text NOT NULL,
+    confidence double precision NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ck_market_observation_clocks CHECK ((available_at IS NOT NULL)),
+    CONSTRAINT ck_market_observation_status CHECK ((status = ANY (ARRAY['AVAILABLE'::text, 'MISSING_SOURCE'::text, 'MISSING_HISTORY'::text, 'CONFLICTED'::text, 'FALLBACK'::text, 'UNSUPPORTED'::text, 'STALE'::text]))),
+    CONSTRAINT market_observation_confidence_check CHECK (((confidence >= (0)::double precision) AND (confidence <= (1)::double precision))),
+    CONSTRAINT market_observation_pkey PRIMARY KEY (observation_id),
+    CONSTRAINT market_observation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT market_observation_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT market_observation_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.option_snapshot (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.option_snapshot_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    payload_id bigint,
+    observed_at timestamp with time zone NOT NULL,
+    trading_date date NOT NULL,
+    market_session text NOT NULL,
+    universe text NOT NULL,
+    completeness double precision,
+    contract_count integer DEFAULT 0 NOT NULL,
+    collection_profile text DEFAULT 'radar'::text NOT NULL,
+    history_symbol text,
+    slot_at timestamp with time zone,
+    capture_started_at timestamp with time zone,
+    capture_finished_at timestamp with time zone,
+    expected_contract_count integer,
+    received_contract_count integer,
+    capture_state text DEFAULT 'complete'::text NOT NULL,
+    latest_complete_generation_id bigint,
+    CONSTRAINT ck_option_snapshot_capture_state CHECK ((capture_state = ANY (ARRAY['running'::text, 'complete'::text, 'partial'::text, 'failed'::text, 'deferred'::text]))),
+    CONSTRAINT ck_option_snapshot_profile CHECK ((collection_profile = ANY (ARRAY['radar'::text, 'history_full'::text, 'event_strip'::text]))),
+    CONSTRAINT option_snapshot_completeness_check CHECK (((completeness >= (0)::double precision) AND (completeness <= (1)::double precision))),
+    CONSTRAINT option_snapshot_market_session_check CHECK ((market_session = ANY (ARRAY['premarket'::text, 'regular'::text, 'afterhours'::text, 'closed'::text, 'unknown'::text]))),
+    CONSTRAINT option_snapshot_pkey PRIMARY KEY (id),
+    CONSTRAINT option_snapshot_source_id_observed_at_universe_key UNIQUE (source_id, observed_at, universe),
+    CONSTRAINT option_snapshot_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT option_snapshot_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT option_snapshot_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE analysis.decision (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    run_id uuid NOT NULL,
+    decision_key text NOT NULL,
+    kind text NOT NULL,
+    instrument_id bigint NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    state text NOT NULL,
+    rank integer,
+    score double precision,
+    quality_status text,
+    strategy_revision_id bigint,
+    reasons text[] DEFAULT '{}'::text[] NOT NULL,
+    blockers text[] DEFAULT '{}'::text[] NOT NULL,
+    input_hash character(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    lane text,
+    episode_key text,
+    sample_eligible boolean DEFAULT false NOT NULL,
+    quarantine_reason text,
+    calibration_cohort text,
+    CONSTRAINT decision_pkey PRIMARY KEY (id),
+    CONSTRAINT decision_run_id_decision_key_key UNIQUE (run_id, decision_key),
+    CONSTRAINT decision_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT decision_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE,
+    CONSTRAINT decision_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id)
+);
+
+CREATE TABLE analysis.option_discovery_run (
+    run_id uuid NOT NULL,
+    universe_hash text NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    completed_at timestamp with time zone,
+    provider text,
+    market_session text,
+    symbols_considered integer DEFAULT 0 NOT NULL,
+    symbols_with_chains integer DEFAULT 0 NOT NULL,
+    contracts_evaluated integer DEFAULT 0 NOT NULL,
+    manifest jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT option_discovery_run_pkey PRIMARY KEY (run_id),
+    CONSTRAINT option_discovery_run_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.option_event_capture (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    event_id uuid NOT NULL,
+    snapshot_id bigint,
+    capture_generation_id bigint,
+    scheduled_at timestamp with time zone NOT NULL,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    status text NOT NULL,
+    expected_contract_count integer DEFAULT 0 NOT NULL,
+    received_contract_count integer DEFAULT 0 NOT NULL,
+    completeness double precision,
+    continuity_pct double precision,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    canonical_continuity_pct double precision,
+    original_continuity_pct double precision,
+    CONSTRAINT ck_option_event_capture_status CHECK ((status = ANY (ARRAY['complete'::text, 'partial'::text, 'failed'::text, 'deferred'::text]))),
+    CONSTRAINT option_event_capture_event_id_scheduled_at_key UNIQUE (event_id, scheduled_at),
+    CONSTRAINT option_event_capture_pkey PRIMARY KEY (id),
+    CONSTRAINT option_event_capture_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE SET NULL,
+    CONSTRAINT option_event_capture_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE,
+    CONSTRAINT option_event_capture_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE SET NULL
+);
+
+CREATE TABLE analysis.option_feature (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.option_feature_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    run_id uuid NOT NULL,
+    snapshot_id bigint NOT NULL,
+    contract_id bigint NOT NULL,
+    quote_observed_at timestamp with time zone NOT NULL,
+    feature_version text NOT NULL,
+    modeled_iv double precision,
+    modeled_delta double precision,
+    modeled_gamma double precision,
+    modeled_theta double precision,
+    modeled_vega double precision,
+    dte integer,
+    spread_pct double precision,
+    iv_rank double precision,
+    iv_percentile double precision,
+    liquidity_score double precision,
+    flow_score double precision,
+    convexity_score double precision,
+    required_2x_price double precision,
+    required_5x_price double precision,
+    required_10x_price double precision,
+    required_move_pct double precision,
+    ev_inputs jsonb DEFAULT '{}'::jsonb NOT NULL,
+    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT option_feature_pkey PRIMARY KEY (id),
+    CONSTRAINT option_feature_run_id_snapshot_id_contract_id_feature_versi_key UNIQUE (run_id, snapshot_id, contract_id, feature_version),
+    CONSTRAINT option_feature_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id),
+    CONSTRAINT option_feature_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE,
+    CONSTRAINT option_feature_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id)
+);
+
+CREATE TABLE analysis.option_history_anomaly (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.option_history_anomaly_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    snapshot_id bigint NOT NULL,
+    contract_id bigint,
+    expiration date,
+    option_type text,
+    anomaly_type text NOT NULL,
+    state text NOT NULL,
+    observed_value double precision,
+    expected_value double precision,
+    z_score double precision,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    feature_version text DEFAULT 'history-v2'::text NOT NULL,
+    CONSTRAINT option_history_anomaly_option_type_check CHECK ((option_type = ANY (ARRAY['call'::text, 'put'::text]))),
+    CONSTRAINT option_history_anomaly_state_check CHECK ((state = ANY (ARRAY['active'::text, 'collecting'::text]))),
+    CONSTRAINT option_history_anomaly_pkey PRIMARY KEY (id),
+    CONSTRAINT option_history_anomaly_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id),
+    CONSTRAINT option_history_anomaly_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.option_relative_value (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.option_relative_value_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    analysis_run_id uuid NOT NULL,
+    capture_generation_id bigint NOT NULL,
+    contract_id bigint NOT NULL,
+    model_revision text NOT NULL,
+    classification text NOT NULL,
+    fair_low double precision,
+    fair_high double precision,
+    modeled_net_edge double precision,
+    edge_side text,
+    confidence double precision,
+    quality_status text NOT NULL,
+    blockers text[] DEFAULT '{}'::text[] NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT option_relative_value_classification_check CHECK ((classification = ANY (ARRAY['relative_cheap'::text, 'relative_rich'::text, 'historical_static_arbitrage_candidate'::text, 'verified_static_arbitrage_candidate'::text, 'rejected'::text]))),
+    CONSTRAINT option_relative_value_analysis_run_id_capture_generation_id_key UNIQUE (analysis_run_id, capture_generation_id, contract_id, model_revision),
+    CONSTRAINT option_relative_value_pkey PRIMARY KEY (id),
+    CONSTRAINT option_relative_value_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE RESTRICT,
+    CONSTRAINT option_relative_value_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id)
+);
+
+CREATE TABLE analysis.option_surface_shift (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    instrument_id bigint NOT NULL,
+    current_capture_generation_id bigint NOT NULL,
+    previous_capture_generation_id bigint NOT NULL,
+    current_analysis_run_id uuid NOT NULL,
+    previous_analysis_run_id uuid NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    previous_as_of timestamp with time zone,
+    feature_version text NOT NULL,
+    tenors integer[] DEFAULT ARRAY[7, 14, 30, 60, 90] NOT NULL,
+    w1_shift double precision,
+    tail_mass_change double precision,
+    skew_shift double precision,
+    term_shift double precision,
+    evidence_state text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT ck_surface_shift_evidence_state CHECK ((evidence_state = ANY (ARRAY['ready'::text, 'insufficient_surface_evidence'::text, 'unavailable'::text]))),
+    CONSTRAINT option_surface_shift_current_analysis_run_id_previous_analy_key UNIQUE (current_analysis_run_id, previous_analysis_run_id, feature_version),
+    CONSTRAINT option_surface_shift_pkey PRIMARY KEY (id),
+    CONSTRAINT option_surface_shift_current_capture_generation_id_fkey FOREIGN KEY (current_capture_generation_id) REFERENCES raw.option_capture_generation(id),
+    CONSTRAINT option_surface_shift_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT,
+    CONSTRAINT option_surface_shift_previous_capture_generation_id_fkey FOREIGN KEY (previous_capture_generation_id) REFERENCES raw.option_capture_generation(id)
+);
+
+CREATE TABLE analysis.option_surface_summary (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.option_surface_summary_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    snapshot_id bigint NOT NULL,
+    expiration date NOT NULL,
+    option_type text NOT NULL,
+    feature_version text NOT NULL,
+    dte integer NOT NULL,
+    atm_iv double precision,
+    delta_25_iv double precision,
+    skew_25 double precision,
+    smile_slope double precision,
+    smile_curvature double precision,
+    term_slope double precision,
+    average_spread_pct double precision,
+    liquidity_score double precision,
+    atm_iv_change double precision,
+    skew_25_change double precision,
+    term_slope_change double precision,
+    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    analysis_run_id uuid,
+    capture_generation_id bigint,
+    fit_method text,
+    fit_status text,
+    eligible_point_count integer,
+    group_duration_seconds double precision,
+    max_quote_age_seconds double precision,
+    fit_rmse double precision,
+    candidate_count integer DEFAULT 0 NOT NULL,
+    CONSTRAINT option_surface_summary_option_type_check CHECK ((option_type = ANY (ARRAY['call'::text, 'put'::text]))),
+    CONSTRAINT option_surface_summary_pkey PRIMARY KEY (id),
+    CONSTRAINT option_surface_summary_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id),
+    CONSTRAINT option_surface_summary_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE CASCADE
+);
+
+-- PostgreSQL requires post-creation statements for NOT VALID and cyclic FKs.
+ALTER TABLE ONLY analysis.option_relative_value
+    ADD CONSTRAINT option_relative_value_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES analysis.run(id) ON DELETE CASCADE NOT VALID;
+
+ALTER TABLE ONLY analysis.option_surface_shift
+    ADD CONSTRAINT option_surface_shift_current_analysis_run_id_fkey FOREIGN KEY (current_analysis_run_id) REFERENCES analysis.run(id) ON DELETE CASCADE NOT VALID;
+
+ALTER TABLE ONLY analysis.option_surface_shift
+    ADD CONSTRAINT option_surface_shift_previous_analysis_run_id_fkey FOREIGN KEY (previous_analysis_run_id) REFERENCES analysis.run(id) ON DELETE CASCADE NOT VALID;
+
+ALTER TABLE ONLY analysis.option_surface_summary
+    ADD CONSTRAINT option_surface_summary_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES analysis.run(id) ON DELETE CASCADE NOT VALID;
+
+CREATE TABLE analysis.reject_summary (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.reject_summary_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    run_id uuid NOT NULL,
+    strategy_revision_id bigint,
+    instrument_id bigint,
+    gate_code text NOT NULL,
+    reject_count integer NOT NULL,
+    sampled_decision_keys text[] DEFAULT '{}'::text[] NOT NULL,
+    CONSTRAINT reject_summary_reject_count_check CHECK ((reject_count >= 0)),
+    CONSTRAINT reject_summary_pkey PRIMARY KEY (id),
+    CONSTRAINT reject_summary_run_id_strategy_revision_id_instrument_id_ga_key UNIQUE (run_id, strategy_revision_id, instrument_id, gate_code),
+    CONSTRAINT reject_summary_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT reject_summary_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE,
+    CONSTRAINT reject_summary_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id)
+);
+
+CREATE TABLE analysis.research_evaluator_output (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    research_trial_id uuid NOT NULL,
+    trial_result_id uuid NOT NULL,
+    analysis_run_id uuid NOT NULL,
+    evidence_kind text NOT NULL,
+    evaluator_id text NOT NULL,
+    evaluator_code_version text NOT NULL,
+    input_hash character(64) NOT NULL,
+    universe_hash character(64) NOT NULL,
+    feature_hash character(64) NOT NULL,
+    sample_count integer NOT NULL,
+    domain_valid boolean NOT NULL,
+    raw_output jsonb NOT NULL,
+    output_hash character(64) DEFAULT repeat('0'::text, 64) NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    signature text DEFAULT ''::text NOT NULL,
+    CONSTRAINT research_evaluator_output_check CHECK ((available_at >= created_at)),
+    CONSTRAINT research_evaluator_output_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['controls'::text, 'cpcv_paths'::text, 'neutralization'::text, 'parameter_stability'::text, 'mechanism_falsification'::text, 'multiple_testing'::text]))),
+    CONSTRAINT research_evaluator_output_feature_hash_check CHECK (((feature_hash ~ '^[0-9a-fA-F]{64}$'::text) AND (lower((feature_hash)::text) <> repeat('0'::text, 64)))),
+    CONSTRAINT research_evaluator_output_input_hash_check CHECK (((input_hash ~ '^[0-9a-fA-F]{64}$'::text) AND (lower((input_hash)::text) <> repeat('0'::text, 64)))),
+    CONSTRAINT research_evaluator_output_raw_output_check CHECK ((jsonb_typeof(raw_output) = 'object'::text)),
+    CONSTRAINT research_evaluator_output_sample_count_check CHECK ((sample_count > 0)),
+    CONSTRAINT research_evaluator_output_universe_hash_check CHECK (((universe_hash ~ '^[0-9a-fA-F]{64}$'::text) AND (lower((universe_hash)::text) <> repeat('0'::text, 64)))),
+    CONSTRAINT research_evaluator_output_pkey PRIMARY KEY (id),
+    CONSTRAINT research_evaluator_output_trial_result_id_evidence_kind_key UNIQUE (trial_result_id, evidence_kind),
+    CONSTRAINT research_evaluator_output_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES analysis.run(id),
+    CONSTRAINT research_evaluator_output_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id),
+    CONSTRAINT research_evaluator_output_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id)
+);
+
+CREATE TABLE analysis.source_signal (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.source_signal_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    run_id uuid NOT NULL,
+    content_item_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    signal_type text NOT NULL,
+    sentiment text,
+    direction text,
+    confidence double precision,
+    thesis text,
+    antithesis text,
+    invalidation text,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    event_at timestamp with time zone,
+    published_at timestamp with time zone,
+    available_at timestamp with time zone,
+    received_at timestamp with time zone,
+    revision text,
+    license text,
+    evidence_state text,
+    transformation text,
+    CONSTRAINT source_signal_pkey PRIMARY KEY (id),
+    CONSTRAINT source_signal_run_id_content_item_id_instrument_id_signal_t_key UNIQUE (run_id, content_item_id, instrument_id, signal_type),
+    CONSTRAINT source_signal_content_item_id_fkey FOREIGN KEY (content_item_id) REFERENCES raw.content_item(id),
+    CONSTRAINT source_signal_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT source_signal_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.strategy_comparison (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    champion_revision_id bigint NOT NULL,
+    challenger_revision_id bigint NOT NULL,
+    champion_trial_id uuid NOT NULL,
+    challenger_trial_id uuid NOT NULL,
+    champion_result_id uuid NOT NULL,
+    challenger_result_id uuid NOT NULL,
+    champion_result_hash character(64) NOT NULL,
+    challenger_result_hash character(64) NOT NULL,
+    champion_manifest_hash character(64) NOT NULL,
+    challenger_manifest_hash character(64) NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    input_hash character(64) NOT NULL,
+    distinctness text NOT NULL,
+    explanation text NOT NULL,
+    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT strategy_comparison_check CHECK ((champion_revision_id <> challenger_revision_id)),
+    CONSTRAINT strategy_comparison_check1 CHECK (((available_at <= observed_at) AND (available_at <= input_cutoff))),
+    CONSTRAINT strategy_comparison_distinctness_check CHECK ((distinctness = ANY (ARRAY['distinct'::text, 'replica'::text, 'exposure_sleeve'::text, 'inconclusive'::text, 'blocked'::text]))),
+    CONSTRAINT strategy_comparison_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT strategy_comparison_champion_revision_id_challenger_revisio_key UNIQUE (champion_revision_id, challenger_revision_id, input_cutoff, input_hash),
+    CONSTRAINT strategy_comparison_pkey PRIMARY KEY (id),
+    CONSTRAINT strategy_comparison_challenger_result_id_fkey FOREIGN KEY (challenger_result_id) REFERENCES analysis.trial_result(id),
+    CONSTRAINT strategy_comparison_challenger_revision_id_fkey FOREIGN KEY (challenger_revision_id) REFERENCES analysis.strategy_revision(id),
+    CONSTRAINT strategy_comparison_challenger_trial_id_fkey FOREIGN KEY (challenger_trial_id) REFERENCES analysis.research_trial(id),
+    CONSTRAINT strategy_comparison_champion_result_id_fkey FOREIGN KEY (champion_result_id) REFERENCES analysis.trial_result(id),
+    CONSTRAINT strategy_comparison_champion_revision_id_fkey FOREIGN KEY (champion_revision_id) REFERENCES analysis.strategy_revision(id),
+    CONSTRAINT strategy_comparison_champion_trial_id_fkey FOREIGN KEY (champion_trial_id) REFERENCES analysis.research_trial(id)
+);
+
+CREATE TABLE analysis.strategy_evaluation (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    strategy_revision_id bigint NOT NULL,
+    evaluation_type text NOT NULL,
+    evaluated_at timestamp with time zone NOT NULL,
+    period_start timestamp with time zone,
+    period_end timestamp with time zone,
+    verdict text,
+    metrics jsonb NOT NULL,
+    evidence jsonb DEFAULT '[]'::jsonb NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    hypothesis_id uuid,
+    experiment_family_id uuid,
+    research_trial_id uuid,
+    validation_dossier_id uuid,
+    artifact_id text,
+    artifact_hash character(64),
+    input_hash character(64),
+    lineage jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT strategy_evaluation_pkey PRIMARY KEY (id),
+    CONSTRAINT strategy_evaluation_experiment_family_id_fkey FOREIGN KEY (experiment_family_id) REFERENCES analysis.experiment_family(id),
+    CONSTRAINT strategy_evaluation_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id),
+    CONSTRAINT strategy_evaluation_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id),
+    CONSTRAINT strategy_evaluation_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id),
+    CONSTRAINT strategy_evaluation_validation_dossier_id_fkey FOREIGN KEY (validation_dossier_id) REFERENCES analysis.validation_dossier(id)
+);
+
+CREATE TABLE analysis.strategy_monitoring_evidence (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    strategy_revision_id bigint NOT NULL,
+    research_trial_id uuid NOT NULL,
+    trial_result_id uuid NOT NULL,
+    universe_manifest_hash character(64) NOT NULL,
+    result_hash character(64) NOT NULL,
+    evidence_kind text NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    input_hash character(64) NOT NULL,
+    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    lineage jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT strategy_monitoring_evidence_check CHECK (((available_at <= observed_at) AND (available_at <= input_cutoff))),
+    CONSTRAINT strategy_monitoring_evidence_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['correlation'::text, 'tail_correlation'::text, 'crowding'::text, 'capacity'::text, 'decay'::text, 'regime'::text]))),
+    CONSTRAINT strategy_monitoring_evidence_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT strategy_monitoring_evidence_pkey PRIMARY KEY (id),
+    CONSTRAINT strategy_monitoring_evidence_strategy_revision_id_evidence__key UNIQUE (strategy_revision_id, evidence_kind, input_cutoff, input_hash),
+    CONSTRAINT strategy_monitoring_evidence_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id),
+    CONSTRAINT strategy_monitoring_evidence_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id),
+    CONSTRAINT strategy_monitoring_evidence_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id)
+);
+
+CREATE TABLE analysis.symbol_feature (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.symbol_feature_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    run_id uuid NOT NULL,
+    instrument_id bigint NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    feature_set text NOT NULL,
+    feature_version text NOT NULL,
+    price double precision,
+    ma_50 double precision,
+    ma_200 double precision,
+    relative_strength_20d double precision,
+    atr_pct double precision,
+    liquidity_score double precision,
+    valuation_score double precision,
+    earnings_score double precision,
+    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    momentum_5d double precision,
+    momentum_20d double precision,
+    relative_strength_60d double precision,
+    kaufman_er_20d double precision,
+    kaufman_er_60d double precision,
+    kama_fast double precision,
+    kama_slow double precision,
+    kama_fast_slope double precision,
+    kama_slow_slope double precision,
+    trend_state text DEFAULT 'unavailable'::text NOT NULL,
+    trend_confidence double precision DEFAULT 0 NOT NULL,
+    volatility_state text DEFAULT 'unstable'::text NOT NULL,
+    data_quality_status text DEFAULT 'unavailable'::text NOT NULL,
+    reason_codes text[] DEFAULT '{}'::text[] NOT NULL,
+    CONSTRAINT ck_symbol_feature_trend_confidence CHECK (((trend_confidence >= (0)::double precision) AND (trend_confidence <= (1)::double precision))),
+    CONSTRAINT ck_symbol_feature_trend_state CHECK ((trend_state = ANY (ARRAY['trend_up'::text, 'trend_down'::text, 'range'::text, 'transition'::text, 'unavailable'::text]))),
+    CONSTRAINT ck_symbol_feature_volatility_state CHECK ((volatility_state = ANY (ARRAY['low'::text, 'normal'::text, 'high'::text, 'unstable'::text]))),
+    CONSTRAINT symbol_feature_pkey PRIMARY KEY (id),
+    CONSTRAINT symbol_feature_run_id_instrument_id_feature_set_feature_ver_key UNIQUE (run_id, instrument_id, feature_set, feature_version),
+    CONSTRAINT symbol_feature_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT symbol_feature_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.validation_gate_result (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    dossier_id uuid NOT NULL,
+    gate_code text NOT NULL,
+    verdict text NOT NULL,
+    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    evaluated_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    CONSTRAINT validation_gate_result_check CHECK ((available_at <= evaluated_at)),
+    CONSTRAINT validation_gate_result_gate_code_check CHECK ((gate_code = ANY (ARRAY['pit_integrity'::text, 'denominator_completeness'::text, 'oos_predictive_validity'::text, 'falsification_and_robustness'::text, 'economic_promotability'::text]))),
+    CONSTRAINT validation_gate_result_verdict_check CHECK ((verdict = ANY (ARRAY['pass'::text, 'fail'::text, 'unavailable'::text]))),
+    CONSTRAINT validation_gate_result_dossier_id_gate_code_key UNIQUE (dossier_id, gate_code),
+    CONSTRAINT validation_gate_result_pkey PRIMARY KEY (id),
+    CONSTRAINT validation_gate_result_dossier_id_fkey FOREIGN KEY (dossier_id) REFERENCES analysis.validation_dossier(id)
+);
+
+CREATE TABLE app.catalyst (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME app.catalyst_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    instrument_id bigint,
+    market_event_id bigint,
+    starts_at timestamp with time zone NOT NULL,
+    title text NOT NULL,
+    expected_impact text,
+    notes text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    event_key text,
+    version integer DEFAULT 1 NOT NULL,
+    status text DEFAULT 'current'::text NOT NULL,
+    supersedes_id bigint,
+    superseded_at timestamp with time zone,
+    source_id text,
+    source_priority integer DEFAULT 0 NOT NULL,
+    confidence double precision,
+    CONSTRAINT catalyst_pkey PRIMARY KEY (id),
+    CONSTRAINT catalyst_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT catalyst_market_event_id_fkey FOREIGN KEY (market_event_id) REFERENCES raw.market_event(id),
+    CONSTRAINT fk_app_catalyst_supersedes FOREIGN KEY (supersedes_id) REFERENCES app.catalyst(id)
+);
+
+CREATE TABLE app.publication (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    scope text NOT NULL,
+    analysis_run_id uuid NOT NULL,
+    status text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    published_at timestamp with time zone,
+    validation jsonb DEFAULT '{}'::jsonb NOT NULL,
+    bundle_id uuid,
+    CONSTRAINT publication_status_check CHECK ((status = ANY (ARRAY['building'::text, 'published'::text, 'failed'::text, 'superseded'::text]))),
+    CONSTRAINT publication_pkey PRIMARY KEY (id),
+    CONSTRAINT publication_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES analysis.run(id),
+    CONSTRAINT publication_bundle_id_fkey FOREIGN KEY (bundle_id) REFERENCES app.publication_bundle(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE raw.content_item_instrument (
+    content_item_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    relevance double precision,
+    CONSTRAINT content_item_instrument_pkey PRIMARY KEY (content_item_id, instrument_id),
+    CONSTRAINT content_item_instrument_content_item_id_fkey FOREIGN KEY (content_item_id) REFERENCES raw.content_item(id) ON DELETE CASCADE,
+    CONSTRAINT content_item_instrument_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE raw.market_event_version (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.market_event_version_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    market_event_id bigint NOT NULL,
+    instrument_id bigint,
+    source_id text NOT NULL,
+    ingest_run_id uuid NOT NULL,
+    payload_id bigint,
+    source_key text NOT NULL,
+    event_scope text NOT NULL,
+    event_kind text NOT NULL,
+    title text NOT NULL,
+    starts_at timestamp with time zone NOT NULL,
+    ends_at timestamp with time zone,
+    importance text,
+    verification_status text,
+    source_url text,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT market_event_version_market_event_id_ingest_run_id_key UNIQUE (market_event_id, ingest_run_id),
+    CONSTRAINT market_event_version_pkey PRIMARY KEY (id),
+    CONSTRAINT market_event_version_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id),
+    CONSTRAINT market_event_version_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT market_event_version_market_event_id_fkey FOREIGN KEY (market_event_id) REFERENCES raw.market_event(id) ON DELETE CASCADE,
+    CONSTRAINT market_event_version_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id),
+    CONSTRAINT market_event_version_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id)
+);
+
+CREATE TABLE raw.option_quote (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME raw.option_quote_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    snapshot_id bigint NOT NULL,
+    contract_id bigint NOT NULL,
+    underlying_price double precision,
+    bid double precision,
+    ask double precision,
+    mid double precision,
+    last double precision,
+    volume bigint,
+    open_interest bigint,
+    provider_iv double precision,
+    provider_delta double precision,
+    provider_gamma double precision,
+    provider_theta double precision,
+    provider_vega double precision,
+    bid_size bigint,
+    ask_size bigint,
+    last_trade_at timestamp with time zone,
+    captured_at timestamp with time zone,
+    market_data_status text,
+    previous_close double precision,
+    provider_rho double precision,
+    chance_of_profit_long double precision,
+    chance_of_profit_short double precision,
+    provider_updated_at timestamp with time zone,
+    provider_payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    capture_generation_id bigint,
+    capture_group_key text,
+    group_started_at timestamp with time zone,
+    group_finished_at timestamp with time zone,
+    provider_observed_at timestamp with time zone,
+    available_at timestamp with time zone DEFAULT now() NOT NULL,
+    underlying_observed_at timestamp with time zone,
+    underlying_available_at timestamp with time zone,
+    contract_style text,
+    contract_settlement text,
+    contract_deliverable_key text,
+    standard_contract_verified boolean DEFAULT false NOT NULL,
+    CONSTRAINT ck_option_quote_standard_terms CHECK (((NOT standard_contract_verified) OR ((contract_style = 'american'::text) AND (contract_settlement = 'physical'::text) AND (contract_deliverable_key IS NOT NULL)))),
+    CONSTRAINT option_quote_snapshot_id_contract_id_observed_at_key UNIQUE (snapshot_id, contract_id, observed_at),
+    CONSTRAINT option_quote_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE RESTRICT,
+    CONSTRAINT option_quote_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id),
+    CONSTRAINT option_quote_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE CASCADE
+)
+PARTITION BY RANGE (observed_at);
+
+CREATE TABLE analysis.agent_task (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    agent_run_id uuid,
+    decision_id uuid,
+    task_kind text NOT NULL,
+    status text NOT NULL,
+    request jsonb NOT NULL,
+    result jsonb,
+    validation jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    result_available_at timestamp with time zone,
+    validation_available_at timestamp with time zone,
+    experiment_id uuid,
+    arm text,
+    paired_task_id uuid,
+    provider text,
+    model text,
+    evidence_fingerprint text,
+    prompt_version text,
+    schema_version text,
+    baseline_version text,
+    validation_status text,
+    validation_detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+    latency_ms integer,
+    input_tokens bigint,
+    output_tokens bigint,
+    cost_usd numeric(14,6),
+    CONSTRAINT agent_task_pkey PRIMARY KEY (id),
+    CONSTRAINT agent_task_agent_run_id_fkey FOREIGN KEY (agent_run_id) REFERENCES analysis.agent_run(id) ON DELETE CASCADE,
+    CONSTRAINT agent_task_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id),
+    CONSTRAINT agent_task_experiment_id_fkey FOREIGN KEY (experiment_id) REFERENCES analysis.agent_experiment(id) ON DELETE RESTRICT,
+    CONSTRAINT agent_task_paired_task_id_fkey FOREIGN KEY (paired_task_id) REFERENCES analysis.agent_task(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.decision_evidence (
+    decision_id uuid NOT NULL,
+    evidence_kind text NOT NULL,
+    reference_key text NOT NULL,
+    reference_url text,
+    detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT decision_evidence_pkey PRIMARY KEY (decision_id, evidence_kind, reference_key),
+    CONSTRAINT decision_evidence_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.event_study_feature (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    run_id uuid NOT NULL,
+    instrument_id bigint,
+    market_event_id bigint NOT NULL,
+    market_event_version_id bigint NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    event_kind text NOT NULL,
+    event_session text NOT NULL,
+    pre_event_regime text NOT NULL,
+    horizon integer NOT NULL,
+    sample_size integer NOT NULL,
+    actual_move_median double precision,
+    actual_move_p75 double precision,
+    actual_move_p90 double precision,
+    bootstrap_low double precision,
+    bootstrap_high double precision,
+    win_rate double precision,
+    iv_crush_frequency double precision,
+    atm_iv double precision,
+    skew_25d double precision,
+    term_slope double precision,
+    implied_move double precision,
+    evidence_state text NOT NULL,
+    feature_version text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT ck_event_study_evidence_state CHECK ((evidence_state = ANY (ARRAY['ready'::text, 'insufficient_event_evidence'::text, 'unavailable'::text]))),
+    CONSTRAINT event_study_feature_horizon_check CHECK ((horizon > 0)),
+    CONSTRAINT event_study_feature_sample_size_check CHECK ((sample_size >= 0)),
+    CONSTRAINT event_study_feature_pkey PRIMARY KEY (id),
+    CONSTRAINT event_study_feature_run_id_instrument_id_market_event_versi_key UNIQUE (run_id, instrument_id, market_event_version_id, horizon, feature_version),
+    CONSTRAINT event_study_feature_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT,
+    CONSTRAINT event_study_feature_market_event_id_fkey FOREIGN KEY (market_event_id) REFERENCES raw.market_event(id) ON DELETE CASCADE,
+    CONSTRAINT event_study_feature_market_event_version_id_fkey FOREIGN KEY (market_event_version_id) REFERENCES raw.market_event_version(id) ON DELETE RESTRICT,
+    CONSTRAINT event_study_feature_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.option_discovery_candidate (
+    run_id uuid NOT NULL,
+    instrument_id bigint NOT NULL,
+    stage text NOT NULL,
+    discovery_score double precision NOT NULL,
+    surface_reason text NOT NULL,
+    primary_edge text NOT NULL,
+    causal_exposure text NOT NULL,
+    catalyst_start date,
+    catalyst_end date,
+    earliest_signal_at timestamp with time zone,
+    timeliness text NOT NULL,
+    source_root_count integer DEFAULT 0 NOT NULL,
+    evidence_completeness integer DEFAULT 0 NOT NULL,
+    data_readiness text NOT NULL,
+    execution_ready boolean DEFAULT false NOT NULL,
+    next_evidence text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT ck_option_discovery_evidence CHECK (((evidence_completeness >= 0) AND (evidence_completeness <= 5))),
+    CONSTRAINT ck_option_discovery_readiness CHECK ((data_readiness = ANY (ARRAY['A'::text, 'B'::text, 'C'::text, 'D'::text]))),
+    CONSTRAINT ck_option_discovery_stage CHECK ((stage = ANY (ARRAY['DISCOVERED'::text, 'UNDERWRITING'::text, 'STRUCTURED'::text, 'PUBLISHED'::text]))),
+    CONSTRAINT option_discovery_candidate_pkey PRIMARY KEY (run_id, instrument_id),
+    CONSTRAINT option_discovery_candidate_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT option_discovery_candidate_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.option_discovery_run(run_id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.option_event_signal (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    event_id uuid NOT NULL,
+    event_contract_id bigint,
+    capture_id uuid,
+    decision_id uuid,
+    snapshot_id bigint,
+    contract_id bigint NOT NULL,
+    strategy_key text NOT NULL,
+    strategy_revision_id bigint,
+    objective_version text DEFAULT 'short_horizon_convex_v1'::text NOT NULL,
+    status text DEFAULT 'shadow'::text NOT NULL,
+    signal_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    selection_score double precision,
+    lower_confidence_expectancy double precision,
+    maximum_loss numeric(20,6),
+    gate_result jsonb DEFAULT '{}'::jsonb NOT NULL,
+    ticket jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    cohort_id uuid NOT NULL,
+    CONSTRAINT ck_option_event_signal_availability CHECK ((signal_at >= available_at)),
+    CONSTRAINT ck_option_event_signal_status CHECK ((status = ANY (ARRAY['shadow'::text, 'ticketed'::text, 'risk_blocked'::text, 'stale'::text, 'unfilled'::text, 'entered'::text, 'partial_exited'::text, 'exited'::text, 'invalidated'::text, 'unmeasurable'::text, 'rejected'::text]))),
+    CONSTRAINT option_event_signal_event_id_event_contract_id_capture_id_s_key UNIQUE (event_id, event_contract_id, capture_id, strategy_key, strategy_revision_id),
+    CONSTRAINT option_event_signal_pkey PRIMARY KEY (id),
+    CONSTRAINT option_event_signal_capture_id_fkey FOREIGN KEY (capture_id) REFERENCES analysis.option_event_capture(id) ON DELETE SET NULL,
+    CONSTRAINT option_event_signal_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT,
+    CONSTRAINT option_event_signal_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id) ON DELETE RESTRICT,
+    CONSTRAINT option_event_signal_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE SET NULL,
+    CONSTRAINT option_event_signal_event_contract_id_fkey FOREIGN KEY (event_contract_id) REFERENCES analysis.option_event_contract(id) ON DELETE SET NULL,
+    CONSTRAINT option_event_signal_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE,
+    CONSTRAINT option_event_signal_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE SET NULL,
+    CONSTRAINT option_event_signal_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id) ON DELETE SET NULL
+);
+
+CREATE TABLE analysis.option_relative_value_verification (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.option_relative_value_verification_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    relative_value_id bigint NOT NULL,
+    verified_at timestamp with time zone DEFAULT now() NOT NULL,
+    status text NOT NULL,
+    blockers text[] DEFAULT '{}'::text[] NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT option_relative_value_verification_status_check CHECK ((status = ANY (ARRAY['verified'::text, 'rejected'::text, 'unavailable'::text]))),
+    CONSTRAINT option_relative_value_verification_pkey PRIMARY KEY (id),
+    CONSTRAINT option_relative_value_verification_relative_value_id_fkey FOREIGN KEY (relative_value_id) REFERENCES analysis.option_relative_value(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.research_evidence_manifest (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    research_trial_id uuid NOT NULL,
+    trial_result_id uuid NOT NULL,
+    evidence_kind text NOT NULL,
+    evaluator_id text NOT NULL,
+    sample_count integer NOT NULL,
+    domain_valid boolean NOT NULL,
+    payload jsonb NOT NULL,
+    evidence_hash character(64) DEFAULT repeat('0'::text, 64) NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    evaluator_output_id uuid,
+    evaluator_code_version text,
+    input_hash character(64),
+    universe_hash character(64),
+    feature_hash character(64),
+    CONSTRAINT research_evidence_manifest_check CHECK ((available_at >= created_at)),
+    CONSTRAINT research_evidence_manifest_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['controls'::text, 'cpcv_paths'::text, 'neutralization'::text, 'parameter_stability'::text, 'mechanism_falsification'::text, 'multiple_testing'::text]))),
+    CONSTRAINT research_evidence_manifest_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT research_evidence_manifest_sample_count_check CHECK ((sample_count > 0)),
+    CONSTRAINT research_evidence_manifest_pkey PRIMARY KEY (id),
+    CONSTRAINT research_evidence_manifest_trial_result_id_evidence_kind_key UNIQUE (trial_result_id, evidence_kind),
+    CONSTRAINT research_evidence_manifest_evaluator_output_id_fkey FOREIGN KEY (evaluator_output_id) REFERENCES analysis.research_evaluator_output(id),
+    CONSTRAINT research_evidence_manifest_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id),
+    CONSTRAINT research_evidence_manifest_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id)
+);
+
+CREATE TABLE analysis.shadow_trade (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    decision_id uuid NOT NULL,
+    entry_at timestamp with time zone,
+    entry_price numeric(20,6),
+    exit_at timestamp with time zone,
+    exit_price numeric(20,6),
+    status text NOT NULL,
+    path jsonb DEFAULT '[]'::jsonb NOT NULL,
+    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+    pending_entry_reason text,
+    entry_cohort_id bigint,
+    structure text,
+    market_regime text,
+    fill_basis text,
+    source_kind text DEFAULT 'system'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT shadow_trade_decision_id_key UNIQUE (decision_id),
+    CONSTRAINT shadow_trade_pkey PRIMARY KEY (id),
+    CONSTRAINT shadow_trade_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id),
+    CONSTRAINT shadow_trade_entry_cohort_id_fkey FOREIGN KEY (entry_cohort_id) REFERENCES raw.option_capture_generation(id)
+);
+
+CREATE TABLE analysis.strategy_forecast (
+    id text NOT NULL,
+    strategy_revision_id bigint NOT NULL,
+    strategy_evaluation_id uuid,
+    instrument_id bigint NOT NULL,
+    opportunity_episode_id text NOT NULL,
+    target text NOT NULL,
+    horizon text NOT NULL,
+    forecast_value double precision,
+    forecast_range jsonb,
+    forecast_distribution jsonb,
+    probability_semantics text,
+    model_artifact_id text NOT NULL,
+    artifact_hash character(64) NOT NULL,
+    input_hash character(64) NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    generated_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    status text DEFAULT 'available'::text NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    research_trial_id uuid,
+    trial_result_id uuid,
+    universe_manifest_hash character(64),
+    result_hash character(64),
+    CONSTRAINT strategy_forecast_check CHECK ((as_of = input_cutoff)),
+    CONSTRAINT strategy_forecast_check1 CHECK (((forecast_value IS NOT NULL) OR (forecast_range IS NOT NULL) OR (forecast_distribution IS NOT NULL))),
+    CONSTRAINT strategy_forecast_p3_link_check CHECK ((((research_trial_id IS NULL) AND (trial_result_id IS NULL) AND (universe_manifest_hash IS NULL) AND (result_hash IS NULL)) OR ((research_trial_id IS NOT NULL) AND (trial_result_id IS NOT NULL) AND (universe_manifest_hash IS NOT NULL) AND (result_hash IS NOT NULL)))),
+    CONSTRAINT strategy_forecast_p3_pit_check CHECK (((research_trial_id IS NULL) OR (available_at <= input_cutoff))),
+    CONSTRAINT strategy_forecast_pkey PRIMARY KEY (id),
+    CONSTRAINT strategy_forecast_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT strategy_forecast_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id),
+    CONSTRAINT strategy_forecast_strategy_evaluation_id_fkey FOREIGN KEY (strategy_evaluation_id) REFERENCES analysis.strategy_evaluation(id),
+    CONSTRAINT strategy_forecast_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id),
+    CONSTRAINT strategy_forecast_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id)
+);
+
+CREATE TABLE analysis.symbol_decision (
+    decision_id uuid NOT NULL,
+    action text,
+    discovery_reasons text[] DEFAULT '{}'::text[] NOT NULL,
+    freshness_status text,
+    portfolio_context jsonb DEFAULT '{}'::jsonb NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT symbol_decision_pkey PRIMARY KEY (decision_id),
+    CONSTRAINT symbol_decision_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.symbol_decision_outcome (
+    decision_id uuid NOT NULL,
+    instrument_id bigint NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    outcome_version text DEFAULT 'equity-v1'::text NOT NULL,
+    state text DEFAULT 'observing'::text NOT NULL,
+    return_1d double precision,
+    return_5d double precision,
+    return_20d double precision,
+    spy_adjusted_return_1d double precision,
+    spy_adjusted_return_5d double precision,
+    spy_adjusted_return_20d double precision,
+    sector_adjusted_return_1d double precision,
+    sector_adjusted_return_5d double precision,
+    sector_adjusted_return_20d double precision,
+    mae double precision,
+    mfe double precision,
+    max_drawdown double precision,
+    thesis_invalidated_at timestamp with time zone,
+    sample_eligible boolean DEFAULT false NOT NULL,
+    quarantine_reason text,
+    measured_through timestamp with time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT symbol_decision_outcome_state_check CHECK ((state = ANY (ARRAY['observing'::text, 'resolved'::text, 'quarantined'::text]))),
+    CONSTRAINT symbol_decision_outcome_pkey PRIMARY KEY (decision_id),
+    CONSTRAINT symbol_decision_outcome_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE,
+    CONSTRAINT symbol_decision_outcome_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.ticker_decision (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    instrument_id bigint NOT NULL,
+    decision_revision text NOT NULL,
+    contract_version text NOT NULL,
+    as_of timestamp with time zone NOT NULL,
+    published_at timestamp with time zone,
+    input_hash character(64) NOT NULL,
+    code_version text NOT NULL,
+    experiment_id text NOT NULL,
+    tactical jsonb NOT NULL,
+    fundamental jsonb NOT NULL,
+    capital_action jsonb NOT NULL,
+    risk_policy jsonb NOT NULL,
+    expressions jsonb DEFAULT '{}'::jsonb NOT NULL,
+    selected_expression jsonb,
+    data_requests jsonb DEFAULT '[]'::jsonb NOT NULL,
+    learning_history jsonb DEFAULT '[]'::jsonb NOT NULL,
+    input_manifest jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status text DEFAULT 'published'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    resolution jsonb DEFAULT '{}'::jsonb NOT NULL,
+    policy_version text DEFAULT 'risk-policy.v2:legacy'::text NOT NULL,
+    opportunity_episode_id text,
+    opportunity_cutoff timestamp with time zone,
+    opportunity_episode jsonb DEFAULT '{}'::jsonb NOT NULL,
+    market_state_publication_id uuid,
+    market_state_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    portfolio_impacts jsonb DEFAULT '{}'::jsonb NOT NULL,
+    risk_policy_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT ticker_decision_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'published'::text, 'superseded'::text, 'quarantined'::text]))),
+    CONSTRAINT ticker_decision_instrument_id_decision_revision_key UNIQUE (instrument_id, decision_revision),
+    CONSTRAINT ticker_decision_pkey PRIMARY KEY (id),
+    CONSTRAINT ticker_decision_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT,
+    CONSTRAINT ticker_decision_market_state_publication_id_fkey FOREIGN KEY (market_state_publication_id) REFERENCES app.publication(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE app.alert (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    decision_id uuid,
+    instrument_id bigint,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    alert_type text NOT NULL,
+    severity text NOT NULL,
+    title text NOT NULL,
+    detail text,
+    acknowledged_at timestamp with time zone,
+    resolution_reason text,
+    CONSTRAINT alert_pkey PRIMARY KEY (id),
+    CONSTRAINT alert_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id),
+    CONSTRAINT alert_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE app.current_publication_item (
+    scope text NOT NULL,
+    publication_id uuid NOT NULL,
+    model_name text NOT NULL,
+    stable_key text NOT NULL,
+    rank integer NOT NULL,
+    instrument_id bigint,
+    content_hash character(64) NOT NULL,
+    CONSTRAINT current_publication_item_pkey PRIMARY KEY (scope, model_name, stable_key),
+    CONSTRAINT current_publication_item_content_hash_fkey FOREIGN KEY (content_hash) REFERENCES app.publication_payload(content_hash) ON DELETE RESTRICT,
+    CONSTRAINT current_publication_item_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT current_publication_item_publication_id_fkey FOREIGN KEY (publication_id) REFERENCES app.publication(id) ON DELETE CASCADE
+);
+
+CREATE TABLE app.publication_item (
+    publication_id uuid NOT NULL,
+    model_name text NOT NULL,
+    stable_key text NOT NULL,
+    rank integer NOT NULL,
+    instrument_id bigint,
+    payload jsonb NOT NULL,
+    CONSTRAINT publication_item_pkey PRIMARY KEY (publication_id, model_name, stable_key),
+    CONSTRAINT publication_item_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT publication_item_publication_id_fkey FOREIGN KEY (publication_id) REFERENCES app.publication(id) ON DELETE CASCADE
+);
+
+CREATE TABLE app.trade_journal (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    decision_id uuid,
+    instrument_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    action text NOT NULL,
+    quantity numeric(24,8),
+    price numeric(20,6),
+    rationale text,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT trade_journal_pkey PRIMARY KEY (id),
+    CONSTRAINT trade_journal_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id),
+    CONSTRAINT trade_journal_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id)
+);
+
+CREATE TABLE raw.option_quote_default PARTITION OF raw.option_quote DEFAULT;
+
+CREATE TABLE analysis.option_event_agent_batch (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    event_id uuid NOT NULL,
+    capture_id uuid,
+    trigger text NOT NULL,
+    fingerprint_key text NOT NULL,
+    fingerprint jsonb NOT NULL,
+    provider text DEFAULT 'codex'::text NOT NULL,
+    model text NOT NULL,
+    reasoning_effort text NOT NULL,
+    status text DEFAULT 'queued'::text NOT NULL,
+    task_count integer DEFAULT 0 NOT NULL,
+    agent_run_id uuid,
+    telemetry jsonb DEFAULT '{}'::jsonb NOT NULL,
+    error text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    started_at timestamp with time zone,
+    finished_at timestamp with time zone,
+    cohort_id uuid NOT NULL,
+    experiment_id uuid,
+    arm text,
+    paired_task_id uuid,
+    evidence_fingerprint text,
+    prompt_version text,
+    schema_version text,
+    baseline_version text,
+    validation_status text,
+    validation_detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+    latency_ms integer,
+    CONSTRAINT ck_option_event_agent_batch_status CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text, 'skipped'::text]))),
+    CONSTRAINT ck_option_event_agent_batch_task_count CHECK (((task_count >= 0) AND (task_count <= 12))),
+    CONSTRAINT ck_option_event_agent_batch_trigger CHECK ((trigger = ANY (ARRAY['event_established'::text, 'underlying_move_2pct'::text, 'material_iv_change'::text, 'new_material_evidence'::text, 'signal_family_transition'::text, 'preopen_review'::text]))),
+    CONSTRAINT option_event_agent_batch_event_id_fingerprint_key_key UNIQUE (event_id, fingerprint_key),
+    CONSTRAINT option_event_agent_batch_pkey PRIMARY KEY (id),
+    CONSTRAINT option_event_agent_batch_agent_run_id_fkey FOREIGN KEY (agent_run_id) REFERENCES analysis.agent_run(id) ON DELETE SET NULL,
+    CONSTRAINT option_event_agent_batch_capture_id_fkey FOREIGN KEY (capture_id) REFERENCES analysis.option_event_capture(id) ON DELETE SET NULL,
+    CONSTRAINT option_event_agent_batch_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT,
+    CONSTRAINT option_event_agent_batch_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE,
+    CONSTRAINT option_event_agent_batch_experiment_id_fkey FOREIGN KEY (experiment_id) REFERENCES analysis.agent_experiment(id) ON DELETE RESTRICT,
+    CONSTRAINT option_event_agent_batch_paired_task_id_fkey FOREIGN KEY (paired_task_id) REFERENCES analysis.agent_task(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE analysis.option_gate_result (
+    run_id uuid NOT NULL,
+    instrument_id bigint NOT NULL,
+    gate_code text NOT NULL,
+    passed boolean NOT NULL,
+    reason text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT option_gate_result_pkey PRIMARY KEY (run_id, instrument_id, gate_code),
+    CONSTRAINT option_gate_result_run_id_instrument_id_fkey FOREIGN KEY (run_id, instrument_id) REFERENCES analysis.option_discovery_candidate(run_id, instrument_id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.option_outcome (
+    decision_id uuid NOT NULL,
+    maturity_state text NOT NULL,
+    observed_through timestamp with time zone,
+    return_1d double precision,
+    return_5d double precision,
+    return_20d double precision,
+    return_60d double precision,
+    peak_return double precision,
+    max_drawdown double precision,
+    time_to_2x_days integer,
+    time_to_5x_days integer,
+    time_to_10x_days integer,
+    realized_exit_return double precision,
+    realized_exit_basis text,
+    stock_move_effect double precision,
+    iv_effect double precision,
+    theta_effect double precision,
+    spread_effect double precision,
+    unexplained_effect double precision,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    current_return double precision,
+    paper_status text,
+    credit_captured double precision,
+    collateral_return double precision,
+    assigned_basis double precision,
+    strike_touched boolean,
+    assignment_return_1d double precision,
+    assignment_return_5d double precision,
+    assignment_return_20d double precision,
+    assignment_return_60d double precision,
+    outcome_source text DEFAULT 'generic'::text NOT NULL,
+    shadow_trade_id uuid,
+    objective_version text DEFAULT 'legacy'::text NOT NULL,
+    outcome_classification text DEFAULT 'legacy_non_executable'::text NOT NULL,
+    promotion_eligible boolean DEFAULT false NOT NULL,
+    entry_fill_at timestamp with time zone,
+    entry_fill_price numeric(20,6),
+    exit_fill_at timestamp with time zone,
+    exit_fill_price numeric(20,6),
+    exit_reason text,
+    fee_total numeric(20,6),
+    slippage_total numeric(20,6),
+    return_3d double precision,
+    return_10d double precision,
+    time_to_3x_days integer,
+    time_to_4x_days integer,
+    executable_peak_return double precision,
+    mae double precision,
+    giveback double precision,
+    exit_efficiency double precision,
+    lane text,
+    episode_key text,
+    sample_eligible boolean DEFAULT false NOT NULL,
+    quarantine_reason text,
+    calibration_cohort text,
+    CONSTRAINT ck_option_outcome_recovery_classification CHECK ((outcome_classification = ANY (ARRAY['legacy_non_executable'::text, 'captured'::text, 'missed'::text, 'unfilled'::text, 'unmeasurable'::text, 'observing'::text]))),
+    CONSTRAINT ck_option_outcome_source CHECK ((outcome_source = ANY (ARRAY['generic'::text, 'options_history_v3'::text]))),
+    CONSTRAINT ck_option_outcome_v3_shadow CHECK (((outcome_source <> 'options_history_v3'::text) OR (shadow_trade_id IS NOT NULL))),
+    CONSTRAINT option_outcome_pkey PRIMARY KEY (decision_id),
+    CONSTRAINT fk_option_outcome_shadow_trade FOREIGN KEY (shadow_trade_id) REFERENCES analysis.shadow_trade(id) ON DELETE RESTRICT,
+    CONSTRAINT option_outcome_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.portfolio_allocation_item (
+    allocation_item_id text NOT NULL,
+    allocation_id text NOT NULL,
+    candidate_id text DEFAULT ''::text NOT NULL,
+    ticker text NOT NULL,
+    strategy_forecast_id text,
+    action_id text,
+    rank_id text,
+    hypothesis_id uuid,
+    disposition text NOT NULL,
+    target_weight double precision NOT NULL,
+    current_weight double precision DEFAULT 0 NOT NULL,
+    marginal_book_utility double precision NOT NULL,
+    trace jsonb NOT NULL,
+    blockers jsonb DEFAULT '[]'::jsonb NOT NULL,
+    funding_source text,
+    funding_amount double precision,
+    input_hash character(64) NOT NULL,
+    content_hash character(64) NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    funding_sources jsonb DEFAULT '{}'::jsonb,
+    CONSTRAINT phase4_allocation_item_funding_amount_shape CHECK (((funding_amount IS NULL) OR ((funding_amount < 'Infinity'::double precision) AND (funding_amount > '-Infinity'::double precision) AND (funding_amount > (0)::double precision)))),
+    CONSTRAINT phase4_allocation_item_funding_sources_shape CHECK ((jsonb_typeof(funding_sources) = 'object'::text)),
+    CONSTRAINT portfolio_allocation_item_blockers_check CHECK ((jsonb_typeof(blockers) = 'array'::text)),
+    CONSTRAINT portfolio_allocation_item_check CHECK (((ticker = 'CASH'::text) OR (candidate_id <> ''::text))),
+    CONSTRAINT portfolio_allocation_item_check1 CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)) AND (allocation_item_id = ('allocation-item:'::text || (input_hash)::text)))),
+    CONSTRAINT portfolio_allocation_item_check2 CHECK (((ticker = 'CASH'::text) OR (disposition <> 'selected'::text) OR ((strategy_forecast_id IS NOT NULL) AND (action_id IS NOT NULL)))),
+    CONSTRAINT portfolio_allocation_item_check3 CHECK (((ticker = 'CASH'::text) OR (disposition <> 'selected'::text) OR (rank_id IS NOT NULL))),
+    CONSTRAINT portfolio_allocation_item_check4 CHECK (((disposition <> 'selected'::text) OR ((ticker = 'CASH'::text) AND (target_weight > (0)::double precision) AND (marginal_book_utility >= (0)::double precision)) OR ((target_weight > (0)::double precision) AND (marginal_book_utility > (0)::double precision)))),
+    CONSTRAINT portfolio_allocation_item_check6 CHECK (((ticker = 'CASH'::text) OR (disposition <> 'selected'::text) OR ((funding_amount IS NOT NULL) AND (funding_amount > (0)::double precision)))),
+    CONSTRAINT portfolio_allocation_item_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
+    CONSTRAINT portfolio_allocation_item_current_weight_check CHECK (((current_weight < 'Infinity'::double precision) AND (current_weight > '-Infinity'::double precision) AND (current_weight >= (0)::double precision) AND (current_weight <= (1)::double precision))),
+    CONSTRAINT portfolio_allocation_item_disposition_check CHECK ((disposition = ANY (ARRAY['selected'::text, 'ranked_out'::text, 'rejected'::text, 'rollback'::text]))),
+    CONSTRAINT portfolio_allocation_item_marginal_book_utility_check CHECK (((marginal_book_utility < 'Infinity'::double precision) AND (marginal_book_utility > '-Infinity'::double precision))),
+    CONSTRAINT portfolio_allocation_item_target_weight_check CHECK (((target_weight < 'Infinity'::double precision) AND (target_weight > '-Infinity'::double precision) AND (target_weight >= (0)::double precision) AND (target_weight <= (1)::double precision))),
+    CONSTRAINT portfolio_allocation_item_ticker_check CHECK ((ticker <> ''::text)),
+    CONSTRAINT portfolio_allocation_item_trace_check CHECK ((jsonb_typeof(trace) = 'object'::text)),
+    CONSTRAINT portfolio_allocation_item_pkey PRIMARY KEY (allocation_item_id),
+    CONSTRAINT portfolio_allocation_item_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id),
+    CONSTRAINT portfolio_allocation_item_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id),
+    CONSTRAINT portfolio_allocation_item_strategy_forecast_id_fkey FOREIGN KEY (strategy_forecast_id) REFERENCES analysis.strategy_forecast(id)
+);
+
+CREATE TABLE analysis.strategy_pnl_tape (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    strategy_revision_id bigint NOT NULL,
+    instrument_id bigint NOT NULL,
+    strategy_forecast_id text NOT NULL,
+    research_trial_id uuid NOT NULL,
+    trial_result_id uuid NOT NULL,
+    universe_manifest_hash character(64) NOT NULL,
+    result_hash character(64) NOT NULL,
+    pnl_date date NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    gross_return double precision NOT NULL,
+    cost double precision NOT NULL,
+    net_return double precision NOT NULL,
+    tail_return double precision,
+    regime text,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    input_hash character(64) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT strategy_pnl_tape_check CHECK (((available_at <= observed_at) AND (available_at <= input_cutoff))),
+    CONSTRAINT strategy_pnl_tape_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT strategy_pnl_tape_pkey PRIMARY KEY (id),
+    CONSTRAINT strategy_pnl_tape_strategy_forecast_id_key UNIQUE (strategy_forecast_id),
+    CONSTRAINT strategy_pnl_tape_strategy_revision_id_instrument_id_pnl_da_key UNIQUE (strategy_revision_id, instrument_id, pnl_date, input_hash),
+    CONSTRAINT strategy_pnl_tape_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT strategy_pnl_tape_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id),
+    CONSTRAINT strategy_pnl_tape_strategy_forecast_id_fkey FOREIGN KEY (strategy_forecast_id) REFERENCES analysis.strategy_forecast(id),
+    CONSTRAINT strategy_pnl_tape_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id),
+    CONSTRAINT strategy_pnl_tape_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id)
+);
+
+CREATE TABLE analysis.ticker_data_request (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    ticker_decision_id uuid NOT NULL,
+    field text NOT NULL,
+    ticker text NOT NULL,
+    request jsonb NOT NULL,
+    status text DEFAULT 'open'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT ticker_data_request_status_check CHECK ((status = ANY (ARRAY['open'::text, 'running'::text, 'complete'::text, 'failed'::text, 'superseded'::text]))),
+    CONSTRAINT ticker_data_request_pkey PRIMARY KEY (id),
+    CONSTRAINT ticker_data_request_ticker_decision_id_field_key UNIQUE (ticker_decision_id, field),
+    CONSTRAINT ticker_data_request_ticker_decision_id_fkey FOREIGN KEY (ticker_decision_id) REFERENCES analysis.ticker_decision(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.ticker_input_manifest (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME analysis.ticker_input_manifest_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    ticker_decision_id uuid NOT NULL,
+    field text NOT NULL,
+    source_id text NOT NULL,
+    source_version text,
+    event_at timestamp with time zone,
+    published_at timestamp with time zone,
+    available_at timestamp with time zone NOT NULL,
+    received_at timestamp with time zone,
+    revision text,
+    license text,
+    original_value jsonb,
+    revised_value jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ticker_input_manifest_pkey PRIMARY KEY (id),
+    CONSTRAINT ticker_input_manifest_ticker_decision_id_field_source_id_av_key UNIQUE (ticker_decision_id, field, source_id, available_at, revision),
+    CONSTRAINT ticker_input_manifest_ticker_decision_id_fkey FOREIGN KEY (ticker_decision_id) REFERENCES analysis.ticker_decision(id) ON DELETE CASCADE
+);
+
+CREATE TABLE analysis.ticker_outcome (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    ticker_decision_id uuid NOT NULL,
+    horizon text NOT NULL,
+    horizon_sessions integer NOT NULL,
+    state text DEFAULT 'observing'::text NOT NULL,
+    measured_through timestamp with time zone,
+    selected_expression text,
+    selected_return double precision,
+    stock_counterfactual_return double precision,
+    alternate_counterfactual_return double precision,
+    cash_return double precision,
+    sector_return double precision,
+    market_return double precision,
+    error_type text,
+    mistake_card jsonb DEFAULT '{}'::jsonb NOT NULL,
+    available_at timestamp with time zone,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ticker_outcome_horizon_check CHECK ((horizon = ANY (ARRAY['TACTICAL'::text, 'FUNDAMENTAL'::text]))),
+    CONSTRAINT ticker_outcome_horizon_sessions_check CHECK ((horizon_sessions = ANY (ARRAY[1, 5, 20, 63, 126, 252]))),
+    CONSTRAINT ticker_outcome_state_check CHECK ((state = ANY (ARRAY['observing'::text, 'resolved'::text, 'quarantined'::text, 'unmeasurable'::text]))),
+    CONSTRAINT ticker_outcome_pkey PRIMARY KEY (id),
+    CONSTRAINT ticker_outcome_ticker_decision_id_horizon_horizon_sessions_key UNIQUE (ticker_decision_id, horizon, horizon_sessions),
+    CONSTRAINT ticker_outcome_ticker_decision_id_fkey FOREIGN KEY (ticker_decision_id) REFERENCES analysis.ticker_decision(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE app.paper_order (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    decision_id uuid,
+    instrument_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    side text NOT NULL,
+    quantity numeric(24,8) NOT NULL,
+    limit_price numeric(20,6),
+    status text NOT NULL,
+    policy_result jsonb DEFAULT '{}'::jsonb NOT NULL,
+    structure text,
+    reserved_collateral numeric(24,4),
+    idempotency_key text,
+    ticket_version integer,
+    ticket_snapshot jsonb,
+    intended_limit_price numeric(20,6),
+    actual_fill_price numeric(20,6),
+    filled_at timestamp with time zone,
+    event_id uuid,
+    event_signal_id uuid,
+    strategy_family text,
+    objective_version text,
+    entry_capture_count integer DEFAULT 0 NOT NULL,
+    cohort_id uuid,
+    lane text DEFAULT 'radar'::text NOT NULL,
+    policy_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    exit_at timestamp with time zone,
+    exit_price numeric(20,6),
+    fees numeric(20,6) DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    submitted_at timestamp with time zone,
+    filled_quantity numeric(24,8),
+    exited_quantity numeric(24,8) DEFAULT 0 NOT NULL,
+    entry_slippage numeric(20,6),
+    exit_slippage numeric(20,6),
+    unfilled_reason text,
+    ticker_decision_id uuid,
+    ticker_decision_revision text,
+    expression_kind text,
+    max_loss numeric(20,6),
+    planned_loss numeric(20,6),
+    expires_at timestamp with time zone,
+    thesis_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    paper_only boolean DEFAULT true NOT NULL,
+    execution_quote jsonb,
+    fill_evidence_at timestamp with time zone,
+    contract_multiplier numeric(20,6),
+    entry_fees numeric(20,6) DEFAULT 0 NOT NULL,
+    exit_fees numeric(20,6) DEFAULT 0 NOT NULL,
+    CONSTRAINT ck_app_paper_order_lane CHECK ((lane = ANY (ARRAY['radar'::text, 'qqq'::text, 'recovery'::text, 'ticker'::text]))),
+    CONSTRAINT ck_paper_order_entry_capture_count CHECK ((entry_capture_count >= 0)),
+    CONSTRAINT paper_order_pkey PRIMARY KEY (id),
+    CONSTRAINT uq_app_paper_order_idempotency UNIQUE (idempotency_key),
+    CONSTRAINT paper_order_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT,
+    CONSTRAINT paper_order_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id),
+    CONSTRAINT paper_order_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE SET NULL,
+    CONSTRAINT paper_order_event_signal_id_fkey FOREIGN KEY (event_signal_id) REFERENCES analysis.option_event_signal(id) ON DELETE SET NULL,
+    CONSTRAINT paper_order_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT paper_order_ticker_decision_id_fkey FOREIGN KEY (ticker_decision_id) REFERENCES analysis.ticker_decision(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE app.thesis (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME app.thesis_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    instrument_id bigint NOT NULL,
+    revision integer NOT NULL,
+    status text NOT NULL,
+    thesis jsonb NOT NULL,
+    source_agent_task_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    schema_version integer DEFAULT 3 NOT NULL,
+    author_kind text DEFAULT 'legacy'::text NOT NULL,
+    automation_run_id uuid,
+    superseded_revision_id bigint,
+    change_rationale text,
+    last_assessed_at timestamp with time zone,
+    last_human_reviewed_at timestamp with time zone,
+    CONSTRAINT thesis_instrument_id_revision_key UNIQUE (instrument_id, revision),
+    CONSTRAINT thesis_pkey PRIMARY KEY (id),
+    CONSTRAINT thesis_automation_run_id_fkey FOREIGN KEY (automation_run_id) REFERENCES app.thesis_automation_run(id),
+    CONSTRAINT thesis_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT thesis_source_agent_task_id_fkey FOREIGN KEY (source_agent_task_id) REFERENCES analysis.agent_task(id),
+    CONSTRAINT thesis_superseded_revision_id_fkey FOREIGN KEY (superseded_revision_id) REFERENCES app.thesis(id)
+);
+
+CREATE TABLE analysis.option_decision (
+    decision_id uuid NOT NULL,
+    contract_id bigint NOT NULL,
+    snapshot_id bigint NOT NULL,
+    quote_observed_at timestamp with time zone NOT NULL,
+    primary_decision_id uuid,
+    premium_mid double precision,
+    fill_assumption double precision,
+    required_move_pct double precision,
+    buy_under double precision,
+    predicted_p2x double precision,
+    predicted_p5x double precision,
+    ev_multiple double precision,
+    tier text,
+    synthetic_legs jsonb DEFAULT '[]'::jsonb NOT NULL,
+    structure text DEFAULT 'long_option'::text NOT NULL,
+    entry_price double precision,
+    exit_cost_estimate double precision,
+    secured_cash double precision,
+    max_profit double precision,
+    max_loss double precision,
+    break_even double precision,
+    effective_assignment_price double precision,
+    probability_profit double precision,
+    probability_assignment double precision,
+    probability_touch double precision,
+    expected_value double precision,
+    risk_adjusted_expectancy double precision,
+    tail_cvar double precision,
+    data_confidence double precision,
+    execution_confidence double precision,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    paper_state text,
+    discovery_lane text,
+    thesis_id bigint,
+    relative_value_id bigint,
+    model_version text,
+    market_regime text,
+    fair_low double precision,
+    fair_high double precision,
+    modeled_net_edge double precision,
+    route_version text,
+    strategy_route jsonb DEFAULT '{}'::jsonb NOT NULL,
+    market_regime_detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+    event_state text,
+    CONSTRAINT ck_option_decision_market_regime_detail_object CHECK ((jsonb_typeof(market_regime_detail) = 'object'::text)),
+    CONSTRAINT ck_option_decision_paper_state CHECK (((paper_state IS NULL) OR (paper_state = ANY (ARRAY['COLLECTING'::text, 'WATCH'::text, 'PAPER_READY'::text, 'REJECT'::text])))),
+    CONSTRAINT ck_option_decision_strategy_route_object CHECK ((jsonb_typeof(strategy_route) = 'object'::text)),
+    CONSTRAINT option_decision_pkey PRIMARY KEY (decision_id),
+    CONSTRAINT option_decision_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id),
+    CONSTRAINT option_decision_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE,
+    CONSTRAINT option_decision_primary_decision_id_fkey FOREIGN KEY (primary_decision_id) REFERENCES analysis.decision(id),
+    CONSTRAINT option_decision_relative_value_id_fkey FOREIGN KEY (relative_value_id) REFERENCES analysis.option_relative_value(id),
+    CONSTRAINT option_decision_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id),
+    CONSTRAINT option_decision_thesis_id_fkey FOREIGN KEY (thesis_id) REFERENCES app.thesis(id)
+);
+
+CREATE TABLE analysis.option_opportunity_observation (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    event_id uuid NOT NULL,
+    capture_id uuid,
+    capture_generation_id bigint,
+    capture_generation_key text NOT NULL,
+    event_contract_id bigint,
+    contract_id bigint NOT NULL,
+    strategy_key text NOT NULL,
+    strategy_revision_id bigint,
+    objective_version text DEFAULT 'short_horizon_convex_v1'::text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone NOT NULL,
+    expiration date NOT NULL,
+    quote jsonb DEFAULT '{}'::jsonb NOT NULL,
+    liquid boolean NOT NULL,
+    data_status text DEFAULT 'ok'::text NOT NULL,
+    selection_stage text DEFAULT 'observed'::text NOT NULL,
+    miss_reason text,
+    signal_id uuid,
+    paper_order_id uuid,
+    selection_score double precision,
+    lower_confidence_expectancy double precision,
+    entry_fill_at timestamp with time zone,
+    entry_fill_price numeric(20,6),
+    return_1_session double precision,
+    return_3_session double precision,
+    return_5_session double precision,
+    return_10_session double precision,
+    time_to_2x_sessions integer,
+    time_to_3x_sessions integer,
+    time_to_4x_sessions integer,
+    executable_peak_return double precision,
+    realized_return double precision,
+    mae double precision,
+    giveback double precision,
+    exit_efficiency double precision,
+    exit_fill_at timestamp with time zone,
+    exit_fill_price numeric(20,6),
+    outcome_classification text DEFAULT 'observing'::text NOT NULL,
+    measured_through timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    cohort_id uuid NOT NULL,
+    lane text DEFAULT 'recovery'::text NOT NULL,
+    episode_key text NOT NULL,
+    sample_eligible boolean DEFAULT false NOT NULL,
+    quarantine_reason text,
+    calibration_cohort text,
+    CONSTRAINT ck_option_opportunity_availability CHECK ((available_at IS NOT NULL)),
+    CONSTRAINT ck_option_opportunity_classification CHECK ((outcome_classification = ANY (ARRAY['observing'::text, 'captured'::text, 'missed'::text, 'unfilled'::text, 'unmeasurable'::text]))),
+    CONSTRAINT ck_option_opportunity_data_status CHECK ((data_status = ANY (ARRAY['ok'::text, 'stale_quote'::text, 'continuity_missing'::text, 'lookahead_blocked'::text, 'invalid_event_reference'::text]))),
+    CONSTRAINT ck_option_opportunity_miss_reason CHECK (((miss_reason IS NULL) OR (miss_reason = ANY (ARRAY['not_featured'::text, 'gate_reject'::text, 'ranked_out'::text, 'not_published'::text, 'unfilled'::text, 'risk_blocked'::text, 'captured'::text, 'unmeasurable'::text])))),
+    CONSTRAINT ck_option_opportunity_selection_stage CHECK ((selection_stage = ANY (ARRAY['observed'::text, 'eligible'::text, 'ranked_out'::text, 'published'::text, 'ticketed'::text, 'filled'::text, 'exited'::text]))),
+    CONSTRAINT option_opportunity_observatio_event_id_capture_generation_k_key UNIQUE (event_id, capture_generation_key, contract_id, strategy_key, strategy_revision_id),
+    CONSTRAINT option_opportunity_observation_pkey PRIMARY KEY (id),
+    CONSTRAINT option_opportunity_observation_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE SET NULL,
+    CONSTRAINT option_opportunity_observation_capture_id_fkey FOREIGN KEY (capture_id) REFERENCES analysis.option_event_capture(id) ON DELETE SET NULL,
+    CONSTRAINT option_opportunity_observation_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT,
+    CONSTRAINT option_opportunity_observation_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id) ON DELETE RESTRICT,
+    CONSTRAINT option_opportunity_observation_event_contract_id_fkey FOREIGN KEY (event_contract_id) REFERENCES analysis.option_event_contract(id) ON DELETE SET NULL,
+    CONSTRAINT option_opportunity_observation_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE,
+    CONSTRAINT option_opportunity_observation_paper_order_id_fkey FOREIGN KEY (paper_order_id) REFERENCES app.paper_order(id) ON DELETE SET NULL,
+    CONSTRAINT option_opportunity_observation_signal_id_fkey FOREIGN KEY (signal_id) REFERENCES analysis.option_event_signal(id) ON DELETE SET NULL,
+    CONSTRAINT option_opportunity_observation_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id) ON DELETE SET NULL
+);
+
+CREATE TABLE analysis.portfolio_drift_evidence (
+    decision_id text NOT NULL,
+    allocation_id text NOT NULL,
+    allocation_item_id text NOT NULL,
+    drift_score double precision NOT NULL,
+    rollback_threshold double precision NOT NULL,
+    proposed_weight double precision NOT NULL,
+    action text NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    input_hash character(64) NOT NULL,
+    content_hash character(64) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT portfolio_drift_evidence_action_check CHECK ((action = ANY (ARRAY['hold'::text, 'reduce'::text, 'rollback'::text, 'unavailable'::text]))),
+    CONSTRAINT portfolio_drift_evidence_check CHECK (((action <> 'reduce'::text) OR ((drift_score < rollback_threshold) AND (drift_score >= (rollback_threshold / (2)::double precision))))),
+    CONSTRAINT portfolio_drift_evidence_check1 CHECK (((action <> 'rollback'::text) OR (drift_score >= rollback_threshold))),
+    CONSTRAINT portfolio_drift_evidence_check2 CHECK (((action <> 'hold'::text) OR (drift_score < (rollback_threshold / (2)::double precision)))),
+    CONSTRAINT portfolio_drift_evidence_check3 CHECK ((decision_id = ('drift:'::text || (input_hash)::text))),
+    CONSTRAINT portfolio_drift_evidence_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT portfolio_drift_evidence_drift_score_check CHECK (((drift_score < 'Infinity'::double precision) AND (drift_score > '-Infinity'::double precision) AND (drift_score >= (0)::double precision))),
+    CONSTRAINT portfolio_drift_evidence_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT portfolio_drift_evidence_metadata_check CHECK ((jsonb_typeof(metadata) = 'object'::text)),
+    CONSTRAINT portfolio_drift_evidence_proposed_weight_check CHECK (((proposed_weight < 'Infinity'::double precision) AND (proposed_weight >= (0)::double precision) AND (proposed_weight <= (1)::double precision))),
+    CONSTRAINT portfolio_drift_evidence_rollback_threshold_check CHECK (((rollback_threshold < 'Infinity'::double precision) AND (rollback_threshold > (0)::double precision))),
+    CONSTRAINT portfolio_drift_evidence_pkey PRIMARY KEY (decision_id),
+    CONSTRAINT portfolio_drift_evidence_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id),
+    CONSTRAINT portfolio_drift_evidence_allocation_item_id_fkey FOREIGN KEY (allocation_item_id) REFERENCES analysis.portfolio_allocation_item(allocation_item_id)
+);
+
+CREATE TABLE app.decision_inbox_item (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    dedupe_key text NOT NULL,
+    event_type text NOT NULL,
+    opportunity_id uuid,
+    ticket_version integer,
+    paper_order_id uuid,
+    lane text,
+    severity text DEFAULT 'info'::text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    resolved_at timestamp with time zone,
+    user_state text DEFAULT 'open'::text NOT NULL,
+    snoozed_until timestamp with time zone,
+    dismiss_reason text,
+    user_state_updated_at timestamp with time zone,
+    reviewed_at timestamp with time zone,
+    useful boolean,
+    usefulness_updated_at timestamp with time zone,
+    CONSTRAINT ck_app_decision_inbox_event_type CHECK ((event_type = ANY (ARRAY['ready'::text, 'revoked'::text, 'expired'::text, 'paper_filled'::text, 'paper_exited'::text, 'portfolio_critical'::text, 'paper_engine_halt'::text, 'high_priority_research'::text]))),
+    CONSTRAINT ck_decision_inbox_dismiss_reason CHECK (((user_state <> 'dismissed'::text) OR (NULLIF(btrim(dismiss_reason), ''::text) IS NOT NULL))),
+    CONSTRAINT ck_decision_inbox_snooze_state CHECK (((user_state <> 'snoozed'::text) OR (snoozed_until IS NOT NULL))),
+    CONSTRAINT ck_decision_inbox_user_state CHECK ((user_state = ANY (ARRAY['open'::text, 'acknowledged'::text, 'snoozed'::text, 'dismissed'::text, 'review_complete'::text]))),
+    CONSTRAINT decision_inbox_item_severity_check CHECK ((severity = ANY (ARRAY['info'::text, 'warning'::text, 'critical'::text]))),
+    CONSTRAINT decision_inbox_item_status_check CHECK ((status = ANY (ARRAY['active'::text, 'resolved'::text]))),
+    CONSTRAINT decision_inbox_usefulness_timestamp CHECK (((useful IS NULL) = (usefulness_updated_at IS NULL))),
+    CONSTRAINT decision_inbox_item_dedupe_key_key UNIQUE (dedupe_key),
+    CONSTRAINT decision_inbox_item_pkey PRIMARY KEY (id),
+    CONSTRAINT decision_inbox_item_paper_order_id_fkey FOREIGN KEY (paper_order_id) REFERENCES app.paper_order(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE app.paper_execution_observation (
+    paper_execution_observation_id text CONSTRAINT paper_execution_observation_paper_execution_observatio_not_null NOT NULL,
+    allocation_item_id text NOT NULL,
+    action_id text NOT NULL,
+    paper_order_id uuid NOT NULL,
+    execution_mode text DEFAULT 'paper'::text NOT NULL,
+    paper_only boolean DEFAULT true NOT NULL,
+    status text NOT NULL,
+    requested_quantity double precision NOT NULL,
+    filled_quantity double precision NOT NULL,
+    requested_price double precision,
+    fill_price double precision,
+    spread_bps double precision,
+    latency_ms double precision,
+    impact_bps double precision,
+    side text DEFAULT 'buy'::text NOT NULL,
+    exit_price double precision,
+    observed_at timestamp with time zone NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    event_fee double precision,
+    contract_multiplier double precision,
+    CONSTRAINT paper_execution_observation_check CHECK (((filled_quantity < 'Infinity'::double precision) AND (filled_quantity > '-Infinity'::double precision) AND (filled_quantity >= (0)::double precision) AND (filled_quantity <= requested_quantity))),
+    CONSTRAINT paper_execution_observation_check1 CHECK (((status <> ALL (ARRAY['filled'::text, 'exited'::text])) OR (filled_quantity > (0)::double precision))),
+    CONSTRAINT paper_execution_observation_check2 CHECK (((fill_price IS NOT NULL) OR (filled_quantity = (0)::double precision))),
+    CONSTRAINT paper_execution_observation_check3 CHECK ((available_at >= observed_at)),
+    CONSTRAINT paper_execution_observation_execution_mode_check CHECK ((execution_mode = 'paper'::text)),
+    CONSTRAINT paper_execution_observation_exit_price_check CHECK (((exit_price IS NULL) OR ((exit_price < 'Infinity'::double precision) AND (exit_price >= (0)::double precision)))),
+    CONSTRAINT paper_execution_observation_fill_price_check CHECK (((fill_price IS NULL) OR ((fill_price < 'Infinity'::double precision) AND (fill_price > '-Infinity'::double precision) AND (fill_price > (0)::double precision)))),
+    CONSTRAINT paper_execution_observation_impact_bps_check CHECK (((impact_bps IS NULL) OR ((impact_bps < 'Infinity'::double precision) AND (impact_bps > '-Infinity'::double precision) AND (impact_bps >= (0)::double precision)))),
+    CONSTRAINT paper_execution_observation_latency_ms_check CHECK (((latency_ms IS NULL) OR ((latency_ms < 'Infinity'::double precision) AND (latency_ms > '-Infinity'::double precision) AND (latency_ms >= (0)::double precision)))),
+    CONSTRAINT paper_execution_observation_paper_only_check CHECK (paper_only),
+    CONSTRAINT paper_execution_observation_requested_price_check CHECK (((requested_price IS NULL) OR ((requested_price < 'Infinity'::double precision) AND (requested_price > '-Infinity'::double precision) AND (requested_price > (0)::double precision)))),
+    CONSTRAINT paper_execution_observation_requested_quantity_check CHECK (((requested_quantity < 'Infinity'::double precision) AND (requested_quantity > '-Infinity'::double precision) AND (requested_quantity >= (0)::double precision))),
+    CONSTRAINT paper_execution_observation_side_check CHECK ((side = ANY (ARRAY['buy'::text, 'sell'::text]))),
+    CONSTRAINT paper_execution_observation_spread_bps_check CHECK (((spread_bps IS NULL) OR ((spread_bps < 'Infinity'::double precision) AND (spread_bps > '-Infinity'::double precision) AND (spread_bps >= (0)::double precision)))),
+    CONSTRAINT phase4_paper_observation_status CHECK ((status = ANY (ARRAY['planned'::text, 'submitted'::text, 'partial'::text, 'filled'::text, 'partial_exited'::text, 'exited'::text, 'cancelled'::text, 'unavailable'::text]))),
+    CONSTRAINT paper_execution_observation_pkey PRIMARY KEY (paper_execution_observation_id),
+    CONSTRAINT paper_execution_observation_allocation_item_id_fkey FOREIGN KEY (allocation_item_id) REFERENCES analysis.portfolio_allocation_item(allocation_item_id),
+    CONSTRAINT paper_execution_observation_paper_order_id_fkey FOREIGN KEY (paper_order_id) REFERENCES app.paper_order(id)
+);
+
+CREATE TABLE app.paper_order_leg (
+    paper_order_id uuid NOT NULL,
+    leg_index integer NOT NULL,
+    contract_id bigint NOT NULL,
+    option_type text NOT NULL,
+    side text NOT NULL,
+    strike numeric(20,6) NOT NULL,
+    bid numeric(20,6) NOT NULL,
+    ask numeric(20,6) NOT NULL,
+    bid_size integer NOT NULL,
+    ask_size integer NOT NULL,
+    quote_time timestamp with time zone NOT NULL,
+    open_interest integer,
+    volume integer,
+    CONSTRAINT paper_order_leg_pkey PRIMARY KEY (paper_order_id, leg_index),
+    CONSTRAINT paper_order_leg_paper_order_id_fkey FOREIGN KEY (paper_order_id) REFERENCES app.paper_order(id) ON DELETE CASCADE
+);
+
+CREATE TABLE app.thesis_evidence_assessment (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME app.thesis_evidence_assessment_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    thesis_revision_id bigint,
+    automation_run_id uuid,
+    instrument_id bigint NOT NULL,
+    evidence_reference text NOT NULL,
+    evidence_title text,
+    evidence_date timestamp with time zone,
+    stance text NOT NULL,
+    materiality text DEFAULT 'low'::text NOT NULL,
+    affected_pillar_ids text[] DEFAULT ARRAY[]::text[] NOT NULL,
+    confidence numeric(5,4) DEFAULT 0 NOT NULL,
+    rationale text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT thesis_evidence_assessment_confidence_check CHECK (((confidence >= (0)::numeric) AND (confidence <= (1)::numeric))),
+    CONSTRAINT thesis_evidence_assessment_materiality_check CHECK ((materiality = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text]))),
+    CONSTRAINT thesis_evidence_assessment_stance_check CHECK ((stance = ANY (ARRAY['support'::text, 'contradict'::text, 'neutral'::text, 'insufficient'::text]))),
+    CONSTRAINT thesis_evidence_assessment_pkey PRIMARY KEY (id),
+    CONSTRAINT thesis_evidence_assessment_automation_run_id_fkey FOREIGN KEY (automation_run_id) REFERENCES app.thesis_automation_run(id),
+    CONSTRAINT thesis_evidence_assessment_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT thesis_evidence_assessment_thesis_revision_id_fkey FOREIGN KEY (thesis_revision_id) REFERENCES app.thesis(id) ON DELETE CASCADE
+);
+
+CREATE TABLE app.thesis_expression (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME app.thesis_expression_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    instrument_id bigint NOT NULL,
+    thesis_revision_id bigint NOT NULL,
+    expression_kind text NOT NULL,
+    structure jsonb DEFAULT '{}'::jsonb NOT NULL,
+    entry_logic jsonb DEFAULT '{}'::jsonb NOT NULL,
+    max_loss numeric(20,6),
+    risk_budget numeric(20,6),
+    horizon_date date,
+    invalidation_rules jsonb DEFAULT '[]'::jsonb NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT thesis_expression_expression_kind_check CHECK ((expression_kind = ANY (ARRAY['equity'::text, 'option'::text]))),
+    CONSTRAINT thesis_expression_pkey PRIMARY KEY (id),
+    CONSTRAINT thesis_expression_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT thesis_expression_thesis_revision_id_fkey FOREIGN KEY (thesis_revision_id) REFERENCES app.thesis(id) ON DELETE CASCADE
+);
+
+CREATE TABLE app.thesis_review_event (
+    id bigint GENERATED BY DEFAULT AS IDENTITY (
+
+    SEQUENCE NAME app.thesis_review_event_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+
+    ) NOT NULL,
+    instrument_id bigint NOT NULL,
+    thesis_revision_id bigint,
+    outcome text NOT NULL,
+    notes text,
+    reviewed_evidence_cutoff timestamp with time zone,
+    reviewed_by text DEFAULT 'joe'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT thesis_review_event_outcome_check CHECK ((outcome = ANY (ARRAY['unchanged'::text, 'updated'::text, 'invalidated'::text, 'closed'::text, 'legacy_acknowledgement'::text]))),
+    CONSTRAINT thesis_review_event_pkey PRIMARY KEY (id),
+    CONSTRAINT thesis_review_event_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id),
+    CONSTRAINT thesis_review_event_thesis_revision_id_fkey FOREIGN KEY (thesis_revision_id) REFERENCES app.thesis(id)
+);
+
+CREATE TABLE analysis.book_attribution (
+    book_attribution_id text NOT NULL,
+    allocation_id text NOT NULL,
+    allocation_item_id text NOT NULL,
+    strategy_forecast_id text NOT NULL,
+    hypothesis_id uuid NOT NULL,
+    action_id text NOT NULL,
+    rank_id text NOT NULL,
+    expression jsonb NOT NULL,
+    experiment_id text NOT NULL,
+    trial_id uuid NOT NULL,
+    result_id uuid NOT NULL,
+    paper_execution_observation_id text NOT NULL,
+    pnl_status text NOT NULL,
+    realized_pnl double precision,
+    attribution jsonb NOT NULL,
+    input_cutoff timestamp with time zone NOT NULL,
+    input_hash character(64) NOT NULL,
+    content_hash character(64) NOT NULL,
+    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT book_attribution_check CHECK (((jsonb_typeof(attribution) = 'object'::text) AND (jsonb_typeof(expression) = 'object'::text) AND (expression <> '{}'::jsonb))),
+    CONSTRAINT book_attribution_check1 CHECK (((pnl_status <> 'realized'::text) OR (realized_pnl IS NOT NULL))),
+    CONSTRAINT book_attribution_check2 CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)) AND (book_attribution_id = ('attribution:'::text || (input_hash)::text)))),
+    CONSTRAINT book_attribution_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
+    CONSTRAINT book_attribution_pnl_status_check CHECK ((pnl_status = ANY (ARRAY['pending_fill'::text, 'realized'::text, 'unavailable'::text]))),
+    CONSTRAINT book_attribution_realized_pnl_check CHECK (((realized_pnl IS NULL) OR ((realized_pnl < 'Infinity'::double precision) AND (realized_pnl > '-Infinity'::double precision)))),
+    CONSTRAINT book_attribution_pkey PRIMARY KEY (book_attribution_id),
+    CONSTRAINT book_attribution_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id),
+    CONSTRAINT book_attribution_allocation_item_id_fkey FOREIGN KEY (allocation_item_id) REFERENCES analysis.portfolio_allocation_item(allocation_item_id),
+    CONSTRAINT book_attribution_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id),
+    CONSTRAINT book_attribution_paper_execution_observation_id_fkey FOREIGN KEY (paper_execution_observation_id) REFERENCES app.paper_execution_observation(paper_execution_observation_id),
+    CONSTRAINT book_attribution_result_id_fkey FOREIGN KEY (result_id) REFERENCES analysis.trial_result(id),
+    CONSTRAINT book_attribution_strategy_forecast_id_fkey FOREIGN KEY (strategy_forecast_id) REFERENCES analysis.strategy_forecast(id),
+    CONSTRAINT book_attribution_trial_id_fkey FOREIGN KEY (trial_id) REFERENCES analysis.research_trial(id)
+);
+
+CREATE TABLE app.notification_outbox (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    dedupe_key text NOT NULL,
+    inbox_item_id uuid NOT NULL,
+    channel text DEFAULT 'telegram_owner'::text NOT NULL,
+    event_type text NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status text DEFAULT 'queued'::text NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    next_attempt_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_error text,
+    sent_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT notification_outbox_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT notification_outbox_channel_check CHECK ((channel = 'telegram_owner'::text)),
+    CONSTRAINT notification_outbox_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'sending'::text, 'sent'::text, 'failed'::text, 'dry_run'::text, 'suppressed'::text, 'uncertain'::text]))),
+    CONSTRAINT notification_outbox_dedupe_key_key UNIQUE (dedupe_key),
+    CONSTRAINT notification_outbox_pkey PRIMARY KEY (id),
+    CONSTRAINT notification_outbox_inbox_item_id_fkey FOREIGN KEY (inbox_item_id) REFERENCES app.decision_inbox_item(id) ON DELETE RESTRICT
+);
+
+CREATE FUNCTION raw.confirmed_price_bar_at(p_as_of timestamp with time zone, p_instrument_ids bigint[]) RETURNS SETOF raw.price_bar
+    LANGUAGE sql STABLE
+    AS $$
+        SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact."interval", fact.id) fact.*
+        FROM (
+            SELECT * FROM raw.price_bar WHERE p_instrument_ids IS NULL OR instrument_id = ANY(p_instrument_ids)
+            UNION ALL
+            SELECT * FROM raw.price_bar_history WHERE p_instrument_ids IS NULL OR instrument_id = ANY(p_instrument_ids)
+        ) fact
+        JOIN raw.price_bar_fact_availability availability
+          ON availability.fact_id = fact.id AND availability.fact_available_at = fact.available_at
+        JOIN ingest.run price_run
+          ON price_run.id = availability.ingest_run_id
+         AND price_run.status IN ('succeeded', 'partial')
+         AND price_run.finished_at IS NOT NULL
+        WHERE fact.available_at <= p_as_of AND price_run.finished_at <= p_as_of
+        ORDER BY fact.instrument_id, fact.source_id, fact."interval", fact.id, fact.available_at DESC
+    $$;
+
+CREATE FUNCTION raw.confirmed_quote_at(p_as_of timestamp with time zone, p_instrument_ids bigint[]) RETURNS SETOF raw.quote
+    LANGUAGE sql STABLE
+    AS $$
+        SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.id) fact.*
+        FROM (
+            SELECT * FROM raw.quote WHERE p_instrument_ids IS NULL OR instrument_id = ANY(p_instrument_ids)
+            UNION ALL
+            SELECT * FROM raw.quote_history WHERE p_instrument_ids IS NULL OR instrument_id = ANY(p_instrument_ids)
+        ) fact
+        JOIN raw.quote_fact_availability availability
+          ON availability.fact_id = fact.id AND availability.fact_available_at = fact.available_at
+        JOIN ingest.run price_run
+          ON price_run.id = availability.ingest_run_id
+         AND price_run.status IN ('succeeded', 'partial')
+         AND price_run.finished_at IS NOT NULL
+        WHERE fact.available_at <= p_as_of AND price_run.finished_at <= p_as_of
+        ORDER BY fact.instrument_id, fact.source_id, fact.id, fact.available_at DESC
+    $$;
+
 CREATE FUNCTION raw.current_price_at(p_as_of timestamp with time zone, p_instrument_ids bigint[] DEFAULT NULL::bigint[]) RETURNS TABLE(instrument_id bigint, price double precision, change_pct double precision, change_abs double precision, currency text, source_id text, observed_at timestamp with time zone, available_at timestamp with time zone, valuation_status text, source_kind text, trading_date date)
     LANGUAGE plpgsql STABLE
     AS $$
@@ -3484,7 +6953,7 @@ CREATE FUNCTION raw.current_price_for_instruments(p_as_of timestamp with time zo
     LANGUAGE sql STABLE
     AS $$
         WITH confirmed_quote AS MATERIALIZED (
-            SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.observed_at)
+            SELECT DISTINCT ON (fact.id)
                    fact.*, confirmation.confirmed_at
             FROM (
                 SELECT * FROM raw.quote
@@ -3493,7 +6962,7 @@ CREATE FUNCTION raw.current_price_for_instruments(p_as_of timestamp with time zo
                 SELECT * FROM raw.quote_history
                 WHERE instrument_id = ANY(p_instrument_ids)
             ) fact
-            
+
         CROSS JOIN LATERAL (
             SELECT price_run.finished_at AS confirmed_at
             FROM raw.quote_fact_availability availability
@@ -3509,10 +6978,9 @@ CREATE FUNCTION raw.current_price_for_instruments(p_as_of timestamp with time zo
             ORDER BY confirmed_at
             LIMIT 1
         ) confirmation
-    
+
             WHERE fact.available_at <= p_as_of
-            ORDER BY fact.instrument_id, fact.source_id, fact.observed_at,
-                     fact.available_at DESC
+            ORDER BY fact.id, fact.available_at DESC
         ),
         confirmed_daily_bar AS MATERIALIZED (
             SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.trading_date)
@@ -3524,7 +6992,7 @@ CREATE FUNCTION raw.current_price_for_instruments(p_as_of timestamp with time zo
                 SELECT * FROM raw.price_bar_history
                 WHERE instrument_id = ANY(p_instrument_ids) AND interval = '1d'
             ) fact
-            
+
         CROSS JOIN LATERAL (
             SELECT price_run.finished_at AS confirmed_at
             FROM raw.price_bar_fact_availability availability
@@ -3540,10 +7008,41 @@ CREATE FUNCTION raw.current_price_for_instruments(p_as_of timestamp with time zo
             ORDER BY confirmed_at
             LIMIT 1
         ) confirmation
-    
+
             WHERE fact.available_at <= p_as_of
             ORDER BY fact.instrument_id, fact.source_id, fact.trading_date,
                      fact.available_at DESC, fact.observed_at DESC
+        ),
+        daily_clocks AS MATERIALIZED (
+            SELECT fact.*, effective.close_at AS effective_close_at
+            FROM confirmed_daily_bar fact
+            JOIN catalog.instrument instrument ON instrument.id = fact.instrument_id
+            CROSS JOIN LATERAL (
+                VALUES ((fact.trading_date::timestamp + time '16:00')
+                    AT TIME ZONE COALESCE(instrument.market_timezone, 'America/New_York'))
+            ) nominal(close_at)
+            CROSS JOIN LATERAL (
+                VALUES (CASE
+                    WHEN fact.observed_at = nominal.close_at THEN fact.observed_at
+                    WHEN instrument.asset_class IN ('equity', 'etf')
+                     AND COALESCE(instrument.market_timezone, 'America/New_York') = 'America/New_York'
+                     AND (fact.observed_at AT TIME ZONE 'America/New_York')::date = fact.trading_date
+                     AND (fact.observed_at AT TIME ZONE 'America/New_York')::time = time '13:00'
+                     AND (
+                         (extract(month FROM fact.trading_date) = 11
+                          AND extract(isodow FROM fact.trading_date) = 5
+                          AND extract(day FROM fact.trading_date) BETWEEN 23 AND 29)
+                         OR (extract(isodow FROM fact.trading_date) BETWEEN 1 AND 4
+                             AND ((extract(month FROM fact.trading_date) = 7 AND extract(day FROM fact.trading_date) = 3)
+                               OR (extract(month FROM fact.trading_date) = 12 AND extract(day FROM fact.trading_date) = 24)))
+                     ) THEN fact.observed_at
+                    ELSE nominal.close_at
+                END)
+            ) effective(close_at)
+            WHERE effective.close_at <= p_as_of
+              AND (instrument.asset_class NOT IN ('equity', 'etf')
+                   OR COALESCE(instrument.market_timezone, 'America/New_York') <> 'America/New_York'
+                   OR (fact.available_at >= effective.close_at AND fact.confirmed_at >= fact.available_at))
         ),
         quote_candidates AS MATERIALIZED (
             SELECT quote.instrument_id,
@@ -3569,9 +7068,15 @@ CREATE FUNCTION raw.current_price_for_instruments(p_as_of timestamp with time zo
             FROM confirmed_quote quote
             JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
             JOIN ingest.source source ON source.id = quote.source_id AND source.enabled AND source.operational_state = 'active'
+            LEFT JOIN daily_clocks verified_close
+              ON source.kind = 'daily_bars' AND verified_close.instrument_id = quote.instrument_id
+             AND verified_close.source_id = quote.source_id AND verified_close.ingest_run_id = quote.ingest_run_id
+             AND verified_close.observed_at = quote.observed_at AND verified_close.close = quote.price
             CROSS JOIN LATERAL (
                 VALUES (
                     CASE
+                        WHEN source.kind = 'daily_bars' AND verified_close.instrument_id IS NOT NULL
+                            THEN verified_close.effective_close_at
                         WHEN source.kind IN ('daily_bars', 'daily_quote')
                             THEN ((quote.observed_at AT TIME ZONE 'UTC')::date::timestamp + time '16:00')
                                  AT TIME ZONE COALESCE(instrument.market_timezone, 'America/New_York')
@@ -3581,6 +7086,10 @@ CREATE FUNCTION raw.current_price_for_instruments(p_as_of timestamp with time zo
             ) AS effective(observed_at)
             WHERE quote.price > 0
               AND effective.observed_at <= p_as_of
+              AND (source.kind <> 'daily_bars' OR instrument.asset_class NOT IN ('equity', 'etf')
+                   OR COALESCE(instrument.market_timezone, 'America/New_York') <> 'America/New_York' OR (
+                  quote.available_at >= effective.observed_at AND quote.confirmed_at >= quote.available_at
+              ))
         ),
         bar_candidates AS MATERIALIZED (
             SELECT bar.instrument_id,
@@ -3589,20 +7098,18 @@ CREATE FUNCTION raw.current_price_for_instruments(p_as_of timestamp with time zo
                    NULL::double precision AS change_abs,
                    'USD'::text AS currency,
                    bar.source_id,
-                   ((bar.trading_date::timestamp + time '16:00')
-                       AT TIME ZONE COALESCE(instrument.market_timezone, 'America/New_York')) AS observed_at,
+                   bar.effective_close_at AS observed_at,
                    bar.available_at,
                    bar.confirmed_at,
                    'daily_close'::text AS valuation_status,
                    source.kind AS source_kind,
                    bar.trading_date,
                    true AS is_price_bar
-            FROM confirmed_daily_bar bar
+            FROM daily_clocks bar
             JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
             JOIN ingest.source source ON source.id = bar.source_id AND source.enabled AND source.operational_state = 'active'
             WHERE bar.close > 0
-              AND ((bar.trading_date::timestamp + time '16:00')
-                   AT TIME ZONE COALESCE(instrument.market_timezone, 'America/New_York')) <= p_as_of
+              AND bar.effective_close_at <= p_as_of
         ),
         selected AS MATERIALIZED (
             SELECT DISTINCT ON (candidate.instrument_id) candidate.*
@@ -3679,1406 +7186,6 @@ CREATE FUNCTION raw.project_confirmation_staging() RETURNS trigger
         END
         $$;
 
-CREATE TABLE analysis.agent_experiment (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    experiment_key text NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    champion_provider text NOT NULL,
-    champion_model text NOT NULL,
-    challenger_provider text NOT NULL,
-    challenger_model text NOT NULL,
-    max_pairs_per_trading_day integer DEFAULT 12 NOT NULL,
-    advisory_only boolean DEFAULT true NOT NULL,
-    started_at timestamp with time zone DEFAULT now() NOT NULL,
-    completed_at timestamp with time zone,
-    parameters jsonb DEFAULT '{}'::jsonb NOT NULL,
-    immutable_report jsonb,
-    report_sealed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT agent_experiment_check CHECK (((status <> 'completed'::text) OR (immutable_report IS NOT NULL))),
-    CONSTRAINT agent_experiment_max_pairs_per_trading_day_check CHECK (((max_pairs_per_trading_day >= 1) AND (max_pairs_per_trading_day <= 12))),
-    CONSTRAINT agent_experiment_status_check CHECK ((status = ANY (ARRAY['active'::text, 'completed'::text, 'archived'::text])))
-);
-
-CREATE TABLE analysis.agent_run (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    provider text NOT NULL,
-    model text NOT NULL,
-    trigger text NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    finished_at timestamp with time zone,
-    input_tokens bigint,
-    output_tokens bigint,
-    cost_usd numeric(14,6),
-    status text NOT NULL,
-    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
-    experiment_id uuid,
-    arm text,
-    evidence_fingerprint text,
-    prompt_version text,
-    schema_version text,
-    baseline_version text,
-    validation_status text,
-    validation_detail jsonb DEFAULT '{}'::jsonb NOT NULL,
-    latency_ms integer
-);
-
-CREATE TABLE analysis.agent_task (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    agent_run_id uuid,
-    decision_id uuid,
-    task_kind text NOT NULL,
-    status text NOT NULL,
-    request jsonb NOT NULL,
-    result jsonb,
-    validation jsonb,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    result_available_at timestamp with time zone,
-    validation_available_at timestamp with time zone,
-    experiment_id uuid,
-    arm text,
-    paired_task_id uuid,
-    provider text,
-    model text,
-    evidence_fingerprint text,
-    prompt_version text,
-    schema_version text,
-    baseline_version text,
-    validation_status text,
-    validation_detail jsonb DEFAULT '{}'::jsonb NOT NULL,
-    latency_ms integer,
-    input_tokens bigint,
-    output_tokens bigint,
-    cost_usd numeric(14,6)
-);
-
-CREATE TABLE analysis.book_attribution (
-    book_attribution_id text NOT NULL,
-    allocation_id text NOT NULL,
-    allocation_item_id text NOT NULL,
-    strategy_forecast_id text NOT NULL,
-    hypothesis_id uuid NOT NULL,
-    action_id text NOT NULL,
-    rank_id text NOT NULL,
-    expression jsonb NOT NULL,
-    experiment_id text NOT NULL,
-    trial_id uuid NOT NULL,
-    result_id uuid NOT NULL,
-    paper_execution_observation_id text NOT NULL,
-    pnl_status text NOT NULL,
-    realized_pnl double precision,
-    attribution jsonb NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    input_hash character(64) NOT NULL,
-    content_hash character(64) NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT book_attribution_check CHECK (((jsonb_typeof(attribution) = 'object'::text) AND (jsonb_typeof(expression) = 'object'::text) AND (expression <> '{}'::jsonb))),
-    CONSTRAINT book_attribution_check1 CHECK (((pnl_status <> 'realized'::text) OR (realized_pnl IS NOT NULL))),
-    CONSTRAINT book_attribution_check2 CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)) AND (book_attribution_id = ('attribution:'::text || (input_hash)::text)))),
-    CONSTRAINT book_attribution_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
-    CONSTRAINT book_attribution_pnl_status_check CHECK ((pnl_status = ANY (ARRAY['pending_fill'::text, 'realized'::text, 'unavailable'::text]))),
-    CONSTRAINT book_attribution_realized_pnl_check CHECK (((realized_pnl IS NULL) OR ((realized_pnl < 'Infinity'::double precision) AND (realized_pnl > '-Infinity'::double precision))))
-);
-
-CREATE TABLE analysis.decision (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    run_id uuid NOT NULL,
-    decision_key text NOT NULL,
-    kind text NOT NULL,
-    instrument_id bigint NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    state text NOT NULL,
-    rank integer,
-    score double precision,
-    quality_status text,
-    strategy_revision_id bigint,
-    reasons text[] DEFAULT '{}'::text[] NOT NULL,
-    blockers text[] DEFAULT '{}'::text[] NOT NULL,
-    input_hash character(64) NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    lane text,
-    episode_key text,
-    sample_eligible boolean DEFAULT false NOT NULL,
-    quarantine_reason text,
-    calibration_cohort text
-);
-
-CREATE TABLE analysis.decision_evidence (
-    decision_id uuid NOT NULL,
-    evidence_kind text NOT NULL,
-    reference_key text NOT NULL,
-    reference_url text,
-    detail jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-CREATE TABLE analysis.event_decision_packet (
-    event_id text NOT NULL,
-    symbol text NOT NULL,
-    event_kind text NOT NULL,
-    trigger_type text NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    publication_id text,
-    headline text,
-    market_tape jsonb DEFAULT '{}'::jsonb NOT NULL,
-    positioning jsonb DEFAULT '{}'::jsonb NOT NULL,
-    event_fundamentals jsonb DEFAULT '{}'::jsonb NOT NULL,
-    platform_optionality jsonb DEFAULT '{}'::jsonb NOT NULL,
-    historical_cases jsonb DEFAULT '{}'::jsonb NOT NULL,
-    tactical_decision jsonb DEFAULT '{}'::jsonb NOT NULL,
-    fundamental_decision jsonb DEFAULT '{}'::jsonb NOT NULL,
-    decision_truth jsonb DEFAULT '{}'::jsonb NOT NULL,
-    evidence_refs jsonb DEFAULT '[]'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ck_event_decision_packet_json_objects CHECK (((jsonb_typeof(market_tape) = 'object'::text) AND (jsonb_typeof(positioning) = 'object'::text) AND (jsonb_typeof(event_fundamentals) = 'object'::text) AND (jsonb_typeof(platform_optionality) = 'object'::text) AND (jsonb_typeof(tactical_decision) = 'object'::text) AND (jsonb_typeof(fundamental_decision) = 'object'::text) AND (jsonb_typeof(decision_truth) = 'object'::text)))
-);
-
-CREATE TABLE analysis.event_scout_event (
-    event_id text NOT NULL,
-    symbol text NOT NULL,
-    trigger_type text NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    source_url text,
-    source_kind text,
-    status text NOT NULL,
-    cooldown_until timestamp with time zone,
-    collection_status jsonb DEFAULT '{}'::jsonb NOT NULL,
-    raw jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-CREATE TABLE analysis.event_study_feature (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    run_id uuid NOT NULL,
-    instrument_id bigint,
-    market_event_id bigint NOT NULL,
-    market_event_version_id bigint NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    event_kind text NOT NULL,
-    event_session text NOT NULL,
-    pre_event_regime text NOT NULL,
-    horizon integer NOT NULL,
-    sample_size integer NOT NULL,
-    actual_move_median double precision,
-    actual_move_p75 double precision,
-    actual_move_p90 double precision,
-    bootstrap_low double precision,
-    bootstrap_high double precision,
-    win_rate double precision,
-    iv_crush_frequency double precision,
-    atm_iv double precision,
-    skew_25d double precision,
-    term_slope double precision,
-    implied_move double precision,
-    evidence_state text NOT NULL,
-    feature_version text NOT NULL,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT ck_event_study_evidence_state CHECK ((evidence_state = ANY (ARRAY['ready'::text, 'insufficient_event_evidence'::text, 'unavailable'::text]))),
-    CONSTRAINT event_study_feature_horizon_check CHECK ((horizon > 0)),
-    CONSTRAINT event_study_feature_sample_size_check CHECK ((sample_size >= 0))
-);
-
-CREATE TABLE analysis.execution_model_snapshot (
-    execution_model_snapshot_id text NOT NULL,
-    allocation_id text NOT NULL,
-    model_version text NOT NULL,
-    calibration_status text NOT NULL,
-    sample_count integer NOT NULL,
-    fill_probability double precision,
-    spread_bps double precision,
-    latency_ms double precision,
-    impact_bps double precision,
-    input_cutoff timestamp with time zone NOT NULL,
-    input_hash character(64) NOT NULL,
-    content_hash character(64) NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT execution_model_snapshot_calibration_status_check CHECK ((calibration_status = ANY (ARRAY['calibrated'::text, 'calibration_pending'::text, 'unavailable'::text]))),
-    CONSTRAINT execution_model_snapshot_check CHECK (((calibration_status <> 'calibrated'::text) OR (sample_count > 0))),
-    CONSTRAINT execution_model_snapshot_check1 CHECK ((execution_model_snapshot_id = ('execution:'::text || (input_hash)::text))),
-    CONSTRAINT execution_model_snapshot_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
-    CONSTRAINT execution_model_snapshot_fill_probability_check CHECK (((fill_probability IS NULL) OR ((fill_probability < 'Infinity'::double precision) AND (fill_probability > '-Infinity'::double precision) AND ((fill_probability >= (0)::double precision) AND (fill_probability <= (1)::double precision))))),
-    CONSTRAINT execution_model_snapshot_impact_bps_check CHECK (((impact_bps IS NULL) OR ((impact_bps < 'Infinity'::double precision) AND (impact_bps > '-Infinity'::double precision) AND (impact_bps >= (0)::double precision)))),
-    CONSTRAINT execution_model_snapshot_input_hash_check CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)))),
-    CONSTRAINT execution_model_snapshot_latency_ms_check CHECK (((latency_ms IS NULL) OR ((latency_ms < 'Infinity'::double precision) AND (latency_ms > '-Infinity'::double precision) AND (latency_ms >= (0)::double precision)))),
-    CONSTRAINT execution_model_snapshot_sample_count_check CHECK ((sample_count >= 0)),
-    CONSTRAINT execution_model_snapshot_spread_bps_check CHECK (((spread_bps IS NULL) OR ((spread_bps < 'Infinity'::double precision) AND (spread_bps > '-Infinity'::double precision) AND (spread_bps >= (0)::double precision))))
-);
-
-CREATE TABLE analysis.experiment_family (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    hypothesis_id uuid NOT NULL,
-    family_key text NOT NULL,
-    name text NOT NULL,
-    design jsonb DEFAULT '{}'::jsonb NOT NULL,
-    controls jsonb DEFAULT '{}'::jsonb NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    input_hash character(64) NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    available_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE analysis.experiment_manifest (
-    experiment_family_id uuid NOT NULL,
-    expected_trial_count integer NOT NULL,
-    expected_trial_keys jsonb NOT NULL,
-    manifest_hash character(64) NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    available_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT experiment_manifest_expected_trial_count_check CHECK (((expected_trial_count >= 1) AND (expected_trial_count <= 10000))),
-    CONSTRAINT experiment_manifest_expected_trial_keys_check CHECK ((jsonb_typeof(expected_trial_keys) = 'array'::text))
-);
-
-CREATE TABLE analysis.hypothesis (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    hypothesis_key text NOT NULL,
-    statement text NOT NULL,
-    mechanism_class text NOT NULL,
-    falsification text NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    input_hash character(64) NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    available_at timestamp with time zone DEFAULT now() NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT hypothesis_check CHECK ((available_at >= created_at))
-);
-
-CREATE TABLE analysis.market_coverage_vector (
-    vector_id text NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    status text NOT NULL,
-    payload jsonb NOT NULL,
-    ingest_run_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-    input_content_hash text NOT NULL,
-    parent_snapshot_id text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE analysis.market_scenario_path (
-    scenario_hash text NOT NULL,
-    snapshot_id text NOT NULL,
-    parent_snapshot_id text NOT NULL,
-    posterior_id text NOT NULL,
-    model_version text NOT NULL,
-    ingest_run_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-    input_content_hash text NOT NULL,
-    path jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE analysis.market_state_posterior (
-    posterior_id text NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    model_version text NOT NULL,
-    status text NOT NULL,
-    payload jsonb NOT NULL,
-    ingest_run_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-    input_content_hash text NOT NULL,
-    parent_snapshot_id text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE analysis.option_decision (
-    decision_id uuid NOT NULL,
-    contract_id bigint NOT NULL,
-    snapshot_id bigint NOT NULL,
-    quote_observed_at timestamp with time zone NOT NULL,
-    primary_decision_id uuid,
-    premium_mid double precision,
-    fill_assumption double precision,
-    required_move_pct double precision,
-    buy_under double precision,
-    predicted_p2x double precision,
-    predicted_p5x double precision,
-    ev_multiple double precision,
-    tier text,
-    synthetic_legs jsonb DEFAULT '[]'::jsonb NOT NULL,
-    structure text DEFAULT 'long_option'::text NOT NULL,
-    entry_price double precision,
-    exit_cost_estimate double precision,
-    secured_cash double precision,
-    max_profit double precision,
-    max_loss double precision,
-    break_even double precision,
-    effective_assignment_price double precision,
-    probability_profit double precision,
-    probability_assignment double precision,
-    probability_touch double precision,
-    expected_value double precision,
-    risk_adjusted_expectancy double precision,
-    tail_cvar double precision,
-    data_confidence double precision,
-    execution_confidence double precision,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    paper_state text,
-    discovery_lane text,
-    thesis_id bigint,
-    relative_value_id bigint,
-    model_version text,
-    market_regime text,
-    fair_low double precision,
-    fair_high double precision,
-    modeled_net_edge double precision,
-    route_version text,
-    strategy_route jsonb DEFAULT '{}'::jsonb NOT NULL,
-    market_regime_detail jsonb DEFAULT '{}'::jsonb NOT NULL,
-    event_state text,
-    CONSTRAINT ck_option_decision_market_regime_detail_object CHECK ((jsonb_typeof(market_regime_detail) = 'object'::text)),
-    CONSTRAINT ck_option_decision_paper_state CHECK (((paper_state IS NULL) OR (paper_state = ANY (ARRAY['COLLECTING'::text, 'WATCH'::text, 'PAPER_READY'::text, 'REJECT'::text])))),
-    CONSTRAINT ck_option_decision_strategy_route_object CHECK ((jsonb_typeof(strategy_route) = 'object'::text))
-);
-
-CREATE TABLE analysis.option_discovery_candidate (
-    run_id uuid NOT NULL,
-    instrument_id bigint NOT NULL,
-    stage text NOT NULL,
-    discovery_score double precision NOT NULL,
-    surface_reason text NOT NULL,
-    primary_edge text NOT NULL,
-    causal_exposure text NOT NULL,
-    catalyst_start date,
-    catalyst_end date,
-    earliest_signal_at timestamp with time zone,
-    timeliness text NOT NULL,
-    source_root_count integer DEFAULT 0 NOT NULL,
-    evidence_completeness integer DEFAULT 0 NOT NULL,
-    data_readiness text NOT NULL,
-    execution_ready boolean DEFAULT false NOT NULL,
-    next_evidence text NOT NULL,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT ck_option_discovery_evidence CHECK (((evidence_completeness >= 0) AND (evidence_completeness <= 5))),
-    CONSTRAINT ck_option_discovery_readiness CHECK ((data_readiness = ANY (ARRAY['A'::text, 'B'::text, 'C'::text, 'D'::text]))),
-    CONSTRAINT ck_option_discovery_stage CHECK ((stage = ANY (ARRAY['DISCOVERED'::text, 'UNDERWRITING'::text, 'STRUCTURED'::text, 'PUBLISHED'::text])))
-);
-
-CREATE TABLE analysis.option_discovery_run (
-    run_id uuid NOT NULL,
-    universe_hash text NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    completed_at timestamp with time zone,
-    provider text,
-    market_session text,
-    symbols_considered integer DEFAULT 0 NOT NULL,
-    symbols_with_chains integer DEFAULT 0 NOT NULL,
-    contracts_evaluated integer DEFAULT 0 NOT NULL,
-    manifest jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-CREATE TABLE analysis.option_event (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    instrument_id bigint NOT NULL,
-    objective_version text DEFAULT 'short_horizon_convex_v1'::text NOT NULL,
-    event_type text DEFAULT 'selloff'::text NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    detected_at timestamp with time zone NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    reference_price double precision NOT NULL,
-    event_low double precision NOT NULL,
-    trigger_intraday_pct double precision,
-    trigger_one_day_pct double precision,
-    trigger_three_session_pct double precision,
-    severity_score double precision NOT NULL,
-    event_rank integer,
-    material_evidence_count integer DEFAULT 0 NOT NULL,
-    enrolled_at timestamp with time zone,
-    last_signal_at timestamp with time zone,
-    no_active_signal_sessions integer DEFAULT 0 NOT NULL,
-    closed_at timestamp with time zone,
-    close_reason text,
-    provenance jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    cohort_id uuid NOT NULL,
-    data_quality_status text DEFAULT 'valid'::text NOT NULL,
-    trigger_reason text,
-    quote_age_minutes double precision,
-    reference_trading_date date,
-    reference_source_id text,
-    reference_available_at timestamp with time zone,
-    invalidated_at timestamp with time zone,
-    invalidation_reason text,
-    priority_components jsonb DEFAULT '{}'::jsonb NOT NULL,
-    capacity_defer_reason text,
-    CONSTRAINT ck_option_event_data_quality_status CHECK ((data_quality_status = ANY (ARRAY['valid'::text, 'invalid_reference_bar'::text, 'stale_quote'::text, 'missing_reference'::text, 'lookahead_blocked'::text, 'provider_unconfirmed'::text]))),
-    CONSTRAINT ck_option_event_low CHECK (((event_low > (0)::double precision) AND (reference_price > (0)::double precision))),
-    CONSTRAINT ck_option_event_status CHECK ((status = ANY (ARRAY['active'::text, 'deferred_capacity'::text, 'closed'::text, 'invalidated'::text]))),
-    CONSTRAINT ck_option_event_type CHECK ((event_type = 'selloff'::text))
-);
-
-CREATE TABLE analysis.option_event_agent_batch (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    event_id uuid NOT NULL,
-    capture_id uuid,
-    trigger text NOT NULL,
-    fingerprint_key text NOT NULL,
-    fingerprint jsonb NOT NULL,
-    provider text DEFAULT 'codex'::text NOT NULL,
-    model text NOT NULL,
-    reasoning_effort text NOT NULL,
-    status text DEFAULT 'queued'::text NOT NULL,
-    task_count integer DEFAULT 0 NOT NULL,
-    agent_run_id uuid,
-    telemetry jsonb DEFAULT '{}'::jsonb NOT NULL,
-    error text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    started_at timestamp with time zone,
-    finished_at timestamp with time zone,
-    cohort_id uuid NOT NULL,
-    experiment_id uuid,
-    arm text,
-    paired_task_id uuid,
-    evidence_fingerprint text,
-    prompt_version text,
-    schema_version text,
-    baseline_version text,
-    validation_status text,
-    validation_detail jsonb DEFAULT '{}'::jsonb NOT NULL,
-    latency_ms integer,
-    CONSTRAINT ck_option_event_agent_batch_status CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text, 'skipped'::text]))),
-    CONSTRAINT ck_option_event_agent_batch_task_count CHECK (((task_count >= 0) AND (task_count <= 12))),
-    CONSTRAINT ck_option_event_agent_batch_trigger CHECK ((trigger = ANY (ARRAY['event_established'::text, 'underlying_move_2pct'::text, 'material_iv_change'::text, 'new_material_evidence'::text, 'signal_family_transition'::text, 'preopen_review'::text])))
-);
-
-CREATE TABLE analysis.option_event_capture (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    event_id uuid NOT NULL,
-    snapshot_id bigint,
-    capture_generation_id bigint,
-    scheduled_at timestamp with time zone NOT NULL,
-    started_at timestamp with time zone,
-    finished_at timestamp with time zone,
-    status text NOT NULL,
-    expected_contract_count integer DEFAULT 0 NOT NULL,
-    received_contract_count integer DEFAULT 0 NOT NULL,
-    completeness double precision,
-    continuity_pct double precision,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    canonical_continuity_pct double precision,
-    original_continuity_pct double precision,
-    CONSTRAINT ck_option_event_capture_status CHECK ((status = ANY (ARRAY['complete'::text, 'partial'::text, 'failed'::text, 'deferred'::text])))
-);
-
-CREATE TABLE analysis.option_event_contract (
-    id bigint NOT NULL,
-    event_id uuid NOT NULL,
-    contract_id bigint,
-    contract_key text NOT NULL,
-    option_type text NOT NULL,
-    expiration date NOT NULL,
-    target_delta double precision NOT NULL,
-    is_initial boolean DEFAULT false NOT NULL,
-    replaces_contract_id bigint,
-    initial_capture_generation_id bigint,
-    added_at timestamp with time zone DEFAULT now() NOT NULL,
-    retired_at timestamp with time zone,
-    reason text,
-    ladder_slot_key text NOT NULL,
-    retired_reason text,
-    CONSTRAINT ck_option_event_contract_type CHECK ((option_type = ANY (ARRAY['call'::text, 'put'::text])))
-);
-
-ALTER TABLE analysis.option_event_contract ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.option_event_contract_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.option_event_detector_run (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    cohort_id uuid NOT NULL,
-    scheduled_at timestamp with time zone NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    finished_at timestamp with time zone,
-    expected_symbols integer DEFAULT 0 NOT NULL,
-    received_symbols integer DEFAULT 0 NOT NULL,
-    fresh_symbols integer DEFAULT 0 NOT NULL,
-    quote_age_p95_minutes double precision,
-    provider_run_id uuid,
-    status text NOT NULL,
-    failure_reasons jsonb DEFAULT '[]'::jsonb NOT NULL,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ck_option_event_detector_run_counts CHECK (((expected_symbols >= 0) AND (received_symbols >= 0) AND (fresh_symbols >= 0))),
-    CONSTRAINT ck_option_event_detector_run_status CHECK ((status = ANY (ARRAY['succeeded'::text, 'failed'::text, 'skipped'::text])))
-);
-
-CREATE TABLE analysis.option_event_signal (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    event_id uuid NOT NULL,
-    event_contract_id bigint,
-    capture_id uuid,
-    decision_id uuid,
-    snapshot_id bigint,
-    contract_id bigint NOT NULL,
-    strategy_key text NOT NULL,
-    strategy_revision_id bigint,
-    objective_version text DEFAULT 'short_horizon_convex_v1'::text NOT NULL,
-    status text DEFAULT 'shadow'::text NOT NULL,
-    signal_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    selection_score double precision,
-    lower_confidence_expectancy double precision,
-    maximum_loss numeric(20,6),
-    gate_result jsonb DEFAULT '{}'::jsonb NOT NULL,
-    ticket jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    cohort_id uuid NOT NULL,
-    CONSTRAINT ck_option_event_signal_availability CHECK ((signal_at >= available_at)),
-    CONSTRAINT ck_option_event_signal_status CHECK ((status = ANY (ARRAY['shadow'::text, 'ticketed'::text, 'risk_blocked'::text, 'stale'::text, 'unfilled'::text, 'entered'::text, 'partial_exited'::text, 'exited'::text, 'invalidated'::text, 'unmeasurable'::text, 'rejected'::text])))
-);
-
-CREATE TABLE analysis.option_event_spot (
-    event_id uuid NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    price double precision NOT NULL,
-    source_id text,
-    one_day_pct double precision,
-    three_session_pct double precision
-);
-
-CREATE TABLE analysis.option_feature (
-    id bigint NOT NULL,
-    run_id uuid NOT NULL,
-    snapshot_id bigint NOT NULL,
-    contract_id bigint NOT NULL,
-    quote_observed_at timestamp with time zone NOT NULL,
-    feature_version text NOT NULL,
-    modeled_iv double precision,
-    modeled_delta double precision,
-    modeled_gamma double precision,
-    modeled_theta double precision,
-    modeled_vega double precision,
-    dte integer,
-    spread_pct double precision,
-    iv_rank double precision,
-    iv_percentile double precision,
-    liquidity_score double precision,
-    flow_score double precision,
-    convexity_score double precision,
-    required_2x_price double precision,
-    required_5x_price double precision,
-    required_10x_price double precision,
-    required_move_pct double precision,
-    ev_inputs jsonb DEFAULT '{}'::jsonb NOT NULL,
-    metrics jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-ALTER TABLE analysis.option_feature ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.option_feature_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.option_gate_result (
-    run_id uuid NOT NULL,
-    instrument_id bigint NOT NULL,
-    gate_code text NOT NULL,
-    passed boolean NOT NULL,
-    reason text NOT NULL,
-    evidence jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-CREATE TABLE analysis.option_history_anomaly (
-    id bigint NOT NULL,
-    snapshot_id bigint NOT NULL,
-    contract_id bigint,
-    expiration date,
-    option_type text,
-    anomaly_type text NOT NULL,
-    state text NOT NULL,
-    observed_value double precision,
-    expected_value double precision,
-    z_score double precision,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    feature_version text DEFAULT 'history-v2'::text NOT NULL,
-    CONSTRAINT option_history_anomaly_option_type_check CHECK ((option_type = ANY (ARRAY['call'::text, 'put'::text]))),
-    CONSTRAINT option_history_anomaly_state_check CHECK ((state = ANY (ARRAY['active'::text, 'collecting'::text])))
-);
-
-ALTER TABLE analysis.option_history_anomaly ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.option_history_anomaly_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.option_history_canary (
-    id bigint NOT NULL,
-    model_revision text NOT NULL,
-    started_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE analysis.option_history_canary ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.option_history_canary_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.option_liquidity_sla (
-    sla_id text NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_hash text NOT NULL,
-    parent_snapshot_id text,
-    payload jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    payload_id bigint NOT NULL
-);
-
-CREATE TABLE analysis.option_opportunity_observation (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    event_id uuid NOT NULL,
-    capture_id uuid,
-    capture_generation_id bigint,
-    capture_generation_key text NOT NULL,
-    event_contract_id bigint,
-    contract_id bigint NOT NULL,
-    strategy_key text NOT NULL,
-    strategy_revision_id bigint,
-    objective_version text DEFAULT 'short_horizon_convex_v1'::text NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    expiration date NOT NULL,
-    quote jsonb DEFAULT '{}'::jsonb NOT NULL,
-    liquid boolean NOT NULL,
-    data_status text DEFAULT 'ok'::text NOT NULL,
-    selection_stage text DEFAULT 'observed'::text NOT NULL,
-    miss_reason text,
-    signal_id uuid,
-    paper_order_id uuid,
-    selection_score double precision,
-    lower_confidence_expectancy double precision,
-    entry_fill_at timestamp with time zone,
-    entry_fill_price numeric(20,6),
-    return_1_session double precision,
-    return_3_session double precision,
-    return_5_session double precision,
-    return_10_session double precision,
-    time_to_2x_sessions integer,
-    time_to_3x_sessions integer,
-    time_to_4x_sessions integer,
-    executable_peak_return double precision,
-    realized_return double precision,
-    mae double precision,
-    giveback double precision,
-    exit_efficiency double precision,
-    exit_fill_at timestamp with time zone,
-    exit_fill_price numeric(20,6),
-    outcome_classification text DEFAULT 'observing'::text NOT NULL,
-    measured_through timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    cohort_id uuid NOT NULL,
-    lane text DEFAULT 'recovery'::text NOT NULL,
-    episode_key text NOT NULL,
-    sample_eligible boolean DEFAULT false NOT NULL,
-    quarantine_reason text,
-    calibration_cohort text,
-    CONSTRAINT ck_option_opportunity_availability CHECK ((available_at IS NOT NULL)),
-    CONSTRAINT ck_option_opportunity_classification CHECK ((outcome_classification = ANY (ARRAY['observing'::text, 'captured'::text, 'missed'::text, 'unfilled'::text, 'unmeasurable'::text]))),
-    CONSTRAINT ck_option_opportunity_data_status CHECK ((data_status = ANY (ARRAY['ok'::text, 'stale_quote'::text, 'continuity_missing'::text, 'lookahead_blocked'::text, 'invalid_event_reference'::text]))),
-    CONSTRAINT ck_option_opportunity_miss_reason CHECK (((miss_reason IS NULL) OR (miss_reason = ANY (ARRAY['not_featured'::text, 'gate_reject'::text, 'ranked_out'::text, 'not_published'::text, 'unfilled'::text, 'risk_blocked'::text, 'captured'::text, 'unmeasurable'::text])))),
-    CONSTRAINT ck_option_opportunity_selection_stage CHECK ((selection_stage = ANY (ARRAY['observed'::text, 'eligible'::text, 'ranked_out'::text, 'published'::text, 'ticketed'::text, 'filled'::text, 'exited'::text])))
-);
-
-CREATE TABLE analysis.option_outcome (
-    decision_id uuid NOT NULL,
-    maturity_state text NOT NULL,
-    observed_through timestamp with time zone,
-    return_1d double precision,
-    return_5d double precision,
-    return_20d double precision,
-    return_60d double precision,
-    peak_return double precision,
-    max_drawdown double precision,
-    time_to_2x_days integer,
-    time_to_5x_days integer,
-    time_to_10x_days integer,
-    realized_exit_return double precision,
-    realized_exit_basis text,
-    stock_move_effect double precision,
-    iv_effect double precision,
-    theta_effect double precision,
-    spread_effect double precision,
-    unexplained_effect double precision,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    current_return double precision,
-    paper_status text,
-    credit_captured double precision,
-    collateral_return double precision,
-    assigned_basis double precision,
-    strike_touched boolean,
-    assignment_return_1d double precision,
-    assignment_return_5d double precision,
-    assignment_return_20d double precision,
-    assignment_return_60d double precision,
-    outcome_source text DEFAULT 'generic'::text NOT NULL,
-    shadow_trade_id uuid,
-    objective_version text DEFAULT 'legacy'::text NOT NULL,
-    outcome_classification text DEFAULT 'legacy_non_executable'::text NOT NULL,
-    promotion_eligible boolean DEFAULT false NOT NULL,
-    entry_fill_at timestamp with time zone,
-    entry_fill_price numeric(20,6),
-    exit_fill_at timestamp with time zone,
-    exit_fill_price numeric(20,6),
-    exit_reason text,
-    fee_total numeric(20,6),
-    slippage_total numeric(20,6),
-    return_3d double precision,
-    return_10d double precision,
-    time_to_3x_days integer,
-    time_to_4x_days integer,
-    executable_peak_return double precision,
-    mae double precision,
-    giveback double precision,
-    exit_efficiency double precision,
-    lane text,
-    episode_key text,
-    sample_eligible boolean DEFAULT false NOT NULL,
-    quarantine_reason text,
-    calibration_cohort text,
-    CONSTRAINT ck_option_outcome_recovery_classification CHECK ((outcome_classification = ANY (ARRAY['legacy_non_executable'::text, 'captured'::text, 'missed'::text, 'unfilled'::text, 'unmeasurable'::text, 'observing'::text]))),
-    CONSTRAINT ck_option_outcome_source CHECK ((outcome_source = ANY (ARRAY['generic'::text, 'options_history_v3'::text]))),
-    CONSTRAINT ck_option_outcome_v3_shadow CHECK (((outcome_source <> 'options_history_v3'::text) OR (shadow_trade_id IS NOT NULL)))
-);
-
-CREATE TABLE analysis.option_recovery_cohort (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    objective_version text NOT NULL,
-    code_version text NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    status text DEFAULT 'collecting'::text NOT NULL,
-    required_qualified_dates integer DEFAULT 5 NOT NULL,
-    qualified_at timestamp with time zone,
-    blockers jsonb DEFAULT '[]'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ck_option_recovery_cohort_required_dates CHECK ((required_qualified_dates > 0)),
-    CONSTRAINT ck_option_recovery_cohort_status CHECK ((status = ANY (ARRAY['collecting'::text, 'qualified'::text, 'retired'::text])))
-);
-
-CREATE TABLE analysis.option_recovery_event_session_quality (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    cohort_id uuid NOT NULL,
-    event_id uuid NOT NULL,
-    trading_date date NOT NULL,
-    scheduled_slots integer DEFAULT 0 NOT NULL,
-    usable_slots integer DEFAULT 0 NOT NULL,
-    complete_slots integer DEFAULT 0 NOT NULL,
-    contract_completeness double precision,
-    canonical_continuity double precision,
-    original_continuity double precision,
-    capture_p95_latency_minutes double precision,
-    data_defects jsonb DEFAULT '[]'::jsonb NOT NULL,
-    qualification_result boolean DEFAULT false CONSTRAINT option_recovery_event_session_qua_qualification_result_not_null NOT NULL,
-    qualification_reasons jsonb DEFAULT '[]'::jsonb CONSTRAINT option_recovery_event_session_qu_qualification_reasons_not_null NOT NULL,
-    computed_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE analysis.option_recovery_program_session (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    cohort_id uuid NOT NULL,
-    trading_date date NOT NULL,
-    active_event_count integer DEFAULT 0 NOT NULL,
-    detector_scheduled_runs integer DEFAULT 0 CONSTRAINT option_recovery_program_sessio_detector_scheduled_runs_not_null NOT NULL,
-    detector_succeeded_runs integer DEFAULT 0 CONSTRAINT option_recovery_program_sessio_detector_succeeded_runs_not_null NOT NULL,
-    provider_expected_symbols integer DEFAULT 0 CONSTRAINT option_recovery_program_sess_provider_expected_symbols_not_null NOT NULL,
-    provider_received_symbols integer DEFAULT 0 CONSTRAINT option_recovery_program_sess_provider_received_symbols_not_null NOT NULL,
-    fresh_event_trigger_quotes integer DEFAULT 0 CONSTRAINT option_recovery_program_ses_fresh_event_trigger_quotes_not_null NOT NULL,
-    quote_age_p95_minutes double precision,
-    event_scheduled_slots integer DEFAULT 0 NOT NULL,
-    event_usable_slots integer DEFAULT 0 NOT NULL,
-    contract_completeness double precision,
-    canonical_continuity double precision,
-    original_continuity double precision,
-    capture_p95_latency_minutes double precision,
-    critical_defects jsonb DEFAULT '[]'::jsonb NOT NULL,
-    qualification_result boolean DEFAULT false NOT NULL,
-    qualification_reasons jsonb DEFAULT '[]'::jsonb NOT NULL,
-    policy_version text NOT NULL,
-    computed_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE analysis.option_relative_value (
-    id bigint NOT NULL,
-    analysis_run_id uuid NOT NULL,
-    capture_generation_id bigint NOT NULL,
-    contract_id bigint NOT NULL,
-    model_revision text NOT NULL,
-    classification text NOT NULL,
-    fair_low double precision,
-    fair_high double precision,
-    modeled_net_edge double precision,
-    edge_side text,
-    confidence double precision,
-    quality_status text NOT NULL,
-    blockers text[] DEFAULT '{}'::text[] NOT NULL,
-    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT option_relative_value_classification_check CHECK ((classification = ANY (ARRAY['relative_cheap'::text, 'relative_rich'::text, 'historical_static_arbitrage_candidate'::text, 'verified_static_arbitrage_candidate'::text, 'rejected'::text])))
-);
-
-ALTER TABLE analysis.option_relative_value ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.option_relative_value_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.option_relative_value_verification (
-    id bigint NOT NULL,
-    relative_value_id bigint NOT NULL,
-    verified_at timestamp with time zone DEFAULT now() NOT NULL,
-    status text NOT NULL,
-    blockers text[] DEFAULT '{}'::text[] NOT NULL,
-    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT option_relative_value_verification_status_check CHECK ((status = ANY (ARRAY['verified'::text, 'rejected'::text, 'unavailable'::text])))
-);
-
-ALTER TABLE analysis.option_relative_value_verification ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.option_relative_value_verification_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.option_surface_shift (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    instrument_id bigint NOT NULL,
-    current_capture_generation_id bigint NOT NULL,
-    previous_capture_generation_id bigint NOT NULL,
-    current_analysis_run_id uuid NOT NULL,
-    previous_analysis_run_id uuid NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    previous_as_of timestamp with time zone,
-    feature_version text NOT NULL,
-    tenors integer[] DEFAULT ARRAY[7, 14, 30, 60, 90] NOT NULL,
-    w1_shift double precision,
-    tail_mass_change double precision,
-    skew_shift double precision,
-    term_shift double precision,
-    evidence_state text NOT NULL,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT ck_surface_shift_evidence_state CHECK ((evidence_state = ANY (ARRAY['ready'::text, 'insufficient_surface_evidence'::text, 'unavailable'::text])))
-);
-
-CREATE TABLE analysis.option_surface_summary (
-    id bigint NOT NULL,
-    snapshot_id bigint NOT NULL,
-    expiration date NOT NULL,
-    option_type text NOT NULL,
-    feature_version text NOT NULL,
-    dte integer NOT NULL,
-    atm_iv double precision,
-    delta_25_iv double precision,
-    skew_25 double precision,
-    smile_slope double precision,
-    smile_curvature double precision,
-    term_slope double precision,
-    average_spread_pct double precision,
-    liquidity_score double precision,
-    atm_iv_change double precision,
-    skew_25_change double precision,
-    term_slope_change double precision,
-    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    analysis_run_id uuid,
-    capture_generation_id bigint,
-    fit_method text,
-    fit_status text,
-    eligible_point_count integer,
-    group_duration_seconds double precision,
-    max_quote_age_seconds double precision,
-    fit_rmse double precision,
-    candidate_count integer DEFAULT 0 NOT NULL,
-    CONSTRAINT option_surface_summary_option_type_check CHECK ((option_type = ANY (ARRAY['call'::text, 'put'::text])))
-);
-
-ALTER TABLE analysis.option_surface_summary ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.option_surface_summary_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.phase4_allocation_signing_secret (
-    singleton boolean DEFAULT true NOT NULL,
-    secret bytea NOT NULL,
-    installed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT phase4_allocation_signing_secret_secret_check CHECK ((length(secret) >= 16)),
-    CONSTRAINT phase4_allocation_signing_secret_singleton_check CHECK (singleton)
-);
-
-CREATE TABLE analysis.portfolio_allocation_item (
-    allocation_item_id text NOT NULL,
-    allocation_id text NOT NULL,
-    candidate_id text DEFAULT ''::text NOT NULL,
-    ticker text NOT NULL,
-    strategy_forecast_id text,
-    action_id text,
-    rank_id text,
-    hypothesis_id uuid,
-    disposition text NOT NULL,
-    target_weight double precision NOT NULL,
-    current_weight double precision DEFAULT 0 NOT NULL,
-    marginal_book_utility double precision NOT NULL,
-    trace jsonb NOT NULL,
-    blockers jsonb DEFAULT '[]'::jsonb NOT NULL,
-    funding_source text,
-    funding_amount double precision,
-    input_hash character(64) NOT NULL,
-    content_hash character(64) NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    funding_sources jsonb DEFAULT '{}'::jsonb,
-    CONSTRAINT phase4_allocation_item_funding_amount_shape CHECK (((funding_amount IS NULL) OR ((funding_amount < 'Infinity'::double precision) AND (funding_amount > '-Infinity'::double precision) AND (funding_amount > (0)::double precision)))),
-    CONSTRAINT phase4_allocation_item_funding_sources_shape CHECK ((jsonb_typeof(funding_sources) = 'object'::text)),
-    CONSTRAINT portfolio_allocation_item_blockers_check CHECK ((jsonb_typeof(blockers) = 'array'::text)),
-    CONSTRAINT portfolio_allocation_item_check CHECK (((ticker = 'CASH'::text) OR (candidate_id <> ''::text))),
-    CONSTRAINT portfolio_allocation_item_check1 CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)) AND (allocation_item_id = ('allocation-item:'::text || (input_hash)::text)))),
-    CONSTRAINT portfolio_allocation_item_check2 CHECK (((ticker = 'CASH'::text) OR (disposition <> 'selected'::text) OR ((strategy_forecast_id IS NOT NULL) AND (action_id IS NOT NULL)))),
-    CONSTRAINT portfolio_allocation_item_check3 CHECK (((ticker = 'CASH'::text) OR (disposition <> 'selected'::text) OR (rank_id IS NOT NULL))),
-    CONSTRAINT portfolio_allocation_item_check4 CHECK (((disposition <> 'selected'::text) OR ((ticker = 'CASH'::text) AND (target_weight > (0)::double precision) AND (marginal_book_utility >= (0)::double precision)) OR ((target_weight > (0)::double precision) AND (marginal_book_utility > (0)::double precision)))),
-    CONSTRAINT portfolio_allocation_item_check6 CHECK (((ticker = 'CASH'::text) OR (disposition <> 'selected'::text) OR ((funding_amount IS NOT NULL) AND (funding_amount > (0)::double precision)))),
-    CONSTRAINT portfolio_allocation_item_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
-    CONSTRAINT portfolio_allocation_item_current_weight_check CHECK (((current_weight < 'Infinity'::double precision) AND (current_weight > '-Infinity'::double precision) AND (current_weight >= (0)::double precision) AND (current_weight <= (1)::double precision))),
-    CONSTRAINT portfolio_allocation_item_disposition_check CHECK ((disposition = ANY (ARRAY['selected'::text, 'ranked_out'::text, 'rejected'::text, 'rollback'::text]))),
-    CONSTRAINT portfolio_allocation_item_marginal_book_utility_check CHECK (((marginal_book_utility < 'Infinity'::double precision) AND (marginal_book_utility > '-Infinity'::double precision))),
-    CONSTRAINT portfolio_allocation_item_target_weight_check CHECK (((target_weight < 'Infinity'::double precision) AND (target_weight > '-Infinity'::double precision) AND (target_weight >= (0)::double precision) AND (target_weight <= (1)::double precision))),
-    CONSTRAINT portfolio_allocation_item_ticker_check CHECK ((ticker <> ''::text)),
-    CONSTRAINT portfolio_allocation_item_trace_check CHECK ((jsonb_typeof(trace) = 'object'::text))
-);
-
-CREATE TABLE analysis.portfolio_allocation_snapshot (
-    allocation_id text NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    status text NOT NULL,
-    cash_hurdle double precision,
-    forecast_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-    action_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-    strategy_registry_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-    input_hash character(64) NOT NULL,
-    content_hash character(64) NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT portfolio_allocation_snapshot_action_ids_check CHECK ((jsonb_typeof(action_ids) = 'array'::text)),
-    CONSTRAINT portfolio_allocation_snapshot_cash_hurdle_check CHECK (((cash_hurdle IS NULL) OR ((cash_hurdle < 'Infinity'::double precision) AND (cash_hurdle > '-Infinity'::double precision) AND (cash_hurdle >= (0)::double precision)))),
-    CONSTRAINT portfolio_allocation_snapshot_check CHECK ((as_of = input_cutoff)),
-    CONSTRAINT portfolio_allocation_snapshot_check1 CHECK (((status <> 'available'::text) OR (cash_hurdle > (0)::double precision))),
-    CONSTRAINT portfolio_allocation_snapshot_check2 CHECK ((allocation_id = ('allocation:'::text || (input_hash)::text))),
-    CONSTRAINT portfolio_allocation_snapshot_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
-    CONSTRAINT portfolio_allocation_snapshot_forecast_ids_check CHECK ((jsonb_typeof(forecast_ids) = 'array'::text)),
-    CONSTRAINT portfolio_allocation_snapshot_input_hash_check CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)))),
-    CONSTRAINT portfolio_allocation_snapshot_status_check CHECK ((status = ANY (ARRAY['available'::text, 'cash_only'::text, 'unavailable'::text]))),
-    CONSTRAINT portfolio_allocation_snapshot_strategy_registry_ids_check CHECK ((jsonb_typeof(strategy_registry_ids) = 'array'::text))
-);
-
-CREATE TABLE analysis.portfolio_drift_evidence (
-    decision_id text NOT NULL,
-    allocation_id text NOT NULL,
-    allocation_item_id text NOT NULL,
-    drift_score double precision NOT NULL,
-    rollback_threshold double precision NOT NULL,
-    proposed_weight double precision NOT NULL,
-    action text NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    input_hash character(64) NOT NULL,
-    content_hash character(64) NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT portfolio_drift_evidence_action_check CHECK ((action = ANY (ARRAY['hold'::text, 'reduce'::text, 'rollback'::text, 'unavailable'::text]))),
-    CONSTRAINT portfolio_drift_evidence_check CHECK (((action <> 'reduce'::text) OR ((drift_score < rollback_threshold) AND (drift_score >= (rollback_threshold / (2)::double precision))))),
-    CONSTRAINT portfolio_drift_evidence_check1 CHECK (((action <> 'rollback'::text) OR (drift_score >= rollback_threshold))),
-    CONSTRAINT portfolio_drift_evidence_check2 CHECK (((action <> 'hold'::text) OR (drift_score < (rollback_threshold / (2)::double precision)))),
-    CONSTRAINT portfolio_drift_evidence_check3 CHECK ((decision_id = ('drift:'::text || (input_hash)::text))),
-    CONSTRAINT portfolio_drift_evidence_content_hash_check CHECK ((content_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT portfolio_drift_evidence_drift_score_check CHECK (((drift_score < 'Infinity'::double precision) AND (drift_score > '-Infinity'::double precision) AND (drift_score >= (0)::double precision))),
-    CONSTRAINT portfolio_drift_evidence_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT portfolio_drift_evidence_metadata_check CHECK ((jsonb_typeof(metadata) = 'object'::text)),
-    CONSTRAINT portfolio_drift_evidence_proposed_weight_check CHECK (((proposed_weight < 'Infinity'::double precision) AND (proposed_weight >= (0)::double precision) AND (proposed_weight <= (1)::double precision))),
-    CONSTRAINT portfolio_drift_evidence_rollback_threshold_check CHECK (((rollback_threshold < 'Infinity'::double precision) AND (rollback_threshold > (0)::double precision)))
-);
-
-CREATE TABLE analysis.probabilistic_portfolio_scenario_artifact (
-    scenario_artifact_id text CONSTRAINT probabilistic_portfolio_scenario__scenario_artifact_id_not_null NOT NULL,
-    allocation_id text CONSTRAINT probabilistic_portfolio_scenario_artifac_allocation_id_not_null NOT NULL,
-    model_version text CONSTRAINT probabilistic_portfolio_scenario_artifac_model_version_not_null NOT NULL,
-    probability_semantics text CONSTRAINT probabilistic_portfolio_scenario_probability_semantics_not_null NOT NULL,
-    scenarios jsonb NOT NULL,
-    tail_dependence jsonb CONSTRAINT probabilistic_portfolio_scenario_artif_tail_dependence_not_null NOT NULL,
-    simultaneous_unwind jsonb CONSTRAINT probabilistic_portfolio_scenario_a_simultaneous_unwind_not_null NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    input_hash character(64) NOT NULL,
-    content_hash character(64) NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT probabilistic_portfolio_scenario_arti_simultaneous_unwind_check CHECK (((jsonb_typeof(simultaneous_unwind) = 'object'::text) AND (simultaneous_unwind <> '{}'::jsonb))),
-    CONSTRAINT probabilistic_portfolio_scenario_artifact_check CHECK ((scenario_artifact_id = ('scenario:'::text || (input_hash)::text))),
-    CONSTRAINT probabilistic_portfolio_scenario_artifact_content_hash_check CHECK (((content_hash ~ '^[0-9a-f]{64}$'::text) AND ((content_hash)::text <> repeat('0'::text, 64)))),
-    CONSTRAINT probabilistic_portfolio_scenario_artifact_input_hash_check CHECK (((input_hash ~ '^[0-9a-f]{64}$'::text) AND ((input_hash)::text <> repeat('0'::text, 64)))),
-    CONSTRAINT probabilistic_portfolio_scenario_artifact_scenarios_check CHECK (((jsonb_typeof(scenarios) = 'array'::text) AND (jsonb_array_length(scenarios) > 0))),
-    CONSTRAINT probabilistic_portfolio_scenario_artifact_tail_dependence_check CHECK (((jsonb_typeof(tail_dependence) = 'object'::text) AND (tail_dependence <> '{}'::jsonb)))
-);
-
-CREATE TABLE analysis.reject_summary (
-    id bigint NOT NULL,
-    run_id uuid NOT NULL,
-    strategy_revision_id bigint,
-    instrument_id bigint,
-    gate_code text NOT NULL,
-    reject_count integer NOT NULL,
-    sampled_decision_keys text[] DEFAULT '{}'::text[] NOT NULL,
-    CONSTRAINT reject_summary_reject_count_check CHECK ((reject_count >= 0))
-);
-
-ALTER TABLE analysis.reject_summary ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.reject_summary_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.research_evaluator_output (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    research_trial_id uuid NOT NULL,
-    trial_result_id uuid NOT NULL,
-    analysis_run_id uuid NOT NULL,
-    evidence_kind text NOT NULL,
-    evaluator_id text NOT NULL,
-    evaluator_code_version text NOT NULL,
-    input_hash character(64) NOT NULL,
-    universe_hash character(64) NOT NULL,
-    feature_hash character(64) NOT NULL,
-    sample_count integer NOT NULL,
-    domain_valid boolean NOT NULL,
-    raw_output jsonb NOT NULL,
-    output_hash character(64) DEFAULT repeat('0'::text, 64) NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    signature text DEFAULT ''::text NOT NULL,
-    CONSTRAINT research_evaluator_output_check CHECK ((available_at >= created_at)),
-    CONSTRAINT research_evaluator_output_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['controls'::text, 'cpcv_paths'::text, 'neutralization'::text, 'parameter_stability'::text, 'mechanism_falsification'::text, 'multiple_testing'::text]))),
-    CONSTRAINT research_evaluator_output_feature_hash_check CHECK (((feature_hash ~ '^[0-9a-fA-F]{64}$'::text) AND (lower((feature_hash)::text) <> repeat('0'::text, 64)))),
-    CONSTRAINT research_evaluator_output_input_hash_check CHECK (((input_hash ~ '^[0-9a-fA-F]{64}$'::text) AND (lower((input_hash)::text) <> repeat('0'::text, 64)))),
-    CONSTRAINT research_evaluator_output_raw_output_check CHECK ((jsonb_typeof(raw_output) = 'object'::text)),
-    CONSTRAINT research_evaluator_output_sample_count_check CHECK ((sample_count > 0)),
-    CONSTRAINT research_evaluator_output_universe_hash_check CHECK (((universe_hash ~ '^[0-9a-fA-F]{64}$'::text) AND (lower((universe_hash)::text) <> repeat('0'::text, 64))))
-);
-
-ALTER TABLE analysis.research_evaluator_output OWNER TO market_research_signer;
-
-CREATE TABLE analysis.research_evaluator_signing_secret (
-    singleton boolean DEFAULT true NOT NULL,
-    secret bytea NOT NULL,
-    installed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT research_evaluator_signing_secret_secret_check CHECK ((length(secret) >= 16)),
-    CONSTRAINT research_evaluator_signing_secret_singleton_check CHECK (singleton)
-);
-
-ALTER TABLE analysis.research_evaluator_signing_secret OWNER TO market_research_signer;
-
-CREATE TABLE analysis.research_evidence_manifest (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    research_trial_id uuid NOT NULL,
-    trial_result_id uuid NOT NULL,
-    evidence_kind text NOT NULL,
-    evaluator_id text NOT NULL,
-    sample_count integer NOT NULL,
-    domain_valid boolean NOT NULL,
-    payload jsonb NOT NULL,
-    evidence_hash character(64) DEFAULT repeat('0'::text, 64) NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    evaluator_output_id uuid,
-    evaluator_code_version text,
-    input_hash character(64),
-    universe_hash character(64),
-    feature_hash character(64),
-    CONSTRAINT research_evidence_manifest_check CHECK ((available_at >= created_at)),
-    CONSTRAINT research_evidence_manifest_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['controls'::text, 'cpcv_paths'::text, 'neutralization'::text, 'parameter_stability'::text, 'mechanism_falsification'::text, 'multiple_testing'::text]))),
-    CONSTRAINT research_evidence_manifest_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
-    CONSTRAINT research_evidence_manifest_sample_count_check CHECK ((sample_count > 0))
-);
-
-CREATE TABLE analysis.research_trial (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    experiment_family_id uuid NOT NULL,
-    trial_key text NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    code_version text NOT NULL,
-    input_hash character(64) NOT NULL,
-    parameters jsonb DEFAULT '{}'::jsonb NOT NULL,
-    status text DEFAULT 'running'::text NOT NULL,
-    failure_reason text,
-    started_at timestamp with time zone DEFAULT now() NOT NULL,
-    finished_at timestamp with time zone,
-    available_at timestamp with time zone DEFAULT now() NOT NULL,
-    outcome jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT research_trial_check CHECK (((finished_at IS NULL) OR (finished_at >= started_at))),
-    CONSTRAINT research_trial_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'failed'::text, 'rejected'::text])))
-);
-
-CREATE TABLE analysis.run (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    run_type text NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    code_version text NOT NULL,
-    feature_versions jsonb DEFAULT '{}'::jsonb NOT NULL,
-    strategy_revision_id bigint,
-    input_hash character(64) NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    finished_at timestamp with time zone,
-    status text NOT NULL,
-    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
-    inputs jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT run_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text])))
-);
-
-CREATE TABLE analysis.shadow_trade (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    decision_id uuid NOT NULL,
-    entry_at timestamp with time zone,
-    entry_price numeric(20,6),
-    exit_at timestamp with time zone,
-    exit_price numeric(20,6),
-    status text NOT NULL,
-    path jsonb DEFAULT '[]'::jsonb NOT NULL,
-    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
-    pending_entry_reason text,
-    entry_cohort_id bigint,
-    structure text,
-    market_regime text,
-    fill_basis text,
-    source_kind text DEFAULT 'system'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE analysis.source_signal (
-    id bigint NOT NULL,
-    run_id uuid NOT NULL,
-    content_item_id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    signal_type text NOT NULL,
-    sentiment text,
-    direction text,
-    confidence double precision,
-    thesis text,
-    antithesis text,
-    invalidation text,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    event_at timestamp with time zone,
-    published_at timestamp with time zone,
-    available_at timestamp with time zone,
-    received_at timestamp with time zone,
-    revision text,
-    license text,
-    evidence_state text,
-    transformation text
-);
-
-ALTER TABLE analysis.source_signal ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.source_signal_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.strategy_comparison (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    champion_revision_id bigint NOT NULL,
-    challenger_revision_id bigint NOT NULL,
-    champion_trial_id uuid NOT NULL,
-    challenger_trial_id uuid NOT NULL,
-    champion_result_id uuid NOT NULL,
-    challenger_result_id uuid NOT NULL,
-    champion_result_hash character(64) NOT NULL,
-    challenger_result_hash character(64) NOT NULL,
-    champion_manifest_hash character(64) NOT NULL,
-    challenger_manifest_hash character(64) NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    input_hash character(64) NOT NULL,
-    distinctness text NOT NULL,
-    explanation text NOT NULL,
-    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT strategy_comparison_check CHECK ((champion_revision_id <> challenger_revision_id)),
-    CONSTRAINT strategy_comparison_check1 CHECK (((available_at <= observed_at) AND (available_at <= input_cutoff))),
-    CONSTRAINT strategy_comparison_distinctness_check CHECK ((distinctness = ANY (ARRAY['distinct'::text, 'replica'::text, 'exposure_sleeve'::text, 'inconclusive'::text, 'blocked'::text]))),
-    CONSTRAINT strategy_comparison_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text))
-);
-
-CREATE TABLE analysis.strategy_evaluation (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    strategy_revision_id bigint NOT NULL,
-    evaluation_type text NOT NULL,
-    evaluated_at timestamp with time zone NOT NULL,
-    period_start timestamp with time zone,
-    period_end timestamp with time zone,
-    verdict text,
-    metrics jsonb NOT NULL,
-    evidence jsonb DEFAULT '[]'::jsonb NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    hypothesis_id uuid,
-    experiment_family_id uuid,
-    research_trial_id uuid,
-    validation_dossier_id uuid,
-    artifact_id text,
-    artifact_hash character(64),
-    input_hash character(64),
-    lineage jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-CREATE TABLE analysis.strategy_forecast (
-    id text NOT NULL,
-    strategy_revision_id bigint NOT NULL,
-    strategy_evaluation_id uuid,
-    instrument_id bigint NOT NULL,
-    opportunity_episode_id text NOT NULL,
-    target text NOT NULL,
-    horizon text NOT NULL,
-    forecast_value double precision,
-    forecast_range jsonb,
-    forecast_distribution jsonb,
-    probability_semantics text,
-    model_artifact_id text NOT NULL,
-    artifact_hash character(64) NOT NULL,
-    input_hash character(64) NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    generated_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    status text DEFAULT 'available'::text NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    research_trial_id uuid,
-    trial_result_id uuid,
-    universe_manifest_hash character(64),
-    result_hash character(64),
-    CONSTRAINT strategy_forecast_check CHECK ((as_of = input_cutoff)),
-    CONSTRAINT strategy_forecast_check1 CHECK (((forecast_value IS NOT NULL) OR (forecast_range IS NOT NULL) OR (forecast_distribution IS NOT NULL))),
-    CONSTRAINT strategy_forecast_p3_link_check CHECK ((((research_trial_id IS NULL) AND (trial_result_id IS NULL) AND (universe_manifest_hash IS NULL) AND (result_hash IS NULL)) OR ((research_trial_id IS NOT NULL) AND (trial_result_id IS NOT NULL) AND (universe_manifest_hash IS NOT NULL) AND (result_hash IS NOT NULL)))),
-    CONSTRAINT strategy_forecast_p3_pit_check CHECK (((research_trial_id IS NULL) OR (available_at <= input_cutoff)))
-);
-
-CREATE TABLE analysis.strategy_manifest (
-    strategy_revision_id bigint NOT NULL,
-    source_definition_version text NOT NULL,
-    source_manifest jsonb NOT NULL,
-    data_manifest jsonb NOT NULL,
-    cost_manifest jsonb NOT NULL,
-    capacity_manifest jsonb NOT NULL,
-    failure_manifest jsonb NOT NULL,
-    manifest_hash character(64) NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT strategy_manifest_capacity_manifest_check CHECK (((jsonb_typeof(capacity_manifest) = 'object'::text) AND (capacity_manifest <> '{}'::jsonb))),
-    CONSTRAINT strategy_manifest_cost_manifest_check CHECK (((jsonb_typeof(cost_manifest) = 'object'::text) AND (cost_manifest <> '{}'::jsonb))),
-    CONSTRAINT strategy_manifest_data_manifest_check CHECK (((jsonb_typeof(data_manifest) = 'object'::text) AND (data_manifest <> '{}'::jsonb))),
-    CONSTRAINT strategy_manifest_failure_manifest_check CHECK (((jsonb_typeof(failure_manifest) = 'object'::text) AND (failure_manifest <> '{}'::jsonb))),
-    CONSTRAINT strategy_manifest_manifest_hash_check CHECK ((manifest_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT strategy_manifest_source_manifest_check CHECK (((jsonb_typeof(source_manifest) = 'object'::text) AND (source_manifest <> '{}'::jsonb)))
-);
-
-CREATE TABLE analysis.strategy_monitoring_evidence (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    strategy_revision_id bigint NOT NULL,
-    research_trial_id uuid NOT NULL,
-    trial_result_id uuid NOT NULL,
-    universe_manifest_hash character(64) NOT NULL,
-    result_hash character(64) NOT NULL,
-    evidence_kind text NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    input_hash character(64) NOT NULL,
-    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
-    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
-    lineage jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT strategy_monitoring_evidence_check CHECK (((available_at <= observed_at) AND (available_at <= input_cutoff))),
-    CONSTRAINT strategy_monitoring_evidence_evidence_kind_check CHECK ((evidence_kind = ANY (ARRAY['correlation'::text, 'tail_correlation'::text, 'crowding'::text, 'capacity'::text, 'decay'::text, 'regime'::text]))),
-    CONSTRAINT strategy_monitoring_evidence_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text))
-);
-
-CREATE TABLE analysis.strategy_pnl_tape (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    strategy_revision_id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    strategy_forecast_id text NOT NULL,
-    research_trial_id uuid NOT NULL,
-    trial_result_id uuid NOT NULL,
-    universe_manifest_hash character(64) NOT NULL,
-    result_hash character(64) NOT NULL,
-    pnl_date date NOT NULL,
-    input_cutoff timestamp with time zone NOT NULL,
-    gross_return double precision NOT NULL,
-    cost double precision NOT NULL,
-    net_return double precision NOT NULL,
-    tail_return double precision,
-    regime text,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    input_hash character(64) NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT strategy_pnl_tape_check CHECK (((available_at <= observed_at) AND (available_at <= input_cutoff))),
-    CONSTRAINT strategy_pnl_tape_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text))
-);
-
-CREATE TABLE analysis.strategy_revision (
-    id bigint NOT NULL,
-    strategy_key text NOT NULL,
-    revision integer NOT NULL,
-    name text NOT NULL,
-    status text NOT NULL,
-    parameters jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    promoted_at timestamp with time zone,
-    supersedes_id bigint,
-    authority_group text NOT NULL,
-    hypothesis_id uuid,
-    experiment_family_id uuid,
-    artifact_id text,
-    artifact_hash character(64),
-    research_required boolean DEFAULT false NOT NULL,
-    mechanism_class text,
-    economic_mechanism text,
-    falsification_rule text,
-    source_definition_version text,
-    strategy_family text DEFAULT 'legacy'::text NOT NULL,
-    promotability text DEFAULT 'standard'::text NOT NULL,
-    actionability text DEFAULT 'daily_research'::text NOT NULL,
-    p3_enabled boolean DEFAULT false NOT NULL,
-    CONSTRAINT strategy_revision_actionability_check CHECK ((actionability = ANY (ARRAY['daily_research'::text, 'shadow_only'::text, 'research_only'::text, 'registration_only'::text]))),
-    CONSTRAINT strategy_revision_family_check CHECK ((strategy_family <> ''::text)),
-    CONSTRAINT strategy_revision_promotability_check CHECK ((promotability = ANY (ARRAY['standard'::text, 'negative_control'::text, 'registration_only'::text, 'exposure_sleeve'::text])))
-);
-
 CREATE VIEW analysis.strategy_registry AS
  SELECT revision.id AS strategy_revision_id,
     revision.strategy_key,
@@ -5102,58 +7209,6 @@ CREATE VIEW analysis.strategy_registry AS
    FROM (analysis.strategy_revision revision
      LEFT JOIN analysis.strategy_manifest manifest ON ((manifest.strategy_revision_id = revision.id)));
 
-ALTER TABLE analysis.strategy_revision ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.strategy_revision_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.trial_result (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    research_trial_id uuid NOT NULL,
-    result_kind text NOT NULL,
-    result_version integer DEFAULT 1 NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
-    outcome jsonb DEFAULT '{}'::jsonb NOT NULL,
-    input_hash character(64) NOT NULL,
-    CONSTRAINT trial_result_check CHECK ((available_at <= observed_at)),
-    CONSTRAINT trial_result_result_version_check CHECK ((result_version > 0))
-);
-
-CREATE TABLE analysis.trial_universe_manifest (
-    research_trial_id uuid NOT NULL,
-    cutoff timestamp with time zone NOT NULL,
-    expected_member_count integer NOT NULL,
-    expected_members jsonb NOT NULL,
-    manifest_hash character(64) NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    available_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT trial_universe_manifest_expected_member_count_check CHECK (((expected_member_count >= 0) AND (expected_member_count <= 10000))),
-    CONSTRAINT trial_universe_manifest_expected_members_check CHECK ((jsonb_typeof(expected_members) = 'array'::text))
-);
-
-CREATE TABLE analysis.universe_observation (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    research_trial_id uuid NOT NULL,
-    instrument_id bigint NOT NULL,
-    cutoff timestamp with time zone NOT NULL,
-    eligible boolean NOT NULL,
-    rank integer,
-    candidate_score double precision,
-    exclusion_reason text,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    input_hash character(64) NOT NULL,
-    outcome jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT universe_observation_check CHECK ((eligible OR (exclusion_reason IS NOT NULL))),
-    CONSTRAINT universe_observation_rank_check CHECK (((rank IS NULL) OR (rank > 0)))
-);
-
 CREATE VIEW analysis.strategy_trial_accounting AS
  SELECT family.family_key,
     trial.id AS research_trial_id,
@@ -5174,597 +7229,6 @@ CREATE VIEW analysis.strategy_trial_accounting AS
      LEFT JOIN analysis.trial_universe_manifest manifest ON ((manifest.research_trial_id = trial.id)))
      LEFT JOIN analysis.universe_observation observation ON ((observation.research_trial_id = trial.id)))
   GROUP BY family.family_key, trial.id, trial.trial_key, trial.status, trial.input_cutoff, trial.available_at, manifest.expected_member_count, trial.experiment_family_id;
-
-CREATE TABLE analysis.symbol_decision (
-    decision_id uuid NOT NULL,
-    action text,
-    discovery_reasons text[] DEFAULT '{}'::text[] NOT NULL,
-    freshness_status text,
-    portfolio_context jsonb DEFAULT '{}'::jsonb NOT NULL,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-CREATE TABLE analysis.symbol_decision_outcome (
-    decision_id uuid NOT NULL,
-    instrument_id bigint NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    outcome_version text DEFAULT 'equity-v1'::text NOT NULL,
-    state text DEFAULT 'observing'::text NOT NULL,
-    return_1d double precision,
-    return_5d double precision,
-    return_20d double precision,
-    spy_adjusted_return_1d double precision,
-    spy_adjusted_return_5d double precision,
-    spy_adjusted_return_20d double precision,
-    sector_adjusted_return_1d double precision,
-    sector_adjusted_return_5d double precision,
-    sector_adjusted_return_20d double precision,
-    mae double precision,
-    mfe double precision,
-    max_drawdown double precision,
-    thesis_invalidated_at timestamp with time zone,
-    sample_eligible boolean DEFAULT false NOT NULL,
-    quarantine_reason text,
-    measured_through timestamp with time zone,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT symbol_decision_outcome_state_check CHECK ((state = ANY (ARRAY['observing'::text, 'resolved'::text, 'quarantined'::text])))
-);
-
-CREATE TABLE analysis.symbol_feature (
-    id bigint NOT NULL,
-    run_id uuid NOT NULL,
-    instrument_id bigint NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    feature_set text NOT NULL,
-    feature_version text NOT NULL,
-    price double precision,
-    ma_50 double precision,
-    ma_200 double precision,
-    relative_strength_20d double precision,
-    atr_pct double precision,
-    liquidity_score double precision,
-    valuation_score double precision,
-    earnings_score double precision,
-    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
-    momentum_5d double precision,
-    momentum_20d double precision,
-    relative_strength_60d double precision,
-    kaufman_er_20d double precision,
-    kaufman_er_60d double precision,
-    kama_fast double precision,
-    kama_slow double precision,
-    kama_fast_slope double precision,
-    kama_slow_slope double precision,
-    trend_state text DEFAULT 'unavailable'::text NOT NULL,
-    trend_confidence double precision DEFAULT 0 NOT NULL,
-    volatility_state text DEFAULT 'unstable'::text NOT NULL,
-    data_quality_status text DEFAULT 'unavailable'::text NOT NULL,
-    reason_codes text[] DEFAULT '{}'::text[] NOT NULL,
-    CONSTRAINT ck_symbol_feature_trend_confidence CHECK (((trend_confidence >= (0)::double precision) AND (trend_confidence <= (1)::double precision))),
-    CONSTRAINT ck_symbol_feature_trend_state CHECK ((trend_state = ANY (ARRAY['trend_up'::text, 'trend_down'::text, 'range'::text, 'transition'::text, 'unavailable'::text]))),
-    CONSTRAINT ck_symbol_feature_volatility_state CHECK ((volatility_state = ANY (ARRAY['low'::text, 'normal'::text, 'high'::text, 'unstable'::text])))
-);
-
-ALTER TABLE analysis.symbol_feature ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.symbol_feature_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.ticker_benchmark_snapshot (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    benchmark_key text NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    membership_hash character(64) NOT NULL,
-    member_count integer NOT NULL,
-    source_id text NOT NULL,
-    source_version text,
-    exact_membership jsonb DEFAULT '[]'::jsonb NOT NULL,
-    coverage jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ticker_benchmark_snapshot_member_count_check CHECK ((member_count >= 0))
-);
-
-CREATE TABLE analysis.ticker_data_request (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    ticker_decision_id uuid NOT NULL,
-    field text NOT NULL,
-    ticker text NOT NULL,
-    request jsonb NOT NULL,
-    status text DEFAULT 'open'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    completed_at timestamp with time zone,
-    CONSTRAINT ticker_data_request_status_check CHECK ((status = ANY (ARRAY['open'::text, 'running'::text, 'complete'::text, 'failed'::text, 'superseded'::text])))
-);
-
-CREATE TABLE analysis.ticker_decision (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    instrument_id bigint NOT NULL,
-    decision_revision text NOT NULL,
-    contract_version text NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    published_at timestamp with time zone,
-    input_hash character(64) NOT NULL,
-    code_version text NOT NULL,
-    experiment_id text NOT NULL,
-    tactical jsonb NOT NULL,
-    fundamental jsonb NOT NULL,
-    capital_action jsonb NOT NULL,
-    risk_policy jsonb NOT NULL,
-    expressions jsonb DEFAULT '{}'::jsonb NOT NULL,
-    selected_expression jsonb,
-    data_requests jsonb DEFAULT '[]'::jsonb NOT NULL,
-    learning_history jsonb DEFAULT '[]'::jsonb NOT NULL,
-    input_manifest jsonb DEFAULT '{}'::jsonb NOT NULL,
-    status text DEFAULT 'published'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    resolution jsonb DEFAULT '{}'::jsonb NOT NULL,
-    policy_version text DEFAULT 'risk-policy.v2:legacy'::text NOT NULL,
-    opportunity_episode_id text,
-    opportunity_cutoff timestamp with time zone,
-    opportunity_episode jsonb DEFAULT '{}'::jsonb NOT NULL,
-    market_state_publication_id uuid,
-    market_state_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
-    portfolio_impacts jsonb DEFAULT '{}'::jsonb NOT NULL,
-    risk_policy_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT ticker_decision_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'published'::text, 'superseded'::text, 'quarantined'::text])))
-);
-
-CREATE TABLE analysis.ticker_input_manifest (
-    id bigint NOT NULL,
-    ticker_decision_id uuid NOT NULL,
-    field text NOT NULL,
-    source_id text NOT NULL,
-    source_version text,
-    event_at timestamp with time zone,
-    published_at timestamp with time zone,
-    available_at timestamp with time zone NOT NULL,
-    received_at timestamp with time zone,
-    revision text,
-    license text,
-    original_value jsonb,
-    revised_value jsonb,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE analysis.ticker_input_manifest ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME analysis.ticker_input_manifest_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE analysis.ticker_outcome (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    ticker_decision_id uuid NOT NULL,
-    horizon text NOT NULL,
-    horizon_sessions integer NOT NULL,
-    state text DEFAULT 'observing'::text NOT NULL,
-    measured_through timestamp with time zone,
-    selected_expression text,
-    selected_return double precision,
-    stock_counterfactual_return double precision,
-    alternate_counterfactual_return double precision,
-    cash_return double precision,
-    sector_return double precision,
-    market_return double precision,
-    error_type text,
-    mistake_card jsonb DEFAULT '{}'::jsonb NOT NULL,
-    available_at timestamp with time zone,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ticker_outcome_horizon_check CHECK ((horizon = ANY (ARRAY['TACTICAL'::text, 'FUNDAMENTAL'::text]))),
-    CONSTRAINT ticker_outcome_horizon_sessions_check CHECK ((horizon_sessions = ANY (ARRAY[1, 5, 20, 63, 126, 252]))),
-    CONSTRAINT ticker_outcome_state_check CHECK ((state = ANY (ARRAY['observing'::text, 'resolved'::text, 'quarantined'::text, 'unmeasurable'::text])))
-);
-
-CREATE TABLE analysis.validation_dossier (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    strategy_revision_id bigint NOT NULL,
-    research_trial_id uuid,
-    status text DEFAULT 'draft'::text NOT NULL,
-    sections jsonb DEFAULT '{}'::jsonb NOT NULL,
-    compiled_policy jsonb DEFAULT '{}'::jsonb NOT NULL,
-    artifact_id text,
-    artifact_hash character(64),
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    sealed_at timestamp with time zone,
-    CONSTRAINT validation_dossier_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'sealed'::text, 'rejected'::text])))
-);
-
-CREATE TABLE analysis.validation_gate_result (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    dossier_id uuid NOT NULL,
-    gate_code text NOT NULL,
-    verdict text NOT NULL,
-    metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
-    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
-    evaluated_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    CONSTRAINT validation_gate_result_check CHECK ((available_at <= evaluated_at)),
-    CONSTRAINT validation_gate_result_gate_code_check CHECK ((gate_code = ANY (ARRAY['pit_integrity'::text, 'denominator_completeness'::text, 'oos_predictive_validity'::text, 'falsification_and_robustness'::text, 'economic_promotability'::text]))),
-    CONSTRAINT validation_gate_result_verdict_check CHECK ((verdict = ANY (ARRAY['pass'::text, 'fail'::text, 'unavailable'::text])))
-);
-
-CREATE TABLE app.alert (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    decision_id uuid,
-    instrument_id bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    alert_type text NOT NULL,
-    severity text NOT NULL,
-    title text NOT NULL,
-    detail text,
-    acknowledged_at timestamp with time zone,
-    resolution_reason text
-);
-
-CREATE TABLE app.catalyst (
-    id bigint NOT NULL,
-    instrument_id bigint,
-    market_event_id bigint,
-    starts_at timestamp with time zone NOT NULL,
-    title text NOT NULL,
-    expected_impact text,
-    notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    event_key text,
-    version integer DEFAULT 1 NOT NULL,
-    status text DEFAULT 'current'::text NOT NULL,
-    supersedes_id bigint,
-    superseded_at timestamp with time zone,
-    source_id text,
-    source_priority integer DEFAULT 0 NOT NULL,
-    confidence double precision
-);
-
-ALTER TABLE app.catalyst ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME app.catalyst_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE app.current_publication_item (
-    scope text NOT NULL,
-    publication_id uuid NOT NULL,
-    model_name text NOT NULL,
-    stable_key text NOT NULL,
-    rank integer NOT NULL,
-    instrument_id bigint,
-    content_hash character(64) NOT NULL
-);
-
-CREATE TABLE app.decision_inbox_item (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    dedupe_key text NOT NULL,
-    event_type text NOT NULL,
-    opportunity_id uuid,
-    ticket_version integer,
-    paper_order_id uuid,
-    lane text,
-    severity text DEFAULT 'info'::text NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    resolved_at timestamp with time zone,
-    user_state text DEFAULT 'open'::text NOT NULL,
-    snoozed_until timestamp with time zone,
-    dismiss_reason text,
-    user_state_updated_at timestamp with time zone,
-    reviewed_at timestamp with time zone,
-    CONSTRAINT ck_app_decision_inbox_event_type CHECK ((event_type = ANY (ARRAY['ready'::text, 'revoked'::text, 'expired'::text, 'paper_filled'::text, 'paper_exited'::text, 'portfolio_critical'::text, 'paper_engine_halt'::text, 'high_priority_research'::text]))),
-    CONSTRAINT ck_decision_inbox_dismiss_reason CHECK (((user_state <> 'dismissed'::text) OR (NULLIF(btrim(dismiss_reason), ''::text) IS NOT NULL))),
-    CONSTRAINT ck_decision_inbox_snooze_state CHECK (((user_state <> 'snoozed'::text) OR (snoozed_until IS NOT NULL))),
-    CONSTRAINT ck_decision_inbox_user_state CHECK ((user_state = ANY (ARRAY['open'::text, 'acknowledged'::text, 'snoozed'::text, 'dismissed'::text, 'review_complete'::text]))),
-    CONSTRAINT decision_inbox_item_severity_check CHECK ((severity = ANY (ARRAY['info'::text, 'warning'::text, 'critical'::text]))),
-    CONSTRAINT decision_inbox_item_status_check CHECK ((status = ANY (ARRAY['active'::text, 'resolved'::text])))
-);
-
-CREATE TABLE app.decision_inbox_sync_state (
-    state_key text NOT NULL,
-    activated_at timestamp with time zone NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE app.decision_truth (
-    symbol text NOT NULL,
-    lane text NOT NULL,
-    as_of timestamp with time zone NOT NULL,
-    publication_id text,
-    candidate_state text,
-    route_verdict text,
-    readiness_state text,
-    execution_state text,
-    primary_blocker text,
-    blockers jsonb DEFAULT '[]'::jsonb NOT NULL,
-    next_action text,
-    route_version text,
-    evidence_refs jsonb DEFAULT '[]'::jsonb NOT NULL,
-    event_id text,
-    raw jsonb DEFAULT '{}'::jsonb NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ck_decision_truth_json_arrays CHECK (((jsonb_typeof(blockers) = 'array'::text) AND (jsonb_typeof(evidence_refs) = 'array'::text)))
-);
-
-CREATE TABLE app.manual_account_snapshot (
-    id bigint NOT NULL,
-    account_key text DEFAULT 'manual'::text NOT NULL,
-    currency text DEFAULT 'USD'::text NOT NULL,
-    effective_at timestamp with time zone NOT NULL,
-    recorded_at timestamp with time zone DEFAULT now() NOT NULL,
-    cash_balance numeric(20,4) NOT NULL,
-    net_liquidation numeric(20,4),
-    reconciliation_state text NOT NULL,
-    reconciliation_version integer NOT NULL,
-    ledger_book_identity text NOT NULL,
-    idempotency_key text NOT NULL,
-    notes text DEFAULT ''::text NOT NULL,
-    CONSTRAINT manual_account_snapshot_cash_balance_check CHECK ((cash_balance >= (0)::numeric)),
-    CONSTRAINT manual_account_snapshot_currency_check CHECK ((currency = 'USD'::text)),
-    CONSTRAINT manual_account_snapshot_net_liquidation_check CHECK ((net_liquidation >= (0)::numeric)),
-    CONSTRAINT manual_account_snapshot_reconciliation_state_check CHECK ((reconciliation_state = ANY (ARRAY['pending'::text, 'reconciled'::text]))),
-    CONSTRAINT manual_account_snapshot_reconciliation_version_check CHECK ((reconciliation_version > 0))
-);
-
-ALTER TABLE app.manual_account_snapshot ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME app.manual_account_snapshot_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE app.notification_outbox (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    dedupe_key text NOT NULL,
-    inbox_item_id uuid NOT NULL,
-    channel text DEFAULT 'telegram_owner'::text NOT NULL,
-    event_type text NOT NULL,
-    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
-    status text DEFAULT 'queued'::text NOT NULL,
-    attempts integer DEFAULT 0 NOT NULL,
-    next_attempt_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_error text,
-    sent_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT notification_outbox_attempts_check CHECK ((attempts >= 0)),
-    CONSTRAINT notification_outbox_channel_check CHECK ((channel = 'telegram_owner'::text)),
-    CONSTRAINT notification_outbox_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'sending'::text, 'sent'::text, 'failed'::text, 'dry_run'::text, 'suppressed'::text, 'uncertain'::text])))
-);
-
-CREATE TABLE app.option_history_policy (
-    instrument_id bigint NOT NULL,
-    requested_state text DEFAULT 'off'::text NOT NULL,
-    effective_state text DEFAULT 'disabled'::text NOT NULL,
-    collection_tier text DEFAULT 'standard'::text NOT NULL,
-    cadence_minutes integer DEFAULT 60 NOT NULL,
-    publication_cap text DEFAULT 'WATCH'::text NOT NULL,
-    provider text DEFAULT 'robinhood'::text NOT NULL,
-    normalized_retention_days integer DEFAULT 730 NOT NULL,
-    derived_retention_days integer DEFAULT 30 NOT NULL,
-    provider_payload_retention_days integer DEFAULT 90 NOT NULL,
-    policy_revision text DEFAULT 'options-chain-reliability-20260722'::text NOT NULL,
-    lock_version integer DEFAULT 0 NOT NULL,
-    reason text,
-    activated_at timestamp with time zone,
-    paused_at timestamp with time zone,
-    requested_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    profile text DEFAULT 'history_full'::text NOT NULL,
-    activation_reason text,
-    event_id uuid,
-    expires_at timestamp with time zone,
-    hot_retention_days integer DEFAULT 7 NOT NULL,
-    archive_retention_days integer DEFAULT 730 NOT NULL,
-    CONSTRAINT ck_option_history_policy_cadence CHECK ((cadence_minutes = ANY (ARRAY[15, 60]))),
-    CONSTRAINT ck_option_history_policy_cap CHECK ((publication_cap = ANY (ARRAY['WATCH'::text, 'PAPER_READY'::text]))),
-    CONSTRAINT ck_option_history_policy_effective CHECK ((effective_state = ANY (ARRAY['disabled'::text, 'pending_gate'::text, 'shadow'::text, 'active'::text, 'paused'::text]))),
-    CONSTRAINT ck_option_history_policy_profile CHECK ((profile = ANY (ARRAY['history_full'::text, 'event_strip'::text]))),
-    CONSTRAINT ck_option_history_policy_requested CHECK ((requested_state = ANY (ARRAY['on'::text, 'off'::text]))),
-    CONSTRAINT ck_option_history_policy_retention CHECK ((((profile = 'history_full'::text) AND (normalized_retention_days = 730) AND (derived_retention_days = 30) AND (provider_payload_retention_days = 90) AND (event_id IS NULL)) OR ((profile = 'event_strip'::text) AND (normalized_retention_days = 365) AND (derived_retention_days = 30) AND (provider_payload_retention_days = 30) AND (event_id IS NOT NULL)))),
-    CONSTRAINT ck_option_history_policy_tier CHECK ((collection_tier = ANY (ARRAY['core'::text, 'standard'::text, 'event'::text]))),
-    CONSTRAINT option_history_policy_archive_retention_days_check CHECK ((archive_retention_days >= 0)),
-    CONSTRAINT option_history_policy_hot_retention_days_check CHECK ((hot_retention_days >= 0))
-);
-
-CREATE TABLE app.paper_execution_observation (
-    paper_execution_observation_id text CONSTRAINT paper_execution_observation_paper_execution_observatio_not_null NOT NULL,
-    allocation_item_id text NOT NULL,
-    action_id text NOT NULL,
-    paper_order_id uuid NOT NULL,
-    execution_mode text DEFAULT 'paper'::text NOT NULL,
-    paper_only boolean DEFAULT true NOT NULL,
-    status text NOT NULL,
-    requested_quantity double precision NOT NULL,
-    filled_quantity double precision NOT NULL,
-    requested_price double precision,
-    fill_price double precision,
-    spread_bps double precision,
-    latency_ms double precision,
-    impact_bps double precision,
-    side text DEFAULT 'buy'::text NOT NULL,
-    exit_price double precision,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    event_fee double precision,
-    contract_multiplier double precision,
-    CONSTRAINT paper_execution_observation_check CHECK (((filled_quantity < 'Infinity'::double precision) AND (filled_quantity > '-Infinity'::double precision) AND (filled_quantity >= (0)::double precision) AND (filled_quantity <= requested_quantity))),
-    CONSTRAINT paper_execution_observation_check1 CHECK (((status <> ALL (ARRAY['filled'::text, 'exited'::text])) OR (filled_quantity > (0)::double precision))),
-    CONSTRAINT paper_execution_observation_check2 CHECK (((fill_price IS NOT NULL) OR (filled_quantity = (0)::double precision))),
-    CONSTRAINT paper_execution_observation_check3 CHECK ((available_at >= observed_at)),
-    CONSTRAINT paper_execution_observation_execution_mode_check CHECK ((execution_mode = 'paper'::text)),
-    CONSTRAINT paper_execution_observation_exit_price_check CHECK (((exit_price IS NULL) OR ((exit_price < 'Infinity'::double precision) AND (exit_price >= (0)::double precision)))),
-    CONSTRAINT paper_execution_observation_fill_price_check CHECK (((fill_price IS NULL) OR ((fill_price < 'Infinity'::double precision) AND (fill_price > '-Infinity'::double precision) AND (fill_price > (0)::double precision)))),
-    CONSTRAINT paper_execution_observation_impact_bps_check CHECK (((impact_bps IS NULL) OR ((impact_bps < 'Infinity'::double precision) AND (impact_bps > '-Infinity'::double precision) AND (impact_bps >= (0)::double precision)))),
-    CONSTRAINT paper_execution_observation_latency_ms_check CHECK (((latency_ms IS NULL) OR ((latency_ms < 'Infinity'::double precision) AND (latency_ms > '-Infinity'::double precision) AND (latency_ms >= (0)::double precision)))),
-    CONSTRAINT paper_execution_observation_paper_only_check CHECK (paper_only),
-    CONSTRAINT paper_execution_observation_requested_price_check CHECK (((requested_price IS NULL) OR ((requested_price < 'Infinity'::double precision) AND (requested_price > '-Infinity'::double precision) AND (requested_price > (0)::double precision)))),
-    CONSTRAINT paper_execution_observation_requested_quantity_check CHECK (((requested_quantity < 'Infinity'::double precision) AND (requested_quantity > '-Infinity'::double precision) AND (requested_quantity >= (0)::double precision))),
-    CONSTRAINT paper_execution_observation_side_check CHECK ((side = ANY (ARRAY['buy'::text, 'sell'::text]))),
-    CONSTRAINT paper_execution_observation_spread_bps_check CHECK (((spread_bps IS NULL) OR ((spread_bps < 'Infinity'::double precision) AND (spread_bps > '-Infinity'::double precision) AND (spread_bps >= (0)::double precision)))),
-    CONSTRAINT phase4_paper_observation_status CHECK ((status = ANY (ARRAY['planned'::text, 'submitted'::text, 'partial'::text, 'filled'::text, 'partial_exited'::text, 'exited'::text, 'cancelled'::text, 'unavailable'::text])))
-);
-
-CREATE TABLE app.paper_order (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    decision_id uuid,
-    instrument_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    side text NOT NULL,
-    quantity numeric(24,8) NOT NULL,
-    limit_price numeric(20,6),
-    status text NOT NULL,
-    policy_result jsonb DEFAULT '{}'::jsonb NOT NULL,
-    structure text,
-    reserved_collateral numeric(24,4),
-    idempotency_key text,
-    ticket_version integer,
-    ticket_snapshot jsonb,
-    intended_limit_price numeric(20,6),
-    actual_fill_price numeric(20,6),
-    filled_at timestamp with time zone,
-    event_id uuid,
-    event_signal_id uuid,
-    strategy_family text,
-    objective_version text,
-    entry_capture_count integer DEFAULT 0 NOT NULL,
-    cohort_id uuid,
-    lane text DEFAULT 'radar'::text NOT NULL,
-    policy_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
-    exit_at timestamp with time zone,
-    exit_price numeric(20,6),
-    fees numeric(20,6) DEFAULT 0 NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    submitted_at timestamp with time zone,
-    filled_quantity numeric(24,8),
-    exited_quantity numeric(24,8) DEFAULT 0 NOT NULL,
-    entry_slippage numeric(20,6),
-    exit_slippage numeric(20,6),
-    unfilled_reason text,
-    ticker_decision_id uuid,
-    ticker_decision_revision text,
-    expression_kind text,
-    max_loss numeric(20,6),
-    planned_loss numeric(20,6),
-    expires_at timestamp with time zone,
-    thesis_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
-    paper_only boolean DEFAULT true NOT NULL,
-    execution_quote jsonb,
-    fill_evidence_at timestamp with time zone,
-    contract_multiplier numeric(20,6),
-    entry_fees numeric(20,6) DEFAULT 0 NOT NULL,
-    exit_fees numeric(20,6) DEFAULT 0 NOT NULL,
-    CONSTRAINT ck_app_paper_order_lane CHECK ((lane = ANY (ARRAY['radar'::text, 'qqq'::text, 'recovery'::text, 'ticker'::text]))),
-    CONSTRAINT ck_paper_order_entry_capture_count CHECK ((entry_capture_count >= 0))
-);
-
-CREATE TABLE app.paper_order_leg (
-    paper_order_id uuid NOT NULL,
-    leg_index integer NOT NULL,
-    contract_id bigint NOT NULL,
-    option_type text NOT NULL,
-    side text NOT NULL,
-    strike numeric(20,6) NOT NULL,
-    bid numeric(20,6) NOT NULL,
-    ask numeric(20,6) NOT NULL,
-    bid_size integer NOT NULL,
-    ask_size integer NOT NULL,
-    quote_time timestamp with time zone NOT NULL,
-    open_interest integer,
-    volume integer
-);
-
-CREATE TABLE app.portfolio_position (
-    instrument_id bigint NOT NULL,
-    quantity numeric(24,8) NOT NULL,
-    average_cost numeric(20,6),
-    purchase_date date,
-    notes text,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE app.portfolio_transaction (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    instrument_id bigint,
-    transaction_type text NOT NULL,
-    quantity numeric(24,8),
-    price numeric(20,6),
-    amount numeric(20,6),
-    fees numeric(20,6) DEFAULT '0'::numeric NOT NULL,
-    realized_pnl numeric(20,6) DEFAULT '0'::numeric NOT NULL,
-    currency text DEFAULT 'USD'::text NOT NULL,
-    account text DEFAULT 'manual'::text NOT NULL,
-    executed_at timestamp with time zone NOT NULL,
-    notes text DEFAULT ''::text NOT NULL,
-    idempotency_key text NOT NULL,
-    reverses_transaction_id uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    instrument_sector text,
-    CONSTRAINT ck_portfolio_transaction_fees_nonnegative CHECK ((fees >= (0)::numeric)),
-    CONSTRAINT ck_portfolio_transaction_type CHECK ((transaction_type = ANY (ARRAY['opening_balance'::text, 'buy'::text, 'sell'::text, 'dividend'::text, 'fee'::text, 'split'::text, 'transfer_in'::text, 'transfer_out'::text, 'cash_deposit'::text, 'cash_withdrawal'::text])))
-);
-
-CREATE TABLE app.publication (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    scope text NOT NULL,
-    analysis_run_id uuid NOT NULL,
-    status text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    published_at timestamp with time zone,
-    validation jsonb DEFAULT '{}'::jsonb NOT NULL,
-    bundle_id uuid,
-    CONSTRAINT publication_status_check CHECK ((status = ANY (ARRAY['building'::text, 'published'::text, 'failed'::text, 'superseded'::text])))
-);
-
-CREATE TABLE app.publication_bundle (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    scope text NOT NULL,
-    bundle_hash character(64) NOT NULL,
-    item_count integer NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT publication_bundle_item_count_check CHECK ((item_count >= 0))
-);
-
-CREATE TABLE app.publication_bundle_item (
-    bundle_id uuid NOT NULL,
-    model_name text NOT NULL,
-    stable_key text NOT NULL,
-    rank integer NOT NULL,
-    instrument_id bigint,
-    content_hash character(64) NOT NULL
-);
-
-CREATE TABLE app.publication_item (
-    publication_id uuid NOT NULL,
-    model_name text NOT NULL,
-    stable_key text NOT NULL,
-    rank integer NOT NULL,
-    instrument_id bigint,
-    payload jsonb NOT NULL
-);
-
-CREATE TABLE app.publication_payload (
-    content_hash character(64) NOT NULL,
-    payload jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
 
 CREATE VIEW app.publication_content_item AS
  SELECT item.publication_id,
@@ -5787,1619 +7251,37 @@ UNION ALL
      JOIN app.publication_bundle_item item ON ((item.bundle_id = publication.bundle_id)))
      JOIN app.publication_payload payload ON ((payload.content_hash = item.content_hash)));
 
-CREATE TABLE app.research_report (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    instrument_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    report_type text NOT NULL,
-    markdown text,
-    report jsonb NOT NULL,
-    evidence jsonb DEFAULT '[]'::jsonb NOT NULL
-);
-
-CREATE TABLE app.setting (
-    key text NOT NULL,
-    value jsonb NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE app.thesis (
-    id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    revision integer NOT NULL,
-    status text NOT NULL,
-    thesis jsonb NOT NULL,
-    source_agent_task_id uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    schema_version integer DEFAULT 3 NOT NULL,
-    author_kind text DEFAULT 'legacy'::text NOT NULL,
-    automation_run_id uuid,
-    superseded_revision_id bigint,
-    change_rationale text,
-    last_assessed_at timestamp with time zone,
-    last_human_reviewed_at timestamp with time zone
-);
-
-CREATE TABLE app.thesis_automation_run (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    instrument_id bigint,
-    run_kind text DEFAULT 'assessment'::text NOT NULL,
-    trigger text DEFAULT 'manual'::text NOT NULL,
-    model text,
-    reasoning_effort text,
-    prompt_version text DEFAULT 'thesis_v3_20260725'::text NOT NULL,
-    evidence_fingerprint text,
-    evidence_snapshot jsonb DEFAULT '[]'::jsonb NOT NULL,
-    input_symbol text,
-    input_tokens integer,
-    output_tokens integer,
-    cost_usd numeric(12,6),
-    status text NOT NULL,
-    error text,
-    started_at timestamp with time zone DEFAULT now() NOT NULL,
-    finished_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT thesis_automation_run_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'succeeded'::text, 'failed'::text, 'timeout'::text, 'skipped'::text])))
-);
-
-CREATE TABLE app.thesis_evidence_assessment (
-    id bigint NOT NULL,
-    thesis_revision_id bigint,
-    automation_run_id uuid,
-    instrument_id bigint NOT NULL,
-    evidence_reference text NOT NULL,
-    evidence_title text,
-    evidence_date timestamp with time zone,
-    stance text NOT NULL,
-    materiality text DEFAULT 'low'::text NOT NULL,
-    affected_pillar_ids text[] DEFAULT ARRAY[]::text[] NOT NULL,
-    confidence numeric(5,4) DEFAULT 0 NOT NULL,
-    rationale text DEFAULT ''::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT thesis_evidence_assessment_confidence_check CHECK (((confidence >= (0)::numeric) AND (confidence <= (1)::numeric))),
-    CONSTRAINT thesis_evidence_assessment_materiality_check CHECK ((materiality = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text]))),
-    CONSTRAINT thesis_evidence_assessment_stance_check CHECK ((stance = ANY (ARRAY['support'::text, 'contradict'::text, 'neutral'::text, 'insufficient'::text])))
-);
-
-ALTER TABLE app.thesis_evidence_assessment ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME app.thesis_evidence_assessment_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE app.thesis_expression (
-    id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    thesis_revision_id bigint NOT NULL,
-    expression_kind text NOT NULL,
-    structure jsonb DEFAULT '{}'::jsonb NOT NULL,
-    entry_logic jsonb DEFAULT '{}'::jsonb NOT NULL,
-    max_loss numeric(20,6),
-    risk_budget numeric(20,6),
-    horizon_date date,
-    invalidation_rules jsonb DEFAULT '[]'::jsonb NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT thesis_expression_expression_kind_check CHECK ((expression_kind = ANY (ARRAY['equity'::text, 'option'::text])))
-);
-
-ALTER TABLE app.thesis_expression ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME app.thesis_expression_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-ALTER TABLE app.thesis ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME app.thesis_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE app.thesis_review_event (
-    id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    thesis_revision_id bigint,
-    outcome text NOT NULL,
-    notes text,
-    reviewed_evidence_cutoff timestamp with time zone,
-    reviewed_by text DEFAULT 'joe'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT thesis_review_event_outcome_check CHECK ((outcome = ANY (ARRAY['unchanged'::text, 'updated'::text, 'invalidated'::text, 'closed'::text, 'legacy_acknowledgement'::text])))
-);
-
-ALTER TABLE app.thesis_review_event ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME app.thesis_review_event_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE app.trade_journal (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    decision_id uuid,
-    instrument_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    action text NOT NULL,
-    quantity numeric(24,8),
-    price numeric(20,6),
-    rationale text,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-CREATE TABLE app.watchlist_item (
-    instrument_id bigint NOT NULL,
-    watch_state text NOT NULL,
-    notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE catalog.instrument (
-    id bigint NOT NULL,
-    symbol text NOT NULL,
-    name text,
-    asset_class text NOT NULL,
-    sector text,
-    industry text,
-    category text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    market_timezone text DEFAULT 'America/New_York'::text NOT NULL,
-    delisted_at timestamp with time zone,
-    delisting_price double precision,
-    delisting_available_at timestamp with time zone,
-    delisting_source text,
-    CONSTRAINT ck_instrument_delisting_availability CHECK (((delisting_available_at IS NULL) OR (delisted_at IS NOT NULL))),
-    CONSTRAINT ck_instrument_delisting_price CHECK (((delisting_price IS NULL) OR (delisting_price > (0)::double precision)))
-);
-
-CREATE TABLE catalog.instrument_alias (
-    id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    provider text NOT NULL,
-    external_symbol text NOT NULL,
-    exchange text DEFAULT ''::text NOT NULL,
-    currency text,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-ALTER TABLE catalog.instrument_alias ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME catalog.instrument_alias_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-ALTER TABLE catalog.instrument ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME catalog.instrument_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE catalog.option_contract (
-    id bigint NOT NULL,
-    underlying_instrument_id bigint NOT NULL,
-    expiration date NOT NULL,
-    strike numeric(20,6) NOT NULL,
-    option_type text NOT NULL,
-    multiplier integer DEFAULT 100 NOT NULL,
-    style text,
-    settlement text,
-    provider_symbols jsonb DEFAULT '{}'::jsonb NOT NULL,
-    deliverable_key text NOT NULL,
-    standard_contract_verified boolean DEFAULT false NOT NULL,
-    CONSTRAINT ck_option_contract_standard_terms CHECK (((NOT standard_contract_verified) OR ((style = 'american'::text) AND (settlement = 'physical'::text) AND (deliverable_key IS NOT NULL)))),
-    CONSTRAINT option_contract_multiplier_check CHECK ((multiplier > 0)),
-    CONSTRAINT option_contract_option_type_check CHECK ((option_type = ANY (ARRAY['call'::text, 'put'::text])))
-);
-
-ALTER TABLE catalog.option_contract ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME catalog.option_contract_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE ingest.payload (
-    id bigint NOT NULL,
-    run_id uuid NOT NULL,
-    archive_uri text NOT NULL,
-    sha256 character(64) NOT NULL,
-    encoding text NOT NULL,
-    byte_count bigint NOT NULL,
-    schema_version text,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT payload_byte_count_check CHECK ((byte_count >= 0))
-);
-
-ALTER TABLE ingest.payload ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME ingest.payload_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE ingest.run (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    source_id text NOT NULL,
-    source_run_key text,
-    capability text NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    finished_at timestamp with time zone,
-    status text NOT NULL,
-    item_count integer DEFAULT 0 NOT NULL,
-    instrument_count integer DEFAULT 0 NOT NULL,
-    failure_detail text,
-    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT run_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text, 'skipped'::text])))
-);
-
-CREATE TABLE ingest.source (
-    id text NOT NULL,
-    name text NOT NULL,
-    family text NOT NULL,
-    kind text NOT NULL,
-    origin text,
-    enabled boolean DEFAULT true NOT NULL,
-    ingestion_mode text,
-    source_url text,
-    capabilities jsonb DEFAULT '{}'::jsonb NOT NULL,
-    config jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    operational_state text DEFAULT 'archived'::text NOT NULL,
-    health_owner text,
-    freshness_seconds integer,
-    CONSTRAINT ck_ingest_source_active_health_contract CHECK (((operational_state <> 'active'::text) OR ((health_owner IS NOT NULL) AND (freshness_seconds IS NOT NULL)))),
-    CONSTRAINT ck_ingest_source_freshness_seconds CHECK (((freshness_seconds IS NULL) OR (freshness_seconds > 0))),
-    CONSTRAINT ck_ingest_source_operational_state CHECK ((operational_state = ANY (ARRAY['active'::text, 'standby'::text, 'archived'::text])))
-);
-
-CREATE TABLE ingest.source_lifecycle_history (
-    id bigint NOT NULL,
-    source_id text NOT NULL,
-    effective_at timestamp with time zone NOT NULL,
-    enabled boolean NOT NULL,
-    operational_state text NOT NULL,
-    recorded_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ingest.source_lifecycle_history ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME ingest.source_lifecycle_history_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE ops.job_run (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    job_name text NOT NULL,
-    status text NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    finished_at timestamp with time zone,
-    error text,
-    summary jsonb DEFAULT '{}'::jsonb NOT NULL,
-    heartbeat_at timestamp with time zone DEFAULT now() NOT NULL,
-    scheduled_due_at timestamp with time zone,
-    dispatched_at timestamp with time zone,
-    source_status text,
-    downstream_status text,
-    CONSTRAINT job_run_status_check CHECK ((status = ANY (ARRAY['running'::text, 'succeeded'::text, 'partial'::text, 'failed'::text, 'skipped'::text])))
-);
-
-CREATE TABLE ops.option_quote_partition_policy (
-    policy_key text NOT NULL,
-    daily_start date NOT NULL,
-    hot_retention_days integer DEFAULT 7 NOT NULL,
-    archive_retention_days integer DEFAULT 730 NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE TABLE ops.provider_lease (
-    id bigint NOT NULL,
-    provider text NOT NULL,
-    workload text NOT NULL,
-    symbol text NOT NULL,
-    owner text NOT NULL,
-    heartbeat_at timestamp with time zone DEFAULT now() NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    acquired_at timestamp with time zone DEFAULT now() NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-ALTER TABLE ops.provider_lease ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME ops.provider_lease_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE ops.storage_archive_checkpoint (
-    checkpoint_key text NOT NULL,
-    archive_kind text NOT NULL,
-    source_relation text NOT NULL,
-    cursor jsonb DEFAULT '{}'::jsonb NOT NULL,
-    run_status text DEFAULT 'idle'::text NOT NULL,
-    counts jsonb DEFAULT '{}'::jsonb NOT NULL,
-    error_detail text,
-    started_at timestamp with time zone,
-    finished_at timestamp with time zone,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT storage_archive_checkpoint_run_status_check CHECK ((run_status = ANY (ARRAY['idle'::text, 'running'::text, 'paused'::text, 'succeeded'::text, 'failed'::text])))
-);
-
-CREATE TABLE ops.storage_archive_manifest (
-    id bigint NOT NULL,
-    archive_kind text NOT NULL,
-    source_relation text NOT NULL,
-    nas_uri text NOT NULL,
-    sha256 character(64) NOT NULL,
-    format text NOT NULL,
-    row_count bigint DEFAULT 0 NOT NULL,
-    range_start timestamp with time zone,
-    range_end timestamp with time zone,
-    schema_revision text NOT NULL,
-    verification_status text DEFAULT 'pending'::text NOT NULL,
-    verified_at timestamp with time zone,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT storage_archive_manifest_row_count_check CHECK ((row_count >= 0)),
-    CONSTRAINT storage_archive_manifest_verification_status_check CHECK ((verification_status = ANY (ARRAY['pending'::text, 'written'::text, 'verified'::text, 'failed'::text, 'restored'::text])))
-);
-
-ALTER TABLE ops.storage_archive_manifest ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME ops.storage_archive_manifest_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE ops.storage_archive_manifest_reference (
-    manifest_id bigint NOT NULL,
-    source_relation text NOT NULL,
-    source_row_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    source_ingest_run_id uuid
-);
-
-CREATE TABLE raw.broker_account_snapshot (
-    id bigint NOT NULL,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    account_key text NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    currency text,
-    net_liquidation numeric(20,4),
-    buying_power numeric(20,4),
-    cash_balance numeric(20,4),
-    details jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-ALTER TABLE raw.broker_account_snapshot ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.broker_account_snapshot_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.broker_activity (
-    id bigint NOT NULL,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    account_key text NOT NULL,
-    activity_key text NOT NULL,
-    activity_type text NOT NULL,
-    instrument_id bigint,
-    occurred_at timestamp with time zone NOT NULL,
-    side text,
-    quantity numeric(24,8),
-    price numeric(20,6),
-    status text,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT broker_activity_activity_type_check CHECK ((activity_type = ANY (ARRAY['order'::text, 'fill'::text])))
-);
-
-ALTER TABLE raw.broker_activity ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.broker_activity_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.broker_position_snapshot (
-    id bigint NOT NULL,
-    account_snapshot_id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    quantity numeric(24,8) NOT NULL,
-    average_cost numeric(20,6),
-    market_price numeric(20,6),
-    market_value numeric(24,4),
-    unrealized_pnl numeric(24,4),
-    details jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-ALTER TABLE raw.broker_position_snapshot ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.broker_position_snapshot_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.price_bar (
-    id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint,
-    "interval" text DEFAULT '1d'::text NOT NULL,
-    trading_date date NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    open double precision,
-    high double precision,
-    low double precision,
-    close double precision NOT NULL,
-    volume double precision,
-    currency text,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
-);
-
-CREATE TABLE raw.price_bar_fact_availability (
-    fact_id bigint NOT NULL,
-    fact_available_at timestamp with time zone NOT NULL,
-    ingest_run_id uuid NOT NULL
-);
-
-CREATE TABLE raw.price_bar_history (
-    id bigint CONSTRAINT price_bar_id_not_null NOT NULL,
-    instrument_id bigint CONSTRAINT price_bar_instrument_id_not_null NOT NULL,
-    source_id text CONSTRAINT price_bar_source_id_not_null NOT NULL,
-    ingest_run_id uuid CONSTRAINT price_bar_ingest_run_id_not_null NOT NULL,
-    payload_id bigint,
-    "interval" text DEFAULT '1d'::text CONSTRAINT price_bar_interval_not_null NOT NULL,
-    trading_date date CONSTRAINT price_bar_trading_date_not_null NOT NULL,
-    observed_at timestamp with time zone CONSTRAINT price_bar_observed_at_not_null NOT NULL,
-    open double precision,
-    high double precision,
-    low double precision,
-    close double precision CONSTRAINT price_bar_close_not_null NOT NULL,
-    volume double precision,
-    currency text,
-    available_at timestamp with time zone DEFAULT clock_timestamp() CONSTRAINT price_bar_available_at_not_null NOT NULL
-);
-
 CREATE VIEW raw.confirmed_price_bar AS
- SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact."interval", fact.observed_at) fact.id,
-    fact.instrument_id,
-    fact.source_id,
-    fact.ingest_run_id,
-    fact.payload_id,
-    fact."interval",
-    fact.trading_date,
-    fact.observed_at,
-    fact.open,
-    fact.high,
-    fact.low,
-    fact.close,
-    fact.volume,
-    fact.currency,
-    fact.available_at
-   FROM ((( SELECT price_bar.id,
-            price_bar.instrument_id,
-            price_bar.source_id,
-            price_bar.ingest_run_id,
-            price_bar.payload_id,
-            price_bar."interval",
-            price_bar.trading_date,
-            price_bar.observed_at,
-            price_bar.open,
-            price_bar.high,
-            price_bar.low,
-            price_bar.close,
-            price_bar.volume,
-            price_bar.currency,
-            price_bar.available_at
-           FROM raw.price_bar
-        UNION ALL
-         SELECT price_bar_history.id,
-            price_bar_history.instrument_id,
-            price_bar_history.source_id,
-            price_bar_history.ingest_run_id,
-            price_bar_history.payload_id,
-            price_bar_history."interval",
-            price_bar_history.trading_date,
-            price_bar_history.observed_at,
-            price_bar_history.open,
-            price_bar_history.high,
-            price_bar_history.low,
-            price_bar_history.close,
-            price_bar_history.volume,
-            price_bar_history.currency,
-            price_bar_history.available_at
-           FROM raw.price_bar_history) fact
-     JOIN raw.price_bar_fact_availability availability ON (((availability.fact_id = fact.id) AND (availability.fact_available_at = fact.available_at))))
-     JOIN ingest.run price_run ON (((price_run.id = availability.ingest_run_id) AND (price_run.status = ANY (ARRAY['succeeded'::text, 'partial'::text])) AND (price_run.finished_at IS NOT NULL))))
-  ORDER BY fact.instrument_id, fact.source_id, fact."interval", fact.observed_at, fact.available_at DESC;
-
-CREATE TABLE raw.quote (
-    id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint,
-    observed_at timestamp with time zone NOT NULL,
-    price double precision NOT NULL,
-    change_abs double precision,
-    change_pct double precision,
-    currency text,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
-);
-
-CREATE TABLE raw.quote_fact_availability (
-    fact_id bigint NOT NULL,
-    fact_available_at timestamp with time zone NOT NULL,
-    ingest_run_id uuid NOT NULL
-);
-
-CREATE TABLE raw.quote_history (
-    id bigint CONSTRAINT quote_id_not_null NOT NULL,
-    instrument_id bigint CONSTRAINT quote_instrument_id_not_null NOT NULL,
-    source_id text CONSTRAINT quote_source_id_not_null NOT NULL,
-    ingest_run_id uuid CONSTRAINT quote_ingest_run_id_not_null NOT NULL,
-    payload_id bigint,
-    observed_at timestamp with time zone CONSTRAINT quote_observed_at_not_null NOT NULL,
-    price double precision CONSTRAINT quote_price_not_null NOT NULL,
-    change_abs double precision,
-    change_pct double precision,
-    currency text,
-    available_at timestamp with time zone DEFAULT clock_timestamp() CONSTRAINT quote_available_at_not_null NOT NULL
-);
+ SELECT id,
+    instrument_id,
+    source_id,
+    ingest_run_id,
+    payload_id,
+    "interval",
+    trading_date,
+    observed_at,
+    open,
+    high,
+    low,
+    close,
+    volume,
+    currency,
+    available_at
+   FROM raw.confirmed_price_bar_at(now(), NULL::bigint[]) confirmed_price_bar_at(id, instrument_id, source_id, ingest_run_id, payload_id, "interval", trading_date, observed_at, open, high, low, close, volume, currency, available_at);
 
 CREATE VIEW raw.confirmed_quote AS
- SELECT DISTINCT ON (fact.instrument_id, fact.source_id, fact.observed_at) fact.id,
-    fact.instrument_id,
-    fact.source_id,
-    fact.ingest_run_id,
-    fact.payload_id,
-    fact.observed_at,
-    fact.price,
-    fact.change_abs,
-    fact.change_pct,
-    fact.currency,
-    fact.available_at
-   FROM ((( SELECT quote.id,
-            quote.instrument_id,
-            quote.source_id,
-            quote.ingest_run_id,
-            quote.payload_id,
-            quote.observed_at,
-            quote.price,
-            quote.change_abs,
-            quote.change_pct,
-            quote.currency,
-            quote.available_at
-           FROM raw.quote
-        UNION ALL
-         SELECT quote_history.id,
-            quote_history.instrument_id,
-            quote_history.source_id,
-            quote_history.ingest_run_id,
-            quote_history.payload_id,
-            quote_history.observed_at,
-            quote_history.price,
-            quote_history.change_abs,
-            quote_history.change_pct,
-            quote_history.currency,
-            quote_history.available_at
-           FROM raw.quote_history) fact
-     JOIN raw.quote_fact_availability availability ON (((availability.fact_id = fact.id) AND (availability.fact_available_at = fact.available_at))))
-     JOIN ingest.run price_run ON (((price_run.id = availability.ingest_run_id) AND (price_run.status = ANY (ARRAY['succeeded'::text, 'partial'::text])) AND (price_run.finished_at IS NOT NULL))))
-  ORDER BY fact.instrument_id, fact.source_id, fact.observed_at, fact.available_at DESC;
-
-CREATE TABLE raw.content_item (
-    id bigint NOT NULL,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint,
-    source_key text NOT NULL,
-    kind text NOT NULL,
-    title text,
-    url text,
-    author text,
-    published_at timestamp with time zone,
-    observed_at timestamp with time zone NOT NULL,
-    summary text,
-    content_hash character(64),
-    license_status text,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-ALTER TABLE raw.content_item ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.content_item_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.content_item_instrument (
-    content_item_id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    relevance double precision
-);
-
-CREATE TABLE raw.disclosure (
-    id bigint NOT NULL,
-    instrument_id bigint,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint,
-    source_key text NOT NULL,
-    source_type text NOT NULL,
-    trader_name text,
-    filer_name text,
-    event_date date,
-    filed_date date,
-    action text,
-    amount_text text,
-    source_url text,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL
-);
-
-ALTER TABLE raw.disclosure ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.disclosure_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.fundamental_observation (
-    id bigint NOT NULL,
-    instrument_id bigint NOT NULL,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint,
-    metric_set text NOT NULL,
-    period_end date,
-    filed_at timestamp with time zone,
-    observed_at timestamp with time zone NOT NULL,
-    "values" jsonb NOT NULL,
-    period_start date
-);
-
-ALTER TABLE raw.fundamental_observation ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.fundamental_observation_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.market_event (
-    id bigint NOT NULL,
-    instrument_id bigint,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint,
-    source_key text NOT NULL,
-    event_scope text NOT NULL,
-    event_kind text NOT NULL,
-    title text NOT NULL,
-    starts_at timestamp with time zone NOT NULL,
-    ends_at timestamp with time zone,
-    importance text,
-    verification_status text,
-    source_url text,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
-);
-
-ALTER TABLE raw.market_event ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.market_event_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.market_event_version (
-    id bigint NOT NULL,
-    market_event_id bigint NOT NULL,
-    instrument_id bigint,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint,
-    source_key text NOT NULL,
-    event_scope text NOT NULL,
-    event_kind text NOT NULL,
-    title text NOT NULL,
-    starts_at timestamp with time zone NOT NULL,
-    ends_at timestamp with time zone,
-    importance text,
-    verification_status text,
-    source_url text,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    available_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
-);
-
-ALTER TABLE raw.market_event_version ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.market_event_version_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.market_observation (
-    observation_id text NOT NULL,
-    field_name text NOT NULL,
-    dimension text NOT NULL,
-    asset_class text NOT NULL,
-    source_id text NOT NULL,
-    source_version text NOT NULL,
-    value jsonb,
-    unit text,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint NOT NULL,
-    content_hash text NOT NULL,
-    parent_snapshot_id text,
-    observed_at timestamp with time zone NOT NULL,
-    available_at timestamp with time zone NOT NULL,
-    publication_at timestamp with time zone,
-    release_at timestamp with time zone,
-    vintage_at timestamp with time zone,
-    actual double precision,
-    consensus double precision,
-    surprise double precision,
-    revision double precision,
-    status text NOT NULL,
-    confidence double precision NOT NULL,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ck_market_observation_clocks CHECK ((available_at IS NOT NULL)),
-    CONSTRAINT ck_market_observation_status CHECK ((status = ANY (ARRAY['AVAILABLE'::text, 'MISSING_SOURCE'::text, 'MISSING_HISTORY'::text, 'CONFLICTED'::text, 'FALLBACK'::text, 'UNSUPPORTED'::text, 'STALE'::text]))),
-    CONSTRAINT market_observation_confidence_check CHECK (((confidence >= (0)::double precision) AND (confidence <= (1)::double precision)))
-);
-
-CREATE TABLE raw.option_capture_generation (
-    id bigint NOT NULL,
-    snapshot_id bigint NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    generation integer NOT NULL,
-    capture_state text NOT NULL,
-    expected_contract_count integer DEFAULT 0 NOT NULL,
-    received_contract_count integer DEFAULT 0 NOT NULL,
-    completeness double precision DEFAULT 0 NOT NULL,
-    capture_started_at timestamp with time zone DEFAULT now() NOT NULL,
-    capture_finished_at timestamp with time zone,
-    terminal_error text,
-    diagnostics jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT option_capture_generation_capture_state_check CHECK ((capture_state = ANY (ARRAY['running'::text, 'complete'::text, 'partial'::text, 'failed'::text, 'deferred'::text]))),
-    CONSTRAINT option_capture_generation_completeness_check CHECK (((completeness >= (0)::double precision) AND (completeness <= (1)::double precision)))
-);
-
-ALTER TABLE raw.option_capture_generation ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.option_capture_generation_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.option_quote (
-    id bigint NOT NULL,
-    observed_at timestamp with time zone NOT NULL,
-    snapshot_id bigint NOT NULL,
-    contract_id bigint NOT NULL,
-    underlying_price double precision,
-    bid double precision,
-    ask double precision,
-    mid double precision,
-    last double precision,
-    volume bigint,
-    open_interest bigint,
-    provider_iv double precision,
-    provider_delta double precision,
-    provider_gamma double precision,
-    provider_theta double precision,
-    provider_vega double precision,
-    bid_size bigint,
-    ask_size bigint,
-    last_trade_at timestamp with time zone,
-    captured_at timestamp with time zone,
-    market_data_status text,
-    previous_close double precision,
-    provider_rho double precision,
-    chance_of_profit_long double precision,
-    chance_of_profit_short double precision,
-    provider_updated_at timestamp with time zone,
-    provider_payload jsonb DEFAULT '{}'::jsonb NOT NULL,
-    capture_generation_id bigint,
-    capture_group_key text,
-    group_started_at timestamp with time zone,
-    group_finished_at timestamp with time zone,
-    provider_observed_at timestamp with time zone,
-    available_at timestamp with time zone DEFAULT now() NOT NULL,
-    underlying_observed_at timestamp with time zone,
-    underlying_available_at timestamp with time zone,
-    contract_style text,
-    contract_settlement text,
-    contract_deliverable_key text,
-    standard_contract_verified boolean DEFAULT false NOT NULL,
-    CONSTRAINT ck_option_quote_standard_terms CHECK (((NOT standard_contract_verified) OR ((contract_style = 'american'::text) AND (contract_settlement = 'physical'::text) AND (contract_deliverable_key IS NOT NULL))))
-)
-PARTITION BY RANGE (observed_at);
-
-CREATE TABLE raw.option_quote_default (
-    id bigint CONSTRAINT option_quote_id_not_null NOT NULL,
-    observed_at timestamp with time zone CONSTRAINT option_quote_observed_at_not_null NOT NULL,
-    snapshot_id bigint CONSTRAINT option_quote_snapshot_id_not_null NOT NULL,
-    contract_id bigint CONSTRAINT option_quote_contract_id_not_null NOT NULL,
-    underlying_price double precision,
-    bid double precision,
-    ask double precision,
-    mid double precision,
-    last double precision,
-    volume bigint,
-    open_interest bigint,
-    provider_iv double precision,
-    provider_delta double precision,
-    provider_gamma double precision,
-    provider_theta double precision,
-    provider_vega double precision,
-    bid_size bigint,
-    ask_size bigint,
-    last_trade_at timestamp with time zone,
-    captured_at timestamp with time zone,
-    market_data_status text,
-    previous_close double precision,
-    provider_rho double precision,
-    chance_of_profit_long double precision,
-    chance_of_profit_short double precision,
-    provider_updated_at timestamp with time zone,
-    provider_payload jsonb DEFAULT '{}'::jsonb CONSTRAINT option_quote_provider_payload_not_null NOT NULL,
-    capture_generation_id bigint,
-    capture_group_key text,
-    group_started_at timestamp with time zone,
-    group_finished_at timestamp with time zone,
-    provider_observed_at timestamp with time zone,
-    available_at timestamp with time zone DEFAULT now() CONSTRAINT option_quote_available_at_not_null NOT NULL,
-    underlying_observed_at timestamp with time zone,
-    underlying_available_at timestamp with time zone,
-    contract_style text,
-    contract_settlement text,
-    contract_deliverable_key text,
-    standard_contract_verified boolean DEFAULT false CONSTRAINT option_quote_standard_contract_verified_not_null NOT NULL,
-    CONSTRAINT ck_option_quote_standard_terms CHECK (((NOT standard_contract_verified) OR ((contract_style = 'american'::text) AND (contract_settlement = 'physical'::text) AND (contract_deliverable_key IS NOT NULL))))
-);
-
-ALTER TABLE raw.option_quote ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.option_quote_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.option_snapshot (
-    id bigint NOT NULL,
-    source_id text NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    payload_id bigint,
-    observed_at timestamp with time zone NOT NULL,
-    trading_date date NOT NULL,
-    market_session text NOT NULL,
-    universe text NOT NULL,
-    completeness double precision,
-    contract_count integer DEFAULT 0 NOT NULL,
-    collection_profile text DEFAULT 'radar'::text NOT NULL,
-    history_symbol text,
-    slot_at timestamp with time zone,
-    capture_started_at timestamp with time zone,
-    capture_finished_at timestamp with time zone,
-    expected_contract_count integer,
-    received_contract_count integer,
-    capture_state text DEFAULT 'complete'::text NOT NULL,
-    latest_complete_generation_id bigint,
-    CONSTRAINT ck_option_snapshot_capture_state CHECK ((capture_state = ANY (ARRAY['running'::text, 'complete'::text, 'partial'::text, 'failed'::text, 'deferred'::text]))),
-    CONSTRAINT ck_option_snapshot_profile CHECK ((collection_profile = ANY (ARRAY['radar'::text, 'history_full'::text, 'event_strip'::text]))),
-    CONSTRAINT option_snapshot_completeness_check CHECK (((completeness >= (0)::double precision) AND (completeness <= (1)::double precision))),
-    CONSTRAINT option_snapshot_market_session_check CHECK ((market_session = ANY (ARRAY['premarket'::text, 'regular'::text, 'afterhours'::text, 'closed'::text, 'unknown'::text])))
-);
-
-ALTER TABLE raw.option_snapshot ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.option_snapshot_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.price_bar_confirmation (
-    fact_id bigint NOT NULL,
-    fact_available_at timestamp with time zone NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    confirmed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
-);
-
-ALTER TABLE raw.price_bar ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.price_bar_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-CREATE TABLE raw.quote_confirmation (
-    fact_id bigint NOT NULL,
-    fact_available_at timestamp with time zone NOT NULL,
-    ingest_run_id uuid NOT NULL,
-    confirmed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
-);
-
-ALTER TABLE raw.quote ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME raw.quote_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-ALTER TABLE ONLY raw.option_quote ATTACH PARTITION raw.option_quote_default DEFAULT;
-
-ALTER TABLE ONLY analysis.agent_experiment
-    ADD CONSTRAINT agent_experiment_experiment_key_key UNIQUE (experiment_key);
-
-ALTER TABLE ONLY analysis.agent_experiment
-    ADD CONSTRAINT agent_experiment_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.agent_run
-    ADD CONSTRAINT agent_run_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.agent_task
-    ADD CONSTRAINT agent_task_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.book_attribution
-    ADD CONSTRAINT book_attribution_pkey PRIMARY KEY (book_attribution_id);
-
-ALTER TABLE ONLY analysis.decision_evidence
-    ADD CONSTRAINT decision_evidence_pkey PRIMARY KEY (decision_id, evidence_kind, reference_key);
-
-ALTER TABLE ONLY analysis.decision
-    ADD CONSTRAINT decision_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.decision
-    ADD CONSTRAINT decision_run_id_decision_key_key UNIQUE (run_id, decision_key);
-
-ALTER TABLE ONLY analysis.event_decision_packet
-    ADD CONSTRAINT event_decision_packet_pkey PRIMARY KEY (event_id);
-
-ALTER TABLE ONLY analysis.event_scout_event
-    ADD CONSTRAINT event_scout_event_pkey PRIMARY KEY (event_id);
-
-ALTER TABLE ONLY analysis.event_study_feature
-    ADD CONSTRAINT event_study_feature_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.event_study_feature
-    ADD CONSTRAINT event_study_feature_run_id_instrument_id_market_event_versi_key UNIQUE (run_id, instrument_id, market_event_version_id, horizon, feature_version);
-
-ALTER TABLE ONLY analysis.execution_model_snapshot
-    ADD CONSTRAINT execution_model_snapshot_pkey PRIMARY KEY (execution_model_snapshot_id);
-
-ALTER TABLE ONLY analysis.experiment_family
-    ADD CONSTRAINT experiment_family_family_key_key UNIQUE (family_key);
-
-ALTER TABLE ONLY analysis.experiment_family
-    ADD CONSTRAINT experiment_family_hypothesis_id_name_key UNIQUE (hypothesis_id, name);
-
-ALTER TABLE ONLY analysis.experiment_family
-    ADD CONSTRAINT experiment_family_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.experiment_manifest
-    ADD CONSTRAINT experiment_manifest_pkey PRIMARY KEY (experiment_family_id);
-
-ALTER TABLE ONLY analysis.hypothesis
-    ADD CONSTRAINT hypothesis_hypothesis_key_key UNIQUE (hypothesis_key);
-
-ALTER TABLE ONLY analysis.hypothesis
-    ADD CONSTRAINT hypothesis_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.market_coverage_vector
-    ADD CONSTRAINT market_coverage_vector_pkey PRIMARY KEY (vector_id);
-
-ALTER TABLE ONLY analysis.market_scenario_path
-    ADD CONSTRAINT market_scenario_path_pkey PRIMARY KEY (scenario_hash);
-
-ALTER TABLE ONLY analysis.market_state_posterior
-    ADD CONSTRAINT market_state_posterior_pkey PRIMARY KEY (posterior_id);
-
-ALTER TABLE ONLY analysis.option_decision
-    ADD CONSTRAINT option_decision_pkey PRIMARY KEY (decision_id);
-
-ALTER TABLE ONLY analysis.option_discovery_candidate
-    ADD CONSTRAINT option_discovery_candidate_pkey PRIMARY KEY (run_id, instrument_id);
-
-ALTER TABLE ONLY analysis.option_discovery_run
-    ADD CONSTRAINT option_discovery_run_pkey PRIMARY KEY (run_id);
-
-ALTER TABLE ONLY analysis.option_event_agent_batch
-    ADD CONSTRAINT option_event_agent_batch_event_id_fingerprint_key_key UNIQUE (event_id, fingerprint_key);
-
-ALTER TABLE ONLY analysis.option_event_agent_batch
-    ADD CONSTRAINT option_event_agent_batch_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_event_capture
-    ADD CONSTRAINT option_event_capture_event_id_scheduled_at_key UNIQUE (event_id, scheduled_at);
-
-ALTER TABLE ONLY analysis.option_event_capture
-    ADD CONSTRAINT option_event_capture_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_event_contract
-    ADD CONSTRAINT option_event_contract_event_id_contract_key_key UNIQUE (event_id, contract_key);
-
-ALTER TABLE ONLY analysis.option_event_contract
-    ADD CONSTRAINT option_event_contract_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_event_detector_run
-    ADD CONSTRAINT option_event_detector_run_cohort_id_scheduled_at_key UNIQUE (cohort_id, scheduled_at);
-
-ALTER TABLE ONLY analysis.option_event_detector_run
-    ADD CONSTRAINT option_event_detector_run_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_event
-    ADD CONSTRAINT option_event_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_event_id_event_contract_id_capture_id_s_key UNIQUE (event_id, event_contract_id, capture_id, strategy_key, strategy_revision_id);
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_event_spot
-    ADD CONSTRAINT option_event_spot_pkey PRIMARY KEY (event_id, observed_at);
-
-ALTER TABLE ONLY analysis.option_feature
-    ADD CONSTRAINT option_feature_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_feature
-    ADD CONSTRAINT option_feature_run_id_snapshot_id_contract_id_feature_versi_key UNIQUE (run_id, snapshot_id, contract_id, feature_version);
-
-ALTER TABLE ONLY analysis.option_gate_result
-    ADD CONSTRAINT option_gate_result_pkey PRIMARY KEY (run_id, instrument_id, gate_code);
-
-ALTER TABLE ONLY analysis.option_history_anomaly
-    ADD CONSTRAINT option_history_anomaly_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_history_canary
-    ADD CONSTRAINT option_history_canary_model_revision_started_at_key UNIQUE (model_revision, started_at);
-
-ALTER TABLE ONLY analysis.option_history_canary
-    ADD CONSTRAINT option_history_canary_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_liquidity_sla
-    ADD CONSTRAINT option_liquidity_sla_pkey PRIMARY KEY (sla_id);
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observatio_event_id_capture_generation_k_key UNIQUE (event_id, capture_generation_key, contract_id, strategy_key, strategy_revision_id);
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_outcome
-    ADD CONSTRAINT option_outcome_pkey PRIMARY KEY (decision_id);
-
-ALTER TABLE ONLY analysis.option_recovery_cohort
-    ADD CONSTRAINT option_recovery_cohort_objective_version_code_version_key UNIQUE (objective_version, code_version);
-
-ALTER TABLE ONLY analysis.option_recovery_cohort
-    ADD CONSTRAINT option_recovery_cohort_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_recovery_event_session_quality
-    ADD CONSTRAINT option_recovery_event_session_quality_event_id_trading_date_key UNIQUE (event_id, trading_date);
-
-ALTER TABLE ONLY analysis.option_recovery_event_session_quality
-    ADD CONSTRAINT option_recovery_event_session_quality_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_recovery_program_session
-    ADD CONSTRAINT option_recovery_program_session_cohort_id_trading_date_key UNIQUE (cohort_id, trading_date);
-
-ALTER TABLE ONLY analysis.option_recovery_program_session
-    ADD CONSTRAINT option_recovery_program_session_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_relative_value
-    ADD CONSTRAINT option_relative_value_analysis_run_id_capture_generation_id_key UNIQUE (analysis_run_id, capture_generation_id, contract_id, model_revision);
-
-ALTER TABLE ONLY analysis.option_relative_value
-    ADD CONSTRAINT option_relative_value_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_relative_value_verification
-    ADD CONSTRAINT option_relative_value_verification_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_surface_shift
-    ADD CONSTRAINT option_surface_shift_current_analysis_run_id_previous_analy_key UNIQUE (current_analysis_run_id, previous_analysis_run_id, feature_version);
-
-ALTER TABLE ONLY analysis.option_surface_shift
-    ADD CONSTRAINT option_surface_shift_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.option_surface_summary
-    ADD CONSTRAINT option_surface_summary_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.phase4_allocation_signing_secret
-    ADD CONSTRAINT phase4_allocation_signing_secret_pkey PRIMARY KEY (singleton);
-
-ALTER TABLE ONLY analysis.portfolio_allocation_item
-    ADD CONSTRAINT portfolio_allocation_item_pkey PRIMARY KEY (allocation_item_id);
-
-ALTER TABLE ONLY analysis.portfolio_allocation_snapshot
-    ADD CONSTRAINT portfolio_allocation_snapshot_pkey PRIMARY KEY (allocation_id);
-
-ALTER TABLE ONLY analysis.portfolio_drift_evidence
-    ADD CONSTRAINT portfolio_drift_evidence_pkey PRIMARY KEY (decision_id);
-
-ALTER TABLE ONLY analysis.probabilistic_portfolio_scenario_artifact
-    ADD CONSTRAINT probabilistic_portfolio_scenario_artifact_pkey PRIMARY KEY (scenario_artifact_id);
-
-ALTER TABLE ONLY analysis.reject_summary
-    ADD CONSTRAINT reject_summary_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.reject_summary
-    ADD CONSTRAINT reject_summary_run_id_strategy_revision_id_instrument_id_ga_key UNIQUE (run_id, strategy_revision_id, instrument_id, gate_code);
-
-ALTER TABLE ONLY analysis.research_evaluator_output
-    ADD CONSTRAINT research_evaluator_output_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.research_evaluator_output
-    ADD CONSTRAINT research_evaluator_output_trial_result_id_evidence_kind_key UNIQUE (trial_result_id, evidence_kind);
-
-ALTER TABLE ONLY analysis.research_evaluator_signing_secret
-    ADD CONSTRAINT research_evaluator_signing_secret_pkey PRIMARY KEY (singleton);
-
-ALTER TABLE ONLY analysis.research_evidence_manifest
-    ADD CONSTRAINT research_evidence_manifest_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.research_evidence_manifest
-    ADD CONSTRAINT research_evidence_manifest_trial_result_id_evidence_kind_key UNIQUE (trial_result_id, evidence_kind);
-
-ALTER TABLE ONLY analysis.research_trial
-    ADD CONSTRAINT research_trial_experiment_family_id_trial_key_key UNIQUE (experiment_family_id, trial_key);
-
-ALTER TABLE ONLY analysis.research_trial
-    ADD CONSTRAINT research_trial_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.run
-    ADD CONSTRAINT run_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.shadow_trade
-    ADD CONSTRAINT shadow_trade_decision_id_key UNIQUE (decision_id);
-
-ALTER TABLE ONLY analysis.shadow_trade
-    ADD CONSTRAINT shadow_trade_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.source_signal
-    ADD CONSTRAINT source_signal_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.source_signal
-    ADD CONSTRAINT source_signal_run_id_content_item_id_instrument_id_signal_t_key UNIQUE (run_id, content_item_id, instrument_id, signal_type);
-
-ALTER TABLE ONLY analysis.strategy_comparison
-    ADD CONSTRAINT strategy_comparison_champion_revision_id_challenger_revisio_key UNIQUE (champion_revision_id, challenger_revision_id, input_cutoff, input_hash);
-
-ALTER TABLE ONLY analysis.strategy_comparison
-    ADD CONSTRAINT strategy_comparison_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.strategy_evaluation
-    ADD CONSTRAINT strategy_evaluation_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.strategy_forecast
-    ADD CONSTRAINT strategy_forecast_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.strategy_manifest
-    ADD CONSTRAINT strategy_manifest_pkey PRIMARY KEY (strategy_revision_id);
-
-ALTER TABLE ONLY analysis.strategy_monitoring_evidence
-    ADD CONSTRAINT strategy_monitoring_evidence_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.strategy_monitoring_evidence
-    ADD CONSTRAINT strategy_monitoring_evidence_strategy_revision_id_evidence__key UNIQUE (strategy_revision_id, evidence_kind, input_cutoff, input_hash);
-
-ALTER TABLE ONLY analysis.strategy_pnl_tape
-    ADD CONSTRAINT strategy_pnl_tape_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.strategy_pnl_tape
-    ADD CONSTRAINT strategy_pnl_tape_strategy_forecast_id_key UNIQUE (strategy_forecast_id);
-
-ALTER TABLE ONLY analysis.strategy_pnl_tape
-    ADD CONSTRAINT strategy_pnl_tape_strategy_revision_id_instrument_id_pnl_da_key UNIQUE (strategy_revision_id, instrument_id, pnl_date, input_hash);
-
-ALTER TABLE ONLY analysis.strategy_revision
-    ADD CONSTRAINT strategy_revision_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.strategy_revision
-    ADD CONSTRAINT strategy_revision_strategy_key_revision_key UNIQUE (strategy_key, revision);
-
-ALTER TABLE ONLY analysis.symbol_decision_outcome
-    ADD CONSTRAINT symbol_decision_outcome_pkey PRIMARY KEY (decision_id);
-
-ALTER TABLE ONLY analysis.symbol_decision
-    ADD CONSTRAINT symbol_decision_pkey PRIMARY KEY (decision_id);
-
-ALTER TABLE ONLY analysis.symbol_feature
-    ADD CONSTRAINT symbol_feature_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.symbol_feature
-    ADD CONSTRAINT symbol_feature_run_id_instrument_id_feature_set_feature_ver_key UNIQUE (run_id, instrument_id, feature_set, feature_version);
-
-ALTER TABLE ONLY analysis.ticker_benchmark_snapshot
-    ADD CONSTRAINT ticker_benchmark_snapshot_benchmark_key_as_of_key UNIQUE (benchmark_key, as_of);
-
-ALTER TABLE ONLY analysis.ticker_benchmark_snapshot
-    ADD CONSTRAINT ticker_benchmark_snapshot_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.ticker_data_request
-    ADD CONSTRAINT ticker_data_request_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.ticker_data_request
-    ADD CONSTRAINT ticker_data_request_ticker_decision_id_field_key UNIQUE (ticker_decision_id, field);
-
-ALTER TABLE ONLY analysis.ticker_decision
-    ADD CONSTRAINT ticker_decision_instrument_id_decision_revision_key UNIQUE (instrument_id, decision_revision);
-
-ALTER TABLE ONLY analysis.ticker_decision
-    ADD CONSTRAINT ticker_decision_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.ticker_input_manifest
-    ADD CONSTRAINT ticker_input_manifest_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.ticker_input_manifest
-    ADD CONSTRAINT ticker_input_manifest_ticker_decision_id_field_source_id_av_key UNIQUE (ticker_decision_id, field, source_id, available_at, revision);
-
-ALTER TABLE ONLY analysis.ticker_outcome
-    ADD CONSTRAINT ticker_outcome_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.ticker_outcome
-    ADD CONSTRAINT ticker_outcome_ticker_decision_id_horizon_horizon_sessions_key UNIQUE (ticker_decision_id, horizon, horizon_sessions);
-
-ALTER TABLE ONLY analysis.trial_result
-    ADD CONSTRAINT trial_result_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.trial_result
-    ADD CONSTRAINT trial_result_research_trial_id_result_kind_result_version_key UNIQUE (research_trial_id, result_kind, result_version);
-
-ALTER TABLE ONLY analysis.trial_universe_manifest
-    ADD CONSTRAINT trial_universe_manifest_pkey PRIMARY KEY (research_trial_id);
-
-ALTER TABLE ONLY analysis.universe_observation
-    ADD CONSTRAINT universe_observation_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.universe_observation
-    ADD CONSTRAINT universe_observation_research_trial_id_cutoff_instrument_id_key UNIQUE (research_trial_id, cutoff, instrument_id);
-
-ALTER TABLE ONLY analysis.validation_dossier
-    ADD CONSTRAINT validation_dossier_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY analysis.validation_dossier
-    ADD CONSTRAINT validation_dossier_strategy_revision_id_key UNIQUE (strategy_revision_id);
-
-ALTER TABLE ONLY analysis.validation_gate_result
-    ADD CONSTRAINT validation_gate_result_dossier_id_gate_code_key UNIQUE (dossier_id, gate_code);
-
-ALTER TABLE ONLY analysis.validation_gate_result
-    ADD CONSTRAINT validation_gate_result_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.alert
-    ADD CONSTRAINT alert_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.catalyst
-    ADD CONSTRAINT catalyst_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.current_publication_item
-    ADD CONSTRAINT current_publication_item_pkey PRIMARY KEY (scope, model_name, stable_key);
-
-ALTER TABLE ONLY app.decision_inbox_item
-    ADD CONSTRAINT decision_inbox_item_dedupe_key_key UNIQUE (dedupe_key);
-
-ALTER TABLE ONLY app.decision_inbox_item
-    ADD CONSTRAINT decision_inbox_item_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.decision_inbox_sync_state
-    ADD CONSTRAINT decision_inbox_sync_state_pkey PRIMARY KEY (state_key);
-
-ALTER TABLE ONLY app.decision_truth
-    ADD CONSTRAINT decision_truth_pkey PRIMARY KEY (symbol, lane);
-
-ALTER TABLE ONLY app.manual_account_snapshot
-    ADD CONSTRAINT manual_account_snapshot_idempotency_key_key UNIQUE (idempotency_key);
-
-ALTER TABLE ONLY app.manual_account_snapshot
-    ADD CONSTRAINT manual_account_snapshot_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.notification_outbox
-    ADD CONSTRAINT notification_outbox_dedupe_key_key UNIQUE (dedupe_key);
-
-ALTER TABLE ONLY app.notification_outbox
-    ADD CONSTRAINT notification_outbox_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.option_history_policy
-    ADD CONSTRAINT option_history_policy_pkey PRIMARY KEY (instrument_id, profile);
-
-ALTER TABLE ONLY app.paper_execution_observation
-    ADD CONSTRAINT paper_execution_observation_pkey PRIMARY KEY (paper_execution_observation_id);
-
-ALTER TABLE ONLY app.paper_order_leg
-    ADD CONSTRAINT paper_order_leg_pkey PRIMARY KEY (paper_order_id, leg_index);
-
-ALTER TABLE ONLY app.paper_order
-    ADD CONSTRAINT paper_order_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.portfolio_position
-    ADD CONSTRAINT portfolio_position_pkey PRIMARY KEY (instrument_id);
-
-ALTER TABLE ONLY app.portfolio_transaction
-    ADD CONSTRAINT portfolio_transaction_idempotency_key_key UNIQUE (idempotency_key);
-
-ALTER TABLE ONLY app.portfolio_transaction
-    ADD CONSTRAINT portfolio_transaction_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.publication_bundle_item
-    ADD CONSTRAINT publication_bundle_item_pkey PRIMARY KEY (bundle_id, model_name, stable_key);
-
-ALTER TABLE ONLY app.publication_bundle
-    ADD CONSTRAINT publication_bundle_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.publication_bundle
-    ADD CONSTRAINT publication_bundle_scope_bundle_hash_key UNIQUE (scope, bundle_hash);
-
-ALTER TABLE ONLY app.publication_item
-    ADD CONSTRAINT publication_item_pkey PRIMARY KEY (publication_id, model_name, stable_key);
-
-ALTER TABLE ONLY app.publication_payload
-    ADD CONSTRAINT publication_payload_pkey PRIMARY KEY (content_hash);
-
-ALTER TABLE ONLY app.publication
-    ADD CONSTRAINT publication_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.research_report
-    ADD CONSTRAINT research_report_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.setting
-    ADD CONSTRAINT setting_pkey PRIMARY KEY (key);
-
-ALTER TABLE ONLY app.thesis_automation_run
-    ADD CONSTRAINT thesis_automation_run_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.thesis_evidence_assessment
-    ADD CONSTRAINT thesis_evidence_assessment_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.thesis_expression
-    ADD CONSTRAINT thesis_expression_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.thesis
-    ADD CONSTRAINT thesis_instrument_id_revision_key UNIQUE (instrument_id, revision);
-
-ALTER TABLE ONLY app.thesis
-    ADD CONSTRAINT thesis_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.thesis_review_event
-    ADD CONSTRAINT thesis_review_event_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.trade_journal
-    ADD CONSTRAINT trade_journal_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY app.paper_order
-    ADD CONSTRAINT uq_app_paper_order_idempotency UNIQUE (idempotency_key);
-
-ALTER TABLE ONLY app.watchlist_item
-    ADD CONSTRAINT watchlist_item_pkey PRIMARY KEY (instrument_id);
-
-ALTER TABLE ONLY catalog.instrument_alias
-    ADD CONSTRAINT instrument_alias_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY catalog.instrument_alias
-    ADD CONSTRAINT instrument_alias_provider_external_symbol_exchange_key UNIQUE (provider, external_symbol, exchange);
-
-ALTER TABLE ONLY catalog.instrument
-    ADD CONSTRAINT instrument_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY catalog.instrument
-    ADD CONSTRAINT instrument_symbol_key UNIQUE (symbol);
-
-ALTER TABLE ONLY catalog.option_contract
-    ADD CONSTRAINT option_contract_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY catalog.option_contract
-    ADD CONSTRAINT uq_option_contract_deliverable UNIQUE (underlying_instrument_id, expiration, strike, option_type, multiplier, deliverable_key);
-
-ALTER TABLE ONLY ingest.payload
-    ADD CONSTRAINT payload_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY ingest.payload
-    ADD CONSTRAINT payload_sha256_key UNIQUE (sha256);
-
-ALTER TABLE ONLY ingest.run
-    ADD CONSTRAINT run_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY ingest.run
-    ADD CONSTRAINT run_source_id_source_run_key_key UNIQUE (source_id, source_run_key);
-
-ALTER TABLE ONLY ingest.source_lifecycle_history
-    ADD CONSTRAINT source_lifecycle_history_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY ingest.source_lifecycle_history
-    ADD CONSTRAINT source_lifecycle_history_source_id_effective_at_enabled_ope_key UNIQUE (source_id, effective_at, enabled, operational_state);
-
-ALTER TABLE ONLY ingest.source
-    ADD CONSTRAINT source_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY ops.job_run
-    ADD CONSTRAINT job_run_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY ops.option_quote_partition_policy
-    ADD CONSTRAINT option_quote_partition_policy_pkey PRIMARY KEY (policy_key);
-
-ALTER TABLE ONLY ops.provider_lease
-    ADD CONSTRAINT provider_lease_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY ops.storage_archive_checkpoint
-    ADD CONSTRAINT storage_archive_checkpoint_pkey PRIMARY KEY (checkpoint_key);
-
-ALTER TABLE ONLY ops.storage_archive_manifest
-    ADD CONSTRAINT storage_archive_manifest_archive_kind_sha256_key UNIQUE (archive_kind, sha256);
-
-ALTER TABLE ONLY ops.storage_archive_manifest
-    ADD CONSTRAINT storage_archive_manifest_nas_uri_key UNIQUE (nas_uri);
-
-ALTER TABLE ONLY ops.storage_archive_manifest
-    ADD CONSTRAINT storage_archive_manifest_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY ops.storage_archive_manifest_reference
-    ADD CONSTRAINT storage_archive_manifest_refe_source_relation_source_row_id_key UNIQUE (source_relation, source_row_id);
-
-ALTER TABLE ONLY ops.storage_archive_manifest_reference
-    ADD CONSTRAINT storage_archive_manifest_reference_pkey PRIMARY KEY (manifest_id, source_relation, source_row_id);
-
-ALTER TABLE ONLY raw.broker_account_snapshot
-    ADD CONSTRAINT broker_account_snapshot_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.broker_account_snapshot
-    ADD CONSTRAINT broker_account_snapshot_source_id_account_key_observed_at_key UNIQUE (source_id, account_key, observed_at);
-
-ALTER TABLE ONLY raw.broker_activity
-    ADD CONSTRAINT broker_activity_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.broker_activity
-    ADD CONSTRAINT broker_activity_source_id_activity_key_activity_type_key UNIQUE (source_id, activity_key, activity_type);
-
-ALTER TABLE ONLY raw.broker_position_snapshot
-    ADD CONSTRAINT broker_position_snapshot_account_snapshot_id_instrument_id_key UNIQUE (account_snapshot_id, instrument_id);
-
-ALTER TABLE ONLY raw.broker_position_snapshot
-    ADD CONSTRAINT broker_position_snapshot_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.content_item_instrument
-    ADD CONSTRAINT content_item_instrument_pkey PRIMARY KEY (content_item_id, instrument_id);
-
-ALTER TABLE ONLY raw.content_item
-    ADD CONSTRAINT content_item_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.content_item
-    ADD CONSTRAINT content_item_source_id_source_key_key UNIQUE (source_id, source_key);
-
-ALTER TABLE ONLY raw.disclosure
-    ADD CONSTRAINT disclosure_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.disclosure
-    ADD CONSTRAINT disclosure_source_id_source_key_key UNIQUE (source_id, source_key);
-
-ALTER TABLE ONLY raw.fundamental_observation
-    ADD CONSTRAINT fundamental_observation_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.market_event
-    ADD CONSTRAINT market_event_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.market_event
-    ADD CONSTRAINT market_event_source_id_source_key_key UNIQUE (source_id, source_key);
-
-ALTER TABLE ONLY raw.market_event_version
-    ADD CONSTRAINT market_event_version_market_event_id_ingest_run_id_key UNIQUE (market_event_id, ingest_run_id);
-
-ALTER TABLE ONLY raw.market_event_version
-    ADD CONSTRAINT market_event_version_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.market_observation
-    ADD CONSTRAINT market_observation_pkey PRIMARY KEY (observation_id);
-
-ALTER TABLE ONLY raw.option_capture_generation
-    ADD CONSTRAINT option_capture_generation_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.option_capture_generation
-    ADD CONSTRAINT option_capture_generation_snapshot_id_generation_key UNIQUE (snapshot_id, generation);
-
-ALTER TABLE ONLY raw.option_capture_generation
-    ADD CONSTRAINT option_capture_generation_snapshot_id_ingest_run_id_key UNIQUE (snapshot_id, ingest_run_id);
-
-ALTER TABLE ONLY raw.option_quote
-    ADD CONSTRAINT option_quote_snapshot_id_contract_id_observed_at_key UNIQUE (snapshot_id, contract_id, observed_at);
-
-ALTER TABLE ONLY raw.option_quote_default
-    ADD CONSTRAINT option_quote_default_snapshot_id_contract_id_observed_at_key UNIQUE (snapshot_id, contract_id, observed_at);
-
-ALTER TABLE ONLY raw.option_snapshot
-    ADD CONSTRAINT option_snapshot_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.option_snapshot
-    ADD CONSTRAINT option_snapshot_source_id_observed_at_universe_key UNIQUE (source_id, observed_at, universe);
-
-ALTER TABLE ONLY raw.price_bar_confirmation
-    ADD CONSTRAINT price_bar_confirmation_pkey PRIMARY KEY (fact_id, fact_available_at, ingest_run_id);
-
-ALTER TABLE ONLY raw.price_bar_fact_availability
-    ADD CONSTRAINT price_bar_fact_availability_pkey PRIMARY KEY (fact_id, fact_available_at);
-
-ALTER TABLE ONLY raw.price_bar
-    ADD CONSTRAINT price_bar_instrument_id_source_id_interval_observed_at_key UNIQUE (instrument_id, source_id, "interval", observed_at);
-
-ALTER TABLE ONLY raw.price_bar
-    ADD CONSTRAINT price_bar_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY raw.quote_confirmation
-    ADD CONSTRAINT quote_confirmation_pkey PRIMARY KEY (fact_id, fact_available_at, ingest_run_id);
-
-ALTER TABLE ONLY raw.quote_fact_availability
-    ADD CONSTRAINT quote_fact_availability_pkey PRIMARY KEY (fact_id, fact_available_at);
-
-ALTER TABLE ONLY raw.quote
-    ADD CONSTRAINT quote_instrument_id_source_id_observed_at_key UNIQUE (instrument_id, source_id, observed_at);
-
-ALTER TABLE ONLY raw.quote
-    ADD CONSTRAINT quote_pkey PRIMARY KEY (id);
+ SELECT id,
+    instrument_id,
+    source_id,
+    ingest_run_id,
+    payload_id,
+    observed_at,
+    price,
+    change_abs,
+    change_pct,
+    currency,
+    available_at
+   FROM raw.confirmed_quote_at(now(), NULL::bigint[]) confirmed_quote_at(id, instrument_id, source_id, ingest_run_id, payload_id, observed_at, price, change_abs, change_pct, currency, available_at);
 
 CREATE INDEX ix_agent_run_experiment_arm_started ON analysis.agent_run USING btree (experiment_id, arm, started_at DESC) WHERE (experiment_id IS NOT NULL);
 
@@ -7665,11 +7547,11 @@ CREATE INDEX ix_raw_market_event_version_point_in_time ON raw.market_event_versi
 
 CREATE INDEX ix_raw_option_capture_generation_snapshot_state ON raw.option_capture_generation USING btree (snapshot_id, capture_state, generation DESC);
 
-CREATE INDEX ix_raw_option_quote_contract ON ONLY raw.option_quote USING btree (contract_id, observed_at DESC) INCLUDE (mid, provider_iv, underlying_price);
+CREATE INDEX ix_raw_option_quote_contract ON raw.option_quote USING btree (contract_id, observed_at DESC) INCLUDE (mid, provider_iv, underlying_price);
 
-CREATE INDEX ix_raw_option_quote_generation_group ON ONLY raw.option_quote USING btree (capture_generation_id, capture_group_key, contract_id);
+CREATE INDEX ix_raw_option_quote_generation_group ON raw.option_quote USING btree (capture_generation_id, capture_group_key, contract_id);
 
-CREATE INDEX ix_raw_option_quote_history_chain ON ONLY raw.option_quote USING btree (snapshot_id, contract_id) INCLUDE (provider_iv, bid, ask, volume, open_interest);
+CREATE INDEX ix_raw_option_quote_history_chain ON raw.option_quote USING btree (snapshot_id, contract_id) INCLUDE (provider_iv, bid, ask, volume, open_interest);
 
 CREATE INDEX ix_raw_option_snapshot_history_lookup ON raw.option_snapshot USING btree (history_symbol, collection_profile, capture_state, slot_at DESC);
 
@@ -7687,29 +7569,11 @@ CREATE INDEX ix_raw_quote_lookup ON raw.quote USING btree (instrument_id, observ
 
 CREATE INDEX ix_raw_quote_panel_latest ON raw.quote USING btree (instrument_id, observed_at DESC, available_at DESC) INCLUDE (price, change_pct, change_abs, source_id);
 
-CREATE INDEX option_quote_default_capture_generation_id_capture_group_ke_idx ON raw.option_quote_default USING btree (capture_generation_id, capture_group_key, contract_id);
-
-CREATE UNIQUE INDEX ux_raw_option_quote_generation_contract_observed ON ONLY raw.option_quote USING btree (capture_generation_id, contract_id, observed_at) WHERE (capture_generation_id IS NOT NULL);
-
-CREATE UNIQUE INDEX option_quote_default_capture_generation_id_contract_id_obse_idx ON raw.option_quote_default USING btree (capture_generation_id, contract_id, observed_at) WHERE (capture_generation_id IS NOT NULL);
-
-CREATE INDEX option_quote_default_contract_id_observed_at_mid_provider_i_idx ON raw.option_quote_default USING btree (contract_id, observed_at DESC) INCLUDE (mid, provider_iv, underlying_price);
-
-CREATE INDEX option_quote_default_snapshot_id_contract_id_provider_iv_bi_idx ON raw.option_quote_default USING btree (snapshot_id, contract_id) INCLUDE (provider_iv, bid, ask, volume, open_interest);
+CREATE UNIQUE INDEX ux_raw_option_quote_generation_contract_observed ON raw.option_quote USING btree (capture_generation_id, contract_id, observed_at) WHERE (capture_generation_id IS NOT NULL);
 
 CREATE UNIQUE INDEX ux_raw_fundamental_observation_period ON raw.fundamental_observation USING btree (instrument_id, source_id, metric_set, period_end, observed_at, COALESCE(period_start, '0001-01-01'::date));
 
 CREATE UNIQUE INDEX ux_raw_option_snapshot_history_slot ON raw.option_snapshot USING btree (source_id, collection_profile, history_symbol, slot_at) WHERE (collection_profile = 'history_full'::text);
-
-ALTER INDEX raw.ix_raw_option_quote_generation_group ATTACH PARTITION raw.option_quote_default_capture_generation_id_capture_group_ke_idx;
-
-ALTER INDEX raw.ux_raw_option_quote_generation_contract_observed ATTACH PARTITION raw.option_quote_default_capture_generation_id_contract_id_obse_idx;
-
-ALTER INDEX raw.ix_raw_option_quote_contract ATTACH PARTITION raw.option_quote_default_contract_id_observed_at_mid_provider_i_idx;
-
-ALTER INDEX raw.option_quote_snapshot_id_contract_id_observed_at_key ATTACH PARTITION raw.option_quote_default_snapshot_id_contract_id_observed_at_key;
-
-ALTER INDEX raw.ix_raw_option_quote_history_chain ATTACH PARTITION raw.option_quote_default_snapshot_id_contract_id_provider_iv_bi_idx;
 
 CREATE TRIGGER agent_task_payload_availability BEFORE INSERT OR UPDATE ON analysis.agent_task FOR EACH ROW EXECUTE FUNCTION analysis.stamp_agent_task_payload_availability();
 
@@ -7865,819 +7729,65 @@ CREATE TRIGGER price_bar_confirmation_projection AFTER INSERT OR UPDATE OF fact_
 
 CREATE TRIGGER quote_confirmation_projection AFTER INSERT OR UPDATE OF fact_id, fact_available_at, ingest_run_id ON raw.quote_confirmation FOR EACH ROW EXECUTE FUNCTION raw.project_confirmation_staging();
 
-ALTER TABLE ONLY analysis.agent_run
-    ADD CONSTRAINT agent_run_experiment_id_fkey FOREIGN KEY (experiment_id) REFERENCES analysis.agent_experiment(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.agent_task
-    ADD CONSTRAINT agent_task_agent_run_id_fkey FOREIGN KEY (agent_run_id) REFERENCES analysis.agent_run(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.agent_task
-    ADD CONSTRAINT agent_task_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id);
-
-ALTER TABLE ONLY analysis.agent_task
-    ADD CONSTRAINT agent_task_experiment_id_fkey FOREIGN KEY (experiment_id) REFERENCES analysis.agent_experiment(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.agent_task
-    ADD CONSTRAINT agent_task_paired_task_id_fkey FOREIGN KEY (paired_task_id) REFERENCES analysis.agent_task(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.book_attribution
-    ADD CONSTRAINT book_attribution_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id);
-
-ALTER TABLE ONLY analysis.book_attribution
-    ADD CONSTRAINT book_attribution_allocation_item_id_fkey FOREIGN KEY (allocation_item_id) REFERENCES analysis.portfolio_allocation_item(allocation_item_id);
-
-ALTER TABLE ONLY analysis.book_attribution
-    ADD CONSTRAINT book_attribution_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id);
-
-ALTER TABLE ONLY analysis.book_attribution
-    ADD CONSTRAINT book_attribution_paper_execution_observation_id_fkey FOREIGN KEY (paper_execution_observation_id) REFERENCES app.paper_execution_observation(paper_execution_observation_id);
-
-ALTER TABLE ONLY analysis.book_attribution
-    ADD CONSTRAINT book_attribution_result_id_fkey FOREIGN KEY (result_id) REFERENCES analysis.trial_result(id);
-
-ALTER TABLE ONLY analysis.book_attribution
-    ADD CONSTRAINT book_attribution_strategy_forecast_id_fkey FOREIGN KEY (strategy_forecast_id) REFERENCES analysis.strategy_forecast(id);
-
-ALTER TABLE ONLY analysis.book_attribution
-    ADD CONSTRAINT book_attribution_trial_id_fkey FOREIGN KEY (trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.decision_evidence
-    ADD CONSTRAINT decision_evidence_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.decision
-    ADD CONSTRAINT decision_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY analysis.decision
-    ADD CONSTRAINT decision_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.decision
-    ADD CONSTRAINT decision_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.event_scout_event
-    ADD CONSTRAINT event_scout_event_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.event_decision_packet(event_id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.event_study_feature
-    ADD CONSTRAINT event_study_feature_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.event_study_feature
-    ADD CONSTRAINT event_study_feature_market_event_id_fkey FOREIGN KEY (market_event_id) REFERENCES raw.market_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.event_study_feature
-    ADD CONSTRAINT event_study_feature_market_event_version_id_fkey FOREIGN KEY (market_event_version_id) REFERENCES raw.market_event_version(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.event_study_feature
-    ADD CONSTRAINT event_study_feature_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.execution_model_snapshot
-    ADD CONSTRAINT execution_model_snapshot_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id);
-
-ALTER TABLE ONLY analysis.experiment_family
-    ADD CONSTRAINT experiment_family_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id);
-
-ALTER TABLE ONLY analysis.experiment_manifest
-    ADD CONSTRAINT experiment_manifest_experiment_family_id_fkey FOREIGN KEY (experiment_family_id) REFERENCES analysis.experiment_family(id);
-
-ALTER TABLE ONLY analysis.option_outcome
-    ADD CONSTRAINT fk_option_outcome_shadow_trade FOREIGN KEY (shadow_trade_id) REFERENCES analysis.shadow_trade(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_decision
-    ADD CONSTRAINT option_decision_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id);
-
-ALTER TABLE ONLY analysis.option_decision
-    ADD CONSTRAINT option_decision_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_decision
-    ADD CONSTRAINT option_decision_primary_decision_id_fkey FOREIGN KEY (primary_decision_id) REFERENCES analysis.decision(id);
-
-ALTER TABLE ONLY analysis.option_decision
-    ADD CONSTRAINT option_decision_relative_value_id_fkey FOREIGN KEY (relative_value_id) REFERENCES analysis.option_relative_value(id);
-
-ALTER TABLE ONLY analysis.option_decision
-    ADD CONSTRAINT option_decision_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id);
-
-ALTER TABLE ONLY analysis.option_decision
-    ADD CONSTRAINT option_decision_thesis_id_fkey FOREIGN KEY (thesis_id) REFERENCES app.thesis(id);
-
-ALTER TABLE ONLY analysis.option_discovery_candidate
-    ADD CONSTRAINT option_discovery_candidate_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY analysis.option_discovery_candidate
-    ADD CONSTRAINT option_discovery_candidate_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.option_discovery_run(run_id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_discovery_run
-    ADD CONSTRAINT option_discovery_run_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_event_agent_batch
-    ADD CONSTRAINT option_event_agent_batch_agent_run_id_fkey FOREIGN KEY (agent_run_id) REFERENCES analysis.agent_run(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_agent_batch
-    ADD CONSTRAINT option_event_agent_batch_capture_id_fkey FOREIGN KEY (capture_id) REFERENCES analysis.option_event_capture(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_agent_batch
-    ADD CONSTRAINT option_event_agent_batch_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_agent_batch
-    ADD CONSTRAINT option_event_agent_batch_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_event_agent_batch
-    ADD CONSTRAINT option_event_agent_batch_experiment_id_fkey FOREIGN KEY (experiment_id) REFERENCES analysis.agent_experiment(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_agent_batch
-    ADD CONSTRAINT option_event_agent_batch_paired_task_id_fkey FOREIGN KEY (paired_task_id) REFERENCES analysis.agent_task(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_capture
-    ADD CONSTRAINT option_event_capture_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_capture
-    ADD CONSTRAINT option_event_capture_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_event_capture
-    ADD CONSTRAINT option_event_capture_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event
-    ADD CONSTRAINT option_event_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_contract
-    ADD CONSTRAINT option_event_contract_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_contract
-    ADD CONSTRAINT option_event_contract_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_event_contract
-    ADD CONSTRAINT option_event_contract_initial_capture_generation_id_fkey FOREIGN KEY (initial_capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_contract
-    ADD CONSTRAINT option_event_contract_replaces_contract_id_fkey FOREIGN KEY (replaces_contract_id) REFERENCES analysis.option_event_contract(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_detector_run
-    ADD CONSTRAINT option_event_detector_run_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_detector_run
-    ADD CONSTRAINT option_event_detector_run_provider_run_id_fkey FOREIGN KEY (provider_run_id) REFERENCES ingest.run(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event
-    ADD CONSTRAINT option_event_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_capture_id_fkey FOREIGN KEY (capture_id) REFERENCES analysis.option_event_capture(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_event_contract_id_fkey FOREIGN KEY (event_contract_id) REFERENCES analysis.option_event_contract(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_signal
-    ADD CONSTRAINT option_event_signal_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_event_spot
-    ADD CONSTRAINT option_event_spot_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_feature
-    ADD CONSTRAINT option_feature_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id);
-
-ALTER TABLE ONLY analysis.option_feature
-    ADD CONSTRAINT option_feature_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_feature
-    ADD CONSTRAINT option_feature_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id);
-
-ALTER TABLE ONLY analysis.option_gate_result
-    ADD CONSTRAINT option_gate_result_run_id_instrument_id_fkey FOREIGN KEY (run_id, instrument_id) REFERENCES analysis.option_discovery_candidate(run_id, instrument_id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_history_anomaly
-    ADD CONSTRAINT option_history_anomaly_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id);
-
-ALTER TABLE ONLY analysis.option_history_anomaly
-    ADD CONSTRAINT option_history_anomaly_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_liquidity_sla
-    ADD CONSTRAINT option_liquidity_sla_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY analysis.option_liquidity_sla
-    ADD CONSTRAINT option_liquidity_sla_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
-
-ALTER TABLE ONLY analysis.option_liquidity_sla
-    ADD CONSTRAINT option_liquidity_sla_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_capture_id_fkey FOREIGN KEY (capture_id) REFERENCES analysis.option_event_capture(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_event_contract_id_fkey FOREIGN KEY (event_contract_id) REFERENCES analysis.option_event_contract(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_paper_order_id_fkey FOREIGN KEY (paper_order_id) REFERENCES app.paper_order(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_signal_id_fkey FOREIGN KEY (signal_id) REFERENCES analysis.option_event_signal(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_opportunity_observation
-    ADD CONSTRAINT option_opportunity_observation_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY analysis.option_outcome
-    ADD CONSTRAINT option_outcome_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_recovery_event_session_quality
-    ADD CONSTRAINT option_recovery_event_session_quality_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_recovery_event_session_quality
-    ADD CONSTRAINT option_recovery_event_session_quality_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.option_recovery_program_session
-    ADD CONSTRAINT option_recovery_program_session_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_relative_value
-    ADD CONSTRAINT option_relative_value_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES analysis.run(id) ON DELETE CASCADE NOT VALID;
-
-ALTER TABLE ONLY analysis.option_relative_value
-    ADD CONSTRAINT option_relative_value_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_relative_value
-    ADD CONSTRAINT option_relative_value_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id);
-
-ALTER TABLE ONLY analysis.option_relative_value_verification
-    ADD CONSTRAINT option_relative_value_verification_relative_value_id_fkey FOREIGN KEY (relative_value_id) REFERENCES analysis.option_relative_value(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_surface_shift
-    ADD CONSTRAINT option_surface_shift_current_analysis_run_id_fkey FOREIGN KEY (current_analysis_run_id) REFERENCES analysis.run(id) ON DELETE CASCADE NOT VALID;
-
-ALTER TABLE ONLY analysis.option_surface_shift
-    ADD CONSTRAINT option_surface_shift_current_capture_generation_id_fkey FOREIGN KEY (current_capture_generation_id) REFERENCES raw.option_capture_generation(id);
-
-ALTER TABLE ONLY analysis.option_surface_shift
-    ADD CONSTRAINT option_surface_shift_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.option_surface_shift
-    ADD CONSTRAINT option_surface_shift_previous_analysis_run_id_fkey FOREIGN KEY (previous_analysis_run_id) REFERENCES analysis.run(id) ON DELETE CASCADE NOT VALID;
-
-ALTER TABLE ONLY analysis.option_surface_shift
-    ADD CONSTRAINT option_surface_shift_previous_capture_generation_id_fkey FOREIGN KEY (previous_capture_generation_id) REFERENCES raw.option_capture_generation(id);
-
-ALTER TABLE ONLY analysis.option_surface_summary
-    ADD CONSTRAINT option_surface_summary_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES analysis.run(id) ON DELETE CASCADE NOT VALID;
-
-ALTER TABLE ONLY analysis.option_surface_summary
-    ADD CONSTRAINT option_surface_summary_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id);
-
-ALTER TABLE ONLY analysis.option_surface_summary
-    ADD CONSTRAINT option_surface_summary_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.portfolio_allocation_item
-    ADD CONSTRAINT portfolio_allocation_item_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id);
-
-ALTER TABLE ONLY analysis.portfolio_allocation_item
-    ADD CONSTRAINT portfolio_allocation_item_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id);
-
-ALTER TABLE ONLY analysis.portfolio_allocation_item
-    ADD CONSTRAINT portfolio_allocation_item_strategy_forecast_id_fkey FOREIGN KEY (strategy_forecast_id) REFERENCES analysis.strategy_forecast(id);
-
-ALTER TABLE ONLY analysis.portfolio_drift_evidence
-    ADD CONSTRAINT portfolio_drift_evidence_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id);
-
-ALTER TABLE ONLY analysis.portfolio_drift_evidence
-    ADD CONSTRAINT portfolio_drift_evidence_allocation_item_id_fkey FOREIGN KEY (allocation_item_id) REFERENCES analysis.portfolio_allocation_item(allocation_item_id);
-
-ALTER TABLE ONLY analysis.probabilistic_portfolio_scenario_artifact
-    ADD CONSTRAINT probabilistic_portfolio_scenario_artifact_allocation_id_fkey FOREIGN KEY (allocation_id) REFERENCES analysis.portfolio_allocation_snapshot(allocation_id);
-
-ALTER TABLE ONLY analysis.reject_summary
-    ADD CONSTRAINT reject_summary_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY analysis.reject_summary
-    ADD CONSTRAINT reject_summary_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.reject_summary
-    ADD CONSTRAINT reject_summary_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.research_evaluator_output
-    ADD CONSTRAINT research_evaluator_output_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES analysis.run(id);
-
-ALTER TABLE ONLY analysis.research_evaluator_output
-    ADD CONSTRAINT research_evaluator_output_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.research_evaluator_output
-    ADD CONSTRAINT research_evaluator_output_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id);
-
-ALTER TABLE ONLY analysis.research_evidence_manifest
-    ADD CONSTRAINT research_evidence_manifest_evaluator_output_id_fkey FOREIGN KEY (evaluator_output_id) REFERENCES analysis.research_evaluator_output(id);
-
-ALTER TABLE ONLY analysis.research_evidence_manifest
-    ADD CONSTRAINT research_evidence_manifest_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.research_evidence_manifest
-    ADD CONSTRAINT research_evidence_manifest_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id);
-
-ALTER TABLE ONLY analysis.research_trial
-    ADD CONSTRAINT research_trial_experiment_family_id_fkey FOREIGN KEY (experiment_family_id) REFERENCES analysis.experiment_family(id);
-
-ALTER TABLE ONLY analysis.run
-    ADD CONSTRAINT run_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.shadow_trade
-    ADD CONSTRAINT shadow_trade_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id);
-
-ALTER TABLE ONLY analysis.shadow_trade
-    ADD CONSTRAINT shadow_trade_entry_cohort_id_fkey FOREIGN KEY (entry_cohort_id) REFERENCES raw.option_capture_generation(id);
-
-ALTER TABLE ONLY analysis.source_signal
-    ADD CONSTRAINT source_signal_content_item_id_fkey FOREIGN KEY (content_item_id) REFERENCES raw.content_item(id);
-
-ALTER TABLE ONLY analysis.source_signal
-    ADD CONSTRAINT source_signal_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY analysis.source_signal
-    ADD CONSTRAINT source_signal_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.strategy_comparison
-    ADD CONSTRAINT strategy_comparison_challenger_result_id_fkey FOREIGN KEY (challenger_result_id) REFERENCES analysis.trial_result(id);
-
-ALTER TABLE ONLY analysis.strategy_comparison
-    ADD CONSTRAINT strategy_comparison_challenger_revision_id_fkey FOREIGN KEY (challenger_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.strategy_comparison
-    ADD CONSTRAINT strategy_comparison_challenger_trial_id_fkey FOREIGN KEY (challenger_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.strategy_comparison
-    ADD CONSTRAINT strategy_comparison_champion_result_id_fkey FOREIGN KEY (champion_result_id) REFERENCES analysis.trial_result(id);
-
-ALTER TABLE ONLY analysis.strategy_comparison
-    ADD CONSTRAINT strategy_comparison_champion_revision_id_fkey FOREIGN KEY (champion_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.strategy_comparison
-    ADD CONSTRAINT strategy_comparison_champion_trial_id_fkey FOREIGN KEY (champion_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.strategy_evaluation
-    ADD CONSTRAINT strategy_evaluation_experiment_family_id_fkey FOREIGN KEY (experiment_family_id) REFERENCES analysis.experiment_family(id);
-
-ALTER TABLE ONLY analysis.strategy_evaluation
-    ADD CONSTRAINT strategy_evaluation_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id);
-
-ALTER TABLE ONLY analysis.strategy_evaluation
-    ADD CONSTRAINT strategy_evaluation_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.strategy_evaluation
-    ADD CONSTRAINT strategy_evaluation_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.strategy_evaluation
-    ADD CONSTRAINT strategy_evaluation_validation_dossier_id_fkey FOREIGN KEY (validation_dossier_id) REFERENCES analysis.validation_dossier(id);
-
-ALTER TABLE ONLY analysis.strategy_forecast
-    ADD CONSTRAINT strategy_forecast_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY analysis.strategy_forecast
-    ADD CONSTRAINT strategy_forecast_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.strategy_forecast
-    ADD CONSTRAINT strategy_forecast_strategy_evaluation_id_fkey FOREIGN KEY (strategy_evaluation_id) REFERENCES analysis.strategy_evaluation(id);
-
-ALTER TABLE ONLY analysis.strategy_forecast
-    ADD CONSTRAINT strategy_forecast_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.strategy_forecast
-    ADD CONSTRAINT strategy_forecast_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id);
-
-ALTER TABLE ONLY analysis.strategy_manifest
-    ADD CONSTRAINT strategy_manifest_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.strategy_monitoring_evidence
-    ADD CONSTRAINT strategy_monitoring_evidence_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.strategy_monitoring_evidence
-    ADD CONSTRAINT strategy_monitoring_evidence_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.strategy_monitoring_evidence
-    ADD CONSTRAINT strategy_monitoring_evidence_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id);
-
-ALTER TABLE ONLY analysis.strategy_pnl_tape
-    ADD CONSTRAINT strategy_pnl_tape_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY analysis.strategy_pnl_tape
-    ADD CONSTRAINT strategy_pnl_tape_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.strategy_pnl_tape
-    ADD CONSTRAINT strategy_pnl_tape_strategy_forecast_id_fkey FOREIGN KEY (strategy_forecast_id) REFERENCES analysis.strategy_forecast(id);
-
-ALTER TABLE ONLY analysis.strategy_pnl_tape
-    ADD CONSTRAINT strategy_pnl_tape_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.strategy_pnl_tape
-    ADD CONSTRAINT strategy_pnl_tape_trial_result_id_fkey FOREIGN KEY (trial_result_id) REFERENCES analysis.trial_result(id);
-
-ALTER TABLE ONLY analysis.strategy_revision
-    ADD CONSTRAINT strategy_revision_experiment_family_id_fkey FOREIGN KEY (experiment_family_id) REFERENCES analysis.experiment_family(id);
-
-ALTER TABLE ONLY analysis.strategy_revision
-    ADD CONSTRAINT strategy_revision_hypothesis_id_fkey FOREIGN KEY (hypothesis_id) REFERENCES analysis.hypothesis(id);
-
-ALTER TABLE ONLY analysis.strategy_revision
-    ADD CONSTRAINT strategy_revision_supersedes_id_fkey FOREIGN KEY (supersedes_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.symbol_decision
-    ADD CONSTRAINT symbol_decision_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.symbol_decision_outcome
-    ADD CONSTRAINT symbol_decision_outcome_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.symbol_decision_outcome
-    ADD CONSTRAINT symbol_decision_outcome_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.symbol_feature
-    ADD CONSTRAINT symbol_feature_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY analysis.symbol_feature
-    ADD CONSTRAINT symbol_feature_run_id_fkey FOREIGN KEY (run_id) REFERENCES analysis.run(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.ticker_data_request
-    ADD CONSTRAINT ticker_data_request_ticker_decision_id_fkey FOREIGN KEY (ticker_decision_id) REFERENCES analysis.ticker_decision(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.ticker_decision
-    ADD CONSTRAINT ticker_decision_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.ticker_decision
-    ADD CONSTRAINT ticker_decision_market_state_publication_id_fkey FOREIGN KEY (market_state_publication_id) REFERENCES app.publication(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.ticker_input_manifest
-    ADD CONSTRAINT ticker_input_manifest_ticker_decision_id_fkey FOREIGN KEY (ticker_decision_id) REFERENCES analysis.ticker_decision(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY analysis.ticker_outcome
-    ADD CONSTRAINT ticker_outcome_ticker_decision_id_fkey FOREIGN KEY (ticker_decision_id) REFERENCES analysis.ticker_decision(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY analysis.trial_result
-    ADD CONSTRAINT trial_result_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.trial_universe_manifest
-    ADD CONSTRAINT trial_universe_manifest_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.universe_observation
-    ADD CONSTRAINT universe_observation_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY analysis.universe_observation
-    ADD CONSTRAINT universe_observation_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.validation_dossier
-    ADD CONSTRAINT validation_dossier_research_trial_id_fkey FOREIGN KEY (research_trial_id) REFERENCES analysis.research_trial(id);
-
-ALTER TABLE ONLY analysis.validation_dossier
-    ADD CONSTRAINT validation_dossier_strategy_revision_id_fkey FOREIGN KEY (strategy_revision_id) REFERENCES analysis.strategy_revision(id);
-
-ALTER TABLE ONLY analysis.validation_gate_result
-    ADD CONSTRAINT validation_gate_result_dossier_id_fkey FOREIGN KEY (dossier_id) REFERENCES analysis.validation_dossier(id);
-
-ALTER TABLE ONLY app.alert
-    ADD CONSTRAINT alert_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id);
-
-ALTER TABLE ONLY app.alert
-    ADD CONSTRAINT alert_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.catalyst
-    ADD CONSTRAINT catalyst_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.catalyst
-    ADD CONSTRAINT catalyst_market_event_id_fkey FOREIGN KEY (market_event_id) REFERENCES raw.market_event(id);
-
-ALTER TABLE ONLY app.current_publication_item
-    ADD CONSTRAINT current_publication_item_content_hash_fkey FOREIGN KEY (content_hash) REFERENCES app.publication_payload(content_hash) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY app.current_publication_item
-    ADD CONSTRAINT current_publication_item_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.current_publication_item
-    ADD CONSTRAINT current_publication_item_publication_id_fkey FOREIGN KEY (publication_id) REFERENCES app.publication(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY app.decision_inbox_item
-    ADD CONSTRAINT decision_inbox_item_paper_order_id_fkey FOREIGN KEY (paper_order_id) REFERENCES app.paper_order(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY app.decision_truth
-    ADD CONSTRAINT decision_truth_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.event_decision_packet(event_id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY app.catalyst
-    ADD CONSTRAINT fk_app_catalyst_supersedes FOREIGN KEY (supersedes_id) REFERENCES app.catalyst(id);
-
-ALTER TABLE ONLY app.option_history_policy
-    ADD CONSTRAINT fk_option_history_policy_event FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY app.notification_outbox
-    ADD CONSTRAINT notification_outbox_inbox_item_id_fkey FOREIGN KEY (inbox_item_id) REFERENCES app.decision_inbox_item(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY app.option_history_policy
-    ADD CONSTRAINT option_history_policy_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY app.paper_execution_observation
-    ADD CONSTRAINT paper_execution_observation_allocation_item_id_fkey FOREIGN KEY (allocation_item_id) REFERENCES analysis.portfolio_allocation_item(allocation_item_id);
-
-ALTER TABLE ONLY app.paper_execution_observation
-    ADD CONSTRAINT paper_execution_observation_paper_order_id_fkey FOREIGN KEY (paper_order_id) REFERENCES app.paper_order(id);
-
-ALTER TABLE ONLY app.paper_order
-    ADD CONSTRAINT paper_order_cohort_id_fkey FOREIGN KEY (cohort_id) REFERENCES analysis.option_recovery_cohort(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY app.paper_order
-    ADD CONSTRAINT paper_order_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id);
-
-ALTER TABLE ONLY app.paper_order
-    ADD CONSTRAINT paper_order_event_id_fkey FOREIGN KEY (event_id) REFERENCES analysis.option_event(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY app.paper_order
-    ADD CONSTRAINT paper_order_event_signal_id_fkey FOREIGN KEY (event_signal_id) REFERENCES analysis.option_event_signal(id) ON DELETE SET NULL;
-
-ALTER TABLE ONLY app.paper_order
-    ADD CONSTRAINT paper_order_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.paper_order_leg
-    ADD CONSTRAINT paper_order_leg_paper_order_id_fkey FOREIGN KEY (paper_order_id) REFERENCES app.paper_order(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY app.paper_order
-    ADD CONSTRAINT paper_order_ticker_decision_id_fkey FOREIGN KEY (ticker_decision_id) REFERENCES analysis.ticker_decision(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY app.portfolio_position
-    ADD CONSTRAINT portfolio_position_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.portfolio_transaction
-    ADD CONSTRAINT portfolio_transaction_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.portfolio_transaction
-    ADD CONSTRAINT portfolio_transaction_reverses_transaction_id_fkey FOREIGN KEY (reverses_transaction_id) REFERENCES app.portfolio_transaction(id);
-
-ALTER TABLE ONLY app.publication
-    ADD CONSTRAINT publication_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES analysis.run(id);
-
-ALTER TABLE ONLY app.publication
-    ADD CONSTRAINT publication_bundle_id_fkey FOREIGN KEY (bundle_id) REFERENCES app.publication_bundle(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY app.publication_bundle_item
-    ADD CONSTRAINT publication_bundle_item_bundle_id_fkey FOREIGN KEY (bundle_id) REFERENCES app.publication_bundle(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY app.publication_bundle_item
-    ADD CONSTRAINT publication_bundle_item_content_hash_fkey FOREIGN KEY (content_hash) REFERENCES app.publication_payload(content_hash) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY app.publication_bundle_item
-    ADD CONSTRAINT publication_bundle_item_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.publication_item
-    ADD CONSTRAINT publication_item_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.publication_item
-    ADD CONSTRAINT publication_item_publication_id_fkey FOREIGN KEY (publication_id) REFERENCES app.publication(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY app.research_report
-    ADD CONSTRAINT research_report_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.thesis
-    ADD CONSTRAINT thesis_automation_run_id_fkey FOREIGN KEY (automation_run_id) REFERENCES app.thesis_automation_run(id);
-
-ALTER TABLE ONLY app.thesis_automation_run
-    ADD CONSTRAINT thesis_automation_run_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.thesis_evidence_assessment
-    ADD CONSTRAINT thesis_evidence_assessment_automation_run_id_fkey FOREIGN KEY (automation_run_id) REFERENCES app.thesis_automation_run(id);
-
-ALTER TABLE ONLY app.thesis_evidence_assessment
-    ADD CONSTRAINT thesis_evidence_assessment_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.thesis_evidence_assessment
-    ADD CONSTRAINT thesis_evidence_assessment_thesis_revision_id_fkey FOREIGN KEY (thesis_revision_id) REFERENCES app.thesis(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY app.thesis_expression
-    ADD CONSTRAINT thesis_expression_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.thesis_expression
-    ADD CONSTRAINT thesis_expression_thesis_revision_id_fkey FOREIGN KEY (thesis_revision_id) REFERENCES app.thesis(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY app.thesis
-    ADD CONSTRAINT thesis_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.thesis_review_event
-    ADD CONSTRAINT thesis_review_event_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.thesis_review_event
-    ADD CONSTRAINT thesis_review_event_thesis_revision_id_fkey FOREIGN KEY (thesis_revision_id) REFERENCES app.thesis(id);
-
-ALTER TABLE ONLY app.thesis
-    ADD CONSTRAINT thesis_source_agent_task_id_fkey FOREIGN KEY (source_agent_task_id) REFERENCES analysis.agent_task(id);
-
-ALTER TABLE ONLY app.thesis
-    ADD CONSTRAINT thesis_superseded_revision_id_fkey FOREIGN KEY (superseded_revision_id) REFERENCES app.thesis(id);
-
-ALTER TABLE ONLY app.trade_journal
-    ADD CONSTRAINT trade_journal_decision_id_fkey FOREIGN KEY (decision_id) REFERENCES analysis.decision(id);
-
-ALTER TABLE ONLY app.trade_journal
-    ADD CONSTRAINT trade_journal_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY app.watchlist_item
-    ADD CONSTRAINT watchlist_item_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY catalog.instrument_alias
-    ADD CONSTRAINT instrument_alias_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY catalog.option_contract
-    ADD CONSTRAINT option_contract_underlying_instrument_id_fkey FOREIGN KEY (underlying_instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY ingest.payload
-    ADD CONSTRAINT payload_run_id_fkey FOREIGN KEY (run_id) REFERENCES ingest.run(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY ingest.run
-    ADD CONSTRAINT run_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY ingest.source_lifecycle_history
-    ADD CONSTRAINT source_lifecycle_history_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY ops.storage_archive_manifest_reference
-    ADD CONSTRAINT storage_archive_manifest_reference_manifest_id_fkey FOREIGN KEY (manifest_id) REFERENCES ops.storage_archive_manifest(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY raw.broker_account_snapshot
-    ADD CONSTRAINT broker_account_snapshot_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY raw.broker_account_snapshot
-    ADD CONSTRAINT broker_account_snapshot_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY raw.broker_activity
-    ADD CONSTRAINT broker_activity_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY raw.broker_activity
-    ADD CONSTRAINT broker_activity_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY raw.broker_activity
-    ADD CONSTRAINT broker_activity_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY raw.broker_position_snapshot
-    ADD CONSTRAINT broker_position_snapshot_account_snapshot_id_fkey FOREIGN KEY (account_snapshot_id) REFERENCES raw.broker_account_snapshot(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY raw.broker_position_snapshot
-    ADD CONSTRAINT broker_position_snapshot_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY raw.content_item
-    ADD CONSTRAINT content_item_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY raw.content_item_instrument
-    ADD CONSTRAINT content_item_instrument_content_item_id_fkey FOREIGN KEY (content_item_id) REFERENCES raw.content_item(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY raw.content_item_instrument
-    ADD CONSTRAINT content_item_instrument_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY raw.content_item
-    ADD CONSTRAINT content_item_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
-
-ALTER TABLE ONLY raw.content_item
-    ADD CONSTRAINT content_item_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY raw.disclosure
-    ADD CONSTRAINT disclosure_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY raw.disclosure
-    ADD CONSTRAINT disclosure_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY raw.disclosure
-    ADD CONSTRAINT disclosure_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
-
-ALTER TABLE ONLY raw.disclosure
-    ADD CONSTRAINT disclosure_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
 ALTER TABLE ONLY raw.option_snapshot
     ADD CONSTRAINT fk_option_snapshot_latest_generation FOREIGN KEY (latest_complete_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE RESTRICT;
-
-ALTER TABLE ONLY raw.fundamental_observation
-    ADD CONSTRAINT fundamental_observation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY raw.fundamental_observation
-    ADD CONSTRAINT fundamental_observation_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY raw.fundamental_observation
-    ADD CONSTRAINT fundamental_observation_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
-
-ALTER TABLE ONLY raw.fundamental_observation
-    ADD CONSTRAINT fundamental_observation_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY raw.market_event
-    ADD CONSTRAINT market_event_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY raw.market_event
-    ADD CONSTRAINT market_event_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY raw.market_event
-    ADD CONSTRAINT market_event_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
-
-ALTER TABLE ONLY raw.market_event
-    ADD CONSTRAINT market_event_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY raw.market_event_version
-    ADD CONSTRAINT market_event_version_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY raw.market_event_version
-    ADD CONSTRAINT market_event_version_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
-
-ALTER TABLE ONLY raw.market_event_version
-    ADD CONSTRAINT market_event_version_market_event_id_fkey FOREIGN KEY (market_event_id) REFERENCES raw.market_event(id) ON DELETE CASCADE;
-
-ALTER TABLE ONLY raw.market_event_version
-    ADD CONSTRAINT market_event_version_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
-
-ALTER TABLE ONLY raw.market_event_version
-    ADD CONSTRAINT market_event_version_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY raw.market_observation
-    ADD CONSTRAINT market_observation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
-
-ALTER TABLE ONLY raw.market_observation
-    ADD CONSTRAINT market_observation_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
-
-ALTER TABLE ONLY raw.market_observation
-    ADD CONSTRAINT market_observation_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
-
-ALTER TABLE ONLY raw.option_capture_generation
-    ADD CONSTRAINT option_capture_generation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
 
 ALTER TABLE ONLY raw.option_capture_generation
     ADD CONSTRAINT option_capture_generation_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE RESTRICT;
 
-ALTER TABLE raw.option_quote
-    ADD CONSTRAINT option_quote_capture_generation_id_fkey FOREIGN KEY (capture_generation_id) REFERENCES raw.option_capture_generation(id) ON DELETE RESTRICT;
+-- Keep protected research objects owned by non-application roles.
+ALTER FUNCTION analysis.enforce_research_evaluator_output() OWNER TO market_research_signer;
 
-ALTER TABLE raw.option_quote
-    ADD CONSTRAINT option_quote_contract_id_fkey FOREIGN KEY (contract_id) REFERENCES catalog.option_contract(id);
+ALTER FUNCTION analysis.enforce_research_evidence_manifest() OWNER TO market_research_signer;
 
-ALTER TABLE raw.option_quote
-    ADD CONSTRAINT option_quote_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES raw.option_snapshot(id) ON DELETE CASCADE;
+ALTER FUNCTION analysis.enforce_research_gate_actual_availability() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.option_snapshot
-    ADD CONSTRAINT option_snapshot_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
+ALTER FUNCTION analysis.enforce_research_result_actual_availability() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.option_snapshot
-    ADD CONSTRAINT option_snapshot_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
+ALTER FUNCTION analysis.enforce_research_revision_promotion() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.option_snapshot
-    ADD CONSTRAINT option_snapshot_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
+ALTER FUNCTION analysis.enforce_research_revision_promotion_hardened() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.price_bar_confirmation
-    ADD CONSTRAINT price_bar_confirmation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
+ALTER FUNCTION analysis.enforce_research_trial_terminal_immutability() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.price_bar_fact_availability
-    ADD CONSTRAINT price_bar_fact_availability_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
+ALTER FUNCTION analysis.enforce_research_universe_actual_availability() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.price_bar
-    ADD CONSTRAINT price_bar_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
+ALTER FUNCTION analysis.enforce_strategy_forecast_authority() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.price_bar
-    ADD CONSTRAINT price_bar_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
+ALTER FUNCTION analysis.enforce_validation_dossier_seal() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.price_bar
-    ADD CONSTRAINT price_bar_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
+ALTER FUNCTION analysis.research_evaluator_authorization_payload(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output jsonb) OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.price_bar
-    ADD CONSTRAINT price_bar_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
+ALTER FUNCTION analysis.research_evaluator_output_hash_v2(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output jsonb, available timestamp with time zone) OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.quote_confirmation
-    ADD CONSTRAINT quote_confirmation_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
+ALTER FUNCTION analysis.research_evaluator_signature_payload(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output_digest text, available timestamp with time zone) OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.quote_fact_availability
-    ADD CONSTRAINT quote_fact_availability_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
+ALTER FUNCTION analysis.research_evaluator_signing_key() OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.quote
-    ADD CONSTRAINT quote_ingest_run_id_fkey FOREIGN KEY (ingest_run_id) REFERENCES ingest.run(id);
+ALTER FUNCTION analysis.research_evidence_complete(result_uuid uuid) OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.quote
-    ADD CONSTRAINT quote_instrument_id_fkey FOREIGN KEY (instrument_id) REFERENCES catalog.instrument(id);
+ALTER FUNCTION analysis.research_validation_evidence_complete(result_uuid uuid, expected_attempt_count integer) OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.quote
-    ADD CONSTRAINT quote_payload_id_fkey FOREIGN KEY (payload_id) REFERENCES ingest.payload(id);
+ALTER FUNCTION analysis.write_research_evaluator_output(p_trial_id uuid, p_result_id uuid, p_run_id uuid, p_kind text, p_evaluator text, p_code_version text, p_input_digest text, p_universe_digest text, p_feature_digest text, p_samples integer, p_valid boolean, p_output jsonb, p_authorization_signature text) OWNER TO market_research_signer;
 
-ALTER TABLE ONLY raw.quote
-    ADD CONSTRAINT quote_source_id_fkey FOREIGN KEY (source_id) REFERENCES ingest.source(id);
+ALTER FUNCTION ingest.record_source_lifecycle() OWNER TO market_migrator;
+
+ALTER TABLE analysis.research_evaluator_output OWNER TO market_research_signer;
+
+ALTER TABLE analysis.research_evaluator_signing_secret OWNER TO market_research_signer;
 
 GRANT USAGE ON SCHEMA analysis TO market_research_signer;
+
 GRANT USAGE ON SCHEMA analysis TO market_app;
 
 GRANT USAGE ON SCHEMA app TO market_app;
 
 GRANT USAGE ON SCHEMA catalog TO market_research_signer;
+
 GRANT USAGE ON SCHEMA catalog TO market_app;
 
 GRANT USAGE ON SCHEMA ingest TO market_app;
+
 GRANT USAGE ON SCHEMA ingest TO market_migrator;
 
 GRANT USAGE ON SCHEMA ops TO market_app;
@@ -8699,19 +7809,23 @@ REVOKE ALL ON FUNCTION analysis.insert_phase4_paper_execution_observation(p json
 GRANT ALL ON FUNCTION analysis.insert_phase4_scenario(p_id text, p_allocation_id text, p_model_version text, p_probability_semantics text, p_scenarios jsonb, p_tail_dependence jsonb, p_simultaneous_unwind jsonb, p_input_cutoff timestamp with time zone, p_input_hash text, p_content_hash text) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.phase4_allocation_authorization_payload(p_snapshot jsonb, p_items jsonb) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.phase4_allocation_authorization_payload(p_snapshot jsonb, p_items jsonb) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.phase4_allocation_signing_key() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION analysis.phase4_telemetry_authorization_payload(p_contract text, p_payload jsonb) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.phase4_telemetry_authorization_payload(p_contract text, p_payload jsonb) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.phase4_telemetry_authorized(p_contract text, p_payload jsonb, p_signature text) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION analysis.promote_phase3_strategy(revision_id bigint) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.promote_phase3_strategy(revision_id bigint) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.research_evaluator_authorization_payload(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output jsonb) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.research_evaluator_authorization_payload(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output jsonb) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.research_evaluator_output_hash_v2(trial_id uuid, result_id uuid, run_id uuid, kind text, evaluator text, code_version text, input_digest text, universe_digest text, feature_digest text, samples integer, valid boolean, output jsonb, available timestamp with time zone) FROM PUBLIC;
@@ -8725,25 +7839,42 @@ GRANT ALL ON FUNCTION analysis.research_evidence_complete(result_uuid uuid) TO m
 REVOKE ALL ON FUNCTION analysis.research_validation_evidence_complete(result_uuid uuid, expected_attempt_count integer) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION analysis.write_phase4_allocation(p_snapshot jsonb, p_items jsonb, p_authorization_signature text) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.write_phase4_allocation(p_snapshot jsonb, p_items jsonb, p_authorization_signature text) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.write_phase4_book_attribution(p jsonb, sig text) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.write_phase4_book_attribution(p jsonb, sig text) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.write_phase4_execution(p jsonb, sig text) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.write_phase4_execution(p jsonb, sig text) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.write_phase4_execution_0077(p jsonb, sig text) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION analysis.write_phase4_paper_execution(p jsonb, sig text) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.write_phase4_paper_execution(p jsonb, sig text) TO market_app;
 
 REVOKE ALL ON FUNCTION analysis.write_research_evaluator_output(p_trial_id uuid, p_result_id uuid, p_run_id uuid, p_kind text, p_evaluator text, p_code_version text, p_input_digest text, p_universe_digest text, p_feature_digest text, p_samples integer, p_valid boolean, p_output jsonb, p_authorization_signature text) FROM PUBLIC;
+
 GRANT ALL ON FUNCTION analysis.write_research_evaluator_output(p_trial_id uuid, p_result_id uuid, p_run_id uuid, p_kind text, p_evaluator text, p_code_version text, p_input_digest text, p_universe_digest text, p_feature_digest text, p_samples integer, p_valid boolean, p_output jsonb, p_authorization_signature text) TO market_app;
 
 REVOKE ALL ON FUNCTION ingest.record_source_lifecycle() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION ingest.reject_identity_update() FROM PUBLIC;
+
+GRANT SELECT,INSERT,UPDATE ON TABLE raw.price_bar TO market_app;
+
+REVOKE ALL ON FUNCTION raw.confirmed_price_bar_at(p_as_of timestamp with time zone, p_instrument_ids bigint[]) FROM PUBLIC;
+
+GRANT ALL ON FUNCTION raw.confirmed_price_bar_at(p_as_of timestamp with time zone, p_instrument_ids bigint[]) TO market_app;
+
+GRANT SELECT,INSERT,UPDATE ON TABLE raw.quote TO market_app;
+
+REVOKE ALL ON FUNCTION raw.confirmed_quote_at(p_as_of timestamp with time zone, p_instrument_ids bigint[]) FROM PUBLIC;
+
+GRANT ALL ON FUNCTION raw.confirmed_quote_at(p_as_of timestamp with time zone, p_instrument_ids bigint[]) TO market_app;
 
 GRANT ALL ON FUNCTION raw.current_price_at(p_as_of timestamp with time zone, p_instrument_ids bigint[]) TO market_app;
 
@@ -8768,12 +7899,15 @@ GRANT SELECT,INSERT,UPDATE ON TABLE analysis.event_study_feature TO market_app;
 GRANT SELECT ON TABLE analysis.execution_model_snapshot TO market_app;
 
 GRANT SELECT ON TABLE analysis.experiment_family TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.experiment_family TO market_app;
 
 GRANT SELECT ON TABLE analysis.experiment_manifest TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.experiment_manifest TO market_app;
 
 GRANT SELECT ON TABLE analysis.hypothesis TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.hypothesis TO market_app;
 
 GRANT SELECT,INSERT ON TABLE analysis.market_coverage_vector TO market_app;
@@ -8845,24 +7979,45 @@ GRANT SELECT,INSERT ON TABLE analysis.reject_summary TO market_app;
 GRANT SELECT,USAGE ON SEQUENCE analysis.reject_summary_id_seq TO market_app;
 
 GRANT SELECT ON TABLE analysis.research_evidence_manifest TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.research_evidence_manifest TO market_app;
 
 GRANT SELECT ON TABLE analysis.research_trial TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.research_trial TO market_app;
 
 GRANT SELECT ON TABLE analysis.run TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.run TO market_app;
 
 GRANT SELECT,INSERT ON TABLE analysis.shadow_trade TO market_app;
+
+GRANT UPDATE(entry_at) ON TABLE analysis.shadow_trade TO market_app;
+
+GRANT UPDATE(entry_price) ON TABLE analysis.shadow_trade TO market_app;
+
+GRANT UPDATE(exit_at) ON TABLE analysis.shadow_trade TO market_app;
+
+GRANT UPDATE(exit_price) ON TABLE analysis.shadow_trade TO market_app;
+
+GRANT UPDATE(status) ON TABLE analysis.shadow_trade TO market_app;
+
+GRANT UPDATE(metrics) ON TABLE analysis.shadow_trade TO market_app;
+
+GRANT UPDATE(pending_entry_reason) ON TABLE analysis.shadow_trade TO market_app;
+
+GRANT UPDATE(fill_basis) ON TABLE analysis.shadow_trade TO market_app;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.source_signal TO market_app;
 
 GRANT SELECT,INSERT ON TABLE analysis.strategy_comparison TO market_app;
 
 GRANT SELECT ON TABLE analysis.strategy_evaluation TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.strategy_evaluation TO market_app;
 
 GRANT SELECT ON TABLE analysis.strategy_forecast TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.strategy_forecast TO market_app;
 
 GRANT SELECT,INSERT ON TABLE analysis.strategy_manifest TO market_app;
@@ -8872,17 +8027,21 @@ GRANT SELECT,INSERT ON TABLE analysis.strategy_monitoring_evidence TO market_app
 GRANT SELECT,INSERT ON TABLE analysis.strategy_pnl_tape TO market_app;
 
 GRANT SELECT ON TABLE analysis.strategy_revision TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.strategy_revision TO market_app;
 
 GRANT SELECT ON TABLE analysis.strategy_registry TO market_app;
 
 GRANT SELECT ON TABLE analysis.trial_result TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.trial_result TO market_app;
 
 GRANT SELECT ON TABLE analysis.trial_universe_manifest TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.trial_universe_manifest TO market_app;
 
 GRANT SELECT ON TABLE analysis.universe_observation TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.universe_observation TO market_app;
 
 GRANT SELECT ON TABLE analysis.strategy_trial_accounting TO market_app;
@@ -8894,6 +8053,7 @@ GRANT SELECT,INSERT,UPDATE ON TABLE analysis.symbol_feature TO market_app;
 GRANT SELECT,USAGE ON SEQUENCE analysis.symbol_feature_id_seq TO market_app;
 
 GRANT SELECT ON TABLE analysis.ticker_benchmark_snapshot TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.ticker_benchmark_snapshot TO market_app;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.ticker_data_request TO market_app;
@@ -8907,9 +8067,11 @@ GRANT SELECT,USAGE ON SEQUENCE analysis.ticker_input_manifest_id_seq TO market_a
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.ticker_outcome TO market_app;
 
 GRANT SELECT ON TABLE analysis.validation_dossier TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.validation_dossier TO market_app;
 
 GRANT SELECT ON TABLE analysis.validation_gate_result TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE analysis.validation_gate_result TO market_app;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE app.alert TO market_app;
@@ -8950,6 +8112,10 @@ GRANT UPDATE(user_state_updated_at) ON TABLE app.decision_inbox_item TO market_a
 
 GRANT UPDATE(reviewed_at) ON TABLE app.decision_inbox_item TO market_app;
 
+GRANT UPDATE(useful) ON TABLE app.decision_inbox_item TO market_app;
+
+GRANT UPDATE(usefulness_updated_at) ON TABLE app.decision_inbox_item TO market_app;
+
 GRANT SELECT,INSERT ON TABLE app.decision_inbox_sync_state TO market_app;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE app.decision_truth TO market_app;
@@ -8986,7 +8152,97 @@ GRANT SELECT ON TABLE app.paper_execution_observation TO market_app;
 
 GRANT SELECT ON TABLE app.paper_order TO market_app;
 
+GRANT INSERT(decision_id) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(instrument_id) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(side) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(quantity) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(limit_price) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(status),UPDATE(status) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(policy_result) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(structure) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(reserved_collateral) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(idempotency_key) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(ticket_version) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(ticket_snapshot) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(intended_limit_price) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(actual_fill_price) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(filled_at) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(lane) ON TABLE app.paper_order TO market_app;
+
+GRANT INSERT(policy_snapshot) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(exit_at) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(exit_price) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(fees) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(updated_at) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(submitted_at) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(filled_quantity) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(exited_quantity) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(entry_slippage) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(exit_slippage) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(unfilled_reason) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(execution_quote) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(fill_evidence_at) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(contract_multiplier) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(entry_fees) ON TABLE app.paper_order TO market_app;
+
+GRANT UPDATE(exit_fees) ON TABLE app.paper_order TO market_app;
+
 GRANT SELECT ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(paper_order_id) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(leg_index) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(contract_id) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(option_type) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(side) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(strike) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(bid) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(ask) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(bid_size) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(ask_size) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(quote_time) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(open_interest) ON TABLE app.paper_order_leg TO market_app;
+
+GRANT INSERT(volume) ON TABLE app.paper_order_leg TO market_app;
 
 GRANT SELECT ON TABLE app.portfolio_position TO market_app;
 
@@ -9023,6 +8279,7 @@ GRANT SELECT,INSERT ON TABLE app.trade_journal TO market_app;
 GRANT SELECT ON TABLE app.watchlist_item TO market_app;
 
 GRANT SELECT ON TABLE catalog.instrument TO market_research_signer;
+
 GRANT SELECT,INSERT,UPDATE ON TABLE catalog.instrument TO market_app;
 
 GRANT SELECT ON TABLE catalog.instrument_alias TO market_app;
@@ -9042,6 +8299,7 @@ GRANT SELECT,INSERT,UPDATE ON TABLE ingest.run TO market_app;
 GRANT SELECT,INSERT,UPDATE ON TABLE ingest.source TO market_app;
 
 GRANT INSERT ON TABLE ingest.source_lifecycle_history TO market_migrator;
+
 GRANT SELECT ON TABLE ingest.source_lifecycle_history TO market_app;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE ops.job_run TO market_app;
@@ -9060,19 +8318,7 @@ GRANT SELECT ON TABLE raw.broker_account_snapshot TO market_app;
 
 GRANT SELECT ON TABLE raw.broker_position_snapshot TO market_app;
 
-GRANT SELECT,INSERT,UPDATE ON TABLE raw.price_bar TO market_app;
-
-GRANT SELECT,INSERT,UPDATE ON TABLE raw.price_bar_fact_availability TO market_app;
-
-GRANT SELECT,INSERT,UPDATE ON TABLE raw.price_bar_history TO market_app;
-
 GRANT SELECT ON TABLE raw.confirmed_price_bar TO market_app;
-
-GRANT SELECT,INSERT,UPDATE ON TABLE raw.quote TO market_app;
-
-GRANT SELECT,INSERT,UPDATE ON TABLE raw.quote_fact_availability TO market_app;
-
-GRANT SELECT,INSERT,UPDATE ON TABLE raw.quote_history TO market_app;
 
 GRANT SELECT ON TABLE raw.confirmed_quote TO market_app;
 
@@ -9098,4 +8344,12 @@ GRANT SELECT ON TABLE raw.option_snapshot TO market_app;
 
 GRANT SELECT,INSERT,DELETE ON TABLE raw.price_bar_confirmation TO market_app;
 
+GRANT SELECT,INSERT,UPDATE ON TABLE raw.price_bar_fact_availability TO market_app;
+
+GRANT SELECT,INSERT,UPDATE ON TABLE raw.price_bar_history TO market_app;
+
 GRANT SELECT,INSERT,DELETE ON TABLE raw.quote_confirmation TO market_app;
+
+GRANT SELECT,INSERT,UPDATE ON TABLE raw.quote_fact_availability TO market_app;
+
+GRANT SELECT,INSERT,UPDATE ON TABLE raw.quote_history TO market_app;

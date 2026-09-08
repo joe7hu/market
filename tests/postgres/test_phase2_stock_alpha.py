@@ -18,7 +18,7 @@ from investment_panel.core.decision import Horizon, MARKET_TZ, is_us_market_day,
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.migrations import downgrade_database, upgrade_database
+from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime, activate_application_role
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 from investment_panel.jobs.stock_alpha_walk_forward import load_observations, load_universe_members, run
@@ -1254,7 +1254,7 @@ def test_scheduled_stock_qualifies_with_its_real_prediction_controls(
         runtime.close()
 
 
-def test_stock_promotion_clock_migration_round_trip(migrated_postgres_dsn: str) -> None:
+def test_stock_promotion_clock_is_in_current_snapshot(migrated_postgres_dsn: str) -> None:
     def definitions():
         with psycopg.connect(migrated_postgres_dsn) as connection:
             return connection.execute(
@@ -1268,7 +1268,5 @@ def test_stock_promotion_clock_migration_round_trip(migrated_postgres_dsn: str) 
 
     upgraded = definitions()
     assert all("promotion_decision_cutoff" in definition for _name, definition in upgraded)
-    downgrade_database(migrated_postgres_dsn, "20260906_0001")
-    assert all("promotion_decision_cutoff" not in definition for _name, definition in definitions())
     upgrade_database(migrated_postgres_dsn)
     assert definitions() == upgraded

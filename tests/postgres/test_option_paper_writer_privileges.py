@@ -6,9 +6,8 @@ import psycopg
 import pytest
 from sqlalchemy.engine import make_url
 
-from investment_panel.database.migrations import downgrade_database, upgrade_database
+from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
-from migrations.schema_contract import schema_contract
 
 
 WRITER_COLUMNS = {
@@ -45,17 +44,10 @@ def _writer_columns(connection):
     }
 
 
-def test_option_paper_writer_grants_are_narrow_and_reversible(postgres_dsn):
-    upgrade_database(postgres_dsn, "20260907_0003")
+def test_option_paper_writer_grants_are_narrow(postgres_dsn):
+    upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
-        before = schema_contract(connection)
-        assert all(not columns for columns in _writer_columns(connection).values())
-    upgrade_database(postgres_dsn, "20260907_0004")
-    with psycopg.connect(postgres_dsn) as connection:
-        upgraded = schema_contract(connection)
         assert _writer_columns(connection) == WRITER_COLUMNS
-        changed = {key for key in before.keys() | upgraded.keys() if before.get(key) != upgraded.get(key)}
-        assert changed == {f"column_acl:{table}.{column}" for (table, _privilege), columns in WRITER_COLUMNS.items() for column in columns}
         assert all(not connection.execute("SELECT has_table_privilege('market_app', %s, %s)", [table, privilege]).fetchone()[0]
                    for table, privilege in WRITER_COLUMNS)
         for table in {table for table, _privilege in WRITER_COLUMNS}:
@@ -87,12 +79,3 @@ def test_option_paper_writer_grants_are_narrow_and_reversible(postgres_dsn):
                         connection.execute(statement)
     finally:
         application.close()
-
-    downgrade_database(postgres_dsn, "20260907_0003")
-    with psycopg.connect(postgres_dsn) as connection:
-        assert all(not columns for columns in _writer_columns(connection).values())
-        assert schema_contract(connection) == before
-    upgrade_database(postgres_dsn, "20260907_0004")
-    with psycopg.connect(postgres_dsn) as connection:
-        assert _writer_columns(connection) == WRITER_COLUMNS
-        assert schema_contract(connection) == upgraded

@@ -1,10 +1,9 @@
-"""Bootstrap roles and adopt the last historical schema without copying facts."""
+"""Bootstrap roles and install secrets for the current schema snapshot."""
 
 from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 
 from sqlalchemy import text
 
@@ -66,29 +65,3 @@ def install_secrets(connection) -> None:
             raise RuntimeError(f"{variable} must contain at least 16 characters")
         connection.execute(text(f"""INSERT INTO analysis.{table}(singleton,secret)
             VALUES(true,convert_to(:secret,'UTF8')) ON CONFLICT(singleton) DO NOTHING"""), {"secret": key})
-
-
-def repair_legacy_schema(connection) -> None:
-    """One transactional maintenance-window repair; no fact rows are removed."""
-    connection.connection.driver_connection.execute("""
-        GRANT SELECT, INSERT, UPDATE ON analysis.event_decision_packet,
-            analysis.event_scout_event, app.decision_truth TO market_app;
-        GRANT SELECT, INSERT ON app.trade_journal TO market_app;
-        GRANT SELECT, INSERT, UPDATE ON app.alert TO market_app;
-        DROP TABLE app.review_page_snapshot;
-        DROP INDEX ops.ix_storage_archive_manifest_reference_source;
-        DROP INDEX analysis.ix_research_evidence_trial_result;
-        CREATE INDEX ix_analysis_decision_recent_page ON analysis.decision(as_of DESC,id DESC);
-        CREATE INDEX ix_analysis_option_decision_contract_predecessor
-            ON analysis.option_decision(contract_id,decision_id);
-    """)
-    # The live compacted schema predates one conservation check. Reuse the
-    # baseline definition rather than maintaining a second function body.
-    schema = Path(__file__).with_name("baseline.sql").read_text()
-    guard = re.search(
-        r"CREATE FUNCTION analysis\.enforce_phase4_review_item_guard\(\).*?AS \$(\w*)\$.*?\$\1\$;",
-        schema, re.DOTALL,
-    )
-    if guard is None:
-        raise RuntimeError("baseline funding guard is missing")
-    connection.connection.driver_connection.execute(guard[0].replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1))

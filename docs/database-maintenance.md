@@ -1,9 +1,8 @@
 # Database maintenance
 
-Market uses one PostgreSQL baseline (`20260906_0001`). The 131 older migrations
-remain in Git history. The baseline keeps account records, research evidence,
-signing keys, and paper-only controls. It removes only the obsolete review-page
-cache and two indexes already covered by unique constraints.
+Market uses one PostgreSQL baseline (`20260907_0006`). It is a current-state,
+data-free schema snapshot. It does not replay historical migrations and it does
+not delete data. Older migration files remain in Git history for audit only.
 
 ## Apply a schema change
 
@@ -18,12 +17,11 @@ The runner takes one database-wide migration lock and sets bounded lock and
 statement timeouts. Do not run Alembic directly. A failed transaction leaves the
 previous schema intact and can be retried after its cause is fixed.
 
-For the existing `20260906_0131` database, the runner checks the exact audited
-catalog, roles, owners, and grants before adoption. Unknown drift is refused.
-Adoption repairs grants, adds two query indexes, restores the funding guard,
-removes the obsolete cache and duplicate indexes, and records the baseline in
-one transaction. Earlier revisions need the old checkout to reach `0131` first.
-Never stamp an unknown schema or reset a database that contains needed records.
+An existing database already at `20260907_0006` is left unchanged when the
+runner is repeated. Its rows, secrets, roles, and grants are not rewritten.
+Databases that still record an archived revision fail closed; use the matching
+old checkout to reach `20260907_0006` first. Never stamp an unknown schema or
+reset a database that contains needed records.
 
 For an empty database, the baseline creates the schema and small configuration
 seed. Provision the application login first; a `market_app` login can instead
@@ -31,12 +29,14 @@ be created with `MARKET_APP_DATABASE_PASSWORD` (at least 16 characters).
 A separate login must have safe role attributes and membership in `market_app`.
 Configure signing keys through the existing secret settings when required.
 
-## Keep future changes small
+## Keep future snapshots small
 
-Add short forward Alembic revisions after the baseline and update
-`HEAD_REVISION` in the migration runner. Keep one definition of each fact;
-reference it from derived records. Preserve history needed to explain decisions.
-Do not remove constraints or privilege checks to simplify a migration.
+When the schema changes, apply the required data-preserving maintenance SQL to
+existing databases, then regenerate the one snapshot from a verified current
+schema and update the revision marker. Do not add historical `ALTER` statements
+to the snapshot. The snapshot is for empty databases and cannot safely update
+an older nonempty schema by itself. Keep one definition of each fact; reference
+it from derived records. Preserve history needed to explain decisions.
 
 Review lists use bounded keyset pages with a creation cutoff and expiring
 cursors. Values can change between pages. Options reads select the latest
