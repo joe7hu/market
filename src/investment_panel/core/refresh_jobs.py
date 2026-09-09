@@ -30,6 +30,9 @@ from investment_panel.jobs import (
     run_agent_experiment,
     run_option_recovery_agents,
     run_thesis_monitor,
+    run_continuous_advisor,
+    replay_continuous_advisor,
+    evolve_continuous_advisor,
     snapshot_database,
     update_ibkr_options,
     update_broker_sources,
@@ -237,6 +240,9 @@ ALLOWLIST: dict[str, JobRunner] = {
     "run_thesis_monitor": lambda config_path: run_thesis_monitor.run(config_path, trigger="preopen"),
     "run_thesis_monitor_force": lambda config_path: run_thesis_monitor.run(config_path, trigger="manual", force=True),
     "run_thesis_monitor_preflight": lambda config_path: run_thesis_monitor.run(config_path, trigger="manual", force=True, dry_run=True),
+    "run_continuous_advisor": lambda config_path: run_continuous_advisor.run(config_path),
+    "run_continuous_advisor_replay": lambda config_path: replay_continuous_advisor.run(config_path),
+    "run_continuous_advisor_evolution": lambda config_path: evolve_continuous_advisor.run(config_path),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
     # Ticker data requests use stable, user-visible operation names. Each
     # request points to a source-specific collector or to an explicit

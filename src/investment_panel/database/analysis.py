@@ -131,6 +131,7 @@ def current_option_publication_result(
     model_name: str,
     cutoff: datetime | None = None,
     publication_id: UUID | str | None = None,
+    allow_superseded: bool = False,
 ) -> dict[str, Any]:
     """Read one point-in-time option publication with authoritative episode keys.
 
@@ -143,11 +144,18 @@ def current_option_publication_result(
 
     if (scope, model_name) not in CURRENT_OPTION_PUBLICATION_MODELS:
         raise ValueError("unsupported current option publication model")
+    explicit_superseded = cutoff is not None and publication_id is not None and allow_superseded
     status_clause = (
         "publication.status = 'published'"
         if cutoff is None
         else "publication.status IN ('published', 'superseded')"
+        if explicit_superseded
+        else "(publication.status = 'published' OR (publication.status = 'superseded' AND publication.superseded_at > %s))"
     )
+    query_params = [scope]
+    if cutoff is not None and not explicit_superseded:
+        query_params.append(cutoff)
+    query_params.extend([cutoff, cutoff, cutoff, cutoff, publication_id, publication_id, model_name, model_name])
     rows = connection.execute(
         f"""
         WITH chosen_publication AS MATERIALIZED (
@@ -159,6 +167,9 @@ def current_option_publication_result(
               AND {status_clause}
               AND publication.published_at IS NOT NULL
               AND publication.published_at <= COALESCE(%s::timestamptz, now())
+              AND (%s::timestamptz IS NULL OR run.input_cutoff <= %s::timestamptz)
+              AND run.finished_at IS NOT NULL
+              AND run.finished_at <= COALESCE(%s::timestamptz, now())
               AND (%s::uuid IS NULL OR publication.id = %s::uuid)
             ORDER BY publication.published_at DESC, publication.created_at DESC,
                      publication.id DESC
@@ -257,7 +268,7 @@ def current_option_publication_result(
         FROM counted_rows
         ORDER BY rank, stable_key
         """,
-        [scope, cutoff, publication_id, publication_id, model_name, model_name],
+        query_params,
     ).fetchall()
     normalized = [dict(row) for row in rows]
     if not normalized:
@@ -339,6 +350,7 @@ def current_option_publication_rows(
     model_name: str,
     cutoff: datetime | None = None,
     publication_id: UUID | str | None = None,
+    allow_superseded: bool = False,
 ) -> list[dict[str, Any]]:
     """Return only a complete current option projection."""
 
@@ -348,6 +360,7 @@ def current_option_publication_rows(
         model_name=model_name,
         cutoff=cutoff,
         publication_id=publication_id,
+        allow_superseded=allow_superseded,
     )["rows"])
 
 
@@ -1020,12 +1033,12 @@ class AnalysisRepository:
                 # published row and ignored an equivalent superseded one.
                 if str(existing["status"]) != "published":
                     connection.execute(
-                        "UPDATE app.publication SET status = 'superseded' "
+                        "UPDATE app.publication SET status = 'superseded', superseded_at = COALESCE(superseded_at, now()) "
                         "WHERE scope = %s AND status = 'published' AND id <> %s",
                         [scope, existing_id],
                     )
                     connection.execute(
-                        "UPDATE app.publication SET status = 'published', published_at = now() "
+                        "UPDATE app.publication SET status = 'published', published_at = now(), superseded_at = NULL "
                         "WHERE id = %s",
                         [existing_id],
                     )
@@ -1104,21 +1117,21 @@ class AnalysisRepository:
                 bundle_id=bundle_id,
             )
             connection.execute(
-                "UPDATE app.publication SET status = 'superseded' "
+                "UPDATE app.publication SET status = 'superseded', superseded_at = COALESCE(superseded_at, now()) "
                 "WHERE scope = %s AND status = 'published'",
                 [scope],
             )
             connection.execute(
-                "UPDATE app.publication SET status = 'published', published_at = now() WHERE id = %s",
+                "UPDATE app.publication SET status = 'published', published_at = now(), superseded_at = NULL WHERE id = %s",
                 [publication_id],
             )
-            if complete_run_summary is not None:
+            if complete_run_summary is not None or str(run["status"]) == "running":
                 result = connection.execute(
                     "UPDATE analysis.run SET status = 'succeeded', finished_at = now(), "
                     "summary = summary || %s WHERE id = %s AND status = 'running'",
-                    [Jsonb(dict(complete_run_summary)), run_id],
+                    [Jsonb(dict(complete_run_summary or {})), run_id],
                 )
-                if result.rowcount != 1:
+                if result.rowcount != 1 and str(run["status"]) == "running":
                     raise ValueError("atomic publication requires a running analysis run")
         return publication_id
 

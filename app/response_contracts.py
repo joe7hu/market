@@ -661,6 +661,51 @@ class AgentExperimentResponse(FlexibleResponse):
     message: str | None = None
 
 
+class ContinuousAdvisorTickerResponse(FlexibleResponse):
+    symbol: str
+    verdict: Row = Field(default_factory=dict)
+    provenance: Row = Field(default_factory=dict)
+
+
+class ContinuousAdvisorResponse(FlexibleResponse):
+    enabled: bool = False
+    cadence_minutes: int = 120
+    budget_usd: float = 0
+    tickers: list[ContinuousAdvisorTickerResponse] = Field(default_factory=list)
+    strategy_health: Row = Field(default_factory=dict)
+
+
+class ContinuousAdvisorTickersResponse(FlexibleResponse):
+    rows: list[ContinuousAdvisorTickerResponse] = Field(default_factory=list)
+    count: int = 0
+
+
+class ContinuousAdvisorRunsResponse(FlexibleResponse):
+    rows: list[Row] = Field(default_factory=list)
+    count: int = 0
+
+
+class ContinuousAdvisorRunDetailResponse(FlexibleResponse):
+    run: Row = Field(default_factory=dict)
+    packet: Row = Field(default_factory=dict)
+    response: Row = Field(default_factory=dict)
+    claims: list[Row] = Field(default_factory=list)
+
+
+class ContinuousAdvisorReplayResponse(FlexibleResponse):
+    scorecards: list[Row] = Field(default_factory=list)
+    count: int = 0
+
+
+class ContinuousAdvisorPromptStatusResponse(FlexibleResponse):
+    active_prompt_version: str
+    challenger: Row | None = None
+    matched_cohort_scorecard: Row | None = None
+    promotion: Row | None = None
+    coverage: Row = Field(default_factory=dict)
+    scheduler: Row = Field(default_factory=dict)
+
+
 class AgentResearchPromptResponse(FlexibleResponse):
     ready: bool
     message: str

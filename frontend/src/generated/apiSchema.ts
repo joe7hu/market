@@ -109,6 +109,142 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/continuous-advisor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Continuous Advisor */
+        get: operations["continuous_advisor_api_continuous_advisor_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/continuous-advisor/prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Continuous Advisor Prompts */
+        get: operations["continuous_advisor_prompts_api_continuous_advisor_prompts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/continuous-advisor/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Continuous Advisor Replay */
+        get: operations["continuous_advisor_replay_api_continuous_advisor_replay_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/continuous-advisor/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Continuous Advisor Runs */
+        get: operations["continuous_advisor_runs_api_continuous_advisor_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/continuous-advisor/runs/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Continuous Advisor Run Detail */
+        get: operations["continuous_advisor_run_detail_api_continuous_advisor_runs__task_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/continuous-advisor/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Continuous Advisor Settings */
+        patch: operations["update_continuous_advisor_settings_api_continuous_advisor_settings_patch"];
+        trace?: never;
+    };
+    "/api/continuous-advisor/tickers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Continuous Advisor Tickers */
+        get: operations["continuous_advisor_tickers_api_continuous_advisor_tickers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/continuous-advisor/tickers/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Continuous Advisor Ticker */
+        get: operations["continuous_advisor_ticker_api_continuous_advisor_tickers__symbol__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/decision-funnel": {
         parameters: {
             query?: never;
@@ -1916,6 +2052,144 @@ export interface components {
              * @default false
              */
             requested_calculation: boolean;
+        };
+        /** ContinuousAdvisorPromptStatusResponse */
+        ContinuousAdvisorPromptStatusResponse: {
+            /** Active Prompt Version */
+            active_prompt_version: string;
+            /** Challenger */
+            challenger?: {
+                [key: string]: unknown;
+            } | null;
+            /** Coverage */
+            coverage?: {
+                [key: string]: unknown;
+            };
+            /** Matched Cohort Scorecard */
+            matched_cohort_scorecard?: {
+                [key: string]: unknown;
+            } | null;
+            /** Promotion */
+            promotion?: {
+                [key: string]: unknown;
+            } | null;
+            /** Scheduler */
+            scheduler?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** ContinuousAdvisorReplayResponse */
+        ContinuousAdvisorReplayResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Scorecards */
+            scorecards?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** ContinuousAdvisorResponse */
+        ContinuousAdvisorResponse: {
+            /**
+             * Budget Usd
+             * @default 0
+             */
+            budget_usd: number;
+            /**
+             * Cadence Minutes
+             * @default 120
+             */
+            cadence_minutes: number;
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /** Strategy Health */
+            strategy_health?: {
+                [key: string]: unknown;
+            };
+            /** Tickers */
+            tickers?: components["schemas"]["ContinuousAdvisorTickerResponse"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /** ContinuousAdvisorRunDetailResponse */
+        ContinuousAdvisorRunDetailResponse: {
+            /** Claims */
+            claims?: {
+                [key: string]: unknown;
+            }[];
+            /** Packet */
+            packet?: {
+                [key: string]: unknown;
+            };
+            /** Response */
+            response?: {
+                [key: string]: unknown;
+            };
+            /** Run */
+            run?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** ContinuousAdvisorRunsResponse */
+        ContinuousAdvisorRunsResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** ContinuousAdvisorSettingsInput */
+        ContinuousAdvisorSettingsInput: {
+            /** Budget Usd */
+            budget_usd?: number | null;
+            /** Cadence Minutes */
+            cadence_minutes?: number | null;
+            /** Enabled */
+            enabled?: boolean | null;
+        };
+        /** ContinuousAdvisorTickerResponse */
+        ContinuousAdvisorTickerResponse: {
+            /** Provenance */
+            provenance?: {
+                [key: string]: unknown;
+            };
+            /** Symbol */
+            symbol: string;
+            /** Verdict */
+            verdict?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** ContinuousAdvisorTickersResponse */
+        ContinuousAdvisorTickersResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Rows */
+            rows?: components["schemas"]["ContinuousAdvisorTickerResponse"][];
+        } & {
+            [key: string]: unknown;
         };
         /**
          * CoverageMatrix
@@ -6123,6 +6397,8 @@ export interface components {
             confidence?: string | null;
             /** Conviction */
             conviction?: string | null;
+            /** Countercase */
+            countercase?: string | null;
             /** Direction */
             direction?: ("bullish" | "bearish") | null;
             /** Evidence Coverage Status */
@@ -6180,6 +6456,12 @@ export interface components {
         ThesisMonitorSettingsInput: {
             /** Concurrency */
             concurrency?: number | null;
+            /** Continuous Budget Usd */
+            continuous_budget_usd?: number | null;
+            /** Continuous Cadence Minutes */
+            continuous_cadence_minutes?: number | null;
+            /** Continuous Enabled */
+            continuous_enabled?: boolean | null;
             /** Debounce Minutes */
             debounce_minutes?: number | null;
             /** Enabled */
@@ -7178,6 +7460,224 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentResearchPromptResponse"];
+                };
+            };
+        };
+    };
+    continuous_advisor_api_continuous_advisor_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorResponse"];
+                };
+            };
+        };
+    };
+    continuous_advisor_prompts_api_continuous_advisor_prompts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorPromptStatusResponse"];
+                };
+            };
+        };
+    };
+    continuous_advisor_replay_api_continuous_advisor_replay_get: {
+        parameters: {
+            query?: {
+                prompt_version?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorReplayResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    continuous_advisor_runs_api_continuous_advisor_runs_get: {
+        parameters: {
+            query?: {
+                symbol?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorRunsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    continuous_advisor_run_detail_api_continuous_advisor_runs__task_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorRunDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_continuous_advisor_settings_api_continuous_advisor_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContinuousAdvisorSettingsInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    continuous_advisor_tickers_api_continuous_advisor_tickers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorTickersResponse"];
+                };
+            };
+        };
+    };
+    continuous_advisor_ticker_api_continuous_advisor_tickers__symbol__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorTickerResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

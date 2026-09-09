@@ -236,7 +236,7 @@ class ThesisAutomationRepository:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
                 """
-                UPDATE app.thesis thesis SET last_assessed_at = now(), updated_at = now()
+                UPDATE app.thesis thesis SET last_assessed_at = now()
                 FROM catalog.instrument instrument
                 WHERE thesis.instrument_id = instrument.id AND instrument.symbol = %s
                   AND thesis.status = 'current'

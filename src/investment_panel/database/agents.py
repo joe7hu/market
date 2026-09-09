@@ -38,6 +38,7 @@ class AgentRepository:
         trigger: str = "ondemand",
         context: dict[str, Any] | None = None,
         context_sources: dict[str, bool] | None = None,
+        current_option_rows: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         symbol = str(ticker).strip().upper()
         if not symbol:
@@ -88,6 +89,7 @@ class AgentRepository:
                 context_sources=context_sources,
                 cutoff=cutoff,
                 decision_id=decision_identity.get("id"),
+                current_option_rows=current_option_rows,
             )
             request = {
                 "ticker": symbol,
@@ -132,7 +134,11 @@ class AgentRepository:
             if not symbol:
                 continue
             result = self.queue_thesis(
-                symbol, trigger=trigger, context=context, context_sources=context_sources,
+                symbol,
+                trigger=trigger,
+                context=context,
+                context_sources=context_sources,
+                current_option_rows=[{"payload": context}],
             )
             if result.get("status") == "queued":
                 queued += 1

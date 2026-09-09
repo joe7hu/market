@@ -74,6 +74,9 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("run_thesis_monitor", timeout_seconds=1800),
         _job("run_thesis_monitor_force", timeout_seconds=1800),
         _job("run_thesis_monitor_preflight", timeout_seconds=1800),
+        _job("run_continuous_advisor", timeout_seconds=1800),
+        _job("run_continuous_advisor_replay", timeout_seconds=900),
+        _job("run_continuous_advisor_evolution", timeout_seconds=900),
         _job("update_broker_sources", freshness_seconds=3600),
         _job("update_broker_account", freshness_seconds=3600),
         _job("update_market_data", freshness_seconds=86400),
@@ -223,6 +226,18 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
     if auto_run_enabled and recovery_agent_seconds > 0:
         intervals["run_option_recovery_agents"] = recovery_agent_seconds
 
+    continuous = active_config.agents.thesis_monitor
+    continuous_seconds = _env_int_optional("MARKET_CONTINUOUS_ADVISOR_REFRESH_SECONDS")
+    continuous_seconds = int(continuous.continuous_cadence_minutes or 120) * 60 if continuous_seconds is None else continuous_seconds
+    if continuous.continuous_enabled and continuous_seconds > 0:
+        intervals["run_continuous_advisor"] = continuous_seconds
+        replay_seconds = _env_int("MARKET_CONTINUOUS_ADVISOR_REPLAY_SECONDS", 900, allow_zero=True)
+        if replay_seconds > 0:
+            intervals["run_continuous_advisor_replay"] = replay_seconds
+        evolution_seconds = _env_int("MARKET_CONTINUOUS_ADVISOR_EVOLUTION_SECONDS", 86_400, allow_zero=True)
+        if evolution_seconds > 0:
+            intervals["run_continuous_advisor_evolution"] = evolution_seconds
+
     decision_settings = active_config.analysis.options_decision_system
     inbox_seconds = _env_int("MARKET_DECISION_INBOX_REFRESH_SECONDS", 15, allow_zero=True)
     if decision_settings.decision_inbox_enabled and inbox_seconds > 0:
@@ -264,6 +279,9 @@ def scheduler_status(config: AppConfig | None = None) -> dict[str, Any]:
         "jobs": intervals,
         "agent_refresh_seconds": str(intervals.get("run_option_agents", 0)),
         "recovery_event_agent_refresh_seconds": str(intervals.get("run_option_recovery_agents", 0)),
+        "continuous_advisor_refresh_seconds": str(intervals.get("run_continuous_advisor", 0)),
+        "continuous_advisor_replay_seconds": str(intervals.get("run_continuous_advisor_replay", 0)),
+        "continuous_advisor_evolution_seconds": str(intervals.get("run_continuous_advisor_evolution", 0)),
         "radar_refresh_seconds": str(_first_interval(intervals, "options_radar_hard_refresh", "refresh_options_radar_signal")),
         "source_refresh_seconds": str(_first_interval(intervals, "options_radar_hard_refresh", "update_free_sources_radar", "update_ibkr_options", "update_robinhood_options")),
         "options_hard_refresh_seconds": str(intervals.get("options_radar_hard_refresh", 0)),

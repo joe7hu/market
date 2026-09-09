@@ -7,7 +7,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from investment_panel.database.migrations import HEAD_REVISION, alembic_config, upgrade_database
+from investment_panel.database.migrations import alembic_config, upgrade_database
 from investment_panel.database.panel_models import QUERY_POLICIES
 from migrations.baseline_contract import BASELINE_REVISION, BASELINE_SCHEMA_HASHES
 from migrations.schema_contract import schema_contract
@@ -43,7 +43,7 @@ def test_reapplying_snapshot_preserves_user_records_and_secret(baseline_postgres
         before = connection.execute("SELECT secret FROM analysis.phase4_allocation_signing_secret").fetchone()[0]
     upgrade_database(baseline_postgres_dsn, BASELINE_REVISION)
     with psycopg.connect(baseline_postgres_dsn) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == BASELINE_REVISION
         assert connection.execute("SELECT name FROM catalog.instrument WHERE symbol='QQQ'").fetchone()[0] == 'Keep my name'
         assert connection.execute("SELECT secret FROM analysis.phase4_allocation_signing_secret").fetchone()[0] == before
 
@@ -73,10 +73,10 @@ def test_encoded_password_survives_alembic_config():
     assert alembic_config(dsn).get_main_option('sqlalchemy.url') == dsn.replace('postgresql://','postgresql+psycopg://')
 
 
-def test_migrations_directory_has_one_latest_snapshot():
+def test_migrations_directory_has_snapshot_and_forward_schema():
     root = Path(__file__).resolve().parents[2]
     versions = sorted((root / 'migrations' / 'versions').glob('*.py'))
-    assert [path.name for path in versions] == ['20260907_0006_baseline.py']
+    assert [path.name for path in versions] == ['20260907_0006_baseline.py', '20260908_0007_continuous_advisor.py']
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
     assert max(path.read_text().count('\n') for path in sql_files) < 1500
@@ -85,6 +85,30 @@ def test_migrations_directory_has_one_latest_snapshot():
     assert 'DROP COLUMN' not in sql
     assert 'ALTER COLUMN' not in sql
     assert 'ALTER INDEX' not in sql
+
+
+def test_continuous_advisor_schema_is_append_only_and_advisory_only(postgres_dsn):
+    upgrade_database(postgres_dsn)
+    tables = (
+        'analysis.continuous_advisor_packet',
+        'analysis.continuous_advisor_response',
+        'analysis.continuous_advisor_forecast_claim',
+        'analysis.continuous_advisor_forecast_outcome',
+        'analysis.continuous_advisor_prompt_version',
+        'analysis.continuous_advisor_evaluation_cohort',
+        'analysis.continuous_advisor_promotion_decision',
+    )
+    with psycopg.connect(postgres_dsn) as connection:
+        connection.execute('SET LOCAL ROLE market_app')
+        for table in tables:
+            assert connection.execute('SELECT has_table_privilege(current_user,%s,\'SELECT\')', [table]).fetchone()[0]
+            assert not connection.execute('SELECT has_table_privilege(current_user,%s,\'INSERT\')', [table]).fetchone()[0]
+            has_update = connection.execute('SELECT has_table_privilege(current_user,%s,\'UPDATE\')', [table]).fetchone()[0]
+            assert has_update is (table == 'analysis.continuous_advisor_packet')
+            assert not connection.execute('SELECT has_table_privilege(current_user,%s,\'DELETE\')', [table]).fetchone()[0]
+        assert connection.execute(
+            "SELECT has_function_privilege(current_user, 'analysis.write_continuous_advisor_promotion(jsonb)', 'EXECUTE')"
+        ).fetchone()[0]
 
 
 def test_baseline_supports_separate_login_and_nologin_application_group(postgres_dsn, monkeypatch):

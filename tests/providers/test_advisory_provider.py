@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -111,14 +112,17 @@ def test_provider_identity_mismatch_fails_before_transport() -> None:
 
 def test_codex_subprocess_failure_is_typed(monkeypatch) -> None:
     monkeypatch.setattr(advisory, "resolve_codex_bin", lambda: "codex-test")
+    captured: dict[str, Any] = {}
 
-    def fake_run(*_args: Any, **_kwargs: Any):
+    def fake_run(*_args: Any, **kwargs: Any):
+        captured["preexec_fn"] = kwargs["preexec_fn"]
         return type("Completed", (), {"returncode": 3, "stderr": "child failed", "stdout": ""})()
 
     monkeypatch.setattr(advisory.subprocess, "run", fake_run)
-    request = _request(provider="codex", model="gpt-5.6-luna")
+    request = replace(_request(provider="codex", model="gpt-5.6-luna"), max_output_tokens=24_000)
     with pytest.raises(AgentProviderError, match="Codex agent failed 3"):
         invoke_structured(request)
+    assert callable(captured["preexec_fn"])
 
 
 def test_codex_timeout_is_typed(monkeypatch) -> None:

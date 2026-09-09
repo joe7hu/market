@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from investment_panel.database.analysis import current_option_publication_rows
+from investment_panel.database.analysis import current_option_publication_answers, current_option_publication_rows
 from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.thesis_evidence import thesis_source_evidence
 
@@ -26,6 +26,8 @@ def ticker_context(
     context_sources: dict[str, bool] | None = None,
     cutoff: Any | None = None,
     decision_id: Any | None = None,
+    include_current_options: bool = False,
+    current_option_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     enabled = context_sources or {}
 
@@ -34,6 +36,7 @@ def ticker_context(
             "context_status": {"cutoff": None, "cutoff_available": False},
             "portfolio": {},
             "option_opportunity": {},
+            "option_opportunities": [],
             "published_models": {},
             "catalysts": [],
             "source_evidence": [],
@@ -46,20 +49,29 @@ def ticker_context(
         """
         SELECT thesis.thesis, thesis.revision AS thesis_revision,
                thesis.created_at AS thesis_created_at, thesis.updated_at AS thesis_updated_at,
-               quote.price, quote.observed_at AS quote_observed_at
+               quote.price, quote.observed_at AS quote_observed_at,
+               quote.available_at AS quote_available_at
         FROM catalog.instrument instrument
         LEFT JOIN LATERAL (
             SELECT thesis.thesis, thesis.revision, thesis.created_at, thesis.updated_at
             FROM app.thesis thesis
             WHERE thesis.instrument_id = instrument.id
               AND thesis.created_at <= %s
-              AND thesis.updated_at IS NOT NULL
-              AND thesis.updated_at <= %s
+              AND (thesis.updated_at <= %s OR thesis.status = 'superseded')
+              AND (
+                  thesis.status <> 'superseded'
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM app.thesis successor
+                      WHERE successor.superseded_revision_id = thesis.id
+                        AND successor.created_at <= %s
+                  )
+              )
             ORDER BY thesis.created_at DESC, thesis.revision DESC, thesis.id DESC
             LIMIT 1
         ) thesis ON true
         LEFT JOIN LATERAL (
-            SELECT quote.price, quote.observed_at
+            SELECT quote.price, quote.observed_at, quote.available_at
             FROM raw.quote quote
             JOIN ingest.run quote_run ON quote_run.id = quote.ingest_run_id
             JOIN LATERAL (
@@ -84,44 +96,63 @@ def ticker_context(
         ) quote ON true
         WHERE instrument.symbol = %s
         """,
-        [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, symbol],
+        [cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, cutoff, symbol],
     ).fetchone()
-    option = None
+    option_matches = []
     if decision_id is not None:
-        option_matches = []
-        for current in current_option_publication_rows(
-            connection,
-            scope="options-radar",
-            model_name="option_radar_opportunity",
-            cutoff=cutoff,
-        ):
+        available_option_rows = (
+            current_option_rows
+            if current_option_rows is not None
+            else current_option_publication_rows(
+                connection,
+                scope="options-radar",
+                model_name="option_radar_opportunity",
+                cutoff=cutoff,
+            )
+        )
+        for current in available_option_rows:
             payload = dict(current["payload"] or {})
             payload_symbol = str(payload.get("ticker") or payload.get("symbol") or "").upper()
             payload_decision_id = str(payload.get("decision_id") or payload.get("opportunity_id") or "")
             if payload_symbol == str(symbol).upper() and payload_decision_id == str(decision_id):
                 option_matches.append(current)
-        option = option_matches[0] if option_matches else None
+    elif include_current_options:
+        available_option_rows = (
+            current_option_rows
+            if current_option_rows is not None
+            else current_option_publication_answers(connection, cutoff=cutoff)
+        )
+        option_matches = [
+            current for current in available_option_rows
+            if str((current.get("payload") or {}).get("ticker") or (current.get("payload") or {}).get("symbol") or "").upper()
+            == str(symbol).upper()
+        ]
     published = connection.execute(
         """
-        SELECT DISTINCT ON (item.model_name) item.model_name, item.payload
+        SELECT DISTINCT ON (item.model_name) item.model_name, item.payload, publication.published_at
         FROM app.publication publication
         JOIN app.publication_content_item item ON item.publication_id = publication.id
         JOIN analysis.run publication_run ON publication_run.id = publication.analysis_run_id
-        WHERE publication.status = 'published'
+        WHERE (
+                publication.status = 'published'
+                OR (publication.status = 'superseded' AND publication.superseded_at > %s)
+              )
           AND coalesce(item.payload->>'symbol', item.payload->>'ticker', item.payload->>'underlying') = %s
           AND item.model_name <> ALL(%s)
           AND CAST(%s AS timestamptz) IS NOT NULL AND publication.published_at <= %s
+          AND publication_run.input_cutoff <= %s
           AND publication_run.status IN ('succeeded', 'partial')
           AND publication_run.finished_at IS NOT NULL AND publication_run.finished_at <= %s
         ORDER BY item.model_name, publication.published_at DESC NULLS LAST,
                  publication.id DESC, item.rank, item.stable_key
         LIMIT 24
         """,
-        [symbol, sorted(_DUPLICATE_MODELS | {"candidate_event", "option_features", "option_snapshot"}), cutoff, cutoff, cutoff],
+        [cutoff, symbol, sorted(_DUPLICATE_MODELS | {"candidate_event", "option_features", "option_snapshot"}), cutoff, cutoff, cutoff, cutoff],
     ).fetchall()
     catalysts = connection.execute(
         """
-        SELECT catalyst.starts_at, catalyst.title, catalyst.expected_impact, catalyst.notes
+        SELECT catalyst.starts_at, catalyst.title, catalyst.expected_impact, catalyst.notes,
+               event_lineage.available_at
         FROM app.catalyst catalyst
         JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
         JOIN LATERAL (
@@ -172,9 +203,19 @@ def ticker_context(
             "cutoff_available": cutoff is not None,
         },
         "portfolio": _bounded_value(portfolio),
-        "option_opportunity": option_opportunity_context(dict(option["payload"] or {})) if option else {},
+        "option_opportunity": option_opportunity_context(
+            dict(option_matches[0]["payload"] or {}), available_at=option_matches[0].get("published_at")
+        ) if option_matches else {},
+        "option_opportunities": [
+            option_opportunity_context(
+                dict(current["payload"] or {}), available_at=current.get("published_at")
+            ) for current in option_matches
+        ],
         "published_models": {
-            str(row["model_name"]): _bounded_value(dict(row["payload"] or {}))
+            str(row["model_name"]): {
+                **_bounded_value(dict(row["payload"] or {})),
+                "published_at": row["published_at"],
+            }
             for row in published
             if _model_enabled(str(row["model_name"]), include)
         },
@@ -187,7 +228,7 @@ def ticker_context(
     }
 
 
-def option_opportunity_context(payload: dict[str, Any]) -> dict[str, Any]:
+def option_opportunity_context(payload: dict[str, Any], *, available_at: Any | None = None) -> dict[str, Any]:
     keys = {
         "ticker", "symbol", "decision_id", "episode_key", "state", "recommendation_state",
         "ranking_version", "research_rank", "trade_rank",
@@ -200,7 +241,10 @@ def option_opportunity_context(payload: dict[str, Any]) -> dict[str, Any]:
         "blockers", "quality_status", "primary_edge", "catalyst_start", "catalyst_end",
         "thesis_payload", "details",
     }
-    return _bounded_value({key: payload[key] for key in keys if key in payload})
+    context = {key: payload[key] for key in keys if key in payload}
+    if available_at is not None:
+        context["available_at"] = available_at
+    return _bounded_value(context)
 
 
 def _model_enabled(model_name: str, include: Any) -> bool:

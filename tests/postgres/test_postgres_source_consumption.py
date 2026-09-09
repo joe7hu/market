@@ -5,10 +5,12 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 from psycopg.types.json import Jsonb
 
+import investment_panel.database.thesis as thesis_owner
 from investment_panel.database.thesis import thesis_monitor_rows
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.panel_models import load_postgres_tables
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.jobs.run_continuous_advisor import selected_rows
 from conftest import typed_config
 
 
@@ -244,3 +246,106 @@ def test_thesis_monitor_consumes_diverse_source_evidence_without_replacing_user_
     assert {"https://example.test/nvda-wire", "https://example.test/nvda-social"}.issubset(
         set(row["evidence_links"])
     )
+
+
+def test_historical_thesis_monitor_does_not_leak_future_watchlist_membership(
+    migrated_postgres_dsn: str,
+) -> None:
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    created_at = cutoff + timedelta(minutes=1)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        instrument_id = _instrument(connection, "FUTWATCH", category="watchlist")
+        connection.execute(
+            "INSERT INTO app.watchlist_item (instrument_id, watch_state, created_at, updated_at) VALUES (%s, 'watched', %s, %s)",
+            [instrument_id, created_at, created_at],
+        )
+
+    config = typed_config(migrated_postgres_dsn)
+    assert thesis_monitor_rows(config, symbols=["FUTWATCH"], include_current_prices=False, as_of=cutoff) == []
+    assert thesis_monitor_rows(config, symbols=["FUTWATCH"], include_current_prices=False, as_of=created_at + timedelta(seconds=1))[0]["symbol"] == "FUTWATCH"
+
+
+def test_thesis_monitor_excludes_inactive_watch_states(migrated_postgres_dsn: str) -> None:
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        instrument_id = _instrument(connection, "CANDWATCH", category="watchlist")
+        legacy_id = _instrument(connection, "LEGWATCH", category="watchlist")
+        connection.execute(
+            "INSERT INTO app.watchlist_item (instrument_id, watch_state) VALUES (%s, 'candidate'), (%s, 'watching')",
+            [instrument_id, legacy_id],
+        )
+        connection.execute(
+            """
+            INSERT INTO app.thesis (instrument_id, revision, status, thesis)
+            VALUES (%s, 1, 'current', %s)
+            """,
+            [instrument_id, Jsonb({"core_thesis": "Candidate thesis"})],
+        )
+
+    assert [row["symbol"] for row in selected_rows(
+        typed_config(migrated_postgres_dsn), ["CANDWATCH", "LEGWATCH"],
+    )] == ["LEGWATCH"]
+
+
+def test_historical_thesis_monitor_excludes_future_catalysts_and_runs(
+    migrated_postgres_dsn: str,
+) -> None:
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        instrument_id = _instrument(connection, "PITCATRUN", category="watchlist")
+        connection.execute(
+            "INSERT INTO app.watchlist_item (instrument_id, watch_state, created_at, updated_at) VALUES (%s, 'watched', %s, %s)",
+            [instrument_id, cutoff - timedelta(minutes=1), cutoff - timedelta(minutes=1)],
+        )
+        connection.execute(
+            """
+            INSERT INTO app.catalyst (instrument_id, starts_at, title, created_at, status)
+            VALUES (%s, %s, 'Future catalyst', %s, 'current')
+            """,
+            [instrument_id, cutoff + timedelta(days=1), cutoff + timedelta(minutes=1)],
+        )
+        connection.execute(
+            """
+            INSERT INTO app.thesis_automation_run
+                (instrument_id, input_symbol, status, started_at, created_at)
+            VALUES (%s, 'PITCATRUN', 'failed', %s, %s)
+            """,
+            [instrument_id, cutoff + timedelta(minutes=1), cutoff + timedelta(minutes=1)],
+        )
+
+    row = thesis_monitor_rows(
+        typed_config(migrated_postgres_dsn), symbols=["PITCATRUN"],
+        include_current_prices=False, as_of=cutoff,
+    )[0]
+    assert row.get("next_catalyst_at") is None
+    assert row.get("latest_automation_status") is None
+
+
+def test_historical_thesis_monitor_clears_future_position_fields(
+    migrated_postgres_dsn: str, monkeypatch,
+) -> None:
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        instrument_id = _instrument(connection, "PITPOSITION", category="watchlist")
+        connection.execute(
+            "INSERT INTO app.watchlist_item (instrument_id, watch_state, created_at, updated_at) VALUES (%s, 'watched', %s, %s)",
+            [instrument_id, cutoff - timedelta(minutes=1), cutoff - timedelta(minutes=1)],
+        )
+        connection.execute(
+            "INSERT INTO app.portfolio_position (instrument_id, quantity, average_cost, purchase_date, updated_at) VALUES (%s, 7, 42, %s, %s)",
+            [instrument_id, cutoff.date(), cutoff + timedelta(minutes=1)],
+        )
+
+    captured: dict[str, object] = {}
+
+    def capture(row: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        captured.update(row)
+        return row
+
+    monkeypatch.setattr(thesis_owner, "_thesis_monitor_row", capture)
+    thesis_monitor_rows(
+        typed_config(migrated_postgres_dsn), symbols=["PITPOSITION"],
+        include_current_prices=False, as_of=cutoff,
+    )
+    assert captured["owned"] is False
+    assert captured["quantity"] is None
+    assert captured["average_cost"] is None

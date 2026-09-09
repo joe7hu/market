@@ -660,7 +660,7 @@ class ActionRepository:
                 [candidate["id"]],
             )
             connection.execute(
-                "UPDATE app.publication SET status = 'superseded' "
+                "UPDATE app.publication SET status = 'superseded', superseded_at = COALESCE(superseded_at, now()) "
                 "WHERE scope = 'options-radar' AND status = 'published'"
             )
             connection.execute("DELETE FROM app.current_publication_item WHERE scope = 'options-radar'")

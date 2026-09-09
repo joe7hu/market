@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 
@@ -87,6 +87,7 @@ class OptionsHistoryToggleInput(BaseModel):
 
 class ThesisInput(BaseModel):
     thesis: str
+    countercase: str | None = None
     why: str = ""
     invalidation: str = ""
     invalidation_price: float | None = None
@@ -185,6 +186,17 @@ class ThesisMonitorSettingsInput(BaseModel):
     material_event_enabled: bool | None = None
     debounce_minutes: int | None = None
     max_material_runs_per_symbol_per_day: int | None = None
+    continuous_enabled: bool | None = None
+    continuous_cadence_minutes: int | None = Field(default=None, ge=5, le=720)
+    continuous_budget_usd: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+
+
+class ContinuousAdvisorSettingsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    cadence_minutes: int | None = Field(default=None, ge=5, le=720)
+    budget_usd: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
 
 
 class AgentSettingsInput(BaseModel):

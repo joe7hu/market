@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app import scheduler
@@ -199,6 +199,43 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["jobs"]["run_option_agents"] == 123
 
 
+def test_continuous_advisor_settings_refresh_without_restart(monkeypatch) -> None:
+    intervals = {
+        "run_continuous_advisor": 7_200,
+        "run_continuous_advisor_replay": 900,
+        "run_continuous_advisor_evolution": 86_400,
+        "other_job": 60,
+    }
+    next_due = {job: 1.0 for job in intervals}
+    next_due_wall = {job: datetime(2026, 7, 20, tzinfo=ZoneInfo("UTC")) for job in intervals}
+    monkeypatch.setattr(
+        scheduler,
+        "load_config",
+        lambda _path: object(),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "job_intervals",
+        lambda _config: {"run_continuous_advisor": 300, "run_continuous_advisor_replay": 600, "run_continuous_advisor_evolution": 1_800},
+    )
+
+    scheduler._refresh_continuous_advisor_intervals(
+        "config.yaml",
+        intervals,
+        next_due,
+        next_due_wall,
+        {},
+        now=100.0,
+        wall_now=datetime(2026, 7, 20, 9, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+
+    assert intervals["run_continuous_advisor"] == 300
+    assert intervals["run_continuous_advisor_replay"] == 600
+    assert intervals["run_continuous_advisor_evolution"] == 1_800
+    assert next_due["run_continuous_advisor"] == 100.0
+    assert "other_job" in intervals
+
+
 def test_source_writers_wait_one_interval_before_first_run() -> None:
     assert scheduler._initial_delay_seconds("options_radar_hard_refresh", 900, 0) == 900
     assert scheduler._initial_delay_seconds("update_robinhood_options", 120, 1) == 120
@@ -249,6 +286,18 @@ def test_option_history_recurrence_uses_the_next_quarter_hour_not_the_startup_st
     assert scheduler._recurring_delay_seconds(
         "robinhood_option_history", 900, reference_time=datetime(2026, 7, 20, 9, 30, tzinfo=eastern)
     ) == 900
+
+
+def test_continuous_advisor_cadence_stays_inside_market_hours() -> None:
+    cadence = 90 * 60
+    market_open = datetime(2026, 7, 20, 9, 30, tzinfo=ZoneInfo("America/New_York"))
+    assert scheduler._initial_delay_seconds("run_continuous_advisor", cadence, 0, reference_time=market_open) == 0
+    assert scheduler._initial_delay_seconds(
+        "run_continuous_advisor", cadence, 0, reference_time=market_open - timedelta(seconds=1)
+    ) == 1
+    assert scheduler._recurring_delay_seconds(
+        "run_continuous_advisor", 720 * 60, reference_time=market_open
+    ) == 24 * 60 * 60
 
 
 def test_agent_pass_can_be_disabled(monkeypatch) -> None:
@@ -374,6 +423,25 @@ def test_execute_started_job_passes_database_url_only_in_process_environment(mon
     assert result == {"status": "succeeded"}
     assert captured_specs[0].database_url == "postgresql://user:secret@localhost/market"
     assert captured_specs[0].database_reference is None
+
+
+def test_continuous_advisor_subprocess_receives_scheduled_due(monkeypatch) -> None:
+    captured_specs = []
+
+    async def execute(spec, _fail):
+        captured_specs.append(spec)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(scheduler, "execute_async", execute)
+    due = datetime(2026, 9, 9, 13, 30, tzinfo=ZoneInfo("UTC"))
+    result = asyncio.run(
+        scheduler._execute_started_refresh_job(
+            "run_continuous_advisor", "job-1", "postgresql:///market", "config.yaml", due_at=due
+        )
+    )
+
+    assert result["status"] == "succeeded"
+    assert captured_specs[0].scheduled_due_at == "2026-09-09T13:30:00+00:00"
 
 
 def test_scheduler_does_not_let_slow_job_starve_market_environment(monkeypatch) -> None:

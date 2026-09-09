@@ -245,8 +245,8 @@ def validate_model_output(
             raise ThesisAutomationValidationError("assessment confidence out of bounds")
         item["evidence_reference"] = reference_map[ref]
     _restore_thesis_references(thesis, reference_map)
-    _validate_scenarios(thesis)
-    _validate_invalidations(thesis)
+    validate_scenarios(thesis)
+    validate_invalidations(thesis)
     if not allowed_refs:
         thesis["confidence"] = "low"
         thesis["evidence_coverage_status"] = thesis.get("evidence_coverage_status") or "low"
@@ -260,7 +260,7 @@ def validate_model_output(
     }
 
 
-def _validate_scenarios(thesis: dict[str, Any]) -> None:
+def validate_scenarios(thesis: dict[str, Any]) -> None:
     scenarios = thesis.get("scenarios")
     if not isinstance(scenarios, dict):
         raise ThesisAutomationValidationError("scenarios must be an object")
@@ -277,7 +277,7 @@ def _validate_scenarios(thesis: dict[str, Any]) -> None:
         raise ThesisAutomationValidationError("scenario probabilities must sum to 1")
 
 
-def _validate_invalidations(thesis: dict[str, Any]) -> None:
+def validate_invalidations(thesis: dict[str, Any]) -> None:
     rules = thesis.get("invalidation_rules")
     if not isinstance(rules, list) or not rules:
         raise ThesisAutomationValidationError("at least one invalidation rule is required")

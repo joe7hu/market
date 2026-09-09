@@ -22,6 +22,14 @@ def test_process_spec_keeps_database_credentials_in_environment() -> None:
     assert environment["PYTHONPATH"].split(os.pathsep)[-1] == "existing"
 
 
+def test_process_spec_passes_scheduled_due_only_when_set() -> None:
+    scheduled = RefreshProcessSpec(
+        "job-1", "run_continuous_advisor", "postgresql:///market", scheduled_due_at="2026-09-09T13:30:00+00:00"
+    )
+    assert process_environment(scheduled, {})["MARKET_SCHEDULED_DUE_AT"] == "2026-09-09T13:30:00+00:00"
+    assert "MARKET_SCHEDULED_DUE_AT" not in process_environment(RefreshProcessSpec("job-2", "update_market_data", "db"), {})
+
+
 def test_sync_and_async_paths_share_the_same_process_command() -> None:
     spec = RefreshProcessSpec("job-1", "update_market_data", "postgresql:///market", "config.yaml", "db")
     command = process_command(spec)

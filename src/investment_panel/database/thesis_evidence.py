@@ -18,12 +18,32 @@ def thesis_source_evidence(
 ) -> dict[str, list[dict[str, Any]]]:
     if not symbols:
         return {}
+    historical = cutoff is not _DEFAULT_CUTOFF
     if cutoff is _DEFAULT_CUTOFF:
         cutoff = datetime.now(UTC)
     if cutoff is None:
         return {str(symbol): [] for symbol in symbols}
+    source_lifecycle_join = """
+            LEFT JOIN LATERAL (
+                SELECT lifecycle.enabled, lifecycle.operational_state
+                FROM ingest.source_lifecycle_history lifecycle
+                WHERE lifecycle.source_id = source.id AND lifecycle.effective_at <= %s
+                ORDER BY lifecycle.effective_at DESC, lifecycle.id DESC
+                LIMIT 1
+            ) source_lifecycle ON true
+    """ if historical else ""
+    source_state_filter = (
+        "AND COALESCE(source_lifecycle.enabled, source.enabled) "
+        "AND COALESCE(source_lifecycle.operational_state, source.operational_state) = 'active'"
+        if historical else
+        "AND source.enabled AND source.operational_state = 'active'"
+    )
+    params = [cutoff] * 5
+    if historical:
+        params.insert(0, cutoff)
+    params.extend([symbols, cutoff, cutoff, cutoff, max(1, int(max_per_symbol))])
     rows = connection.execute(
-        """
+        f"""
         WITH evidence_rows AS (
             SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
                    item.id AS item_id, item.source_id, signal.source_signal_id,
@@ -46,6 +66,7 @@ def thesis_source_evidence(
             JOIN ingest.run ingest_run ON ingest_run.id = item.ingest_run_id
             JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
             JOIN ingest.source source ON source.id = item.source_id
+            {source_lifecycle_join}
             LEFT JOIN LATERAL (
                 SELECT signal.id AS source_signal_id, signal.thesis, signal.sentiment,
                        signal.observed_at, signal.available_at
@@ -65,8 +86,7 @@ def thesis_source_evidence(
                 LIMIT 1
             ) signal ON true
             WHERE regexp_replace(upper(instrument.symbol), '[.]+$', '') = ANY(%s)
-              AND source.enabled
-              AND source.operational_state = 'active'
+              {source_state_filter}
               AND ingest_run.status IN ('succeeded', 'partial')
               AND ingest_run.finished_at IS NOT NULL
               AND ingest_run.finished_at <= %s
@@ -85,7 +105,7 @@ def thesis_source_evidence(
         WHERE symbol_rank <= %s
         ORDER BY symbol, observed_at DESC, source_id, reference, item_id
         """,
-        [cutoff, cutoff, cutoff, cutoff, cutoff, symbols, cutoff, cutoff, cutoff, max(1, int(max_per_symbol))],
+        params,
     ).fetchall()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for raw_row in rows:
@@ -94,7 +114,12 @@ def thesis_source_evidence(
     return grouped
 
 
-def assessments_by_revision(connection: Any, revision_ids: list[Any]) -> dict[int, list[dict[str, Any]]]:
+def assessments_by_revision(
+    connection: Any,
+    revision_ids: list[Any],
+    *,
+    cutoff: Any | None = None,
+) -> dict[int, list[dict[str, Any]]]:
     clean_ids = [int(value) for value in revision_ids if value is not None]
     if not clean_ids:
         return {}
@@ -104,9 +129,10 @@ def assessments_by_revision(connection: Any, revision_ids: list[Any]) -> dict[in
                stance, materiality, affected_pillar_ids, confidence, rationale, created_at
         FROM app.thesis_evidence_assessment
         WHERE thesis_revision_id = ANY(%s)
+          AND (%s::timestamptz IS NULL OR created_at <= %s)
         ORDER BY created_at DESC
         """,
-        [clean_ids],
+        [clean_ids, cutoff, cutoff],
     ).fetchall()
     grouped: dict[int, list[dict[str, Any]]] = {}
     for row in rows:

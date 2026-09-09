@@ -215,6 +215,11 @@ agents:
     material_event_enabled: true
     debounce_minutes: 30
     max_material_runs_per_symbol_per_day: 2
+    # Continuous advisor is opt-in; its scheduler remains dormant until the
+    # authenticated continuous-advisor control enables it.
+    continuous_enabled: false
+    continuous_cadence_minutes: 120
+    continuous_budget_usd: 5
     authority: research_ranking_only
   pricing:
     default:

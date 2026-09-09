@@ -28,12 +28,13 @@ from investment_panel.core.refresh_jobs import (
     mark_stale_running_jobs,
     start_refresh_job,
 )
-from investment_panel.core.decision import MARKET_TZ
+from investment_panel.core.decision import MARKET_TZ, is_market_open, is_us_market_day, market_session_bounds
 from investment_panel.database.source_health import overdue_source_refresh_jobs
 
 logger = logging.getLogger("market.scheduler")
 
 TICK_SECONDS = 15
+CONTINUOUS_SETTINGS_REFRESH_SECONDS = 60
 SCHEDULER_CAPACITY = 2
 FAST_DATABASE_JOBS = frozenset({"process_options_paper_orders", "sync_decision_inbox"})
 _scheduler_semaphore: asyncio.Semaphore | None = None
@@ -44,6 +45,9 @@ _deferred_jobs = 0
 # five-minute detector into the next observation bucket.
 SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history", "detect_option_events"})
 SLOT_ALIGNMENT_TOLERANCE_SECONDS = 30.0
+CONTINUOUS_ADVISOR_JOBS = frozenset(
+    {"run_continuous_advisor", "run_continuous_advisor_replay", "run_continuous_advisor_evolution"}
+)
 
 __all__ = [
     "STAGGER_SECONDS",
@@ -81,9 +85,12 @@ def _initial_delay_seconds(
     *,
     reference_time: datetime | None = None,
 ) -> float:
+    if job == "run_continuous_advisor":
+        reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(UTC)
+        return max(0.0, (_next_market_open_at(reference) - reference).total_seconds())
     if job in SLOT_ALIGNED_JOBS:
         reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(MARKET_TZ)
-        elapsed = reference.minute * 60 + reference.second + reference.microsecond / 1_000_000
+        elapsed = reference.timestamp()
         remainder = elapsed % interval
         return 0.0 if remainder == 0 else float(interval - remainder)
     return initial_delay_seconds(job, interval, offset, stagger_seconds=STAGGER_SECONDS)
@@ -108,7 +115,7 @@ def _is_slot_boundary(job: str, interval: int, reference_time: datetime | None =
     if job not in SLOT_ALIGNED_JOBS:
         return True
     reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(MARKET_TZ)
-    elapsed = reference.minute * 60 + reference.second + reference.microsecond / 1_000_000
+    elapsed = reference.timestamp()
     return elapsed % interval < SLOT_ALIGNMENT_TOLERANCE_SECONDS
 
 
@@ -125,14 +132,36 @@ def _recurring_delay_seconds(
     waits a full configured interval.  History collection is intentionally
     calendar-aligned; its next recurrence is the *next* quarter-hour slot.
     """
+    if job == "run_continuous_advisor":
+        reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(UTC)
+        target = reference + timedelta(seconds=interval)
+        return max(0.0, (_next_market_open_at(target) - reference).total_seconds())
     if job not in SLOT_ALIGNED_JOBS:
         return float(interval)
     reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(MARKET_TZ)
-    elapsed = reference.minute * 60 + reference.second + reference.microsecond / 1_000_000
+    elapsed = reference.timestamp()
     remainder = elapsed % interval
     # A completed run five seconds into a slot must wait to the *next* slot;
     # the scheduler's broader boundary tolerance is only for dispatch jitter.
     return float(interval if remainder < 0.001 else interval - remainder)
+
+
+def _next_market_open_at(reference: datetime) -> datetime:
+    """Return the next regular US session open, including the current open session."""
+
+    reference = reference.astimezone(UTC)
+    local = reference.astimezone(MARKET_TZ)
+    if is_market_open(reference):
+        return reference
+    day = local.date()
+    for _ in range(8):
+        if is_us_market_day(day):
+            open_at, _close_at = market_session_bounds(day)
+            candidate = open_at.astimezone(UTC)
+            if candidate >= reference:
+                return candidate
+        day += timedelta(days=1)
+    return reference + timedelta(days=8)
 
 
 def _env_int(name: str, default: int, *, allow_zero: bool = False) -> int:
@@ -148,6 +177,44 @@ def _env_int(name: str, default: int, *, allow_zero: bool = False) -> int:
     if value == 0:
         return 0 if allow_zero else default
     return value
+
+
+def _refresh_continuous_advisor_intervals(
+    config_path: str,
+    intervals: dict[str, int],
+    next_due: dict[str, float],
+    next_due_wall: dict[str, datetime],
+    in_flight: dict[str, asyncio.Task],
+    *,
+    now: float,
+    wall_now: datetime,
+) -> None:
+    """Apply live advisor enable/cadence changes without restarting the app."""
+
+    try:
+        configured = job_intervals(load_config(config_path))
+    except Exception:
+        logger.exception("could not refresh live continuous-advisor settings")
+        return
+
+    current = {job: configured[job] for job in CONTINUOUS_ADVISOR_JOBS if job in configured}
+    previous = {job: intervals.get(job) for job in CONTINUOUS_ADVISOR_JOBS if job in intervals}
+    if current == previous:
+        return
+
+    for job in CONTINUOUS_ADVISOR_JOBS:
+        interval = current.get(job)
+        if interval is None:
+            intervals.pop(job, None)
+            if job not in in_flight:
+                next_due.pop(job, None)
+                next_due_wall.pop(job, None)
+            continue
+        intervals[job] = interval
+        if job not in in_flight:
+            delay = _initial_delay_seconds(job, interval, 0, reference_time=wall_now)
+            next_due[job] = now + delay
+            next_due_wall[job] = wall_now + timedelta(seconds=delay)
 
 
 async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
@@ -191,6 +258,7 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
         )
         for offset, (job, interval) in enumerate(intervals.items())
     }
+    next_continuous_settings_refresh = time.monotonic() + CONTINUOUS_SETTINGS_REFRESH_SECONDS
     in_flight: dict[str, asyncio.Task] = {}
     global _scheduler_semaphore
     global _deferred_jobs
@@ -201,10 +269,27 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     try:
         while True:
             now = time.monotonic()
+            if now >= next_continuous_settings_refresh:
+                await asyncio.to_thread(
+                    _refresh_continuous_advisor_intervals,
+                    config_path,
+                    intervals,
+                    next_due,
+                    next_due_wall,
+                    in_flight,
+                    now=now,
+                    wall_now=datetime.now(MARKET_TZ),
+                )
+                next_continuous_settings_refresh = time.monotonic() + CONTINUOUS_SETTINGS_REFRESH_SECONDS
+                now = time.monotonic()
             for job, task in list(in_flight.items()):
                 if task.done():
                     in_flight.pop(job, None)
-                    interval = intervals[job]
+                    interval = intervals.get(job)
+                    if interval is None:
+                        next_due.pop(job, None)
+                        next_due_wall.pop(job, None)
+                        continue
                     delay = _recurring_delay_seconds(job, interval)
                     next_due[job] = now + delay
                     next_due_wall[job] = datetime.now(MARKET_TZ) + timedelta(seconds=delay)
@@ -297,7 +382,12 @@ async def _dispatch_once(
                     raise_on_error=False,
                 )
             else:
-                result = await _execute_started_refresh_job(job, started_job_id, db_path, config_path)
+                if job == "run_continuous_advisor" and due_at is not None:
+                    result = await _execute_started_refresh_job(
+                        job, started_job_id, db_path, config_path, due_at=due_at
+                    )
+                else:
+                    result = await _execute_started_refresh_job(job, started_job_id, db_path, config_path)
         else:
             result = started
     except Exception as exc:
@@ -323,12 +413,20 @@ async def _dispatch_once(
         logger.info("scheduled job %s -> %s", job, status)
 
 
-async def _execute_started_refresh_job(job: str, job_id: str, db_path: str, config_path: str) -> dict[str, Any]:
+async def _execute_started_refresh_job(
+    job: str,
+    job_id: str,
+    db_path: str,
+    config_path: str,
+    *,
+    due_at: datetime | None = None,
+) -> dict[str, Any]:
     spec = RefreshProcessSpec(
         job_id=job_id,
         job_name=job,
         database_url=str(db_path),
         config_path=config_path,
+        scheduled_due_at=due_at.astimezone(UTC).isoformat() if due_at is not None else None,
     )
 
     async def fail(error: str) -> dict[str, Any]:

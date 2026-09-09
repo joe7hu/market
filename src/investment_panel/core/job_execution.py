@@ -27,6 +27,7 @@ class RefreshProcessSpec:
     database_url: str
     config_path: str = "config.yaml"
     database_reference: str | None = None
+    scheduled_due_at: str | None = None
     python_executable: str = field(default_factory=lambda: sys.executable)
 
 
@@ -56,6 +57,10 @@ def process_environment(spec: RefreshProcessSpec, base: Mapping[str, str] | None
             ),
         }
     )
+    if spec.scheduled_due_at is None:
+        environment.pop("MARKET_SCHEDULED_DUE_AT", None)
+    else:
+        environment["MARKET_SCHEDULED_DUE_AT"] = spec.scheduled_due_at
     return environment
 
 

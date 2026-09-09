@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from ipaddress import ip_address
+import math
 import re
 import socket
 from typing import Any, Iterable
@@ -273,6 +274,22 @@ def _sanitize_thesis_monitor_settings(
             minimum=0,
             maximum=8,
         )
+    if "continuous_enabled" in value:
+        clean["continuous_enabled"] = _strict_bool(value["continuous_enabled"], "continuous_enabled")
+    if "continuous_cadence_minutes" in value:
+        clean["continuous_cadence_minutes"] = _bounded_int(
+            value["continuous_cadence_minutes"],
+            "continuous_cadence_minutes",
+            minimum=5,
+            maximum=720,
+        )
+    if "continuous_budget_usd" in value:
+        clean["continuous_budget_usd"] = _bounded_float(
+            value["continuous_budget_usd"],
+            "continuous_budget_usd",
+            minimum=0,
+            maximum=100,
+        )
     clean["authority"] = "research_ranking_only"
     return clean
 
@@ -402,6 +419,18 @@ def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
         raise ValueError(f"{name} must be an integer")
     if parsed < minimum or parsed > maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+
+def _bounded_float(value: Any, name: str, *, minimum: float, maximum: float) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not math.isfinite(parsed) or parsed < minimum or parsed > maximum:
+        raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}")
     return parsed
 
 

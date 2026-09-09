@@ -10,6 +10,7 @@ import {
   type DailyResearchPrompt,
   type OptionAgentSettingsInput,
 } from "@/api/agent";
+import { loadContinuousAdvisor, updateContinuousAdvisorSettings, type ContinuousAdvisor } from "@/api/continuousAdvisor";
 import { startRefreshJob, updateAgentSettings } from "@/api/panel";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
@@ -47,12 +48,20 @@ export function AgentPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState<{ latestOptionRunId?: string; label: string } | null>(null);
+  const [continuous, setContinuous] = useState<ContinuousAdvisor | null>(null);
+  const [continuousError, setContinuousError] = useState("");
 
   const refresh = useCallback(async () => {
     try {
       setData(await loadAgent());
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Failed to load agent overview");
+    }
+    try {
+      setContinuous(await loadContinuousAdvisor());
+      setContinuousError("");
+    } catch (exc) {
+      setContinuousError(exc instanceof Error ? exc.message : "Failed to load continuous advisor");
     }
   }, []);
 
@@ -158,6 +167,7 @@ export function AgentPage() {
     ["Thesis expressions", `${materialization?.materialized ?? 0}/${materialization?.completed ?? 0}`, "research-only · tickets own readiness", materialization?.historical_unmaterialized ? "warn" : "good"],
     ["Agent tokens today", cost ? (cost.today.input_tokens + cost.today.output_tokens).toLocaleString() : "—", `${cost?.today.runs ?? 0} option + thesis-monitor runs`, "info"],
     ["Agent tokens 7d", cost ? (cost.last_7d.input_tokens + cost.last_7d.output_tokens).toLocaleString() : "—", `${cost?.last_7d.runs ?? 0} runs · OAuth cost not metered`, "info"],
+    ["Continuous advisor", continuous ? (continuous.enabled ? "On" : "Off") : "—", continuous ? `${continuous.tickers.length} portfolio/watchlist names · ${continuous.cadence_minutes}m cadence` : continuousError || "loading", continuous?.enabled ? "good" : "muted"],
   ];
 
   return (
@@ -179,6 +189,8 @@ export function AgentPage() {
 
       {researchError ? <Notice tone="bad">Daily research context unavailable: {researchError}</Notice> : null}
       <DailyResearchPromptPanel research={research ?? undefined} />
+      {continuousError ? <Notice tone="bad">Continuous advisor unavailable: {continuousError}</Notice> : null}
+      {continuous ? <ContinuousAdvisorPanel data={continuous} onSaved={(next) => setContinuous(next)} /> : null}
 
       {/* On-demand analysis */}
       <DataTableFrame title="On-demand analysis">
@@ -224,7 +236,7 @@ export function AgentPage() {
           <div className="flex items-start gap-3">
             <div className="rounded-md border border-border bg-muted p-2"><BrainCircuit className="size-5 text-muted-foreground" /></div>
             <p className="text-sm leading-6 text-muted-foreground">
-              One consolidated pass covers all open thesis + postmortem requests in a single call. Saved to config.yaml; cadence changes apply on app restart.
+              One consolidated pass covers all open thesis + postmortem requests in a single call. Saved to config.yaml; continuous-advisor cadence changes apply without an app restart.
             </p>
           </div>
 
@@ -328,6 +340,76 @@ function RunRow({ run }: { run: AgentRun }) {
       <td className="px-3 py-3 tabular-nums">{run.postmortem_accepted ?? 0}/{run.postmortem_attempted ?? 0}</td>
       <td className="px-3 py-3"><StatusBadge tone={toneFromText(run.status || "")}>{titleLabel(run.status || "unknown")}</StatusBadge></td>
     </tr>
+  );
+}
+
+function ContinuousAdvisorPanel({ data, onSaved }: { data: ContinuousAdvisor; onSaved: (data: ContinuousAdvisor) => void }) {
+  const [enabled, setEnabled] = useState(data.enabled);
+  const [cadence, setCadence] = useState(data.cadence_minutes);
+  const [budget, setBudget] = useState(data.budget_usd);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const next = await updateContinuousAdvisorSettings({ enabled, cadence_minutes: cadence, budget_usd: budget });
+      onSaved(next);
+      setMessage("Continuous advisor settings saved.");
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "Failed to save continuous advisor settings");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const health = data.strategy_health;
+  return (
+    <DataTableFrame title="Continuous Advisor" action={<StatusBadge tone={data.enabled ? "good" : "muted"}>{data.enabled ? "Enabled" : "Disabled"}</StatusBadge>}>
+      <div className="space-y-4 p-4">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="size-4 accent-primary" /> Run during US market hours</label>
+          <Field label="Cadence (minutes)"><Input type="number" min={5} max={720} value={cadence} onChange={(event) => setCadence(boundedInt(event.target.value, 5, 720))} /></Field>
+          <Field label="Budget per scheduler run (USD)"><Input type="number" min={0} max={100} step="0.01" value={budget} onChange={(event) => setBudget(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} /></Field>
+        </div>
+        <p className="text-xs text-muted-foreground">Research-only five-minute minimum cadence; the default scheduler cadence is two hours. Missing or stale evidence is shown as a blocker and never inferred.</p>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm">Active prompt <strong>{String(health.active_prompt_version ?? "unknown")}</strong> · challenger {String(health.challenger?.version ?? "none")} · coverage {String(health.coverage?.symbols ?? 0)} names · ${Number(health.coverage?.cost_usd ?? 0).toFixed(4)}</div>
+          <Button type="button" variant="outline" disabled={busy} onClick={() => void save()}>{busy ? "Saving" : "Save advisor settings"}</Button>
+        </div>
+        {message ? <p className="text-sm text-emerald-700 dark:text-emerald-300">{message}</p> : null}
+        {error ? <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p> : null}
+
+        {data.tickers.length ? (
+          <div className="grid gap-3 lg:grid-cols-2">
+            {data.tickers.map((ticker) => <AdvisorTickerCard key={ticker.symbol} ticker={ticker} />)}
+          </div>
+        ) : <p className="text-sm text-muted-foreground">No owned or active-watchlist symbols are currently monitored.</p>}
+        <details className="rounded-md border border-border px-3 py-2 text-sm">
+          <summary className="cursor-pointer font-medium">Strategy health and provenance</summary>
+          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{JSON.stringify(health, null, 2)}</pre>
+        </details>
+      </div>
+    </DataTableFrame>
+  );
+}
+
+function AdvisorTickerCard({ ticker }: { ticker: ContinuousAdvisor["tickers"][number] }) {
+  const verdict = ticker.verdict;
+  const forecast = verdict.forecasts?.[0];
+  return (
+    <div className="rounded-lg border border-border bg-background p-4">
+      <div className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{ticker.symbol}</p><h3 className="mt-1 font-semibold">{verdict.thesis || "No verdict yet"}</h3></div><StatusBadge tone={verdict.blockers?.length ? "warn" : "good"}>{verdict.blockers?.length ? `${verdict.blockers.length} blocker${verdict.blockers.length === 1 ? "" : "s"}` : "Ready"}</StatusBadge></div>
+      <p className="mt-2 text-sm text-muted-foreground"><strong>Countercase:</strong> {verdict.countercase || "Unavailable"}</p>
+      {forecast ? <p className="mt-2 text-sm"><strong>Forecast:</strong> {forecast.statement} · {forecast.horizon} · {Math.round(Number(forecast.probability ?? 0) * 100)}% {forecast.direction}</p> : null}
+      <p className="mt-2 text-xs text-muted-foreground">{verdict.change_since_prior || "No prior cycle"} · Next review: {verdict.next_review_trigger || "—"}{verdict.next_review_at ? ` (${formatTime(verdict.next_review_at)})` : ""}{verdict.outcome_date ? ` · Outcome: ${formatTime(verdict.outcome_date)}` : ""}</p>
+      {verdict.evidence_freshness && Object.keys(verdict.evidence_freshness).length ? <p className="mt-1 text-xs text-muted-foreground"><strong>Evidence freshness:</strong> {Object.entries(verdict.evidence_freshness).map(([key, value]) => `${titleLabel(key)} ${value}`).join(" · ")}</p> : null}
+      {verdict.blockers?.length ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Blockers: {verdict.blockers.join(", ")}</p> : null}
+      <details className="mt-3 text-xs"><summary className="cursor-pointer text-muted-foreground">Packet provenance</summary><pre className="mt-1 overflow-auto whitespace-pre-wrap text-muted-foreground">{JSON.stringify(ticker.provenance, null, 2)}</pre></details>
+    </div>
   );
 }
 

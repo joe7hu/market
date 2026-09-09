@@ -1356,6 +1356,257 @@
         "title": "ContextualAssistantResponseInput",
         "type": "object"
       },
+      "ContinuousAdvisorPromptStatusResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "active_prompt_version": {
+            "title": "Active Prompt Version",
+            "type": "string"
+          },
+          "challenger": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Challenger"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "title": "Coverage",
+            "type": "object"
+          },
+          "matched_cohort_scorecard": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Cohort Scorecard"
+          },
+          "promotion": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promotion"
+          },
+          "scheduler": {
+            "additionalProperties": true,
+            "title": "Scheduler",
+            "type": "object"
+          }
+        },
+        "required": [
+          "active_prompt_version"
+        ],
+        "title": "ContinuousAdvisorPromptStatusResponse",
+        "type": "object"
+      },
+      "ContinuousAdvisorReplayResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "scorecards": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Scorecards",
+            "type": "array"
+          }
+        },
+        "title": "ContinuousAdvisorReplayResponse",
+        "type": "object"
+      },
+      "ContinuousAdvisorResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "budget_usd": {
+            "default": 0,
+            "title": "Budget Usd",
+            "type": "number"
+          },
+          "cadence_minutes": {
+            "default": 120,
+            "title": "Cadence Minutes",
+            "type": "integer"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "strategy_health": {
+            "additionalProperties": true,
+            "title": "Strategy Health",
+            "type": "object"
+          },
+          "tickers": {
+            "items": {
+              "$ref": "#/components/schemas/ContinuousAdvisorTickerResponse"
+            },
+            "title": "Tickers",
+            "type": "array"
+          }
+        },
+        "title": "ContinuousAdvisorResponse",
+        "type": "object"
+      },
+      "ContinuousAdvisorRunDetailResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "claims": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "packet": {
+            "additionalProperties": true,
+            "title": "Packet",
+            "type": "object"
+          },
+          "response": {
+            "additionalProperties": true,
+            "title": "Response",
+            "type": "object"
+          },
+          "run": {
+            "additionalProperties": true,
+            "title": "Run",
+            "type": "object"
+          }
+        },
+        "title": "ContinuousAdvisorRunDetailResponse",
+        "type": "object"
+      },
+      "ContinuousAdvisorRunsResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "ContinuousAdvisorRunsResponse",
+        "type": "object"
+      },
+      "ContinuousAdvisorSettingsInput": {
+        "additionalProperties": false,
+        "properties": {
+          "budget_usd": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Usd"
+          },
+          "cadence_minutes": {
+            "anyOf": [
+              {
+                "maximum": 720.0,
+                "minimum": 5.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cadence Minutes"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          }
+        },
+        "title": "ContinuousAdvisorSettingsInput",
+        "type": "object"
+      },
+      "ContinuousAdvisorTickerResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "provenance": {
+            "additionalProperties": true,
+            "title": "Provenance",
+            "type": "object"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "verdict": {
+            "additionalProperties": true,
+            "title": "Verdict",
+            "type": "object"
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "title": "ContinuousAdvisorTickerResponse",
+        "type": "object"
+      },
+      "ContinuousAdvisorTickersResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ContinuousAdvisorTickerResponse"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "ContinuousAdvisorTickersResponse",
+        "type": "object"
+      },
       "CoverageMatrix": {
         "additionalProperties": true,
         "description": "Frozen point-in-time coverage contract for market state inputs.",
@@ -13521,6 +13772,17 @@
             ],
             "title": "Conviction"
           },
+          "countercase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Countercase"
+          },
           "direction": {
             "anyOf": [
               {
@@ -13734,6 +13996,43 @@
               }
             ],
             "title": "Concurrency"
+          },
+          "continuous_budget_usd": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuous Budget Usd"
+          },
+          "continuous_cadence_minutes": {
+            "anyOf": [
+              {
+                "maximum": 720.0,
+                "minimum": 5.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuous Cadence Minutes"
+          },
+          "continuous_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuous Enabled"
           },
           "debounce_minutes": {
             "anyOf": [
@@ -16494,6 +16793,280 @@
           }
         },
         "summary": "Agent Research Prompt"
+      }
+    },
+    "/api/continuous-advisor": {
+      "get": {
+        "operationId": "continuous_advisor_api_continuous_advisor_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Continuous Advisor"
+      }
+    },
+    "/api/continuous-advisor/prompts": {
+      "get": {
+        "operationId": "continuous_advisor_prompts_api_continuous_advisor_prompts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorPromptStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Continuous Advisor Prompts"
+      }
+    },
+    "/api/continuous-advisor/replay": {
+      "get": {
+        "operationId": "continuous_advisor_replay_api_continuous_advisor_replay_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "prompt_version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Prompt Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorReplayResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Continuous Advisor Replay"
+      }
+    },
+    "/api/continuous-advisor/runs": {
+      "get": {
+        "operationId": "continuous_advisor_runs_api_continuous_advisor_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "symbol",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorRunsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Continuous Advisor Runs"
+      }
+    },
+    "/api/continuous-advisor/runs/{task_id}": {
+      "get": {
+        "operationId": "continuous_advisor_run_detail_api_continuous_advisor_runs__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorRunDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Continuous Advisor Run Detail"
+      }
+    },
+    "/api/continuous-advisor/settings": {
+      "patch": {
+        "operationId": "update_continuous_advisor_settings_api_continuous_advisor_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContinuousAdvisorSettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Continuous Advisor Settings"
+      }
+    },
+    "/api/continuous-advisor/tickers": {
+      "get": {
+        "operationId": "continuous_advisor_tickers_api_continuous_advisor_tickers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorTickersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Continuous Advisor Tickers"
+      }
+    },
+    "/api/continuous-advisor/tickers/{symbol}": {
+      "get": {
+        "operationId": "continuous_advisor_ticker_api_continuous_advisor_tickers__symbol__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorTickerResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Continuous Advisor Ticker"
       }
     },
     "/api/decision-funnel": {

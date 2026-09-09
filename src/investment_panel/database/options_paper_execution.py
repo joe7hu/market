@@ -618,6 +618,7 @@ class OptionsPaperExecutionRepository:
             model_name = "options_decision_candidate" if lane == "qqq" else "option_radar_opportunity"
             matches = [row for row in current_option_publication_rows(
                 connection, scope=scope, model_name=model_name, cutoff=as_of, publication_id=publication_id,
+                allow_superseded=True,
             ) if row["authoritative_decision_id"] == decision_id]
         else:
             matches = [

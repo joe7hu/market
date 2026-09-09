@@ -1533,6 +1533,20 @@ def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> 
     assert reviewed["last_reviewed"]
 
 
+def test_lifecycle_review_creates_a_point_in_time_revision(migrated_postgres_dsn: str) -> None:
+    config = typed_config(migrated_postgres_dsn, raw={"watchlist": [{"symbol": "MU"}]})
+
+    first = thesis_owner.save_thesis(config, "MU", {"thesis": "Memory upcycle.", "invalidation": "below $80"})
+    reviewed = thesis_owner.record_thesis_review(config, "MU", {"outcome": "closed", "notes": "Thesis ended."})
+    history = thesis_history(config, "MU")
+
+    assert reviewed["revision"] == first["revision"] + 1
+    assert len(history["revisions"]) == 2
+    revisions = {row["revision"]: row for row in history["revisions"]}
+    assert revisions[first["revision"]]["thesis_json"]["lifecycle_status"] == "active"
+    assert revisions[reviewed["revision"]]["thesis_json"]["lifecycle_status"] == "closed"
+
+
 def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) -> None:
     config = typed_config(migrated_postgres_dsn, raw={"watchlist": [{"symbol": "TSLA"}]})
 

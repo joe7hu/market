@@ -13,6 +13,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.core.config import AppConfig
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
+from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.thesis_evidence import assessments_by_revision, thesis_source_evidence
 from investment_panel.database.thesis_monitor_universe import monitored_thesis_rows
 
@@ -26,67 +27,98 @@ INVALIDATION_PRICE_RE = re.compile(
 REVIEW_OUTCOMES = {"unchanged", "updated", "invalidated", "closed"}
 
 
-def save_thesis(config: AppConfig, symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
-    normalized = canonical_symbol(symbol)
+def save_thesis(
+    config: AppConfig,
+    symbol: str,
+    fields: dict[str, Any],
+    *,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
     runtime = runtime_for_config(config)
+    with runtime.transaction() as connection:
+        return save_thesis_on_connection(
+            connection,
+            symbol,
+            fields,
+            expected_revision=expected_revision,
+        )
+
+
+def save_thesis_on_connection(
+    connection: Any,
+    symbol: str,
+    fields: dict[str, Any],
+    *,
+    expected_revision: int | None = None,
+    record_review_event: bool = True,
+) -> dict[str, Any]:
+    """Persist one thesis revision inside a caller-owned transaction."""
+    normalized = canonical_symbol(symbol)
     now = datetime.now(UTC)
     author_kind = str(fields.get("author_kind") or "human").lower()
     if author_kind not in {"human", "ai", "legacy"}:
         raise ValueError("author_kind must be human, ai, or legacy")
-    with runtime.transaction() as connection:
-        instrument_id = reconcile_instrument(connection, normalized, name=normalized, category="thesis")
-        current = connection.execute(
-            """
-            SELECT id, revision, thesis
-            FROM app.thesis
-            WHERE instrument_id = %s AND status = 'current'
-            ORDER BY revision DESC LIMIT 1
-            FOR UPDATE
-            """,
-            [instrument_id],
-        ).fetchone()
-        previous = dict(current["thesis"]) if current else {}
-        thesis = normalize_thesis_v3(fields, previous=previous, symbol=normalized)
-        revision = int(current["revision"]) + 1 if current else 1
-        superseded_id = int(current["id"]) if current else None
-        change_rationale = str(fields.get("change_rationale") or fields.get("notes") or "").strip()
-        connection.execute(
-            "UPDATE app.thesis SET status = 'superseded', updated_at = now() "
-            "WHERE instrument_id = %s AND status = 'current'",
-            [instrument_id],
+    instrument_id = reconcile_instrument(connection, normalized, name=normalized, category="thesis")
+    current = connection.execute(
+        """
+        SELECT id, revision, thesis
+        FROM app.thesis
+        WHERE instrument_id = %s AND status = 'current'
+        ORDER BY revision DESC LIMIT 1
+        FOR UPDATE
+        """,
+        [instrument_id],
+    ).fetchone()
+    current_revision = int(current["revision"]) if current else 0
+    if expected_revision is not None and current_revision != int(expected_revision):
+        raise ValueError(
+            f"thesis revision changed during write: expected {expected_revision}, got {current_revision}"
         )
-        inserted = connection.execute(
+    previous = dict(current["thesis"]) if current else {}
+    if author_kind == "ai" and str(previous.get("automation_policy") or "").lower() == "manual_lock":
+        raise ValueError("thesis automation is manually locked")
+    thesis = normalize_thesis_v3(fields, previous=previous, symbol=normalized)
+    revision = int(current["revision"]) + 1 if current else 1
+    superseded_id = int(current["id"]) if current else None
+    change_rationale = str(fields.get("change_rationale") or fields.get("notes") or "").strip()
+    connection.execute(
+        "UPDATE app.thesis SET status = 'superseded' "
+        "WHERE instrument_id = %s AND status = 'current'",
+        [instrument_id],
+    )
+    inserted = connection.execute(
+        """
+        INSERT INTO app.thesis (
+            instrument_id, revision, status, thesis, schema_version, author_kind,
+            source_agent_task_id, automation_run_id, superseded_revision_id, change_rationale,
+            last_assessed_at, last_human_reviewed_at
+        )
+        VALUES (%s, %s, 'current', %s, 3, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id, created_at, updated_at
+        """,
+        [
+            instrument_id,
+            revision,
+            Jsonb(thesis),
+            author_kind,
+            fields.get("source_agent_task_id"),
+            fields.get("automation_run_id"),
+            superseded_id,
+            change_rationale or None,
+            now if author_kind == "ai" else None,
+            now if author_kind == "human" else _parse_datetime(thesis.get("last_reviewed")),
+        ],
+    ).fetchone()
+    if author_kind == "human" and record_review_event:
+        connection.execute(
             """
-            INSERT INTO app.thesis (
-                instrument_id, revision, status, thesis, schema_version, author_kind,
-                automation_run_id, superseded_revision_id, change_rationale,
-                last_assessed_at, last_human_reviewed_at
+            INSERT INTO app.thesis_review_event (
+                instrument_id, thesis_revision_id, outcome, notes, reviewed_evidence_cutoff, reviewed_by
             )
-            VALUES (%s, %s, 'current', %s, 3, %s, %s, %s, %s, %s, %s)
-            RETURNING id, created_at, updated_at
+            VALUES (%s, %s, 'updated', %s, %s, 'joe')
             """,
-            [
-                instrument_id,
-                revision,
-                Jsonb(thesis),
-                author_kind,
-                fields.get("automation_run_id"),
-                superseded_id,
-                change_rationale or None,
-                now if author_kind == "ai" else None,
-                now if author_kind == "human" else _parse_datetime(thesis.get("last_reviewed")),
-            ],
-        ).fetchone()
-        if author_kind == "human":
-            connection.execute(
-                """
-                INSERT INTO app.thesis_review_event (
-                    instrument_id, thesis_revision_id, outcome, notes, reviewed_evidence_cutoff, reviewed_by
-                )
-                VALUES (%s, %s, 'updated', %s, %s, 'joe')
-                """,
-                [instrument_id, inserted["id"], change_rationale or None, fields.get("reviewed_evidence_cutoff")],
-            )
+            [instrument_id, inserted["id"], change_rationale or None, fields.get("reviewed_evidence_cutoff")],
+        )
     return {
         "symbol": normalized,
         "thesis": thesis,
@@ -115,6 +147,7 @@ def normalize_thesis_v3(fields: dict[str, Any], *, previous: dict[str, Any] | No
         {
             "schema_version": 3,
             "core_thesis": core,
+            "countercase": _first_text(fields, "countercase") or _first_text(previous, "countercase"),
             "why_owned_watched": why,
             "direction": direction,
             "timeframe": _first_text(fields, "timeframe") or _first_text(previous, "timeframe"),
@@ -165,6 +198,29 @@ def record_thesis_review(config: AppConfig, symbol: str, fields: dict[str, Any])
         thesis = dict(row["thesis"] or {})
         if not str(thesis.get("core_thesis") or thesis.get("thesis") or "").strip():
             raise ValueError("cannot record an empty-thesis review")
+        notes = _first_text(fields, "notes")
+        if outcome in {"invalidated", "closed"}:
+            thesis["lifecycle_status"] = outcome
+            saved = save_thesis_on_connection(
+                connection,
+                normalized,
+                {
+                    **thesis,
+                    "author_kind": "human",
+                    "change_rationale": notes or f"Thesis review marked {outcome}.",
+                },
+                expected_revision=int(row["revision"]),
+                record_review_event=False,
+            )
+            reviewed_revision_id = saved["revision_id"]
+            reviewed_revision = saved["revision"]
+        else:
+            connection.execute(
+                "UPDATE app.thesis SET last_human_reviewed_at = now() WHERE id = %s",
+                [row["thesis_revision_id"]],
+            )
+            reviewed_revision_id = row["thesis_revision_id"]
+            reviewed_revision = row["revision"]
         event = connection.execute(
             """
             INSERT INTO app.thesis_review_event (
@@ -174,30 +230,16 @@ def record_thesis_review(config: AppConfig, symbol: str, fields: dict[str, Any])
             RETURNING id, created_at
             """,
             [
-                row["instrument_id"],
-                row["thesis_revision_id"],
-                outcome,
-                _first_text(fields, "notes"),
+                row["instrument_id"], reviewed_revision_id, outcome, notes,
                 fields.get("reviewed_evidence_cutoff"),
             ],
         ).fetchone()
-        if outcome in {"invalidated", "closed"}:
-            thesis["lifecycle_status"] = outcome
-            connection.execute(
-                "UPDATE app.thesis SET thesis = %s, updated_at = now(), last_human_reviewed_at = now() WHERE id = %s",
-                [Jsonb(thesis), row["thesis_revision_id"]],
-            )
-        else:
-            connection.execute(
-                "UPDATE app.thesis SET last_human_reviewed_at = now(), updated_at = now() WHERE id = %s",
-                [row["thesis_revision_id"]],
-            )
     return {
         "symbol": normalized,
         "outcome": outcome,
         "review_event_id": event["id"],
         "last_reviewed": event["created_at"],
-        "revision": row["revision"],
+        "revision": reviewed_revision,
     }
 
 
@@ -311,6 +353,7 @@ def thesis_monitor_rows(
     *,
     symbols: list[str] | set[str] | None = None,
     include_current_prices: bool = True,
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
@@ -318,7 +361,30 @@ def thesis_monitor_rows(
             connection,
             symbols=symbols,
             include_current_prices=include_current_prices,
+            as_of=as_of,
         )
+        if as_of is not None:
+            historical_positions = {
+                str(item.get("symbol") or "").upper(): item
+                for item in replay_portfolio_at(None, as_of, connection=connection).get("positions") or []
+            }
+            for row in rows:
+                symbol = str(row.get("symbol") or "").upper()
+                position = historical_positions.get(symbol)
+                if position is not None:
+                    row["owned"] = True
+                    for key in ("quantity", "average_cost", "purchase_date"):
+                        if key in position:
+                            row[key] = position[key]
+                elif row.get("owned"):
+                    position_updated_at = _parse_datetime(row.get("position_updated_at"))
+                    row["owned"] = bool(position_updated_at and position_updated_at <= as_of)
+                    if not row["owned"]:
+                        for key in ("quantity", "average_cost", "purchase_date", "position_updated_at"):
+                            row[key] = None
+                else:
+                    row["owned"] = False
+            rows = [row for row in rows if row.get("owned") or row.get("watched")]
         for row in rows:
             available_values = [
                 value for value in (
@@ -327,8 +393,15 @@ def thesis_monitor_rows(
                 ) if value is not None
             ]
             row["available_at"] = max(available_values) if available_values else None
-        evidence_by_symbol = thesis_source_evidence(connection, [str(row["symbol"]) for row in rows])
-        assessments_by_revision_map = assessments_by_revision(connection, [row.get("revision_id") for row in rows])
+        evidence_symbols = [str(row["symbol"]) for row in rows]
+        evidence_by_symbol = (
+            thesis_source_evidence(connection, evidence_symbols, cutoff=as_of)
+            if as_of is not None
+            else thesis_source_evidence(connection, evidence_symbols)
+        )
+        assessments_by_revision_map = assessments_by_revision(
+            connection, [row.get("revision_id") for row in rows], cutoff=as_of
+        )
     total_market_value = 0.0
     for row in rows:
         row["market_value"] = _market_value(row)

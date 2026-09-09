@@ -38,6 +38,7 @@ export const navItems: NavItem[] = [
   { to: "/opportunities", label: "Opportunities", icon: Eye, aliases: ["/watchlist"] },
   { to: "/portfolio", label: "Portfolio", icon: Landmark },
   { to: "/sources", label: "Research", icon: Mic, aliases: ["/research", "/research-queue"] },
+  { to: "/agent", label: "Advisor", icon: MessageCircle, aliases: ["/thesis-monitor", "/theses"] },
   { to: "/health", label: "System", icon: HeartPulse, aliases: ["/system"] },
 ];
 

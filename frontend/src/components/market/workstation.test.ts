@@ -3,12 +3,13 @@ import { describe, expect, it } from "vitest";
 import { criticalDataCoverageTone, navItems } from "./workstation";
 
 describe("primary navigation", () => {
-  it("keeps the five Command Center destinations on desktop and mobile", () => {
+  it("keeps the primary Command Center destinations on desktop and mobile", () => {
     expect(navItems.map(({ label, to }) => [label, to])).toEqual([
       ["Command Center", "/today"],
       ["Opportunities", "/opportunities"],
       ["Portfolio", "/portfolio"],
       ["Research", "/sources"],
+      ["Advisor", "/agent"],
       ["System", "/health"],
     ]);
   });

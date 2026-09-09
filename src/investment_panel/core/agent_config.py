@@ -19,6 +19,9 @@ class ThesisMonitorAgentConfig:
     material_event_enabled: bool = False
     debounce_minutes: int = 30
     max_material_runs_per_symbol_per_day: int = 2
+    continuous_enabled: bool = False
+    continuous_cadence_minutes: int = 120
+    continuous_budget_usd: float = 5.0
     authority: str = "research_ranking_only"
 
 
@@ -35,6 +38,9 @@ def thesis_monitor_agent_config(raw: dict[str, Any]) -> ThesisMonitorAgentConfig
         material_event_enabled=bool(raw.get("material_event_enabled", False)),
         debounce_minutes=int(raw.get("debounce_minutes", 30)),
         max_material_runs_per_symbol_per_day=int(raw.get("max_material_runs_per_symbol_per_day", 2)),
+        continuous_enabled=bool(raw.get("continuous_enabled", False)),
+        continuous_cadence_minutes=int(raw.get("continuous_cadence_minutes", 120)),
+        continuous_budget_usd=float(raw.get("continuous_budget_usd", 5.0)),
         authority=str(raw.get("authority", "research_ranking_only")),
     )
 
@@ -52,5 +58,8 @@ def thesis_monitor_agent_dict(config: ThesisMonitorAgentConfig) -> dict[str, Any
         "material_event_enabled": config.material_event_enabled,
         "debounce_minutes": config.debounce_minutes,
         "max_material_runs_per_symbol_per_day": config.max_material_runs_per_symbol_per_day,
+        "continuous_enabled": config.continuous_enabled,
+        "continuous_cadence_minutes": config.continuous_cadence_minutes,
+        "continuous_budget_usd": config.continuous_budget_usd,
         "authority": config.authority,
     }

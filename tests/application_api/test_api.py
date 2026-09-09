@@ -49,6 +49,26 @@ def _use_postgres_api(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
     monkeypatch.setattr(panel_owner, "load_config", lambda: config)
 
 
+def test_continuous_advisor_read_routes_are_decision_first(postgresql, monkeypatch: pytest.MonkeyPatch) -> None:
+    info = postgresql.info
+    credentials = info.user if not info.password else f"{info.user}:{info.password}"
+    dsn = f"postgresql://{credentials}@{info.host}:{info.port}/{info.dbname}"
+    upgrade_database(dsn)
+    _use_postgres_api(monkeypatch, dsn)
+    client = TestClient(app)
+
+    overview = client.get("/api/continuous-advisor")
+    assert overview.status_code == 200
+    assert overview.json()["tickers"] == []
+    assert client.get("/api/continuous-advisor/tickers").json() == {"rows": [], "count": 0}
+    assert client.get("/api/continuous-advisor/runs").json() == {"rows": [], "count": 0}
+    assert client.get("/api/continuous-advisor/replay").json() == {"scorecards": [], "count": 0}
+    assert client.get("/api/continuous-advisor/prompts").status_code == 200
+    assert client.get("/api/continuous-advisor/runs/not-a-run").status_code == 404
+    assert client.get("/api/continuous-advisor/tickers/%20").status_code == 400
+    assert client.get("/api/continuous-advisor/runs?symbol=%20").status_code == 400
+
+
 def _seed_phase7_paper_provenance(connection: Any, candidate_id: int, instrument_id: int, sample: int = 30) -> tuple[list[str], list[str]]:
     # Retained paper observations follow the candidate's creation and precede
     # the evaluation cutoff. Each episode has one complete execution journal.
