@@ -11,7 +11,8 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
-HEAD_REVISION = "20260908_0007"
+HEAD_REVISION = "20260909_0008"
+_SUPPORTED_UPGRADE_REVISIONS = frozenset({"20260907_0006", "20260908_0007", HEAD_REVISION})
 _MIGRATION_LOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended('market-schema-migration',0))"
 
 
@@ -33,8 +34,6 @@ def downgrade_database(dsn: str, revision: str = "base") -> None:
 
 def _migrate(dsn: str, revision: str, *, downgrade: bool) -> None:
     # Runtime readers only need HEAD_REVISION; migration assets live in the checkout.
-    from migrations.baseline_contract import BASELINE_REVISION
-
     config = alembic_config(dsn)
     engine = create_engine(config.get_main_option("sqlalchemy.url"), poolclass=NullPool)
     try:
@@ -57,7 +56,9 @@ def _migrate(dsn: str, revision: str, *, downgrade: bool) -> None:
                 with connection.begin():
                     exists = connection.execute(text("SELECT to_regclass('public.alembic_version')")).scalar()
                     versions = connection.execute(text("SELECT version_num FROM public.alembic_version")).scalars().all() if exists else []
-                    if versions and versions not in ([BASELINE_REVISION], [HEAD_REVISION]):
+                    if versions and (
+                        len(versions) != 1 or versions[0] not in _SUPPORTED_UPGRADE_REVISIONS
+                    ):
                         raise RuntimeError(
                             "database uses an archived migration revision; use the matching old checkout before switching to the current schema"
                         )

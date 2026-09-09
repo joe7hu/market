@@ -7,7 +7,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from investment_panel.database.migrations import alembic_config, upgrade_database
+from investment_panel.database.migrations import HEAD_REVISION, alembic_config, upgrade_database
 from investment_panel.database.panel_models import QUERY_POLICIES
 from migrations.baseline_contract import BASELINE_REVISION, BASELINE_SCHEMA_HASHES
 from migrations.schema_contract import schema_contract
@@ -76,7 +76,11 @@ def test_encoded_password_survives_alembic_config():
 def test_migrations_directory_has_snapshot_and_forward_schema():
     root = Path(__file__).resolve().parents[2]
     versions = sorted((root / 'migrations' / 'versions').glob('*.py'))
-    assert [path.name for path in versions] == ['20260907_0006_baseline.py', '20260908_0007_continuous_advisor.py']
+    assert [path.name for path in versions] == [
+        '20260907_0006_baseline.py',
+        '20260908_0007_continuous_advisor.py',
+        '20260909_0008_backfill_publication_superseded_at.py',
+    ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
     assert max(path.read_text().count('\n') for path in sql_files) < 1500
@@ -85,6 +89,13 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
     assert 'DROP COLUMN' not in sql
     assert 'ALTER COLUMN' not in sql
     assert 'ALTER INDEX' not in sql
+
+
+def test_known_forward_revision_upgrades_to_head(postgres_dsn):
+    upgrade_database(postgres_dsn, '20260908_0007')
+    upgrade_database(postgres_dsn)
+    with psycopg.connect(postgres_dsn) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
 
 
 def test_continuous_advisor_schema_is_append_only_and_advisory_only(postgres_dsn):
