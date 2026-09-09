@@ -8,10 +8,10 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.config import load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.jobs import JobRepository
-from investment_panel.database.price_confirmation_retention import PriceConfirmationRetentionRepository
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.jobs import JobRepository
+from investment_panel.infrastructure.postgres.price_confirmation_retention import PriceConfirmationRetentionRepository
 
 
 JOB_NAME = "price_fact_availability_backfill"

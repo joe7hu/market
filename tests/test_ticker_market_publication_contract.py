@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 import investment_panel.jobs.ticker_decisions as ticker_decisions
-from investment_panel.core.decision.ticker import InputLineage, MarketStateSnapshot
+from investment_panel.domain.decision.ticker import InputLineage, MarketStateSnapshot
 
 
 CUTOFF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)

@@ -6,12 +6,12 @@ import argparse
 import json
 from typing import Any
 
-from investment_panel.core.config import load_config
+from investment_panel.settings import load_config
 from investment_panel.core.agent_providers import resolve_provider_selection
 from investment_panel.core.options_recovery_agents import recovery_agent_schema, recovery_agent_system_prompt
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.options_recovery_agents import RecoveryEventAgentRepository
-from investment_panel.providers.advisory import StructuredProviderRequest, invoke_structured
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.options_recovery_agents import RecoveryEventAgentRepository
+from investment_panel.infrastructure.providers.advisory import StructuredProviderRequest, invoke_structured
 
 
 def run(

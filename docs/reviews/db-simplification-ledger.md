@@ -54,7 +54,7 @@ Commands: `uv run pytest -q tests/postgres tests/options
  tests/contracts/test_postgres_runtime_boundary.py --maxfail=2` (679 passed);
 `uv run pytest -q tests/postgres/test_schema_baseline.py` (22 passed);
 final architecture/runtime guard group (26 passed); `uvx ruff check` on changed
-Python paths; `npm run build`; wheel build and isolated runtime import check.
+Python paths; `npm --prefix frontend run build`; wheel build and isolated runtime import check.
 Independent review: autoreview `--mode local --no-web-search` with the scoped
 review prompt, final report `autoreview-seventh.json`: no actionable findings.
 No rebase conflicts. Live evidence is saved under `/tmp/market-db-baseline`;

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.instruments import canonical_symbol, instrument_identity, reconcile_instrument
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.instruments import canonical_symbol, instrument_identity, reconcile_instrument
 from conftest import typed_config
 
 

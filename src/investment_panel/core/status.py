@@ -9,7 +9,7 @@ from pathlib import Path
 import socket
 from typing import Any
 
-from investment_panel.core.config import AppConfig
+from investment_panel.settings import AppConfig
 
 logger = logging.getLogger("market.status")
 

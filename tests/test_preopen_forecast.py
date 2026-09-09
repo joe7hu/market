@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from investment_panel.analysis.preopen_forecast import (
+from investment_panel.domain.options.preopen_forecast import (
     evaluate_qqq_forecast,
     qqq_preopen_forecast,
 )

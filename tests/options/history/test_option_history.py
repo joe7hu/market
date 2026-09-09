@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from investment_panel.core.robinhood_options.history import collect_robinhood_full_option_chain
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.options_history import OptionHistoryRepository, residual_eligible, surface_summaries
-from investment_panel.database.retention import RetentionRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.options_history import OptionHistoryRepository, residual_eligible, surface_summaries
+from investment_panel.infrastructure.postgres.retention import RetentionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs.robinhood_option_history import history_slot
 
 

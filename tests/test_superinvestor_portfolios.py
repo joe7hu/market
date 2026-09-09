@@ -1,8 +1,8 @@
-from investment_panel.database.superinvestor_portfolios import (
+from investment_panel.infrastructure.postgres.superinvestor_portfolios import (
     build_superinvestor_portfolios,
 )
 from investment_panel.jobs.update_disclosure_sources import configured_13f_trackers
-from investment_panel.core.panel.contracts import PANEL_SCOPE_TABLES
+from investment_panel.domain.panel.contracts import PANEL_SCOPE_TABLES
 
 
 def _filing(date, filed, holdings):

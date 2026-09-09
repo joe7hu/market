@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.core.phase2 import (
+from investment_panel.domain.market.phase2 import (
     FIELD_CONTRACTS,
     PITObservation,
     Phase2Status,
@@ -22,7 +22,7 @@ from investment_panel.core.phase2 import (
     select_point_in_time,
     source_status,
 )
-from investment_panel.database.phase2 import Phase2Repository
+from investment_panel.infrastructure.postgres.phase2 import Phase2Repository
 
 
 AS_OF = datetime(2026, 9, 2, 14, tzinfo=UTC)

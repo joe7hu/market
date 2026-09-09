@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta
 
-from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.option_events import OptionEventRepository
-from investment_panel.database.options_recovery_cohorts import (
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
+from investment_panel.infrastructure.postgres.option_events import OptionEventRepository
+from investment_panel.infrastructure.postgres.options_recovery_cohorts import (
     RecoveryCohortRepository,
     program_qualification_reasons,
     scheduled_detector_slots,
 )
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs.detect_option_events import (
     detector_collection_deadline,
     detector_symbol_limit,

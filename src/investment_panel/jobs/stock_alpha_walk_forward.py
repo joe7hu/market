@@ -12,9 +12,9 @@ from typing import Any, Iterable, Mapping
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.analysis.research_validation import validate_trial
-from investment_panel.analysis.research_validation import multiple_testing_metrics
-from investment_panel.analysis.stock_alpha import (
+from investment_panel.domain.research.research_validation import validate_trial
+from investment_panel.domain.research.research_validation import multiple_testing_metrics
+from investment_panel.domain.research.stock_alpha import (
     COST_MODEL_VERSION,
     CONTROL_STATISTIC_VERSION,
     FEATURE_VERSION,
@@ -26,13 +26,13 @@ from investment_panel.analysis.stock_alpha import (
     independent_observations,
     walk_forward,
 )
-from investment_panel.core.config import load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.core.instruments import normalize_symbol
-from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
-from investment_panel.core.decision import build_strategy_forecast, market_session_bounds, opportunity_episode_id
-from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE, activate_application_role
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.domain.instruments import normalize_symbol
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
+from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
+from investment_panel.domain.decision import build_strategy_forecast, market_session_bounds, opportunity_episode_id
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE, activate_application_role
 
 
 STRATEGY_KEY = "ticker-stock-alpha"

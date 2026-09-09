@@ -5,10 +5,10 @@ from uuid import uuid4
 import pytest
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision.governance import TRACKED_METRICS
-from investment_panel.database.runtime import DatabaseRuntime
-import investment_panel.database.strategy_governance as strategy_governance
-from investment_panel.database.strategy_governance import StrategyGovernanceRepository
+from investment_panel.domain.decision.governance import TRACKED_METRICS
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+import investment_panel.infrastructure.postgres.strategy_governance as strategy_governance
+from investment_panel.infrastructure.postgres.strategy_governance import StrategyGovernanceRepository
 
 
 @pytest.mark.parametrize("paper_defect", [None, "missing_journal", "incomplete_exit", "repeated_episode", "missing_cost", "late_journal",

@@ -16,8 +16,8 @@ import re
 from typing import Any, Mapping
 from uuid import UUID
 
-from investment_panel.core.portfolio import canonical_content_hash
-from investment_panel.database.instruments import canonical_symbol
+from investment_panel.domain.portfolio.contracts import canonical_content_hash
+from investment_panel.infrastructure.postgres.instruments import canonical_symbol
 
 
 PACKET_SCHEMA_VERSION = "continuous-advisor-packet.v1"

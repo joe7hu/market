@@ -1,5 +1,5 @@
-from investment_panel.core.panel import PHASE4_PORTFOLIO_TABLES, tables_for_scope
-from investment_panel.database.panel_models import DIRECT_QUERIES
+from investment_panel.domain.panel import PHASE4_PORTFOLIO_TABLES, tables_for_scope
+from investment_panel.infrastructure.postgres.panel_models import DIRECT_QUERIES
 
 
 def test_phase4_read_models_are_shared_by_exactly_five_workspaces() -> None:

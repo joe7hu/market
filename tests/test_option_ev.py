@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from investment_panel.analysis import option_ev
-from investment_panel.analysis.option_ev import (
+from investment_panel.domain.options import option_ev
+from investment_panel.domain.options.option_ev import (
     EVInputs,
     compute_ev,
     conviction_from_ev,
@@ -41,7 +41,7 @@ def test_ev_multiple_strictly_decreasing_in_premium():
 def test_theta_cost_positive_for_otm_call():
     # Price the option at its Black-Scholes fair value, then a no-move scenario after a
     # horizon must be worth less than premium -> positive theta -> finite ev_per_theta.
-    from investment_panel.analysis.options_payoff import black_scholes
+    from investment_panel.domain.options.options_payoff import black_scholes
 
     spot, strike, iv, dte = 100.0, 130.0, 0.45, 540
     fair = black_scholes("call", spot, strike, dte / 365.0, option_ev.DEFAULT_RISK_FREE_RATE, iv)

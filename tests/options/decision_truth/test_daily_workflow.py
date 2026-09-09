@@ -4,10 +4,10 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from app.actions.today import decision_inbox_queue
-from investment_panel.database.decision_inbox import DecisionInboxRepository, evidence_fingerprint
-from investment_panel.database.migrations import HEAD_REVISION, upgrade_database
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.workflows.today import decision_inbox_queue
+from investment_panel.infrastructure.postgres.decision_inbox import DecisionInboxRepository, evidence_fingerprint
+from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION, upgrade_database
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 @pytest.mark.parametrize('state', ['acknowledged', 'dismissed', 'review_complete', 'snoozed'])
@@ -125,10 +125,10 @@ def test_notification_terminal_outcomes_survive_idempotent_upgrade(postgres_dsn)
 
 def test_review_endpoint_refresh_and_authorization(application_postgres_dsn, monkeypatch):
     from fastapi.testclient import TestClient
-    from app import dependencies
-    from app.main import app
-    from app.data_access import loaders
-    from app.data_access.types import DataStatus, PanelData
+    from investment_panel.api import dependencies
+    from investment_panel.api.main import app
+    from investment_panel.api.data_access import loaders
+    from investment_panel.api.data_access.types import DataStatus, PanelData
     from conftest import typed_config
 
     runtime = DatabaseRuntime(application_postgres_dsn)

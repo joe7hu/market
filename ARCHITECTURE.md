@@ -16,14 +16,52 @@ recomputable and is retained through the `analysis.run` lifecycle for 30 days
 unless publication, outcome, paper evidence, journal, or pinned research
 evidence protects it.
 
+## Logical layers and extension flow
+
+Market is one modular monolith with one Python namespace and one React
+application. The four logical layers are:
+
+1. `domain/` — pure factors, signals, strategy evaluators, portfolio policy,
+   and typed contracts. It does not load configuration, call providers, or
+   access delivery or persistence modules.
+2. `workflows/` — substantive application sequencing, cutoff handling,
+   publication boundaries, and transaction coordination.
+3. `infrastructure/` — PostgreSQL authorities, provider normalization, and
+   scheduling/process integration.
+4. `api/` — FastAPI transport, authorization bindings, response mapping, and
+   generated browser contracts.
+
+The ordinary research path is explicit:
+
+```text
+point-in-time inputs -> factors -> signals -> strategy candidates
+                    -> portfolio/decision policy -> publications -> UI
+```
+
+Static factor and strategy catalogs bind an identity, implementation version,
+typed parameters, dependencies, and a pure evaluator. PostgreSQL stores the
+immutable revision, research state, evidence, and publication identity. A new
+factor or strategy adds its owner, catalog entry, and tests; it does not add a
+shared dispatch branch or a second runtime implementation.
+
+The product remains advisory and paper-only: PostgreSQL is authoritative,
+research and publication evidence is immutable, and missing authorization or
+data blocks action. A Publication is the versioned output selected for API use;
+Today is the bounded current decision projection; a Read Model is a bounded
+PostgreSQL result for a product surface; and Availability Projection is the
+point-in-time fact-to-availability mapping used by current-price selectors.
+Event time, observation time, and availability time remain distinct. The
+scheduler keeps its fixed capacity of two, and long collector/provider work
+stays isolated from database transactions.
+
 ## Request flow
 
 ```text
 Browser
   -> frontend/src/apiTransport.ts
   -> frontend/src/api/{panel,options,agent,portfolio,userState}.ts
-  -> app/routers/
-  -> app/dependencies.py / app/panel_snapshot.py / app/job_control.py
+  -> src/investment_panel/api/routers/
+  -> src/investment_panel/api/dependencies.py / panel_snapshot.py / job_control.py
   -> workflow owner or direct typed read dependency
   -> PostgreSQL 18
 ```
@@ -37,30 +75,33 @@ and mutation routes remain separate.
 
 | Owner | Interface | Change this when… |
 |---|---|---|
-| `app/main.py` | `create_app()` | app wiring or router registration changes |
-| `app/contracts.py` / `app/response_contracts.py` | named Pydantic HTTP models | an HTTP request or response contract changes |
-| `app/dependencies.py` | typed config, runtime, repository, and authorization providers | a route needs a new dependency |
-| `app/panel_snapshot.py` | panel scopes, pagination, freshness, and last-good cache | a panel read changes |
-| `app/job_control.py` | refresh start, heartbeat, and subprocess boundary | refresh control changes |
-| `app/actions/options.py` | option workflow sequencing and fail-closed gates | options actions change |
-| `app/actions/today.py` | bounded Today queue and brief composition | Today workflow changes |
-| `app/actions/event_scout.py` | Event Scout packet, cooldown, and replay workflow | Event Scout mutation changes |
-| `app/data_access/loaders.py` | panel query composition | a Read Model scope needs bounded loading |
-| `src/investment_panel/core/panel/` | panel contract and payload rules | a canonical panel shape changes |
+| `src/investment_panel/api/main.py` | `create_app()` | app wiring or router registration changes |
+| `src/investment_panel/api/contracts.py` / `response_contracts.py` | named Pydantic HTTP models | an HTTP request or response contract changes |
+| `src/investment_panel/api/dependencies.py` | typed config, runtime, repository, and authorization providers | a route needs a new dependency |
+| `src/investment_panel/api/panel_snapshot.py` | panel scopes, pagination, freshness, and last-good cache | a panel read changes |
+| `src/investment_panel/api/job_control.py` | refresh start, heartbeat, and subprocess boundary | refresh control changes |
+| `src/investment_panel/workflows/options.py` | option workflow sequencing and fail-closed gates | options actions change |
+| `src/investment_panel/workflows/today.py` | bounded Today queue and brief composition | Today workflow changes |
+| `src/investment_panel/workflows/event_scout.py` | Event Scout packet, cooldown, and replay workflow | Event Scout mutation changes |
+| `src/investment_panel/domain/factors/catalog.py` | typed factor definitions, dependency checks, and memoized evaluation | a factor or factor parameter changes |
+| `src/investment_panel/domain/strategies/catalog.py` | immutable strategy definitions and exact implementation evaluators | a strategy implementation or revision changes |
+| `src/investment_panel/domain/portfolio/contracts.py` | account-aware portfolio and decision contracts | portfolio valuation or policy meaning changes |
+| `src/investment_panel/api/data_access/loaders.py` | panel query composition | a Read Model scope needs bounded loading |
+| `src/investment_panel/domain/panel/` | panel contract and payload rules | a canonical panel shape changes |
 | `src/investment_panel/core/event_scout.py` | Event Scout public rules and packet interface | signal normalization changes |
 | `src/investment_panel/core/event_scout_runtime.py` | runtime packet processing | Event Scout runtime sequencing changes |
-| `src/investment_panel/providers/advisory.py` | `StructuredProviderRequest`, result, and `invoke_structured` | provider behavior changes |
-| `src/investment_panel/database/panel_models.py` | PostgreSQL model catalog and retrieval | a named Read Model is added or moved |
-| `src/investment_panel/database/panel_queries.py` | panel query policies | a canonical panel query changes |
-| `src/investment_panel/database/options_history.py` | Option History capture, history policy, health, and retention | historical option evidence changes |
-| `src/investment_panel/database/options_research.py` | research candidates, event studies, and learning | research-only option reads change |
-| `src/investment_panel/database/options_decision_system.py` | Decision Truth and readiness | option decision publication changes |
-| `src/investment_panel/database/options_execution.py` | Option Ticket and paper execution | ticket or execution gates change |
-| `src/investment_panel/database/options_recovery_read.py` | recovery research Read Models | recovery evidence changes |
-| `src/investment_panel/database/ingestion.py` | managed ingestion lifecycle | collector lifecycle changes |
-| `src/investment_panel/database/portfolio_ledger.py` | transaction, reversal, and position projection | portfolio accounting changes |
-| `src/investment_panel/database/source_facts.py` | source facts and publication inputs | source facts change |
-| `src/investment_panel/core/refresh_jobs.py` | canonical job allowlist and identity | a scheduled job changes |
+| `src/investment_panel/infrastructure/providers/advisory.py` | `StructuredProviderRequest`, result, and `invoke_structured` | provider behavior changes |
+| `src/investment_panel/infrastructure/postgres/panel_models.py` | PostgreSQL model catalog and retrieval | a named Read Model is added or moved |
+| `src/investment_panel/infrastructure/postgres/panel_queries.py` | panel query policies | a canonical panel query changes |
+| `src/investment_panel/infrastructure/postgres/options_history.py` | Option History capture, history policy, health, and retention | historical option evidence changes |
+| `src/investment_panel/infrastructure/postgres/options_research.py` | research candidates, event studies, and learning | research-only option reads change |
+| `src/investment_panel/infrastructure/postgres/options_decision_system.py` | Decision Truth and readiness | option decision publication changes |
+| `src/investment_panel/infrastructure/postgres/options_execution.py` | Option Ticket and paper execution | ticket or execution gates change |
+| `src/investment_panel/infrastructure/postgres/options_recovery_read.py` | recovery research Read Models | recovery evidence changes |
+| `src/investment_panel/infrastructure/postgres/ingestion.py` | managed ingestion lifecycle | collector lifecycle changes |
+| `src/investment_panel/infrastructure/postgres/portfolio_ledger.py` | transaction, reversal, and position projection | portfolio accounting changes |
+| `src/investment_panel/infrastructure/postgres/source_facts.py` | source facts and publication inputs | source facts change |
+| `src/investment_panel/infrastructure/postgres/jobs.py` | canonical job allowlist and identity | a scheduled job changes |
 | `migrations/versions/` | Alembic migrations | PostgreSQL schema changes |
 | `frontend/src/apiTransport.ts` | browser transport and HTTP errors | transport behavior changes |
 | `frontend/src/api/<domain>.ts` | one domain's request functions | a frontend request path changes |
@@ -72,7 +113,7 @@ deletion test; a deep coherent module may exceed 700 lines.
 
 ## Configuration
 
-`investment_panel.core.config` is the one typed configuration owner. Internal
+`investment_panel.settings` is the one typed configuration owner. Internal
 callers use `AppConfig` or a narrow typed subsection. Only the redacted
 settings HTTP response may become a dictionary. No action or database owner
 accepts both `AppConfig` and arbitrary dictionaries.
@@ -94,19 +135,22 @@ production build to verify them.
 
 Each recipe starts with no more than three owner interfaces:
 
-1. HTTP endpoint: `app/routers/<domain>.py`, `app/response_contracts.py`, and
-   the domain owner. Run `make test-api` and `make check`.
-2. Panel Read Model: `core/panel/`, `database/panel_models.py`, and the
-   owning database query module. Run `make test-postgres` and `make check`.
-3. Options behavior: a typed read dependency or `app/actions/options.py` for
+1. HTTP endpoint: `src/investment_panel/api/routers/<domain>.py`,
+   `src/investment_panel/api/response_contracts.py`, and the domain owner.
+   Run `make test-api` and `make check`.
+2. Panel Read Model: `domain/panel/`, `infrastructure/postgres/panel_models.py`,
+   and the owning database query module. Run `make test-postgres` and
+   `make check`.
+3. Options behavior: a typed read dependency or `workflows/options.py` for
    coordinated workflows, one deep options owner, and its
    public test interface. Run `make test-options` and `make check`.
-4. Provider behavior: `providers/advisory.py`, the option-agent workflow, and
+4. Provider behavior: `infrastructure/providers/advisory.py`, the option-agent workflow, and
    its adapter tests. Run `make test-unit` and `make check`.
-5. Configuration: `core/config.py`, `app/dependencies.py`, and the settings
+5. Configuration: `settings.py`, `api/dependencies.py`, and the settings
    route. Run `make test-api`, `make check`, and the config-focused tests.
 6. Frontend request: `frontend/src/api/<domain>.ts`, the backend response
-   owner, and the affected view. Run Vitest, TypeScript, and `npm run build`.
+   owner, and the affected view. Run Vitest, TypeScript, and
+   `npm --prefix frontend run build`.
 
 ## Guardrails and inventory
 
@@ -166,7 +210,7 @@ make test-all
 make check
 uv lock --check
 uv build --wheel
-npm run build
+npm --prefix frontend run build
 ```
 
 The storage archive tests require at least the configured free-space reserve.
@@ -178,10 +222,10 @@ Storage recovery procedures and destructive-command gates are recorded in
 [`docs/adr/20260821-final-architecture-scale.md`](docs/adr/20260821-final-architecture-scale.md).
 The September 6 personal-app maintenance direction supersedes the architecture
 freeze for code simplification. Keep the storage and execution invariants in
-the ADR. Retain current folders and deep owners; remove forwarding layers
-when callers can use the existing typed owner directly. Routers obtain those
-owners through dependencies, not database imports. Do not add interfaces for
-a single implementation or divide modules to meet a line-count target.
+the ADR. Retain deep coherent owners; remove forwarding layers when callers
+can use the existing typed owner directly. Routers obtain those owners through
+dependencies, not database imports. Do not add interfaces for a single
+implementation or divide modules to meet a line-count target.
 
 For live checks, bind API and Vite to `0.0.0.0`, probe `/api/status` and the
 changed routes, and compare the served frontend asset between `:5173` and

@@ -1,4 +1,4 @@
-from investment_panel.core.instruments import infer_asset_class, normalize_symbol
+from investment_panel.domain.instruments import infer_asset_class, normalize_symbol
 
 
 def test_symbol_normalization_handles_crypto_aliases() -> None:

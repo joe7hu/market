@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.core.decision.governance import (
+from investment_panel.domain.decision.governance import (
     OUTCOME_ERROR_TYPES,
     TRACKED_METRICS,
     classify_outcome_error,
@@ -12,9 +12,9 @@ from investment_panel.core.decision.governance import (
     promotion_readiness,
     transition_dedupe_key,
 )
-from investment_panel.database import ticker_decisions
-from investment_panel.database import decision_inbox
-from investment_panel.database.strategy_learning import StrategyLearningRepository
+from investment_panel.infrastructure.postgres import ticker_decisions
+from investment_panel.infrastructure.postgres import decision_inbox
+from investment_panel.infrastructure.postgres.strategy_learning import StrategyLearningRepository
 
 
 _EXECUTION_METRICS = ("net_pnl_after_realized_costs", "turnover", "slippage", "capacity")
@@ -264,7 +264,7 @@ def test_strategy_learning_does_not_reuse_parent_paper_execution_for_candidate()
 
 
 def test_strategy_comparison_uses_net_returns_and_the_original_opportunity_denominator() -> None:
-    from investment_panel.database.strategy_learning import evaluate_comparison
+    from investment_panel.infrastructure.postgres.strategy_learning import evaluate_comparison
 
     now = datetime(2026, 8, 1, tzinfo=UTC)
     baseline = [
@@ -286,7 +286,7 @@ def test_strategy_comparison_uses_net_returns_and_the_original_opportunity_denom
 
 
 def test_paper_return_requires_complete_quantity_and_uses_multiplier_and_credit_direction() -> None:
-    from investment_panel.database.strategy_learning import paper_realized_return
+    from investment_panel.infrastructure.postgres.strategy_learning import paper_realized_return
 
     row = {
         "as_of": datetime(2026, 8, 1, tzinfo=UTC), "filled_at": datetime(2026, 8, 2, tzinfo=UTC),

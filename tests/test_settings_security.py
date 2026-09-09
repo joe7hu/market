@@ -6,9 +6,9 @@ import socket
 from defusedxml.common import EntitiesForbidden
 import pytest
 
-from app.data_access import settings as settings_owner
+from investment_panel.api.data_access import settings as settings_owner
 from conftest import typed_config
-from investment_panel.core import config as config_owner
+import investment_panel.settings as config_owner
 from investment_panel.core import settings_validation
 from investment_panel.core.settings_validation import (
     apply_agent_settings_update,

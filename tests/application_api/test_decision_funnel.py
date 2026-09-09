@@ -6,16 +6,16 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from app import dependencies
-from app.main import app
-from investment_panel.core.decision import trade_expression_identity
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.runtime import API_PROFILE
-from investment_panel.database.ticker_decisions import (
+from investment_panel.api import dependencies
+from investment_panel.api.main import app
+from investment_panel.domain.decision import trade_expression_identity
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE
+from investment_panel.infrastructure.postgres.ticker_decisions import (
     TickerDecisionRepository,
     decision_funnel_payload,
 )
-import investment_panel.database.ticker_decisions as ticker_decisions
+import investment_panel.infrastructure.postgres.ticker_decisions as ticker_decisions
 
 
 NOW = datetime(2026, 8, 29, 14, tzinfo=UTC)

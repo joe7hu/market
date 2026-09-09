@@ -4,13 +4,13 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from app import dependencies
-from app.data_access import loaders as loaders_owner
-import app.panel_snapshot as panel_owner
-from app.main import app
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.source_health import source_health_blockers
+from investment_panel.api import dependencies
+from investment_panel.api.data_access import loaders as loaders_owner
+import investment_panel.api.panel_snapshot as panel_owner
+from investment_panel.api.main import app
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.source_health import source_health_blockers
 from conftest import typed_config
 
 

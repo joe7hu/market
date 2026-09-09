@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from investment_panel.core.panel import frontend_key_for_table, frontend_table_names
+from investment_panel.domain.panel import frontend_key_for_table, frontend_table_names
 
 
 ROOT = Path(__file__).resolve().parents[1]

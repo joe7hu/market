@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from investment_panel.analysis.strategy_routing import (
+from investment_panel.domain.strategies.routing import (
     PROHIBITED_STRUCTURES,
     ROUTE_VERSION,
     route_promotion_gate,
     route_strategy,
 )
-from investment_panel.core.risk_policy import PortfolioAssignmentPolicy
+from investment_panel.domain.portfolio.risk_policy import PortfolioAssignmentPolicy
 
 
 NOW = datetime(2026, 8, 19, 14, tzinfo=UTC)

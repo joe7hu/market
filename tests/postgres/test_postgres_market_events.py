@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.source_facts import SourceFactRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.source_facts import SourceFactRepository
 from investment_panel.jobs import update_market_events
 
 

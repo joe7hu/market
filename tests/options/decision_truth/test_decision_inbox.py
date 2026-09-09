@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import (
+from investment_panel.domain.decision import (
     ExpressionDecision,
     ExpressionKind,
     Horizon,
@@ -24,10 +24,10 @@ from investment_panel.core.decision import (
     TradePlan,
     trade_expression_identity,
 )
-from investment_panel.database import decision_inbox as decision_inbox_module
-from investment_panel.database.decision_inbox import DecisionInboxRepository, telegram_message
-from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres import decision_inbox as decision_inbox_module
+from investment_panel.infrastructure.postgres.decision_inbox import DecisionInboxRepository, telegram_message
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import decision_inbox as decision_inbox_job
 
 

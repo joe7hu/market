@@ -4,10 +4,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from investment_panel.core.phase2 import EventObservation
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.phase2 import Phase2Repository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.domain.market.phase2 import EventObservation
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.phase2 import Phase2Repository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def test_phase2_event_fields_lineage_and_divergent_identity_are_authoritative(

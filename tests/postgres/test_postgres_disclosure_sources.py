@@ -4,7 +4,7 @@ from pathlib import Path
 import json
 from types import SimpleNamespace
 
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import update_disclosure_sources
 
 

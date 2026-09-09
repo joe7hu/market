@@ -5,9 +5,9 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from app import dependencies
-from app.main import app
-from investment_panel.database.research_summary import evaluation_summary
+from investment_panel.api import dependencies
+from investment_panel.api.main import app
+from investment_panel.infrastructure.postgres.research_summary import evaluation_summary
 
 
 @pytest.fixture

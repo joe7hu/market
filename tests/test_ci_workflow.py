@@ -7,7 +7,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
 TCP_DSN = "postgresql://postgres:postgres@127.0.0.1:5432/postgres"
 
 
-def test_market_ci_migrates_the_tcp_database_before_the_phase_zero_gate() -> None:
+def test_market_ci_migrates_the_tcp_database_before_the_release_gate() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     job_environment = workflow.split("    steps:", maxsplit=1)[0]
     bootstrap_step = (
@@ -26,7 +26,7 @@ def test_market_ci_migrates_the_tcp_database_before_the_phase_zero_gate() -> Non
         "          export MARKET_APP_DATABASE_PASSWORD=\"$ci_password\"\n"
         "          uv run market-db-migrate\n"
     )
-    gate_step = "      - name: Run Phase 0 gate\n        run: make phase0-gate"
+    gate_step = "      - name: Run release gate\n        run: make release-gate"
 
     assert "MARKET_DATABASE_URL" not in job_environment
     assert bootstrap_step in workflow

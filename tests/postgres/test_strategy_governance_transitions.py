@@ -4,9 +4,9 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.strategy_governance import StrategyGovernanceRepository
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.strategy_governance import StrategyGovernanceRepository
 
 
 def test_rollback_counts_independent_episodes_and_preserves_publication_history(
@@ -145,7 +145,7 @@ def test_rollback_counts_independent_episodes_and_preserves_publication_history(
 def test_later_paper_attempt_keeps_old_shadow_episode_inside_rollback_window(
     migrated_postgres_dsn: str, earlier_attempt: bool,
 ) -> None:
-    from investment_panel.database.strategy_learning import OUTCOME_QUERY, PAPER_EPISODE_ORDERS_SQL
+    from investment_panel.infrastructure.postgres.strategy_learning import OUTCOME_QUERY, PAPER_EPISODE_ORDERS_SQL
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

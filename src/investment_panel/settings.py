@@ -1,0 +1,729 @@
+"""Configuration loading for the investment panel."""
+from __future__ import annotations
+from dataclasses import dataclass, field
+import os
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from investment_panel.core.agent_providers import provider_catalog, resolve_provider_selection, validate_registry_command
+from investment_panel.core.settings_validation import (
+    apply_agent_settings_update,
+    apply_research_sources_update,
+)
+import yaml
+from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
+from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig, options_decision_system_config
+from investment_panel.infrastructure.postgres.configuration import DatabaseConfig, load_database_config, persisted_setting_sections
+def project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+def resolve_path(value: str | Path, base: Path | None = None) -> Path:
+    path = Path(os.path.expandvars(str(value))).expanduser()
+    if path.is_absolute():
+        return path
+    return (base or project_root()) / path
+@dataclass(frozen=True)
+class NasConfig:
+    source_root: Path = Path("/Volumes/agent/data-sources")
+    status_dir: Path = Path("/Volumes/agent/data-sources/status")
+    market_dir: Path = Path("/Volumes/agent/data-sources/market-mini")
+    postgres_backup_dir: Path = Path("/Volumes/agent/data-sources/market-mini/postgres-backups")
+    storage_archive_dir: Path = Path("/Volumes/agent/data-sources/market-mini/storage-archive/v1")
+@dataclass(frozen=True)
+class ArcoConfig:
+    raw_dir: Path = Path("/Volumes/agent/brain/raw/sources/arco")
+    signals_path: str = "signals.json"
+    beliefs_path: str = "beliefs.json"
+    brief_beliefs_glob: str = "brief-beliefs/brief-beliefs-*.json"
+    source_manifest_glob: str = "source-manifest-*.json"
+    birdclaw_bookmarks_glob: str = "birdclaw-bookmarks-*.json"
+    web_captures_glob: str = "web-captures-*.json"
+@dataclass(frozen=True)
+class MarketDataConfig:
+    mode: str = "online"
+    lookback_days: int = 260
+    equity_provider: str = "yfinance"
+    crypto_provider: str = "coingecko"
+    user_agent: str = "joehu-market-panel/0.1 contact:local"
+@dataclass(frozen=True)
+class OpenCliConfig:
+    enabled: bool = True
+    command: str = "opencli"
+    timeout_seconds: int = 25
+@dataclass(frozen=True)
+class YFinanceConfig:
+    enabled: bool = True
+@dataclass(frozen=True)
+class IBKRConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 4002
+    client_id: int = 77
+    account_id: str | None = None
+    readonly: bool = True
+    paper_only: bool = True
+    stale_after_minutes: int = 15
+    market_data_type: str = "live_or_delayed"
+    quote_limit: int = 50
+
+@dataclass(frozen=True)
+class RobinhoodConfig:
+    enabled: bool = False
+    mcp_url: str = "https://agent.robinhood.com/mcp/trading"
+    token_path: str = "~/.config/market/robinhood-mcp-token.json"
+    auth_token_env: str = "ROBINHOOD_MCP_TOKEN"
+    prefer_codex_credentials: bool = True
+    codex_credentials_path: str = "~/.codex/.credentials.json"
+    codex_mcp_server_name: str = "robinhood-trading"
+    client_id: str | None = None
+    scope: str = "internal"
+    callback_host: str = "127.0.0.1"
+    callback_port: int = 8765
+    timeout_seconds: int = 30
+    max_collection_seconds: int = 600
+    max_response_bytes: int = 8 * 1024 * 1024
+    readonly: bool = True
+    max_symbols: int = 40
+    max_expiries: int = 2
+    strikes_around_spot: int = 12
+    quote_batch_size: int = 20
+    collect_puts: bool = False
+    near_term_dte: int = 35
+    history_enabled: bool = True
+    history_symbols: list[str] = field(default_factory=lambda: ["QQQ"])
+    history_min_completeness: float = 0.98
+
+@dataclass(frozen=True)
+class MoomooConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 11111
+    paper_only: bool = True
+    stale_after_minutes: int = 15
+    scanner_limit: int = 50
+@dataclass(frozen=True)
+class BrokerPolicyConfig:
+    require_account_for_recommendations: bool = False
+    max_trade_notional: float = 10_000.0
+    max_position_weight_pct: float = 20.0
+    min_primary_evidence_count: int = 1
+    min_total_evidence_count: int = 2
+    earnings_blackout_days: int = 2
+@dataclass(frozen=True)
+class BrokerSourcesConfig:
+    enabled: bool = True
+    advisory_only: bool = True
+    ibkr: IBKRConfig = IBKRConfig()
+    robinhood: RobinhoodConfig = RobinhoodConfig()
+    moomoo: MoomooConfig = MoomooConfig()
+    policy: BrokerPolicyConfig = BrokerPolicyConfig()
+@dataclass(frozen=True)
+class DataSourcesConfig:
+    opencli: OpenCliConfig = OpenCliConfig()
+    yfinance: YFinanceConfig = YFinanceConfig()
+    brokers: BrokerSourcesConfig = BrokerSourcesConfig()
+@dataclass(frozen=True)
+class ResearchXConfig:
+    enabled: bool = True
+    list_id: str = ""
+    priority_handles: list[str] = field(
+        default_factory=lambda: ["balajis", "karpathy", "citrini", "BillAckman", "dylan522p", "IncomeSharks"]
+    )
+    limit: int = 30
+    # Per-cycle cap on per-account fallback requests (the list call is one request).
+    account_fetch_cap: int = 2
+@dataclass(frozen=True)
+class ResearchNewsConfig:
+    enabled: bool = True
+    providers: list[str] = field(default_factory=lambda: ["bloomberg", "reuters", "google-news", "hackernews"])
+    limit: int = 30
+@dataclass(frozen=True)
+class ResearchBlogsConfig:
+    enabled: bool = True
+    substack_urls: list[str] = field(default_factory=list)
+    rss_urls: list[str] = field(default_factory=list)
+
+@dataclass(frozen=True)
+class ResearchSourcesConfig:
+    x: ResearchXConfig = ResearchXConfig()
+    news: ResearchNewsConfig = ResearchNewsConfig()
+    blogs: ResearchBlogsConfig = ResearchBlogsConfig()
+
+@dataclass(frozen=True)
+class EventSourcesConfig:
+    enabled: bool = False
+    seed_requested_week: bool = False
+    bls_enabled: bool = True
+    dol_enabled: bool = True
+    federal_reserve_enabled: bool = True
+    treasury_enabled: bool = True
+    sec_enabled: bool = True
+    watchlist_enabled: bool = True
+
+@dataclass(frozen=True)
+class AnalysisConfig:
+    enabled: bool = True
+    correlation_lookback_days: int = 180
+    max_correlation_peers: int = 8
+    ticker_universe_coverage_threshold: float = 0.8
+    market_publication_max_age_minutes: int = 1_440
+    options_decision_system: OptionsDecisionSystemConfig = OptionsDecisionSystemConfig()
+DEFAULT_AGENT_CONTEXT_SOURCES: dict[str, bool] = {
+    "fundamentals": True,
+    "technicals": True,
+    "ownership": True,
+    "news": True,
+    "social_signals": True,
+    "catalysts": True,
+    "portfolio": True,
+    "decision": True,
+}
+
+DEFAULT_AGENT_PRICING: dict[str, dict[str, float]] = {
+    "default": {"input_per_1m": 1.25, "output_per_1m": 10.0},
+    "gpt-5.2": {"input_per_1m": 1.25, "output_per_1m": 10.0},
+}
+
+@dataclass(frozen=True)
+class OptionAgentConfig:
+    """Unified single-pass option agent (consolidated thesis + postmortem)."""
+
+    enabled: bool = False
+    command: str = ""
+    timeout_seconds: int = 180
+    thesis_limit: int = 8
+    postmortem_limit: int = 4
+    provider: str = "codex"
+    model: str = "gpt-5.6-luna"
+    reasoning_effort: str = "high"
+    # In-app scheduler cadence override (0 = use MARKET_AGENT_REFRESH_SECONDS / default).
+    auto_run_seconds: int = 0
+    max_runs_per_day: int = 1
+    # Paired DeepSeek/Luna study.  It is disabled by default because it creates
+    # paid advisory calls and must not alter production routing or trade state.
+    experiment_enabled: bool = False
+    experiment_auto_run_seconds: int = 86_400
+    # Per-ticker context sources fed to each run; toggle off to trim the prompt.
+    context_sources: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_AGENT_CONTEXT_SOURCES))
+
+
+@dataclass(frozen=True)
+class AgentsConfig:
+    option_agent: OptionAgentConfig = OptionAgentConfig()
+    thesis_monitor: ThesisMonitorAgentConfig = ThesisMonitorAgentConfig()
+    pricing: dict[str, dict[str, float]] = field(default_factory=lambda: {k: dict(v) for k, v in DEFAULT_AGENT_PRICING.items()})
+
+
+@dataclass(frozen=True)
+class ScoringConfig:
+    weights: dict[str, float] = field(
+        default_factory=lambda: {
+            "technical": 0.25,
+            "fundamental": 0.20,
+            "category": 0.20,
+            "thesis": 0.15,
+            "trader": 0.10,
+            "portfolio_fit": 0.10,
+        }
+    )
+    research_threshold: float = 75.0
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    database: DatabaseConfig = DatabaseConfig()
+    nas: NasConfig = NasConfig()
+    arco: ArcoConfig = ArcoConfig()
+    market_data: MarketDataConfig = MarketDataConfig()
+    data_sources: DataSourcesConfig = DataSourcesConfig()
+    research_sources: ResearchSourcesConfig = ResearchSourcesConfig()
+    event_sources: EventSourcesConfig = EventSourcesConfig()
+    analysis: AnalysisConfig = AnalysisConfig()
+    agents: AgentsConfig = AgentsConfig()
+    scoring: ScoringConfig = ScoringConfig()
+    watchlist: list[dict[str, Any]] = field(default_factory=list)
+    portfolio_csv: Path | None = None
+    trader_profile_dir: Path = project_root() / "data" / "trader_profiles"
+    prompt_dir: Path = project_root() / "prompts"
+    report_dir: Path = project_root() / "data" / "reports"
+    packet_dir: Path = project_root() / "data" / "packets"
+def _options_decision_mode(raw: Any) -> str:
+    mode = str((raw or {}).get("mode", "shadow")).strip().lower() if isinstance(raw, dict) else "shadow"
+    if mode not in {"disabled", "shadow", "paper"}:
+        raise ValueError("analysis.options_decision_system.mode must be disabled, shadow, or paper")
+    return mode
+
+
+def load_config(path: str | Path | None = None) -> AppConfig:
+    config_path = resolve_path(path or "config.yaml")
+    raw: dict[str, Any] = {}
+    if config_path.exists():
+        with config_path.open("r", encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    base = project_root()
+    database = load_database_config(raw, base)
+    # PostgreSQL is the settings authority whether its DSN came from the
+    # environment or config.yaml. The repository handles an unavailable
+    # database as a no-op so initial migration/config tooling remains usable.
+    if database.url.startswith(("postgresql://", "postgresql+psycopg://")):
+        overrides = persisted_setting_sections(database.url)
+        persisted_agents = overrides.get("agents")
+        if persisted_agents is not None:
+            try:
+                overrides["agents"] = apply_agent_settings_update(
+                    raw.get("agents") if isinstance(raw.get("agents"), dict) else {},
+                    persisted_agents,
+                )
+            except (TypeError, ValueError):
+                # A legacy poisoned row must not prevent the settings endpoint
+                # from loading so the trusted user can replace that row.
+                overrides.pop("agents", None)
+        persisted_research_sources = overrides.get("research_sources")
+        if persisted_research_sources is not None:
+            try:
+                overrides["research_sources"] = apply_research_sources_update(
+                    raw.get("research_sources")
+                    if isinstance(raw.get("research_sources"), dict)
+                    else {},
+                    persisted_research_sources,
+                    resolve_urls=False,
+                )
+            except (TypeError, ValueError):
+                overrides.pop("research_sources", None)
+        raw = _merge_setting_sections(raw, overrides)
+    nas_raw = raw.get("nas", {})
+    nas = NasConfig(
+        source_root=resolve_path(nas_raw.get("source_root", "/Volumes/agent/data-sources"), base),
+        status_dir=resolve_path(nas_raw.get("status_dir", "/Volumes/agent/data-sources/status"), base),
+        market_dir=resolve_path(nas_raw.get("market_dir", "/Volumes/agent/data-sources/market-mini"), base),
+        postgres_backup_dir=resolve_path(
+            nas_raw.get("postgres_backup_dir", "/Volumes/agent/data-sources/market-mini/postgres-backups"),
+            base,
+        ),
+        storage_archive_dir=resolve_path(
+            nas_raw.get("storage_archive_dir", "/Volumes/agent/data-sources/market-mini/storage-archive/v1"),
+            base,
+        ),
+    )
+    arco_raw = raw.get("arco", {})
+    arco = ArcoConfig(
+        raw_dir=resolve_path(arco_raw.get("raw_dir", "/Volumes/agent/brain/raw/sources/arco"), base),
+        signals_path=arco_raw.get("signals_path", "signals.json"),
+        beliefs_path=arco_raw.get("beliefs_path", "beliefs.json"),
+        brief_beliefs_glob=arco_raw.get("brief_beliefs_glob", "brief-beliefs/brief-beliefs-*.json"),
+        source_manifest_glob=arco_raw.get("source_manifest_glob", "source-manifest-*.json"),
+        birdclaw_bookmarks_glob=arco_raw.get("birdclaw_bookmarks_glob", "birdclaw-bookmarks-*.json"),
+        web_captures_glob=arco_raw.get("web_captures_glob", "web-captures-*.json"),
+    )
+    market_data_raw = raw.get("market_data", {})
+    market_data = MarketDataConfig(
+        mode=str(market_data_raw.get("mode", "online")),
+        lookback_days=int(market_data_raw.get("lookback_days", 260)),
+        equity_provider=str(market_data_raw.get("equity_provider", "yfinance")),
+        crypto_provider=str(market_data_raw.get("crypto_provider", "coingecko")),
+        user_agent=str(market_data_raw.get("user_agent", "joehu-market-panel/0.1 contact:local")),
+    )
+    data_sources_raw = raw.get("data_sources", {})
+    opencli_raw = data_sources_raw.get("opencli", {})
+    yfinance_raw = data_sources_raw.get("yfinance", {})
+    brokers_raw = data_sources_raw.get("brokers", {})
+    ibkr_raw = brokers_raw.get("ibkr", {})
+    robinhood_raw = brokers_raw.get("robinhood", {})
+    moomoo_raw = brokers_raw.get("moomoo", {})
+    policy_raw = brokers_raw.get("policy", {})
+    data_sources = DataSourcesConfig(
+        opencli=OpenCliConfig(
+            enabled=bool(opencli_raw.get("enabled", True)),
+            command=str(opencli_raw.get("command", "opencli")),
+            timeout_seconds=int(opencli_raw.get("timeout_seconds", 25)),
+        ),
+        yfinance=YFinanceConfig(enabled=bool(yfinance_raw.get("enabled", True))),
+        brokers=BrokerSourcesConfig(
+            enabled=bool(brokers_raw.get("enabled", True)),
+            advisory_only=bool(brokers_raw.get("advisory_only", True)),
+            ibkr=IBKRConfig(
+                enabled=bool(ibkr_raw.get("enabled", False)),
+                host=str(ibkr_raw.get("host", "127.0.0.1")),
+                port=int(ibkr_raw.get("port", 4002)),
+                client_id=int(ibkr_raw.get("client_id", 77)),
+                account_id=ibkr_raw.get("account_id"),
+                readonly=bool(ibkr_raw.get("readonly", True)),
+                paper_only=bool(ibkr_raw.get("paper_only", True)),
+                stale_after_minutes=int(ibkr_raw.get("stale_after_minutes", 15)),
+                market_data_type=str(ibkr_raw.get("market_data_type", "live_or_delayed")),
+                quote_limit=int(ibkr_raw.get("quote_limit", 50)),
+            ),
+            robinhood=RobinhoodConfig(
+                enabled=bool(robinhood_raw.get("enabled", False)),
+                mcp_url=str(robinhood_raw.get("mcp_url", "https://agent.robinhood.com/mcp/trading")),
+                token_path=str(robinhood_raw.get("token_path", "~/.config/market/robinhood-mcp-token.json")),
+                auth_token_env=str(robinhood_raw.get("auth_token_env", "ROBINHOOD_MCP_TOKEN")),
+                prefer_codex_credentials=bool(robinhood_raw.get("prefer_codex_credentials", True)),
+                codex_credentials_path=str(robinhood_raw.get("codex_credentials_path", "~/.codex/.credentials.json")),
+                codex_mcp_server_name=str(robinhood_raw.get("codex_mcp_server_name", "robinhood-trading")),
+                client_id=robinhood_raw.get("client_id"),
+                scope=str(robinhood_raw.get("scope", "internal")),
+                callback_host=str(robinhood_raw.get("callback_host", "127.0.0.1")),
+                callback_port=int(robinhood_raw.get("callback_port", 8765)),
+                timeout_seconds=int(robinhood_raw.get("timeout_seconds", 30)),
+                max_collection_seconds=int(robinhood_raw.get("max_collection_seconds", 600)),
+                max_response_bytes=int(robinhood_raw.get("max_response_bytes", 8 * 1024 * 1024)),
+                readonly=bool(robinhood_raw.get("readonly", True)),
+                max_symbols=int(robinhood_raw.get("max_symbols", 40)),
+                max_expiries=int(robinhood_raw.get("max_expiries", 2)),
+                strikes_around_spot=int(robinhood_raw.get("strikes_around_spot", 12)),
+                quote_batch_size=int(robinhood_raw.get("quote_batch_size", 20)),
+                collect_puts=bool(robinhood_raw.get("collect_puts", False)),
+                near_term_dte=int(robinhood_raw.get("near_term_dte", 35)),
+                history_enabled=bool(robinhood_raw.get("history_enabled", True)), history_symbols=[str(symbol).upper() for symbol in robinhood_raw.get("history_symbols", ["QQQ"]) if str(symbol).strip()], history_min_completeness=float(robinhood_raw.get("history_min_completeness", 0.98)),
+            ),
+            moomoo=MoomooConfig(
+                enabled=bool(moomoo_raw.get("enabled", False)),
+                host=str(moomoo_raw.get("host", "127.0.0.1")),
+                port=int(moomoo_raw.get("port", 11111)),
+                paper_only=bool(moomoo_raw.get("paper_only", True)),
+                stale_after_minutes=int(moomoo_raw.get("stale_after_minutes", 15)),
+                scanner_limit=int(moomoo_raw.get("scanner_limit", 50)),
+            ),
+            policy=BrokerPolicyConfig(
+                require_account_for_recommendations=bool(policy_raw.get("require_account_for_recommendations", False)),
+                max_trade_notional=float(policy_raw.get("max_trade_notional", 10_000.0)),
+                max_position_weight_pct=float(policy_raw.get("max_position_weight_pct", 20.0)),
+                min_primary_evidence_count=int(policy_raw.get("min_primary_evidence_count", 1)),
+                min_total_evidence_count=int(policy_raw.get("min_total_evidence_count", 2)),
+                earnings_blackout_days=int(policy_raw.get("earnings_blackout_days", 2)),
+            ),
+        ),
+    )
+    research_sources_raw = raw.get("research_sources", {})
+    if not isinstance(research_sources_raw, dict):
+        research_sources_raw = {}
+    research_x_raw = research_sources_raw.get("x", {})
+    research_news_raw = research_sources_raw.get("news", {})
+    research_blogs_raw = research_sources_raw.get("blogs", {})
+    if not isinstance(research_x_raw, dict):
+        research_x_raw = {}
+    if not isinstance(research_news_raw, dict):
+        research_news_raw = {}
+    if not isinstance(research_blogs_raw, dict):
+        research_blogs_raw = {}
+    research_sources = ResearchSourcesConfig(
+        x=ResearchXConfig(
+            enabled=bool(research_x_raw.get("enabled", True)),
+            list_id=str(research_x_raw.get("list_id", "") or ""),
+            priority_handles=list(
+                research_x_raw.get(
+                    "priority_handles", ["balajis", "karpathy", "citrini", "BillAckman", "dylan522p", "IncomeSharks"]
+                )
+            ),
+            limit=int(research_x_raw.get("limit", 30)),
+            account_fetch_cap=int(research_x_raw.get("account_fetch_cap", 2)),
+        ),
+        news=ResearchNewsConfig(
+            enabled=bool(research_news_raw.get("enabled", True)),
+            providers=list(research_news_raw.get("providers", ["bloomberg", "reuters", "google-news", "hackernews"])),
+            limit=int(research_news_raw.get("limit", 30)),
+        ),
+        blogs=ResearchBlogsConfig(
+            enabled=bool(research_blogs_raw.get("enabled", True)),
+            substack_urls=list(research_blogs_raw.get("substack_urls", [])),
+            rss_urls=list(research_blogs_raw.get("rss_urls", [])),
+        ),
+    )
+    event_sources_raw = raw.get("event_sources", {})
+    event_sources = EventSourcesConfig(
+        enabled=bool(event_sources_raw.get("enabled", False)),
+        seed_requested_week=bool(event_sources_raw.get("seed_requested_week", False)),
+        bls_enabled=bool(event_sources_raw.get("bls_enabled", True)),
+        dol_enabled=bool(event_sources_raw.get("dol_enabled", True)),
+        federal_reserve_enabled=bool(event_sources_raw.get("federal_reserve_enabled", True)),
+        treasury_enabled=bool(event_sources_raw.get("treasury_enabled", True)),
+        sec_enabled=bool(event_sources_raw.get("sec_enabled", True)),
+        watchlist_enabled=bool(event_sources_raw.get("watchlist_enabled", True)),
+    )
+    analysis_raw = raw.get("analysis", {})
+    options_decision_raw = analysis_raw.get("options_decision_system", {}) or {}
+    analysis = AnalysisConfig(
+        enabled=bool(analysis_raw.get("enabled", True)),
+        correlation_lookback_days=int(analysis_raw.get("correlation_lookback_days", 180)),
+        max_correlation_peers=int(analysis_raw.get("max_correlation_peers", 8)),
+        ticker_universe_coverage_threshold=float(
+            analysis_raw.get("ticker_universe_coverage_threshold", 0.8)
+        ),
+        market_publication_max_age_minutes=int(
+            analysis_raw.get("market_publication_max_age_minutes", 1_440)
+        ),
+        options_decision_system=options_decision_system_config(
+            options_decision_raw, _options_decision_mode,
+        ),
+    )
+    agents_raw = raw.get("agents", {})
+    option_agent_raw = agents_raw.get("option_agent", {}) if isinstance(agents_raw.get("option_agent", {}), dict) else {}
+    option_agent_env_command = os.environ.get("MARKET_OPTION_AGENT_COMMAND")
+    option_agent_provider = str(option_agent_raw.get("provider", "codex")).strip().lower()
+    option_agent_model = str(option_agent_raw.get("model", "")).strip()
+    option_agent_effort = str(option_agent_raw.get("reasoning_effort", "")).strip().lower()
+    option_agent_selection = resolve_provider_selection(
+        option_agent_provider, option_agent_model or None, option_agent_effort or None,
+    )
+    # The legacy setting is accepted only when it already matches the provider
+    # registry.  A UI or environment override cannot reroute a selected model.
+    validate_registry_command(option_agent_selection.provider, option_agent_raw.get("command"))
+    if option_agent_env_command:
+        validate_registry_command(option_agent_selection.provider, option_agent_env_command)
+    option_agent_command = option_agent_selection.command
+    thesis_monitor_raw = agents_raw.get("thesis_monitor", {}) if isinstance(agents_raw.get("thesis_monitor", {}), dict) else {}
+    agents = AgentsConfig(
+        option_agent=OptionAgentConfig(
+            enabled=bool(option_agent_raw.get("enabled", bool(option_agent_command))),
+            command=option_agent_command,
+            timeout_seconds=int(option_agent_raw.get("timeout_seconds", 180)),
+            thesis_limit=int(option_agent_raw.get("thesis_limit", 8)),
+            postmortem_limit=int(option_agent_raw.get("postmortem_limit", 4)),
+            provider=option_agent_selection.provider,
+            model=option_agent_selection.model,
+            reasoning_effort=option_agent_selection.reasoning_effort,
+            auto_run_seconds=int(option_agent_raw.get("auto_run_seconds", 0)),
+            max_runs_per_day=int(option_agent_raw.get("max_runs_per_day", 1)),
+            experiment_enabled=bool(option_agent_raw.get("experiment_enabled", False)),
+            experiment_auto_run_seconds=int(option_agent_raw.get("experiment_auto_run_seconds", 86_400)),
+            context_sources={**DEFAULT_AGENT_CONTEXT_SOURCES, **{k: bool(v) for k, v in dict(option_agent_raw.get("context_sources", {})).items()}},
+        ),
+        thesis_monitor=thesis_monitor_agent_config(thesis_monitor_raw),
+        pricing={**{k: dict(v) for k, v in DEFAULT_AGENT_PRICING.items()}, **{k: dict(v) for k, v in dict(agents_raw.get("pricing", {})).items()}},
+    )
+    scoring_raw = raw.get("scoring", {})
+    scoring = ScoringConfig(
+        weights={**ScoringConfig().weights, **dict(scoring_raw.get("weights", {}))},
+        research_threshold=float(scoring_raw.get("research_threshold", 75.0)),
+    )
+    portfolio_csv = raw.get("portfolio", {}).get("csv_path") or raw.get("portfolio_csv")
+    return AppConfig(
+        database=database,
+        nas=nas,
+        arco=arco,
+        market_data=market_data,
+        data_sources=data_sources,
+        research_sources=research_sources,
+        event_sources=event_sources,
+        analysis=analysis,
+        agents=agents,
+        scoring=scoring,
+        watchlist=list(raw.get("watchlist", [])),
+        portfolio_csv=resolve_path(portfolio_csv, base) if portfolio_csv else None,
+        trader_profile_dir=resolve_path(raw.get("trader_profile_dir", "data/trader_profiles"), base),
+        prompt_dir=resolve_path(raw.get("prompt_dir", "prompts"), base),
+        report_dir=resolve_path(raw.get("report_dir", "data/reports"), base),
+        packet_dir=resolve_path(raw.get("packet_dir", "data/packets"), base),
+    )
+
+
+def _merge_setting_sections(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_setting_sections(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def public_config_payload(config: AppConfig) -> dict[str, Any]:
+    """Return the redacted settings view owned by the config module."""
+
+    payload = _config_payload(config)
+    database = payload.get("database")
+    if isinstance(database, dict) and database.get("url"):
+        database["url"] = _redacted_database_url(str(database["url"]))
+    return payload
+
+
+def _config_payload(config: AppConfig) -> dict[str, Any]:
+    return {
+        "database": {"url": config.database.url},
+        "nas": {
+            "source_root": str(config.nas.source_root),
+            "status_dir": str(config.nas.status_dir),
+            "market_dir": str(config.nas.market_dir),
+            "postgres_backup_dir": str(config.nas.postgres_backup_dir),
+            "storage_archive_dir": str(config.nas.storage_archive_dir),
+        },
+        "arco": {
+            "raw_dir": str(config.arco.raw_dir),
+            "signals_path": config.arco.signals_path,
+            "beliefs_path": config.arco.beliefs_path,
+            "brief_beliefs_glob": config.arco.brief_beliefs_glob,
+            "source_manifest_glob": config.arco.source_manifest_glob,
+            "birdclaw_bookmarks_glob": config.arco.birdclaw_bookmarks_glob,
+            "web_captures_glob": config.arco.web_captures_glob,
+        },
+        "market_data": {
+            "mode": config.market_data.mode,
+            "lookback_days": config.market_data.lookback_days,
+            "equity_provider": config.market_data.equity_provider,
+            "crypto_provider": config.market_data.crypto_provider,
+        },
+        "data_sources": {
+            "opencli": {
+                "enabled": config.data_sources.opencli.enabled,
+                "command": config.data_sources.opencli.command,
+                "timeout_seconds": config.data_sources.opencli.timeout_seconds,
+            },
+            "yfinance": {"enabled": config.data_sources.yfinance.enabled},
+            "brokers": {
+                "enabled": config.data_sources.brokers.enabled,
+                "advisory_only": config.data_sources.brokers.advisory_only,
+                "ibkr": {
+                    "enabled": config.data_sources.brokers.ibkr.enabled,
+                    "host": config.data_sources.brokers.ibkr.host,
+                    "port": config.data_sources.brokers.ibkr.port,
+                    "client_id": config.data_sources.brokers.ibkr.client_id,
+                    "account_id": config.data_sources.brokers.ibkr.account_id,
+                    "readonly": config.data_sources.brokers.ibkr.readonly,
+                    "paper_only": config.data_sources.brokers.ibkr.paper_only,
+                    "stale_after_minutes": config.data_sources.brokers.ibkr.stale_after_minutes,
+                    "market_data_type": config.data_sources.brokers.ibkr.market_data_type,
+                    "quote_limit": config.data_sources.brokers.ibkr.quote_limit,
+                },
+                "robinhood": {
+                    "enabled": config.data_sources.brokers.robinhood.enabled,
+                    "mcp_url": config.data_sources.brokers.robinhood.mcp_url,
+                    "token_path": config.data_sources.brokers.robinhood.token_path,
+                    "auth_token_env": config.data_sources.brokers.robinhood.auth_token_env,
+                    "prefer_codex_credentials": config.data_sources.brokers.robinhood.prefer_codex_credentials,
+                    "codex_credentials_path": config.data_sources.brokers.robinhood.codex_credentials_path,
+                    "codex_mcp_server_name": config.data_sources.brokers.robinhood.codex_mcp_server_name,
+                    "client_id": config.data_sources.brokers.robinhood.client_id,
+                    "scope": config.data_sources.brokers.robinhood.scope,
+                    "callback_host": config.data_sources.brokers.robinhood.callback_host,
+                    "callback_port": config.data_sources.brokers.robinhood.callback_port,
+                    "timeout_seconds": config.data_sources.brokers.robinhood.timeout_seconds,
+                    "max_collection_seconds": config.data_sources.brokers.robinhood.max_collection_seconds,
+                    "max_response_bytes": config.data_sources.brokers.robinhood.max_response_bytes,
+                    "readonly": config.data_sources.brokers.robinhood.readonly,
+                    "max_symbols": config.data_sources.brokers.robinhood.max_symbols,
+                    "max_expiries": config.data_sources.brokers.robinhood.max_expiries,
+                    "strikes_around_spot": config.data_sources.brokers.robinhood.strikes_around_spot,
+                    "quote_batch_size": config.data_sources.brokers.robinhood.quote_batch_size,
+                    "collect_puts": config.data_sources.brokers.robinhood.collect_puts,
+                    "near_term_dte": config.data_sources.brokers.robinhood.near_term_dte,
+                },
+                "moomoo": {
+                    "enabled": config.data_sources.brokers.moomoo.enabled,
+                    "host": config.data_sources.brokers.moomoo.host,
+                    "port": config.data_sources.brokers.moomoo.port,
+                    "paper_only": config.data_sources.brokers.moomoo.paper_only,
+                    "stale_after_minutes": config.data_sources.brokers.moomoo.stale_after_minutes,
+                    "scanner_limit": config.data_sources.brokers.moomoo.scanner_limit,
+                },
+                "policy": {
+                    "max_trade_notional": config.data_sources.brokers.policy.max_trade_notional,
+                    "require_account_for_recommendations": config.data_sources.brokers.policy.require_account_for_recommendations,
+                    "max_position_weight_pct": config.data_sources.brokers.policy.max_position_weight_pct,
+                    "min_primary_evidence_count": config.data_sources.brokers.policy.min_primary_evidence_count,
+                    "min_total_evidence_count": config.data_sources.brokers.policy.min_total_evidence_count,
+                    "earnings_blackout_days": config.data_sources.brokers.policy.earnings_blackout_days,
+                },
+            },
+        },
+        "event_sources": {
+            "enabled": config.event_sources.enabled,
+            "seed_requested_week": config.event_sources.seed_requested_week,
+            "bls_enabled": config.event_sources.bls_enabled,
+            "dol_enabled": config.event_sources.dol_enabled,
+            "federal_reserve_enabled": config.event_sources.federal_reserve_enabled,
+            "treasury_enabled": config.event_sources.treasury_enabled,
+            "sec_enabled": config.event_sources.sec_enabled,
+            "watchlist_enabled": config.event_sources.watchlist_enabled,
+        },
+        "analysis": {
+            "enabled": config.analysis.enabled,
+            "correlation_lookback_days": config.analysis.correlation_lookback_days,
+            "max_correlation_peers": config.analysis.max_correlation_peers,
+            "options_decision_system": {
+                "mode": config.analysis.options_decision_system.mode,
+                "ticker_paper_actions_enabled": config.analysis.options_decision_system.ticker_paper_actions_enabled,
+                "stock_paper_actions_enabled": config.analysis.options_decision_system.stock_paper_actions_enabled,
+                "options_paper_actions_enabled": config.analysis.options_decision_system.options_paper_actions_enabled,
+                "csp_paper_assignment_allowed": config.analysis.options_decision_system.csp_paper_assignment_allowed,
+                "radar_paper_actions_enabled": config.analysis.options_decision_system.radar_paper_actions_enabled,
+                "qqq_paper_actions_enabled": config.analysis.options_decision_system.qqq_paper_actions_enabled,
+                "recovery_paper_actions_enabled": config.analysis.options_decision_system.recovery_paper_actions_enabled,
+                "decision_inbox_enabled": config.analysis.options_decision_system.decision_inbox_enabled,
+                "telegram_notifications_enabled": config.analysis.options_decision_system.telegram_notifications_enabled,
+                "telegram_notifications_dry_run": config.analysis.options_decision_system.telegram_notifications_dry_run,
+                "options_risk_sleeve_capital": config.analysis.options_decision_system.options_risk_sleeve_capital,
+                "max_risk_per_trade_pct": config.analysis.options_decision_system.max_risk_per_trade_pct,
+                "max_open_risk_pct": config.analysis.options_decision_system.max_open_risk_pct,
+                "max_symbol_risk_pct": config.analysis.options_decision_system.max_symbol_risk_pct,
+                "daily_loss_halt_pct": config.analysis.options_decision_system.daily_loss_halt_pct,
+                "max_recovery_open_positions": config.analysis.options_decision_system.max_recovery_open_positions,
+                "strategy_auto_promotion_enabled": config.analysis.options_decision_system.strategy_auto_promotion_enabled,
+                "event_agent_debounce_minutes": config.analysis.options_decision_system.event_agent_debounce_minutes,
+                "event_agent_max_batches_per_symbol_per_day": config.analysis.options_decision_system.event_agent_max_batches_per_symbol_per_day,
+                "event_agent_max_tasks_per_batch": config.analysis.options_decision_system.event_agent_max_tasks_per_batch,
+            },
+        },
+        "agents": {
+            "option_agent": {
+                "enabled": config.agents.option_agent.enabled,
+                "command": config.agents.option_agent.command,
+                "timeout_seconds": config.agents.option_agent.timeout_seconds,
+                "thesis_limit": config.agents.option_agent.thesis_limit,
+                "postmortem_limit": config.agents.option_agent.postmortem_limit,
+                "provider": config.agents.option_agent.provider,
+                "model": config.agents.option_agent.model,
+                "reasoning_effort": config.agents.option_agent.reasoning_effort,
+                "auto_run_seconds": config.agents.option_agent.auto_run_seconds,
+                "max_runs_per_day": config.agents.option_agent.max_runs_per_day,
+                "experiment_enabled": config.agents.option_agent.experiment_enabled,
+                "experiment_auto_run_seconds": config.agents.option_agent.experiment_auto_run_seconds,
+                "context_sources": dict(config.agents.option_agent.context_sources),
+                "command_managed_by_provider": True,
+                "provider_catalog": provider_catalog(),
+            },
+            "thesis_monitor": thesis_monitor_agent_dict(config.agents.thesis_monitor),
+            "pricing": {k: dict(v) for k, v in config.agents.pricing.items()},
+        },
+        "research_sources": {
+            "x": {
+                "enabled": config.research_sources.x.enabled,
+                "list_id": config.research_sources.x.list_id,
+                "priority_handles": config.research_sources.x.priority_handles,
+                "limit": config.research_sources.x.limit,
+                "account_fetch_cap": config.research_sources.x.account_fetch_cap,
+            },
+            "news": {
+                "enabled": config.research_sources.news.enabled,
+                "providers": config.research_sources.news.providers,
+                "limit": config.research_sources.news.limit,
+            },
+            "blogs": {
+                "enabled": config.research_sources.blogs.enabled,
+                "substack_urls": config.research_sources.blogs.substack_urls,
+                "rss_urls": config.research_sources.blogs.rss_urls,
+            },
+        },
+        "scoring": {
+            "weights": config.scoring.weights,
+            "research_threshold": config.scoring.research_threshold,
+        },
+        "watchlist": config.watchlist,
+        "portfolio_csv": str(config.portfolio_csv) if config.portfolio_csv else None,
+        "trader_profile_dir": str(config.trader_profile_dir),
+        "prompt_dir": str(config.prompt_dir),
+    }
+
+
+def _redacted_database_url(value: str) -> str:
+    parsed = urlparse(value)
+    if not parsed.hostname:
+        return f"{parsed.scheme or 'postgresql'}://{parsed.path}"
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme or 'postgresql'}://{host}{port}{parsed.path}"

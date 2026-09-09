@@ -9,16 +9,16 @@
 #   make test-all - complete backend suite
 #   make test-workflow - focused production-role and fixture-isolation checks
 #   make test-migrations - raw-database migration/recovery checks
-#   make release-gate - descriptive alias for the unchanged phase0-gate
+#   make release-gate - full release gate
 #
 # `check` is intentionally green-or-bust and quick so it can run on every commit.
 # The full backend suite uses ephemeral PostgreSQL fixtures. Storage archive
 # tests also enforce the configured free-space reserve.
 
-PY := uv run python
+PY := uv run --extra test python
 RUFF := uvx ruff
 
-.PHONY: check contracts guards lint frontend typecheck test test-unit test-api test-options test-postgres test-all coverage build phase0-gate test-workflow test-migrations release-gate
+.PHONY: check contracts guards lint frontend typecheck test test-unit test-api test-options test-postgres test-all coverage build test-workflow test-migrations release-gate
 
 check: contracts guards lint frontend
 	@echo "✓ check passed"
@@ -27,7 +27,7 @@ contracts:
 	@echo "→ generated panel contract"
 	@$(PY) scripts/generate_panel_contract.py --check
 	@echo "→ generated OpenAPI contract"
-	@npm run check:api
+	@npm --prefix frontend run check:api
 
 guards:
 	@echo "→ architecture guards (interfaces + facade imports)"
@@ -35,16 +35,16 @@ guards:
 
 lint:
 	@echo "→ ruff (high-signal rules)"
-	@$(RUFF) check app src tests
+	@$(RUFF) check src tests
 
 frontend:
 	@echo "→ frontend Vitest"
-	@npm run test:frontend
+	@npm --prefix frontend run test:frontend
 	@echo "→ frontend typecheck"
-	@npm run typecheck
+	@npm --prefix frontend run typecheck
 
 typecheck:
-	@npm run typecheck
+	@npm --prefix frontend run typecheck
 
 test: test-all
 
@@ -70,13 +70,11 @@ test-all:
 	@$(PY) -m pytest tests -q
 
 coverage:
-	@$(PY) -m pytest tests -q --cov=src/investment_panel/database --cov=app --cov-fail-under=80
+	@$(PY) -m pytest tests -q --cov=src/investment_panel/infrastructure/postgres --cov=src/investment_panel/api --cov-fail-under=80
 
 build:
-	@npm run build
+	@npm --prefix frontend run build
 
-phase0-gate: check build
-	@$(PY) -m pytest tests -q --run-slow --cov=src/investment_panel/database --cov=app --cov-fail-under=80
+release-gate: check build
+	@$(PY) -m pytest tests -q --run-slow --cov=src/investment_panel/infrastructure/postgres --cov=src/investment_panel/api --cov-fail-under=80
 	@git diff --check
-
-release-gate: phase0-gate

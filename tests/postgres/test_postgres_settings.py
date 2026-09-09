@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from investment_panel.core.config import load_config as load_core_config
-from investment_panel.database.authority import close_cached_runtimes
-from investment_panel.database.configuration import SettingRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.settings import load_config as load_core_config
+from investment_panel.infrastructure.postgres.authority import close_cached_runtimes
+from investment_panel.infrastructure.postgres.configuration import SettingRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def test_postgresql_settings_overlay_yaml_without_rewriting_it(

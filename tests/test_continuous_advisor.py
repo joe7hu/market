@@ -381,13 +381,13 @@ def test_cohort_evaluation_keeps_response_evidence_safety_rate():
 
 
 def test_estimated_call_cost_is_available_for_registered_provider():
-    from investment_panel.core.config import AppConfig
+    from investment_panel.settings import AppConfig
 
     assert run_continuous_advisor._estimated_call_cost({"evidence_packet": {}}, AppConfig()) is not None
 
 
 def test_provider_failure_telemetry_is_priced_from_direct_metadata():
-    from investment_panel.core.config import AppConfig
+    from investment_panel.settings import AppConfig
 
     usage, cost = run_continuous_advisor._telemetry(
         {

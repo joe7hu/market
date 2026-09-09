@@ -7,7 +7,7 @@ import psycopg
 import pytest
 
 from conftest import typed_config
-from investment_panel.database import panel_pagination
+from investment_panel.infrastructure.postgres import panel_pagination
 
 
 def test_review_pages_above_50k_use_stable_keys_and_live_values(

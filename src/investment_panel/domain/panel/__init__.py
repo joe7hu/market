@@ -1,0 +1,57 @@
+"""Canonical panel contracts and pure payload adapters."""
+
+from investment_panel.domain.panel.contracts import (
+    DECISION_REPAIR_TABLES,
+    DASHBOARD_UNAVAILABLE_MODELS,
+    FRONTEND_ADDITIONAL_TABLES,
+    FRONTEND_TABLE_KEY_OVERRIDES,
+    PANEL_SCOPE_TABLES,
+    PHASE4_PORTFOLIO_TABLES,
+    SOURCE_REPAIR_TABLES,
+    TICKER_INITIAL_TABLES,
+    TICKER_TABLES,
+    WATCHLIST_SECTION_OUTPUT_TABLES,
+    WATCHLIST_SECTION_TABLES,
+    frontend_key_for_table,
+    frontend_table_names,
+    panel_contract_payload,
+    panel_snapshot_table_names,
+    tables_for_scope,
+)
+from investment_panel.domain.panel.payloads import (
+    SCOPED_TABLE_COMPACT_FIELDS,
+    SCOPED_TABLE_ROW_LIMITS,
+    dashboard_payload,
+    panel_snapshot_payload,
+    row_symbols,
+    watchlist_section_payload,
+    watchlist_universe_rows,
+)
+from investment_panel.domain.panel.ticker_sections import build_ticker_dossier
+
+__all__ = [
+    "DECISION_REPAIR_TABLES",
+    "DASHBOARD_UNAVAILABLE_MODELS",
+    "FRONTEND_ADDITIONAL_TABLES",
+    "FRONTEND_TABLE_KEY_OVERRIDES",
+    "PANEL_SCOPE_TABLES",
+    "PHASE4_PORTFOLIO_TABLES",
+    "SOURCE_REPAIR_TABLES",
+    "TICKER_INITIAL_TABLES",
+    "TICKER_TABLES",
+    "WATCHLIST_SECTION_OUTPUT_TABLES",
+    "WATCHLIST_SECTION_TABLES",
+    "SCOPED_TABLE_COMPACT_FIELDS",
+    "SCOPED_TABLE_ROW_LIMITS",
+    "build_ticker_dossier",
+    "dashboard_payload",
+    "frontend_key_for_table",
+    "frontend_table_names",
+    "panel_contract_payload",
+    "panel_snapshot_payload",
+    "panel_snapshot_table_names",
+    "row_symbols",
+    "tables_for_scope",
+    "watchlist_section_payload",
+    "watchlist_universe_rows",
+]

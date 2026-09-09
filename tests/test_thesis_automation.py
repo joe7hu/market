@@ -6,13 +6,13 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
-from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
-from investment_panel.database.thesis import save_thesis
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
+from investment_panel.infrastructure.postgres.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
+from investment_panel.infrastructure.postgres.thesis import thesis_history, thesis_monitor_rows
+from investment_panel.infrastructure.postgres.thesis import save_thesis
 from investment_panel.jobs import run_thesis_monitor
-from investment_panel.providers.advisory import AgentProviderError
+from investment_panel.infrastructure.providers.advisory import AgentProviderError
 from conftest import typed_config
 
 _TEST_SYMBOLS = {"THIN", "HALL", "PRES", "DBNC"}

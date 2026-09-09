@@ -6,10 +6,10 @@ import argparse
 import json
 from typing import Any
 
-from investment_panel.core.config import load_config
-from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
-from investment_panel.database.agents import AgentRepository
-from investment_panel.database.authority import runtime_for_config
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.options_constants import DEFAULT_STRATEGY_VERSION
+from investment_panel.infrastructure.postgres.agents import AgentRepository
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
 
 
 def run(

@@ -9,8 +9,8 @@ import pytest
 from psycopg.errors import RaiseException
 from psycopg.types.json import Jsonb
 
-from investment_panel.analysis.stock_alpha import COST_MODEL_VERSION, FEATURE_VERSION, MODEL_VERSION, TARGET_HORIZON_SESSIONS, TARGET_VERSION
-from investment_panel.core.decision import (
+from investment_panel.domain.research.stock_alpha import COST_MODEL_VERSION, FEATURE_VERSION, MODEL_VERSION, TARGET_HORIZON_SESSIONS, TARGET_VERSION
+from investment_panel.domain.decision import (
     AvailabilityStatus,
     CoverageMatrix,
     CoverageMatrixRow,
@@ -36,10 +36,10 @@ from investment_panel.core.decision import (
     rank_opportunities,
     trade_expression_identity,
 )
-from investment_panel.core.decision.ticker import MARKET_DIMENSIONS, MARKET_HORIZONS
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.domain.decision.ticker import MARKET_DIMENSIONS, MARKET_HORIZONS
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 from investment_panel.jobs import ticker_decisions
 from conftest import typed_config
 

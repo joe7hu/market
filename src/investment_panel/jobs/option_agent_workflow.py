@@ -6,7 +6,7 @@ import json
 import sys
 from typing import Any, Callable
 
-from investment_panel.providers.advisory import AgentProviderError
+from investment_panel.infrastructure.providers.advisory import AgentProviderError
 from investment_panel.jobs.option_agent_contract import POSTMORTEM_SCHEMA, THESIS_SCHEMA
 
 

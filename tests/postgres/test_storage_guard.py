@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from investment_panel.database.storage_guard import GIB, storage_capacity
+from investment_panel.infrastructure.postgres.storage_guard import GIB, storage_capacity
 
 
 def test_storage_guard_blocks_history_at_or_below_the_reserve(monkeypatch) -> None:
     monkeypatch.setattr(
-        "investment_panel.database.storage_guard.shutil.disk_usage",
+        "investment_panel.infrastructure.postgres.storage_guard.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=30 * GIB),
     )
 
@@ -20,7 +20,7 @@ def test_storage_guard_blocks_history_at_or_below_the_reserve(monkeypatch) -> No
 
 def test_storage_guard_allows_history_only_above_the_reserve(monkeypatch) -> None:
     monkeypatch.setattr(
-        "investment_panel.database.storage_guard.shutil.disk_usage",
+        "investment_panel.infrastructure.postgres.storage_guard.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=31 * GIB),
     )
 

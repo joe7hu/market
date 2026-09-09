@@ -12,7 +12,7 @@ from threading import Event, Thread
 import time
 import traceback
 from typing import Any, Callable, Iterator
-from investment_panel.core.config import load_config
+from investment_panel.settings import load_config
 from investment_panel.core.job_execution import (
     PROJECT_ROOT,
     RefreshProcessSpec,
@@ -20,9 +20,9 @@ from investment_panel.core.job_execution import (
     execute_sync,
 )
 from investment_panel.core.job_policy import default_job_timeouts, job_timeout_seconds
-from investment_panel.database.authority import database_url, runtime_for_url
-from investment_panel.database.jobs import JobRepository
-from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository
+from investment_panel.infrastructure.postgres.authority import database_url, runtime_for_url
+from investment_panel.infrastructure.postgres.jobs import JobRepository
+from investment_panel.infrastructure.postgres.options_history_policy import OptionHistoryPolicyRepository
 from investment_panel.jobs import (
     postgres_refresh,
     refresh_options_radar,
@@ -54,7 +54,7 @@ from investment_panel.jobs import (
     update_company_financials,
     stock_alpha_walk_forward,
 )
-from investment_panel.database.retention import RetentionRepository
+from investment_panel.infrastructure.postgres.retention import RetentionRepository
 
 
 JobRunner = Callable[[str | None], dict[str, Any]]

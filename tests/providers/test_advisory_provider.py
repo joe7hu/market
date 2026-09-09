@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from investment_panel.providers import advisory
-from investment_panel.providers.advisory import (
+from investment_panel.infrastructure.providers import advisory
+from investment_panel.infrastructure.providers.advisory import (
     AgentProviderError,
     StructuredProviderRequest,
     invoke_structured,

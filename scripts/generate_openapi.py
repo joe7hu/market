@@ -10,12 +10,13 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "frontend" / "src" / "generated" / "openapi.json"
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+for import_root in (ROOT / "src", ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 
 def rendered_schema() -> str:
-    from app.main import create_app
+    from investment_panel.api.main import create_app
 
     return json.dumps(create_app().openapi(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
@@ -27,7 +28,7 @@ def main() -> int:
     expected = rendered_schema()
     if args.check:
         if not OUTPUT.exists() or OUTPUT.read_text(encoding="utf-8") != expected:
-            raise SystemExit("frontend OpenAPI contract is stale; run npm run generate:api")
+            raise SystemExit("frontend OpenAPI contract is stale; run npm --prefix frontend run generate:api")
         return 0
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(expected, encoding="utf-8")

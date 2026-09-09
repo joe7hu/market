@@ -15,12 +15,12 @@ flow, thesis tracking, portfolio-aware risk, and evidence-backed decision memory
 
 ```bash
 uv sync --extra test
-npm install
+npm install --prefix frontend
 uv run market-db-migrate
 uv run market-full-refresh --config config.yaml
-npm run build
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
-npx vite --host 0.0.0.0
+npm --prefix frontend run build
+uv run uvicorn investment_panel.api.main:app --host 0.0.0.0 --port 8000
+npm --prefix frontend run dev
 ```
 
 Open:
@@ -32,8 +32,8 @@ http://127.0.0.1:5173/today
 For frontend-only development:
 
 ```bash
-npm run dev
-npm run api
+npm --prefix frontend run dev
+npm --prefix frontend run api
 ```
 
 ## Jobs

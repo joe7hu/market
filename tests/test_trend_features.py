@@ -6,13 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from investment_panel.core.decision import is_us_market_day
-from investment_panel.analysis.trend_features import (
+from investment_panel.domain.decision import is_us_market_day
+from investment_panel.domain.factors.trend_features import (
     compute_trend_feature,
     kaufman_adaptive_moving_average,
     kaufman_efficiency_ratio,
 )
-from investment_panel.database.symbol_trends import market_regime_from_features
+from investment_panel.infrastructure.postgres.symbol_trends import market_regime_from_features
 
 
 def _bars(values: list[float]) -> list[dict[str, object]]:

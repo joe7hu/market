@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from investment_panel.core.config import load_config
+from investment_panel.settings import load_config
 
 
 def test_deployed_config_enables_paper_signal_learning_without_live_brokerage() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from investment_panel.database.decision_inbox import DecisionInboxRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.decision_inbox import DecisionInboxRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def test_notifications_emit_only_meaningful_state_transitions(

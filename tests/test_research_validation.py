@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.analysis.research_validation import (
+from investment_panel.domain.research.research_validation import (
     combinatorial_path_records,
     combinatorial_paths,
     cost_capacity_stress,
@@ -13,8 +13,8 @@ from investment_panel.analysis.research_validation import (
     purged_embargoed_splits,
     validate_trial,
 )
-from investment_panel.core.decision import build_strategy_forecast, strategy_forecast_id_for_payload
-from investment_panel.database.research import ResearchRepository
+from investment_panel.domain.decision import build_strategy_forecast, strategy_forecast_id_for_payload
+from investment_panel.infrastructure.postgres.research import ResearchRepository
 
 
 def test_phase1_validation_is_deterministic_and_fail_closed() -> None:

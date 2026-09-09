@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import math
 
-from investment_panel.analysis.cash_secured_put import (
+from investment_panel.domain.options.cash_secured_put import (
     CashSecuredPutInputs,
     evaluate_cash_secured_put,
 )
-from investment_panel.database.options_cash_secured_put import hard_blockers
+from investment_panel.infrastructure.postgres.options_cash_secured_put import hard_blockers
 
 
 def test_cash_secured_put_payoff_and_assignment_basis() -> None:

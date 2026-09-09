@@ -7,8 +7,8 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from investment_panel.database.migrations import HEAD_REVISION, alembic_config, upgrade_database
-from investment_panel.database.panel_models import QUERY_POLICIES
+from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION, alembic_config, upgrade_database
+from investment_panel.infrastructure.postgres.panel_models import QUERY_POLICIES
 from migrations.baseline_contract import BASELINE_REVISION, BASELINE_SCHEMA_HASHES
 from migrations.schema_contract import schema_contract
 
@@ -80,6 +80,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260907_0006_baseline.py',
         '20260908_0007_continuous_advisor.py',
         '20260909_0008_backfill_publication_superseded_at.py',
+        '20260909_0009_strategy_implementation_identity.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
@@ -169,8 +170,8 @@ class NoMigrationAssets(importlib.abc.MetaPathFinder):
         if fullname == 'migrations' or fullname.startswith('migrations.'):
             raise ImportError('migration assets unavailable in wheel')
 sys.meta_path.insert(0, NoMigrationAssets())
-from investment_panel.database.panel_models import QUERY_POLICIES
-from app.data_access import loaders
+from investment_panel.infrastructure.postgres.panel_models import QUERY_POLICIES
+from investment_panel.api.data_access import loaders
 assert QUERY_POLICIES
 """
     subprocess.run([sys.executable, '-c', code], check=True, capture_output=True)

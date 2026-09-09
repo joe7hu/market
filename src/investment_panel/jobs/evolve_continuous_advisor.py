@@ -7,10 +7,10 @@ from datetime import UTC, datetime
 import json
 from typing import Any
 
-from investment_panel.core.config import load_config
+from investment_panel.settings import load_config
 from investment_panel.core.continuous_advisor import MIN_TEST_MATCHES, mutate_prompt_template, promotion_gate
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.continuous_advisor import ContinuousAdvisorRepository
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
 
 
 def run(config_path: str | None = None) -> dict[str, Any]:

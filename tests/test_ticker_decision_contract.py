@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import investment_panel.core.decision.ticker as ticker_module
-from app.data_access.payloads import option_decision_adapter
-from investment_panel.core.decision.ticker import (
+import investment_panel.domain.decision.ticker as ticker_module
+from investment_panel.api.data_access.payloads import option_decision_adapter
+from investment_panel.domain.decision.ticker import (
     CapitalActionType,
     ExpressionDecision,
     ExpressionKind,
@@ -17,7 +17,7 @@ from investment_panel.core.decision.ticker import (
     build_ticker_decision,
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST
-from investment_panel.core.risk_policy import RiskPolicySnapshot, compile_risk_policy_snapshot
+from investment_panel.domain.portfolio.risk_policy import RiskPolicySnapshot, compile_risk_policy_snapshot
 import investment_panel.jobs.ticker_decisions as ticker_decision_job
 from investment_panel.jobs.ticker_decisions import portfolio_impacts
 

@@ -8,9 +8,9 @@ import psycopg
 import pytest
 
 from investment_panel.core import refresh_jobs
-from investment_panel.database.jobs import JobRepository
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.jobs import JobRepository
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 @pytest.fixture

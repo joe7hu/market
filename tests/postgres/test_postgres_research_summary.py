@@ -6,12 +6,12 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from conftest import typed_config
-from investment_panel.analysis.stock_alpha import TARGET_VERSION
-from investment_panel.core.decision import build_ticker_decision
-from investment_panel.database.decision_inbox import DecisionInboxRepository
-from investment_panel.database.research_summary import research_summary
-from investment_panel.database.runtime import API_PROFILE, DatabaseRuntime
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.domain.research.stock_alpha import TARGET_VERSION
+from investment_panel.domain.decision import build_ticker_decision
+from investment_panel.infrastructure.postgres.decision_inbox import DecisionInboxRepository
+from investment_panel.infrastructure.postgres.research_summary import research_summary
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 
 
 def test_research_summary_reads_latest_evidence_and_feedback_separately(

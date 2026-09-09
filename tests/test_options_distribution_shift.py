@@ -1,6 +1,6 @@
 import pytest
 
-from investment_panel.database.options_distribution_shift import (
+from investment_panel.infrastructure.postgres.options_distribution_shift import (
     constant_tenor_curve,
     surface_shift_payload,
     wasserstein_1_equal_mass,

@@ -8,7 +8,7 @@ Production access was read-only. No application result rows were printed into th
 
 1. **P1 — Application permissions remain incomplete at head.**
 
-   Evidence: [role grants](../../migrations/versions/20260902_0067_application_role_privilege_hardening.py#L170), [event queries](../../src/investment_panel/database/event_panel_models.py#L6), [journal and alerts](../../src/investment_panel/database/panel_models.py#L934), [snapshot paging](../../src/investment_panel/database/panel_pagination.py#L54).
+   Evidence: [role grants](../../migrations/versions/20260902_0067_application_role_privilege_hardening.py#L170), [event queries](../../src/investment_panel/infrastructure/postgres/event_panel_models.py#L6), [journal and alerts](../../src/investment_panel/infrastructure/postgres/panel_models.py#L934), [snapshot paging](../../src/investment_panel/infrastructure/postgres/panel_pagination.py#L54).
 
    Of 76 registered direct queries planned under `SET ROLE market_app`, five failed: `trade_journal`, `radar_alert`, `event_decision_packets`, `decision_truth`, and `event_scout_events`. The same role also lacks SELECT, INSERT, and DELETE on `app.review_page_snapshot`. The latter blocks the non-agent learning collections before their paging logic can work.
 
@@ -28,7 +28,7 @@ Production access was read-only. No application result rows were printed into th
 
 3. **P1 — The option-chain read selects latest snapshots by scanning quote history for the full universe.**
 
-   Evidence: [options_chain](../../src/investment_panel/database/panel_models.py#L761), [symbol-scope policy](../../src/investment_panel/database/panel_queries.py#L24).
+   Evidence: [options_chain](../../src/investment_panel/infrastructure/postgres/panel_models.py#L761), [symbol-scope policy](../../src/investment_panel/infrastructure/postgres/panel_queries.py#L24).
 
    The latest-snapshot CTE joins historical quotes to contracts, then sorts and deduplicates by instrument. `options_chain` is absent from the symbol-scoped policy. Thus a caller's symbol filter does not constrain this query. The live plan includes an estimated 4.93 million rows at its largest node; a 50-row request exceeded the three-second server limit. This query belongs to the deeper ticker table contract, not the initial ticker bundle.
 
@@ -36,7 +36,7 @@ Production access was read-only. No application result rows were printed into th
 
 4. **P1 — Volatility surface values mix all historical observations.**
 
-   Evidence: [vol_surface_features](../../src/investment_panel/database/panel_models.py#L1025).
+   Evidence: [vol_surface_features](../../src/investment_panel/infrastructure/postgres/panel_models.py#L1025).
 
    The query averages IV across every quote row for each symbol and expiry. It does not select a current snapshot, restrict a time interval, or verify a completed eligible ingest run. Repeated captures therefore change the weight of a contract. `count(*) AS contracts` counts observations, while `max(observed_at) AS as_of` gives this historical aggregate the latest observation time. This is a correctness defect as well as a performance defect; the 50-row read also exceeded three seconds.
 
@@ -44,7 +44,7 @@ Production access was read-only. No application result rows were printed into th
 
 5. **P2 — Event symbol filtering happens after a global LIMIT.**
 
-   Evidence: [event query limits](../../src/investment_panel/database/event_panel_models.py#L6), [outer symbol filter](../../src/investment_panel/database/panel_models.py#L2114).
+   Evidence: [event query limits](../../src/investment_panel/infrastructure/postgres/event_panel_models.py#L6), [outer symbol filter](../../src/investment_panel/infrastructure/postgres/panel_models.py#L2114).
 
    Event queries select the latest 200 or 500 rows across all symbols. The shared loader wraps the query and applies the requested symbol afterward. A valid event outside that global prefix disappears from a symbol request. An isolated test inserted 201 events with the target symbol in the oldest event: the stored target count was one, but the wrapped query returned zero.
 
@@ -52,7 +52,7 @@ Production access was read-only. No application result rows were printed into th
 
 6. **P2 — Learning pagination transfers and decodes the whole snapshot on every page.**
 
-   Evidence: [snapshot read](../../src/investment_panel/database/panel_pagination.py#L54), [snapshot creation](../../src/investment_panel/database/panel_pagination.py#L65), [Python slicing](../../src/investment_panel/database/panel_pagination.py#L92).
+   Evidence: [snapshot read](../../src/investment_panel/infrastructure/postgres/panel_pagination.py#L54), [snapshot creation](../../src/investment_panel/infrastructure/postgres/panel_pagination.py#L65), [Python slicing](../../src/investment_panel/infrastructure/postgres/panel_pagination.py#L92).
 
    The first page loads up to 50,001 rows, converts them to JSON, and stores the full array. Each next page selects and decodes that full array before slicing it in Python. A 25-row page can therefore transfer 50,000 rows internally. Once a collection exceeds 50,000 rows, even its first page fails. This remains a design defect after the permission repair in finding 1.
 
@@ -60,7 +60,7 @@ Production access was read-only. No application result rows were printed into th
 
 7. **P2 — Transition pages compute and sort the full history before returning a small page.**
 
-   Evidence: [transition window](../../src/investment_panel/database/panel_models.py#L1070), [unconditional total-count window for limited reads](../../src/investment_panel/database/panel_models.py#L2090).
+   Evidence: [transition window](../../src/investment_panel/infrastructure/postgres/panel_models.py#L1070), [unconditional total-count window for limited reads](../../src/investment_panel/infrastructure/postgres/panel_models.py#L2090).
 
    A 50-row request took 1,930.9 ms, processed about 821,545 rows at its largest node, and wrote 48,307 temporary blocks, about 377 MiB. The query computes LAG by contract across history, sorts again by descending time, and the wrapper requests an exact full count. The page limit reduces output, not this work.
 
@@ -68,7 +68,7 @@ Production access was read-only. No application result rows were printed into th
 
 8. **P2 — URL-encoded database passwords break migration configuration.**
 
-   Evidence: [alembic_config](../../src/investment_panel/database/migrations.py#L20).
+   Evidence: [alembic_config](../../src/investment_panel/infrastructure/postgres/migrations.py#L20).
 
    A valid DSN containing a password such as `example%40password` raises ValueError before connecting because `set_main_option` uses ConfigParser interpolation. A plain synthetic password succeeds. The isolated reproducer confirms this without accessing credentials.
 

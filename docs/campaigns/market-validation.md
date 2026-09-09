@@ -14,7 +14,7 @@ locked command. The phase planner owns the final exact check-to-gate mapping.
 | Release | `make release-gate` once on the frozen candidate, valid independent review, required migration and live route proof | Inputs or environment change; invalidate only affected proof |
 | Observation | Real scheduled operation, source history, and locked observation window | Explicit failures require repair; elapsed time alone cannot supply observations |
 
-`release-gate` is an alias of `phase0-gate`; it includes slow tests, coverage,
+`release-gate` includes slow tests, coverage,
 contracts, lint, frontend tests/typecheck, build, and diff checks. It does not
 rename an active campaign phase. `make coverage` skips slow tests by default,
 and `make test-postgres` overlaps coverage. These are not equivalent gates.

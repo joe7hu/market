@@ -7,23 +7,23 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from conftest import typed_config
-from investment_panel.core.decision import market_session_bounds
+from investment_panel.domain.decision import market_session_bounds
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket
-from investment_panel.core.risk_policy import PortfolioAssignmentPolicy, RiskPolicySnapshot
-from investment_panel.database.actions import ActionRepository
-from investment_panel.database.analysis import AnalysisRepository, current_option_publication_answers
-from investment_panel.database.confirmed_daily_prices import completed_trading_dates, confirmed_daily_bars
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.options_analysis import DEFAULT_PARAMETERS, FEATURE_VERSION, refresh_options_radar
-from investment_panel.database.options_calibration import calibration_profiles
-from investment_panel.database.options_paper_execution import PAPER_MARK_KEY, OptionsPaperExecutionRepository
-from investment_panel.database.options_paper_ledger import shared_sleeve_blockers
-from investment_panel.database.options_experiments import (
+from investment_panel.domain.portfolio.risk_policy import PortfolioAssignmentPolicy, RiskPolicySnapshot
+from investment_panel.infrastructure.postgres.actions import ActionRepository
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository, current_option_publication_answers
+from investment_panel.infrastructure.postgres.confirmed_daily_prices import completed_trading_dates, confirmed_daily_bars
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.options_analysis import DEFAULT_PARAMETERS, FEATURE_VERSION, refresh_options_radar
+from investment_panel.infrastructure.postgres.options_calibration import calibration_profiles
+from investment_panel.infrastructure.postgres.options_paper_execution import PAPER_MARK_KEY, OptionsPaperExecutionRepository
+from investment_panel.infrastructure.postgres.options_paper_ledger import shared_sleeve_blockers
+from investment_panel.infrastructure.postgres.options_experiments import (
     EXPERIMENT_VERSION, advance_experiment_shadows, experiment_candidate, experiment_publication_row,
     experiment_identity,
 )
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.strategy_parameters import merge_strategy_parameters
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.strategy_parameters import merge_strategy_parameters
 from investment_panel.jobs.options_paper_execution import run_experiments
 
 
@@ -56,7 +56,7 @@ def experiment_context(migrated_postgres_dsn, monkeypatch):
             "VALUES (%s, 'walk_forward', %s, %s, 'pass', '{}')",
             [candidate, now - timedelta(minutes=59), now - timedelta(minutes=59)],
         )
-    monkeypatch.setattr("investment_panel.database.options_experiments.is_market_open", lambda _: True)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.options_experiments.is_market_open", lambda _: True)
     try:
         yield runtime, ingestion, now, parent, candidate
     finally:
@@ -160,7 +160,7 @@ def test_incumbent_and_candidate_gain_real_forward_calibration_before_promotion(
             assert row["metrics"]["exit_quotes"][0]["source_id"] == "test-experiment"
         assert connection.execute("SELECT status FROM analysis.strategy_revision WHERE id = %s", [candidate]).fetchone()["status"] == "candidate"
         # Use the fixture's forward observation clock for the evaluator handoff.
-        from investment_panel.database.strategy_learning import OBSERVATION_QUERY, OUTCOME_QUERY
+        from investment_panel.infrastructure.postgres.strategy_learning import OBSERVATION_QUERY, OUTCOME_QUERY
 
         observed_query = OUTCOME_QUERY.replace("now()", f"TIMESTAMPTZ '{(now + timedelta(seconds=92)).isoformat()}'")
         for revision in (parent, candidate):
@@ -250,7 +250,7 @@ def test_rejected_independent_opportunities_remain_in_both_denominators(experime
         assert {row["strategy_revision_id"] for row in rows} == {parent, candidate}
         assert all(row["episodes"] == 2 and row["all_rejected"] for row in rows)
         assert connection.execute("SELECT count(*) AS count FROM analysis.option_outcome").fetchone()["count"] == 0
-        from investment_panel.database.strategy_learning import OBSERVATION_QUERY
+        from investment_panel.infrastructure.postgres.strategy_learning import OBSERVATION_QUERY
 
         cohort = connection.execute(OBSERVATION_QUERY, [[parent, candidate], now - timedelta(hours=1)]).fetchall()
         assert len(cohort) == 4 and all(row["shadow_status"] == "rejected" for row in cohort)
@@ -258,7 +258,7 @@ def test_rejected_independent_opportunities_remain_in_both_denominators(experime
 
 @pytest.mark.parametrize("legacy_pending", [False, True])
 def test_score_rejections_stay_confirmed_cash_without_shadow_fills(experiment_context, monkeypatch, legacy_pending):
-    from investment_panel.database.strategy_learning import OBSERVATION_QUERY, OUTCOME_QUERY, forward_cohort
+    from investment_panel.infrastructure.postgres.strategy_learning import OBSERVATION_QUERY, OUTCOME_QUERY, forward_cohort
 
     runtime, ingestion, now, parent, candidate = experiment_context
     reference = now
@@ -268,7 +268,7 @@ def test_score_rejections_stay_confirmed_cash_without_shadow_fills(experiment_co
         def now(cls, tz=None):
             return reference + timedelta(seconds=10)
 
-    monkeypatch.setattr("investment_panel.database.options_analysis.datetime", ObservationClock)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.options_analysis.datetime", ObservationClock)
     # Two explicit fixture sessions let the fixed cohort exclude its first
     # partial session and still retain a confirmed CASH observation per side.
     for reference in (now, now + timedelta(days=1)):
@@ -304,7 +304,7 @@ def test_score_rejections_stay_confirmed_cash_without_shadow_fills(experiment_co
 
 
 def test_candidate_and_promoted_revision_select_after_the_same_expectancy_scoring(experiment_context, monkeypatch):
-    from investment_panel.database.options_expressions import enrich_long_option_expectancy
+    from investment_panel.infrastructure.postgres.options_expressions import enrich_long_option_expectancy
 
     runtime, ingestion, now, parent, candidate = experiment_context
     _capture(runtime, ingestion, now, contracts=(
@@ -313,7 +313,7 @@ def test_candidate_and_promoted_revision_select_after_the_same_expectancy_scorin
     ))
     # A bounded deterministic history isolates the retention/scoring seam. The
     # cheaper contract leads liquidity scoring but expires out of the money.
-    monkeypatch.setattr("investment_panel.database.options_expressions._histories",
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.options_expressions._histories",
                         lambda _connection, cutoffs, _limits: {
                             instrument: [100 * 1.1 ** (index / 28) for index in range(60)]
                             for instrument in cutoffs
@@ -331,7 +331,7 @@ def test_candidate_and_promoted_revision_select_after_the_same_expectancy_scorin
             initial_contracts.append([float(row["strike"]) for row in rows])
         return enrich_long_option_expectancy(runtime, run_id, calibrated_ready)
 
-    monkeypatch.setattr("investment_panel.database.options_analysis.enrich_long_option_expectancy", score)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.options_analysis.enrich_long_option_expectancy", score)
     before = refresh_options_radar(runtime, source_id="test-experiment", code_version="selection-before", candidate_revision_id=candidate)
     assert before["empirical_long_options"] == 2 and before["shadow_trades"] == 1
     with runtime.transaction() as connection:
@@ -410,7 +410,7 @@ def test_scheduled_candidate_staging_uses_a_clock_after_its_publication(experime
 def test_candidate_records_only_the_regime_available_at_its_decision(experiment_context, monkeypatch, regime, clock_offset):
     runtime, ingestion, now, _parent, candidate = experiment_context
     _capture(runtime, ingestion, now)
-    monkeypatch.setattr("investment_panel.database.options_analysis.refresh_symbol_trend_features",
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.options_analysis.refresh_symbol_trend_features",
                         lambda *_args, **_kwargs: {"market_regime": {"state": regime, "quality_status": "complete",
                             "as_of": (now + timedelta(seconds=clock_offset)).isoformat()}})
     published = refresh_options_radar(runtime, source_id="test-experiment", code_version="regime-test", candidate_revision_id=candidate)
@@ -469,8 +469,8 @@ def test_shadow_drawdown_measures_a_decline_from_peak_wealth(experiment_context)
 
 def _ready_paper_publication(experiment_context, monkeypatch, *, experimental=True, sleeve_capital=25000, analysis_runtime=None):
     runtime, ingestion, now, parent, candidate = experiment_context
-    monkeypatch.setattr("investment_panel.database.actions.is_market_open", lambda _: True)
-    monkeypatch.setattr("investment_panel.database.options_paper_execution.is_market_open", lambda _: True)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.actions.is_market_open", lambda _: True)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.options_paper_execution.is_market_open", lambda _: True)
     _capture(runtime, ingestion, now)
     with runtime.transaction() as connection:
         connection.execute(
@@ -624,7 +624,7 @@ def test_application_login_exits_use_all_partial_entry_prices_and_paid_fees(expe
                     daily_loss_halt_pct=.02, max_open_positions=None,
                 )
         if future_entry_journal:
-            from investment_panel.database.options_paper_ledger import shared_sleeve_loss_state
+            from investment_panel.infrastructure.postgres.options_paper_ledger import shared_sleeve_loss_state
 
             # The missing fee/fill journal becomes available after both exits.
             # Reconcile from that evidence without rewriting the unknown exits.
@@ -1237,8 +1237,8 @@ def test_candidate_paper_uses_same_risk_checks_and_immutable_experiment_provenan
     "paper_missing_entry_multiplier", "paper_conflicting_exit_multiplier",
 ])
 def test_rollback_requires_twenty_independent_current_incumbent_losses(experiment_context, monkeypatch, cohort):
-    from investment_panel.database import strategy_learning
-    from investment_panel.database.strategy_governance import StrategyGovernanceRepository
+    from investment_panel.infrastructure.postgres import strategy_learning
+    from investment_panel.infrastructure.postgres.strategy_governance import StrategyGovernanceRepository
 
     runtime, ingestion, now, parent, active = experiment_context
     with runtime.transaction() as connection:
@@ -1359,10 +1359,10 @@ def test_rollback_requires_twenty_independent_current_incumbent_losses(experimen
 
 
 def test_multiple_public_paper_orders_cannot_supply_one_selected_execution_sample(experiment_context, monkeypatch):
-    from investment_panel.database import strategy_learning
-    from investment_panel.database.options_experiments import seed_experiment_shadows
-    from investment_panel.core.decision import promotion_readiness
-    from investment_panel.database.strategy_governance import StrategyGovernanceRepository, paper_provenance_is_database_backed
+    from investment_panel.infrastructure.postgres import strategy_learning
+    from investment_panel.infrastructure.postgres.options_experiments import seed_experiment_shadows
+    from investment_panel.domain.decision import promotion_readiness
+    from investment_panel.infrastructure.postgres.strategy_governance import StrategyGovernanceRepository, paper_provenance_is_database_backed
 
     runtime, ingestion, now, _parent, candidate = experiment_context
     ready = _ready_paper_publication(experiment_context, monkeypatch, sleeve_capital=50000)

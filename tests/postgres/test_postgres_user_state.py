@@ -9,16 +9,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app import dependencies
-from app.data_access import mutations as mutations_owner
-import app.panel_snapshot as panel_owner
-from app.routers.portfolio import router
-from app.routers.panel import router as panel_router
-from app.routers.theses import router as theses_router
-from investment_panel.database.authority import close_cached_runtimes
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.api import dependencies
+from investment_panel.api.data_access import mutations as mutations_owner
+import investment_panel.api.panel_snapshot as panel_owner
+from investment_panel.api.routers.portfolio import router
+from investment_panel.api.routers.panel import router as panel_router
+from investment_panel.api.routers.theses import router as theses_router
+from investment_panel.infrastructure.postgres.authority import close_cached_runtimes
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from conftest import typed_config
 
 
@@ -1206,7 +1206,7 @@ def test_portfolio_only_panel_read_skips_full_intelligence_bundle(
     postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from investment_panel.database import panel_models as postgres_panel
+    from investment_panel.infrastructure.postgres import panel_models as postgres_panel
 
     def fail_if_bundled(_config: dict[str, object]) -> dict[str, list[dict[str, object]]]:
         raise AssertionError("portfolio-only reads must not build the full intelligence bundle")
@@ -1226,7 +1226,7 @@ def test_shared_risk_models_use_live_portfolio_contracts(
     postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from investment_panel.database import panel_models as postgres_panel
+    from investment_panel.infrastructure.postgres import panel_models as postgres_panel
 
     published = {
         "portfolio_risk_cards": [{"card_id": "published-card"}],
@@ -1253,7 +1253,7 @@ def test_shared_scopes_load_one_live_portfolio_contract_bundle(
     postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from investment_panel.database import panel_models as postgres_panel
+    from investment_panel.infrastructure.postgres import panel_models as postgres_panel
 
     published = {
         "portfolio_risk_cards": [{"card_id": "published-card"}],

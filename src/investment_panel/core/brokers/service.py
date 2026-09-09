@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 from typing import Any
-from investment_panel.core.config import load_config
+from investment_panel.settings import load_config
 
 from investment_panel.core.brokers.constants import ADVISORY_AUTHORITY
 from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus
 from investment_panel.core.brokers.ibkr import IBKRProvider
 from investment_panel.core.brokers.moomoo import MoomooProvider
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.brokers import BrokerRepository
-from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.brokers import BrokerRepository
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 
 
 

@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from investment_panel.core.decision.ticker_learning import evaluate_ticker_policy
-from investment_panel.core.decision import ExpressionKind, InputLineage, OutcomeAttribution
-from app.data_access.payloads import ticker_learning_payload
+from investment_panel.domain.decision.ticker_learning import evaluate_ticker_policy
+from investment_panel.domain.decision import ExpressionKind, InputLineage, OutcomeAttribution
+from investment_panel.api.data_access.payloads import ticker_learning_payload
 
 
 def _canonical_rows(*, sample_eligible: bool = True, promotion_eligible: bool = True) -> list[dict[str, object]]:
@@ -288,7 +288,7 @@ def test_ticker_learning_payload_exposes_expression_result_and_policy_gate() -> 
 
 
 def test_repository_learning_surface_rejects_mismatched_current_attributions(monkeypatch) -> None:
-    from investment_panel.database import ticker_decisions as owner
+    from investment_panel.infrastructure.postgres import ticker_decisions as owner
 
     cutoff = datetime(2026, 8, 22, 14, tzinfo=UTC)
     old_lineage = InputLineage(

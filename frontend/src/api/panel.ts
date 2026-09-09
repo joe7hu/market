@@ -96,6 +96,7 @@ export async function loadPanelScope(
     status: snapshot.status as unknown as DashboardPayload["status"],
     dashboard: snapshot.dashboard as unknown as DashboardPayload | null | undefined,
     tables: snapshot.tables as unknown as Record<string, TablePayload> | undefined,
+    portfolio_holdings: snapshot.portfolio_holdings,
     portfolio_integrated: snapshot.portfolio_integrated,
   };
   return { snapshot: result, settings: scope === "settings" ? await loadSettings() : undefined };

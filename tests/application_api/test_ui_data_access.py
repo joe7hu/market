@@ -1,23 +1,23 @@
-from investment_panel.database import thesis as thesis_owner
+from investment_panel.infrastructure.postgres import thesis as thesis_owner
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
-from app.routers import panel as panel_router
-from app.data_access import loaders as loaders_owner
-from app.data_access import mutations as mutations_owner
-from app.data_access import payloads as payloads_owner
-from app.data_access import settings as settings_owner
-from app.data_access.types import DataStatus, PanelData
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.portfolio_ledger import record_portfolio_transaction
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
-from investment_panel.database.user_state import portfolio_rows, watchlist_rows
-from investment_panel.core.panel import panel_contract_payload, tables_for_scope
-from investment_panel.core.config import load_config
+from investment_panel.api.routers import panel as panel_router
+from investment_panel.api.data_access import loaders as loaders_owner
+from investment_panel.api.data_access import mutations as mutations_owner
+from investment_panel.api.data_access import payloads as payloads_owner
+from investment_panel.api.data_access import settings as settings_owner
+from investment_panel.api.data_access.types import DataStatus, PanelData
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.portfolio_ledger import record_portfolio_transaction
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.thesis import thesis_history, thesis_monitor_rows
+from investment_panel.infrastructure.postgres.user_state import portfolio_rows, watchlist_rows
+from investment_panel.domain.panel import panel_contract_payload, tables_for_scope
+from investment_panel.settings import load_config
 from conftest import typed_config
 
 
@@ -70,6 +70,52 @@ def test_opportunities_snapshot_keeps_the_on_demand_screener() -> None:
     payload = payloads_owner.panel_snapshot_payload(panel, "opportunities")
 
     assert payload["tables"]["screener"]["rows"] == [{"symbol": "BBB"}]
+
+
+def test_portfolio_snapshot_exposes_canonical_holding_values() -> None:
+    panel = PanelData(
+        status=DataStatus(True, "ok", "test"),
+        tables={
+            "portfolio": [
+                {
+                    "symbol": "ZERO",
+                    "quantity": 0,
+                    "price": 0,
+                    "market_value": 0,
+                    "portfolio_weight": 0,
+                    "currency": "USD",
+                    "valuation_status": "market_quote",
+                    "valuation_available": True,
+                },
+                {
+                    "symbol": "SHORT",
+                    "quantity": -1,
+                    "price": 50,
+                    "market_value": -50,
+                    "portfolio_weight": -0.5,
+                    "currency": "USD",
+                    "valuation_status": "market_quote",
+                    "valuation_available": True,
+                },
+                {
+                    "symbol": "STALE",
+                    "quantity": 10,
+                    "market_value": None,
+                    "currency": "USD",
+                    "valuation_status": "stale_quote",
+                    "valuation_available": False,
+                },
+            ],
+            "quotes": [{"symbol": "ZERO", "price": 999}],
+        },
+    )
+
+    holdings = payloads_owner.panel_snapshot_payload(panel, "portfolio")["portfolio_holdings"]
+
+    assert [holding["market_value"] for holding in holdings] == [0.0, -50.0, None]
+    assert [holding["portfolio_weight"] for holding in holdings] == [0.0, -0.5, None]
+    assert holdings[0]["valuation_available"] is True
+    assert holdings[2]["valuation_status"] == "stale_quote"
 
 
 def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -> None:
@@ -1588,8 +1634,8 @@ def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) ->
 
 
 def test_thesis_review_rejects_empty_legacy_acknowledgement(migrated_postgres_dsn: str) -> None:
-    from investment_panel.database.authority import runtime_for_config
-    from investment_panel.database.instruments import reconcile_instrument
+    from investment_panel.infrastructure.postgres.authority import runtime_for_config
+    from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
     from psycopg.types.json import Jsonb
 
     config = typed_config(migrated_postgres_dsn)
@@ -1744,7 +1790,7 @@ def test_save_watchlist_symbol_rejects_malformed_ticker(migrated_postgres_dsn: s
 @pytest.mark.parametrize("offset,limit", [(0, 500), (10_000, 500)])
 @pytest.mark.parametrize("fallback", [False, True])
 def test_opportunities_preserves_maximum_page(monkeypatch, offset, limit, fallback):
-    from investment_panel.core.decision import OpportunityRank
+    from investment_panel.domain.decision import OpportunityRank
 
     count = offset + limit + 1
     rows = [{
@@ -1793,7 +1839,7 @@ def test_opportunities_preserves_maximum_page(monkeypatch, offset, limit, fallba
     ("blockers", None), ("blockers", "not-an-array"),
 ])
 def test_opportunities_fallback_rejects_malformed_persisted_rank(monkeypatch, field, bad_value):
-    from investment_panel.core.decision import OpportunityRank
+    from investment_panel.domain.decision import OpportunityRank
 
     rank = OpportunityRank(
         rank_id="rank-1", ticker="AAA", opportunity_episode_id="episode-1",
@@ -1831,7 +1877,7 @@ def test_ticker_action_identity_uses_matching_nested_episode() -> None:
 
 
 def test_ticker_fundamentals_read_postgres_values_without_screener() -> None:
-    from investment_panel.core.panel.ticker_sections import build_fundamentals
+    from investment_panel.domain.panel.ticker_sections import build_fundamentals
     result = build_fundamentals("AAA", {"fundamentals": [
         {"symbol": "AAA", "source": "sec-fundamentals", "metric_set": "sec_fundamentals",
          "observed_at": "2026-09-01", "values": {"revenue": 100, "free_cash_flow": 0, "form_type": "10-K", "source_url": "https://sec.test/facts"}},
@@ -1849,7 +1895,7 @@ def test_ticker_fundamentals_read_postgres_values_without_screener() -> None:
 
 
 def test_ticker_fundamentals_keep_sec_quarter_separate_from_year_to_date() -> None:
-    from investment_panel.core.panel.ticker_sections import build_fundamentals
+    from investment_panel.domain.panel.ticker_sections import build_fundamentals
     common = {"source": "sec_companyfacts", "metric_set": "sec_companyfacts", "period_end": "2026-06-30", "filed_at": "2026-08-01"}
     result = build_fundamentals("AAA", {"fundamentals": [
         {**common, "period_start": "2026-01-01", "values": {"form": "10-Q", "metrics": {"revenue": 200, "operating_cash_flow": 50}}},

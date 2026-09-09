@@ -10,7 +10,7 @@ The implementation changes 64 files: 1,111 added lines, 3,421 removed lines
 
 - Frontend scope responses merge once into current state. Concurrent refreshes
   preserve newer data and keep loading active until all requests finish.
-- Today queue composition lives in `app/actions/today.py`; shared rank identity
+- Today queue composition lives in `src/investment_panel/workflows/today.py`; shared rank identity
   rules live in the existing decision module.
 - Portfolio, thesis, and options routes use their concrete owners. Removed
   forwarding methods, duplicate dependency wiring, and signature inspection.

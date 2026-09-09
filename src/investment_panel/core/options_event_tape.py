@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Iterable
 
-from investment_panel.core.decision import MARKET_TZ, is_us_market_day, market_session_bounds
+from investment_panel.domain.decision import MARKET_TZ, is_us_market_day, market_session_bounds
 
 
 DELTA_LADDER = (0.25, 0.35, 0.45, 0.55, 0.65, 0.75)

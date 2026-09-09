@@ -8,17 +8,17 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
-from investment_panel.database.migrations import downgrade_database, upgrade_database
-from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.storage_archive import (
+from investment_panel.infrastructure.postgres.migrations import downgrade_database, upgrade_database
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.storage_archive import (
     ARCHIVE_FREE_RESERVE_BYTES,
     ArchiveCapacityError,
     StorageArchiveService,
     ensure_mounted_archive_root,
 )
-from investment_panel.core.config import load_config, public_config_payload
+from investment_panel.settings import load_config, public_config_payload
 
 
 @pytest.fixture
@@ -148,7 +148,7 @@ def test_verification_fails_closed_for_corrupt_artifact(storage_postgres_dsn: st
 
 
 def test_market_nas_archive_rejects_a_stale_unmounted_mountpoint(monkeypatch) -> None:
-    monkeypatch.setattr("investment_panel.database.storage_archive.os.path.ismount", lambda _path: False)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.storage_archive.os.path.ismount", lambda _path: False)
 
     with pytest.raises(FileNotFoundError, match="archive mount is unavailable"):
         ensure_mounted_archive_root(Path("/Volumes/agent/data-sources/market-mini/storage-archive/v1"))
@@ -162,7 +162,7 @@ def test_archive_writer_rejects_writes_below_nas_reserve(storage_postgres_dsn: s
         archive_root.parent.mkdir(parents=True)
         service = StorageArchiveService(runtime, archive_root)
         monkeypatch.setattr(
-            "investment_panel.database.storage_archive._disk_usage",
+            "investment_panel.infrastructure.postgres.storage_archive._disk_usage",
             lambda _path: SimpleNamespace(free=ARCHIVE_FREE_RESERVE_BYTES),
         )
 

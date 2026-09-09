@@ -18,8 +18,8 @@ from xml.etree import ElementTree
 
 import httpx
 
-from investment_panel.core.config import AppConfig, load_config
-from investment_panel.core.phase2 import (
+from investment_panel.settings import AppConfig, load_config
+from investment_panel.domain.market.phase2 import (
     AdapterResult,
     Phase2Status,
     assess_option_oi_volume_sla,
@@ -32,10 +32,10 @@ from investment_panel.core.phase2 import (
     parse_treasury_yield_curve,
     source_contracts,
 )
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.payload_archive import write_provider_payload
-from investment_panel.database.phase2 import Phase2Repository
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.payload_archive import write_provider_payload
+from investment_panel.infrastructure.postgres.phase2 import Phase2Repository
 
 
 Fetcher = Callable[[str, Mapping[str, str], Mapping[str, str]], Mapping[str, Any]]

@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 
-from investment_panel.core.config import load_config
+from investment_panel.settings import load_config
 from investment_panel.core.status import write_source_status
-from investment_panel.database.backup import create_verified_backup
+from investment_panel.infrastructure.postgres.backup import create_verified_backup
 
 
 def run(config_path: str | None = None) -> dict[str, object]:

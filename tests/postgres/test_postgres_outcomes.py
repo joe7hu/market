@@ -4,13 +4,13 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from app.data_access.loaders import load_table_panel_data
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.options_analysis import DEFAULT_PARAMETERS, refresh_options_radar
-from investment_panel.database.outcomes import OutcomeRepository
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.strategy_learning import StrategyLearningRepository
+from investment_panel.api.data_access.loaders import load_table_panel_data
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.options_analysis import DEFAULT_PARAMETERS, refresh_options_radar
+from investment_panel.infrastructure.postgres.outcomes import OutcomeRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.strategy_learning import StrategyLearningRepository
 from psycopg.types.json import Jsonb
 from conftest import typed_config
 

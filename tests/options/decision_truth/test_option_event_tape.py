@@ -12,15 +12,15 @@ from investment_panel.core.options_event_tape import (
 )
 from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig
 from investment_panel.core.options_recovery_paper import recovery_risk_policy
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.option_events import OptionEventRepository
-from investment_panel.database.options_recovery_execution import RecoveryExecutionRepository
-from investment_panel.database.options_recovery_read import RecoveryReadRepository
-from investment_panel.database.options_recovery_cohorts import ProgramEligibility
-from investment_panel.database.options_history import OptionHistoryRepository
-from investment_panel.database.options_history_policy import EVENT_PROFILE, OptionHistoryPolicyRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
+from investment_panel.infrastructure.postgres.option_events import OptionEventRepository
+from investment_panel.infrastructure.postgres.options_recovery_execution import RecoveryExecutionRepository
+from investment_panel.infrastructure.postgres.options_recovery_read import RecoveryReadRepository
+from investment_panel.infrastructure.postgres.options_recovery_cohorts import ProgramEligibility
+from investment_panel.infrastructure.postgres.options_history import OptionHistoryRepository
+from investment_panel.infrastructure.postgres.options_history_policy import EVENT_PROFILE, OptionHistoryPolicyRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def _strip_rows(symbol: str = "NVDA", *, as_of: date = date(2026, 8, 3)) -> list[dict[str, object]]:
@@ -383,8 +383,8 @@ def test_recovery_event_and_health_routes_expose_only_their_bounded_surfaces(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from app import dependencies
-    from app.routers.options import router as options_router
+    from investment_panel.api import dependencies
+    from investment_panel.api.routers.options import router as options_router
     from conftest import typed_config
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
@@ -704,7 +704,7 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
             "model_name": "option_recovery_signal",
             "signal_id": str(result["selected"][0]["signal_id"]),
         }
-        from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
+        from investment_panel.infrastructure.postgres.opportunity_scorecards import OpportunityScorecardRepository
 
         scorecard = OpportunityScorecardRepository(runtime).scorecard(
             lane="recovery",
@@ -715,14 +715,14 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
         assert ticket is not None
         assert ticket["ticket_version"] == 4
         assert ticket["objective_version"] == "short_horizon_convex_v2"
-        from app.options_history_contracts import RecoveryOptionTradeTicketV4
+        from investment_panel.api.options_history_contracts import RecoveryOptionTradeTicketV4
 
         assert RecoveryOptionTradeTicketV4.model_validate(ticket).ticket_version == 4
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from app import dependencies
-        from app.routers.options import router as options_router
+        from investment_panel.api import dependencies
+        from investment_panel.api.routers.options import router as options_router
         from conftest import typed_config
 
         application = FastAPI()

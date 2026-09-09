@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.response_contracts import TodayTradePlanSummaryResponse
-from investment_panel.core.decision import ExpressionKind
+from investment_panel.api.response_contracts import TodayTradePlanSummaryResponse
+from investment_panel.domain.decision import ExpressionKind
 
 
 @pytest.mark.parametrize("kind", list(ExpressionKind))

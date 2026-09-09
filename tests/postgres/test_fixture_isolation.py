@@ -1,7 +1,7 @@
 import psycopg
 import pytest
 
-from investment_panel.database.migrations import HEAD_REVISION
+from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
 
 
 @pytest.mark.parametrize("attempt", range(2))

@@ -4,12 +4,12 @@ from datetime import UTC, datetime
 
 from psycopg.errors import QueryCanceled
 
-from investment_panel.database.opportunity_episodes import (
+from investment_panel.infrastructure.postgres.opportunity_episodes import (
     SCORECARD_TRUTH_VERSION,
     option_episode_key,
 )
-from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository, scorecard_payload
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.opportunity_scorecards import OpportunityScorecardRepository, scorecard_payload
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def test_scorecard_query_timeout_is_explicitly_invalid_and_fail_closed() -> None:

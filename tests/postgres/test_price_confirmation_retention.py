@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.price_confirmation_retention import PriceConfirmationRetentionRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.price_confirmation_retention import PriceConfirmationRetentionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def test_confirmation_retention_compacts_success_duplicates_but_keeps_failed_audit(

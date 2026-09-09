@@ -1,0 +1,277 @@
+"""Settings and agent-control payloads and config writes."""
+
+from __future__ import annotations
+import os
+import re
+from typing import Any, Iterable
+from urllib.parse import urlparse
+
+from investment_panel.api.scheduler import scheduler_status
+from investment_panel.api.data_access.coerce import jsonable
+from investment_panel.api.data_access.coerce import deep_merge as _deep_merge
+from investment_panel.api.data_access.payloads import runtime_metadata, status_payload
+from investment_panel.settings import AppConfig, public_config_payload
+from investment_panel.core.settings_validation import (
+    apply_agent_settings_update,
+    apply_research_sources_update,
+)
+from investment_panel.infrastructure.postgres.authority import runtime_for_url
+from investment_panel.infrastructure.postgres.configuration import SettingRepository
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+
+
+def slug(value: Any) -> str:
+    text = str(value or "source").lower().strip()
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or "source"
+
+
+
+def settings_payload(config: AppConfig, panel_data: PanelData) -> dict[str, Any]:
+    public_config = public_config_payload(config)
+    database = public_config.get("database")
+    if isinstance(database, dict) and database.get("url"):
+        database["url"] = _public_database_url(str(database["url"]))
+    return {
+        "status": status_payload(panel_data),
+        "config": jsonable(public_config),
+        "sources": research_source_inventory(config, panel_data),
+        "agents": agent_control_payload(config),
+        "integration": {
+            "core_modules": ["investment_panel.infrastructure.postgres"],
+            "helper_names": ["load_panel_data", "load_ticker_dossier_data"],
+            "database_url": _public_database_url(config.database.url),
+            "arco_raw_dir": str(config.arco.raw_dir),
+            "birdclaw_command": "Not configured",
+        },
+    }
+
+
+def _public_database_url(value: str) -> str:
+    parsed = urlparse(value)
+    if not parsed.hostname:
+        return f"{parsed.scheme or 'postgresql'}://{parsed.path}"
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme or 'postgresql'}://{host}{port}{parsed.path}"
+
+
+def persist_setting_section(config: AppConfig, section: str, update: dict[str, Any]) -> None:
+    configured = public_config_payload(config).get(section)
+    current = configured if isinstance(configured, dict) else {}
+    if section == "agents":
+        value = apply_agent_settings_update(current, update)
+    elif section == "research_sources":
+        value = apply_research_sources_update(current, update)
+    else:
+        value = _deep_merge(dict(current), update)
+    runtime = runtime_for_url(config.database.url)
+    SettingRepository(runtime).set_section(section, value)
+    if section == "research_sources":
+        news = value.get("news", {}) if isinstance(value.get("news"), dict) else {}
+        blogs = value.get("blogs", {}) if isinstance(value.get("blogs"), dict) else {}
+        x = value.get("x", {}) if isinstance(value.get("x"), dict) else {}
+        IngestionRepository(runtime).sync_research_source_enablement(
+            news_ids=[slug(f"news_{provider}") for provider in _config_list(news.get("providers"))],
+            blog_sources=[
+                *[(_blog_source_id(url), "substack") for url in _config_list(blogs.get("substack_urls"))],
+                *[(_blog_source_id(url), "rss") for url in _config_list(blogs.get("rss_urls"))],
+            ],
+            news_enabled=bool(news.get("enabled", True)),
+            blogs_enabled=bool(blogs.get("enabled", True)),
+            x_enabled=bool(x.get("enabled", True) and str(x.get("list_id") or "").strip()),
+        )
+
+
+def research_source_inventory(config: AppConfig, panel_data: PanelData) -> dict[str, Any]:
+    """Configured live research sources plus latest run stats.
+
+    Settings is the edit/delete surface for user-configured live pulls, so this
+    list is derived from config and joined to source_runs. Dynamic blog/news
+    source IDs are produced by the live ingestion helpers.
+    """
+
+    research = config.research_sources
+    x = research.x
+    news = research.news
+    blogs = research.blogs
+    run_index = _source_run_index(panel_data.rows("source_runs"))
+    rows: list[dict[str, Any]] = []
+
+    list_id = str(x.list_id or "").strip()
+    if list_id:
+        rows.append(
+            _inventory_row(
+                run_index,
+                source_id="birdclaw_primary_tweets",
+                family="x",
+                kind="x_list",
+                label="X list",
+                value=list_id,
+                config_path="research_sources.x.list_id",
+                removable=True,
+                enabled=x.enabled,
+                capability="x_list",
+            )
+        )
+    for handle in _config_list(x.priority_handles):
+        rows.append(
+            _inventory_row(
+                run_index,
+                source_id="birdclaw_primary_tweets",
+                family="x",
+                kind="x_handle",
+                label=f"@{handle}",
+                value=handle,
+                config_path="research_sources.x.priority_handles",
+                removable=True,
+                enabled=x.enabled,
+                capability="x_account",
+            )
+        )
+    for provider in _config_list(news.providers):
+        rows.append(
+            _inventory_row(
+                run_index,
+                source_id=slug(f"news_{provider}"),
+                family="news",
+                kind="news_provider",
+                label=provider,
+                value=provider,
+                config_path="research_sources.news.providers",
+                removable=True,
+                enabled=news.enabled,
+                capability="news",
+            )
+        )
+    for url in _config_list(blogs.substack_urls):
+        rows.append(
+            _inventory_row(
+                run_index,
+                source_id=_blog_source_id(url),
+                family="blog",
+                kind="substack",
+                label=_host(url),
+                value=url,
+                config_path="research_sources.blogs.substack_urls",
+                removable=True,
+                enabled=blogs.enabled,
+                capability="substack",
+            )
+        )
+    for url in _config_list(blogs.rss_urls):
+        rows.append(
+            _inventory_row(
+                run_index,
+                source_id=_blog_source_id(url),
+                family="blog",
+                kind="rss",
+                label=_host(url),
+                value=url,
+                config_path="research_sources.blogs.rss_urls",
+                removable=True,
+                enabled=blogs.enabled,
+                capability="rss",
+            )
+        )
+    return {"rows": rows, "count": len(rows)}
+
+
+def _source_run_index(rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+    counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        source_id = str(row.get("source_id") or "")
+        if not source_id:
+            continue
+        capability = str(row.get("capability") or "")
+        key = (source_id, capability)
+        counts[key] = counts.get(key, 0) + 1
+        current = index.get(key)
+        if current is None or str(row.get("finished_at") or row.get("started_at") or "") > str(current.get("finished_at") or current.get("started_at") or ""):
+            index[key] = dict(row)
+    for key, count in counts.items():
+        index[key]["run_count"] = count
+    return index
+
+
+def _inventory_row(
+    run_index: dict[tuple[str, str], dict[str, Any]],
+    *,
+    source_id: str,
+    family: str,
+    kind: str,
+    label: str,
+    value: str,
+    config_path: str,
+    removable: bool,
+    enabled: bool,
+    capability: str,
+) -> dict[str, Any]:
+    run = run_index.get((source_id, capability), {})
+    status = str(run.get("status") or ("configured" if enabled else "paused"))
+    return {
+        "source_id": source_id,
+        "family": family,
+        "kind": kind,
+        "label": label,
+        "value": value,
+        "config_path": config_path,
+        "removable": removable,
+        "enabled": enabled,
+        "latest_status": status,
+        "latest_finished_at": run.get("finished_at"),
+        "latest_capability": run.get("capability"),
+        "latest_failure_detail": run.get("failure_detail"),
+        "latest_item_count": int(run.get("item_count") or 0),
+        "latest_ticker_count": int(run.get("ticker_count") or 0),
+        "observed_run_count": int(run.get("run_count") or 0),
+    }
+
+
+def _config_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items: Iterable[Any] = re.split(r"[\n,]+", value)
+    elif isinstance(value, (list, tuple)):
+        items = value
+    else:
+        return []
+    out: list[str] = []
+    for item in items:
+        token = str(item or "").strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def _blog_source_id(url: str) -> str:
+    return slug(f"blog_{_host(url)}")
+
+
+def _host(url: str) -> str:
+    try:
+        netloc = urlparse(url).netloc or url
+    except Exception:
+        netloc = url
+    return netloc.replace("www.", "") or "blog"
+
+
+
+
+def agent_control_payload(config: AppConfig) -> dict[str, Any]:
+    agents = public_config_payload(config).get("agents", {})
+    return {
+        "config": jsonable(agents),
+        "runtime": runtime_metadata(config).get("agents", {}),
+        "scheduler": scheduler_status(config),
+        "model_overrides": {
+            "codex_model": os.environ.get("MARKET_CODEX_MODEL", ""),
+            "codex_reasoning_effort": os.environ.get("MARKET_CODEX_REASONING_EFFORT", ""),
+            "codex_timeout_seconds": os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"),
+            "deepseek_model": os.environ.get("MARKET_DEEPSEEK_MODEL", ""),
+            "deepseek_base_url": os.environ.get("MARKET_DEEPSEEK_BASE_URL", ""),
+            "deepseek_timeout_seconds": os.environ.get("MARKET_DEEPSEEK_TIMEOUT_SECONDS", ""),
+            "auth_mode": "chatgpt_oauth",
+        },
+    }

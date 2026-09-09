@@ -26,7 +26,7 @@ from investment_panel.core.options_recovery_ticket import (
     build_recovery_ticket_v4,
     occ_symbol,
 )
-from investment_panel.database.options_recovery_execution import RecoveryExecutionRepository
+from investment_panel.infrastructure.postgres.options_recovery_execution import RecoveryExecutionRepository
 
 
 NOW = datetime(2026, 8, 3, 15, 0, tzinfo=UTC)

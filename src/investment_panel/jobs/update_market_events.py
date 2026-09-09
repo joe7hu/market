@@ -10,13 +10,13 @@ import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from investment_panel.core.config import AppConfig, load_config
+from investment_panel.settings import AppConfig, load_config
 from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.core import sec
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.payload_archive import write_provider_payload
-from investment_panel.database.source_facts import SourceFactRepository
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.payload_archive import write_provider_payload
+from investment_panel.infrastructure.postgres.source_facts import SourceFactRepository
 
 
 SOURCE_ID = "official-event-calendar"

@@ -6,10 +6,10 @@ import argparse
 import json
 from typing import Any
 
-from investment_panel.core.config import load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.symbol_decision_outcomes import SymbolDecisionOutcomeRepository
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.symbol_decision_outcomes import SymbolDecisionOutcomeRepository
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 
 
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:

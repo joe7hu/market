@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import update_content_sources
-from investment_panel.providers.opencli import OpenCliUnavailableError
+from investment_panel.infrastructure.providers.opencli import OpenCliUnavailableError
 
 
 def test_content_refresh_archives_payload_and_stores_compact_linked_facts(

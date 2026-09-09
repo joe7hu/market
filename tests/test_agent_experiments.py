@@ -5,11 +5,11 @@ from uuid import UUID
 
 import pytest
 
-from investment_panel.database.agent_experiments import AgentExperimentRepository, arm_summary
+from investment_panel.infrastructure.postgres.agent_experiments import AgentExperimentRepository, arm_summary
 from investment_panel.core.agent_providers import provider_cost, resolve_provider_selection
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import run_agent_experiment
-from investment_panel.providers.advisory import ProviderTokenMetadata, StructuredProviderResult
+from investment_panel.infrastructure.providers.advisory import ProviderTokenMetadata, StructuredProviderResult
 
 
 def test_paired_packet_extracts_explicit_refs_from_radar_thesis_payload() -> None:

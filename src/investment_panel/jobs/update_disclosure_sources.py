@@ -15,7 +15,7 @@ from typing import Any
 from defusedxml import ElementTree as ET
 import yaml
 
-from investment_panel.core.config import AppConfig, load_config, resolve_path
+from investment_panel.settings import AppConfig, load_config, resolve_path
 from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.core.house_disclosures import (
     fetch_house_pdf_bytes,
@@ -24,10 +24,10 @@ from investment_panel.core.house_disclosures import (
     search_house_member_filings,
 )
 from investment_panel.core import sec
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.payload_archive import provider_archive_path
-from investment_panel.database.source_facts import SourceFactRepository
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.payload_archive import provider_archive_path
+from investment_panel.infrastructure.postgres.source_facts import SourceFactRepository
 
 
 def run(config_path: str | None = None) -> dict[str, Any]:

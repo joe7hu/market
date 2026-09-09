@@ -18,32 +18,38 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROD_ROOTS = (ROOT / "app", ROOT / "src" / "investment_panel")
+PROD_ROOTS = (ROOT / "src" / "investment_panel",)
 FRONTEND_SRC = ROOT / "frontend" / "src"
 OWNER_MODULES = (
-    "app/dependencies.py",
-    "app/panel_snapshot.py",
-    "app/job_control.py",
-    "app/request_security.py",
-    "app/actions/options.py",
-    "app/actions/today.py",
-    "app/actions/event_scout.py",
-    "src/investment_panel/database/panel_models.py",
-    "src/investment_panel/database/panel_queries.py",
+    "src/investment_panel/api/dependencies.py",
+    "src/investment_panel/api/panel_snapshot.py",
+    "src/investment_panel/api/job_control.py",
+    "src/investment_panel/api/request_security.py",
+    "src/investment_panel/workflows/options.py",
+    "src/investment_panel/workflows/today.py",
+    "src/investment_panel/workflows/event_scout.py",
+    "src/investment_panel/domain/factors/catalog.py",
+    "src/investment_panel/domain/strategies/catalog.py",
+    "src/investment_panel/domain/portfolio/contracts.py",
+    "src/investment_panel/infrastructure/postgres/panel_models.py",
+    "src/investment_panel/infrastructure/postgres/panel_queries.py",
     "src/investment_panel/core/event_scout.py",
     "src/investment_panel/core/event_scout_runtime.py",
-    "src/investment_panel/database/event_scout.py",
-    "src/investment_panel/database/options_history.py",
-    "src/investment_panel/database/options_decision_system.py",
-    "src/investment_panel/database/options_research.py",
-    "src/investment_panel/database/options_execution.py",
-    "src/investment_panel/database/options_recovery_read.py",
-    "src/investment_panel/database/options_publication.py",
-    "src/investment_panel/database/ingestion.py",
+    "src/investment_panel/infrastructure/postgres/event_scout.py",
+    "src/investment_panel/infrastructure/postgres/options_history.py",
+    "src/investment_panel/infrastructure/postgres/options_decision_system.py",
+    "src/investment_panel/infrastructure/postgres/options_research.py",
+    "src/investment_panel/infrastructure/postgres/options_execution.py",
+    "src/investment_panel/infrastructure/postgres/options_recovery_read.py",
+    "src/investment_panel/infrastructure/postgres/options_publication.py",
+    "src/investment_panel/infrastructure/postgres/ingestion.py",
     "frontend/src/generated/apiSchema.ts",
 )
 AREAS = ("api", "config", "options", "providers", "frontend")
-KNOWN_COMPATIBILITY_FILES = frozenset({"app/deps.py", "app/panel_contracts.py"})
+KNOWN_COMPATIBILITY_FILES = frozenset({
+    "src/investment_panel/api/deps.py",
+    "src/investment_panel/api/panel_contracts.py",
+})
 KNOWN_COMPATIBILITY_ROUTES = frozenset({
     "/api/decision-truth",
     "/api/etf-premiums",
@@ -57,7 +63,7 @@ COMPATIBILITY_MARKERS = (
     "etf_premiums",
     "watchlist-screen",
     "panel_contracts",
-    "app.deps",
+    "investment_panel.api.deps",
 )
 FINAL_ARCHITECTURE_INVARIANTS = {
     "availability_authority": "raw.price_bar_fact_availability + raw.quote_fact_availability",
@@ -86,10 +92,7 @@ def _prod_py_files() -> list[Path]:
 
 
 def _module_name(path: Path) -> str:
-    if path.is_relative_to(ROOT / "app"):
-        relative = path.relative_to(ROOT).with_suffix("")
-    else:
-        relative = path.relative_to(ROOT / "src").with_suffix("")
+    relative = path.relative_to(ROOT / "src").with_suffix("")
     parts = list(relative.parts)
     if parts[-1] == "__init__":
         parts.pop()
@@ -207,10 +210,10 @@ def production_private_imports() -> list[str]:
 
 def router_database_imports() -> list[str]:
     findings: list[str] = []
-    for path in sorted((ROOT / "app" / "routers").glob("*.py")):
+    for path in sorted((ROOT / "src" / "investment_panel" / "api" / "routers").glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("investment_panel.database"):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("investment_panel.infrastructure.postgres"):
                 findings.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno} {node.module}")
     return findings
 
@@ -254,36 +257,36 @@ def _area_matches(path: Path, area: str | None) -> bool:
     relative = path.relative_to(ROOT).as_posix()
     if area == "api":
         return relative.startswith((
-            "app/",
-            "src/investment_panel/core/panel/",
-            "src/investment_panel/database/panel",
-            "src/investment_panel/database/current_quotes.py",
-            "src/investment_panel/database/sources.py",
-            "src/investment_panel/database/superinvestor_portfolios.py",
+            "src/investment_panel/api/",
+            "src/investment_panel/domain/panel/",
+            "src/investment_panel/infrastructure/postgres/panel",
+            "src/investment_panel/infrastructure/postgres/current_quotes.py",
+            "src/investment_panel/infrastructure/postgres/sources.py",
+            "src/investment_panel/infrastructure/postgres/superinvestor_portfolios.py",
             "frontend/src/api/",
             "frontend/src/apiTransport.ts",
         ))
     if area == "config":
         return relative.startswith((
-            "app/dependencies.py",
-            "app/response_contracts.py",
-            "app/routers/settings.py",
-            "app/data_access/settings.py",
-            "src/investment_panel/core/config",
+            "src/investment_panel/api/dependencies.py",
+            "src/investment_panel/api/response_contracts.py",
+            "src/investment_panel/api/routers/settings.py",
+            "src/investment_panel/api/data_access/settings.py",
+            "src/investment_panel/settings.py",
             "src/investment_panel/core/agent_config.py",
             "src/investment_panel/core/options_recovery_config.py",
-            "src/investment_panel/database/configuration.py",
+            "src/investment_panel/infrastructure/postgres/configuration.py",
         ))
     if area == "options":
         return (
-            relative.startswith(("app/actions/options.py", "app/routers/options"))
+            relative.startswith(("src/investment_panel/workflows/options.py", "src/investment_panel/api/routers/options"))
             or "/options" in relative
             or "/option_" in relative
             or relative.startswith(("frontend/src/api/options.ts", "frontend/src/views/options"))
         )
     if area == "providers":
         return relative.startswith((
-            "src/investment_panel/providers/",
+            "src/investment_panel/infrastructure/providers/",
             "src/investment_panel/core/agent_providers.py",
             "src/investment_panel/jobs/run_option_agent.py",
             "src/investment_panel/jobs/option_agent_workflow.py",
@@ -338,10 +341,7 @@ def _scripts() -> list[str]:
 
 
 def _module_path(module: str) -> Path | None:
-    if module == "app" or module.startswith("app."):
-        relative = Path(*module.split("."))
-        root = ROOT
-    elif module == "investment_panel" or module.startswith("investment_panel."):
+    if module == "investment_panel" or module.startswith("investment_panel."):
         relative = Path(*module.split("."))
         root = ROOT / "src"
     else:
@@ -444,7 +444,7 @@ def final_architecture_inventory() -> dict[str, Any]:
     """Return the final lifecycle contracts for human and CI inspection."""
 
     counts = {marker: 0 for marker in RETIRED_MARKERS}
-    for root in (ROOT / "app", ROOT / "src", ROOT / "config.yaml"):
+    for root in (ROOT / "src", ROOT / "config.yaml"):
         paths = [root] if root.is_file() else root.rglob("*")
         for path in paths:
             if not path.is_file() or path.suffix not in {".py", ".yaml", ".yml", ".ts", ".tsx"}:
@@ -472,20 +472,20 @@ def production_lines_by_subsystem(area: str | None = None) -> dict[str, int]:
         relative = path.relative_to(ROOT).as_posix()
         if relative.startswith("frontend/"):
             subsystem = "frontend"
-        elif relative.startswith("app/routers/"):
-            subsystem = "app/routers"
-        elif relative.startswith("app/actions/"):
-            subsystem = "app/actions"
-        elif relative.startswith("app/"):
-            subsystem = "app"
-        elif "/database/" in relative:
-            subsystem = "database"
+        elif "/api/routers/" in relative:
+            subsystem = "api/routers"
+        elif "/api/" in relative:
+            subsystem = "api"
+        elif "/workflows/" in relative:
+            subsystem = "workflows"
+        elif "/infrastructure/postgres/" in relative:
+            subsystem = "infrastructure/postgres"
         elif "/jobs/" in relative:
             subsystem = "jobs"
-        elif "/analysis/" in relative:
-            subsystem = "analysis"
-        elif "/providers/" in relative:
-            subsystem = "providers"
+        elif "/domain/" in relative:
+            subsystem = "domain"
+        elif "/infrastructure/providers/" in relative:
+            subsystem = "infrastructure/providers"
         else:
             subsystem = "core"
         totals[subsystem] += len(path.read_text(encoding="utf-8", errors="replace").splitlines())
@@ -507,9 +507,9 @@ def _missing_local_imports() -> list[str]:
             else:
                 continue
             for module in candidates:
-                if not module or not module.startswith(("app", "investment_panel")) or module in local_modules:
+                if not module or not module.startswith("investment_panel") or module in local_modules:
                     continue
-                roots = (ROOT, ROOT / "src") if module.startswith("app") else (ROOT / "src",)
+                roots = (ROOT / "src",)
                 relative = Path(*module.split("."))
                 exists_as_namespace = any((root / relative).is_dir() for root in roots)
                 if not exists_as_namespace:

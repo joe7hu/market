@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import (
+from investment_panel.domain.decision import (
     InputLineage,
     bind_trade_plan,
     build_trade_plan,
@@ -13,16 +13,16 @@ from investment_panel.core.decision import (
     rank_opportunities,
     trade_expression_identity,
 )
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.portfolio_ledger import replay_portfolio_at
-from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE, RuntimeProfile
-from investment_panel.database.ticker_decisions import (
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.portfolio_ledger import replay_portfolio_at
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE, RuntimeProfile
+from investment_panel.infrastructure.postgres.ticker_decisions import (
     HORIZON_SESSIONS,
     TickerDecisionRepository,
     paper_execution_for_plan,
 )
-from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
+from investment_panel.infrastructure.postgres.ticker_execution import TickerPaperExecutionRepository
 from investment_panel.jobs.ticker_decisions import portfolio_impacts, replay_with_seed_stock_evidence
 from conftest import typed_config
 
@@ -1144,7 +1144,7 @@ def test_peer_return_bounds_large_confirmed_peer_sets_at_each_cutoff(
     migrated_postgres_dsn: str,
     monkeypatch,
 ) -> None:
-    import investment_panel.database.ticker_decisions as ticker_decision_module
+    import investment_panel.infrastructure.postgres.ticker_decisions as ticker_decision_module
 
     monkeypatch.setattr(
         ticker_decision_module,

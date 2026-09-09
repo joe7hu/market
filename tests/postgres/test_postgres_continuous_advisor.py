@@ -4,11 +4,11 @@ import psycopg
 import pytest
 
 from investment_panel.core.continuous_advisor import build_evidence_packet, packet_fingerprint
-from investment_panel.database.authority import runtime_for_url
-from investment_panel.database.continuous_advisor import ContinuousAdvisorRepository
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.thesis import save_thesis
+from investment_panel.infrastructure.postgres.authority import runtime_for_url
+from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.thesis import save_thesis
 from conftest import typed_config
 
 

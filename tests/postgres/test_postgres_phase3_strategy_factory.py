@@ -6,11 +6,11 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
-from investment_panel.analysis.stock_alpha import content_hash
-from investment_panel.core.strategy_factory import default_strategy_registry
-from investment_panel.database.migrations import downgrade_database, upgrade_database
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.strategy_factory import StrategyFactoryRepository
+from investment_panel.domain.research.stock_alpha import content_hash
+from investment_panel.domain.strategies.catalog import resolve_builtin_strategy
+from investment_panel.infrastructure.postgres.migrations import downgrade_database, upgrade_database
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.strategy_factory import StrategyFactoryRepository
 
 
 def test_phase3_migration_exposes_bounded_registry_contract(migrated_postgres_dsn: str) -> None:
@@ -36,11 +36,13 @@ def test_phase3_migration_exposes_bounded_registry_contract(migrated_postgres_ds
             """SELECT column_name FROM information_schema.columns
                WHERE table_schema = 'analysis' AND table_name = 'strategy_revision'
                  AND column_name IN ('mechanism_class', 'source_definition_version', 'promotability',
-                                     'actionability', 'p3_enabled')
+                                     'actionability', 'p3_enabled', 'implementation_id',
+                                     'implementation_version')
                ORDER BY column_name""",
         ).fetchall()
         assert [row[0] for row in columns] == [
-            "actionability", "mechanism_class", "p3_enabled", "promotability", "source_definition_version",
+            "actionability", "implementation_id", "implementation_version", "mechanism_class",
+            "p3_enabled", "promotability", "source_definition_version",
         ]
 
 
@@ -86,6 +88,13 @@ def test_phase3_evidence_is_immutable_and_martingale_is_not_promotable(
                 ["c" * 64, revision],
             )
         connection.execute("ROLLBACK TO SAVEPOINT phase3_immutable")
+        connection.execute("SAVEPOINT implementation_identity_immutable")
+        with pytest.raises(psycopg.errors.RaiseException, match="implementation identity is immutable"):
+            connection.execute(
+                "UPDATE analysis.strategy_revision SET implementation_id = %s WHERE id = %s",
+                ["different-implementation", revision],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT implementation_identity_immutable")
         martingale = connection.execute(
             """INSERT INTO analysis.strategy_revision
                (strategy_key, revision, name, status, parameters, mechanism_class,
@@ -134,7 +143,7 @@ def test_phase3_repository_rejects_conflicting_registration_identity(migrated_po
     runtime.open()
     try:
         repository = StrategyFactoryRepository(runtime)
-        spec = default_strategy_registry().resolve("daily_trend_underreaction_v1")
+        spec = resolve_builtin_strategy("daily_trend_underreaction_v1")
         repository.register(spec)
         with pytest.raises(ValueError, match="identity conflicts"):
             repository.register(spec.model_copy(update={"name": "conflicting name"}))
@@ -149,7 +158,7 @@ def test_phase3_repository_resolves_only_postgres_registered_strategy(migrated_p
     runtime.open()
     try:
         repository = StrategyFactoryRepository(runtime)
-        spec = default_strategy_registry().resolve("daily_trend_underreaction_v1")
+        spec = resolve_builtin_strategy("daily_trend_underreaction_v1")
         revision_id = repository.register(spec)
         resolved = repository.resolve(spec.strategy_key)
         assert revision_id > 0

@@ -6,7 +6,7 @@ import argparse
 import json
 from typing import Any
 
-from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
+from investment_panel.infrastructure.postgres.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.jobs import postgres_refresh
 
 

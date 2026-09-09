@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from investment_panel.core.decision import (
+from investment_panel.domain.decision import (
     build_ticker_decision,
     build_trade_plan,
     bind_trade_plan,
     trade_expression_identity,
 )
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 
 
 def test_options_and_crypto_share_episode_rank_impact_resolution_plan(

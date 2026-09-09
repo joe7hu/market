@@ -8,10 +8,10 @@ from typing import Any
 
 import httpx
 
-from investment_panel.core.config import load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.market_analysis import refresh_market_publication
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.market_analysis import refresh_market_publication
 
 
 MUNGER_MARKET_METRICS_URL = "https://mungermode.com/api/v1/market/metrics"

@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from investment_panel.core.config import load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.storage_archive import ARCHIVE_KINDS, StorageArchiveService
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.storage_archive import ARCHIVE_KINDS, StorageArchiveService
 
 
 def _service(config_path: str | None) -> StorageArchiveService:

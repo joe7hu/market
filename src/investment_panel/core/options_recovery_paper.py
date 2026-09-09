@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from math import floor, isfinite
 from typing import Any
 
-from investment_panel.core.risk_policy import compile_risk_policy_snapshot
+from investment_panel.domain.portfolio.risk_policy import compile_risk_policy_snapshot
 from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig
 
 @dataclass(frozen=True)

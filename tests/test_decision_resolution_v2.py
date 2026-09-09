@@ -4,18 +4,27 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.core.decision import (
+from investment_panel.domain.decision import (
     DecisionResolutionV2,
     capital_action_from_resolution,
     build_decision_resolution,
+    resolution_from_published,
 )
-from investment_panel.core.risk_policy import (
+from investment_panel.domain.portfolio.risk_policy import (
     PortfolioAssignmentPolicy,
     coerce_portfolio_assignment_policy,
 )
 
 
 NOW = datetime(2026, 8, 23, 15, tzinfo=UTC)
+
+
+def test_published_resolution_uses_the_typed_stored_contract() -> None:
+    stored = build_decision_resolution(
+        action="HOLD", decision_revision="decision-1", policy_version="risk-policy.v2:test",
+        provenance={"as_of": NOW}, ticker="QQQ",
+    )
+    assert resolution_from_published({"resolution": stored.model_dump(mode="json")}).model_dump(mode="json") == stored.model_dump(mode="json")
 
 
 def test_blocked_resolution_has_one_safe_primary_blocker() -> None:

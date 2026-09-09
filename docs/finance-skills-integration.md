@@ -8,10 +8,10 @@ a wholesale runtime dependency.
 | Upstream skill/plugin | Market implementation | LLM role |
 | --- | --- | --- |
 | `tradingview-reader` | Read-only OpenCLI provider plus normalized quote, screener, option, news, and exchange-qualified instrument identity. | None for ingestion. |
-| `options-payoff` | `investment_panel.analysis.options_payoff` computes expiry/theoretical payoff curves, breakevens, max gain/loss, and standard scenarios from stored chains. | Parse screenshots/free-form strategies into structured legs only. |
-| `earnings-preview`, `earnings-recap`, `estimate-analysis` | `investment_panel.analysis.earnings_setup` scores revision momentum, surprise history, estimate spread, and analyst target sentiment. | Memo prose and transcript/news interpretation only. |
-| `company-valuation` | `investment_panel.analysis.valuation` stores DCF base case, relative revenue multiple, and blended valuation rows. | Assumption selection only when structured data is missing. |
-| `sepa-strategy`, `stock-liquidity`, `stock-correlation` | Existing deterministic analysis modules and yfinance/TradingView ingestion. | None. |
+| `options-payoff` | `investment_panel.domain.options.options_payoff` computes expiry/theoretical payoff curves, breakevens, max gain/loss, and standard scenarios from stored chains. | Parse screenshots/free-form strategies into structured legs only. |
+| `earnings-preview`, `earnings-recap`, `estimate-analysis` | The typed `valuations`, `estimates`, and `disclosures` read models feed `investment_panel.domain.decision`. | Memo prose and transcript/news interpretation only. |
+| `company-valuation` | The current valuation read model and decision contracts under `investment_panel.domain.decision` own structured valuation context. | Assumption selection only when structured data is missing. |
+| `sepa-strategy`, `stock-liquidity`, `stock-correlation` | Deterministic factor/research owners under `investment_panel.domain`, with provider ingestion under `investment_panel.infrastructure`. | None. |
 
 ## Deliberately Not Applied
 

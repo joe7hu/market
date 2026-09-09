@@ -2,8 +2,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from investment_panel.analysis.stock_alpha import TARGET_VERSION
-from investment_panel.database.research_summary import evaluation_summary
+from investment_panel.domain.research.stock_alpha import TARGET_VERSION
+from investment_panel.infrastructure.postgres.research_summary import evaluation_summary
 
 
 def _evaluation(**metrics):

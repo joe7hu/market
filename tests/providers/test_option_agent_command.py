@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from investment_panel.jobs import run_option_agent
-from investment_panel.providers.advisory import (
+from investment_panel.infrastructure.providers.advisory import (
     ProviderTokenMetadata,
     StructuredProviderResult,
 )

@@ -5,7 +5,7 @@ import type { PanelData } from "@/types";
 import { buildPortfolioViewModel, performanceRangeRows } from "@/viewModels/portfolio";
 
 const model = {
-  holdings: [{ ticker: "NVDA", quantity: 2, price: 120, averageCost: 100, marketValue: 240, hasMarketValue: true, weight: 60, unrealizedPnl: 40, unrealizedPnlPct: 20, dayChange: 4, dayChangePct: 1.7, quoteObservedAt: "2026-07-15T20:00:00Z", valuationStatus: "market_quote", nextStep: "Review sizing" }],
+  holdings: [{ ticker: "NVDA", quantity: 2, price: 120, averageCost: 100, marketValue: 240, hasMarketValue: true, weight: 60, unrealizedPnl: 40, unrealizedPnlPct: 20, dayChange: 4, dayChangePct: 1.7, quoteObservedAt: "2026-07-15T20:00:00Z", quoteAvailableAt: "2026-07-15T20:01:00Z", availableAt: "2026-07-15T20:01:00Z", quoteSource: "test", quoteSourceKind: "quote", quoteTradingDate: "2026-07-15", currency: "USD", valuationAvailable: true, valuationStatus: "market_quote", nextStep: "Review sizing" }],
   portfolioValue: 240,
   thesisMonitorRows: [],
   latestHealthCheck: "Not loaded",

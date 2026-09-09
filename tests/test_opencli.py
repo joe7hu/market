@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from investment_panel.providers import OpenCliUnavailableError as PackageOpenCliUnavailableError
-from investment_panel.providers.opencli import (
+from investment_panel.infrastructure.providers import OpenCliUnavailableError as PackageOpenCliUnavailableError
+from investment_panel.infrastructure.providers.opencli import (
     OpenCliError,
     OpenCliRateLimitError,
     OpenCliRunner,

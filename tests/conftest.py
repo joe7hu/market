@@ -23,11 +23,11 @@ os.environ.setdefault("MARKET_APP_LOGIN_ROLE", "market_app")
 os.environ.setdefault("MARKET_APP_DATABASE_PASSWORD", "phase1-test-market-app-password")
 os.environ.setdefault("MARKET_PHASE4_ALLOCATION_SIGNING_KEY", "phase4-test-allocation-signing-key")
 
-from investment_panel.core.config import AppConfig, load_config
-from investment_panel.database.configuration import DatabaseConfig
+from investment_panel.settings import AppConfig, load_config
+from investment_panel.infrastructure.postgres.configuration import DatabaseConfig
 from dataclasses import replace
-from investment_panel.database.authority import close_cached_runtimes
-from investment_panel.database.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.authority import close_cached_runtimes
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
 
 
 def _postgres_url(*, host, port, user, dbname, password=None) -> str:

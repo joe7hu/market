@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.data_access.payloads import option_decision_adapter
-from investment_panel.core.decision import (
+from investment_panel.api.data_access.payloads import option_decision_adapter
+from investment_panel.domain.decision import (
     ExpressionKind,
     Horizon,
     InputLineage,

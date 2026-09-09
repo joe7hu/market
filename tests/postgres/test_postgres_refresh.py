@@ -4,9 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.core.decision import MarketStateSnapshot
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.domain.decision import MarketStateSnapshot
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import (
     postgres_refresh,
     snapshot_database,
@@ -303,7 +303,7 @@ def test_scheduled_preopen_skips_outside_window_and_publishes_inside(
     migrated_postgres_dsn: str,
     monkeypatch,
 ) -> None:
-    from investment_panel.database.runtime import DatabaseRuntime
+    from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

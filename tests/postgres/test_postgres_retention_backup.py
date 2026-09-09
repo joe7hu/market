@@ -10,14 +10,14 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.backup import credential_safe_connection, create_verified_backup
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.jobs import JobRepository
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.retention import RetentionRepository
-from investment_panel.database.runtime import DatabaseRuntime
-import investment_panel.database.retention as retention_module
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.backup import credential_safe_connection, create_verified_backup
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.jobs import JobRepository
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.retention import RetentionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+import investment_panel.infrastructure.postgres.retention as retention_module
 
 
 def _insert_publication(

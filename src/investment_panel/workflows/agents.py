@@ -1,0 +1,74 @@
+"""Agent overview and on-demand analysis application actions."""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Callable
+
+from investment_panel.settings import AppConfig, public_config_payload
+from investment_panel.infrastructure.postgres.agents import AgentRepository
+from investment_panel.infrastructure.postgres.agent_experiments import AgentExperimentRepository
+from investment_panel.infrastructure.postgres.authority import database_url, runtime_for_config
+from investment_panel.infrastructure.postgres.research_summary import research_summary
+
+
+class AgentActions:
+    def __init__(self, config: AppConfig, start_job: Callable[[str, Any], dict[str, Any]]) -> None:
+        self.config = config
+        self.repository = AgentRepository(runtime_for_config(config))
+        self.start_job = start_job
+
+    def overview(self) -> dict[str, Any]:
+        agents = public_config_payload(self.config)["agents"]
+        overview = self.repository.overview()
+        return {
+            "config": agents.get("option_agent", {}),
+            "pricing": agents.get("pricing", {}),
+            "queue": overview["queue"],
+            "runs": overview["runs"],
+            "workflows": overview["workflows"],
+            "cost": overview["cost"],
+            "materialization": overview["materialization"],
+            "scheduler": {"agent_refresh_seconds": _scheduler_agent_seconds(self.config)},
+        }
+
+    def queue_analysis(self, ticker: str, *, prompt: str = "") -> dict[str, Any]:
+        normalized = str(ticker or "").strip().upper()
+        if not normalized:
+            raise ValueError("ticker is required")
+        option_agent = _option_agent_settings(self.config)
+        if not self.config.agents.option_agent.command:
+            raise ValueError("Set the option agent command before running on-demand analysis.")
+        request = self.repository.queue_thesis(normalized, prompt=prompt, trigger="ondemand")
+        job = self.start_job("run_option_agents_ondemand", database_url(self.config))
+        return {"ticker": normalized, "request_id": request["request_id"], "job": job}
+
+    def current_experiment(self) -> dict[str, Any]:
+        """Return the public experiment conclusion without operational batch rows."""
+
+        summary = AgentExperimentRepository(runtime_for_config(self.config)).current()
+        return summary or {
+            "status": "not_started",
+            "advisory_only": True,
+            "routing_changed": False,
+            "message": "No paired DeepSeek/Luna experiment has been queued.",
+        }
+
+    def research_results(self) -> dict[str, Any]:
+        """Return stored strategy evidence and explicit review feedback."""
+
+        return research_summary(self.repository.runtime, self.config)
+
+
+def _scheduler_agent_seconds(config: AppConfig) -> int:
+    configured = int(config.agents.option_agent.auto_run_seconds or 0)
+    if configured > 0:
+        return configured
+    try:
+        return int(os.environ.get("MARKET_AGENT_REFRESH_SECONDS", "0") or 0)
+    except ValueError:
+        return 0
+
+
+def _option_agent_settings(config: AppConfig) -> Any:
+    return config.agents.option_agent

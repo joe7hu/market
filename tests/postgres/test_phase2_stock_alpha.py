@@ -11,16 +11,16 @@ from psycopg.rows import dict_row
 from psycopg.sql import Identifier, Literal, SQL
 from psycopg.types.json import Jsonb
 
-from app.data_access.loaders import load_daily_research_panel_data, load_panel_data
+from investment_panel.api.data_access.loaders import load_daily_research_panel_data, load_panel_data
 from conftest import typed_config
-from investment_panel.analysis.stock_alpha import FEATURE_VERSION, TARGET_HORIZON_SESSIONS, TARGET_VERSION, independent_observations, research_score
-from investment_panel.core.decision import Horizon, MARKET_TZ, is_us_market_day, market_session_bounds
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.runtime import DatabaseRuntime, activate_application_role
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.domain.research.stock_alpha import FEATURE_VERSION, TARGET_HORIZON_SESSIONS, TARGET_VERSION, independent_observations, research_score
+from investment_panel.domain.decision import Horizon, MARKET_TZ, is_us_market_day, market_session_bounds
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, activate_application_role
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 from investment_panel.jobs.stock_alpha_walk_forward import load_observations, load_universe_members, run
 
 
@@ -276,7 +276,7 @@ def test_walk_forward_registry_is_append_only_idempotent_and_paper_promoted(
         assert forecast["forecast_distribution"] == artifact["forecast"]["forecast_distribution"]
         assert forecast["generated_at"] <= cutoff
         assert forecast["available_at"] <= cutoff
-        import investment_panel.database.analysis as reader
+        import investment_panel.infrastructure.postgres.analysis as reader
 
         for field in ("STOCK_ALPHA_TARGET_VERSION", "STOCK_ALPHA_MODEL_VERSION"):
             with monkeypatch.context() as context:
@@ -1185,7 +1185,7 @@ def test_scheduled_stock_qualifies_with_its_real_prediction_controls(
 ) -> None:
     from statistics import fmean, stdev
 
-    from investment_panel.database.research_summary import research_summary
+    from investment_panel.infrastructure.postgres.research_summary import research_summary
     from investment_panel.jobs import stock_alpha_walk_forward as job
 
     runtime = _production_runtime(migrated_postgres_dsn)

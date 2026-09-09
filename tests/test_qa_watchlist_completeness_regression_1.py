@@ -4,12 +4,12 @@ from datetime import UTC, datetime
 
 import pandas as pd
 
-from app.data_access import loaders as loaders_owner
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.api.data_access import loaders as loaders_owner
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from conftest import typed_config
 from investment_panel.jobs.update_market_data import market_metrics_row
-from investment_panel.providers.yfinance_provider import return_on_invested_capital
+from investment_panel.infrastructure.providers.yfinance_provider import return_on_invested_capital
 
 
 # Regression: ISSUE-001 — Watchlist valuation and quality columns were empty.

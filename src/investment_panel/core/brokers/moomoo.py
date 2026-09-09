@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import importlib.util
 import time
 
-from investment_panel.core.config import MoomooConfig
+from investment_panel.settings import MoomooConfig
 from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus
 from investment_panel.core.brokers.coerce import tcp_open
 

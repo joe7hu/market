@@ -11,9 +11,9 @@ from typing import Any, Iterable
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.analysis.stock_alpha import FEATURE_VERSION, research_score
-from investment_panel.core.config import AppConfig, load_config
-from investment_panel.core.decision import (
+from investment_panel.domain.research.stock_alpha import FEATURE_VERSION, research_score
+from investment_panel.settings import AppConfig, load_config
+from investment_panel.domain.decision import (
     AlphaSignal,
     EligibleUniverseSnapshot,
     InputLineage,
@@ -36,14 +36,14 @@ from investment_panel.core.decision import (
     rank_opportunities,
     trade_expression_identity,
 )
-from investment_panel.core.panel import TICKER_INITIAL_TABLES
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.panel_models import load_postgres_tables
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.portfolio_ledger import replay_portfolio_at
-from investment_panel.database.runtime import JOB_PROFILE
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
-from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
+from investment_panel.domain.panel import TICKER_INITIAL_TABLES
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.panel_models import load_postgres_tables
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.portfolio_ledger import replay_portfolio_at
+from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
+from investment_panel.infrastructure.postgres.ticker_execution import TickerPaperExecutionRepository
 
 
 PUBLISH_INPUT_TABLES = tuple(

@@ -3,10 +3,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from conftest import typed_config
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.panel_models import load_postgres_tables
-from investment_panel.database.panel_option_queries import current_option_query, transition_rows
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.panel_models import load_postgres_tables
+from investment_panel.infrastructure.postgres.panel_option_queries import current_option_query, transition_rows
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def test_current_option_panels_ignore_old_and_unfinished_captures(migrated_postgres_dsn):

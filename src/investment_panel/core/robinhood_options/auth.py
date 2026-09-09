@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
-from investment_panel.core.config import RobinhoodConfig
+from investment_panel.settings import RobinhoodConfig
 
 
 class RobinhoodAuthRequired(RuntimeError):

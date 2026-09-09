@@ -56,7 +56,7 @@ production source lines, 268 production Python modules, 67 OpenAPI paths and
 ## Guard policy
 
 Architecture guards fail on import cycles, private cross-module imports, router
-imports from `investment_panel.database`, implicit or dynamic facade exports,
+imports from `investment_panel.infrastructure.postgres`, implicit or dynamic facade exports,
 compatibility files or routes, stale generated contracts, console scripts
 without a registered callable owner, and Ruff F401/F811 findings. The cycle
 and private-import inventories are now required to be empty.

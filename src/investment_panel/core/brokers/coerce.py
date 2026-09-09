@@ -3,8 +3,8 @@
 from __future__ import annotations
 import socket
 
-from investment_panel.core.coercion import parse_dt_utc as parse_dt
-from investment_panel.core.coercion import parse_json, stable_id
+from investment_panel.domain.coercion import parse_dt_utc as parse_dt
+from investment_panel.domain.coercion import parse_json, stable_id
 
 __all__ = ["parse_json", "parse_dt", "tcp_open", "stable_id"]
 

@@ -11,12 +11,12 @@ from datetime import UTC, date, datetime, timedelta
 from math import floor, isfinite
 from typing import Any
 
-from investment_panel.database.opportunity_episodes import option_episode_key
-from investment_panel.core.decision import (
+from investment_panel.infrastructure.postgres.opportunity_episodes import option_episode_key
+from investment_panel.domain.decision import (
     DecisionResolutionV2,
     build_decision_resolution,
 )
-from investment_panel.core.risk_policy import (
+from investment_panel.domain.portfolio.risk_policy import (
     ASSIGNMENT_POLICY_VERSION,
     PortfolioAssignmentPolicy,
     RiskPolicySnapshot,

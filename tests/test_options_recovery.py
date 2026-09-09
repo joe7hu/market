@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.core.decision import MARKET_TZ
+from investment_panel.domain.decision import MARKET_TZ
 from investment_panel.core.options_event_tape import event_strip_expiration_after_fill
 from investment_panel.core.options_recovery import (
     FEE_PER_CONTRACT_LEG,

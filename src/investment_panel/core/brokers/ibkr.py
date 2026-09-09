@@ -7,8 +7,8 @@ import threading
 import time
 from typing import Any
 from uuid import uuid4
-from investment_panel.core.config import IBKRConfig
-from investment_panel.core.instruments import normalize_symbol
+from investment_panel.settings import IBKRConfig
+from investment_panel.domain.instruments import normalize_symbol
 
 from investment_panel.core.brokers.constants import IBKR_ACCOUNT_TAGS, IBKR_GENERIC_TICKS, IBKR_TICK_GENERIC_FIELDS, IBKR_TICK_PRICE_FIELDS, IBKR_TICK_SIZE_FIELDS
 from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus

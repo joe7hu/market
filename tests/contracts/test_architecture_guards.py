@@ -23,7 +23,7 @@ from scripts.architecture_inventory import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PROD_ROOTS = [REPO_ROOT / "app", REPO_ROOT / "src" / "investment_panel"]
+PROD_ROOTS = [REPO_ROOT / "src" / "investment_panel"]
 
 KNOWN_CYCLE_COMPONENTS = frozenset()
 KNOWN_PRIVATE_IMPORT_EDGES = frozenset()
@@ -114,22 +114,22 @@ def test_tests_use_public_module_interfaces() -> None:
 
 
 def test_options_actions_uses_bounded_domain_owners() -> None:
-    path = REPO_ROOT / "app" / "actions" / "options.py"
+    path = REPO_ROOT / "src" / "investment_panel" / "workflows" / "options.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     domain_modules = {
         node.module
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom)
         and node.module
-        and node.module.startswith("investment_panel.database.")
-        and node.module != "investment_panel.database.authority"
+        and node.module.startswith("investment_panel.infrastructure.postgres.")
+        and node.module != "investment_panel.infrastructure.postgres.authority"
     }
     assert domain_modules == {
-        "investment_panel.database.options_decision_system",
-        "investment_panel.database.options_execution",
-        "investment_panel.database.options_history",
-        "investment_panel.database.options_recovery_read",
-        "investment_panel.database.options_research",
+        "investment_panel.infrastructure.postgres.options_decision_system",
+        "investment_panel.infrastructure.postgres.options_execution",
+        "investment_panel.infrastructure.postgres.options_history",
+        "investment_panel.infrastructure.postgres.options_recovery_read",
+        "investment_panel.infrastructure.postgres.options_research",
     }
     assert len(domain_modules) <= 5
 
@@ -138,11 +138,11 @@ def test_deep_owner_modules_have_explicit_exports() -> None:
     modules = (
         "src/investment_panel/core/event_scout.py",
         "src/investment_panel/core/event_scout_runtime.py",
-        "src/investment_panel/database/options_decision_system.py",
-        "src/investment_panel/database/options_execution.py",
-        "src/investment_panel/database/options_history.py",
-        "src/investment_panel/database/options_recovery_read.py",
-        "src/investment_panel/database/options_research.py",
+        "src/investment_panel/infrastructure/postgres/options_decision_system.py",
+        "src/investment_panel/infrastructure/postgres/options_execution.py",
+        "src/investment_panel/infrastructure/postgres/options_history.py",
+        "src/investment_panel/infrastructure/postgres/options_recovery_read.py",
+        "src/investment_panel/infrastructure/postgres/options_research.py",
     )
     missing = [module for module in modules if "__all__" not in (REPO_ROOT / module).read_text(encoding="utf-8")]
     assert not missing, "Deep owner modules need explicit __all__: " + ", ".join(missing)
@@ -179,8 +179,8 @@ def test_runtime_has_no_retired_storage_or_importer_markers() -> None:
         *runtime_files,
         REPO_ROOT / "pyproject.toml",
         REPO_ROOT / "uv.lock",
-        REPO_ROOT / "package.json",
-        REPO_ROOT / "package-lock.json",
+        REPO_ROOT / "frontend" / "package.json",
+        REPO_ROOT / "frontend" / "package-lock.json",
         REPO_ROOT / "Makefile",
     ]
     violations = []
@@ -204,10 +204,7 @@ def _imported_modules(tree: ast.AST) -> list[str]:
 
 
 def _module_path(module: str) -> Path | None:
-    if module == "app" or module.startswith("app."):
-        relative = Path(*module.split("."))
-        root = REPO_ROOT
-    elif module == "investment_panel" or module.startswith("investment_panel."):
+    if module == "investment_panel" or module.startswith("investment_panel."):
         relative = Path(*module.split("."))
         root = REPO_ROOT / "src"
     else:
@@ -229,9 +226,7 @@ def test_local_imports_resolve_to_existing_modules() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
         for module in _imported_modules(tree):
             if (module_path := _module_path(module)) is None and (
-                module == "app"
-                or module.startswith("app.")
-                or module == "investment_panel"
+                module == "investment_panel"
                 or module.startswith("investment_panel.")
             ):
                 violations.append(f"{path.relative_to(REPO_ROOT)} imports missing {module}")
@@ -239,8 +234,8 @@ def test_local_imports_resolve_to_existing_modules() -> None:
 
 
 FACADE_PACKAGES = (
-    "investment_panel.core.panel",
-    "investment_panel.core.decision",
+    "investment_panel.domain.panel",
+    "investment_panel.domain.decision",
     "investment_panel.core.brokers",
 )
 
@@ -267,7 +262,7 @@ def test_external_code_imports_facade_not_submodules() -> None:
 
 def test_public_facades_are_explicit() -> None:
     violations = []
-    for facade in (*FACADE_PACKAGES, "app.data_access"):
+    for facade in (*FACADE_PACKAGES, "investment_panel.api.data_access"):
         path = _facade_dir(facade) / "__init__.py"
         text = path.read_text(encoding="utf-8", errors="replace")
         if "__all__" not in text:
@@ -284,10 +279,27 @@ def test_application_seams_are_static_and_split() -> None:
         "job_control.py",
         "request_security.py",
     }
-    seam_dir = REPO_ROOT / "app"
+    seam_dir = REPO_ROOT / "src" / "investment_panel" / "api"
     assert {path.name for path in seam_dir.glob("*.py")} >= expected
     assert not (seam_dir / "deps.py").exists()
     assert not (seam_dir / "panel_contracts.py").exists()
+
+
+def test_domain_does_not_import_delivery_or_infrastructure() -> None:
+    forbidden_prefixes = (
+        "investment_panel.api",
+        "investment_panel.infrastructure",
+        "investment_panel.jobs",
+        "investment_panel.settings",
+    )
+    violations = []
+    domain_root = REPO_ROOT / "src" / "investment_panel" / "domain"
+    for path in domain_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+        for module in _imported_modules(tree):
+            if module.startswith(forbidden_prefixes):
+                violations.append(f"{path.relative_to(REPO_ROOT)} imports {module}")
+    assert not violations, "Domain imports delivery/infrastructure code:\n  " + "\n  ".join(violations)
 
 
 def test_configuration_has_one_typed_owner_and_no_raw_config_parameters() -> None:
@@ -309,9 +321,9 @@ def test_configuration_has_one_typed_owner_and_no_raw_config_parameters() -> Non
                         f"{path.relative_to(REPO_ROOT)}:{node.lineno} config: {annotation}"
                     )
 
-    assert config_owners == [REPO_ROOT / "src" / "investment_panel" / "core" / "config.py"]
+    assert config_owners == [REPO_ROOT / "src" / "investment_panel" / "settings.py"]
     assert not raw_parameters, "Application owners must accept typed configuration:\n  " + "\n  ".join(raw_parameters)
-    assert not (REPO_ROOT / "app" / "data_access" / "config.py").exists()
+    assert not (REPO_ROOT / "src" / "investment_panel" / "api" / "data_access" / "config.py").exists()
     assert not (REPO_ROOT / "src" / "investment_panel" / "core" / "retention.py").exists()
 
 
@@ -391,7 +403,7 @@ def test_retained_routes_have_explicit_router_owners() -> None:
     import json
 
     from fastapi.routing import APIRoute
-    from app.main import app
+    from investment_panel.api.main import app
 
     manifest = json.loads((REPO_ROOT / "docs" / "api-route-manifest.json").read_text(encoding="utf-8"))
     manifest_routes = {
@@ -408,7 +420,7 @@ def test_retained_routes_have_explicit_router_owners() -> None:
                 observed[(route.path, method)] = route.endpoint.__module__
 
     assert set(observed) == manifest_routes
-    assert all(module.startswith("app.routers.") for module in observed.values())
+    assert all(module.startswith("investment_panel.api.routers.") for module in observed.values())
 
 
 def test_generated_contracts_are_current() -> None:
@@ -454,12 +466,12 @@ def test_shallow_postgres_reexport_modules_are_removed() -> None:
         "postgres_source_queries.py",
         "postgres_watchlist.py",
     )
-    assert not [name for name in removed if (REPO_ROOT / "app" / "data_access" / name).exists()]
+    assert not [name for name in removed if (REPO_ROOT / "src" / "investment_panel" / "api" / "data_access" / name).exists()]
 
 
 def test_live_catalog_writes_use_instrument_owner() -> None:
     violations = []
-    owner = REPO_ROOT / "src" / "investment_panel" / "database" / "instruments.py"
+    owner = REPO_ROOT / "src" / "investment_panel" / "infrastructure" / "postgres" / "instruments.py"
     for path in _prod_py_files():
         if path == owner:
             continue
@@ -495,11 +507,11 @@ def test_ingestion_clients_use_managed_run_lifecycle() -> None:
 
 def test_http_routers_do_not_construct_database_repositories() -> None:
     violations = []
-    for path in (REPO_ROOT / "app" / "routers").glob("*.py"):
+    for path in (REPO_ROOT / "src" / "investment_panel" / "api" / "routers").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "investment_panel.database"
+                "investment_panel.infrastructure.postgres"
             ):
                 violations.append(f"{path.name}:{node.lineno} imports {node.module}")
     assert not violations, "Routers must call application owners, not database adapters:\n  " + "\n  ".join(violations)

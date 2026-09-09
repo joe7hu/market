@@ -6,9 +6,9 @@ import argparse
 import json
 from typing import Any
 
-from investment_panel.core.config import load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
 
 
 R2_REVISION = "history-v3-price-shape-r2"

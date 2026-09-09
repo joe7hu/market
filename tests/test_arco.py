@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from investment_panel.core.arco import arco_readability_preflight
-from investment_panel.core.config import ArcoConfig
+from investment_panel.settings import ArcoConfig
 
 
 def test_arco_readability_preflight_accepts_required_json_files(tmp_path: Path) -> None:

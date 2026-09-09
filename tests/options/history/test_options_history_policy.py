@@ -6,17 +6,17 @@ import socket
 import pytest
 from fastapi.testclient import TestClient
 
-from app import dependencies
-from app.main import app
+from investment_panel.api import dependencies
+from investment_panel.api.main import app
 from conftest import typed_config
-from investment_panel.database.options_history_policy import (
+from investment_panel.infrastructure.postgres.options_history_policy import (
     MAX_PROVIDER_LEASES,
     OptionHistoryPolicyRepository,
     PolicyConflict,
     apply_publication_cap,
     eligible_policy_slot,
 )
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def test_policy_seeds_qqq_and_nvda_with_locked_retention(migrated_postgres_dsn: str) -> None:

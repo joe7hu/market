@@ -1,7 +1,7 @@
 """Pure option-chain signal builders.
 
-Persistence belongs to :mod:`investment_panel.database.options_analysis` and
-:mod:`investment_panel.database.panel_watchlist`. This module only transforms
+Persistence belongs to :mod:`investment_panel.infrastructure.postgres.options_analysis` and
+:mod:`investment_panel.infrastructure.postgres.panel_watchlist`. This module only transforms
 already loaded PostgreSQL rows into option summary values.
 """
 

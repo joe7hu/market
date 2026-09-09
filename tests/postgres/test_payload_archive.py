@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from investment_panel.database import payload_archive
+from investment_panel.infrastructure.postgres import payload_archive
 
 
 def test_provider_archive_path_falls_back_when_nas_is_not_writable(tmp_path: Path, monkeypatch) -> None:

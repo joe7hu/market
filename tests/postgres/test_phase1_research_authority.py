@@ -7,9 +7,9 @@ from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision.alpha import build_strategy_forecast
-from investment_panel.analysis.stock_alpha import content_hash
-from investment_panel.database.migrations import upgrade_database
+from investment_panel.domain.decision.alpha import build_strategy_forecast
+from investment_panel.domain.research.stock_alpha import content_hash
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
 
 
 def test_phase1_trial_dossier_forecast_and_universe_authority(

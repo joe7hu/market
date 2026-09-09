@@ -6,10 +6,10 @@ import argparse
 import json
 from typing import Any
 
-from investment_panel.analysis.history_v3 import MODEL_REVISION
-from investment_panel.core.config import load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.options_history_v3 import OptionHistoryV3Materializer
+from investment_panel.domain.options.history_v3 import MODEL_REVISION
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.options_history_v3 import OptionHistoryV3Materializer
 
 
 def run(

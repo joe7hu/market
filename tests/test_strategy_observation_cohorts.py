@@ -2,8 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.database.options_experiments import EXPERIMENT_VERSION
-from investment_panel.database.strategy_learning import evaluate_comparison, forward_cohort, measured_rows
+from investment_panel.infrastructure.postgres.options_experiments import EXPERIMENT_VERSION
+from investment_panel.infrastructure.postgres.strategy_learning import evaluate_comparison, forward_cohort, measured_rows
 
 
 def _observation(revision, index, day, state="closed", reason=None):
@@ -177,7 +177,7 @@ def test_span_uses_the_whole_window_with_weekend_start_and_cash_boundary():
     assert result["proposed"]["sample_size"] == 20 and result["comparison_denominator"] == 21
     assert evaluate_comparison(parent, candidate, minimum=21, require_span_days=30, paired=True, **context)["verdict"] != "pass"
 
-    from investment_panel.database.strategy_learning import StrategyLearningRepository
+    from investment_panel.infrastructure.postgres.strategy_learning import StrategyLearningRepository
 
     class Capture:
         def execute(self, _sql, parameters):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from investment_panel.database.strategy_parameters import EVALUABLE_GATES
+from investment_panel.infrastructure.postgres.strategy_parameters import EVALUABLE_GATES
 
 
 THESIS_SCHEMA: dict[str, Any] = {

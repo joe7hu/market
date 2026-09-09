@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from psycopg.types.json import Jsonb
 
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.options_paper_ledger import shared_sleeve_blockers, shared_sleeve_loss_state
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
+from investment_panel.infrastructure.postgres.options_paper_ledger import shared_sleeve_blockers, shared_sleeve_loss_state
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 NOW = datetime(2026, 9, 8, 4, 30, tzinfo=UTC)  # 00:30 in New York.

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.market_analysis import refresh_market_publication
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.market_analysis import refresh_market_publication
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import update_market_valuations
 from conftest import typed_config
 

@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from investment_panel.database.fundamental_history import hydrate_history
+from investment_panel.infrastructure.postgres.fundamental_history import hydrate_history
 
 
 def test_hydrate_history_reads_a_verified_archive(tmp_path: Path) -> None:

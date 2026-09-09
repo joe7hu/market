@@ -8,11 +8,11 @@ import json
 import re
 from typing import Any
 
-from investment_panel.core.config import load_config
+from investment_panel.settings import load_config
 from investment_panel.core.continuous_advisor import packet_is_replay_safe, resolve_claim
-from investment_panel.core.decision import MARKET_TZ, is_us_market_day, market_session_bounds
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.continuous_advisor import ContinuousAdvisorRepository
+from investment_panel.domain.decision import MARKET_TZ, is_us_market_day, market_session_bounds
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
 
 
 _INVALIDATION_RE = re.compile(

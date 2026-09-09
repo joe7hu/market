@@ -7,14 +7,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
-from app.dependencies import get_options_research
-from app.routers.options import router as options_router
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
-from investment_panel.database.options_experiments import EXPERIMENT_VERSION, incumbent_identity
-from investment_panel.database.options_paper_execution import OptionsPaperExecutionRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.api.dependencies import get_options_research
+from investment_panel.api.routers.options import router as options_router
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.opportunity_scorecards import OpportunityScorecardRepository
+from investment_panel.infrastructure.postgres.options_experiments import EXPERIMENT_VERSION, incumbent_identity
+from investment_panel.infrastructure.postgres.options_paper_execution import OptionsPaperExecutionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 @pytest.fixture

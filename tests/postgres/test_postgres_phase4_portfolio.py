@@ -10,8 +10,8 @@ from psycopg.errors import CheckViolation, RaiseException
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision.alpha import build_strategy_forecast
-from investment_panel.core.portfolio import (
+from investment_panel.domain.decision.alpha import build_strategy_forecast
+from investment_panel.domain.portfolio.contracts import (
     allocation_id_for_snapshot,
     build_execution_model_snapshot,
     canonical_content_hash,
@@ -19,9 +19,9 @@ from investment_panel.core.portfolio import (
     execution_model_id_for_snapshot,
     PaperExecutionObservation,
 )
-from investment_panel.database.migrations import HEAD_REVISION
-from investment_panel.database.portfolio import PortfolioLoopRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
+from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 AS_OF = datetime(2026, 9, 2, 15, tzinfo=UTC)
@@ -618,7 +618,7 @@ def test_repository_persists_and_replays_cash_plus_two_trim_sources_with_conserv
             utility: float, funding_source: str | None, funding_amount: float | None,
             funding_sources: dict[str, float], trace_extra: dict[str, object],
         ) -> object:
-            from investment_panel.core.portfolio import PortfolioAllocationItem
+            from investment_panel.domain.portfolio.contracts import PortfolioAllocationItem
 
             return PortfolioAllocationItem(
                 allocation_item_id=item_id, candidate_id=ticker, ticker=ticker,
@@ -662,7 +662,7 @@ def test_repository_persists_and_replays_cash_plus_two_trim_sources_with_conserv
             },
         }
         allocation_id = allocation_id_for_snapshot(base)
-        from investment_panel.core.portfolio import PortfolioAllocationSnapshot
+        from investment_panel.domain.portfolio.contracts import PortfolioAllocationSnapshot
 
         allocation = PortfolioAllocationSnapshot.model_validate(base | {"allocation_id": allocation_id})
 

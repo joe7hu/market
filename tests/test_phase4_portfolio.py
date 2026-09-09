@@ -1,14 +1,14 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from app.contracts import OptionsHistoryToggleInput
-from app.routers.portfolio import delete_watchlist_symbol_endpoint, set_watchlist_options_history_endpoint
-from investment_panel.database.options_paper_execution import OptionsPaperExecutionRepository
-from investment_panel.database.portfolio import PortfolioLoopRepository
-from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
-from investment_panel.core import portfolio as portfolio_core
+from investment_panel.api.contracts import OptionsHistoryToggleInput
+from investment_panel.api.routers.portfolio import delete_watchlist_symbol_endpoint, set_watchlist_options_history_endpoint
+from investment_panel.infrastructure.postgres.options_paper_execution import OptionsPaperExecutionRepository
+from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
+from investment_panel.infrastructure.postgres.ticker_execution import TickerPaperExecutionRepository
+from investment_panel.domain.portfolio import contracts as portfolio_core
 
-from investment_panel.core.portfolio import (
+from investment_panel.domain.portfolio.contracts import (
     AuthoritativePortfolioBundle,
     PaperExecutionObservation,
     PortfolioAllocationSnapshot,

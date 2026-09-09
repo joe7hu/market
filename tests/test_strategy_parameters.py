@@ -1,4 +1,4 @@
-from investment_panel.database.strategy_parameters import (
+from investment_panel.infrastructure.postgres.strategy_parameters import (
     merge_strategy_parameters,
     mutation_capability,
     normalize_gates,
@@ -36,7 +36,7 @@ def test_merge_strategy_parameters_persists_one_canonical_gate_shape() -> None:
 
 def test_agent_schema_and_mutation_gate_share_the_runtime_parameters() -> None:
     from investment_panel.jobs.option_agent_contract import POSTMORTEM_SCHEMA
-    from investment_panel.database.strategy_parameters import EVALUABLE_GATES
+    from investment_panel.infrastructure.postgres.strategy_parameters import EVALUABLE_GATES
 
     schema = POSTMORTEM_SCHEMA["properties"]["proposed_parameter_changes"]
     assert set(schema["properties"]) == EVALUABLE_GATES

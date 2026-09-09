@@ -8,11 +8,11 @@ import pytest
 from psycopg.errors import RaiseException
 from psycopg.sql import Identifier, Literal, SQL
 
-from investment_panel.database.migrations import HEAD_REVISION, downgrade_database, main as migration_main, upgrade_database
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.authority import close_cached_runtimes, runtime_for_url
-from investment_panel.database.runtime import DatabaseRuntime
-from app.data_access.loaders import load_panel_data
+from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION, downgrade_database, main as migration_main, upgrade_database
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.authority import close_cached_runtimes, runtime_for_url
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.api.data_access.loaders import load_panel_data
 from conftest import typed_config
 
 

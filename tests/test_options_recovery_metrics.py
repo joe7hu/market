@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from investment_panel.core.options_recovery import ExecutableLeg, QuoteCapture, evaluate_lifecycle
 from investment_panel.core.options_recovery_metrics import counterfactual_metrics, recovery_promotion_passes
-from investment_panel.database.options_recovery_learning import RecoveryLearningRepository
+from investment_panel.infrastructure.postgres.options_recovery_learning import RecoveryLearningRepository
 
 
 NOW = datetime(2026, 8, 3, 14, tzinfo=UTC)

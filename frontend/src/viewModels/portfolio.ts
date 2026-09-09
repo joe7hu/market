@@ -92,7 +92,7 @@ export function buildPortfolioViewModel(data: PanelData, model: AppModel, correl
       const impact = selectedPortfolioImpact(decisions.get(holding.ticker.toUpperCase()));
       return impact ? [{ ticker: holding.ticker, ...impact }] : [];
     }),
-    topHolding: model.holdings.slice().sort((a, b) => b.weight - a.weight)[0],
+    topHolding: model.holdings.slice().sort((a, b) => (b.weight ?? -Infinity) - (a.weight ?? -Infinity))[0],
   };
 }
 

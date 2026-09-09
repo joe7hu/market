@@ -9,8 +9,8 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-from investment_panel.core.config import ArcoConfig
-from investment_panel.core.instruments import symbols_from_text
+from investment_panel.settings import ArcoConfig
+from investment_panel.domain.instruments import symbols_from_text
 
 
 def json_dumps(value: Any) -> str:

@@ -7,15 +7,15 @@ from statistics import mean, pstdev
 
 import pytest
 
-from app.data_access.loaders import load_panel_scope_data
-from investment_panel.core.decision import MARKET_DIMENSIONS, MARKET_HORIZONS, MarketStateSnapshot, is_us_market_day
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.confirmed_daily_prices import completed_trading_dates
-from investment_panel.database.ingestion import IngestionRepository
-import investment_panel.database.market_analysis as market_analysis
-from investment_panel.database.market_analysis import refresh_market_publication
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.source_facts import SourceFactRepository
+from investment_panel.api.data_access.loaders import load_panel_scope_data
+from investment_panel.domain.decision import MARKET_DIMENSIONS, MARKET_HORIZONS, MarketStateSnapshot, is_us_market_day
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.confirmed_daily_prices import completed_trading_dates
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+import investment_panel.infrastructure.postgres.market_analysis as market_analysis
+from investment_panel.infrastructure.postgres.market_analysis import refresh_market_publication
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.source_facts import SourceFactRepository
 from conftest import typed_config
 
 

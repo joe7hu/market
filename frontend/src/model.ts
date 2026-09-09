@@ -1,20 +1,30 @@
+import type { components } from "@/generated/apiSchema";
 import type { PanelData, RowRecord } from "@/types";
 import { rows } from "@/utils";
-import { numberField, textField } from "@/views/rowFormat";
+import { textField } from "@/views/rowFormat";
+
+type PortfolioHolding = components["schemas"]["PortfolioHoldingDTO"];
 
 export type Holding = {
   ticker: string;
   quantity: number;
-  price: number;
-  averageCost: number;
-  marketValue: number;
+  price: number | null;
+  averageCost: number | null;
+  marketValue: number | null;
   hasMarketValue: boolean;
-  weight: number;
-  unrealizedPnl: number;
-  unrealizedPnlPct: number;
-  dayChange: number;
-  dayChangePct: number;
+  weight: number | null;
+  unrealizedPnl: number | null;
+  unrealizedPnlPct: number | null;
+  dayChange: number | null;
+  dayChangePct: number | null;
   quoteObservedAt: string;
+  quoteAvailableAt: string;
+  availableAt: string;
+  quoteSource: string;
+  quoteSourceKind: string;
+  quoteTradingDate: string;
+  currency: string;
+  valuationAvailable: boolean;
   valuationStatus: string;
   nextStep: string;
 };
@@ -36,12 +46,12 @@ export type AppModel = {
 
 export function buildModel(data: PanelData): AppModel {
   const quoteRows = [...rows(data.quotes), ...rows(data.watchlistWatchedQuotes), ...rows(data.watchlistUnwatchedQuotes)];
-  const holdings = buildHoldings(rows(data.portfolio), quoteRows);
-  const portfolioValue = holdings.reduce((total, holding) => total + holding.marketValue, 0);
-  const weightedHoldings = holdings.map((holding) => ({
-    ...holding,
-    weight: portfolioValue ? (holding.marketValue / portfolioValue) * 100 : 0,
-  }));
+  const holdings = (data.portfolioHoldings ?? []).map(toHolding);
+  const summaryRow = rows(data.portfolioSummary)[0];
+  const summaryValue = summaryRow?.portfolio_value;
+  const portfolioValue = typeof summaryValue === "number" && Number.isFinite(summaryValue)
+    ? summaryValue
+    : holdings.reduce((total, holding) => total + (holding.marketValue ?? 0), 0);
   const healthRows = [
     ...rows(data.sourceFreshness),
     ...rows(data.sourceHealth),
@@ -50,7 +60,7 @@ export function buildModel(data: PanelData): AppModel {
   ];
 
   return {
-    holdings: weightedHoldings,
+    holdings,
     thesisMonitorRows: rows(data.thesisMonitor),
     portfolioValue,
     latestHealthCheck: newestDateLabel(healthRows.map((row) => textField(row, ["checked_at", "last_run_at", "as_of", "updated_at", "timestamp"]))),
@@ -65,42 +75,31 @@ export function buildModel(data: PanelData): AppModel {
   };
 }
 
-function buildHoldings(portfolioRows: RowRecord[], quoteRows: RowRecord[]): Holding[] {
-  const prices = new Map<string, number>();
-  for (const row of quoteRows) {
-    const symbol = textField(row, ["symbol", "ticker"]).toUpperCase();
-    const price = numberField(row, ["price", "close", "regular_market_price", "last"]);
-    if (symbol && Number.isFinite(price) && price > 0) prices.set(symbol, price);
-  }
-
-  return portfolioRows.map((row) => {
-    const ticker = textField(row, ["symbol", "ticker", "security"], "UNKNOWN").toUpperCase();
-    const quantity = numberField(row, ["quantity", "shares", "position", "units"], 0);
-    const explicitPrice = numberField(row, ["price", "valuation_price", "latest_price", "market_price"], Number.NaN);
-    const price = Number.isFinite(explicitPrice) && explicitPrice > 0 ? explicitPrice : prices.get(ticker) ?? 0;
-    const explicitValue = numberField(row, ["market_value", "value"], Number.NaN);
-    const marketValue = Number.isFinite(explicitValue) && explicitValue > 0 ? explicitValue : quantity * price;
-    const costBasis = numberField(row, ["cost_basis", "average_cost", "avg_cost"], 0);
-    const explicitPnl = numberField(row, ["unrealized_pnl", "pnl"], Number.NaN);
-    const unrealizedPnl = Number.isFinite(explicitPnl) ? explicitPnl : quantity ? (price - costBasis) * quantity : 0;
-    const nextStep = textField(row, ["next_step", "review_reason", "status"], "Review sizing, thesis, and latest evidence.");
-    return {
-      ticker,
-      quantity,
-      price,
-      averageCost: costBasis,
-      marketValue,
-      hasMarketValue: marketValue > 0,
-      weight: 0,
-      unrealizedPnl,
-      unrealizedPnlPct: numberField(row, ["unrealized_pnl_pct"], costBasis ? ((price / costBasis) - 1) * 100 : 0),
-      dayChange: numberField(row, ["change_abs"]) * quantity,
-      dayChangePct: numberField(row, ["change_pct"]),
-      quoteObservedAt: textField(row, ["quote_observed_at", "observed_at"]),
-      valuationStatus: textField(row, ["valuation_status"], "market_quote"),
-      nextStep,
-    };
-  });
+function toHolding(row: PortfolioHolding): Holding {
+  const ticker = row.symbol.trim().toUpperCase();
+  return {
+    ticker,
+    quantity: row.quantity,
+    price: row.price ?? null,
+    averageCost: row.average_cost ?? null,
+    marketValue: row.market_value ?? null,
+    hasMarketValue: row.valuation_available && row.market_value != null,
+    weight: row.portfolio_weight ?? null,
+    unrealizedPnl: row.unrealized_pnl ?? null,
+    unrealizedPnlPct: row.unrealized_pnl_pct ?? null,
+    dayChange: row.day_change ?? null,
+    dayChangePct: row.day_change_pct ?? null,
+    quoteObservedAt: row.quote_observed_at ?? "",
+    quoteAvailableAt: row.quote_available_at ?? "",
+    availableAt: row.available_at ?? "",
+    quoteSource: row.quote_source ?? "",
+    quoteSourceKind: row.quote_source_kind ?? "",
+    quoteTradingDate: row.quote_trading_date ?? "",
+    currency: row.currency,
+    valuationAvailable: row.valuation_available,
+    valuationStatus: row.valuation_status,
+    nextStep: row.next_step,
+  };
 }
 
 function newestDateLabel(values: string[]): string {

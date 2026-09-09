@@ -11,19 +11,19 @@ import psycopg
 from psycopg.types.json import Jsonb
 import pytest
 
-from investment_panel.database.actions import ActionRepository
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.agents import AgentRepository, command_args
-from investment_panel.database.agent_process import market_day_start_utc, validate_result
-from investment_panel.database.agent_context import option_opportunity_context, ticker_context
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.strategy_learning import StrategyLearningRepository
-from investment_panel.database.strategy_governance import StrategyGovernanceRepository
-from investment_panel.core.decision import TRACKED_METRICS
-from investment_panel.database.thesis_evidence import thesis_source_evidence
+from investment_panel.infrastructure.postgres.actions import ActionRepository
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.agents import AgentRepository, command_args
+from investment_panel.infrastructure.postgres.agent_process import market_day_start_utc, validate_result
+from investment_panel.infrastructure.postgres.agent_context import option_opportunity_context, ticker_context
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.strategy_learning import StrategyLearningRepository
+from investment_panel.infrastructure.postgres.strategy_governance import StrategyGovernanceRepository
+from investment_panel.domain.decision import TRACKED_METRICS
+from investment_panel.infrastructure.postgres.thesis_evidence import thesis_source_evidence
 from investment_panel.jobs.option_agent_workflow import compact_agent_batch
-from app.response_contracts import AgentOverviewResponse
+from investment_panel.api.response_contracts import AgentOverviewResponse
 
 
 def _option_thesis_result(ticker: str, *, request_id: str | None = None) -> dict[str, object]:
@@ -683,7 +683,7 @@ def test_legacy_recovered_task_uses_dispatch_fallback_envelope(
             result["evidence_refs"] = [{"type": "agent_request", "id": envelope["request_id"]}]
             return SimpleNamespace(returncode=0, stdout=json.dumps(result), stderr="")
 
-        monkeypatch.setattr("investment_panel.database.agents.subprocess.run", fake_run)
+        monkeypatch.setattr("investment_panel.infrastructure.postgres.agents.subprocess.run", fake_run)
         outcome = repository.run_queued(
             "legacy-agent", limit=1, trigger="legacy-recovery", task_kinds=("option_thesis",),
         )
@@ -813,7 +813,7 @@ def test_agent_repository_claims_sequential_tasks_only_when_execution_starts(
                 stderr="",
             )
 
-        monkeypatch.setattr("investment_panel.database.agents.subprocess.run", fake_run)
+        monkeypatch.setattr("investment_panel.infrastructure.postgres.agents.subprocess.run", fake_run)
         result = repository.run_queued(
             "agent-command", trigger="sequential", limit=2, task_kinds=("option_thesis",)
         )
@@ -855,7 +855,7 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
                 stderr="",
             )
 
-        monkeypatch.setattr("investment_panel.database.agents.subprocess.run", fake_run)
+        monkeypatch.setattr("investment_panel.infrastructure.postgres.agents.subprocess.run", fake_run)
         result = repository.run_queued(
             "market-run-option-agent --provider codex --task batch", consolidated=True, limit=8,
             provider="codex", model="gpt-5.6-luna", reasoning_effort="high",
@@ -933,7 +933,7 @@ def test_consolidated_agent_enforces_scheduled_daily_run_cap(
     try:
         repository.queue_thesis("NVDA", trigger="scheduled")
         monkeypatch.setattr(
-            "investment_panel.database.agents.subprocess.run",
+            "investment_panel.infrastructure.postgres.agents.subprocess.run",
             lambda *_args, input, **_kwargs: SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps({
@@ -968,8 +968,8 @@ def test_agent_command_resolves_from_active_virtualenv(tmp_path, monkeypatch: py
     command = bin_dir / "market-run-option-agent"
     python.write_text("")
     command.write_text("")
-    monkeypatch.setattr("investment_panel.database.agent_process.shutil.which", lambda _name: None)
-    monkeypatch.setattr("investment_panel.database.agent_process.sys.executable", str(python))
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.agent_process.shutil.which", lambda _name: None)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.agent_process.sys.executable", str(python))
     resolved = command_args("market-run-option-agent")
     assert resolved[0] == str(command)
 

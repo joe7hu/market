@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 from investment_panel.core.agent_providers import resolve_provider_selection
-from investment_panel.providers.advisory import (
+from investment_panel.infrastructure.providers.advisory import (
     AgentProviderError,
     StructuredProviderRequest,
     invoke_structured,

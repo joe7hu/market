@@ -10,19 +10,19 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
-from app import dependencies
-from app.routers.options import encode_learning_cursor, router as options_router
-from investment_panel.database.analysis import AnalysisRepository, current_option_publication_result
-from investment_panel.database.actions import ActionRepository
-from investment_panel.core.decision import build_ticker_decision, is_us_market_day
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.options_analysis import published_options_radar_rows, refresh_options_radar
-from investment_panel.database.options_publication import RANKING_VERSION
-from investment_panel.database.outcomes import OutcomeRepository
-from investment_panel.database.panel_publications import published_tables
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.api import dependencies
+from investment_panel.api.routers.options import encode_learning_cursor, router as options_router
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository, current_option_publication_result
+from investment_panel.infrastructure.postgres.actions import ActionRepository
+from investment_panel.domain.decision import build_ticker_decision, is_us_market_day
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.options_analysis import published_options_radar_rows, refresh_options_radar
+from investment_panel.infrastructure.postgres.options_publication import RANKING_VERSION
+from investment_panel.infrastructure.postgres.outcomes import OutcomeRepository
+from investment_panel.infrastructure.postgres.panel_publications import published_tables
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 from conftest import typed_config
 
 
@@ -968,7 +968,7 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
     analysis_context,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("investment_panel.database.actions.is_market_open", lambda _now: True)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.actions.is_market_open", lambda _now: True)
     runtime: DatabaseRuntime = analysis_context["runtime"]
     actions = ActionRepository(runtime)
     config = typed_config(raw={
@@ -981,7 +981,7 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
         },
     })
     monkeypatch.setattr(
-        "investment_panel.database.options_analysis.calibration_profiles",
+        "investment_panel.infrastructure.postgres.options_analysis.calibration_profiles",
         lambda *_args, **_kwargs: [{
             "structure": "cash_secured_put",
             "sample_size": 30,
@@ -1721,7 +1721,7 @@ def test_incremental_refresh_preserves_older_symbols_in_complete_publication(ana
     assert result["status"] == "ok"
     opportunities = published_options_radar_rows(runtime, "option_radar_opportunity")
     assert {row["symbol"] for row in opportunities} == {"AAPL", "NVDA"}
-    from app.data_access.loaders import load_table_panel_data
+    from investment_panel.api.data_access.loaders import load_table_panel_data
 
     chain = load_table_panel_data(typed_config(postgres_dsn), "options_chain").rows("options_chain")
     assert {row["symbol"] for row in chain} == {"AAPL", "NVDA"}

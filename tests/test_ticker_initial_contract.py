@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from investment_panel.core.panel.contracts import TICKER_INITIAL_TABLES
+from investment_panel.domain.panel.contracts import TICKER_INITIAL_TABLES
 
 
 def test_ticker_initial_contract_keeps_deep_payoff_rows_out_of_the_initial_load() -> None:

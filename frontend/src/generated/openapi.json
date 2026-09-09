@@ -9789,6 +9789,20 @@
               }
             ]
           },
+          "portfolio_holdings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PortfolioHoldingDTO"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Holdings"
+          },
           "portfolio_integrated": {
             "anyOf": [
               {
@@ -10301,6 +10315,216 @@
           "sample_count"
         ],
         "title": "PortfolioExecutionDTO",
+        "type": "object"
+      },
+      "PortfolioHoldingDTO": {
+        "additionalProperties": false,
+        "description": "Canonical account-aware holding valuation for browser read models.",
+        "properties": {
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "average_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Cost"
+          },
+          "currency": {
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "day_change": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Change"
+          },
+          "day_change_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Change Pct"
+          },
+          "market_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Value"
+          },
+          "next_step": {
+            "default": "Review sizing, thesis, and latest evidence.",
+            "title": "Next Step",
+            "type": "string"
+          },
+          "portfolio_weight": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Weight"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "number"
+          },
+          "quote_available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Available At"
+          },
+          "quote_observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Observed At"
+          },
+          "quote_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Source"
+          },
+          "quote_source_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Source Kind"
+          },
+          "quote_trading_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Trading Date"
+          },
+          "symbol": {
+            "minLength": 1,
+            "title": "Symbol",
+            "type": "string"
+          },
+          "unrealized_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unrealized Pnl"
+          },
+          "unrealized_pnl_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unrealized Pnl Pct"
+          },
+          "valuation_available": {
+            "default": false,
+            "title": "Valuation Available",
+            "type": "boolean"
+          },
+          "valuation_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuation Price"
+          },
+          "valuation_status": {
+            "default": "unavailable",
+            "title": "Valuation Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "quantity"
+        ],
+        "title": "PortfolioHoldingDTO",
         "type": "object"
       },
       "PortfolioImpact": {

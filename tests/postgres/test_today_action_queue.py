@@ -2,10 +2,10 @@ from datetime import UTC, datetime, timedelta
 
 from psycopg.types.json import Jsonb
 
-from app.data_access.loaders import load_postgres_tables
-from investment_panel.core.decision import build_ticker_decision
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.api.data_access.loaders import load_postgres_tables
+from investment_panel.domain.decision import build_ticker_decision
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 from conftest import typed_config
 
 

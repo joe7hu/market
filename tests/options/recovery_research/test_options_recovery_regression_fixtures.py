@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 from investment_panel.core.options_recovery import ExecutableLeg, QuoteCapture, evaluate_lifecycle
-from investment_panel.database.options_recovery_learning import classification as classify_observation
+from investment_panel.infrastructure.postgres.options_recovery_learning import classification as classify_observation
 
 
 NOW = datetime(2026, 8, 3, 14, tzinfo=UTC)

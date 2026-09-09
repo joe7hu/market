@@ -5016,6 +5016,8 @@ export interface components {
         /** PanelSnapshotResponse */
         PanelSnapshotResponse: {
             dashboard?: components["schemas"]["DashboardResponse"] | null;
+            /** Portfolio Holdings */
+            portfolio_holdings?: components["schemas"]["PortfolioHoldingDTO"][] | null;
             portfolio_integrated?: components["schemas"]["PortfolioIntegratedDTO"] | null;
             /** Scope */
             scope: string;
@@ -5168,6 +5170,66 @@ export interface components {
             execution_model_snapshot_id: string;
             /** Sample Count */
             sample_count: number;
+        };
+        /**
+         * PortfolioHoldingDTO
+         * @description Canonical account-aware holding valuation for browser read models.
+         */
+        PortfolioHoldingDTO: {
+            /** Available At */
+            available_at?: string | null;
+            /** Average Cost */
+            average_cost?: number | null;
+            /**
+             * Currency
+             * @default USD
+             */
+            currency: string;
+            /** Day Change */
+            day_change?: number | null;
+            /** Day Change Pct */
+            day_change_pct?: number | null;
+            /** Market Value */
+            market_value?: number | null;
+            /**
+             * Next Step
+             * @default Review sizing, thesis, and latest evidence.
+             */
+            next_step: string;
+            /** Portfolio Weight */
+            portfolio_weight?: number | null;
+            /** Price */
+            price?: number | null;
+            /** Quantity */
+            quantity: number;
+            /** Quote Available At */
+            quote_available_at?: string | null;
+            /** Quote Observed At */
+            quote_observed_at?: string | null;
+            /** Quote Source */
+            quote_source?: string | null;
+            /** Quote Source Kind */
+            quote_source_kind?: string | null;
+            /** Quote Trading Date */
+            quote_trading_date?: string | null;
+            /** Symbol */
+            symbol: string;
+            /** Unrealized Pnl */
+            unrealized_pnl?: number | null;
+            /** Unrealized Pnl Pct */
+            unrealized_pnl_pct?: number | null;
+            /**
+             * Valuation Available
+             * @default false
+             */
+            valuation_available: boolean;
+            /** Valuation Price */
+            valuation_price?: number | null;
+            /**
+             * Valuation Status
+             * @default unavailable
+             */
+            valuation_status: string;
         };
         /**
          * PortfolioImpact

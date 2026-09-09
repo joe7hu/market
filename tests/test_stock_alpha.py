@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.analysis.stock_alpha import (
+from investment_panel.domain.research.stock_alpha import (
     CONTROL_STATISTIC_VERSION,
     COST_MODEL_VERSION,
     FEATURE_VERSION,
@@ -18,8 +18,8 @@ from investment_panel.analysis.stock_alpha import (
     research_score,
     walk_forward,
 )
-from investment_panel.analysis.research_validation import negative_control
-from investment_panel.core.decision import MARKET_TZ, is_us_market_day, market_session_bounds
+from investment_panel.domain.research.research_validation import negative_control
+from investment_panel.domain.decision import MARKET_TZ, is_us_market_day, market_session_bounds
 
 
 def _window_end(as_of: datetime) -> datetime:
@@ -185,7 +185,7 @@ def test_control_null_reference_excludes_outcomes_unavailable_at_cutoff() -> Non
 def test_production_control_gate_rejects_skill_or_invalid_forecasts_after_perturbation(
     monkeypatch: pytest.MonkeyPatch, leaked_probability: str,
 ) -> None:
-    from investment_panel.analysis import stock_alpha as producer
+    from investment_panel.domain.research import stock_alpha as producer
 
     real_walk_forward = producer.walk_forward
 

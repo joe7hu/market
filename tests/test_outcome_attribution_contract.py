@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from investment_panel.core.decision import (
+from investment_panel.domain.decision import (
     OutcomeAttribution,
     PaperExecutionOutcome,
 )

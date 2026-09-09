@@ -21,7 +21,7 @@ from investment_panel.core.daily_research_prompt_fields import (
     DAILY_RESEARCH_MACRO_SYMBOLS,
     DAILY_RESEARCH_TABLES,
 )
-from investment_panel.core.panel import watchlist_universe_rows
+from investment_panel.domain.panel import watchlist_universe_rows
 
 _TIMESTAMP_KEYS = (
     "generated_at",

@@ -5,14 +5,14 @@ import pytest
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-import investment_panel.database.event_studies as event_studies
-from investment_panel.database.event_studies import (
+import investment_panel.infrastructure.postgres.event_studies as event_studies
+from investment_panel.infrastructure.postgres.event_studies import (
     bootstrap_median_interval, bounded_event_cohort, bounded_event_targets,
     deduplicate_logical_events, event_session, event_move, latest_completed_market_date,
     minimum_event_expiration, canonical_event_bars, paired_atm_straddle_cost,
     percentile, summarize_actual_moves,
 )
-from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
+from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_daily_bars
 
 
 def test_less_than_twenty_samples_fails_closed() -> None:

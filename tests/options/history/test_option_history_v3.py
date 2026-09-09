@@ -5,26 +5,26 @@ from types import SimpleNamespace
 
 import pytest
 
-from investment_panel.analysis.history_v3 import MODEL_REVISION, analyze_group, static_arbitrage_findings
+from investment_panel.domain.options.history_v3 import MODEL_REVISION, analyze_group, static_arbitrage_findings
 from investment_panel.core.option_underwriting import (
     conservative_entry,
     conservative_mark,
     historical_payoff_statistics,
     paper_state,
 )
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.actions import v3_paper_readiness
-from investment_panel.database.options_history import OptionHistoryRepository
-from investment_panel.database.options_history_v3 import is_later_capture_cohort
-from investment_panel.database.options_history_v3_materialization import (
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.actions import v3_paper_readiness
+from investment_panel.infrastructure.postgres.options_history import OptionHistoryRepository
+from investment_panel.infrastructure.postgres.options_history_v3 import is_later_capture_cohort
+from investment_panel.infrastructure.postgres.options_history_v3_materialization import (
     group_verified_contract_rows,
     surface_summary,
 )
-from investment_panel.database.options_history_v3_surface import surface_shape_metrics
-from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.options_history_v3_surface import surface_shape_metrics
+from investment_panel.infrastructure.postgres.options_decision_system import OptionsDecisionSystemRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from conftest import typed_config
-from investment_panel.database.thesis import save_thesis
+from investment_panel.infrastructure.postgres.thesis import save_thesis
 
 
 def _rows(option_type: str = "call") -> list[dict[str, object]]:
@@ -568,7 +568,7 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
 def test_health_counts_observed_dates_and_qualified_sessions_not_snapshots(
     migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from investment_panel.database import options_history_canary
+    from investment_panel.infrastructure.postgres import options_history_canary
 
     monkeypatch.setattr(options_history_canary, "SCHEDULED_REGULAR_SLOTS", 2)
     runtime = DatabaseRuntime(migrated_postgres_dsn)

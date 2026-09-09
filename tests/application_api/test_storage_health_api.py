@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from app import dependencies
-from app.main import app
+from investment_panel.api import dependencies
+from investment_panel.api.main import app
 from conftest import typed_config
 
 

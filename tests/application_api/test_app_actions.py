@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.actions.portfolio import PortfolioActions
+from investment_panel.workflows.portfolio import PortfolioActions
 from conftest import typed_config
 
 
@@ -11,7 +11,7 @@ def test_portfolio_action_owns_transaction_response_reload(monkeypatch) -> None:
         stored.append(transaction)
         return {"id": "tx-1", **transaction}
 
-    from app.actions import portfolio
+    from investment_panel.workflows import portfolio
 
     monkeypatch.setattr(portfolio, "record_transaction_owner", record)
     monkeypatch.setattr(portfolio, "portfolio_rows_owner", lambda _config: [{"symbol": "NVDA"}])
@@ -26,7 +26,7 @@ def test_portfolio_action_owns_transaction_response_reload(monkeypatch) -> None:
 
 def test_background_dispatch_only_schedules_new_jobs():
     from fastapi import BackgroundTasks
-    from app import job_control
+    from investment_panel.api import job_control
 
     tasks = BackgroundTasks()
     job_control.schedule_created_job(tasks, {"created": False, "id": "existing"}, "refresh_decision_models", "postgresql:///fixture")
@@ -39,12 +39,12 @@ def test_background_dispatch_only_schedules_new_jobs():
 
 def test_option_history_health_preserves_configured_mode(monkeypatch):
     from types import SimpleNamespace
-    from app.routers.options import historical_option_health
+    from investment_panel.api.routers.options import historical_option_health
 
     config = typed_config(raw={"analysis": {"options_decision_system": {"mode": "paper"}}})
     history = SimpleNamespace(health=lambda **filters: filters)
     assert historical_option_health(symbol="QQQ", actions=history, config=config) == {"symbol": "QQQ", "mode": "paper"}
-    from app.routers import panel
+    from investment_panel.api.routers import panel
     monkeypatch.setattr(panel.loaders, "load_panel_data", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(panel.payloads, "status_payload", lambda _data: {})
     assert panel.status(config=config, actions=history)["options_history"] == {"mode": "paper"}

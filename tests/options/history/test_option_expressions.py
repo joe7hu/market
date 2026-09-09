@@ -4,18 +4,18 @@ from datetime import date
 
 import pytest
 
-from investment_panel.analysis.option_expressions import (
+from investment_panel.domain.options.option_expressions import (
     DebitSpreadInputs,
     LongOptionInputs,
     evaluate_call_debit_spread,
     evaluate_long_option,
     evaluate_put_debit_spread,
 )
-from investment_panel.database.options_expressions import (
+from investment_panel.infrastructure.postgres.options_expressions import (
     contiguous_confirmed_closes, history_bar_limits, horizon_returns,
     compatible_contract_terms,
 )
-from investment_panel.database.options_history_v3_candidates import trading_session_horizon
+from investment_panel.infrastructure.postgres.options_history_v3_candidates import trading_session_horizon
 
 
 def test_empirical_history_rejects_a_missing_trading_session() -> None:

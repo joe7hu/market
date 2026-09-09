@@ -3,14 +3,14 @@ from datetime import UTC, date, datetime, timedelta
 import psycopg
 import pytest
 
-from investment_panel.core.decision import market_session_bounds
-from investment_panel.database import price_bar_ingestion
-from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.panel_watchlist import technical_rows
-from investment_panel.database.portfolio_intelligence import portfolio_performance_rows
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+from investment_panel.domain.decision import market_session_bounds
+from investment_panel.infrastructure.postgres import price_bar_ingestion
+from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_daily_bars
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.panel_watchlist import technical_rows
+from investment_panel.infrastructure.postgres.portfolio_intelligence import portfolio_performance_rows
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 from conftest import typed_config
 
 

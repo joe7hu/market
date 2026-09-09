@@ -5,11 +5,11 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 from psycopg.types.json import Jsonb
 
-import investment_panel.database.thesis as thesis_owner
-from investment_panel.database.thesis import thesis_monitor_rows
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.panel_models import load_postgres_tables
-from investment_panel.database.runtime import DatabaseRuntime
+import investment_panel.infrastructure.postgres.thesis as thesis_owner
+from investment_panel.infrastructure.postgres.thesis import thesis_monitor_rows
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.panel_models import load_postgres_tables
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs.run_continuous_advisor import selected_rows
 from conftest import typed_config
 

@@ -6,8 +6,8 @@ import math
 import time
 from uuid import UUID
 
-from investment_panel.core.config import load_config
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 def positive_seconds(value: str) -> float:

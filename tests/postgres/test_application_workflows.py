@@ -6,11 +6,11 @@ from fastapi.testclient import TestClient
 import psycopg
 import pytest
 
-from app import dependencies
-from app.routers.sources import router
+from investment_panel.api import dependencies
+from investment_panel.api.routers.sources import router
 from conftest import typed_config
-from investment_panel.database.jobs import JobRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.jobs import JobRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import update_phase2_sources
 
 

@@ -9,12 +9,12 @@ from zoneinfo import ZoneInfo
 import psycopg
 import pytest
 
-from investment_panel.database.ingestion import IngestionRepository, normalize_option_row
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository, normalize_option_row
 from investment_panel.core.market_time import market_timezone_for_symbol
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.options import market_session
-from investment_panel.database import options as option_database
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.options import market_session
+from investment_panel.infrastructure.postgres import options as option_database
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import update_robinhood_options
 
 

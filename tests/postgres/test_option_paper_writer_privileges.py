@@ -6,8 +6,8 @@ import psycopg
 import pytest
 from sqlalchemy.engine import make_url
 
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
 WRITER_COLUMNS = {

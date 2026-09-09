@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from investment_panel.core.phase2 import Phase2Status
+from investment_panel.domain.market.phase2 import Phase2Status
 from investment_panel.jobs.update_phase2_sources import adapt_source_payload, payload_for
 
 

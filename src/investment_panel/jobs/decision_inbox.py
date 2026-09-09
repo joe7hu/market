@@ -11,11 +11,11 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from investment_panel.core.config import load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.decision_inbox import DecisionInboxRepository
-from investment_panel.database.panel_models import load_postgres_tables
-from investment_panel.database.runtime import JOB_PROFILE
+from investment_panel.settings import load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.decision_inbox import DecisionInboxRepository
+from investment_panel.infrastructure.postgres.panel_models import load_postgres_tables
+from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
 
 
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:

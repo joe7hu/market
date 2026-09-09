@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from investment_panel.core.agent_providers import resolve_provider_selection
 from investment_panel.core.continuous_advisor import CONTINUOUS_MAX_OUTPUT_TOKENS
-from investment_panel.providers.advisory import StructuredProviderRequest, invoke_structured
+from investment_panel.infrastructure.providers.advisory import StructuredProviderRequest, invoke_structured
 
 
 THESIS_MONITOR_SCHEMA: dict[str, Any] = {

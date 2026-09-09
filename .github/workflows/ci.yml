@@ -60,7 +60,7 @@ jobs:
           uv run market-db-migrate
 
       - name: Install Node dependencies
-        run: npm ci
+        run: npm ci --prefix frontend
 
-      - name: Run Phase 0 gate
-        run: make phase0-gate
+      - name: Run release gate
+        run: make release-gate

@@ -8,16 +8,16 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.jobs import options_paper_execution
-from investment_panel.core.decision import ExpressionKind, market_session_bounds
+from investment_panel.domain.decision import ExpressionKind, market_session_bounds
 from investment_panel.core.option_trade_ticket import exit_reason
-from investment_panel.database import options_paper_execution as paper_execution_database
-from investment_panel.database import ticker_execution as ticker_execution_database
-from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.options_paper_execution import GENERIC_LANES, OptionsPaperExecutionRepository
-from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
-from investment_panel.database.options_paper_ledger import active_paper_exposure
-from investment_panel.database.options_paper_execution import available_quantity
-from investment_panel.database.options_paper_quotes import package_price
+from investment_panel.infrastructure.postgres import options_paper_execution as paper_execution_database
+from investment_panel.infrastructure.postgres import ticker_execution as ticker_execution_database
+from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
+from investment_panel.infrastructure.postgres.options_paper_execution import GENERIC_LANES, OptionsPaperExecutionRepository
+from investment_panel.infrastructure.postgres.ticker_execution import TickerPaperExecutionRepository
+from investment_panel.infrastructure.postgres.options_paper_ledger import active_paper_exposure
+from investment_panel.infrastructure.postgres.options_paper_execution import available_quantity
+from investment_panel.infrastructure.postgres.options_paper_quotes import package_price
 
 
 NOW = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
@@ -568,7 +568,7 @@ def test_cancelled_partial_holding_measures_its_exact_filled_basis(monkeypatch, 
 
 
 def test_partial_exit_residual_is_aggregated_for_risk_and_cash_collateral(migrated_postgres_dsn: str) -> None:
-    from investment_panel.database.runtime import DatabaseRuntime
+    from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

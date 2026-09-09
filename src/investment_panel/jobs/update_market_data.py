@@ -7,12 +7,12 @@ from datetime import UTC, datetime
 import json
 from typing import Any
 
-from investment_panel.core.config import AppConfig, load_config
+from investment_panel.settings import AppConfig, load_config
 from investment_panel.core.prices import fetch_prices
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.market_analysis import refresh_market_publication
-from investment_panel.providers.yfinance_provider import YFinanceProvider
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.market_analysis import refresh_market_publication
+from investment_panel.infrastructure.providers.yfinance_provider import YFinanceProvider
 
 
 SOURCE_ID = "daily-market-prices"

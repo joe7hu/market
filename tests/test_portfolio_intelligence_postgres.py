@@ -5,9 +5,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from investment_panel.database import portfolio_intelligence
-from investment_panel.database.portfolio_intelligence import performance_rows, portfolio_risk_rows
-from investment_panel.database.portfolio_math import adjacent_session_dates, aligned_pair_returns
+from investment_panel.infrastructure.postgres import portfolio_intelligence
+from investment_panel.infrastructure.postgres.portfolio_intelligence import performance_rows, portfolio_risk_rows
+from investment_panel.infrastructure.postgres.portfolio_math import adjacent_session_dates, aligned_pair_returns
 
 
 def test_aligned_pair_returns_use_identical_price_intervals() -> None:

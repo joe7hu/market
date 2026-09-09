@@ -6,25 +6,25 @@ from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
-from app.data_access.loaders import load_panel_scope_data, today_plan_for_row, today_rank_for_row
-from app.data_access.payloads import panel_snapshot_payload
+from investment_panel.api.data_access.loaders import load_panel_scope_data, today_plan_for_row, today_rank_for_row
+from investment_panel.api.data_access.payloads import panel_snapshot_payload
 from conftest import typed_config
-from investment_panel.core.decision import (
+from investment_panel.domain.decision import (
     bind_trade_plan,
     build_ticker_decision,
     build_trade_plan,
     trade_expression_identity,
 )
-from investment_panel.database.migrations import upgrade_database
-from investment_panel.database.panel_models import (
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.panel_models import (
     MODEL_ALIASES,
     QUERY_POLICIES,
     load_postgres_tables,
     today_authority_pages,
 )
-import investment_panel.database.panel_models as panel_models
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.ticker_decisions import TickerDecisionRepository
+import investment_panel.infrastructure.postgres.panel_models as panel_models
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 
 
 def test_panel_query_catalog_owns_alias_and_symbol_scope_policy() -> None:
@@ -795,8 +795,8 @@ def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
 
 
 def test_opportunities_fallback_accepts_production_rank_projection(migrated_postgres_dsn):
-    from app.data_access.loaders import load_opportunities_scope_data
-    from investment_panel.core.decision import OpportunityRank
+    from investment_panel.api.data_access.loaders import load_opportunities_scope_data
+    from investment_panel.domain.decision import OpportunityRank
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

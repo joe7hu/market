@@ -65,7 +65,7 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
   const catalysts = briefItems.filter((item) => item.category === "catalysts").slice().sort((a, b) => (a.days_until ?? Number.MAX_SAFE_INTEGER) - (b.days_until ?? Number.MAX_SAFE_INTEGER));
   const portfolioPulse = briefItems.filter((item) => item.category === "portfolio_pulse");
   const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
-  const largestHolding = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
+  const largestHolding = pricedHoldings.slice().sort((a, b) => (b.weight ?? -Infinity) - (a.weight ?? -Infinity))[0];
   const { summary } = buildPortfolioViewModel(data, model);
   const hasPortfolioSummary = Boolean(data.portfolioSummary?.rows?.length);
   const hasBrief = Boolean(actionQueue);
@@ -96,9 +96,9 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
         <MetricTile label="Source updates" value={categoryStates.whats_changed?.total_count ?? "Unavailable"} caption={`${whatsChanged.length} shown · published changes; source coverage ${categoryStates.whats_changed?.coverage_status ?? "unknown"}`} tone={whatsChanged.length ? "info" : "muted"} />
         <MetricTile
           label="Top exposure"
-          value={largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "None"}
+          value={largestHolding ? `${largestHolding.ticker} ${holdingWeight(largestHolding.weight)}` : "None"}
           caption={largestHolding?.nextStep}
-          tone={largestHolding && largestHolding.weight > 30 ? "warn" : "info"}
+          tone={largestHolding?.weight !== null && largestHolding?.weight !== undefined && largestHolding.weight > 30 ? "warn" : "info"}
         />
       </div>
 
@@ -121,6 +121,10 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       )}
     </section>
   );
+}
+
+function holdingWeight(value: number | null): string {
+  return value === null ? "Unavailable" : `${value.toFixed(1)}%`;
 }
 
 function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { response: TodayResponse | null; loading: boolean; error: string | null; onRefresh: () => void; onOpenTicker: (symbol: string) => void }) {

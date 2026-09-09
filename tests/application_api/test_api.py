@@ -13,25 +13,25 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.datastructures import Headers
 
-from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
-from investment_panel.database.authority import close_cached_runtimes
-from investment_panel.database.agents import AgentRepository
-from investment_panel.database.authority import runtime_for_url
-from investment_panel.database.migrations import upgrade_database
-from app.data_access.settings import settings_payload
-from app.data_access.types import DataStatus, PanelData
-from app.data_access import loaders as loaders_owner, settings as settings_owner
-from app import job_control
-from app import dependencies
-import app.panel_snapshot as panel_owner
-import app.main as app_main
-import app.routers.options as options_owner
-import app.routers.system as system_owner
-from app.main import app
-from app.request_security import require_local_request
-from investment_panel.core.panel import PANEL_SCOPE_TABLES
-from investment_panel.core.decision import TRACKED_METRICS, ticker_decision_brief
-from investment_panel.core.config import AppConfig
+from investment_panel.infrastructure.postgres.options_constants import DEFAULT_STRATEGY_VERSION
+from investment_panel.infrastructure.postgres.authority import close_cached_runtimes
+from investment_panel.infrastructure.postgres.agents import AgentRepository
+from investment_panel.infrastructure.postgres.authority import runtime_for_url
+from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.api.data_access.settings import settings_payload
+from investment_panel.api.data_access.types import DataStatus, PanelData
+from investment_panel.api.data_access import loaders as loaders_owner, settings as settings_owner
+from investment_panel.api import job_control
+from investment_panel.api import dependencies
+import investment_panel.api.panel_snapshot as panel_owner
+import investment_panel.api.main as app_main
+import investment_panel.api.routers.options as options_owner
+import investment_panel.api.routers.system as system_owner
+from investment_panel.api.main import app
+from investment_panel.api.request_security import require_local_request
+from investment_panel.domain.panel import PANEL_SCOPE_TABLES
+from investment_panel.domain.decision import TRACKED_METRICS, ticker_decision_brief
+from investment_panel.settings import AppConfig
 from conftest import typed_config
 
 
@@ -341,7 +341,7 @@ def test_today_replaces_a_legacy_refresh_hint_with_the_actual_blocker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from datetime import UTC, datetime
-    from investment_panel.core.decision import (
+    from investment_panel.domain.decision import (
         bind_trade_plan, build_decision_resolution, build_ticker_decision, build_trade_plan,
     )
 
@@ -384,7 +384,7 @@ def test_today_replaces_a_legacy_refresh_hint_with_the_actual_blocker(
 def test_today_missing_plan_field_state_preserves_blocker_semantics(
     reason: str, availability_status: str,
 ) -> None:
-    from app.actions.today import today_field_states
+    from investment_panel.workflows.today import today_field_states
 
     states = today_field_states(identity_missing=False, plan_missing=True, reason=reason)
 
@@ -618,7 +618,7 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
 def test_options_candidate_fill_basis_is_string_for_both_api_routes(
     fill_assumption: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
+    from investment_panel.infrastructure.postgres.options_decision_system import OptionsDecisionSystemRepository
 
     candidate_row = {
         "decision_id": "decision-1",
@@ -1485,7 +1485,7 @@ def test_refresh_jobs_exposes_options_radar_job(migrated_postgres_dsn: str, monk
 def test_api_startup_does_not_fail_recent_job_owned_by_another_process(
     migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from investment_panel.database.jobs import JobRepository
+    from investment_panel.infrastructure.postgres.jobs import JobRepository
 
     runtime = runtime_for_url(migrated_postgres_dsn)
     repository = JobRepository(runtime)
@@ -2110,7 +2110,7 @@ def test_frontend_fallback_does_not_serve_files_outside_dist(
     dist_dir.mkdir(parents=True)
     (dist_dir / "index.html").write_text('<div id="root"></div>', encoding="utf-8")
     (tmp_path / "secret.txt").write_text("not-for-the-browser", encoding="utf-8")
-    monkeypatch.setattr(app_main, "__file__", str(tmp_path / "app" / "main.py"))
+    monkeypatch.setattr(app_main, "__file__", str(tmp_path / "src" / "investment_panel" / "api" / "main.py"))
     test_app = app_main.FastAPI()
     app_main._mount_frontend(test_app)
 

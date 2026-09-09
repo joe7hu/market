@@ -4,9 +4,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from app.data_access import loaders as loaders_owner
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.api.data_access import loaders as loaders_owner
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from conftest import typed_config
 
 

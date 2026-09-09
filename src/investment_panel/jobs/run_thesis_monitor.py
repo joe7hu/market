@@ -7,12 +7,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from typing import Any
 
-from investment_panel.core.config import AppConfig, load_config
-from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.thesis import normalize_thesis_v3, save_thesis, thesis_monitor_rows
-from investment_panel.database.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
+from investment_panel.settings import AppConfig, load_config
+from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.thesis import normalize_thesis_v3, save_thesis, thesis_monitor_rows
+from investment_panel.infrastructure.postgres.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
 from investment_panel.jobs.codex_thesis_monitor import generate_codex_thesis_monitor, generate_deepseek_thesis_monitor
-from investment_panel.providers.advisory import AgentProviderError
+from investment_panel.infrastructure.providers.advisory import AgentProviderError
 
 
 class ThesisAutomationValidationError(ValueError):

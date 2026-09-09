@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from investment_panel.core.config import AppConfig
+from investment_panel.settings import AppConfig
 
 def provider_user_agent(config: AppConfig, provider: str) -> str:
     """Keep identifying contacts scoped to providers that require them."""

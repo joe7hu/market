@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from investment_panel.core.coercion import to_finite_float as as_float
+from investment_panel.domain.coercion import to_finite_float as as_float
 
 
 def verified_robinhood_contract_terms(instrument: dict[str, Any]) -> dict[str, Any]:

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import os
 from typing import Any, Literal, Mapping
 
-from investment_panel.core.config import AppConfig, load_config
+from investment_panel.settings import AppConfig, load_config
 
 
 STAGGER_SECONDS = 5.0

@@ -30,7 +30,7 @@ test = [
 ]
 
 [project.scripts]
-market-db-migrate = "investment_panel.database.migrations:main"
+market-db-migrate = "investment_panel.infrastructure.postgres.migrations:main"
 market-snapshot-database = "investment_panel.jobs.snapshot_database:main"
 market-storage = "investment_panel.jobs.storage:main"
 market-update-robinhood-options = "investment_panel.jobs.update_robinhood_options:main"
@@ -63,7 +63,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/investment_panel", "app"]
+packages = ["src/investment_panel"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "prompts" = "investment_panel/prompts"

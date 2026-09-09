@@ -1,4 +1,4 @@
-import investment_panel.database.option_ticket_read as ticket_read
+import investment_panel.infrastructure.postgres.option_ticket_read as ticket_read
 
 
 def test_reconcile_radar_summary_marks_persisted_quote_as_frozen_when_market_closed(monkeypatch) -> None:

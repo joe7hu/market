@@ -26,7 +26,7 @@ campaign observation gates. Batch review findings before the final release gate.
 
 ## Validation and review
 
-- `make check` passed locally. Final frontend delta: `npm run test:frontend` (105 tests), `npm run build` passed.
+- `make check` passed locally. Final frontend delta: `npm --prefix frontend run test:frontend` (105 tests), `npm --prefix frontend run build` passed.
 - `make release-gate` passed on miniTs (1530 backend tests, 80.47% coverage). Frozen tree `cd66bd77600263babbacf8dbd8addbbfa349f034`; backend is unchanged since this tree. Later frontend changes were checked locally.
 - Independent reviewer fixed-point verdict: REVIEW_PASS. Both findings repaired: linked thesis evidence crowding and same-ticker opportunity pagination identity. Regression checks cover both.
 - CLI autoreview wrapper rejected an absolute finding path and produced no valid verdict. The independent full-diff review replaced that failed run; it is not counted as a pass.

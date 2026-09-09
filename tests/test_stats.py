@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from investment_panel.analysis.stats import (
+from investment_panel.domain.research.stats import (
     apply_calibration_map,
     brier_score,
     isotonic_increasing,

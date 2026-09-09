@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.core.decision import (
+from investment_panel.domain.decision import (
     ExpressionKind,
     InputLineage,
     MARKET_DIMENSIONS,
@@ -15,7 +15,7 @@ from investment_panel.core.decision import (
     market_evidence_for_decision,
     trade_expression_identity,
 )
-from investment_panel.database.market_analysis import market_dimension_v2_fields
+from investment_panel.infrastructure.postgres.market_analysis import market_dimension_v2_fields
 
 
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)

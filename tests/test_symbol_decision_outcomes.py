@@ -4,10 +4,10 @@ from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 
-from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.symbol_decision_outcomes import SymbolDecisionOutcomeRepository
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.symbol_decision_outcomes import SymbolDecisionOutcomeRepository
 
 
 def test_stock_outcome_uses_only_price_facts_available_at_each_point_in_time(
