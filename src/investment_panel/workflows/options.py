@@ -78,7 +78,7 @@ class OptionsActions:
 
 
     def recovery_health(self) -> dict[str, Any]:
-        from investment_panel.api.scheduler import scheduler_status
+        from investment_panel.infrastructure.scheduler import scheduler_status
 
         return {**self.recovery.health(), "scheduler": scheduler_status(self.config)}
 

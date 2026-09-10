@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import BackgroundTasks
 
 
-from investment_panel.api.panel_snapshot import invalidate_context_cache
+from investment_panel.application.read_models.panel_snapshot import invalidate_context_cache
 from investment_panel.core.refresh_jobs import (
     ALLOWLIST,
     execute_refresh_job,

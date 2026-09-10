@@ -383,26 +383,35 @@ class AnalysisRepository:
         artifact_id: str | None = None,
         artifact_hash: str | None = None,
         research_required: bool = False,
+        implementation_id: str | None = None,
+        implementation_version: str | None = None,
     ) -> int:
+        if implementation_id is None or implementation_version is None:
+            raise ValueError("new strategy revisions require an explicit implementation id and version")
         with self.runtime.transaction() as connection:
             row = connection.execute(
                 f"""
                 INSERT INTO analysis.strategy_revision
                     (strategy_key, revision, name, status, parameters, supersedes_id, authority_group,
                      hypothesis_id, experiment_family_id, artifact_id, artifact_hash,
-                     research_required, promoted_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                     research_required, implementation_id, implementation_version, promoted_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         CASE WHEN %s = 'active' THEN now() ELSE NULL END)
                 ON CONFLICT (strategy_key, revision) DO UPDATE
                 SET name = EXCLUDED.name, parameters = EXCLUDED.parameters
+                WHERE analysis.strategy_revision.implementation_id IS NOT DISTINCT FROM EXCLUDED.implementation_id
+                  AND analysis.strategy_revision.implementation_version IS NOT DISTINCT FROM EXCLUDED.implementation_version
                 RETURNING id
                 """,
                 [
                     strategy_key, revision, name, status, Jsonb(dict(parameters)), supersedes_id,
                     authority_group or strategy_key, hypothesis_id, experiment_family_id,
-                    artifact_id, artifact_hash, research_required, status,
+                    artifact_id, artifact_hash, research_required,
+                    implementation_id, implementation_version, status,
                 ],
             ).fetchone()
+        if row is None:
+            raise ValueError("strategy revision implementation identity conflicts with the immutable stored binding")
         return int(row["id"])
 
     def qualified_stock_alpha_artifact(

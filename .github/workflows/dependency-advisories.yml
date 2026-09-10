@@ -33,7 +33,7 @@ jobs:
           version: "0.9.26"
 
       - name: Audit npm lockfile
-        run: npm audit --package-lock-only
+        run: npm --prefix frontend audit --package-lock-only
 
       - name: Audit Python lockfile
         run: |

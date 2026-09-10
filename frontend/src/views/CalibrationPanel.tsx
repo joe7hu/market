@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { cn } from "@/lib/utils";
 import type { RowRecord } from "@/types";
-import { booleanField, numberField, textField } from "./rowFormat";
+import { booleanField, numberField, textField } from "@/shared/rowFormat";
 
 // Probability-calibration dashboard (Phase 4). Reads conviction_calibration bins (Phase 2a:
 // predicted vs realized P(2x) with Wilson intervals per predicted-probability bin) and renders

@@ -8,7 +8,7 @@ import {Input } from "@/components/ui/input";
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {cn } from "@/lib/utils";
 import {RowRecord } from "@/types";
-import {formatMoney, listField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
+import {formatMoney, listField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import {moneyField, formatRatio, formatScore, formatShortDate, formatNumber } from "../optionsRadarFormat";
 import {recordField, listFromRecord, stringFromRecord, numberFromRecord } from "../optionsRadarData";
 import {stateTone, thesisStateTone, thesisValidationLabel } from "../optionsRadarTone";

@@ -17,7 +17,9 @@ from pathlib import Path
 
 from scripts.architecture_inventory import (
     compatibility_references,
+    computation_purity_violations,
     console_script_violations,
+    layer_violations,
     local_import_cycles,
     production_private_imports,
 )
@@ -61,6 +63,7 @@ def test_compact_inventory_is_complete() -> None:
         "owner_exports:",
         "local_import_cycles:",
         "private_cross_module_imports:",
+        "layer_violations:",
         "router_database_violations:",
         "reexport_only_modules:",
         "console_entrypoints:",
@@ -114,35 +117,48 @@ def test_tests_use_public_module_interfaces() -> None:
 
 
 def test_options_actions_uses_bounded_domain_owners() -> None:
-    path = REPO_ROOT / "src" / "investment_panel" / "workflows" / "options.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    domain_modules = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module
-        and node.module.startswith("investment_panel.infrastructure.postgres.")
-        and node.module != "investment_panel.infrastructure.postgres.authority"
-    }
-    assert domain_modules == {
-        "investment_panel.infrastructure.postgres.options_decision_system",
-        "investment_panel.infrastructure.postgres.options_execution",
-        "investment_panel.infrastructure.postgres.options_history",
-        "investment_panel.infrastructure.postgres.options_recovery_read",
-        "investment_panel.infrastructure.postgres.options_research",
-    }
-    assert len(domain_modules) <= 5
+    assert not layer_violations()
+    assert not computation_purity_violations()
+
+
+def test_layer_analyzer_catches_deliberate_cross_owner_edges() -> None:
+    assert layer_violations({
+        "investment_panel.domain.fixture": {"investment_panel.workflows.fixture"},
+        "investment_panel.workflows.fixture": {"investment_panel.api.fixture"},
+        "investment_panel.infrastructure.fixture": {"investment_panel.jobs.fixture"},
+    }) == [
+        "investment_panel.domain.fixture -> investment_panel.workflows.fixture",
+        "investment_panel.workflows.fixture -> investment_panel.api.fixture",
+        "investment_panel.infrastructure.fixture -> investment_panel.jobs.fixture",
+    ]
+
+
+def test_computation_analyzer_catches_deliberate_io_fixture(tmp_path: Path) -> None:
+    fixture = tmp_path / "bad_domain.py"
+    fixture.write_text("import os\n\ndef bad(runtime):\n    return runtime.read()\n", encoding="utf-8")
+    violations = computation_purity_violations((tmp_path,))
+    assert any("process or I/O import" in violation for violation in violations)
+    assert any("direct I/O call" in violation for violation in violations)
 
 
 def test_deep_owner_modules_have_explicit_exports() -> None:
     modules = (
         "src/investment_panel/core/event_scout.py",
         "src/investment_panel/core/event_scout_runtime.py",
+        "src/investment_panel/application/read_models/loaders.py",
+        "src/investment_panel/domain/signals/catalog.py",
+        "src/investment_panel/domain/strategies/implementations.py",
+        "src/investment_panel/workflows/strategies.py",
+        "src/investment_panel/workflows/market.py",
+        "src/investment_panel/workflows/market_data.py",
+        "src/investment_panel/workflows/ticker_decisions.py",
+        "src/investment_panel/infrastructure/scheduler.py",
         "src/investment_panel/infrastructure/postgres/options_decision_system.py",
         "src/investment_panel/infrastructure/postgres/options_execution.py",
         "src/investment_panel/infrastructure/postgres/options_history.py",
         "src/investment_panel/infrastructure/postgres/options_recovery_read.py",
         "src/investment_panel/infrastructure/postgres/options_research.py",
+        "src/investment_panel/infrastructure/postgres/market_analysis.py",
     )
     missing = [module for module in modules if "__all__" not in (REPO_ROOT / module).read_text(encoding="utf-8")]
     assert not missing, "Deep owner modules need explicit __all__: " + ", ".join(missing)
@@ -275,22 +291,28 @@ def test_public_facades_are_explicit() -> None:
 def test_application_seams_are_static_and_split() -> None:
     expected = {
         "dependencies.py",
-        "panel_snapshot.py",
         "job_control.py",
         "request_security.py",
     }
     seam_dir = REPO_ROOT / "src" / "investment_panel" / "api"
     assert {path.name for path in seam_dir.glob("*.py")} >= expected
+    read_model_dir = REPO_ROOT / "src" / "investment_panel" / "application" / "read_models"
+    assert {path.name for path in read_model_dir.glob("*.py")} >= {
+        "coerce.py", "loaders.py", "panel_snapshot.py", "payloads.py", "types.py",
+    }
     assert not (seam_dir / "deps.py").exists()
+    assert not (seam_dir / "panel_snapshot.py").exists()
     assert not (seam_dir / "panel_contracts.py").exists()
 
 
 def test_domain_does_not_import_delivery_or_infrastructure() -> None:
     forbidden_prefixes = (
         "investment_panel.api",
+        "investment_panel.core",
         "investment_panel.infrastructure",
         "investment_panel.jobs",
         "investment_panel.settings",
+        "investment_panel.workflows",
     )
     violations = []
     domain_root = REPO_ROOT / "src" / "investment_panel" / "domain"
@@ -457,6 +479,18 @@ def test_frontend_domain_responses_are_named_and_api_modules_are_local() -> None
 
     assert not broad_imports, "Frontend imports the deleted broad API module:\n  " + "\n  ".join(broad_imports)
     assert not duplicate_types, "Handwritten frontend types duplicate named OpenAPI schemas:\n  " + "\n  ".join(duplicate_types)
+
+
+def test_frontend_shared_code_does_not_import_view_features() -> None:
+    shared_root = REPO_ROOT / "frontend" / "src" / "shared"
+    violations = []
+    for path in shared_root.rglob("*"):
+        if not path.is_file() or path.suffix not in {".ts", ".tsx"}:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"from\s+[\"'](?:@/views|\.\.?/views)(?:/|[\"'])", text):
+            violations.append(path.relative_to(REPO_ROOT).as_posix())
+    assert not violations, "Frontend shared code imports view features:\n  " + "\n  ".join(violations)
 
 
 def test_shallow_postgres_reexport_modules_are_removed() -> None:

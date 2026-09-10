@@ -14,7 +14,6 @@ from enum import StrEnum
 import hashlib
 import json
 import math
-import os
 from typing import Any, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -173,7 +172,9 @@ def source_status(source_id: str, *, env: Mapping[str, str] | None = None, has_h
         return Phase2Status.UNSUPPORTED
     if str(source_id) in {Phase2Source.SHORT_INTEREST, Phase2Source.COINGECKO}:
         return Phase2Status.UNSUPPORTED
-    active_env = os.environ if env is None else env
+    # Pure policy receives readiness state from the provider/infrastructure
+    # owner. It must not inspect process environment on its own.
+    active_env = env or {}
     if contract.credential_env and not str(active_env.get(contract.credential_env) or "").strip():
         return Phase2Status.MISSING_SOURCE
     if not has_history:
@@ -769,53 +770,39 @@ def build_market_state_posterior(
     )
 
 
-def posterior_can_influence_rank(posterior: MarketStatePosterior, *, runtime: Any | None = None, phase1_evidence: Mapping[str, Any] | None = None) -> bool:
-    """Require independent, verified Phase 1 evidence in addition to utility."""
+def posterior_can_influence_rank(
+    posterior: MarketStatePosterior,
+    *,
+    phase1_evidence: Mapping[str, Any] | None = None,
+) -> bool:
+    """Apply the pure policy to an already loaded, sealed evidence row."""
 
-    if runtime is None or posterior.advisory_only or not posterior.rank_authorized:
+    if posterior.advisory_only or not posterior.rank_authorized:
         return False
     if (not posterior.phase1_evidence_id or not posterior.phase1_evidence_hash
             or posterior.phase1_strategy_revision_id is None or not posterior.phase1_strategy_key):
         return False
-    # Caller mappings and model_copy fields are not evidence.  The only
-    # authorizing fact is the canonical PostgreSQL Phase 1 result and its
-    # sealed evidence predicate.
-    try:
-        with runtime.read() as connection:
-            row = connection.execute(
-                """SELECT result.result_kind, result.input_hash,
-                          trial.input_hash AS trial_input_hash,
-                          dossier.strategy_revision_id, revision.id AS canonical_strategy_revision_id,
-                          revision.strategy_key,
-                          revision.status AS strategy_status,
-                          evaluation.verdict AS evaluation_verdict,
-                          evaluation.metrics AS evaluation_metrics,
-                          analysis.research_evidence_complete(result.id) AS complete
-                   FROM analysis.trial_result result
-                   JOIN analysis.research_trial trial ON trial.id = result.research_trial_id
-                   JOIN analysis.validation_dossier dossier ON dossier.research_trial_id = trial.id
-                   JOIN analysis.strategy_revision revision ON revision.id = dossier.strategy_revision_id
-                   JOIN analysis.strategy_evaluation evaluation
-                     ON evaluation.research_trial_id = trial.id
-                    AND evaluation.strategy_revision_id = revision.id
-                    AND evaluation.evaluation_type = 'out_of_sample'
-                  WHERE result.id = %s""",
-                [posterior.phase1_evidence_id],
-            ).fetchone()
-    except Exception:
+    evidence = phase1_evidence
+    if not isinstance(evidence, Mapping):
         return False
-    if not row or not row["complete"] or row["result_kind"] != "validation":
+    if not evidence.get("complete") or evidence.get("result_kind") != "validation":
         return False
-    if str(row["input_hash"]) != str(row["trial_input_hash"]) or str(row["input_hash"]) != posterior.phase1_evidence_hash:
+    if (
+        str(evidence.get("input_hash")) != str(evidence.get("trial_input_hash"))
+        or str(evidence.get("input_hash")) != posterior.phase1_evidence_hash
+    ):
         return False
-    if (not row["strategy_revision_id"] or not row["strategy_key"]
-            or row["strategy_status"] not in {"active", "superseded"}
-            or int(row["canonical_strategy_revision_id"]) != posterior.phase1_strategy_revision_id
-            or str(row["strategy_key"]) != posterior.phase1_strategy_key):
+    if (
+        not evidence.get("strategy_revision_id")
+        or not evidence.get("strategy_key")
+        or evidence.get("strategy_status") not in {"active", "superseded"}
+        or int(evidence.get("canonical_strategy_revision_id", 0)) != posterior.phase1_strategy_revision_id
+        or str(evidence.get("strategy_key")) != posterior.phase1_strategy_key
+    ):
         return False
-    if row["evaluation_verdict"] != "pass":
+    if evidence.get("evaluation_verdict") != "pass":
         return False
-    metrics = row["evaluation_metrics"] if isinstance(row["evaluation_metrics"], Mapping) else {}
+    metrics = evidence.get("evaluation_metrics") if isinstance(evidence.get("evaluation_metrics"), Mapping) else {}
     utility = metrics.get("lower_confidence_net_utility_after_costs")
     try:
         return math.isfinite(float(utility)) and float(utility) > 0

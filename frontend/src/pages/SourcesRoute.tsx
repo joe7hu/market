@@ -8,7 +8,7 @@ import { useMarketData } from "../marketData";
 import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { rows, tickerSymbol } from "@/utils";
-import { displayField, numberField, textField, titleLabel, toneFromText } from "@/views/rowFormat";
+import { displayField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import { WorkspacePage } from "@/views/workspacePage";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { ResearchSummary } from "@/views/researchSummary";

@@ -11,8 +11,10 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
-HEAD_REVISION = "20260909_0009"
-_SUPPORTED_UPGRADE_REVISIONS = frozenset({"20260907_0006", "20260908_0007", "20260909_0008", HEAD_REVISION})
+HEAD_REVISION = "20260909_0010"
+_SUPPORTED_UPGRADE_REVISIONS = frozenset({
+    "20260907_0006", "20260908_0007", "20260909_0008", "20260909_0009", HEAD_REVISION,
+})
 _MIGRATION_LOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended('market-schema-migration',0))"
 
 
@@ -25,6 +27,12 @@ def alembic_config(dsn: str) -> Config:
 
 
 def _migration_root() -> Path:
+    configured_root = os.environ.get("MARKET_MIGRATIONS_ROOT", "").strip()
+    if configured_root:
+        root = Path(configured_root).expanduser().resolve()
+        if (root / "alembic.ini").is_file() and (root / "migrations" / "env.py").is_file():
+            return root
+        raise RuntimeError(f"Market migration assets are incomplete at {root}")
     for parent in Path(__file__).resolve().parents:
         if (parent / "alembic.ini").is_file() and (parent / "migrations" / "env.py").is_file():
             return parent

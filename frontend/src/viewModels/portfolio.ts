@@ -2,7 +2,7 @@ import type { AppModel } from "@/model";
 import type { components } from "@/generated/apiSchema";
 import type { PanelData, RowRecord } from "@/types";
 import { rows } from "@/utils";
-import { numberField, textField } from "@/views/rowFormat";
+import { listField, numberField, textField } from "@/shared/rowFormat";
 
 export type PerformanceRange = "1D" | "1W" | "1M" | "YTD" | "1Y" | "ALL";
 type PortfolioImpact = components["schemas"]["TickerPortfolioImpactSummaryResponse"];
@@ -10,15 +10,20 @@ type PortfolioImpact = components["schemas"]["TickerPortfolioImpactSummaryRespon
 type ProposedPortfolioImpact = PortfolioImpact & { ticker: string };
 
 export type PortfolioSummary = {
-  portfolioValue: number;
+  portfolioValue: number | null;
+  availability: "complete" | "partial" | "unavailable";
+  knownValueSubtotal: number | null;
+  valuationCoverage: number;
+  valuationBlockers: string[];
+  currency: string;
   dayPnl: number | null;
   dayPnlPct: number | null;
   dayPnlAsOf: string;
-  totalPnl: number;
+  totalPnl: number | null;
   totalPnlPct: number | null;
-  realizedPnl: number;
-  income: number;
-  fees: number;
+  realizedPnl: number | null;
+  income: number | null;
+  fees: number | null;
   asOf: string;
   performanceMethod: string;
   costBasisFallbackCount: number;
@@ -51,22 +56,27 @@ export type PortfolioViewModel = {
 };
 
 export function buildPortfolioViewModel(data: PanelData, model: AppModel, correlationWindow = 60): PortfolioViewModel {
-  const summaryRow = rows(data.portfolioSummary)[0] ?? {};
+  const summaryDto = data.portfolioSummaryDto;
   const decisions = new Map(rows(data.tickerDecisions).map((row) => [textField(row, ["ticker", "symbol"]).toUpperCase(), row]));
   return {
     summary: {
-      portfolioValue: numberField(summaryRow, ["portfolio_value"], model.portfolioValue),
-      dayPnl: nullableNumberField(summaryRow, "day_pnl"),
-      dayPnlPct: nullableNumberField(summaryRow, "day_pnl_pct"),
-      dayPnlAsOf: textField(summaryRow, ["day_pnl_as_of"]),
-      totalPnl: numberField(summaryRow, ["total_pnl"]),
-      totalPnlPct: nullableNumberField(summaryRow, "total_pnl_pct"),
-      realizedPnl: numberField(summaryRow, ["realized_pnl"]),
-      income: numberField(summaryRow, ["income"]),
-      fees: numberField(summaryRow, ["fees"]),
-      asOf: textField(summaryRow, ["as_of"]),
-      performanceMethod: textField(summaryRow, ["performance_method"], "daily-close external-flow adjusted"),
-      costBasisFallbackCount: numberField(summaryRow, ["cost_basis_fallback_count"]),
+      portfolioValue: summaryDto?.portfolio_value ?? null,
+      availability: summaryDto?.availability ?? "unavailable",
+      knownValueSubtotal: summaryDto?.known_value_subtotal ?? null,
+      valuationCoverage: summaryDto?.valuation_coverage ?? 0,
+      valuationBlockers: summaryDto?.valuation_blockers ?? ["portfolio_summary_unavailable"],
+      currency: summaryDto?.currency ?? "Unknown",
+      dayPnl: summaryDto?.day_pnl ?? null,
+      dayPnlPct: summaryDto?.day_pnl_pct ?? null,
+      dayPnlAsOf: summaryDto?.day_pnl_as_of ?? "",
+      totalPnl: summaryDto?.total_pnl ?? null,
+      totalPnlPct: summaryDto?.total_pnl_pct ?? null,
+      realizedPnl: summaryDto?.realized_pnl ?? null,
+      income: summaryDto?.income ?? null,
+      fees: summaryDto?.fees ?? null,
+      asOf: summaryDto?.as_of ?? "",
+      performanceMethod: summaryDto?.performance_method ?? "Unavailable",
+      costBasisFallbackCount: summaryDto?.cost_basis_fallback_count ?? 0,
     },
     performanceRows: rows(data.portfolioPerformance),
     transactionRows: rows(data.portfolioTransactions),
@@ -132,8 +142,4 @@ export function performanceRangeRows(input: RowRecord[], range: PerformanceRange
   }
   threshold.setUTCHours(0, 0, 0, 0);
   return dated.filter((item) => item.date >= threshold).map((item) => item.row);
-}
-
-function nullableNumberField(row: RowRecord, key: string): number | null {
-  return row[key] === null || row[key] === undefined ? null : numberField(row, [key]);
 }

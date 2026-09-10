@@ -3,8 +3,11 @@ from datetime import UTC, datetime
 import pytest
 
 from investment_panel.domain.factors import (
+    EvaluationContext,
     FactorDefinition,
+    FactorDependency,
     FactorResult,
+    FactorRequest,
     InputSnapshot,
     MomentumParams,
     evaluate_factors,
@@ -74,3 +77,84 @@ def test_factor_catalog_rejects_cycles_and_naive_cutoffs() -> None:
     }
     with pytest.raises(ValueError, match="cycle"):
         evaluate_factors(InputSnapshot("test", datetime(2026, 9, 5, 13, tzinfo=UTC), {}), ["a"], definitions=cyclic)
+
+
+def test_momentum_preserves_required_window_and_ignores_invalid_history_outside_it() -> None:
+    cutoff = datetime(2026, 9, 5, 13, tzinfo=UTC)
+    missing = evaluate_factors(
+        InputSnapshot("missing-window", cutoff, {"daily_closes": [100, None, 120, 130]}),
+        {"price.momentum": {"lookback_days": 2}},
+    )["price.momentum"]
+    assert not missing.available
+    assert "daily_closes_missing_window" in missing.blockers
+
+    complete = InputSnapshot("complete-window", cutoff, {"daily_closes": [100, 102, 108, 104]})
+    results = evaluate_factors(
+        complete,
+        [FactorRequest("price.momentum", {"lookback_days": 1}), FactorRequest("price.momentum", {"lookback_days": 3})],
+    )
+    assert results[FactorRequest("price.momentum", {"lookback_days": 1})].value == pytest.approx(104 / 108 - 1)
+    assert results[FactorRequest("price.momentum", {"lookback_days": 3})].value == pytest.approx(0.04)
+
+    outside = evaluate_factors(
+        InputSnapshot("outside-window", cutoff, {"daily_closes": [float("nan"), 100, 110, 120]}),
+        {"price.momentum": {"lookback_days": 2}},
+    )["price.momentum"]
+    inside = evaluate_factors(
+        InputSnapshot("inside-window", cutoff, {"daily_closes": [100, float("nan"), 110, 120]}),
+        {"price.momentum": {"lookback_days": 2}},
+    )["price.momentum"]
+    assert outside.available and outside.value == pytest.approx(0.2)
+    assert not inside.available
+
+
+@pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
+def test_momentum_rejects_boolean_and_non_finite_required_prices(value: object) -> None:
+    result = evaluate_factors(
+        InputSnapshot("invalid-price", datetime(2026, 9, 5, 13, tzinfo=UTC), {"daily_closes": [100, value, 120]}),
+        {"price.momentum": {"lookback_days": 2}},
+    )["price.momentum"]
+    assert not result.available
+    assert "invalid" in result.blockers[0]
+
+
+def test_parameterized_dependencies_and_context_reuse_have_distinct_identities() -> None:
+    calls: list[int] = []
+
+    def base(_snapshot, params, _dependencies):
+        calls.append(params.lookback_days)
+        return FactorResult(key="base", implementation_version="1", available=True, value=params.lookback_days)
+
+    def parent(_snapshot, _params, dependencies):
+        return FactorResult(key="parent", implementation_version="1", available=True, value=dependencies["short"].value)
+
+    definitions = {
+        "base": FactorDefinition("base", "1", MomentumParams, (), (), base),
+        "parent": FactorDefinition(
+            "parent", "1", EmptyFactorParameters, (),
+            (FactorDependency("short", FactorRequest("base", {"lookback_days": 20})),), parent,
+        ),
+    }
+    snapshot = InputSnapshot("shared-context", datetime(2026, 9, 5, 13, tzinfo=UTC), {})
+    context = EvaluationContext(snapshot)
+    first = evaluate_factors(
+        snapshot,
+        [FactorRequest("base", {"lookback_days": 20}), FactorRequest("parent")],
+        definitions=definitions,
+        context=context,
+    )
+    second = evaluate_factors(snapshot, [FactorRequest("base", {"lookback_days": 20})], definitions=definitions, context=context)
+    assert first[FactorRequest("parent")].value == 20
+    assert second[FactorRequest("base", {"lookback_days": 20})].value == 20
+    assert calls == [20]
+
+
+def test_snapshot_freezes_nested_values_after_identity_is_established() -> None:
+    bars = [100, 101]
+    snapshot = InputSnapshot(
+        "nested", datetime(2026, 9, 5, 13, tzinfo=UTC), {"payload": {"bars": bars}},
+    )
+    bars.append(102)
+    assert snapshot.values["payload"]["bars"] == (100, 101)
+    with pytest.raises(TypeError):
+        snapshot.values["payload"]["bars"] += (103,)

@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from investment_panel.settings import AppConfig
+from investment_panel.workflows.market_data import run_for_config
 from investment_panel.infrastructure.postgres.user_state import (
     delete_watchlist_item,
     save_watchlist_item,
@@ -49,8 +50,6 @@ def populate_watchlist_symbol_data(config: AppConfig, symbol: str, asset_class: 
         return {"status": "skipped", "error": "symbol is required"}
 
     try:
-        from investment_panel.jobs.update_market_data import run_for_config
-
         result = run_for_config(config, symbols=[normalized], publish=False)
         if (
             result.get("status") == "ok"
@@ -88,3 +87,10 @@ def delete_watchlist_symbol(config: AppConfig, symbol: str) -> dict[str, Any]:
     if not normalized or not SYMBOL_RE.match(normalized):
         raise ValueError("symbol must be a valid ticker")
     return delete_watchlist_item(config, normalized)
+
+
+__all__ = [
+    "delete_watchlist_symbol",
+    "populate_watchlist_symbol_data",
+    "save_watchlist_symbol",
+]

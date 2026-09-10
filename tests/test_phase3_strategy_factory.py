@@ -12,6 +12,7 @@ from investment_panel.domain.strategies.catalog import (
     monitoring_complete,
     options_recovery_v2,
     resolve_builtin_strategy,
+    TrendParameters,
 )
 
 
@@ -56,15 +57,18 @@ def test_p3_a05_keys_are_versioned_and_resolvable() -> None:
     assert all(spec.strategy_key.endswith(f"_v{spec.revision}") and resolve_builtin_strategy(spec.strategy_key) == spec for spec in default_strategy_definitions())
 
 
-def test_options_recovery_defaults_to_its_registered_implementation_version() -> None:
+def test_unbound_strategy_definition_is_not_inferred_from_its_mechanism() -> None:
     spec = StrategySpec(
         strategy_key="options_recovery_v2", revision=2, name="Options recovery v2",
         mechanism_class="options_recovery", economic_mechanism="x", falsification_rule="x",
         source_definition_version="options-recovery.v2",
         manifest={key: {"x": 1} for key in ("source", "data", "cost", "capacity", "failure")},
     )
-    assert spec.implementation_id == "options_recovery"
-    assert spec.implementation_version == "2"
+    assert spec.implementation_id is None
+    assert spec.implementation_version is None
+    result = evaluate_strategy(spec, {})
+    assert result.status == "blocked"
+    assert result.actionability == "registration_only"
 
 
 def test_p3_a06_full_denominator_requires_outcomes_for_every_member() -> None:
@@ -84,7 +88,7 @@ def test_p3_a08_flow_replica_is_exposure_sleeve() -> None:
 
 
 def test_p3_a09_similar_strategies_have_distinct_versioned_definitions() -> None:
-    left, right = resolve_builtin_strategy("classic_momentum_v1"), resolve_builtin_strategy("daily_trend_underreaction_v1")
+    left, right = resolve_builtin_strategy("classic_momentum_v1"), resolve_builtin_strategy("daily_trend_underreaction_v2")
     assert left.source_definition_version != right.source_definition_version
     assert left.falsification_rule != right.falsification_rule
 
@@ -150,6 +154,21 @@ def test_p3_daily_and_event_numeric_fields_reject_boolean_values() -> None:
     assert event.status == "unavailable"
 
 
+def test_daily_trend_preserves_a_missing_confirmed_session_in_the_requested_window() -> None:
+    result = daily_trend_underreaction(
+        {
+            "input_cutoff": "2026-09-05T13:00:00Z",
+            "daily_bars": [
+                {"status": "confirmed", "confirmed": True, "disabled": False, "observed_at": f"2026-09-{day:02d}T12:00:00Z", "available_at": f"2026-09-{day:02d}T12:00:00Z", "trading_date": f"2026-09-{day:02d}", "close": close}
+                for day, close in enumerate((100, None, 120, 130), start=1)
+            ],
+        },
+        params=TrendParameters(lookback_days=2),
+    )
+    assert result.status == "unavailable"
+    assert "daily_closes_missing_window" in result.blockers
+
+
 def test_p3_actionability_is_a_closed_daily_enum() -> None:
     with pytest.raises(ValueError):
         StrategySpec(
@@ -183,7 +202,7 @@ def test_strategy_parameters_are_consumed_and_account_actionability_is_a_ceiling
             for day, close in enumerate((100, 102, 108, 104), start=1)
         ],
     }
-    base = resolve_builtin_strategy("daily_trend_underreaction_v1")
+    base = resolve_builtin_strategy("daily_trend_underreaction_v2")
     short = evaluate_strategy(base.model_copy(update={"parameters": {"lookback_days": 1}}), inputs)
     long = evaluate_strategy(base.model_copy(update={"parameters": {"lookback_days": 3}}), inputs)
     assert short.evidence["lookback_days"] == 1
@@ -202,3 +221,32 @@ def test_unknown_implementation_and_handler_defaults_fail_closed() -> None:
     assert unknown.status == "blocked"
     assert unknown.actionability == "registration_only"
     assert unknown.blockers == ("strategy_implementation_unavailable",)
+
+
+def test_strategy_output_identity_and_numeric_fields_are_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = resolve_builtin_strategy("volatility_aware_momentum_v1")
+    rows = [
+        {"status": "confirmed", "confirmed": True, "disabled": False,
+         "observed_at": f"2026-09-{day:02d}T12:00:00Z", "available_at": f"2026-09-{day:02d}T12:00:00Z",
+         "trading_date": f"2026-09-{day:02d}", "close": 100 + day}
+        for day in range(1, 26)
+    ]
+    result = evaluate_strategy(spec, {"input_cutoff": "2026-10-01T13:00:00Z", "daily_bars": rows})
+    assert result.status == "available"
+    assert result.actionability == "research_only"
+    assert result.evidence["signal_key"] == "signal.momentum_volatility"
+
+    with pytest.raises(ValueError, match="identity mismatch"):
+        from investment_panel.domain.strategies import catalog
+
+        original = catalog.IMPLEMENTATION_CATALOG["volatility_aware_momentum"]
+        monkeypatch.setattr(catalog, "IMPLEMENTATION_CATALOG", {
+            **catalog.IMPLEMENTATION_CATALOG,
+            "volatility_aware_momentum": original.__class__(
+                original.implementation_id, original.implementation_version, original.parameters_type,
+                lambda _inputs, **_kwargs: catalog.StrategySignal(
+                    strategy_key="wrong_v1", status="available", value=1,
+                ),
+            ),
+        })
+        evaluate_strategy(spec, {})

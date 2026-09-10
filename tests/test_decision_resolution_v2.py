@@ -8,6 +8,7 @@ from investment_panel.domain.decision import (
     DecisionResolutionV2,
     capital_action_from_resolution,
     build_decision_resolution,
+    resolution_from_historical,
     resolution_from_published,
 )
 from investment_panel.domain.portfolio.risk_policy import (
@@ -25,6 +26,14 @@ def test_published_resolution_uses_the_typed_stored_contract() -> None:
         provenance={"as_of": NOW}, ticker="QQQ",
     )
     assert resolution_from_published({"resolution": stored.model_dump(mode="json")}).model_dump(mode="json") == stored.model_dump(mode="json")
+
+
+def test_current_projection_does_not_infer_from_legacy_shape() -> None:
+    legacy = {"ticker": "QQQ", "capital_action": {"action": "AVOID"}}
+
+    with pytest.raises(ValueError, match="missing its canonical resolution"):
+        resolution_from_published(legacy)
+    assert resolution_from_historical(legacy).action == "AVOID"
 
 
 def test_blocked_resolution_has_one_safe_primary_blocker() -> None:

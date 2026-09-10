@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import type { RowRecord } from "@/types";
-import { numberField } from "@/views/rowFormat";
+import { numberField } from "@/shared/rowFormat";
 
 import {
   formatMaybePct,

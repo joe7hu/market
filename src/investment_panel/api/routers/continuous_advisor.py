@@ -7,7 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from investment_panel.api import dependencies, panel_snapshot
+from investment_panel.api import dependencies
+from investment_panel.application.read_models import panel_snapshot
 from investment_panel.api.contracts import ContinuousAdvisorSettingsInput
 from investment_panel.api.data_access import continuous_advisor as continuous_owner
 from investment_panel.api.data_access import settings as settings_owner

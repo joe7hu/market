@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import investment_panel.jobs.ticker_decisions as ticker_decisions
+import investment_panel.workflows.ticker_decisions as ticker_decisions
 from investment_panel.domain.decision.ticker import InputLineage, MarketStateSnapshot
 
 

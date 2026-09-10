@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 
 from investment_panel.api import dependencies
-from investment_panel.api.data_access import loaders as loaders_owner
-import investment_panel.api.panel_snapshot as panel_owner
+from investment_panel.application.read_models import loaders as loaders_owner
+import investment_panel.application.read_models.panel_snapshot as panel_owner
 from investment_panel.api.main import app
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime

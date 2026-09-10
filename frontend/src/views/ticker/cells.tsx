@@ -1,7 +1,7 @@
 import { decisionReason } from "@/components/market/dataFieldState";
 import { StatusBadge } from "@/components/market/workstation";
 import type { Coverage } from "@/types";
-import { toneFromText } from "@/views/rowFormat";
+import { toneFromText } from "@/shared/rowFormat";
 
 import { coverageStatus, coverageTone, type MetricCell } from "./data";
 

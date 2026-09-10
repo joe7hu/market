@@ -8,7 +8,7 @@ import hashlib
 import json
 import math
 from statistics import mean, median
-from typing import Any
+from typing import Any, TypedDict
 
 from investment_panel.domain.factors.trend_features import realized_volatility
 from investment_panel.domain.decision import (
@@ -77,16 +77,35 @@ _UNSUPPORTED_DIMENSIONS = {
     "event risk": ("event_risk_inputs_unavailable", "update_market_events"),
 }
 
+__all__ = [
+    "MarketPublicationInputs",
+    "build_market_publication",
+    "load_market_inputs",
+    "market_dimension_v2_fields",
+    "persist_market_publication",
+]
 
-def refresh_market_publication(
+
+class MarketPublicationInputs(TypedDict):
+    instrument_rows: list[dict[str, Any]]
+    bars_by_id: dict[int, list[dict[str, Any]]]
+    price_rows: list[dict[str, Any]]
+    valuation_rows: list[dict[str, Any]]
+    event_risk_evidence: dict[str, dict[str, Any]]
+    corporate_cycle_evidence: dict[str, Any]
+    crypto_volume_evidence: dict[str, dict[str, Any]]
+    phase2_rows: list[dict[str, Any]]
+    phase2_source_rows: list[dict[str, Any]]
+
+
+def load_market_inputs(
     runtime: DatabaseRuntime,
     *,
-    now: datetime | None = None,
+    as_of: datetime,
     benchmark_symbols: list[str] | tuple[str, ...] | None = None,
     configured_watchlist: list[dict[str, Any]] | None = None,
     configured_watchlist_as_of: datetime | None = None,
-) -> dict[str, Any]:
-    as_of = now or datetime.now(UTC)
+) -> MarketPublicationInputs:
     if as_of.tzinfo is None:
         raise ValueError("market publication timestamp must be timezone-aware")
     as_of = as_of.astimezone(UTC)
@@ -95,8 +114,6 @@ def refresh_market_publication(
         raise ValueError("configured watchlist timestamp must be timezone-aware")
     if configured_at is not None and configured_at > as_of:
         raise ValueError("configured watchlist timestamp is after market cutoff")
-    if configured_at is None and now is None:
-        configured_at = as_of
     # Instrument and source updated_at values are maintenance timestamps touched by
     # idempotent registration. Membership timestamps are semantic and safe to gate.
     with runtime.read() as connection:
@@ -262,6 +279,33 @@ def refresh_market_publication(
                WHERE source.family = 'phase2' AND source.created_at <= %s""",
             [as_of, as_of],
         ).fetchall()]
+    return {
+        "instrument_rows": instrument_rows,
+        "bars_by_id": bars_by_id,
+        "price_rows": price_rows,
+        "valuation_rows": valuation_rows,
+        "event_risk_evidence": event_risk_evidence,
+        "corporate_cycle_evidence": corporate_cycle_evidence,
+        "crypto_volume_evidence": crypto_volume_evidence,
+        "phase2_rows": phase2_rows,
+        "phase2_source_rows": phase2_source_rows,
+    }
+
+
+def build_market_publication(
+    *,
+    as_of: datetime,
+    inputs: MarketPublicationInputs,
+) -> dict[str, Any]:
+    instrument_rows = inputs["instrument_rows"]
+    bars_by_id = inputs["bars_by_id"]
+    price_rows = inputs["price_rows"]
+    valuation_rows = inputs["valuation_rows"]
+    event_risk_evidence = inputs["event_risk_evidence"]
+    corporate_cycle_evidence = inputs["corporate_cycle_evidence"]
+    crypto_volume_evidence = inputs["crypto_volume_evidence"]
+    phase2_rows = inputs["phase2_rows"]
+    phase2_source_rows = inputs["phase2_source_rows"]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in price_rows:
         grouped[str(row["symbol"])].append(row)
@@ -307,6 +351,47 @@ def refresh_market_publication(
         "phase2_scenario_paths": tuple(path.model_dump(mode="json") for path in phase2_scenarios),
     })
     coverage_rows = _coverage_rows(snapshot.coverage_matrix)
+
+    return {
+        "assets": assets,
+        "drivers": drivers,
+        "references": references,
+        "snapshot": snapshot,
+        "coverage_rows": coverage_rows,
+        "volatility_evidence": volatility_evidence,
+        "corporate_cycle_evidence": corporate_cycle_evidence,
+        "crypto_volume_evidence": crypto_volume_evidence,
+        "input_lineage": input_lineage,
+        "grouped": grouped,
+        "price_rows": price_rows,
+        "valuation_rows": valuation_rows,
+        "phase2_posterior": phase2_posterior,
+        "phase2_coverage": phase2_coverage,
+        "phase2_scenarios": phase2_scenarios,
+    }
+
+
+def persist_market_publication(
+    runtime: DatabaseRuntime,
+    *,
+    as_of: datetime,
+    draft: dict[str, Any],
+) -> dict[str, Any]:
+    assets = draft["assets"]
+    drivers = draft["drivers"]
+    references = draft["references"]
+    snapshot = draft["snapshot"]
+    coverage_rows = draft["coverage_rows"]
+    volatility_evidence = draft["volatility_evidence"]
+    corporate_cycle_evidence = draft["corporate_cycle_evidence"]
+    crypto_volume_evidence = draft["crypto_volume_evidence"]
+    input_lineage = draft["input_lineage"]
+    grouped = draft["grouped"]
+    price_rows = draft["price_rows"]
+    valuation_rows = draft["valuation_rows"]
+    phase2_posterior = draft["phase2_posterior"]
+    phase2_coverage = draft["phase2_coverage"]
+    phase2_scenarios = draft["phase2_scenarios"]
     analysis = AnalysisRepository(runtime)
     volatility_inputs = {
         horizon: {

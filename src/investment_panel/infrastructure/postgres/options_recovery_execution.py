@@ -289,6 +289,8 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                 parameters=dict(strategy.parameters),
                 status="candidate",
                 authority_group=f"options-recovery:{strategy.key}",
+                implementation_id="options_recovery",
+                implementation_version="2",
             )
         return ids
 

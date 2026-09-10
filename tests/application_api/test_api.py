@@ -19,11 +19,12 @@ from investment_panel.infrastructure.postgres.agents import AgentRepository
 from investment_panel.infrastructure.postgres.authority import runtime_for_url
 from investment_panel.infrastructure.postgres.migrations import upgrade_database
 from investment_panel.api.data_access.settings import settings_payload
-from investment_panel.api.data_access.types import DataStatus, PanelData
-from investment_panel.api.data_access import loaders as loaders_owner, settings as settings_owner
+from investment_panel.application.read_models.types import DataStatus, PanelData
+from investment_panel.application.read_models import loaders as loaders_owner
+from investment_panel.api.data_access import settings as settings_owner
 from investment_panel.api import job_control
 from investment_panel.api import dependencies
-import investment_panel.api.panel_snapshot as panel_owner
+import investment_panel.application.read_models.panel_snapshot as panel_owner
 import investment_panel.api.main as app_main
 import investment_panel.api.routers.options as options_owner
 import investment_panel.api.routers.system as system_owner
@@ -2108,6 +2109,7 @@ def test_frontend_fallback_does_not_serve_files_outside_dist(
 ) -> None:
     dist_dir = tmp_path / "frontend" / "dist"
     dist_dir.mkdir(parents=True)
+    (tmp_path / "frontend" / "package.json").write_text("{}", encoding="utf-8")
     (dist_dir / "index.html").write_text('<div id="root"></div>', encoding="utf-8")
     (tmp_path / "secret.txt").write_text("not-for-the-browser", encoding="utf-8")
     monkeypatch.setattr(app_main, "__file__", str(tmp_path / "src" / "investment_panel" / "api" / "main.py"))
@@ -2119,6 +2121,20 @@ def test_frontend_fallback_does_not_serve_files_outside_dist(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert response.text == '<div id="root"></div>'
+
+
+def test_installed_package_does_not_guess_checkout_frontend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dist_dir = tmp_path / "frontend" / "dist"
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text('<div id="root"></div>', encoding="utf-8")
+    monkeypatch.delenv("MARKET_FRONTEND_DIST", raising=False)
+    monkeypatch.setattr(app_main, "__file__", str(tmp_path / "site-packages" / "investment_panel" / "api" / "main.py"))
+    test_app = app_main.FastAPI()
+    app_main._mount_frontend(test_app)
+
+    assert not any(getattr(route, "path", "") == "/{path:path}" for route in test_app.routes)
 
 
 def test_decision_inbox_defaults_to_current_items() -> None:

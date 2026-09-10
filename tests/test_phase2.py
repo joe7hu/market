@@ -147,36 +147,24 @@ def test_p2_a10_mixed_fallback_and_missing_source_never_reports_available() -> N
     assert posterior.baseline["degraded_source_count"] == 1
 
 
-class _AdversarialConnection:
-    def execute(self, _query: str, _params: list[str]) -> "_AdversarialConnection":
-        return self
-
-    def fetchone(self) -> dict[str, object]:
-        return {
-            "result_kind": "negative_controls",
-            "input_hash": "phase1-hash",
-            "trial_input_hash": "phase1-hash",
-            "metrics": {"lower_confidence_net_utility_after_costs": 999.0},
-            "outcome": {},
-            "strategy_revision_id": 1,
-            "strategy_key": "forged-strategy",
-            "strategy_status": "active",
-            "complete": True,
-        }
-
-
-class _AdversarialRuntime:
-    @contextmanager
-    def read(self):
-        yield _AdversarialConnection()
-
-
-def test_phase1_rank_authorization_rejects_forged_runtime_evidence() -> None:
+def test_phase1_rank_authorization_rejects_incomplete_evidence() -> None:
     posterior = build_market_state_posterior([observation("a", "macro.value", 1)], as_of=AS_OF).model_copy(update={
         "advisory_only": False, "rank_authorized": True, "incremental_oos_net_utility": 999.0,
         "phase1_evidence_verified": True, "phase1_evidence_id": "forged", "phase1_evidence_hash": "phase1-hash",
     })
-    assert not posterior_can_influence_rank(posterior, runtime=_AdversarialRuntime())
+    assert not posterior_can_influence_rank(
+        posterior,
+        phase1_evidence={
+            "result_kind": "negative_controls",
+            "input_hash": "phase1-hash",
+            "trial_input_hash": "phase1-hash",
+            "strategy_revision_id": 1,
+            "canonical_strategy_revision_id": 1,
+            "strategy_key": "forged-strategy",
+            "strategy_status": "active",
+            "complete": True,
+        },
+    )
 
 
 def test_missing_source_and_history_are_never_selected_and_explain_coverage() -> None:

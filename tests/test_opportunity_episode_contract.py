@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.api.data_access.payloads import option_decision_adapter
+from investment_panel.application.read_models.payloads import option_decision_adapter
 from investment_panel.domain.decision import (
     ExpressionKind,
     Horizon,

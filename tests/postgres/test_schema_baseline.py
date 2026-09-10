@@ -81,6 +81,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260908_0007_continuous_advisor.py',
         '20260909_0008_backfill_publication_superseded_at.py',
         '20260909_0009_strategy_implementation_identity.py',
+        '20260909_0010_strategy_definition_policy.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
@@ -94,6 +95,13 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
 
 def test_known_forward_revision_upgrades_to_head(postgres_dsn):
     upgrade_database(postgres_dsn, '20260908_0007')
+    upgrade_database(postgres_dsn)
+    with psycopg.connect(postgres_dsn) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+
+
+def test_previous_strategy_binding_revision_upgrades_to_head(postgres_dsn):
+    upgrade_database(postgres_dsn, '20260909_0009')
     upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
@@ -171,7 +179,7 @@ class NoMigrationAssets(importlib.abc.MetaPathFinder):
             raise ImportError('migration assets unavailable in wheel')
 sys.meta_path.insert(0, NoMigrationAssets())
 from investment_panel.infrastructure.postgres.panel_models import QUERY_POLICIES
-from investment_panel.api.data_access import loaders
+from investment_panel.application.read_models import loaders
 assert QUERY_POLICIES
 """
     subprocess.run([sys.executable, '-c', code], check=True, capture_output=True)

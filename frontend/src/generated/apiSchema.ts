@@ -5019,6 +5019,7 @@ export interface components {
             /** Portfolio Holdings */
             portfolio_holdings?: components["schemas"]["PortfolioHoldingDTO"][] | null;
             portfolio_integrated?: components["schemas"]["PortfolioIntegratedDTO"] | null;
+            portfolio_summary?: components["schemas"]["PortfolioSummaryDTO"] | null;
             /** Scope */
             scope: string;
             status: components["schemas"]["ApiStatusResponse"];
@@ -5436,6 +5437,109 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * PortfolioSummaryDTO
+         * @description Canonical portfolio valuation state; partial data is never a total.
+         */
+        PortfolioSummaryDTO: {
+            /** As Of */
+            as_of?: string | null;
+            /**
+             * Availability
+             * @default unavailable
+             * @enum {string}
+             */
+            availability: "complete" | "partial" | "unavailable";
+            /** Available At */
+            available_at?: string | null;
+            /** Cash Balance */
+            cash_balance?: number | null;
+            /** Cost Basis */
+            cost_basis?: number | null;
+            /**
+             * Cost Basis Fallback Count
+             * @default 0
+             */
+            cost_basis_fallback_count: number;
+            /** Currency */
+            currency?: string | null;
+            /** Day Pnl */
+            day_pnl?: number | null;
+            /** Day Pnl As Of */
+            day_pnl_as_of?: string | null;
+            /** Day Pnl Pct */
+            day_pnl_pct?: number | null;
+            /**
+             * Day Pnl Status
+             * @default insufficient_adjacent_history
+             */
+            day_pnl_status: string;
+            /** Equity */
+            equity?: number | null;
+            /** Fees */
+            fees?: number | null;
+            /**
+             * Holdings Count
+             * @default 0
+             */
+            holdings_count: number;
+            /** Income */
+            income?: number | null;
+            /** Invested Capital */
+            invested_capital?: number | null;
+            /** Known Value Subtotal */
+            known_value_subtotal?: number | null;
+            /**
+             * Missing Valuation Count
+             * @default 0
+             */
+            missing_valuation_count: number;
+            /** Net Contributions */
+            net_contributions?: number | null;
+            /** Oldest Quote At */
+            oldest_quote_at?: string | null;
+            /**
+             * Performance Method
+             * @default daily-close external-flow adjusted
+             */
+            performance_method: string;
+            /** Portfolio Value */
+            portfolio_value?: number | null;
+            /** Realized Pnl */
+            realized_pnl?: number | null;
+            /** Total Pnl */
+            total_pnl?: number | null;
+            /** Total Pnl Pct */
+            total_pnl_pct?: number | null;
+            /** Valuation As Of */
+            valuation_as_of?: string | null;
+            /** Valuation Available At */
+            valuation_available_at?: string | null;
+            /**
+             * Valuation Blockers
+             * @default []
+             */
+            valuation_blockers: string[];
+            /**
+             * Valuation Coverage
+             * @default 1
+             */
+            valuation_coverage: number;
+            /** Valuation Provenance */
+            valuation_provenance?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Valuation Status
+             * @default unavailable
+             */
+            valuation_status: string;
+            /**
+             * Valued Position Count
+             * @default 0
+             */
+            valued_position_count: number;
+        };
         /** PortfolioTransactionInput */
         PortfolioTransactionInput: {
             /**
@@ -5687,6 +5791,8 @@ export interface components {
         };
         /** ResearchEvaluationResponse */
         ResearchEvaluationResponse: {
+            /** Actionability */
+            actionability?: string | null;
             /** Brier Score */
             brier_score?: number | null;
             /** Comparison Denominator */
@@ -5710,6 +5816,10 @@ export interface components {
             period_end?: string | null;
             /** Period Start */
             period_start?: string | null;
+            /** Signal Direction */
+            signal_direction?: string | null;
+            /** Signal Value */
+            signal_value?: number | null;
             /** Stage */
             stage: string;
             /** Unmatched Episodes */

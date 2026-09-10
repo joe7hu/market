@@ -1,9 +1,10 @@
 import type { components } from "@/generated/apiSchema";
 import type { PanelData, RowRecord } from "@/types";
 import { rows } from "@/utils";
-import { textField } from "@/views/rowFormat";
+import { textField } from "@/shared/rowFormat";
 
 type PortfolioHolding = components["schemas"]["PortfolioHoldingDTO"];
+type PortfolioSummaryDTO = components["schemas"]["PortfolioSummaryDTO"];
 
 export type Holding = {
   ticker: string;
@@ -32,7 +33,8 @@ export type Holding = {
 export type AppModel = {
   holdings: Holding[];
   thesisMonitorRows: RowRecord[];
-  portfolioValue: number;
+  portfolioValue: number | null;
+  portfolioSummary: PortfolioSummaryDTO | null;
   latestHealthCheck: string;
   sources: {
     watchlist: "live" | "empty";
@@ -47,11 +49,11 @@ export type AppModel = {
 export function buildModel(data: PanelData): AppModel {
   const quoteRows = [...rows(data.quotes), ...rows(data.watchlistWatchedQuotes), ...rows(data.watchlistUnwatchedQuotes)];
   const holdings = (data.portfolioHoldings ?? []).map(toHolding);
-  const summaryRow = rows(data.portfolioSummary)[0];
-  const summaryValue = summaryRow?.portfolio_value;
+  const portfolioSummary = data.portfolioSummaryDto ?? null;
+  const summaryValue = portfolioSummary?.portfolio_value;
   const portfolioValue = typeof summaryValue === "number" && Number.isFinite(summaryValue)
     ? summaryValue
-    : holdings.reduce((total, holding) => total + (holding.marketValue ?? 0), 0);
+    : null;
   const healthRows = [
     ...rows(data.sourceFreshness),
     ...rows(data.sourceHealth),
@@ -63,6 +65,7 @@ export function buildModel(data: PanelData): AppModel {
     holdings,
     thesisMonitorRows: rows(data.thesisMonitor),
     portfolioValue,
+    portfolioSummary,
     latestHealthCheck: newestDateLabel(healthRows.map((row) => textField(row, ["checked_at", "last_run_at", "as_of", "updated_at", "timestamp"]))),
     sources: {
       watchlist: quoteRows.length || rows(data.watchlistWatched).length || rows(data.watchlistUnwatched).length ? "live" : "empty",

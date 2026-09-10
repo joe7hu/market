@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {loadOptionsRadarLearning, promoteStrategyMutation } from "@/api/options";
 import {StatusBadge } from "@/components/market/workstation";
 import {PanelData, RowRecord } from "@/types";
-import {numberField, textField } from "./rowFormat";
+import {numberField, textField } from "@/shared/rowFormat";
 import {formatDate, sessionBadge } from "./optionsRadarFormat";
 import {latestBy, latestValidationBy } from "./optionsRadarData";
 import {tabButtonClass, rows, rowsForDisplayTime, uniqueText, countWhere, optionThesisAgentState, stateOf } from "./optionsRadar/helpers";

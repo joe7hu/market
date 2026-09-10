@@ -9813,6 +9813,16 @@
               }
             ]
           },
+          "portfolio_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PortfolioSummaryDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "scope": {
             "title": "Scope",
             "type": "string"
@@ -11187,6 +11197,319 @@
         "title": "PortfolioScenarioDTO",
         "type": "object"
       },
+      "PortfolioSummaryDTO": {
+        "additionalProperties": false,
+        "description": "Canonical portfolio valuation state; partial data is never a total.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "availability": {
+            "default": "unavailable",
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "cash_balance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cash Balance"
+          },
+          "cost_basis": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Basis"
+          },
+          "cost_basis_fallback_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cost Basis Fallback Count",
+            "type": "integer"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "day_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Pnl"
+          },
+          "day_pnl_as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Pnl As Of"
+          },
+          "day_pnl_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Pnl Pct"
+          },
+          "day_pnl_status": {
+            "default": "insufficient_adjacent_history",
+            "title": "Day Pnl Status",
+            "type": "string"
+          },
+          "equity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Equity"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fees"
+          },
+          "holdings_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Holdings Count",
+            "type": "integer"
+          },
+          "income": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Income"
+          },
+          "invested_capital": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invested Capital"
+          },
+          "known_value_subtotal": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Known Value Subtotal"
+          },
+          "missing_valuation_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Missing Valuation Count",
+            "type": "integer"
+          },
+          "net_contributions": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Contributions"
+          },
+          "oldest_quote_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Quote At"
+          },
+          "performance_method": {
+            "default": "daily-close external-flow adjusted",
+            "title": "Performance Method",
+            "type": "string"
+          },
+          "portfolio_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Value"
+          },
+          "realized_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Pnl"
+          },
+          "total_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Pnl"
+          },
+          "total_pnl_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Pnl Pct"
+          },
+          "valuation_as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuation As Of"
+          },
+          "valuation_available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valuation Available At"
+          },
+          "valuation_blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Valuation Blockers",
+            "type": "array"
+          },
+          "valuation_coverage": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Valuation Coverage",
+            "type": "number"
+          },
+          "valuation_provenance": {
+            "additionalProperties": true,
+            "title": "Valuation Provenance",
+            "type": "object"
+          },
+          "valuation_status": {
+            "default": "unavailable",
+            "title": "Valuation Status",
+            "type": "string"
+          },
+          "valued_position_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Valued Position Count",
+            "type": "integer"
+          }
+        },
+        "title": "PortfolioSummaryDTO",
+        "type": "object"
+      },
       "PortfolioTransactionInput": {
         "properties": {
           "account": {
@@ -11968,6 +12291,17 @@
       },
       "ResearchEvaluationResponse": {
         "properties": {
+          "actionability": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actionability"
+          },
           "brier_score": {
             "anyOf": [
               {
@@ -12078,6 +12412,28 @@
               }
             ],
             "title": "Period Start"
+          },
+          "signal_direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal Direction"
+          },
+          "signal_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal Value"
           },
           "stage": {
             "title": "Stage",

@@ -3,7 +3,7 @@ import { AlertTriangle, Clock3, ShieldAlert } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/market/workstation";
 import type { RowRecord } from "@/types";
-import { textField } from "./rowFormat";
+import { textField } from "@/shared/rowFormat";
 
 type Props = {
   truths: RowRecord[];

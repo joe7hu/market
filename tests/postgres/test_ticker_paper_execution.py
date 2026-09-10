@@ -23,7 +23,7 @@ from investment_panel.infrastructure.postgres.ticker_decisions import (
     paper_execution_for_plan,
 )
 from investment_panel.infrastructure.postgres.ticker_execution import TickerPaperExecutionRepository
-from investment_panel.jobs.ticker_decisions import portfolio_impacts, replay_with_seed_stock_evidence
+from investment_panel.workflows.ticker_decisions import portfolio_impacts, replay_with_seed_stock_evidence
 from conftest import typed_config
 
 
@@ -327,7 +327,7 @@ def test_outcome_attribution_publication_is_full_and_replayable(
     migrated_postgres_dsn: str,
     monkeypatch,
 ) -> None:
-    from investment_panel.jobs import ticker_decisions
+    from investment_panel.workflows import ticker_decisions
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -985,7 +985,7 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
     migrated_postgres_dsn: str,
     monkeypatch,
 ) -> None:
-    from investment_panel.jobs import ticker_decisions
+    from investment_panel.workflows import ticker_decisions
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

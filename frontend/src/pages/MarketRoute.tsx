@@ -2,7 +2,7 @@ import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
 import { WorkspacePage } from "@/views/workspacePage";
 import { rows } from "@/utils";
-import { textField } from "@/views/rowFormat";
+import { textField } from "@/shared/rowFormat";
 import { isMarketDriver } from "@/views/market/format";
 import { MarketAssetMatrix, MarketEnvironmentPanel, ReferenceValuationCharts } from "@/views/market/panels";
 import type { JsonValue } from "@/types";

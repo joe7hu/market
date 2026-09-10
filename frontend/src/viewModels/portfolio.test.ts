@@ -7,6 +7,7 @@ import { buildPortfolioViewModel, performanceRangeRows } from "@/viewModels/port
 const model = {
   holdings: [{ ticker: "NVDA", quantity: 2, price: 120, averageCost: 100, marketValue: 240, hasMarketValue: true, weight: 60, unrealizedPnl: 40, unrealizedPnlPct: 20, dayChange: 4, dayChangePct: 1.7, quoteObservedAt: "2026-07-15T20:00:00Z", quoteAvailableAt: "2026-07-15T20:01:00Z", availableAt: "2026-07-15T20:01:00Z", quoteSource: "test", quoteSourceKind: "quote", quoteTradingDate: "2026-07-15", currency: "USD", valuationAvailable: true, valuationStatus: "market_quote", nextStep: "Review sizing" }],
   portfolioValue: 240,
+  portfolioSummary: null,
   thesisMonitorRows: [],
   latestHealthCheck: "Not loaded",
   sources: { watchlist: "empty", opportunities: "empty", holdings: "live", filings: "empty", calendar: "empty", health: "empty" },
@@ -15,7 +16,7 @@ const model = {
 describe("portfolio view model", () => {
   it("maps the reconciled summary and keeps one correlation window", () => {
     const data = {
-      portfolioSummary: { count: 1, rows: [{ portfolio_value: 240, total_pnl: 40, total_pnl_pct: 20, day_pnl: 4, day_pnl_pct: 1.7, as_of: "2026-07-15T20:00:00Z" }] },
+      portfolioSummaryDto: { portfolio_value: 240, availability: "complete", total_pnl: 40, total_pnl_pct: 20, day_pnl: 4, day_pnl_pct: 1.7, as_of: "2026-07-15T20:00:00Z", valuation_coverage: 1, valuation_blockers: [], cost_basis_fallback_count: 0, day_pnl_status: "ready", holdings_count: 1, missing_valuation_count: 0, performance_method: "test", valuation_status: "market_quotes", valued_position_count: 1 },
       portfolioPerformance: { count: 2, rows: [{ date: "2026-07-14", total_pnl: 30 }, { date: "2026-07-15", total_pnl: 40 }] },
       portfolioTransactions: { count: 1, rows: [{ id: "trade-1", symbol: "NVDA", transaction_type: "buy" }] },
       correlationEdges: { count: 2, rows: [
@@ -52,7 +53,7 @@ describe("portfolio view model", () => {
 
   it("preserves an undefined total return", () => {
     const data = {
-      portfolioSummary: { count: 1, rows: [{ total_pnl: -10, total_pnl_pct: null }] },
+      portfolioSummaryDto: { availability: "partial", total_pnl: -10, total_pnl_pct: null, valuation_coverage: 0.5, valuation_blockers: ["missing_quote"], cost_basis_fallback_count: 0, day_pnl_status: "insufficient_adjacent_history", holdings_count: 1, missing_valuation_count: 1, performance_method: "test", valuation_status: "partial", valued_position_count: 0 },
     } as unknown as PanelData;
 
     expect(buildPortfolioViewModel(data, model).summary.totalPnlPct).toBeNull();

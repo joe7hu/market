@@ -6,8 +6,8 @@ from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.api.data_access.loaders import load_panel_scope_data, today_plan_for_row, today_rank_for_row
-from investment_panel.api.data_access.payloads import panel_snapshot_payload
+from investment_panel.application.read_models.loaders import load_panel_scope_data, today_plan_for_row, today_rank_for_row
+from investment_panel.application.read_models.payloads import panel_snapshot_payload
 from conftest import typed_config
 from investment_panel.domain.decision import (
     bind_trade_plan,
@@ -795,7 +795,7 @@ def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
 
 
 def test_opportunities_fallback_accepts_production_rank_projection(migrated_postgres_dsn):
-    from investment_panel.api.data_access.loaders import load_opportunities_scope_data
+    from investment_panel.application.read_models.loaders import load_opportunities_scope_data
     from investment_panel.domain.decision import OpportunityRank
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)

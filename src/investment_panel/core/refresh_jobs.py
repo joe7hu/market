@@ -49,11 +49,11 @@ from investment_panel.jobs import (
     options_paper_execution,
     decision_inbox,
     refresh_symbol_decision_outcomes,
-    ticker_decisions,
     ticker_data_requests,
     update_company_financials,
     stock_alpha_walk_forward,
 )
+from investment_panel.workflows import ticker_decisions
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
 
 
@@ -295,6 +295,7 @@ def mark_stale_running_jobs(
     stale_after: timedelta = timedelta(hours=3),
     retries: int = 30,
 ) -> int:
+    del retries
     repository = _job_repository(db_path)
     configured_job_names = tuple(
         job_name for job_name in ALLOWLIST if _job_timeout_seconds(job_name) is not None

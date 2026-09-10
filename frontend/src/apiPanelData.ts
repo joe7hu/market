@@ -8,6 +8,7 @@ export type PanelSnapshotPayload = {
   dashboard?: DashboardPayload | null;
   tables?: Record<string, TablePayload>;
   portfolio_holdings?: import("./generated/apiSchema").components["schemas"]["PortfolioHoldingDTO"][] | null;
+  portfolio_summary?: import("./generated/apiSchema").components["schemas"]["PortfolioSummaryDTO"] | null;
   portfolio_integrated?: import("./generated/apiSchema").components["schemas"]["PortfolioIntegratedDTO"] | null;
 };
 
@@ -92,6 +93,7 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
   }
   if (unavailable) clearPhase4(next);
   if (snapshot.portfolio_holdings !== undefined) next.portfolioHoldings = snapshot.portfolio_holdings ?? [];
+  if (snapshot.portfolio_summary !== undefined) next.portfolioSummaryDto = snapshot.portfolio_summary ?? undefined;
   if (snapshot.portfolio_integrated) next.portfolioIntegrated = snapshot.portfolio_integrated;
   if (snapshot.dashboard) {
     next.dashboard = { ...snapshot.dashboard, ...(snapshot.status ? { status: snapshot.status } : {}) };

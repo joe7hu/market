@@ -12,7 +12,7 @@ from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION, d
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.authority import close_cached_runtimes, runtime_for_url
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
-from investment_panel.api.data_access.loaders import load_panel_data
+from investment_panel.application.read_models.loaders import load_panel_data
 from conftest import typed_config
 
 

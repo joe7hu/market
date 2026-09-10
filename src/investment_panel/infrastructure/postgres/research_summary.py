@@ -214,6 +214,9 @@ def evaluation_summary(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "stage": stage, "verdict": verdict, "evaluated_at": row.get("evaluated_at"),
         "period_start": row.get("period_start"), "period_end": row.get("period_end"),
+        "actionability": metrics.get("actionability") if stage == "strategy_signal" else None,
+        "signal_value": _number(metrics.get("value")) if stage == "strategy_signal" else None,
+        "signal_direction": metrics.get("direction") if stage == "strategy_signal" and isinstance(metrics.get("direction"), str) else None,
         "independent_sample_count": sample,
         "net_return_lower_bound": lower,
         "brier_score": brier,

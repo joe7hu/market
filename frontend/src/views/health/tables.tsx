@@ -3,7 +3,7 @@ import { type ReactNode } from "react";
 import { type RefreshJob } from "@/api/panel";
 import { StatusBadge } from "@/components/market/workstation";
 import type { RowRecord } from "@/types";
-import { displayField, titleLabel, toneFromText } from "@/views/rowFormat";
+import { displayField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import { jobDef } from "@/views/health/dataFlow";
 import { formatDateTime } from "@/views/health/format";
 

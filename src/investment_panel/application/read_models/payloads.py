@@ -4,15 +4,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import os
 from typing import Any, Mapping
-from investment_panel.api.scheduler import scheduler_status
+from investment_panel.infrastructure.scheduler import scheduler_status
 from investment_panel.domain.panel import (
     build_ticker_dossier,
     dashboard_payload as core_dashboard_payload,
     panel_snapshot_payload as core_panel_snapshot_payload,
 )
 
-from investment_panel.api.data_access.types import PanelData
-from investment_panel.api.data_access.coerce import int_value as _int_value, jsonable
+from investment_panel.application.read_models.types import PanelData
+from investment_panel.application.read_models.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.settings import AppConfig, OptionAgentConfig
 from investment_panel.domain.decision import (
@@ -29,7 +29,7 @@ from investment_panel.domain.decision import (
     ticker_decision_brief,
     valid_outcome_error_type,
 )
-from investment_panel.domain.portfolio.contracts import PortfolioHoldingDTO
+from investment_panel.domain.portfolio.contracts import PortfolioHoldingDTO, PortfolioSummaryDTO
 from investment_panel.infrastructure.postgres.ticker_decisions import select_current_outcome_attributions
 
 DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
@@ -206,6 +206,9 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             }).model_dump(mode="json")
             for row in portfolio_rows
         ]
+    summary_rows = rows_for_table("portfolio_summary")
+    if summary_rows:
+        payload["portfolio_summary"] = PortfolioSummaryDTO.model_validate(summary_rows[0]).model_dump(mode="json")
     return payload
 
 

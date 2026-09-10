@@ -386,7 +386,7 @@ def _agent_preopen_narrative(
     run_id: str | None = None
     try:
         from investment_panel.domain.options.preopen_forecast import backtest_qqq_preopen_model, qqq_preopen_forecast
-        from investment_panel.jobs.codex_preopen_brief import generate
+        from investment_panel.infrastructure.providers.preopen_brief import generate
         context = compact_preopen_context(
             brief_date=brief_date.isoformat(),
             qqq_forecast=qqq_preopen_forecast(qqq_history),

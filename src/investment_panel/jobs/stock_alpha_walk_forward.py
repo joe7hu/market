@@ -206,11 +206,12 @@ def run(
                 """
                 INSERT INTO analysis.strategy_revision
                     (strategy_key, revision, name, status, parameters, authority_group,
-                     hypothesis_id, experiment_family_id, artifact_id, artifact_hash, research_required)
-                VALUES (%s, %s, %s, 'candidate', %s, %s, %s, %s, %s, %s, true)
+                     hypothesis_id, experiment_family_id, artifact_id, artifact_hash,
+                     research_required, implementation_id, implementation_version)
+                VALUES (%s, %s, %s, 'candidate', %s, %s, %s, %s, %s, %s, true, %s, %s)
                 RETURNING id, revision, status, parameters
                 """,
-                [STRATEGY_KEY, revision, "PIT stock alpha", Jsonb(parameters), STRATEGY_KEY, research_ids[0], research_ids[1], parameters["artifact_id"], parameters["artifact_hash"]],
+                [STRATEGY_KEY, revision, "PIT stock alpha", Jsonb(parameters), STRATEGY_KEY, research_ids[0], research_ids[1], parameters["artifact_id"], parameters["artifact_hash"], "qualified_stock_alpha", MODEL_VERSION],
             ).fetchone()
         elif dict(strategy["parameters"] or {}) != parameters:
             raise ValueError("immutable stock-alpha revision parameters do not match")

@@ -1,5 +1,5 @@
 import type { TickerPayload } from "@/types";
-import { textField } from "@/views/rowFormat";
+import { textField } from "@/shared/rowFormat";
 
 export function resolveTradingViewSymbol(symbol: string, ticker: TickerPayload | null): string {
   const resolved = textField(ticker?.dossier?.identity, ["tradingview_symbol"]);

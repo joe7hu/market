@@ -12,10 +12,8 @@ from threading import Event, RLock
 import time
 from typing import Any, Callable
 
-from fastapi import HTTPException
-
-from investment_panel.api.data_access import loaders as loaders_owner
-from investment_panel.api.data_access.payloads import panel_snapshot_payload, table_payload
+from investment_panel.application.read_models import loaders as loaders_owner
+from investment_panel.application.read_models.payloads import panel_snapshot_payload, table_payload
 from investment_panel.settings import AppConfig, load_config
 from investment_panel.domain.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
 from investment_panel.infrastructure.postgres.authority import database_url
@@ -34,6 +32,10 @@ SOURCE_FRESHNESS_DEFAULT_LIMIT = 100
 _CONTEXT_CACHE: dict[str, Any] = {"entries": {}}
 _CONTEXT_LOCK = RLock()
 _CONTEXT_INFLIGHT: dict[tuple[str, str], _ContextFlight] = {}
+
+
+class ReadModelUnavailable(RuntimeError):
+    """Raised when a requested read model is not complete enough to publish."""
 
 
 def panel_snapshot_contract_revision() -> str:
@@ -162,7 +164,7 @@ def scope_snapshot_payload(
         _mark_snapshot_state(payload, "current")
         return payload
     message = str(status.get("message") if isinstance(status, dict) else "") or "PostgreSQL read models unavailable."
-    raise HTTPException(status_code=503, detail=message)
+    raise ReadModelUnavailable(message)
 
 
 def _mark_snapshot_state(payload: dict[str, Any], state: str, *, error: str | None = None) -> None:
@@ -203,6 +205,7 @@ __all__ = [
     "CONTEXT_CACHE_TTL_SECONDS",
     "CONTEXT_CACHE_MAX_ENTRIES",
     "PANEL_SNAPSHOT_CONTRACT_REVISION",
+    "ReadModelUnavailable",
     "SOURCE_FRESHNESS_DEFAULT_LIMIT",
     "capped_table_payload",
     "context",

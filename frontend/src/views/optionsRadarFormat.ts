@@ -6,7 +6,7 @@
 import type { RowRecord } from "@/types";
 import type { Tone } from "@/ui/tone";
 
-import { formatMoney, numberField, textField } from "./rowFormat";
+import { formatMoney, numberField, textField } from "@/shared/rowFormat";
 
 export function moneyField(row: RowRecord | undefined, keys: string[]): string {
   return formatMoney(numberField(row, keys, Number.NaN));

@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from investment_panel.api.data_access.loaders import load_table_panel_data
+from investment_panel.application.read_models.loaders import load_table_panel_data
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.options_analysis import DEFAULT_PARAMETERS, refresh_options_radar

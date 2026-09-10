@@ -52,6 +52,7 @@ CONTINUOUS_ADVISOR_JOBS = frozenset(
 __all__ = [
     "STAGGER_SECONDS",
     "job_intervals",
+    "mark_stale_running_jobs",
     "run_scheduler",
     "scheduler_enabled",
     "scheduler_status",

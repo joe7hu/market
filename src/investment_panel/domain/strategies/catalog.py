@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from dataclasses import dataclass
 from hashlib import sha256
 import json
-from math import isfinite
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from investment_panel.domain.factors import InputSnapshot, evaluate_factors
+from investment_panel.domain.factors import EvaluationContext
+from investment_panel.domain.strategies.implementations import (
+    DAILY_ACTIONABILITY,
+    EmptyParameters,
+    StrategyParameters,
+    StrategySignal,
+    TrendParameters,
+    crypto_funding_basis,
+    daily_gap_regime,
+    daily_trend_underreaction,
+    event_propagation,
+    factor_snapshot_for_inputs,
+    options_recovery_v2,
+    volatility_aware_momentum,
+)
 
 
 MECHANISM_CLASSES = (
@@ -23,23 +35,12 @@ MECHANISM_CLASSES = (
     "options_recovery",
 )
 MANIFEST_PARTS = ("source", "data", "cost", "capacity", "failure")
-DAILY_ACTIONABILITY = Literal["daily_research", "shadow_only", "research_only", "registration_only"]
 ACTIONABILITY_LEVELS = MappingProxyType({
     "registration_only": 0,
     "research_only": 1,
     "shadow_only": 2,
     "daily_research": 3,
 })
-IMPLEMENTATION_FOR_MECHANISM = MappingProxyType({
-    "trend_underreaction": "daily_trend_underreaction",
-    "gap_regime": "daily_gap_regime",
-    "event_propagation": "daily_event_propagation",
-    "options_recovery": "options_recovery",
-    "crypto_basis": "crypto_funding_basis",
-})
-IMPLEMENTATION_VERSION_FOR_ID = MappingProxyType({"options_recovery": "2"})
-
-
 def strategy_family_for_key(strategy_key: str, mechanism_class: str = "", name: str = "", strategy_family: str = "") -> str:
     if "martingale" in f"{strategy_key} {mechanism_class} {name} {strategy_family}".casefold():
         return "martingale"
@@ -62,8 +63,8 @@ class StrategySpec(BaseModel):
     economic_mechanism: str = Field(min_length=1)
     falsification_rule: str = Field(min_length=1)
     source_definition_version: str = Field(min_length=1)
-    implementation_id: str = ""
-    implementation_version: str = "1"
+    implementation_id: str | None = None
+    implementation_version: str | None = None
     strategy_family: str = "legacy"
     promotability: str = "standard"
     actionability: DAILY_ACTIONABILITY = "daily_research"
@@ -71,24 +72,12 @@ class StrategySpec(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
     blockers: tuple[str, ...] = ()
 
-    @model_validator(mode="before")
-    @classmethod
-    def default_implementation_identity(cls, values: Any) -> Any:
-        if not isinstance(values, Mapping):
-            return values
-        data = dict(values)
-        data.setdefault("implementation_id", IMPLEMENTATION_FOR_MECHANISM.get(data.get("mechanism_class", ""), data.get("mechanism_class", "")))
-        data.setdefault("implementation_version", IMPLEMENTATION_VERSION_FOR_ID.get(data["implementation_id"], "1"))
-        return data
-
     @model_validator(mode="after")
     def validate_definition(self) -> "StrategySpec":
         if self.mechanism_class not in MECHANISM_CLASSES and self.mechanism_class not in {"crypto_basis", "flow_supporting", "martingale"}:
             raise ValueError("unknown strategy mechanism class")
-        if not self.implementation_id:
-            raise ValueError("strategy implementation identity is required")
-        if not self.implementation_version:
-            raise ValueError("strategy implementation version is required")
+        if (self.implementation_id is None) != (self.implementation_version is None):
+            raise ValueError("strategy implementation identity requires both id and version")
         if not self.strategy_key.endswith(f"_v{self.revision}"):
             raise ValueError("strategy key must include its source revision")
         if set(self.manifest) != set(MANIFEST_PARTS):
@@ -110,32 +99,6 @@ class StrategySpec(BaseModel):
         return self.strategy_key
 
 
-class StrategySignal(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    strategy_key: str
-    status: str
-    value: float | None = None
-    direction: str | None = None
-    horizon: str = "daily"
-    actionability: DAILY_ACTIONABILITY = "daily_research"
-    regime: str | None = None
-    blockers: tuple[str, ...] = ()
-    evidence: dict[str, Any] = Field(default_factory=dict)
-
-
-class StrategyParameters(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-
-class TrendParameters(StrategyParameters):
-    lookback_days: int = Field(default=20, ge=1, le=252)
-
-
-class EmptyParameters(StrategyParameters):
-    pass
-
-
 @dataclass(frozen=True)
 class StrategyImplementationDefinition:
     implementation_id: str
@@ -154,165 +117,9 @@ def manifest_hash(manifest: Mapping[str, Any]) -> str:
     return content_hash({key: manifest[key] for key in MANIFEST_PARTS})
 
 
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if isfinite(parsed) else None
-
-
-def _daily_rows(inputs: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    cutoff = _parse_clock(inputs.get("input_cutoff"))
-    if cutoff is None:
-        return []
-    rows = [
-        row for row in inputs.get("daily_bars", ())
-        if isinstance(row, Mapping)
-        and row.get("status") == "confirmed"
-        and row.get("confirmed") is True
-        and row.get("disabled") is False
-        and (observed := _parse_clock(row.get("observed_at"))) is not None
-        and (available := _parse_clock(row.get("available_at"))) is not None
-        and observed <= cutoff and available <= cutoff
-    ]
-    return sorted(rows, key=lambda row: (str(row.get("trading_date") or row.get("date") or ""), str(row.get("id") or "")))
-
-
-def _parse_clock(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    else:
-        return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(UTC)
-
-
-def daily_trend_underreaction(
-    inputs: Mapping[str, Any], *, strategy_key: str = "daily_trend_underreaction_v1",
-    params: TrendParameters | None = None,
-) -> StrategySignal:
-    rows = _daily_rows(inputs)
-    closes = [_number(row.get("close")) for row in rows]
-    if len(closes) < 2 or any(value is None or value <= 0 for value in closes[-2:]):
-        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("daily_close_history_incomplete",))
-    validated = params or TrendParameters()
-    factor = evaluate_factors(
-        InputSnapshot(
-            str(inputs.get("input_snapshot_identity") or content_hash({"cutoff": inputs.get("input_cutoff"), "bars": rows})),
-            _parse_clock(inputs["input_cutoff"]),
-            {"daily_closes": [value for value in closes if value is not None]},
-        ),
-        {"price.momentum": validated},
-    )["price.momentum"]
-    if not factor.available or factor.value is None:
-        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=factor.blockers)
-    lookback = validated.lookback_days
-    end = closes[-1]
-    assert end is not None
-    return StrategySignal(
-        strategy_key=strategy_key, status="available", value=factor.value,
-        direction="long" if factor.value > 0 else "short" if factor.value < 0 else "flat",
-        evidence={"lookback_days": lookback, "inputs": "confirmed_daily_bars", "underreaction_test": "future_oos_required"},
-    )
-
-
-def daily_gap_regime(
-    inputs: Mapping[str, Any], *, strategy_key: str = "daily_gap_regime_v1",
-    params: EmptyParameters | None = None,
-) -> StrategySignal:
-    rows = _daily_rows(inputs)
-    if len(rows) < 2:
-        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("daily_gap_history_incomplete",))
-    current, previous = rows[-1], rows[-2]
-    opening, previous_close = _number(current.get("open")), _number(previous.get("close"))
-    if opening is None or previous_close is None or previous_close <= 0:
-        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("gap_open_or_previous_close_missing",))
-    gap = opening / previous_close - 1
-    regime = "gap_up" if gap > 0 else "gap_down" if gap < 0 else "no_gap"
-    return StrategySignal(
-        strategy_key=strategy_key, status="available", value=gap,
-        direction="continuation" if gap else "flat", regime=regime,
-        evidence={"gap_pct": gap, "branches": ("continuation", "reversal"), "decision": "continuation_vs_reversal_requires_oos_regime_evidence"},
-    )
-
-
-def event_propagation(
-    inputs: Mapping[str, Any], *, strategy_key: str = "daily_event_propagation_v1",
-    params: EmptyParameters | None = None,
-) -> StrategySignal:
-    event = inputs.get("event")
-    cutoff = _parse_clock(inputs.get("input_cutoff"))
-    if not isinstance(event, Mapping) or cutoff is None or event.get("status") != "confirmed" or event.get("confirmed") is not True or event.get("disabled") is not False or not event.get("release_at"):
-        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_release_clock_missing",))
-    release_at = _parse_clock(event.get("release_at"))
-    observed_at = _parse_clock(event.get("observed_at"))
-    available_at = _parse_clock(event.get("available_at"))
-    if release_at is None or observed_at is None or available_at is None or release_at > cutoff or observed_at > cutoff or available_at > cutoff:
-        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_clock_invalid_or_future",))
-    actual, consensus = _number(event.get("actual")), _number(event.get("consensus"))
-    if actual is None or consensus is None:
-        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("event_actual_or_consensus_missing",))
-    surprise = actual - consensus
-    fill_ready = inputs.get("fill_model_proven") is True
-    return StrategySignal(
-        strategy_key=strategy_key, status="available", value=surprise,
-        direction="long" if surprise > 0 else "short" if surprise < 0 else "flat",
-        actionability="daily_research" if fill_ready else "shadow_only",
-        blockers=() if fill_ready else ("event_time_fill_model_unproven",),
-        evidence={"release_at": release_at.isoformat(), "surprise": surprise, "daily_only": True},
-    )
-
-
-def options_recovery_v2(
-    inputs: Mapping[str, Any], *, strategy_key: str = "options_recovery_v2",
-    params: EmptyParameters | None = None,
-) -> StrategySignal:
-    cutoff = _parse_clock(inputs.get("input_cutoff"))
-    required = ("full_chain_state", "oi_volume_state", "dividend_state")
-    blockers = tuple(
-        f"{key}_invalid" for key in required
-        if cutoff is None or not _authoritative_state(inputs.get(key), cutoff)
-    )
-    quote_quality = inputs.get("quote_quality")
-    if not isinstance(quote_quality, (int, float)) or isinstance(quote_quality, bool) or not isfinite(float(quote_quality)) or float(quote_quality) < 0:
-        blockers += ("quote_quality_invalid",)
-    if inputs.get("fill_model_proven") is not True:
-        blockers += ("fill_model_unproven",)
-    if blockers:
-        return StrategySignal(strategy_key=strategy_key, status="unavailable", actionability="shadow_only", blockers=blockers)
-    return StrategySignal(strategy_key=strategy_key, status="available", actionability="shadow_only", evidence={"controls": [*required, "quote_quality", "fill_model_proven"], "paper_only": True})
-
-
-def _authoritative_state(value: Any, cutoff: datetime) -> bool:
-    if not isinstance(value, Mapping) or not value or value.get("status") != "confirmed" or value.get("confirmed") is not True or value.get("disabled") is not False:
-        return False
-    available_at = _parse_clock(value.get("available_at"))
-    observed_at = _parse_clock(value.get("observed_at"))
-    return available_at is not None and observed_at is not None and available_at <= cutoff and observed_at <= cutoff
-
-
-def crypto_funding_basis(
-    inputs: Mapping[str, Any] | None = None, *, strategy_key: str = "crypto_funding_basis_v1",
-    params: EmptyParameters | None = None,
-) -> StrategySignal:
-    return StrategySignal(
-        strategy_key=strategy_key, status="blocked", actionability="registration_only",
-        blockers=("venue_identity_required", "executable_depth_required", "liquidation_data_required", "failure_scenarios_required"),
-    )
-
-
 IMPLEMENTATION_CATALOG: Mapping[str, StrategyImplementationDefinition] = MappingProxyType({
     "daily_trend_underreaction": StrategyImplementationDefinition(
-        "daily_trend_underreaction", "1", TrendParameters, daily_trend_underreaction,
+        "daily_trend_underreaction", "2", TrendParameters, daily_trend_underreaction,
     ),
     "daily_gap_regime": StrategyImplementationDefinition(
         "daily_gap_regime", "1", EmptyParameters, daily_gap_regime,
@@ -326,6 +133,9 @@ IMPLEMENTATION_CATALOG: Mapping[str, StrategyImplementationDefinition] = Mapping
     "crypto_funding_basis": StrategyImplementationDefinition(
         "crypto_funding_basis", "1", EmptyParameters, crypto_funding_basis,
     ),
+    "volatility_aware_momentum": StrategyImplementationDefinition(
+        "volatility_aware_momentum", "1", EmptyParameters, volatility_aware_momentum,
+    ),
 })
 
 
@@ -333,42 +143,64 @@ def evaluate_strategy(
     spec: StrategySpec,
     inputs: Mapping[str, Any], *,
     account_actionability: str | None = None,
+    factor_context: EvaluationContext | None = None,
 ) -> StrategySignal:
     """Evaluate a resolved revision through its exact implementation binding."""
 
     if is_martingale_family(spec.strategy_key, spec.mechanism_class, spec.name, spec.strategy_family):
-        return StrategySignal(
+        return _finalize_strategy_result(spec, StrategySignal(
             strategy_key=spec.strategy_key,
             status="blocked",
             actionability="research_only",
             blockers=("permanent_negative_control",),
-        )
+        ), account_actionability)
 
-    implementation = IMPLEMENTATION_CATALOG.get(spec.implementation_id)
-    if implementation is None or implementation.implementation_version != spec.implementation_version:
-        return StrategySignal(
+    implementation = IMPLEMENTATION_CATALOG.get(spec.implementation_id or "")
+    if (
+        implementation is None
+        or spec.implementation_version is None
+        or implementation.implementation_version != spec.implementation_version
+    ):
+        return _finalize_strategy_result(spec, StrategySignal(
             strategy_key=spec.strategy_key,
             status="blocked",
             actionability="registration_only",
             blockers=("strategy_implementation_unavailable",),
-        )
+        ), account_actionability)
     try:
         params = implementation.parameters_type.model_validate(spec.parameters)
     except ValidationError:
-        return StrategySignal(
+        return _finalize_strategy_result(spec, StrategySignal(
             strategy_key=spec.strategy_key,
             status="blocked",
             actionability="registration_only",
             blockers=("strategy_parameters_invalid",),
-        )
+        ), account_actionability)
 
-    result = implementation.evaluate(inputs, strategy_key=spec.strategy_key, params=params)
+    result = implementation.evaluate(
+        inputs, strategy_key=spec.strategy_key, params=params, factor_context=factor_context,
+    )
+    return _finalize_strategy_result(spec, result, account_actionability)
+
+
+def _finalize_strategy_result(
+    spec: StrategySpec,
+    result: StrategySignal,
+    account_actionability: str | None,
+) -> StrategySignal:
+    if not isinstance(result, StrategySignal):
+        try:
+            result = StrategySignal.model_validate(result)
+        except ValidationError as exc:
+            raise ValueError("strategy evaluator returned an invalid result") from exc
+    if result.strategy_key != spec.strategy_key:
+        raise ValueError("strategy evaluator identity mismatch")
     ceiling = _actionability_min(spec.actionability, account_actionability)
     if ceiling is None:
         return result.model_copy(update={"status": "blocked", "actionability": "registration_only", "blockers": (*result.blockers, "strategy_actionability_invalid")})
     blockers = tuple(dict.fromkeys((*spec.blockers, *result.blockers)))
     return result.model_copy(update={
-        "status": "blocked" if spec.blockers else result.status,
+        "status": "blocked" if spec.blockers or result.status == "blocked" else result.status,
         "actionability": _actionability_min(result.actionability, ceiling) or "registration_only",
         "blockers": blockers,
     })
@@ -405,15 +237,16 @@ def _manifest(source: str, data: tuple[str, ...], *, failure: tuple[str, ...] = 
 
 
 BUILTIN_STRATEGIES: tuple[StrategySpec, ...] = (
-        StrategySpec(strategy_key="classic_momentum_v1", revision=1, name="Classic momentum baseline", mechanism_class="trend_underreaction", economic_mechanism="Persistent information is incorporated gradually into daily prices.", falsification_rule="The cost-adjusted out-of-sample return is not positive and stable across parameter neighbors.", source_definition_version="classic-momentum.v1", manifest=_manifest("classic daily momentum", ("confirmed_daily_close",))),
-        StrategySpec(strategy_key="classic_mean_reversion_v1", revision=1, name="Classic mean reversion baseline", mechanism_class="gap_regime", economic_mechanism="Short-lived daily dislocations partially revert after the opening shock.", falsification_rule="The continuation/reversal split has no stable cost-adjusted out-of-sample difference.", source_definition_version="classic-mean-reversion.v1", manifest=_manifest("classic daily gap reversion", ("confirmed_daily_open", "confirmed_daily_close"))),
-        StrategySpec(strategy_key="martingale_v1", revision=1, name="Martingale negative control", mechanism_class="gap_regime", economic_mechanism="Increasing size after losses has no economic source of return.", falsification_rule="It must not show persistent positive edge and can never be promoted.", source_definition_version="martingale.v1", promotability="negative_control", actionability="research_only", manifest=_manifest("classic martingale negative control", ("confirmed_daily_close",), failure=("loss_streak", "ruin",))),
-        StrategySpec(strategy_key="daily_trend_underreaction_v1", revision=1, name="Daily trend underreaction", mechanism_class="trend_underreaction", economic_mechanism="Medium-horizon underreaction creates persistent daily drift after information arrives.", falsification_rule="Neutralized and 3x-cost out-of-sample returns do not remain positive.", source_definition_version="daily-trend-underreaction.v1", manifest=_manifest("daily trend and underreaction", ("confirmed_daily_open", "confirmed_daily_close", "realized_volatility"))),
-        StrategySpec(strategy_key="daily_gap_regime_v1", revision=1, name="Daily gap continuation versus reversal", mechanism_class="gap_regime", economic_mechanism="The sign and size of an opening gap condition later continuation or reversal.", falsification_rule="Regime-conditioned returns are indistinguishable after costs and purged validation.", source_definition_version="daily-gap-regime.v1", manifest=_manifest("daily gap continuation and reversal", ("confirmed_daily_open", "confirmed_daily_close", "market_regime"))),
-        StrategySpec(strategy_key="daily_event_propagation_v1", revision=1, name="Daily event information propagation", mechanism_class="event_propagation", economic_mechanism="Released information propagates into daily prices over a measured horizon.", falsification_rule="Surprise direction does not predict later daily returns out of sample.", source_definition_version="daily-event-propagation.v1", actionability="shadow_only", manifest=_manifest("point-in-time event actual consensus surprise revision", ("event.release_at", "event.actual", "event.consensus", "event.surprise"), failure=("missing_release_clock", "unproven_fill_model"))),
-        StrategySpec(strategy_key="options_recovery_v2", revision=2, name="Options recovery v2", mechanism_class="options_recovery", economic_mechanism="A qualified full-chain options state can measure recovery after a daily event shock.", falsification_rule="Recovery expectancy fails after full-chain controls, neutralization, and 3x-cost stress.", source_definition_version="options-recovery.v2", implementation_version="2", actionability="shadow_only", manifest=_manifest("existing options recovery registry extended with full-chain controls", ("full_chain_state", "open_interest", "volume", "quote_quality", "dividend_state"), failure=("stale_chain", "missing_oi_volume", "missing_fill_model"))),
-        StrategySpec(strategy_key="crypto_funding_basis_v1", revision=1, name="Crypto funding and basis", mechanism_class="crypto_basis", economic_mechanism="Venue-specific funding and basis can compensate for hedged carry risk.", falsification_rule="Venue-level executable evidence, liquidation paths, and failure scenarios must pass before validation or actionability.", source_definition_version="crypto-funding-basis.v1", promotability="registration_only", actionability="registration_only", blockers=("venue_identity_required", "executable_depth_required", "liquidation_data_required", "failure_scenarios_required"), manifest=_manifest("registered Coin Metrics venue derivatives seam", ("venue", "funding", "basis", "executable_depth", "liquidations"), failure=("venue_data_missing", "liquidation_data_missing", "basis_not_executable"))),
-        StrategySpec(strategy_key="structural_flow_v1", revision=1, name="Structural flow supporting family", mechanism_class="flow_supporting", economic_mechanism="Reported positioning and flow may support a distinct exposure explanation when coverage matures.", falsification_rule="The flow signal is rejected or labeled an exposure sleeve when it is only a factor replica.", source_definition_version="structural-flow.v1", promotability="exposure_sleeve", actionability="shadow_only", manifest=_manifest("existing SEC 13F positioning and flow seam", ("positioning.flow",), failure=("insufficient_history", "factor_replica"))),
+    StrategySpec(strategy_key="classic_momentum_v1", revision=1, name="Classic momentum baseline", mechanism_class="trend_underreaction", economic_mechanism="Persistent information is incorporated gradually into daily prices.", falsification_rule="The cost-adjusted out-of-sample return is not positive and stable across parameter neighbors.", source_definition_version="classic-momentum.v1", implementation_id="daily_trend_underreaction", implementation_version="2", manifest=_manifest("classic daily momentum", ("confirmed_daily_close",))),
+        StrategySpec(strategy_key="classic_mean_reversion_v1", revision=1, name="Classic mean reversion baseline", mechanism_class="gap_regime", economic_mechanism="Short-lived daily dislocations partially revert after the opening shock.", falsification_rule="The continuation/reversal split has no stable cost-adjusted out-of-sample difference.", source_definition_version="classic-mean-reversion.v1", implementation_id="daily_gap_regime", implementation_version="1", manifest=_manifest("classic daily gap reversion", ("confirmed_daily_open", "confirmed_daily_close"))),
+        StrategySpec(strategy_key="martingale_v1", revision=1, name="Martingale negative control", mechanism_class="gap_regime", economic_mechanism="Increasing size after losses has no economic source of return.", falsification_rule="It must not show persistent positive edge and can never be promoted.", source_definition_version="martingale.v1", implementation_id="daily_gap_regime", implementation_version="1", promotability="negative_control", actionability="research_only", manifest=_manifest("classic martingale negative control", ("confirmed_daily_close",), failure=("loss_streak", "ruin",))),
+    StrategySpec(strategy_key="daily_trend_underreaction_v2", revision=2, name="Daily trend underreaction", mechanism_class="trend_underreaction", economic_mechanism="Medium-horizon underreaction creates persistent daily drift after information arrives.", falsification_rule="Neutralized and 3x-cost out-of-sample returns do not remain positive.", source_definition_version="daily-trend-underreaction.v2", implementation_id="daily_trend_underreaction", implementation_version="2", manifest=_manifest("daily trend and underreaction with lossless missing-session handling", ("confirmed_daily_open", "confirmed_daily_close", "realized_volatility"))),
+        StrategySpec(strategy_key="daily_gap_regime_v1", revision=1, name="Daily gap continuation versus reversal", mechanism_class="gap_regime", economic_mechanism="The sign and size of an opening gap condition later continuation or reversal.", falsification_rule="Regime-conditioned returns are indistinguishable after costs and purged validation.", source_definition_version="daily-gap-regime.v1", implementation_id="daily_gap_regime", implementation_version="1", manifest=_manifest("daily gap continuation and reversal", ("confirmed_daily_open", "confirmed_daily_close", "market_regime"))),
+        StrategySpec(strategy_key="daily_event_propagation_v1", revision=1, name="Daily event information propagation", mechanism_class="event_propagation", economic_mechanism="Released information propagates into daily prices over a measured horizon.", falsification_rule="Surprise direction does not predict later daily returns out of sample.", source_definition_version="daily-event-propagation.v1", implementation_id="daily_event_propagation", implementation_version="1", actionability="shadow_only", manifest=_manifest("point-in-time event actual consensus surprise revision", ("event.release_at", "event.actual", "event.consensus", "event.surprise"), failure=("missing_release_clock", "unproven_fill_model"))),
+        StrategySpec(strategy_key="options_recovery_v2", revision=2, name="Options recovery v2", mechanism_class="options_recovery", economic_mechanism="A qualified full-chain options state can measure recovery after a daily event shock.", falsification_rule="Recovery expectancy fails after full-chain controls, neutralization, and 3x-cost stress.", source_definition_version="options-recovery.v2", implementation_id="options_recovery", implementation_version="2", actionability="shadow_only", manifest=_manifest("existing options recovery registry extended with full-chain controls", ("full_chain_state", "open_interest", "volume", "quote_quality", "dividend_state"), failure=("stale_chain", "missing_oi_volume", "missing_fill_model"))),
+        StrategySpec(strategy_key="crypto_funding_basis_v1", revision=1, name="Crypto funding and basis", mechanism_class="crypto_basis", economic_mechanism="Venue-specific funding and basis can compensate for hedged carry risk.", falsification_rule="Venue-level executable evidence, liquidation paths, and failure scenarios must pass before validation or actionability.", source_definition_version="crypto-funding-basis.v1", implementation_id="crypto_funding_basis", implementation_version="1", promotability="registration_only", actionability="registration_only", blockers=("venue_identity_required", "executable_depth_required", "liquidation_data_required", "failure_scenarios_required"), manifest=_manifest("registered Coin Metrics venue derivatives seam", ("venue", "funding", "basis", "executable_depth", "liquidations"), failure=("venue_data_missing", "liquidation_data_missing", "basis_not_executable"))),
+        StrategySpec(strategy_key="structural_flow_v1", revision=1, name="Structural flow supporting family", mechanism_class="flow_supporting", economic_mechanism="Reported positioning and flow may support a distinct exposure explanation when coverage matures.", falsification_rule="The flow signal is rejected or labeled an exposure sleeve when it is only a factor replica.", source_definition_version="structural-flow.v1", implementation_id="unavailable", implementation_version="1", promotability="exposure_sleeve", actionability="shadow_only", manifest=_manifest("existing SEC 13F positioning and flow seam", ("positioning.flow",), failure=("insufficient_history", "factor_replica"))),
+        StrategySpec(strategy_key="volatility_aware_momentum_v1", revision=1, name="Volatility-aware momentum research", mechanism_class="trend_underreaction", economic_mechanism="Momentum direction is interpreted with an explicit realized-volatility context.", falsification_rule="The interpretation does not survive independent out-of-sample and cost validation.", source_definition_version="volatility-aware-momentum.v1", implementation_id="volatility_aware_momentum", implementation_version="1", actionability="research_only", manifest=_manifest("reusable momentum and volatility signal", ("confirmed_daily_close", "realized_volatility"), failure=("missing_window", "unqualified_forecast"))),
     )
 
 
@@ -433,6 +266,6 @@ __all__ = [
     "MECHANISM_CLASSES", "StrategyImplementationDefinition", "StrategyParameters", "StrategySignal", "StrategySpec",
     "TrendParameters", "content_hash", "crypto_funding_basis", "daily_gap_regime", "daily_trend_underreaction",
     "default_strategy_definitions", "evaluate_strategy", "event_propagation", "full_denominator_complete",
-    "is_martingale_family", "manifest_hash", "monitoring_complete", "options_recovery_v2", "resolve_builtin_strategy",
+    "factor_snapshot_for_inputs", "is_martingale_family", "manifest_hash", "monitoring_complete", "options_recovery_v2", "resolve_builtin_strategy",
     "strategy_family_for_key",
 ]

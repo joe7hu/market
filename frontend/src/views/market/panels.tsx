@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/market/workstation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { RowRecord } from "@/types";
-import { numberField, textField } from "@/views/rowFormat";
+import { numberField, textField } from "@/shared/rowFormat";
 
 import {
   EmptyChart,

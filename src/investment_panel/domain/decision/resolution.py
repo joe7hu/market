@@ -346,7 +346,16 @@ def resolution_from_legacy(payload: Mapping[str, Any]) -> DecisionResolutionV2:
 
 
 def resolution_from_published(payload: Mapping[str, Any]) -> DecisionResolutionV2:
-    """Read a canonical publication, with an explicit old-row fallback."""
+    """Read a current publication that carries its canonical resolution."""
+
+    existing = payload.get("resolution")
+    if isinstance(existing, Mapping) and existing.get("decision_revision"):
+        return DecisionResolutionV2.model_validate(existing)
+    raise ValueError("current publication is missing its canonical resolution")
+
+
+def resolution_from_historical(payload: Mapping[str, Any]) -> DecisionResolutionV2:
+    """Interpret an old stored row without making it a current publication."""
 
     existing = payload.get("resolution")
     if isinstance(existing, Mapping) and existing.get("decision_revision"):
@@ -423,5 +432,6 @@ __all__ = [
     "build_decision_resolution",
     "next_action_for",
     "resolution_from_legacy",
+    "resolution_from_historical",
     "resolution_from_published",
 ]

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import investment_panel.domain.decision.ticker as ticker_module
-from investment_panel.api.data_access.payloads import option_decision_adapter
+from investment_panel.application.read_models.payloads import option_decision_adapter
 from investment_panel.domain.decision.ticker import (
     CapitalActionType,
     ExpressionDecision,
@@ -18,8 +18,8 @@ from investment_panel.domain.decision.ticker import (
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST
 from investment_panel.domain.portfolio.risk_policy import RiskPolicySnapshot, compile_risk_policy_snapshot
-import investment_panel.jobs.ticker_decisions as ticker_decision_job
-from investment_panel.jobs.ticker_decisions import portfolio_impacts
+import investment_panel.workflows.ticker_decisions as ticker_decision_job
+from investment_panel.workflows.ticker_decisions import portfolio_impacts
 
 AS_OF = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
 

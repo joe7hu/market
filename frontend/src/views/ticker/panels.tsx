@@ -6,7 +6,7 @@ import { DataFieldStateNotice, missingFieldState, decisionReason } from "@/compo
 import { Button } from "@/components/ui/button";
 import type { components } from "@/generated/apiSchema";
 import type { JsonValue, RowRecord, TickerDossier, TickerLearning, TickerPayload } from "@/types";
-import { displayField, listField, symbolList, textField, titleLabel, toneFromText } from "@/views/rowFormat";
+import { displayField, listField, symbolList, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import type { OpenTicker } from "@/views/workspacePage";
 import { PortfolioImpactCard, TradePlanCard } from "@/views/TradePlanCard";
 

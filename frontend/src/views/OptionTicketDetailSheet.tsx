@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { JsonValue, RowRecord } from "@/types";
-import { formatMoney, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
+import { formatMoney, listField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import type { OpenTicker } from "./workspacePage";
 
 type OptionTicketDetailSheetProps = {

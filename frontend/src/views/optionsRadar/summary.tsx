@@ -5,7 +5,7 @@ import {StatusBadge } from "@/components/market/workstation";
 import {Button } from "@/components/ui/button";
 import {RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
-import {displayField, textField, titleLabel } from "../rowFormat";
+import {displayField, textField, titleLabel } from "@/shared/rowFormat";
 
 export function RadarAlertPanel({
   alerts,

@@ -4,7 +4,7 @@
 
 import type { JsonValue, RowRecord } from "@/types";
 
-import { textField } from "./rowFormat";
+import { textField } from "@/shared/rowFormat";
 import { dateMillis, validationMillis } from "./optionsRadarFormat";
 
 export function recordField(row: RowRecord | undefined, key: string): Record<string, JsonValue> | undefined {

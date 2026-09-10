@@ -6,11 +6,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from investment_panel.api import panel_snapshot
+from investment_panel.application.read_models import panel_snapshot
 from investment_panel.api import dependencies
 from investment_panel.workflows.tickers import TickerActions
 from investment_panel.api.contracts import ContextualAssistantResponseInput, TickerPaperEntryInput
-from investment_panel.api.data_access import loaders, payloads
+from investment_panel.application.read_models import loaders, payloads
 from investment_panel.api.response_contracts import ContextualAssistantPacketResponse, ContextualAssistantResponse, TickerDecisionSnapshotResponse, TickerDetailResponse, TickerPaperEntryResponse
 from investment_panel.core.contextual_assistant import build_contextual_packet, validate_contextual_response
 from investment_panel.settings import AppConfig

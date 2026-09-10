@@ -7,7 +7,7 @@ import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import type { Tone } from "@/ui/tone";
 import { cn } from "@/lib/utils";
 
-import { displayField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
+import { displayField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import { dateMillis, formatNumber } from "../optionsRadarFormat";
 import { arrayText, boolFromRecord, jsonRecord, listFromRecord, numberFromRecord, recordField, stringFromRecord } from "../optionsRadarData";
 import { reasonLabel, stateRank, stateTone } from "../optionsRadarTone";

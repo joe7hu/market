@@ -6,16 +6,24 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from investment_panel.api import panel_snapshot as panel_owner
+from investment_panel.application.read_models import panel_snapshot as panel_owner
+from investment_panel.application.read_models.panel_snapshot import ReadModelUnavailable
 from investment_panel.api import dependencies
 from investment_panel.workflows import today as today_actions
-from investment_panel.api.data_access import loaders, payloads
+from investment_panel.application.read_models import loaders, payloads
 from investment_panel.api.response_contracts import PanelContractResponse, PanelSnapshotResponse, StatusResponse, TodayResponse
 from investment_panel.settings import AppConfig
 from investment_panel.domain.panel import tables_for_scope
 
 router = APIRouter()
 ACTION_QUEUE_LIMIT = 10
+
+
+def _scope_snapshot_payload(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        return panel_owner.scope_snapshot_payload(*args, **kwargs)
+    except ReadModelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/api/today", response_model=TodayResponse, response_model_exclude_unset=True)
@@ -64,7 +72,7 @@ def panel_snapshot(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if scope == "market":
         panel_data = loaders.load_market_panel_data(config, offset=offset, limit=limit)
-        return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+        return _scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     if scope == "dashboard":
         dashboard_limit = limit or 12
         _, panel_data = panel_owner.context(
@@ -84,7 +92,7 @@ def panel_snapshot(
             loader=lambda active_config: loaders.load_watchlist_scope_data(active_config, scope, offset=offset, limit=limit),
             config_loader=lambda: config,
         )
-        return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+        return _scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     if scope == "research":
         config, panel_data = panel_owner.context(
             cache_key=f"scope:research:{offset}:{limit}",
@@ -95,7 +103,7 @@ def panel_snapshot(
             ),
             config_loader=lambda: config,
         )
-        return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+        return _scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     cache_key = (
         "scope:today"
         if scope == "today" and offset == 0 and limit is None
@@ -113,7 +121,7 @@ def panel_snapshot(
             ),
             config_loader=lambda: config,
         )
-        return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+        return _scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
 
     def load_snapshot(active_config: AppConfig) -> dict[str, Any]:
         panel_data = loaders.load_panel_scope_data(
@@ -123,7 +131,7 @@ def panel_snapshot(
             limit=limit,
             include_screener=include_screener,
         )
-        return panel_owner.scope_snapshot_payload(
+        return _scope_snapshot_payload(
             active_config,
             panel_data,
             scope,

@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { RowRecord } from "@/types";
 import { displayValue, tickerSymbolFromRow } from "@/utils";
-import { symbolList, titleLabel, toneFromText } from "./rowFormat";
+import { symbolList, titleLabel, toneFromText } from "@/shared/rowFormat";
 import type { OpenTicker } from "./workspacePage";
 
 export function DataGridSection({ title, rows: sectionRows, onOpenTicker }: { title: string; rows: RowRecord[]; onOpenTicker?: OpenTicker }) {

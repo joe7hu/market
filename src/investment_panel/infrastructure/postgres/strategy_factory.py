@@ -8,10 +8,11 @@ from typing import Any, Iterable, Mapping
 from psycopg.types.json import Jsonb
 
 from investment_panel.domain.strategies.catalog import (
+    IMPLEMENTATION_CATALOG,
     MANIFEST_PARTS,
     StrategySignal,
     StrategySpec,
-    evaluate_strategy,
+    content_hash,
     is_martingale_family,
 )
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
@@ -44,12 +45,18 @@ class StrategyFactoryRepository:
             spec.strategy_key, spec.mechanism_class, spec.name, spec.strategy_family,
         ) else spec.strategy_family
         authority_group = f"phase3:{spec.strategy_key}"
+        implementation = IMPLEMENTATION_CATALOG.get(spec.implementation_id or "")
+        executable = bool(
+            implementation is not None
+            and spec.implementation_version is not None
+            and implementation.implementation_version == spec.implementation_version
+        )
         with self.runtime.transaction(JOB_PROFILE) as connection:
             existing = connection.execute(
                 """SELECT id, name, mechanism_class, economic_mechanism, falsification_rule,
                           source_definition_version, strategy_family, promotability,
                           actionability, p3_enabled, parameters, authority_group,
-                          implementation_id, implementation_version
+                          implementation_id, implementation_version, definition_blockers
                      FROM analysis.strategy_revision
                     WHERE strategy_key = %s AND revision = %s""",
                 [spec.strategy_key, spec.revision],
@@ -70,11 +77,12 @@ class StrategyFactoryRepository:
                     or existing["strategy_family"] != family
                     or existing["promotability"] != spec.promotability
                     or existing["actionability"] != spec.actionability
-                    or existing["p3_enabled"] is not True
+                    or existing["p3_enabled"] is not executable
                     or existing["parameters"] != spec.parameters
                     or existing["authority_group"] != authority_group
                     or existing["implementation_id"] != spec.implementation_id
                     or existing["implementation_version"] != spec.implementation_version
+                    or tuple(existing["definition_blockers"] or ()) != tuple(spec.blockers)
                     or manifest["source_definition_version"] != spec.source_definition_version
                     or any(manifest[f"{key}_manifest"] != spec.manifest[key] for key in MANIFEST_PARTS)
                 ):
@@ -85,13 +93,13 @@ class StrategyFactoryRepository:
                    (strategy_key, revision, name, status, parameters, supersedes_id,
                     mechanism_class, economic_mechanism, falsification_rule,
                     source_definition_version, strategy_family, promotability, actionability,
-                    p3_enabled, authority_group, implementation_id, implementation_version)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, %s)
+                    p3_enabled, authority_group, implementation_id, implementation_version, definition_blockers)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    RETURNING id""",
                 [spec.strategy_key, spec.revision, spec.name, status, Jsonb(spec.parameters), supersedes_id,
                  spec.mechanism_class, spec.economic_mechanism, spec.falsification_rule,
                  spec.source_definition_version, family, spec.promotability, spec.actionability,
-                 authority_group, spec.implementation_id, spec.implementation_version],
+                 executable, authority_group, spec.implementation_id, spec.implementation_version, Jsonb(list(spec.blockers))],
             ).fetchone()["id"]
             connection.execute(
                 """INSERT INTO analysis.strategy_manifest
@@ -101,6 +109,61 @@ class StrategyFactoryRepository:
                 [revision, spec.source_definition_version, *[Jsonb(spec.manifest[key]) for key in MANIFEST_PARTS], "0" * 64],
             )
             return int(revision)
+
+    def record_signal_evaluation(
+        self,
+        strategy_key: str,
+        revision: int,
+        signal: StrategySignal,
+        *,
+        scope: str | None = None,
+        input_snapshot_identity: str | None = None,
+        input_cutoff: datetime,
+        mode: str,
+    ) -> str:
+        """Publish an advisory signal as immutable research evidence.
+
+        This deliberately does not write ``strategy_forecast``: a factor or
+        signal is not a qualified model artifact.
+        """
+        if mode not in {"research", "replay"}:
+            raise ValueError("strategy signal publication mode is invalid")
+        if input_cutoff.tzinfo is None:
+            raise ValueError("strategy signal input cutoff must be timezone-aware")
+        if signal.strategy_key != strategy_key:
+            raise ValueError("strategy signal identity does not match strategy key")
+        payload = signal.model_dump(mode="json")
+        input_hash = content_hash({"strategy_key": strategy_key, "revision": revision, "scope": scope,
+                                   "input_snapshot_identity": input_snapshot_identity,
+                                   "cutoff": input_cutoff.isoformat(), "signal": payload})
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            row = connection.execute(
+                "SELECT id, implementation_id, implementation_version FROM analysis.strategy_revision "
+                "WHERE strategy_key = %s AND revision = %s",
+                [strategy_key, revision],
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown PostgreSQL strategy key: {strategy_key}")
+            connection.execute(
+                """
+                INSERT INTO analysis.strategy_evaluation
+                    (strategy_revision_id, evaluation_type, evaluated_at, period_start,
+                     period_end, verdict, metrics, evidence, input_hash, lineage)
+                VALUES (%s, 'strategy_signal', statement_timestamp(), %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    row["id"], input_cutoff, input_cutoff, signal.status,
+                    Jsonb({"value": signal.value, "direction": signal.direction,
+                           "actionability": signal.actionability, "horizon": signal.horizon}),
+                    Jsonb([signal.evidence]), input_hash,
+                           Jsonb({"mode": mode, "scope": scope, "input_snapshot_identity": input_snapshot_identity,
+                           "strategy_key": strategy_key, "revision": revision,
+                           "implementation_id": row["implementation_id"],
+                           "implementation_version": row["implementation_version"],
+                           "blockers": list(signal.blockers)}),
+                ],
+            )
+        return input_hash
 
     def record_pnl_tape(self, rows: Iterable[Mapping[str, Any]]) -> int:
         records = tuple(rows)
@@ -172,7 +235,9 @@ class StrategyFactoryRepository:
                           revision.strategy_family, revision.promotability, revision.actionability,
                           revision.parameters, manifest.source_manifest, manifest.data_manifest,
                           manifest.cost_manifest, manifest.capacity_manifest, manifest.failure_manifest,
-                          revision.implementation_id, revision.implementation_version
+                          revision.implementation_id, revision.implementation_version,
+                          revision.p3_enabled,
+                          revision.definition_blockers
                      FROM analysis.strategy_revision revision
                      JOIN analysis.strategy_manifest manifest ON manifest.strategy_revision_id = revision.id
                     WHERE revision.strategy_key = %s
@@ -188,15 +253,11 @@ class StrategyFactoryRepository:
             "falsification_rule": row["falsification_rule"], "source_definition_version": row["source_definition_version"],
             "strategy_family": row["strategy_family"], "promotability": row["promotability"], "actionability": row["actionability"],
             "parameters": row["parameters"], "manifest": {key: row[f"{key}_manifest"] for key in MANIFEST_PARTS},
+            "implementation_id": row["implementation_id"],
+            "implementation_version": row["implementation_version"],
+            "blockers": tuple(row["definition_blockers"] or ()),
         }
-        if row["implementation_id"]:
-            values["implementation_id"] = row["implementation_id"]
-            values["implementation_version"] = row["implementation_version"]
         return StrategySpec(**values)
-
-    def forecast(self, strategy_key: str, inputs: Mapping[str, Any], *, revision: int | None = None) -> StrategySignal:
-        spec = self.resolve(strategy_key, revision)
-        return evaluate_strategy(spec, inputs, account_actionability=inputs.get("account_actionability"))
 
     def promote(self, strategy_revision_id: int) -> None:
         with self.runtime.transaction(JOB_PROFILE) as connection:

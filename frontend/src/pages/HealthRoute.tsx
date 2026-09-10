@@ -21,7 +21,7 @@ import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api/options
 import { loadDecisionFunnel, type DecisionFunnel } from "@/api/panel";
 import { numberFromRecord, recordField } from "@/views/optionsRadarData";
 import { DecisionFunnelPanel } from "@/views/health/decisionFunnel";
-import { displayField } from "@/views/rowFormat";
+import { displayField } from "@/shared/rowFormat";
 import { Phase4SharedDecision } from "@/components/market/phase4SharedDecision";
 
 export function HealthRoute() {

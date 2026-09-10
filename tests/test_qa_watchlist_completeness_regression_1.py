@@ -4,11 +4,11 @@ from datetime import UTC, datetime
 
 import pandas as pd
 
-from investment_panel.api.data_access import loaders as loaders_owner
+from investment_panel.application.read_models import loaders as loaders_owner
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from conftest import typed_config
-from investment_panel.jobs.update_market_data import market_metrics_row
+from investment_panel.workflows.market_data import market_metrics_row
 from investment_panel.infrastructure.providers.yfinance_provider import return_on_invested_capital
 
 

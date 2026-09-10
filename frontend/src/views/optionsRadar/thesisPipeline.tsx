@@ -8,7 +8,7 @@ import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/
 import {cn } from "@/lib/utils";
 import {RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
-import {displayField, fullField, listField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
+import {displayField, fullField, listField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import {moneyField, formatScore, formatDate, formatShortDate, dateMillis } from "../optionsRadarFormat";
 import {jsonRecord, jsonArrayField, stringFromRecord, latestValidationBy, validationHistoryBy } from "../optionsRadarData";
 import {stateTone, thesisStateTone, thesisValidationLabel, validationStatusLabel, validationStatusTone, toneText } from "../optionsRadarTone";

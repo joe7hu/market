@@ -10,7 +10,7 @@ from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.infrastructure.postgres.source_facts import SourceFactRepository
 from investment_panel.infrastructure.postgres.preopen_context import compact_preopen_context
 from investment_panel.infrastructure.postgres.today_analysis import option_item, refresh_today_publication
-from investment_panel.jobs import codex_preopen_brief
+from investment_panel.infrastructure.providers import preopen_brief as codex_preopen_brief
 from investment_panel.infrastructure.postgres.portfolio_ledger import record_portfolio_transaction
 from conftest import typed_config
 

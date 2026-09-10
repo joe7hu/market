@@ -1721,7 +1721,7 @@ def test_incremental_refresh_preserves_older_symbols_in_complete_publication(ana
     assert result["status"] == "ok"
     opportunities = published_options_radar_rows(runtime, "option_radar_opportunity")
     assert {row["symbol"] for row in opportunities} == {"AAPL", "NVDA"}
-    from investment_panel.api.data_access.loaders import load_table_panel_data
+    from investment_panel.application.read_models.loaders import load_table_panel_data
 
     chain = load_table_panel_data(typed_config(postgres_dsn), "options_chain").rows("options_chain")
     assert {row["symbol"] for row in chain} == {"AAPL", "NVDA"}

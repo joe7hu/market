@@ -3,7 +3,7 @@ import { loadResearchSummary, type ResearchSummary as Summary } from "@/api/pane
 import { Button } from "@/components/ui/button";
 import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { decisionReason } from "@/components/market/dataFieldState";
-import { formatPct, titleLabel } from "./rowFormat";
+import { formatPct, titleLabel } from "@/shared/rowFormat";
 
 export function ResearchSummary({ onOpenTicker }: { onOpenTicker: (ticker: string) => void }) {
   const [data, setData] = useState<Summary | null>(null);

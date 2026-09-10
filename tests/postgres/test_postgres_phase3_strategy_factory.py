@@ -4,13 +4,20 @@ from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
+from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
+from conftest import typed_config
+from investment_panel.api import dependencies
+from investment_panel.api.main import app
 from investment_panel.domain.research.stock_alpha import content_hash
-from investment_panel.domain.strategies.catalog import resolve_builtin_strategy
+from investment_panel.domain.strategies.catalog import evaluate_strategy, resolve_builtin_strategy, StrategySpec
 from investment_panel.infrastructure.postgres.migrations import downgrade_database, upgrade_database
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.infrastructure.postgres.strategy_factory import StrategyFactoryRepository
+from investment_panel.workflows.agents import AgentActions
+from investment_panel.workflows.strategies import StrategyWorkflow
 
 
 def test_phase3_migration_exposes_bounded_registry_contract(migrated_postgres_dsn: str) -> None:
@@ -37,11 +44,11 @@ def test_phase3_migration_exposes_bounded_registry_contract(migrated_postgres_ds
                WHERE table_schema = 'analysis' AND table_name = 'strategy_revision'
                  AND column_name IN ('mechanism_class', 'source_definition_version', 'promotability',
                                      'actionability', 'p3_enabled', 'implementation_id',
-                                     'implementation_version')
+                                     'implementation_version', 'definition_blockers')
                ORDER BY column_name""",
         ).fetchall()
         assert [row[0] for row in columns] == [
-            "actionability", "implementation_id", "implementation_version", "mechanism_class",
+            "actionability", "definition_blockers", "implementation_id", "implementation_version", "mechanism_class",
             "p3_enabled", "promotability", "source_definition_version",
         ]
 
@@ -66,10 +73,11 @@ def test_phase3_evidence_is_immutable_and_martingale_is_not_promotable(
             """INSERT INTO analysis.strategy_revision
                (strategy_key, revision, name, status, parameters, mechanism_class,
                 economic_mechanism, falsification_rule, source_definition_version,
-                promotability, actionability, p3_enabled, authority_group)
+                promotability, actionability, p3_enabled, authority_group,
+                implementation_id, implementation_version)
                VALUES ('phase3-test_v1', 1, 'Phase 3 test', 'candidate', %s, 'gap_regime',
                        'test mechanism', 'test falsification', 'phase3-test.v1',
-                       'standard', 'daily_research', true, 'phase3-test')
+                       'standard', 'daily_research', true, 'phase3-test', 'test', '1')
                RETURNING id""",
             [Jsonb({"paper_only": True})],
         ).fetchone()[0]
@@ -95,14 +103,23 @@ def test_phase3_evidence_is_immutable_and_martingale_is_not_promotable(
                 ["different-implementation", revision],
             )
         connection.execute("ROLLBACK TO SAVEPOINT implementation_identity_immutable")
+        connection.execute("SELECT set_config('market.strategy_implementation_backfill', 'on', true)")
+        connection.execute("SAVEPOINT implementation_identity_setting")
+        with pytest.raises(psycopg.errors.RaiseException, match="implementation identity is immutable"):
+            connection.execute(
+                "UPDATE analysis.strategy_revision SET implementation_version = %s WHERE id = %s",
+                ["different-version", revision],
+            )
+        connection.execute("ROLLBACK TO SAVEPOINT implementation_identity_setting")
         martingale = connection.execute(
             """INSERT INTO analysis.strategy_revision
                (strategy_key, revision, name, status, parameters, mechanism_class,
                 economic_mechanism, falsification_rule, source_definition_version,
-                promotability, actionability, p3_enabled, authority_group)
+                promotability, actionability, p3_enabled, authority_group,
+                implementation_id, implementation_version)
                VALUES ('martingale_v1', 1, 'Martingale', 'candidate', %s, 'gap_regime',
                        'negative control', 'never promote', 'martingale.v1',
-                       'negative_control', 'research_only', true, 'martingale-test')
+                       'negative_control', 'research_only', true, 'martingale-test', 'test', '1')
                RETURNING id""",
             [Jsonb({"paper_only": True})],
         ).fetchone()[0]
@@ -143,7 +160,7 @@ def test_phase3_repository_rejects_conflicting_registration_identity(migrated_po
     runtime.open()
     try:
         repository = StrategyFactoryRepository(runtime)
-        spec = resolve_builtin_strategy("daily_trend_underreaction_v1")
+        spec = resolve_builtin_strategy("daily_trend_underreaction_v2")
         repository.register(spec)
         with pytest.raises(ValueError, match="identity conflicts"):
             repository.register(spec.model_copy(update={"name": "conflicting name"}))
@@ -153,18 +170,149 @@ def test_phase3_repository_rejects_conflicting_registration_identity(migrated_po
         runtime.close()
 
 
+def test_analysis_repository_does_not_rewrite_immutable_binding(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                """INSERT INTO analysis.strategy_revision
+                   (strategy_key, revision, name, status, parameters, authority_group,
+                    implementation_id, implementation_version)
+                   VALUES ('immutable-writer-test', 1, 'Stored', 'candidate', %s,
+                           'immutable-writer-test', 'stored-implementation', '1')""",
+                [Jsonb({})],
+            )
+        with pytest.raises(ValueError, match="immutable stored binding"):
+            AnalysisRepository(runtime).register_strategy(
+                "immutable-writer-test", 1, name="Incoming", parameters={},
+                implementation_id="different-implementation", implementation_version="1",
+            )
+        with runtime.read() as connection:
+            row = connection.execute(
+                "SELECT name, implementation_id, implementation_version FROM analysis.strategy_revision "
+                "WHERE strategy_key = 'immutable-writer-test' AND revision = 1",
+            ).fetchone()
+        assert dict(row) == {
+            "name": "Stored", "implementation_id": "stored-implementation", "implementation_version": "1",
+        }
+    finally:
+        runtime.close()
+
+
 def test_phase3_repository_resolves_only_postgres_registered_strategy(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
         repository = StrategyFactoryRepository(runtime)
-        spec = resolve_builtin_strategy("daily_trend_underreaction_v1")
+        spec = resolve_builtin_strategy("daily_trend_underreaction_v2")
         revision_id = repository.register(spec)
         resolved = repository.resolve(spec.strategy_key)
         assert revision_id > 0
         assert resolved == spec
         with pytest.raises(KeyError, match="PostgreSQL"):
-            repository.resolve("daily_trend_underreaction_v1", revision=99)
+            repository.resolve("daily_trend_underreaction_v2", revision=99)
+    finally:
+        runtime.close()
+
+
+def test_phase3_definition_blockers_survive_postgres_round_trip(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = StrategyFactoryRepository(runtime)
+        spec = resolve_builtin_strategy("crypto_funding_basis_v1")
+        repository.register(spec)
+        resolved = repository.resolve(spec.strategy_key)
+        assert resolved.blockers == spec.blockers
+        assert repository.resolve(spec.strategy_key).actionability == "registration_only"
+    finally:
+        runtime.close()
+
+
+def test_phase3_unbound_definition_is_readable_but_not_executable(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = StrategyFactoryRepository(runtime)
+        spec = StrategySpec(
+            strategy_key="historical_unbound_v1", revision=1, name="Historical unbound", mechanism_class="trend_underreaction",
+            economic_mechanism="historical", falsification_rule="historical", source_definition_version="historical-unbound.v1",
+            manifest={key: {"source": "historical"} for key in ("source", "data", "cost", "capacity", "failure")},
+        )
+        repository.register(spec)
+        resolved = repository.resolve(spec.strategy_key)
+        assert resolved.implementation_id is None
+        assert resolved.implementation_version is None
+        result = evaluate_strategy(resolved, {})
+        assert result.status == "blocked"
+        assert result.actionability == "registration_only"
+        assert result.blockers == ("strategy_implementation_unavailable",)
+    finally:
+        runtime.close()
+
+
+def test_phase3_strategy_workflow_persists_replays_and_reaches_typed_api(
+    migrated_postgres_dsn: str,
+    application_postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    cutoff = datetime.now(UTC) - timedelta(minutes=1)
+    bars = [
+        {
+            "status": "confirmed", "confirmed": True, "disabled": False,
+            "observed_at": (cutoff - timedelta(days=30 - index)).isoformat(),
+            "available_at": (cutoff - timedelta(days=30 - index)).isoformat(),
+            "trading_date": (cutoff - timedelta(days=30 - index)).date().isoformat(),
+            "close": 100 + index,
+        }
+        for index in range(25)
+    ]
+    inputs = {"INTEGRATION": {
+        "input_cutoff": cutoff.isoformat(),
+        "input_snapshot_identity": "integration:strategy:price-bars",
+        "daily_bars": bars,
+    }}
+    try:
+        repository = StrategyFactoryRepository(runtime)
+        spec = resolve_builtin_strategy("volatility_aware_momentum_v1")
+        revision_id = repository.register(spec)
+        workflow = StrategyWorkflow(repository, clock=lambda: cutoff + timedelta(minutes=2))
+        research = workflow.run((spec.strategy_key,), inputs, input_cutoff=cutoff, mode="research")
+        replay = workflow.run((spec.strategy_key,), inputs, input_cutoff=cutoff, mode="replay")
+        assert research[0].signal.status == "available"
+        assert research[0].signal.actionability == "research_only"
+        assert replay[0].signal.model_dump() == research[0].signal.model_dump()
+        assert replay[0].generated_at > replay[0].input_cutoff
+        with runtime.read() as connection:
+            stored = connection.execute(
+                """SELECT input_hash, lineage, metrics
+                     FROM analysis.strategy_evaluation
+                    WHERE strategy_revision_id = %s AND evaluation_type = 'strategy_signal'
+                    ORDER BY evaluated_at DESC, id DESC LIMIT 1""",
+                [revision_id],
+            ).fetchone()
+        assert stored["lineage"]["mode"] == "replay"
+        assert stored["lineage"]["scope"] == "INTEGRATION"
+        assert stored["lineage"]["input_snapshot_identity"]
+        assert stored["metrics"]["actionability"] == "research_only"
+        assert stored["input_hash"] == replay[0].input_hash
+
+        config = typed_config(application_postgres_dsn)
+        monkeypatch.setitem(
+            app.dependency_overrides,
+            dependencies.get_agent_actions,
+            lambda: AgentActions(config, lambda *_args: {}),
+        )
+        with TestClient(app) as client:
+            response = client.get("/api/research/summary")
+        assert response.status_code == 200
+        summary = next(row for row in response.json()["strategies"] if row["strategy_key"] == spec.strategy_key)
+        evaluation = next(row for row in summary["evaluations"] if row["stage"] == "strategy_signal")
+        assert evaluation["actionability"] == "research_only"
+        assert evaluation["signal_direction"] == "long"
     finally:
         runtime.close()
 
@@ -190,10 +338,11 @@ def test_phase3_evidence_requires_canonical_pit_lineage_and_computed_claims(
                 """INSERT INTO analysis.strategy_revision
                    (strategy_key, revision, name, status, parameters, mechanism_class,
                     economic_mechanism, falsification_rule, source_definition_version,
-                    strategy_family, promotability, actionability, p3_enabled, authority_group)
+                    strategy_family, promotability, actionability, p3_enabled, authority_group,
+                    implementation_id, implementation_version)
                    VALUES (%s, 1, %s, 'candidate', %s, 'trend_underreaction',
                            'test mechanism', 'test falsification', %s, 'legacy',
-                           'standard', 'daily_research', true, %s) RETURNING id""",
+                           'standard', 'daily_research', true, %s, 'test', '1') RETURNING id""",
                 [key, key, Jsonb({"paper_only": True}), f"{key}.v1", key],
             ).fetchone()[0]
             hypothesis = connection.execute(

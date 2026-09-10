@@ -40,7 +40,7 @@ from investment_panel.domain.decision.ticker import MARKET_DIMENSIONS, MARKET_HO
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
-from investment_panel.jobs import ticker_decisions
+from investment_panel.workflows import ticker_decisions
 from conftest import typed_config
 
 
@@ -73,6 +73,8 @@ def _qualified_artifact(
         name="Qualified stock alpha",
         status="active",
         parameters=parameters,
+        implementation_id="qualified_stock_alpha",
+        implementation_version=MODEL_VERSION,
     )
     metrics = {
         "artifact_id": parameters["artifact_id"],

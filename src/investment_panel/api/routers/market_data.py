@@ -6,9 +6,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
-from investment_panel.api import panel_snapshot as panel_owner
+from investment_panel.application.read_models import panel_snapshot as panel_owner
 from investment_panel.api import dependencies
-from investment_panel.api.data_access import loaders, payloads
+from investment_panel.application.read_models import loaders, payloads
 from investment_panel.api.response_contracts import QuotesResponse, TickerBenchmarkResponse
 from investment_panel.settings import AppConfig
 

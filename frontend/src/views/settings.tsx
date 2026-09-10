@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useMarketData } from "@/marketData";
 import type { Tone } from "@/ui/tone";
-import { titleLabel, toneFromText } from "@/views/rowFormat";
+import { titleLabel, toneFromText } from "@/shared/rowFormat";
 import { WorkspacePage, type MetricSpec } from "./workspacePage";
 
 type ResearchForm = {

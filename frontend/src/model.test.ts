@@ -21,11 +21,17 @@ function holding(overrides: Partial<PortfolioHolding> = {}): PortfolioHolding {
 
 describe("canonical portfolio model", () => {
   it("uses backend valuation fields instead of conflicting quote rows", () => {
-    const data = { ...emptyPanelData(), quotes: { rows: [{ symbol: "AAA", price: 999 }] }, portfolioHoldings: [holding({ price: 12, market_value: 120, portfolio_weight: 100 })] } as PanelData;
+    const data = { ...emptyPanelData(), quotes: { rows: [{ symbol: "AAA", price: 999 }] }, portfolioHoldings: [holding({ price: 12, market_value: 120, portfolio_weight: 100 })], portfolioSummaryDto: { portfolio_value: 120, availability: "complete", valuation_coverage: 1, valuation_blockers: [], cost_basis_fallback_count: 0, day_pnl_status: "ready", holdings_count: 1, missing_valuation_count: 0, performance_method: "test", valuation_status: "market_quotes", valued_position_count: 1 } } as unknown as PanelData;
     const model = buildModel(data);
 
     expect(model.holdings[0]).toMatchObject({ ticker: "AAA", price: 12, marketValue: 120, weight: 100 });
     expect(model.portfolioValue).toBe(120);
+  });
+
+  it("does not reconstruct a complete value from partial holdings", () => {
+    const data = { ...emptyPanelData(), portfolioHoldings: [holding({ market_value: 120 }), holding({ symbol: "BBB", market_value: null, valuation_available: false })] } as PanelData;
+
+    expect(buildModel(data).portfolioValue).toBeNull();
   });
 
   it("preserves zero and signed values and does not fabricate unavailable values", () => {

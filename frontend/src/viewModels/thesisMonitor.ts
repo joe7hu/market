@@ -1,6 +1,6 @@
 import type { PanelData, RowRecord } from "@/types";
 import { rows } from "@/utils";
-import { booleanField, listField, numberField, textField } from "@/views/rowFormat";
+import { booleanField, listField, numberField, textField } from "@/shared/rowFormat";
 
 // Mirrors INVALIDATION_NEAR_PCT in core/thesis_monitor.py.
 const INVALIDATION_NEAR_PCT = 10.0;

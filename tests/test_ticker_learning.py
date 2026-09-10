@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from investment_panel.domain.decision.ticker_learning import evaluate_ticker_policy
 from investment_panel.domain.decision import ExpressionKind, InputLineage, OutcomeAttribution
-from investment_panel.api.data_access.payloads import ticker_learning_payload
+from investment_panel.application.read_models.payloads import ticker_learning_payload
 
 
 def _canonical_rows(*, sample_eligible: bool = True, promotion_eligible: bool = True) -> list[dict[str, object]]:

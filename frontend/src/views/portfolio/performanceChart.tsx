@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { AreaSeries, ColorType, CrosshairMode, createChart, type Time } from "lightweight-charts";
 
 import type { RowRecord } from "@/types";
-import { numberField, textField } from "@/views/rowFormat";
+import { numberField, textField } from "@/shared/rowFormat";
 
 export function PortfolioPerformanceChart({ rows }: { rows: RowRecord[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);

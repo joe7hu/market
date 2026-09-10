@@ -127,6 +127,30 @@ def test_portfolio_risk_models_use_all_positions_for_a_paged_request(monkeypatch
     assert all(seen[name] == positions for name in ("summary", "correlations", "risks", "exposure"))
 
 
+def test_portfolio_summary_rejects_mixed_currency_totals(monkeypatch) -> None:
+    monkeypatch.setattr(
+        portfolio_intelligence,
+        "_portfolio_accounting_totals",
+        lambda *_args, **_kwargs: {"net_contributions": 300.0, "realized_pnl": 0.0, "income": 0.0, "fees": 0.0, "invested_capital": 300.0},
+    )
+    summary = portfolio_intelligence.portfolio_summary(
+        {},
+        positions=[
+            {"symbol": "AAA", "market_value": 100.0, "currency": "USD"},
+            {"symbol": "BBB", "market_value": 200.0, "currency": "EUR"},
+        ],
+        performance=[],
+        connection=object(),
+    )
+
+    assert summary["portfolio_value"] is None
+    assert summary["known_value_subtotal"] is None
+    assert summary["availability"] == "unavailable"
+    assert summary["currency"] is None
+    assert "multiple_currencies_unsupported" in summary["valuation_blockers"]
+    assert summary["valuation_provenance"]["currency_aggregation"] == "rejected"
+
+
 def test_performance_buckets_executions_on_new_york_market_date() -> None:
     transactions = [{
         "instrument_id": 1,

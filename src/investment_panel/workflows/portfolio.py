@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from investment_panel.api.data_access import mutations
 from investment_panel.settings import AppConfig
+from investment_panel.workflows.portfolio_mutations import (
+    delete_watchlist_symbol,
+    populate_watchlist_symbol_data,
+    save_watchlist_symbol,
+)
 from investment_panel.infrastructure.postgres.portfolio_ledger import (
     manual_account_snapshot as manual_account_snapshot_owner,
     preview_manual_account_reconciliation as preview_manual_account_owner,
@@ -51,8 +55,8 @@ class PortfolioActions:
         return self._transaction_payload(saved)
 
     def save_watchlist_symbol(self, item: dict[str, Any]) -> dict[str, Any]:
-        saved = mutations.save_watchlist_symbol(self.config, item)
-        refresh = mutations.populate_watchlist_symbol_data(self.config, saved["symbol"], saved.get("asset_class"))
+        saved = save_watchlist_symbol(self.config, item)
+        refresh = populate_watchlist_symbol_data(self.config, saved["symbol"], saved.get("asset_class"))
         return {
             "watchlist_symbol": saved,
             "data_refresh": refresh,
@@ -60,7 +64,7 @@ class PortfolioActions:
         }
 
     def delete_watchlist_symbol(self, symbol: str) -> dict[str, Any]:
-        deleted = mutations.delete_watchlist_symbol(self.config, symbol)
+        deleted = delete_watchlist_symbol(self.config, symbol)
         return {
             "watchlist_symbol": deleted,
             "watchlist": table_payload_owner(watchlist_rows_owner(self.config)),

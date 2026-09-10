@@ -94,9 +94,10 @@ export function toneFromText(value: string): Tone {
   return "info";
 }
 
-export function formatMoney(value: number): string {
+export function formatMoney(value: number, currency = "USD"): string {
   if (!Number.isFinite(value)) return "-";
-  return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: Math.abs(value) > 1000 ? 0 : 2 });
+  const normalizedCurrency = /^[A-Z]{3}$/.test(currency) ? currency : "USD";
+  return value.toLocaleString(undefined, { style: "currency", currency: normalizedCurrency, maximumFractionDigits: Math.abs(value) > 1000 ? 0 : 2 });
 }
 
 export function formatPct(value: number): string {

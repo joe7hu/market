@@ -1,7 +1,7 @@
 import {StatusBadge} from "@/components/market/workstation";
 import {RowRecord} from "@/types";
 import {formatNumber, formatShortDate} from "../optionsRadarFormat";
-import {textField, numberField} from "../rowFormat";
+import {textField, numberField} from "@/shared/rowFormat";
 import {TickerButton} from "../optionsRadarPrimitives";
 import {OpenTicker} from "../workspacePage";
 

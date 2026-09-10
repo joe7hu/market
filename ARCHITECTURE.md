@@ -34,15 +34,17 @@ application. The four logical layers are:
 The ordinary research path is explicit:
 
 ```text
-point-in-time inputs -> factors -> signals -> strategy candidates
-                    -> portfolio/decision policy -> publications -> UI
+persisted strategy revision -> point-in-time datasets -> factors -> signals
+                            -> strategy workflow -> research evidence/publications -> typed API/UI
 ```
 
 Static factor and strategy catalogs bind an identity, implementation version,
-typed parameters, dependencies, and a pure evaluator. PostgreSQL stores the
-immutable revision, research state, evidence, and publication identity. A new
-factor or strategy adds its owner, catalog entry, and tests; it does not add a
-shared dispatch branch or a second runtime implementation.
+typed parameters, dependencies, and a pure evaluator. Reusable signal
+definitions consume typed factor requests through the same bounded evaluation
+context. PostgreSQL stores the immutable revision, research state, evidence,
+and publication identity. A new factor, signal, or strategy adds its concrete
+owner, explicit catalog registration, workflow coverage, and tests; it does
+not add a shared dispatch branch or a second runtime implementation.
 
 The product remains advisory and paper-only: PostgreSQL is authoritative,
 research and publication evidence is immutable, and missing authorization or
@@ -61,8 +63,8 @@ Browser
   -> frontend/src/apiTransport.ts
   -> frontend/src/api/{panel,options,agent,portfolio,userState}.ts
   -> src/investment_panel/api/routers/
-  -> src/investment_panel/api/dependencies.py / panel_snapshot.py / job_control.py
-  -> workflow owner or direct typed read dependency
+  -> src/investment_panel/api/dependencies.py / api/job_control.py
+  -> src/investment_panel/application/read_models/ or workflow owner
   -> PostgreSQL 18
 ```
 
@@ -78,15 +80,21 @@ and mutation routes remain separate.
 | `src/investment_panel/api/main.py` | `create_app()` | app wiring or router registration changes |
 | `src/investment_panel/api/contracts.py` / `response_contracts.py` | named Pydantic HTTP models | an HTTP request or response contract changes |
 | `src/investment_panel/api/dependencies.py` | typed config, runtime, repository, and authorization providers | a route needs a new dependency |
-| `src/investment_panel/api/panel_snapshot.py` | panel scopes, pagination, freshness, and last-good cache | a panel read changes |
+| `src/investment_panel/application/read_models/panel_snapshot.py` | panel scopes, pagination, freshness, and last-good cache | a panel read changes |
+| `src/investment_panel/application/read_models/loaders.py` | bounded panel query composition | a Read Model scope needs bounded loading |
 | `src/investment_panel/api/job_control.py` | refresh start, heartbeat, and subprocess boundary | refresh control changes |
 | `src/investment_panel/workflows/options.py` | option workflow sequencing and fail-closed gates | options actions change |
+| `src/investment_panel/workflows/strategies.py` | persisted strategy resolution, factor/signal evaluation, replay, and research evidence | strategy workflow sequencing changes |
+| `src/investment_panel/workflows/market.py` | market cutoff, input loading, computation, and publication sequencing | MarketState publication behavior changes |
+| `src/investment_panel/workflows/market_data.py` | normalized market-data ingestion and scoped refresh policy | source refresh behavior changes |
+| `src/investment_panel/workflows/ticker_decisions.py` | ticker decision loading, ranking, publication, and paper-only sequencing | ticker decision publication changes |
 | `src/investment_panel/workflows/today.py` | bounded Today queue and brief composition | Today workflow changes |
 | `src/investment_panel/workflows/event_scout.py` | Event Scout packet, cooldown, and replay workflow | Event Scout mutation changes |
 | `src/investment_panel/domain/factors/catalog.py` | typed factor definitions, dependency checks, and memoized evaluation | a factor or factor parameter changes |
-| `src/investment_panel/domain/strategies/catalog.py` | immutable strategy definitions and exact implementation evaluators | a strategy implementation or revision changes |
+| `src/investment_panel/domain/signals/catalog.py` | reusable typed signal definitions and factor requests | a reusable interpretation changes |
+| `src/investment_panel/domain/strategies/implementations.py` | pure concrete strategy calculations and input normalization | a strategy calculation changes |
+| `src/investment_panel/domain/strategies/catalog.py` | immutable strategy definitions and explicit implementation bindings | a strategy revision or binding changes |
 | `src/investment_panel/domain/portfolio/contracts.py` | account-aware portfolio and decision contracts | portfolio valuation or policy meaning changes |
-| `src/investment_panel/api/data_access/loaders.py` | panel query composition | a Read Model scope needs bounded loading |
 | `src/investment_panel/domain/panel/` | panel contract and payload rules | a canonical panel shape changes |
 | `src/investment_panel/core/event_scout.py` | Event Scout public rules and packet interface | signal normalization changes |
 | `src/investment_panel/core/event_scout_runtime.py` | runtime packet processing | Event Scout runtime sequencing changes |
@@ -99,6 +107,8 @@ and mutation routes remain separate.
 | `src/investment_panel/infrastructure/postgres/options_execution.py` | Option Ticket and paper execution | ticket or execution gates change |
 | `src/investment_panel/infrastructure/postgres/options_recovery_read.py` | recovery research Read Models | recovery evidence changes |
 | `src/investment_panel/infrastructure/postgres/ingestion.py` | managed ingestion lifecycle | collector lifecycle changes |
+| `src/investment_panel/infrastructure/postgres/strategy_factory.py` | persisted strategy revision resolution and research evidence writes | strategy identity or evidence persistence changes |
+| `src/investment_panel/infrastructure/scheduler.py` | one fixed-capacity scheduler and process boundary | scheduling or worker lifetime changes |
 | `src/investment_panel/infrastructure/postgres/portfolio_ledger.py` | transaction, reversal, and position projection | portfolio accounting changes |
 | `src/investment_panel/infrastructure/postgres/source_facts.py` | source facts and publication inputs | source facts change |
 | `src/investment_panel/infrastructure/postgres/jobs.py` | canonical job allowlist and identity | a scheduled job changes |
@@ -220,12 +230,18 @@ do not weaken the storage safety gate.
 Storage recovery procedures and destructive-command gates are recorded in
 [`docs/storage-operations.md`](docs/storage-operations.md) and
 [`docs/adr/20260821-final-architecture-scale.md`](docs/adr/20260821-final-architecture-scale.md).
-The September 6 personal-app maintenance direction supersedes the architecture
-freeze for code simplification. Keep the storage and execution invariants in
-the ADR. Retain deep coherent owners; remove forwarding layers when callers
-can use the existing typed owner directly. Routers obtain those owners through
-dependencies, not database imports. Do not add interfaces for a single
-implementation or divide modules to meet a line-count target.
+The ADRs preserve storage, execution, and deployment obligations. Current
+ownership is defined here: retain deep coherent owners, remove forwarding
+layers when callers can use the existing typed owner directly, and keep
+routers on typed dependencies rather than database imports. Do not add
+interfaces for a single implementation or divide modules to meet a line-count
+target. Dated reviews and campaigns are historical inputs, not competing
+architecture rules.
+
+Checkout development serves `frontend/dist` when it exists. An installed wheel
+is API-only unless `MARKET_FRONTEND_DIST` points to a built distribution and
+`MARKET_MIGRATIONS_ROOT` points to a checkout or deployment bundle containing
+`alembic.ini` and `migrations/`. The wheel never guesses those external assets.
 
 For live checks, bind API and Vite to `0.0.0.0`, probe `/api/status` and the
 changed routes, and compare the served frontend asset between `:5173` and

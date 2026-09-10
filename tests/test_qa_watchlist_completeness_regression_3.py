@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from investment_panel.api.data_access import loaders as loaders_owner
+from investment_panel.application.read_models import loaders as loaders_owner
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from conftest import typed_config

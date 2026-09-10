@@ -3,7 +3,7 @@ import { Loader2, Play } from "lucide-react";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import type { Tone } from "@/ui/tone";
-import { toneFromText } from "@/views/rowFormat";
+import { toneFromText } from "@/shared/rowFormat";
 import { JOB_CATALOG, jobDef, type JobGroup } from "@/views/health/dataFlow";
 import { formatDateTime } from "@/views/health/format";
 import type { UseRefreshJobs } from "@/views/health/useRefreshJobs";

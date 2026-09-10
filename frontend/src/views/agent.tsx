@@ -16,7 +16,7 @@ import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Tone } from "@/ui/tone";
-import { titleLabel, toneFromText } from "@/views/rowFormat";
+import { titleLabel, toneFromText } from "@/shared/rowFormat";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
 import { DailyResearchPromptPanel } from "@/views/agent/researchPrompt";
 

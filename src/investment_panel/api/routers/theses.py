@@ -6,7 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from investment_panel.api import job_control, panel_snapshot
+from investment_panel.api import job_control
+from investment_panel.application.read_models import panel_snapshot
 from investment_panel.api import dependencies
 from investment_panel.workflows.theses import ThesisActions
 from investment_panel.api.contracts import ThesisAutomationInput, ThesisInput, ThesisReviewInput

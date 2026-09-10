@@ -128,6 +128,7 @@ def test_routine_publication_uses_config_only_exact_market_benchmark(
     monkeypatch,
 ) -> None:
     import pandas as pd
+    from investment_panel.workflows import market_data
 
     config = typed_config(
         migrated_postgres_dsn,
@@ -137,7 +138,7 @@ def test_routine_publication_uses_config_only_exact_market_benchmark(
         },
     )
     monkeypatch.setattr(
-        update_market_data,
+        market_data,
         "fetch_prices",
         lambda *_args: pd.DataFrame(
             [{

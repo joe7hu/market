@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from investment_panel.api.scheduler import scheduler_status
+from investment_panel.infrastructure.scheduler import scheduler_status
 from investment_panel.settings import AppConfig
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository

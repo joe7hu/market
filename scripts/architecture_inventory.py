@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import argparse
+from collections.abc import Sequence
 from collections import Counter
 import json
 from pathlib import Path
@@ -22,13 +23,20 @@ PROD_ROOTS = (ROOT / "src" / "investment_panel",)
 FRONTEND_SRC = ROOT / "frontend" / "src"
 OWNER_MODULES = (
     "src/investment_panel/api/dependencies.py",
-    "src/investment_panel/api/panel_snapshot.py",
+    "src/investment_panel/application/read_models/panel_snapshot.py",
+    "src/investment_panel/application/read_models/loaders.py",
     "src/investment_panel/api/job_control.py",
     "src/investment_panel/api/request_security.py",
     "src/investment_panel/workflows/options.py",
+    "src/investment_panel/workflows/strategies.py",
+    "src/investment_panel/workflows/market.py",
+    "src/investment_panel/workflows/market_data.py",
+    "src/investment_panel/workflows/ticker_decisions.py",
     "src/investment_panel/workflows/today.py",
     "src/investment_panel/workflows/event_scout.py",
     "src/investment_panel/domain/factors/catalog.py",
+    "src/investment_panel/domain/signals/catalog.py",
+    "src/investment_panel/domain/strategies/implementations.py",
     "src/investment_panel/domain/strategies/catalog.py",
     "src/investment_panel/domain/portfolio/contracts.py",
     "src/investment_panel/infrastructure/postgres/panel_models.py",
@@ -43,6 +51,7 @@ OWNER_MODULES = (
     "src/investment_panel/infrastructure/postgres/options_recovery_read.py",
     "src/investment_panel/infrastructure/postgres/options_publication.py",
     "src/investment_panel/infrastructure/postgres/ingestion.py",
+    "src/investment_panel/infrastructure/scheduler.py",
     "frontend/src/generated/apiSchema.ts",
 )
 AREAS = ("api", "config", "options", "providers", "frontend")
@@ -142,6 +151,71 @@ def local_import_graph() -> dict[str, set[str]]:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
         graph[_module_name(path)] = _dependency_targets(path, tree, local_modules)
     return graph
+
+
+def layer_violations(graph: dict[str, set[str]] | None = None) -> list[str]:
+    """Return imports that cross the current application ownership policy."""
+
+    graph = local_import_graph() if graph is None else graph
+    forbidden = {
+        "domain": ("api", "core", "infrastructure", "jobs", "settings", "workflows"),
+        "workflows": ("api", "jobs"),
+        "infrastructure": ("api", "jobs", "workflows"),
+    }
+    violations: list[str] = []
+    for source, targets in graph.items():
+        parts = source.split(".")
+        if len(parts) < 2 or parts[0] != "investment_panel":
+            continue
+        source_layer = parts[1]
+        for target in sorted(targets):
+            target_parts = target.split(".")
+            if len(target_parts) >= 3 and target_parts[:2] == ["investment_panel", target_parts[1]] \
+                    and target_parts[1] in forbidden.get(source_layer, ()):
+                violations.append(f"{source} -> {target}")
+    return violations
+
+
+def computation_purity_violations(roots: Sequence[Path] | None = None) -> list[str]:
+    """Reject process state, implicit clocks, and direct I/O in pure owners."""
+
+    roots = roots or tuple(
+        ROOT / "src" / "investment_panel" / name
+        for name in ("domain/factors", "domain/signals", "domain/strategies", "domain/market")
+    )
+    violations: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+            for node in ast.walk(tree):
+                try:
+                    label = path.relative_to(ROOT)
+                except ValueError:
+                    label = path
+                if isinstance(node, ast.Import) and any(
+                    alias.name in {"os", "subprocess", "time", "httpx", "requests", "psycopg", "sqlalchemy"}
+                    for alias in node.names
+                ):
+                    violations.append(f"{label}:{node.lineno} process or I/O import")
+                elif isinstance(node, ast.ImportFrom) and node.module in {
+                    "os", "subprocess", "time", "httpx", "requests", "psycopg", "sqlalchemy",
+                }:
+                    violations.append(f"{label}:{node.lineno} process or I/O import")
+                elif isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv", "now", "utcnow", "today", "time"}:
+                    if isinstance(node.value, ast.Name) and node.value.id in {"os", "datetime", "date", "time"}:
+                        violations.append(f"{label}:{node.lineno} implicit process state or clock")
+                elif isinstance(node, ast.Call):
+                    function = node.func
+                    if isinstance(function, ast.Name) and function.id == "open":
+                        violations.append(f"{label}:{node.lineno} direct I/O call")
+                    elif (
+                        isinstance(function, ast.Attribute)
+                        and function.attr in {"execute", "read", "request", "get", "post"}
+                        and isinstance(function.value, ast.Name)
+                        and function.value.id in {"connection", "runtime", "client", "httpx", "requests"}
+                    ):
+                        violations.append(f"{label}:{node.lineno} direct I/O call")
+    return sorted(set(violations))
 
 
 def local_import_cycles() -> list[tuple[str, ...]]:
@@ -531,6 +605,12 @@ def _print_area_inventory(area: str) -> int:
         print("  " + " -> ".join(cycle))
     if not cycles:
         print("  none")
+    print("layer_violations:")
+    layer = layer_violations()
+    for finding in layer:
+        print(f"  {finding}")
+    if not layer:
+        print("  none")
     print("private_cross_module_imports:")
     private = production_private_imports()
     for finding in private:
@@ -545,6 +625,8 @@ def _print_area_inventory(area: str) -> int:
         print("  none")
     failures = _missing_local_imports()
     failures.extend(console_script_violations())
+    failures.extend(layer_violations())
+    failures.extend(computation_purity_violations())
     print("static_failures:")
     print("  PASS" if not failures else "  FAIL")
     for failure in failures:
@@ -577,6 +659,12 @@ def main(argv: list[str] | None = None) -> int:
     for cycle in cycles:
         print("  " + " -> ".join(cycle))
     if not cycles:
+        print("  none")
+    print("layer_violations:")
+    layer = layer_violations()
+    for finding in layer:
+        print(f"  {finding}")
+    if not layer:
         print("  none")
     print("private_cross_module_imports:")
     private = production_private_imports()
@@ -613,6 +701,8 @@ def main(argv: list[str] | None = None) -> int:
 
     failures = _missing_local_imports()
     failures.extend(console_script_violations())
+    failures.extend(layer_violations())
+    failures.extend(computation_purity_violations())
     print("static_failures:")
     print("  PASS" if not failures else "  FAIL")
     for failure in failures:

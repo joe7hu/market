@@ -18,7 +18,7 @@ from investment_panel.domain.decision import (
     build_trade_plan,
     trade_expression_identity,
 )
-from investment_panel.jobs.ticker_decisions import portfolio_impacts
+from investment_panel.workflows.ticker_decisions import portfolio_impacts
 
 
 AS_OF = datetime(2026, 8, 22, 14, tzinfo=UTC)
@@ -244,7 +244,7 @@ def test_blocked_trade_plan_projects_typed_primary_without_losing_details(
 
 
 def test_rank_safety_reprojects_primary_status_and_preserves_all_blockers() -> None:
-    from investment_panel.jobs import ticker_decisions
+    from investment_panel.workflows import ticker_decisions
 
     decision, rank_payload, _signal = _decision()
     rank = OpportunityRank.model_construct(
@@ -283,7 +283,7 @@ def test_binding_reuses_exact_plan_terms_in_resolution() -> None:
 
 
 def test_automatic_staging_forwards_only_the_canonical_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    from investment_panel.jobs import ticker_decisions
+    from investment_panel.workflows import ticker_decisions
 
     decision, rank, _, plan, _ = _actionable_plan()
     bundle_id = "bundle:acme"
@@ -397,7 +397,7 @@ def test_legacy_staging_rejects_missing_canonical_trade_plan(monkeypatch: pytest
 
 
 def test_today_api_projects_the_bound_plan_terms(monkeypatch: pytest.MonkeyPatch) -> None:
-    from investment_panel.api.data_access.types import DataStatus, PanelData
+    from investment_panel.application.read_models.types import DataStatus, PanelData
     from investment_panel.api.routers import panel as panel_router
 
     decision, rank, _, plan, _ = _actionable_plan()
@@ -438,7 +438,7 @@ def test_today_api_projects_the_bound_plan_terms(monkeypatch: pytest.MonkeyPatch
 def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from investment_panel.api.data_access import loaders as loaders_owner, payloads as payloads_owner
+    from investment_panel.application.read_models import loaders as loaders_owner, payloads as payloads_owner
     from investment_panel.api.routers import panel as panel_router
     from investment_panel.infrastructure.postgres.panel_models import QUERY_POLICIES, today_authority_pages
 
@@ -573,7 +573,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
 def test_today_hides_non_owned_decisions_without_sampled_rank(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from investment_panel.api.data_access.types import DataStatus, PanelData
+    from investment_panel.application.read_models.types import DataStatus, PanelData
     from investment_panel.api.routers import panel as panel_router
 
     panel = PanelData(
@@ -606,7 +606,7 @@ def test_today_hides_non_owned_decisions_without_sampled_rank(
 def test_today_hides_non_owned_decisions_with_malformed_research_rank(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from investment_panel.api.data_access.types import DataStatus, PanelData
+    from investment_panel.application.read_models.types import DataStatus, PanelData
     from investment_panel.api.routers import panel as panel_router
 
     panel = PanelData(
@@ -646,7 +646,7 @@ def test_today_hides_non_owned_decisions_with_malformed_research_rank(
 def test_today_plan_validation_count_failure_is_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from investment_panel.api.data_access import loaders as loaders_owner
+    from investment_panel.application.read_models import loaders as loaders_owner
     from investment_panel.api.routers import panel as panel_router
 
     def fake_load(_config, table_names, **_options):

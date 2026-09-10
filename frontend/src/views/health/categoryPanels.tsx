@@ -3,7 +3,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, Loader2, RefreshCw } from "lu
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { jobDef, sourceFamilyDef, StatusDot } from "@/views/health/dataFlow";
-import { titleLabel } from "@/views/rowFormat";
+import { titleLabel } from "@/shared/rowFormat";
 import { formatDateTime, statusLabel } from "@/views/health/format";
 import type { Category, ErrorAgg } from "@/views/health/types";
 import type { UseRefreshJobs } from "@/views/health/useRefreshJobs";

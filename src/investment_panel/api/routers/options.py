@@ -10,12 +10,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from investment_panel.api import panel_snapshot
+from investment_panel.application.read_models import panel_snapshot
 from investment_panel.api import dependencies
 from investment_panel.workflows.options import OptionsActions
 from investment_panel.workflows.tickers import TickerActions
 from investment_panel.api.contracts import DecisionInboxStateInput, DecisionInboxUsefulnessInput, OptionPaperEntryInput, StrategyPromotionInput, TickerPaperEntryInput
-from investment_panel.api.data_access import loaders, payloads
+from investment_panel.application.read_models import loaders, payloads
 from investment_panel.api.response_contracts import (
     AgentSubmissionResponse,
     DecisionInboxResponse,

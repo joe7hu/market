@@ -5,7 +5,7 @@ import {EmptyState, StatusBadge } from "@/components/market/workstation";
 import {Button } from "@/components/ui/button";
 import {cn } from "@/lib/utils";
 import {RowRecord } from "@/types";
-import {displayField, textField, titleLabel, toneFromText } from "../rowFormat";
+import {displayField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import {formatDate } from "../optionsRadarFormat";
 import {toneText } from "../optionsRadarTone";
 import {proposalGateSummary, proposalChangeItems, proposalChangeNote, compactStrategyVersion, backtestDetail, forwardDetail} from "./helpers";

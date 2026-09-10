@@ -4,7 +4,7 @@ import {DataTableFrame, EmptyState, StatusBadge } from "@/components/market/work
 import {RowRecord } from "@/types";
 import {formatRatio } from "../optionsRadarFormat";
 import {jsonArrayField, jsonRecord } from "../optionsRadarData";
-import {displayField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
+import {displayField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import {Cell, Head, MetricPill, SectionTitle, TickerButton, Truncated } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
 import {MetricBox } from "./shared";

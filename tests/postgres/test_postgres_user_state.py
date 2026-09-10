@@ -10,8 +10,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from investment_panel.api import dependencies
-from investment_panel.api.data_access import mutations as mutations_owner
-import investment_panel.api.panel_snapshot as panel_owner
+from investment_panel.workflows import portfolio_mutations as mutations_owner
+import investment_panel.application.read_models.panel_snapshot as panel_owner
 from investment_panel.api.routers.portfolio import router
 from investment_panel.api.routers.panel import router as panel_router
 from investment_panel.api.routers.theses import router as theses_router
@@ -301,10 +301,18 @@ def test_portfolio_summary_and_performance_reconcile_to_one_price_set(client: Te
         connection.commit()
 
     summary = _portfolio_summary(client)
-    assert summary | {"as_of": "ignored", "oldest_quote_at": "ignored"} == {
+    assert summary | {"as_of": "ignored", "oldest_quote_at": "ignored", "available_at": "ignored", "valuation_as_of": "ignored", "valuation_available_at": "ignored"} == {
         "as_of": "ignored",
+        "available_at": "ignored",
         "oldest_quote_at": "ignored",
         "portfolio_value": 1100.0,
+        "known_value_subtotal": 1100.0,
+        "valuation_coverage": 1.0,
+        "valuation_blockers": [],
+        "valuation_provenance": {"owner": "raw.current_price_at", "method": "confirmed point-in-time quote valuation", "valued_position_count": 1, "missing_valuation_count": 0, "currencies": ["USD"], "currency_aggregation": "single_currency_only"},
+        "availability": "complete",
+        "valuation_as_of": "ignored",
+        "valuation_available_at": "ignored",
         "cash_balance": None,
         "equity": None,
         "cost_basis": 1000.0,
@@ -320,6 +328,8 @@ def test_portfolio_summary_and_performance_reconcile_to_one_price_set(client: Te
         "income": 0.0,
         "fees": 0.0,
         "holdings_count": 1,
+        "valued_position_count": 1,
+        "missing_valuation_count": 0,
         "cost_basis_fallback_count": 0,
         "valuation_status": "market_quotes",
         "currency": "USD",
@@ -645,7 +655,7 @@ def test_transaction_reversal_replays_position_accounting_and_thesis(
     assert portfolio[0]["avg_cost"] == 100.0
     summary = _portfolio_summary(client)
     assert summary["realized_pnl"] == 0.0
-    assert summary["total_pnl"] == 0.0
+    assert summary["total_pnl"] is None
     activity = client.get("/api/portfolio/transactions").json()["rows"]
     assert len(activity) == 3
     assert next(row for row in activity if row["id"] == sell["id"])["is_reversed"] is True
@@ -783,10 +793,14 @@ def test_unpriced_holdings_use_labeled_cost_basis_fallback(client: TestClient) -
     assert position["valuation_status"] == "cost_basis_fallback"
     assert position["market_value"] == 200.0
     summary = _portfolio_summary(client)
-    assert summary["portfolio_value"] == 200.0
-    assert summary["total_pnl"] == 0.0
+    assert summary["portfolio_value"] is None
+    assert summary["known_value_subtotal"] is None
+    assert summary["total_pnl"] is None
+    assert summary["availability"] == "unavailable"
+    assert summary["valuation_coverage"] == 0.0
+    assert summary["valuation_blockers"] == ["holding_valuation_missing"]
     assert summary["cost_basis_fallback_count"] == 1
-    assert summary["valuation_status"] == "cost_basis_fallback"
+    assert summary["valuation_status"] == "unavailable"
 
 
 def test_portfolio_rejects_arbitrarily_stale_quote_for_current_valuation(
@@ -911,7 +925,7 @@ def test_dividend_and_split_fees_reduce_portfolio_pnl(client: TestClient) -> Non
     summary = _portfolio_summary(client)
     assert summary["income"] == 100.0
     assert summary["fees"] == 15.0
-    assert summary["total_pnl"] == 85.0
+    assert summary["total_pnl"] is None
     assert _portfolio_performance(client)[-1]["total_pnl"] == 85.0
 
 
@@ -1175,7 +1189,8 @@ def test_portfolio_panel_scope_publishes_reconciled_intelligence_tables(client: 
         "portfolio_risk_cards",
         "review_actions",
     }.issubset(tables)
-    assert tables["portfolio_summary"]["rows"][0]["portfolio_value"] == 200.0
+    assert payload.json()["portfolio_summary"]["portfolio_value"] is None
+    assert tables["portfolio_summary"]["rows"][0]["portfolio_value"] is None
     assert tables["portfolio_transactions"]["rows"][0]["symbol"] == "NVDA"
 
 
@@ -1383,9 +1398,10 @@ def test_watchlist_route_round_trip_and_soft_exclusion(client: TestClient, postg
     assert response.status_code == 200
     payload = response.json()
     assert payload["watchlist_symbol"]["asset_class"] == "crypto"
-    assert payload["data_refresh"] == {
-        "status": "ok", "symbol": "BTC-USD", "asset_class": "crypto", "quote_rows": 1,
-    }
+    assert payload["data_refresh"]["status"] == "ok"
+    assert payload["data_refresh"]["symbol"] == "BTC-USD"
+    assert payload["data_refresh"]["asset_class"] == "crypto"
+    assert payload["data_refresh"]["quote_rows"] > 0
     assert payload["watchlist"]["rows"][0]["symbol"] == "BTC-USD"
 
     deleted = client.delete("/api/watchlist/symbols/BTC-USD")

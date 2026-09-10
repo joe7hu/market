@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from investment_panel.api.data_access.coerce import normalize_rows
+from investment_panel.application.read_models.coerce import normalize_rows
 
 
 

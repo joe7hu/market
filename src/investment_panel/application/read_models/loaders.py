@@ -8,7 +8,7 @@ from typing import Any, Iterable
 from investment_panel.settings import AppConfig, load_config
 from investment_panel.domain.decision import OpportunityRank, TradePlan, trade_plan_rank_identity_matches
 from investment_panel.domain.panel import DASHBOARD_UNAVAILABLE_MODELS, tables_for_scope
-from investment_panel.api.data_access.types import DataStatus, PanelData
+from investment_panel.application.read_models.types import DataStatus, PanelData
 from investment_panel.domain.panel import (
     SCOPED_TABLE_ROW_LIMITS,
     TICKER_INITIAL_TABLES,
@@ -837,3 +837,12 @@ def _all_contract_tables() -> tuple[str, ...]:
 
 def _row_symbol(row: dict[str, Any]) -> str:
     return str(row.get("symbol") or row.get("ticker") or "").upper()
+
+
+__all__ = [
+    "load_daily_research_panel_data", "load_decision_funnel", "load_market_panel_data",
+    "load_opportunities_scope_data", "load_panel_data", "load_panel_scope_data",
+    "load_portfolio_scope_data", "load_table_panel_data", "load_table_panel_page",
+    "load_ticker_panel_data", "load_watchlist_scope_data", "panel_contract_payload",
+    "today_plan_for_row", "today_rank_for_row",
+]

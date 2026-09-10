@@ -84,6 +84,7 @@ from investment_panel.domain.decision.resolution import (
     build_decision_resolution,
     next_action_for,
     resolution_from_legacy,
+    resolution_from_historical,
     resolution_from_published,
 )
 
@@ -373,6 +374,7 @@ __all__ = [
     "capital_action_from_resolution",
     "next_action_for",
     "resolution_from_legacy",
+    "resolution_from_historical",
     "resolution_from_published",
     "TICKER_LEARNING_VERSION",
     "evaluate_ticker_policy",

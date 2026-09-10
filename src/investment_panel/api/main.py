@@ -10,6 +10,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 import logging
+import os
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -21,8 +22,7 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from investment_panel.api import dependencies
 from investment_panel.api.routers import ALL_ROUTERS
-from investment_panel.api.scheduler import run_scheduler, scheduler_enabled
-from investment_panel.core.refresh_jobs import mark_stale_running_jobs
+from investment_panel.infrastructure.scheduler import mark_stale_running_jobs, run_scheduler, scheduler_enabled
 from investment_panel.infrastructure.postgres.authority import close_cached_runtimes, database_url
 
 APP_TITLE = "Personal Investment Panel"
@@ -91,7 +91,14 @@ def create_app() -> FastAPI:
 
 
 def _mount_frontend(app: FastAPI) -> None:
-    dist_dir = (Path(__file__).resolve().parents[3] / "frontend" / "dist").resolve()
+    configured_dist = os.environ.get("MARKET_FRONTEND_DIST", "").strip()
+    if configured_dist:
+        dist_dir = Path(configured_dist).expanduser().resolve()
+    else:
+        checkout_root = Path(__file__).resolve().parents[3]
+        if not (checkout_root / "frontend" / "package.json").is_file():
+            return
+        dist_dir = (checkout_root / "frontend" / "dist").resolve()
     index_path = dist_dir / "index.html"
     index_headers = {"Cache-Control": "no-cache"}
     if not index_path.exists():

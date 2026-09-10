@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from investment_panel.api.data_access import loaders as loaders_owner
+from investment_panel.application.read_models import loaders as loaders_owner
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from conftest import typed_config

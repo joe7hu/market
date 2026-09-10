@@ -6,11 +6,11 @@ import pytest
 from fastapi import HTTPException
 
 from investment_panel.api.routers import panel as panel_router
-from investment_panel.api.data_access import loaders as loaders_owner
-from investment_panel.api.data_access import mutations as mutations_owner
-from investment_panel.api.data_access import payloads as payloads_owner
+from investment_panel.application.read_models import loaders as loaders_owner
+from investment_panel.workflows import portfolio_mutations as mutations_owner
+from investment_panel.application.read_models import payloads as payloads_owner
 from investment_panel.api.data_access import settings as settings_owner
-from investment_panel.api.data_access.types import DataStatus, PanelData
+from investment_panel.application.read_models.types import DataStatus, PanelData
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.portfolio_ledger import record_portfolio_transaction
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
@@ -1685,7 +1685,7 @@ def test_save_watchlist_crypto_alias_uses_crypto_asset_class(migrated_postgres_d
 
 def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypatch, migrated_postgres_dsn: str) -> None:
     import pandas as pd
-    from investment_panel.jobs import update_market_data
+    from investment_panel.workflows import market_data
 
     config = typed_config(
         migrated_postgres_dsn,
@@ -1713,7 +1713,7 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
             ]
         )
 
-    monkeypatch.setattr(update_market_data, "fetch_prices", fetch_prices)
+    monkeypatch.setattr(market_data, "fetch_prices", fetch_prices)
     result = mutations_owner.populate_watchlist_symbol_data(config, "XYZ", "equity")
 
     assert result["status"] == "ok"
@@ -1728,14 +1728,14 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
 def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
     monkeypatch, migrated_postgres_dsn: str
 ) -> None:
-    from investment_panel.jobs import update_market_data
+    from investment_panel.workflows import market_data
 
     config = typed_config(
         migrated_postgres_dsn,
         raw={"market_data": {"mode": "online"}, "data_sources": {"yfinance": {"enabled": False}}},
     )
     mutations_owner.save_watchlist_symbol(config, {"symbol": "XYZ"})
-    monkeypatch.setattr(update_market_data, "fetch_prices", lambda *_args: (_ for _ in ()).throw(RuntimeError("provider failed")))
+    monkeypatch.setattr(market_data, "fetch_prices", lambda *_args: (_ for _ in ()).throw(RuntimeError("provider failed")))
 
     result = mutations_owner.populate_watchlist_symbol_data(config, "XYZ", "equity")
 
@@ -1748,6 +1748,7 @@ def test_scoped_market_data_job_does_not_publish_global_market_state(
 ) -> None:
     import pandas as pd
     from investment_panel.jobs import update_market_data
+    from investment_panel.workflows import market_data
 
     config = typed_config(
         migrated_postgres_dsn,
@@ -1758,7 +1759,7 @@ def test_scoped_market_data_job_does_not_publish_global_market_state(
         },
     )
     monkeypatch.setattr(
-        update_market_data,
+        market_data,
         "fetch_prices",
         lambda *_args: pd.DataFrame(
             [{
@@ -1768,7 +1769,7 @@ def test_scoped_market_data_job_does_not_publish_global_market_state(
         ),
     )
     monkeypatch.setattr(
-        update_market_data,
+        market_data,
         "refresh_market_publication",
         lambda *_args, **_kwargs: pytest.fail("scoped refresh published global MarketState"),
     )

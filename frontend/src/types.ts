@@ -131,8 +131,9 @@ export type PanelData = KnownPanelTables & {
   errors: Partial<Record<PanelEndpoint, string>>;
   scopeStatus: Record<string, ScopeSnapshotStatus>;
   portfolioHoldings?: components["schemas"]["PortfolioHoldingDTO"][];
+  portfolioSummaryDto?: components["schemas"]["PortfolioSummaryDTO"];
   portfolioIntegrated?: components["schemas"]["PortfolioIntegratedDTO"];
-  [key: string]: DashboardPayload | SettingsPayload | TablePayload | Partial<Record<PanelEndpoint, string>> | Record<string, ScopeSnapshotStatus> | components["schemas"]["PortfolioHoldingDTO"][] | components["schemas"]["PortfolioIntegratedDTO"] | undefined;
+  [key: string]: DashboardPayload | SettingsPayload | TablePayload | Partial<Record<PanelEndpoint, string>> | Record<string, ScopeSnapshotStatus> | components["schemas"]["PortfolioHoldingDTO"][] | components["schemas"]["PortfolioSummaryDTO"] | components["schemas"]["PortfolioIntegratedDTO"] | undefined;
 };
 
 export type PanelEndpoint = keyof KnownPanelTables | "dashboard" | "settings";

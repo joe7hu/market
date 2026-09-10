@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { DataTableFrame, DecisionCard, EmptyState, EvidenceList, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
 import type { PanelData, RowRecord } from "@/types";
 import { buildThesisMonitorViewModel } from "@/viewModels/thesisMonitor";
-import { booleanField, displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
+import { booleanField, displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "@/shared/rowFormat";
 import { DataGridSection } from "./dataGridSection";
 
 const CARD_LIMIT = 16;

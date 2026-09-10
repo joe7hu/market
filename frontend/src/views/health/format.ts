@@ -1,5 +1,5 @@
 import { toneFromOperationalStatus, type Tone } from "@/ui/tone";
-import { toneFromText } from "@/views/rowFormat";
+import { toneFromText } from "@/shared/rowFormat";
 
 export function freshnessTone(freshnessStatus: string, status: string): Tone {
   const fresh = freshnessStatus.toLowerCase();

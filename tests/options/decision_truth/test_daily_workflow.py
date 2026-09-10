@@ -127,8 +127,8 @@ def test_review_endpoint_refresh_and_authorization(application_postgres_dsn, mon
     from fastapi.testclient import TestClient
     from investment_panel.api import dependencies
     from investment_panel.api.main import app
-    from investment_panel.api.data_access import loaders
-    from investment_panel.api.data_access.types import DataStatus, PanelData
+    from investment_panel.application.read_models import loaders
+    from investment_panel.application.read_models.types import DataStatus, PanelData
     from conftest import typed_config
 
     runtime = DatabaseRuntime(application_postgres_dsn)

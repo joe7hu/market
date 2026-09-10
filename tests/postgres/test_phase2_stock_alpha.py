@@ -11,7 +11,7 @@ from psycopg.rows import dict_row
 from psycopg.sql import Identifier, Literal, SQL
 from psycopg.types.json import Jsonb
 
-from investment_panel.api.data_access.loaders import load_daily_research_panel_data, load_panel_data
+from investment_panel.application.read_models.loaders import load_daily_research_panel_data, load_panel_data
 from conftest import typed_config
 from investment_panel.domain.research.stock_alpha import FEATURE_VERSION, TARGET_HORIZON_SESSIONS, TARGET_VERSION, independent_observations, research_score
 from investment_panel.domain.decision import Horizon, MARKET_TZ, is_us_market_day, market_session_bounds

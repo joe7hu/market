@@ -15,7 +15,7 @@ import type { AppModel } from "@/model";
 import type { PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildPortfolioViewModel, performanceRangeRows, type PerformanceRange } from "@/viewModels/portfolio";
 import { buildPortfolioPhase4Decision, type Phase4Decision } from "@/viewModels/portfolioPhase4";
-import { booleanField, displayField, formatMoney, formatPct, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
+import { booleanField, displayField, formatMoney, formatPct, listField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import { PortfolioPerformanceChart } from "./portfolio/performanceChart";
 import { PortfolioImpactCard } from "./TradePlanCard";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
@@ -46,10 +46,10 @@ export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker,
         <Button type="button" variant="outline" disabled={loading} onClick={() => void onRefresh()}><RefreshCw className={loading ? "animate-spin" : ""} /> Refresh</Button>
       </>}
       metrics={[
-        ["Portfolio value", formatMoney(summary.portfolioValue), summary.costBasisFallbackCount ? `${summary.costBasisFallbackCount} holding value estimated at cost` : `${model.holdings.length} holdings · ${asOf}`, summary.costBasisFallbackCount ? "warn" : summary.portfolioValue ? "info" : "muted"],
-        ["Session P&L", summary.dayPnl === null ? "-" : formatSignedMoney(summary.dayPnl), summary.dayPnlPct === null ? `Needs adjacent sessions · ${formatDate(summary.dayPnlAsOf)}` : `${formatPct(summary.dayPnlPct)} · ${formatDate(summary.dayPnlAsOf)}`, summary.dayPnl === null ? "muted" : summary.dayPnl >= 0 ? "good" : "bad"],
-        ["Total P&L", formatSignedMoney(summary.totalPnl), summary.totalPnlPct === null ? "-" : formatPct(summary.totalPnlPct), summary.totalPnl >= 0 ? "good" : "bad"],
-        ["Realized P&L", formatSignedMoney(summary.realizedPnl), `${formatMoney(summary.income)} income · ${formatMoney(summary.fees)} fees`, summary.realizedPnl >= 0 ? "good" : "bad"],
+        ["Portfolio value", moneyOrUnavailable(summary.portfolioValue, summary.currency), portfolioValueCaption(summary, model.holdings.length, asOf), summary.availability === "complete" ? "info" : "warn"],
+        ["Session P&L", summary.dayPnl === null ? "-" : formatSignedMoney(summary.dayPnl, summary.currency), summary.dayPnlPct === null ? `Needs adjacent sessions · ${formatDate(summary.dayPnlAsOf)}` : `${formatPct(summary.dayPnlPct)} · ${formatDate(summary.dayPnlAsOf)}`, summary.dayPnl === null ? "muted" : summary.dayPnl >= 0 ? "good" : "bad"],
+        ["Total P&L", formatSignedMoney(summary.totalPnl, summary.currency), summary.totalPnlPct === null ? "-" : formatPct(summary.totalPnlPct), pnlTone(summary.totalPnl)],
+        ["Realized P&L", formatSignedMoney(summary.realizedPnl, summary.currency), `${moneyOrUnavailable(summary.income, summary.currency)} income · ${moneyOrUnavailable(summary.fees, summary.currency)} fees`, pnlTone(summary.realizedPnl)],
       ]}
     >
       <ScopeStatusNotice status={scopeStatus} onRetry={() => void onRefresh(true)} />
@@ -189,6 +189,11 @@ function HoldingCard({ holding, onOpenTicker }: { holding: AppModel["holdings"][
 function holdingMoney(value: number | null): string { return value === null ? "Unavailable" : formatMoney(value); }
 function holdingWeight(value: number | null): string { return value === null ? "Unavailable" : `${value.toFixed(1)}%`; }
 function pnlTone(value: number | null): "good" | "bad" | "muted" { return value === null ? "muted" : value < 0 ? "bad" : "good"; }
+function portfolioValueCaption(summary: ReturnType<typeof buildPortfolioViewModel>["summary"], holdingsCount: number, asOf: string): string {
+  if (summary.availability === "complete") return `${holdingsCount} holdings · ${asOf}`;
+  if (summary.knownValueSubtotal !== null) return `${formatMoney(summary.knownValueSubtotal, summary.currency)} known subtotal · ${Math.round(summary.valuationCoverage * 100)}% coverage`;
+  return summary.valuationBlockers.length ? summary.valuationBlockers.join(", ") : "Complete valuation unavailable";
+}
 
 function CorrelationPanel({ rows, window, onWindowChange, onOpenTicker }: { rows: ReturnType<typeof buildPortfolioViewModel>["correlationRows"]; window: number; onWindowChange: (value: number) => void; onOpenTicker: OpenTicker }) {
   return <Card><CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between"><div><CardTitle className="text-base">Shared risk</CardTitle><CardDescription className="mt-1">Daily-return correlation among current holdings. High correlation can turn separate positions into one bet.</CardDescription></div><Select value={String(window)} onValueChange={(value) => onWindowChange(Number(value))}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent>{[20, 60, 120].map((value) => <SelectItem key={value} value={String(value)}>{value} days</SelectItem>)}</SelectContent></Select></CardHeader><CardContent className="space-y-3">{rows.length ? rows.slice(0, 6).map((row) => <button type="button" key={row.id} className="w-full rounded-lg border border-border p-4 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onOpenTicker(row.symbol)}><div className="flex items-start justify-between gap-3"><div><div className="font-semibold">{row.symbol} / {row.peerSymbol}</div><div className="mt-1 text-xs text-muted-foreground">{row.observations} observations · {row.combinedWeight.toFixed(1)}% combined weight</div></div><StatusBadge tone={toneFromText(row.riskLevel)}>{row.correlation === null ? "Not ready" : row.correlation.toFixed(2)}</StatusBadge></div><p className="mt-3 text-sm leading-6 text-muted-foreground">{row.interpretation}</p></button>) : <EmptyState title="No pairwise correlation yet" detail="At least two holdings and ten overlapping daily returns are required." />}</CardContent></Card>;
@@ -278,9 +283,9 @@ function FieldLabel({ label, children }: { label: string; children: React.ReactN
 function PreviewMetric({ label, value }: { label: string; value: string }) { return <div><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 font-medium tabular-nums">{value}</div></div>; }
 function initialTradeForm(): TradeForm { const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset()); return { side: "buy", symbol: "", quantity: "", price: "", fees: "0", executedAt: now.toISOString().slice(0, 16), notes: "", idempotencyKey: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `trade-${Date.now()}` }; }
 function initialAccountForm(): AccountForm { const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset()); return { cashBalance: "", netLiquidation: "", effectiveAt: now.toISOString().slice(0, 16), notes: "", idempotencyKey: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `account-${Date.now()}` }; }
-function moneyOrUnavailable(value: unknown): string { return typeof value === "number" && Number.isFinite(value) ? formatMoney(value) : "Unavailable"; }
+function moneyOrUnavailable(value: unknown, currency = "USD"): string { return typeof value === "number" && Number.isFinite(value) ? formatMoney(value, currency) : "Unavailable"; }
 function formatDateTime(value: string): string { if (!value) return "Awaiting current quote"; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
 function formatDate(value: string): string { if (!value) return "No priced session"; const date = new Date(`${value}T12:00:00`); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
-function formatSignedMoney(value: number | null | undefined): string { if (value === null || value === undefined || !Number.isFinite(value)) return "Unavailable"; const formatted = formatMoney(Math.abs(value)); return `${value > 0 ? "+" : value < 0 ? "−" : ""}${formatted}`; }
+function formatSignedMoney(value: number | null | undefined, currency = "USD"): string { if (value === null || value === undefined || !Number.isFinite(value)) return "Unavailable"; const formatted = formatMoney(Math.abs(value), currency); return `${value > 0 ? "+" : value < 0 ? "−" : ""}${formatted}`; }
 function formatNumber(value: number): string { return Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 6 }) : "-"; }
 function nullableRowNumber(row: RowRecord | undefined, key: string): number | null { return !row || row[key] === null || row[key] === undefined ? null : numberField(row, [key]); }

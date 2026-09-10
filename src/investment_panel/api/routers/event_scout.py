@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from investment_panel.workflows.event_scout import persist_mrna_replay, process_signal
 from investment_panel.api import dependencies
-from investment_panel.api.data_access import loaders
+from investment_panel.application.read_models import loaders
 from investment_panel.api.response_contracts import (
     EventScoutEventsResponse,
     EventScoutPacketsResponse,

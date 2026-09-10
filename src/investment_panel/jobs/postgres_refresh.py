@@ -9,16 +9,16 @@ from investment_panel.settings import AppConfig, load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
 from investment_panel.infrastructure.postgres.today_analysis import refresh_today_publication
-from investment_panel.infrastructure.postgres.market_analysis import refresh_market_publication
+from investment_panel.workflows.market import refresh_market_publication
 from investment_panel.infrastructure.postgres.outcomes import OutcomeRepository
 from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 from investment_panel.jobs import (
     refresh_options_radar,
     run_option_agents,
     run_thesis_monitor,
-    ticker_decisions,
     update_market_data,
 )
+from investment_panel.workflows import ticker_decisions
 
 
 def publish_decisions(config_path: str | None = None) -> dict[str, Any]:

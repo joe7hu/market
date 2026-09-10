@@ -1,7 +1,7 @@
 import type { LineData, PriceFormat, Time } from "lightweight-charts";
 
 import type { JsonValue, RowRecord } from "@/types";
-import { formatPct, numberField, textField } from "@/views/rowFormat";
+import { formatPct, numberField, textField } from "@/shared/rowFormat";
 
 import type { MetricPoint } from "./types";
 

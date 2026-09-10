@@ -25,6 +25,7 @@ from investment_panel.infrastructure.postgres.event_studies import materialize_e
 FEATURE_VERSION = "option-professional-v3-ticket"
 STRATEGY_KEY = "options-radar-core"
 STRATEGY_REVISION = 3
+IMPLEMENTATION_ID = "options_radar"
 RADAR_QUOTE_SESSIONS = ("regular", "afterhours")
 DEFAULT_PARAMETERS = {
     "feature_version": FEATURE_VERSION,
@@ -435,17 +436,28 @@ def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
                 [STRATEGY_KEY],
             )
         if not professional and not external_active:
+            existing = connection.execute(
+                "SELECT implementation_id, implementation_version FROM analysis.strategy_revision "
+                "WHERE strategy_key = %s AND revision = %s",
+                [STRATEGY_KEY, STRATEGY_REVISION],
+            ).fetchone()
+            if existing is not None and (
+                existing["implementation_id"] != IMPLEMENTATION_ID
+                or existing["implementation_version"] != FEATURE_VERSION
+            ):
+                raise ValueError("options radar strategy implementation identity is immutable")
             connection.execute(
                 """
                 INSERT INTO analysis.strategy_revision
-                    (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
-                VALUES (%s, %s, 'Professional options radar', 'active', %s, %s, now())
+                    (strategy_key, revision, name, status, parameters, authority_group,
+                     implementation_id, implementation_version, promoted_at)
+                VALUES (%s, %s, 'Professional options radar', 'active', %s, %s, %s, %s, now())
                 ON CONFLICT (strategy_key, revision) DO UPDATE
                 SET name = EXCLUDED.name, status = 'active', parameters = EXCLUDED.parameters,
                     authority_group = EXCLUDED.authority_group,
                     promoted_at = COALESCE(analysis.strategy_revision.promoted_at, now())
                 """,
-                [STRATEGY_KEY, STRATEGY_REVISION, Jsonb(DEFAULT_PARAMETERS), STRATEGY_KEY],
+                [STRATEGY_KEY, STRATEGY_REVISION, Jsonb(DEFAULT_PARAMETERS), STRATEGY_KEY, IMPLEMENTATION_ID, FEATURE_VERSION],
             )
         row = connection.execute(
             """

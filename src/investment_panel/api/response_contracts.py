@@ -48,7 +48,7 @@ from investment_panel.domain.decision import (
     TradePlan,
     TickerDecision,
 )
-from investment_panel.domain.portfolio.contracts import PortfolioHoldingDTO, PortfolioIntegratedDTO
+from investment_panel.domain.portfolio.contracts import PortfolioHoldingDTO, PortfolioIntegratedDTO, PortfolioSummaryDTO
 
 
 JsonObject = dict[str, Any]
@@ -97,6 +97,7 @@ class PanelSnapshotResponse(BaseModel):
     dashboard: DashboardResponse | None = None
     tables: dict[str, TablePayloadResponse] = Field(default_factory=dict)
     portfolio_holdings: list[PortfolioHoldingDTO] | None = None
+    portfolio_summary: PortfolioSummaryDTO | None = None
     portfolio_integrated: PortfolioIntegratedDTO | None = None
 
 
@@ -418,6 +419,9 @@ class ResearchEvaluationResponse(BaseModel):
     evaluated_at: datetime | None = None
     period_start: datetime | None = None
     period_end: datetime | None = None
+    actionability: str | None = None
+    signal_value: float | None = None
+    signal_direction: str | None = None
     independent_sample_count: int | None = None
     net_return_lower_bound: float | None = None
     brier_score: float | None = None
@@ -1021,6 +1025,7 @@ __all__ = [
     "PanelContractResponse",
     "PanelSnapshotResponse",
     "PortfolioHoldingDTO",
+    "PortfolioSummaryDTO",
     "PaperEntryResponse",
     "TickerPaperEntryResponse",
     "PortfolioTransactionPreviewResponse",

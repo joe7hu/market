@@ -5,7 +5,7 @@ import { acknowledgeRadarAlert } from "@/api/panel";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { RowRecord } from "@/types";
-import { textField } from "./rowFormat";
+import { textField } from "@/shared/rowFormat";
 
 type AlertBellProps = {
   alerts: RowRecord[];

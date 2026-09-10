@@ -5,7 +5,7 @@ import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/wor
 import { cn } from "@/lib/utils";
 import type { RowRecord } from "@/types";
 import type { Tone } from "@/ui/tone";
-import { formatMoney, numberField, textField } from "./rowFormat";
+import { formatMoney, numberField, textField } from "@/shared/rowFormat";
 import type { OpenTicker } from "./workspacePage";
 
 // Trade journal (Phase 4): the real-money log captured from the opportunity drawer. Each

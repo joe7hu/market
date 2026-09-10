@@ -21,6 +21,8 @@ from investment_panel.infrastructure.postgres.strategy_parameters import (
 )
 
 OPTIONS_COMPARISON_VERSION = "options-independent-comparison-v1"
+OPTIONS_IMPLEMENTATION_ID = "options_radar"
+OPTIONS_IMPLEMENTATION_VERSION = "option-professional-v3-ticket"
 
 
 class StrategyLearningRepository:
@@ -74,7 +76,8 @@ class StrategyLearningRepository:
         proposed_key = f"{base['strategy_key']}__agent_{digest}"
         parameters = merge_strategy_parameters(dict(base["parameters"] or {}), changes)
         candidate = connection.execute(
-            "SELECT id, status, parameters, supersedes_id, authority_group "
+            "SELECT id, status, parameters, supersedes_id, authority_group, "
+            "implementation_id, implementation_version "
             "FROM analysis.strategy_revision "
             "WHERE strategy_key = %s AND revision = 1 FOR UPDATE",
             [proposed_key],
@@ -83,19 +86,23 @@ class StrategyLearningRepository:
             candidate = connection.execute(
                 """
                 INSERT INTO analysis.strategy_revision
-                    (strategy_key, revision, name, status, parameters, supersedes_id, authority_group)
-                VALUES (%s, 1, %s, 'candidate', %s, %s, %s)
-                RETURNING id, status, parameters, supersedes_id, authority_group
+                    (strategy_key, revision, name, status, parameters, supersedes_id,
+                     authority_group, implementation_id, implementation_version)
+                VALUES (%s, 1, %s, 'candidate', %s, %s, %s, %s, %s)
+                RETURNING id, status, parameters, supersedes_id, authority_group,
+                          implementation_id, implementation_version
                 """,
                 [
                     proposed_key, proposed_key, Jsonb(parameters), base["id"],
-                    base["authority_group"],
+                    base["authority_group"], base["implementation_id"], base["implementation_version"],
                 ],
             ).fetchone()
         elif (
             candidate["status"] != "candidate"
             or candidate["supersedes_id"] != base["id"]
             or candidate["authority_group"] != base["authority_group"]
+            or candidate["implementation_id"] != base["implementation_id"]
+            or candidate["implementation_version"] != base["implementation_version"]
             or dict(candidate["parameters"] or {}) != parameters
         ):
             raise ValueError("proposed strategy key collides with an existing revision")
@@ -130,31 +137,34 @@ class StrategyLearningRepository:
         connection.execute(
             """
             INSERT INTO analysis.strategy_revision
-                (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
+                (strategy_key, revision, name, status, parameters, authority_group,
+                 implementation_id, implementation_version, promoted_at)
             SELECT 'options-radar-core', 1, 'options-radar-core', 'active', %s,
-                   'options-radar-core', now()
+                   'options-radar-core', %s, %s, now()
             WHERE NOT EXISTS (
                 SELECT 1 FROM analysis.strategy_revision
                 WHERE authority_group = 'options-radar-core' AND status = 'active'
             )
             ON CONFLICT (strategy_key, revision) DO NOTHING
             """,
-            [Jsonb(_DEFAULT_PARAMETERS)],
+            [Jsonb(_DEFAULT_PARAMETERS), OPTIONS_IMPLEMENTATION_ID, OPTIONS_IMPLEMENTATION_VERSION],
         )
         if source_strategy_id is not None:
             base = connection.execute(
                 """
                 WITH RECURSIVE ancestry AS (
-                    SELECT id, strategy_key, revision, parameters, supersedes_id, authority_group
+                    SELECT id, strategy_key, revision, parameters, supersedes_id, authority_group,
+                           implementation_id, implementation_version
                     FROM analysis.strategy_revision WHERE id = %s
                     UNION ALL
                     SELECT parent.id, parent.strategy_key, parent.revision,
-                           parent.parameters, parent.supersedes_id, parent.authority_group
+                           parent.parameters, parent.supersedes_id, parent.authority_group,
+                           parent.implementation_id, parent.implementation_version
                     FROM analysis.strategy_revision parent
                     JOIN ancestry child ON child.supersedes_id = parent.id
                 )
                 SELECT source.id, source.strategy_key, source.revision, source.parameters,
-                       source.authority_group,
+                       source.authority_group, source.implementation_id, source.implementation_version,
                        EXISTS (SELECT 1 FROM ancestry WHERE strategy_key = 'options-radar-core') AS in_core_lineage
                 FROM analysis.strategy_revision source WHERE source.id = %s
                 """,
@@ -169,7 +179,8 @@ class StrategyLearningRepository:
             return base
         return connection.execute(
             """
-            SELECT id, strategy_key, revision, parameters, authority_group
+            SELECT id, strategy_key, revision, parameters, authority_group,
+                   implementation_id, implementation_version
             FROM analysis.strategy_revision
             WHERE authority_group = 'options-radar-core' AND status = 'active'
             """

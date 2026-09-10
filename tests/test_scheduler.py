@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from investment_panel.api import scheduler
+from investment_panel.infrastructure import scheduler
 from investment_panel.core import job_policy
 from investment_panel.core.refresh_jobs import ALLOWLIST
 from conftest import typed_config

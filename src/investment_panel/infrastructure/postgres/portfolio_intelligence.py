@@ -54,7 +54,25 @@ def portfolio_summary(
         if performance is None else performance
     )
     latest_performance = performance[-1] if performance else {}
-    portfolio_value = sum(float(row.get("market_value") or 0) for row in positions)
+    valued_positions = [
+        row for row in positions
+        if row.get("market_value") is not None
+        and row.get("valuation_status") != "cost_basis_fallback"
+        and isfinite(float(row["market_value"]))
+    ]
+    currencies = {str(row.get("currency") or "USD").strip().upper() for row in positions}
+    currency_supported = len(currencies) <= 1
+    known_value_subtotal = (
+        sum(float(row["market_value"]) for row in valued_positions)
+        if currency_supported and (valued_positions or not positions)
+        else None
+    )
+    missing_valuation_count = len(positions) - len(valued_positions)
+    valuation_complete = missing_valuation_count == 0 and currency_supported
+    valuation_availability = (
+        "complete" if valuation_complete else "partial" if valued_positions and currency_supported else "unavailable"
+    )
+    portfolio_value = known_value_subtotal if valuation_complete else None
     cash_balance = replay.get("cash_balance") if replay is not None else None
     cost_basis = sum(float(row.get("quantity") or 0) * float(row.get("avg_cost") or 0) for row in positions)
     net_contributions = accounting["net_contributions"]
@@ -66,7 +84,7 @@ def portfolio_summary(
     availability_times = [_as_datetime(row.get("available_at")) for row in positions]
     availability_times = [value for value in availability_times if value is not None]
     fallback_count = sum(row.get("valuation_status") == "cost_basis_fallback" for row in positions)
-    total_pnl = portfolio_value - net_contributions
+    total_pnl = portfolio_value - net_contributions if portfolio_value is not None else None
     invested_capital = accounting["invested_capital"]
     prior_performance = performance[-2] if len(performance) > 1 else {}
     adjacent_session = adjacent_session_dates(
@@ -84,14 +102,33 @@ def portfolio_summary(
         "as_of": cutoff.astimezone(UTC).isoformat() if cutoff is not None else max(quote_times).isoformat() if quote_times else None,
         "available_at": max(availability_times or quote_times).isoformat() if availability_times or quote_times else None,
         "oldest_quote_at": min(quote_times).isoformat() if quote_times else None,
-        "portfolio_value": round(portfolio_value, 6),
+        "portfolio_value": round(portfolio_value, 6) if portfolio_value is not None else None,
+            "known_value_subtotal": round(known_value_subtotal, 6) if known_value_subtotal is not None else None,
+        "valuation_coverage": len(valued_positions) / len(positions) if positions else 1.0,
+        "valuation_blockers": (
+            [] if valuation_complete else [
+                *([] if missing_valuation_count == 0 else ["holding_valuation_missing"]),
+                *([] if currency_supported else ["multiple_currencies_unsupported"]),
+            ]
+        ),
+        "valuation_provenance": {
+            "owner": "raw.current_price_at",
+            "method": "confirmed point-in-time quote valuation",
+            "valued_position_count": len(valued_positions),
+            "missing_valuation_count": missing_valuation_count,
+            "currencies": sorted(currencies),
+            "currency_aggregation": "single_currency_only" if currency_supported else "rejected",
+        },
+        "availability": valuation_availability,
+        "valuation_as_of": cutoff.astimezone(UTC).isoformat() if cutoff is not None else max(quote_times).isoformat() if quote_times else None,
+        "valuation_available_at": max(availability_times or quote_times).isoformat() if availability_times or quote_times else None,
         "cash_balance": round(float(cash_balance), 6) if cash_balance is not None else None,
-        "equity": round(portfolio_value + float(cash_balance), 6) if cash_balance is not None else None,
+        "equity": round(portfolio_value + float(cash_balance), 6) if portfolio_value is not None and cash_balance is not None else None,
         "cost_basis": round(cost_basis, 6),
         "net_contributions": round(net_contributions, 6),
         "invested_capital": round(invested_capital, 6),
-        "total_pnl": round(total_pnl, 6),
-        "total_pnl_pct": round(total_pnl / invested_capital * 100, 6) if invested_capital else None,
+        "total_pnl": round(total_pnl, 6) if total_pnl is not None else None,
+        "total_pnl_pct": round(total_pnl / invested_capital * 100, 6) if total_pnl is not None and invested_capital else None,
         "day_pnl": round(day_pnl, 6) if day_pnl is not None else None,
         "day_pnl_pct": round(day_pnl / previous_value * 100, 6) if day_pnl is not None and previous_value else None,
         "day_pnl_as_of": latest_performance.get("date"),
@@ -100,9 +137,11 @@ def portfolio_summary(
         "income": round(income, 6),
         "fees": round(fees, 6),
         "holdings_count": len(positions),
+        "valued_position_count": len(valued_positions),
+        "missing_valuation_count": missing_valuation_count,
         "cost_basis_fallback_count": fallback_count,
-        "valuation_status": "cost_basis_fallback" if fallback_count else "market_quotes",
-        "currency": "USD",
+        "valuation_status": "market_quotes" if valuation_complete else "partial_market_quotes" if valued_positions else "unavailable",
+        "currency": next(iter(currencies), "USD") if currency_supported else None,
         "performance_method": PERFORMANCE_METHOD,
     }
 

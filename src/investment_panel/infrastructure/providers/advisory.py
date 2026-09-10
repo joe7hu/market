@@ -22,7 +22,7 @@ from typing import Any, Literal
 import httpx
 
 from investment_panel.core.agent_providers import resolve_provider_selection
-from investment_panel.jobs.codex_runtime import resolve_codex_bin
+from investment_panel.infrastructure.providers.codex_runtime import resolve_codex_bin
 
 
 ProviderName = Literal["codex", "deepseek"]

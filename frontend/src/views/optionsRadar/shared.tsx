@@ -7,7 +7,7 @@ import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/compo
 import {cn } from "@/lib/utils";
 import {RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
-import {formatMoney, numberField, textField, titleLabel } from "../rowFormat";
+import {formatMoney, numberField, textField, titleLabel } from "@/shared/rowFormat";
 import {formatSignedRatio, formatMultiple } from "../optionsRadarFormat";
 import {recordField, listFromRecord, numberFromRecord } from "../optionsRadarData";
 import {attributionTone, verdictTone, toneText, reasonLabel } from "../optionsRadarTone";

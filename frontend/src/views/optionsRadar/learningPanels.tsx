@@ -5,7 +5,7 @@ import {DataTableFrame, EmptyState, StatusBadge } from "@/components/market/work
 import {cn } from "@/lib/utils";
 import {RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
-import {displayField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
+import {displayField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import {moneyField, formatRatio, formatMultiple, formatScore, formatNumber, formatDate } from "../optionsRadarFormat";
 import {jsonArrayField } from "../optionsRadarData";
 import {toneText } from "../optionsRadarTone";

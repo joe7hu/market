@@ -5,7 +5,7 @@
 import type { RowRecord } from "@/types";
 import type { Tone } from "@/ui/tone";
 
-import { textField, titleLabel, toneFromText } from "./rowFormat";
+import { textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 
 export function stateRank(state: string): number {
   if (state === "READY") return 0;

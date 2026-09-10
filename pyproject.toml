@@ -45,6 +45,7 @@ market-update-disclosures = "investment_panel.jobs.update_disclosure_sources:mai
 market-update-arco-data = "investment_panel.jobs.update_arco_sources:main"
 market-refresh-options-radar = "investment_panel.jobs.refresh_options_radar:main"
 market-publish-ticker-decisions = "investment_panel.jobs.ticker_decisions:main"
+market-run-strategy-research = "investment_panel.jobs.strategy_research:main"
 market-stock-alpha-walk-forward = "investment_panel.jobs.stock_alpha_walk_forward:main"
 market-hourly-options-radar = "investment_panel.jobs.hourly_options_radar:main"
 market-premarket-options-intelligence = "investment_panel.jobs.premarket_options_intelligence:main"

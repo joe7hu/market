@@ -15,7 +15,7 @@ import type { AppModel } from "@/model";
 import type { PanelData, ScopeSnapshotStatus } from "@/types";
 import { expressionLabel } from "@/viewModels/expression";
 import { buildPortfolioViewModel } from "@/viewModels/portfolio";
-import { formatMoney, formatPct, toneFromText, type Tone } from "./rowFormat";
+import { formatMoney, formatPct, toneFromText, type Tone } from "@/shared/rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
 
 type TodayPageProps = {
@@ -67,7 +67,8 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
   const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
   const largestHolding = pricedHoldings.slice().sort((a, b) => (b.weight ?? -Infinity) - (a.weight ?? -Infinity))[0];
   const { summary } = buildPortfolioViewModel(data, model);
-  const hasPortfolioSummary = Boolean(data.portfolioSummary?.rows?.length);
+  const hasPortfolioSummary = data.portfolioSummaryDto !== undefined && data.portfolioSummaryDto !== null;
+  const hasTotalPnl = hasPortfolioSummary && summary.totalPnl !== null;
   const hasBrief = Boolean(actionQueue);
 
   return (
@@ -88,9 +89,9 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricTile
           label="Total P&L"
-          value={hasPortfolioSummary ? `${formatMoney(summary.totalPnl)}${summary.totalPnlPct === null ? "" : ` (${formatPct(summary.totalPnlPct)})`}` : "Unavailable"}
+          value={summary.totalPnl !== null && hasTotalPnl ? `${formatMoney(summary.totalPnl, summary.currency)}${summary.totalPnlPct === null ? "" : ` (${formatPct(summary.totalPnlPct)})`}` : "Unavailable"}
           caption={hasPortfolioSummary ? `Return on invested capital · ${summary.asOf ? new Date(summary.asOf).toLocaleString() : "Quote time unavailable"}` : "Portfolio summary is not loaded."}
-          tone={!hasPortfolioSummary ? "muted" : summary.totalPnl >= 0 ? "good" : "bad"}
+          tone={summary.totalPnl === null || !hasTotalPnl ? "muted" : summary.totalPnl >= 0 ? "good" : "bad"}
         />
         <MetricTile label="Decisions due" value={categoryStates.decide_now?.total_count ?? "Unavailable"} caption={`${decideNow.length} shown · candidates, risks, thesis reviews`} tone={decideNow.length ? "warn" : "muted"} />
         <MetricTile label="Source updates" value={categoryStates.whats_changed?.total_count ?? "Unavailable"} caption={`${whatsChanged.length} shown · published changes; source coverage ${categoryStates.whats_changed?.coverage_status ?? "unknown"}`} tone={whatsChanged.length ? "info" : "muted"} />

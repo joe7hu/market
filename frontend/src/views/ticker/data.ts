@@ -1,5 +1,5 @@
 import type { Coverage, JsonValue, RowRecord, TickerDossier, TickerPayload } from "@/types";
-import { displayField, formatPct, textField, toneFromText } from "@/views/rowFormat";
+import { displayField, formatPct, textField, toneFromText } from "@/shared/rowFormat";
 import type { Tone } from "@/ui/tone";
 import type { MetricSpec } from "@/views/workspacePage";
 

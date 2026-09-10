@@ -7,7 +7,7 @@ from enum import Enum
 from hashlib import sha256
 import json
 from math import isfinite
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -232,6 +232,45 @@ class PortfolioHoldingDTO(BaseModel):
     valuation_status: str = "unavailable"
     valuation_available: bool = False
     next_step: str = "Review sizing, thesis, and latest evidence."
+
+
+class PortfolioSummaryDTO(BaseModel):
+    """Canonical portfolio valuation state; partial data is never a total."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    as_of: datetime | None = None
+    available_at: datetime | None = None
+    oldest_quote_at: datetime | None = None
+    valuation_as_of: datetime | None = None
+    valuation_available_at: datetime | None = None
+    portfolio_value: float | None = None
+    known_value_subtotal: float | None = None
+    valuation_coverage: float = Field(default=1.0, ge=0, le=1)
+    valuation_blockers: tuple[str, ...] = ()
+    valuation_provenance: dict[str, Any] = Field(default_factory=dict)
+    availability: Literal["complete", "partial", "unavailable"] = "unavailable"
+    cash_balance: float | None = None
+    equity: float | None = None
+    cost_basis: float | None = None
+    net_contributions: float | None = None
+    invested_capital: float | None = None
+    total_pnl: float | None = None
+    total_pnl_pct: float | None = None
+    day_pnl: float | None = None
+    day_pnl_pct: float | None = None
+    day_pnl_as_of: str | None = None
+    day_pnl_status: str = "insufficient_adjacent_history"
+    realized_pnl: float | None = None
+    income: float | None = None
+    fees: float | None = None
+    holdings_count: int = Field(default=0, ge=0)
+    valued_position_count: int = Field(default=0, ge=0)
+    missing_valuation_count: int = Field(default=0, ge=0)
+    cost_basis_fallback_count: int = Field(default=0, ge=0)
+    valuation_status: str = "unavailable"
+    currency: str | None = None
+    performance_method: str = "daily-close external-flow adjusted"
 
 
 class PortfolioCandidate(BaseModel):

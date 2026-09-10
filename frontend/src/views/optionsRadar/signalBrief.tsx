@@ -5,7 +5,7 @@ import {StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { JsonValue, RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
-import {displayField, fullField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
+import {displayField, fullField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
 import {moneyField, formatRatio, formatNumber, formatDate, formatScore } from "../optionsRadarFormat";
 import {recordField, numberFromRecord, stringFromRecord, boolFromRecord } from "../optionsRadarData";
 import {stateTone, tierTone, thesisStateTone, thesisValidationLabel, validationStatusLabel, validationStatusTone } from "../optionsRadarTone";

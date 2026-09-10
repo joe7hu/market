@@ -7,10 +7,10 @@ from math import isfinite
 from typing import Any
 from urllib.parse import quote
 
-from investment_panel.api import panel_snapshot as panel_owner
+from investment_panel.application.read_models import panel_snapshot as panel_owner
 from investment_panel.infrastructure.postgres.options_research import OptionsResearchRepository
-from investment_panel.api.data_access import loaders, payloads
-from investment_panel.api.data_access.types import PanelData
+from investment_panel.application.read_models import loaders, payloads
+from investment_panel.application.read_models.types import PanelData
 from investment_panel.settings import AppConfig
 from investment_panel.domain.decision import (
     AvailabilityStatus,

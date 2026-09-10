@@ -35,3 +35,15 @@ all interfaces so the app can be browsed from another local device:
 
 - API: `uv run uvicorn investment_panel.api.main:app --reload --host 0.0.0.0 --port 8000`
 - Frontend: `npm --prefix frontend run dev`
+
+## Navigation and checks
+
+- Architecture: `ARCHITECTURE.md` and `scripts/architecture_inventory.py`.
+- Factors: `src/investment_panel/domain/factors/`; signals:
+  `domain/signals/`; strategy calculations:
+  `domain/strategies/implementations.py`; bindings and definitions:
+  `domain/strategies/catalog.py`.
+- Strategy sequencing and replay: `workflows/strategies.py`; PostgreSQL
+  resolution/evidence: `infrastructure/postgres/strategy_factory.py`.
+- Run the affected focused test first, then `make guards`, `make check`, and
+  the final `make release-gate` for an integrated candidate.

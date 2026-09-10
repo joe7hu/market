@@ -7,7 +7,7 @@ import { decisionReason } from "@/components/market/dataFieldState";
 import { DataTableFrame, EmptyState } from "@/components/market/workstation";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { rows } from "@/utils";
-import { textField } from "./rowFormat";
+import { textField } from "@/shared/rowFormat";
 import type { PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import type { OpenTicker } from "./workspacePage";
 

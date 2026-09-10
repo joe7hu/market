@@ -438,7 +438,7 @@ it("renders stored brief and portfolio risk shapes with omitted optional analysi
 
 it("shows published category totals and the same backend portfolio return as Portfolio", () => {
   const data = emptyPanelData();
-  data.portfolioSummary = { count: 1, rows: [{ portfolio_value: 240, total_pnl: 40, total_pnl_pct: 20, as_of: "2026-09-04T20:00:00Z" }] };
+  data.portfolioSummaryDto = { availability: "complete", portfolio_value: 240, total_pnl: 40, total_pnl_pct: 20, as_of: "2026-09-04T20:00:00Z", valuation_coverage: 1, valuation_blockers: [], cost_basis_fallback_count: 0, day_pnl_status: "ready", holdings_count: 1, missing_valuation_count: 1, performance_method: "test", valuation_status: "market_quotes", valued_position_count: 1 };
   const markup = renderToStaticMarkup(createElement(TodayPage, {
     data, model: buildModel(data), lastRefresh: null,
     actionQueue: { ...response,
