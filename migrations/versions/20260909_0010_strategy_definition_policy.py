@@ -16,24 +16,24 @@ def upgrade() -> None:
             ADD COLUMN definition_blockers jsonb NOT NULL DEFAULT '[]'::jsonb,
             ADD CONSTRAINT strategy_revision_definition_blockers_check
                 CHECK (jsonb_typeof(definition_blockers) = 'array');
+        """,
+    )
 
-        -- Preserve incomplete historical rows as readable, non-executable
-        -- records without leaving a half-populated identity pair.
-        SELECT set_config('market.strategy_implementation_backfill', 'on', true);
+    # Keep each UPDATE in its own database statement. The strategy table has
+    # deferred constraint triggers, and PostgreSQL will not ALTER it while
+    # trigger events from an earlier statement are still pending.
+    op.execute("SELECT set_config('market.strategy_implementation_backfill', 'on', true)")
+    op.execute(
+        """
         UPDATE analysis.strategy_revision
            SET implementation_id = NULL,
                implementation_version = NULL,
                p3_enabled = false
          WHERE (implementation_id IS NULL) <> (implementation_version IS NULL);
-
-        ALTER TABLE analysis.strategy_revision
-            ADD CONSTRAINT strategy_revision_implementation_pair_check
-                CHECK (
-                    (implementation_id IS NULL AND implementation_version IS NULL)
-                    OR (implementation_id IS NOT NULL AND implementation_version IS NOT NULL
-                        AND btrim(implementation_id) <> '' AND btrim(implementation_version) <> '')
-                );
-
+        """,
+    )
+    op.execute(
+        """
         -- 0009 derived some bindings from mechanism names. Keep rows readable,
         -- but disable only identities that are incomplete, unknown, or use a
         -- version that is no longer an executable implementation.
@@ -52,14 +52,35 @@ def upgrade() -> None:
             OR (implementation_id = 'options_recovery' AND implementation_version <> '2')
             OR (implementation_id = 'crypto_funding_basis' AND implementation_version <> '1')
             OR (implementation_id = 'volatility_aware_momentum' AND implementation_version <> '1');
-
+        """,
+    )
+    # Flush the deferred research trigger before the next ALTER TABLE. It is
+    # intentionally kept enabled; this only makes the migration's queued
+    # checks run at a safe DDL boundary.
+    op.execute("SET CONSTRAINTS ALL IMMEDIATE")
+    op.execute(
+        """
+        ALTER TABLE analysis.strategy_revision
+            ADD CONSTRAINT strategy_revision_implementation_pair_check
+                CHECK (
+                    (implementation_id IS NULL AND implementation_version IS NULL)
+                    OR (implementation_id IS NOT NULL AND implementation_version IS NOT NULL
+                        AND btrim(implementation_id) <> '' AND btrim(implementation_version) <> '')
+                );
+        """,
+    )
+    op.execute(
+        """
         ALTER TABLE analysis.strategy_revision
             ADD CONSTRAINT strategy_revision_executable_binding_check
                 CHECK (
                     NOT p3_enabled
                     OR (implementation_id IS NOT NULL AND implementation_version IS NOT NULL)
                 );
-
+        """,
+    )
+    op.execute(
+        """
         CREATE OR REPLACE FUNCTION analysis.enforce_strategy_implementation_identity_immutable() RETURNS trigger
             LANGUAGE plpgsql
             AS $$

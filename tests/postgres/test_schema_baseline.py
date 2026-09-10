@@ -6,6 +6,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION, alembic_config, upgrade_database
 from investment_panel.infrastructure.postgres.panel_models import QUERY_POLICIES
@@ -105,6 +106,30 @@ def test_previous_strategy_binding_revision_upgrades_to_head(postgres_dsn):
     upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+
+
+def test_strategy_definition_policy_upgrade_flushes_revision_trigger_events(postgres_dsn):
+    upgrade_database(postgres_dsn, '20260909_0009')
+    with psycopg.connect(postgres_dsn) as connection:
+        connection.execute(
+            """INSERT INTO analysis.strategy_revision
+               (strategy_key, revision, name, status, parameters, authority_group,
+                implementation_id, implementation_version, p3_enabled)
+               VALUES ('migration-trigger-test', 1, 'Migration trigger test', 'candidate', %s,
+                       'migration-test', 'retired-implementation', '1', false)""",
+            [Jsonb({})],
+        )
+
+    upgrade_database(postgres_dsn)
+
+    with psycopg.connect(postgres_dsn) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+        row = connection.execute(
+            """SELECT definition_blockers, implementation_id, implementation_version, p3_enabled
+                 FROM analysis.strategy_revision
+                WHERE strategy_key = 'migration-trigger-test'""",
+        ).fetchone()
+        assert row == ([], "retired-implementation", "1", False)
 
 
 def test_continuous_advisor_schema_is_append_only_and_advisory_only(postgres_dsn):
