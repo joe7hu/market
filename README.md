@@ -29,6 +29,12 @@ Open:
 http://127.0.0.1:5173/today
 ```
 
+From another device on the local network, use:
+
+```text
+http://mini1.local:5173/today
+```
+
 Checkout development serves the built frontend from `frontend/dist`. An
 installed Python wheel is API-only unless deployment sets
 `MARKET_FRONTEND_DIST` to a built frontend directory and

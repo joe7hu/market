@@ -25,10 +25,13 @@ uv run uvicorn investment_panel.api.main:app --reload --host 0.0.0.0 --port 8000
 npx vite --host 0.0.0.0
 ```
 
+Open the app from another local device at `http://mini1.local:5173/today`.
+The API-served build is also available at `http://mini1.local:8000/today`.
+
 Verify the API from another local device:
 
 ```text
-http://192.168.50.197:8000/api/status
+http://mini1.local:8000/api/status
 ```
 
 ## Step Order
