@@ -54,6 +54,7 @@ def research_summary(runtime: DatabaseRuntime, config: AppConfig) -> dict[str, A
                            evaluation.evaluation_type, evaluation.verdict, evaluation.evaluated_at,
                            evaluation.available_at, evaluation.period_start, evaluation.period_end,
                            evaluation.metrics, evaluation.evidence, evaluation.input_hash,
+                           evaluation.output_hash,
                            evaluation.run_id, evaluation.scope, evaluation.mode, evaluation.lineage,
                            row_number() OVER (
                                PARTITION BY evaluation.evaluation_type
@@ -235,6 +236,7 @@ def evaluation_summary(row: dict[str, Any]) -> dict[str, Any]:
         "run_id": str(row["run_id"]) if row.get("run_id") is not None else None,
         "scope": row.get("scope") or lineage.get("scope"), "mode": row.get("mode") or lineage.get("mode"),
         "available_at": row.get("available_at"), "input_hash": row.get("input_hash"),
+        "output_hash": row.get("output_hash"),
         "period_start": row.get("period_start"), "period_end": row.get("period_end"),
         "actionability": metrics.get("actionability") if stage == "strategy_signal" else None,
         "signal_value": _number(metrics.get("value")) if stage == "strategy_signal" else None,

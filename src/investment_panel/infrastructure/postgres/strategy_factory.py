@@ -71,18 +71,48 @@ class StrategyFactoryRepository:
             ).fetchone()
         return {"run_id": str(row["id"]), "started_at": row["started_at"], "input_hash": input_hash}
 
-    def finish_strategy_run(self, run_id: str, *, status: str, summary: Mapping[str, Any]) -> None:
+    def finish_strategy_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        summary: Mapping[str, Any],
+        input_manifest: Mapping[str, Any] | None = None,
+    ) -> None:
         if status not in {"succeeded", "partial", "failed", "canceled"}:
             raise ValueError("strategy run terminal status is invalid")
         with self.runtime.transaction(JOB_PROFILE) as connection:
-            updated = connection.execute(
-                """UPDATE analysis.run
-                      SET status = %s, finished_at = clock_timestamp(), summary = %s
-                    WHERE id = %s AND run_type = 'strategy_research' AND status = 'running'""",
-                [status, Jsonb(dict(summary)), run_id],
-            ).rowcount
-            if updated != 1:
+            run = connection.execute(
+                """SELECT status, input_hash
+                     FROM analysis.run
+                    WHERE id = %s AND run_type = 'strategy_research'
+                    FOR UPDATE""",
+                [run_id],
+            ).fetchone()
+            if run is None or run["status"] != "running":
                 raise ValueError("strategy run is missing or already terminal")
+            if input_manifest is None:
+                connection.execute(
+                    """UPDATE analysis.run
+                          SET status = %s, finished_at = clock_timestamp(), summary = %s
+                        WHERE id = %s""",
+                    [status, Jsonb(dict(summary)), run_id],
+                )
+                return
+            resolved_manifest = dict(input_manifest)
+            final_input_hash = content_hash({
+                "planned_input_hash": run["input_hash"],
+                "resolved_input_manifest": resolved_manifest,
+            })
+            connection.execute(
+                """UPDATE analysis.run
+                      SET status = %s, finished_at = clock_timestamp(), summary = %s,
+                          input_hash = %s,
+                          inputs = inputs || %s
+                    WHERE id = %s""",
+                [status, Jsonb(dict(summary)), final_input_hash,
+                 Jsonb({"resolved_input_manifest": resolved_manifest}), run_id],
+            )
 
     def register(self, spec: StrategySpec, *, status: str = "candidate", supersedes_id: int | None = None) -> int:
         family = "martingale" if is_martingale_family(
@@ -237,6 +267,29 @@ class StrategyFactoryRepository:
             "cutoff": input_cutoff.isoformat(), "mode": mode, "manifest": input_manifest,
         })
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            run = connection.execute(
+                """SELECT run_type, status, input_cutoff, inputs
+                     FROM analysis.run
+                    WHERE id = %s
+                    FOR UPDATE""",
+                [run_id],
+            ).fetchone()
+            if run is None or run["run_type"] != "strategy_research" or run["status"] != "running":
+                raise ValueError("strategy evaluation requires a running strategy research run")
+            if run["input_cutoff"] != input_cutoff:
+                raise ValueError("strategy evaluation cutoff does not match its run")
+            run_inputs = run["inputs"] if isinstance(run["inputs"], Mapping) else {}
+            if run_inputs.get("mode") != mode:
+                raise ValueError("strategy evaluation mode does not match its run")
+            planned_revisions = {
+                (str(item[0]), int(item[1]))
+                for item in run_inputs.get("strategy_revisions", ())
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            }
+            if (strategy_key, revision) not in planned_revisions:
+                raise ValueError("strategy evaluation revision is not part of its run")
+            if scope not in {str(item) for item in run_inputs.get("scopes", ())}:
+                raise ValueError("strategy evaluation scope is not part of its run")
             row = connection.execute(
                 """SELECT id, implementation_id, implementation_version
                      FROM analysis.strategy_revision

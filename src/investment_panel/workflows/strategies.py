@@ -77,6 +77,7 @@ class StrategyWorkflow:
                 input_cutoff=_utc(input_cutoff), mode=mode,
             )
         results: list[StrategyRunResult] = []
+        run_manifest_entries: list[dict[str, Any]] = []
         try:
             for scope, raw_inputs in inputs_by_scope.items():
                 inputs = dict(raw_inputs)
@@ -92,6 +93,8 @@ class StrategyWorkflow:
                         context = EvaluationContext(snapshot)
                         contexts[context_key] = context
                 for spec in specs:
+                    if context is not None:
+                        context.begin_evaluation()
                     signal = evaluate_strategy(
                         spec,
                         inputs,
@@ -119,6 +122,10 @@ class StrategyWorkflow:
                         )
                         evaluation_id = None
                         evaluated_at = None
+                    run_manifest_entries.append({
+                        "scope": str(scope), "strategy_key": spec.strategy_key, "revision": spec.revision,
+                        "input_hash": input_hash, "manifest": manifest,
+                    })
                     results.append(StrategyRunResult(
                         scope=str(scope), strategy_key=spec.strategy_key, revision=spec.revision,
                         mode=mode, input_cutoff=_utc(input_cutoff), generated_at=evaluated_at or generated_at,
@@ -131,11 +138,13 @@ class StrategyWorkflow:
                 self.repository.finish_strategy_run(
                     run_record["run_id"], status="succeeded",
                     summary={"result_count": len(results), "available_count": sum(item.signal.status == "available" for item in results)},
+                    input_manifest=_resolved_run_manifest(run_manifest_entries),
                 )
         except BaseException as exc:
             if run_record is not None:
                 self.repository.finish_strategy_run(
                     run_record["run_id"], status="failed", summary={"error": type(exc).__name__, "result_count": len(results)},
+                    input_manifest=_resolved_run_manifest(run_manifest_entries),
                 )
             raise
         return tuple(results)
@@ -173,10 +182,19 @@ def _input_manifest(spec: Any, inputs: Mapping[str, Any], snapshot: Any, mode: s
         },
         "factor_computation": {
             "catalog_identity": context.catalog_identity if context is not None else None,
-            "trace": context.trace if context is not None else (),
-            "manifest": context.manifest if context is not None else (),
+            "trace": context.evaluation_trace if context is not None else (),
+            "manifest": context.evaluation_manifest if context is not None else (),
         },
     })
+
+
+def _resolved_run_manifest(entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    return {
+        "evaluations": sorted(
+            (_jsonable(dict(entry)) for entry in entries),
+            key=lambda item: (str(item.get("scope", "")), str(item.get("strategy_key", "")), int(item.get("revision", 0))),
+        ),
+    }
 
 
 def _jsonable(value: Any) -> Any:

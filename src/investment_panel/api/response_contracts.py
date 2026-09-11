@@ -425,6 +425,7 @@ class ResearchEvaluationResponse(BaseModel):
     period_start: datetime | None = None
     period_end: datetime | None = None
     input_hash: str | None = None
+    output_hash: str | None = None
     actionability: str | None = None
     signal_value: float | None = None
     signal_direction: str | None = None

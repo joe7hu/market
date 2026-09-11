@@ -11,7 +11,7 @@ from conftest import typed_config
 from investment_panel.api import dependencies
 from investment_panel.api.main import app
 from investment_panel.domain.research.stock_alpha import content_hash
-from investment_panel.domain.strategies.catalog import evaluate_strategy, resolve_builtin_strategy, StrategySpec
+from investment_panel.domain.strategies.catalog import StrategySignal, StrategySpec, evaluate_strategy, resolve_builtin_strategy
 from investment_panel.infrastructure.postgres.migrations import downgrade_database, upgrade_database
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.confirmed_daily_prices import completed_trading_dates
@@ -393,6 +393,36 @@ def test_phase3_strategy_loader_exposes_named_option_unavailability(
         runtime.close()
 
 
+def test_phase3_evaluation_must_match_a_running_planned_scope(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    cutoff = datetime.now(UTC)
+    try:
+        repository = StrategyFactoryRepository(runtime)
+        spec = resolve_builtin_strategy("daily_event_propagation_v1")
+        repository.register(spec)
+        run = repository.start_strategy_run(
+            strategy_keys=(spec.strategy_key,), strategy_revisions=((spec.strategy_key, spec.revision),),
+            scopes=("ONLY",), input_cutoff=cutoff, mode="research",
+        )
+        signal = StrategySignal(strategy_key=spec.strategy_key, status="unavailable", blockers=("test",))
+        with pytest.raises(ValueError, match="scope"):
+            repository.record_signal_evaluation_record(
+                spec.strategy_key, spec.revision, signal, run_id=run["run_id"], scope="OTHER",
+                input_snapshot_identity=None, input_cutoff=cutoff, mode="research", input_manifest={},
+            )
+        repository.finish_strategy_run(run["run_id"], status="failed", summary={"test": True})
+        with pytest.raises(ValueError, match="running"):
+            repository.record_signal_evaluation_record(
+                spec.strategy_key, spec.revision, signal, run_id=run["run_id"], scope="ONLY",
+                input_snapshot_identity=None, input_cutoff=cutoff, mode="research", input_manifest={},
+            )
+    finally:
+        runtime.close()
+
+
 def test_phase3_strategy_workflow_persists_replays_and_reaches_typed_api(
     migrated_postgres_dsn: str,
     application_postgres_dsn: str,
@@ -453,6 +483,7 @@ def test_phase3_strategy_workflow_persists_replays_and_reaches_typed_api(
         assert stored["input_manifest"]["strategy"]["implementation_version"] == "1"
         assert len(stored["output_hash"]) == 64
         assert run_inputs["strategy_revisions"] == [[spec.strategy_key, spec.revision]]
+        assert run_inputs["resolved_input_manifest"]["evaluations"][0]["input_hash"] == replay[0].input_hash
 
         config = typed_config(application_postgres_dsn)
         monkeypatch.setitem(
@@ -467,6 +498,7 @@ def test_phase3_strategy_workflow_persists_replays_and_reaches_typed_api(
         evaluation = next(row for row in summary["evaluations"] if row["stage"] == "strategy_signal")
         assert evaluation["actionability"] == "research_only"
         assert evaluation["signal_direction"] == "long"
+        assert evaluation["output_hash"] == stored["output_hash"]
     finally:
         runtime.close()
 

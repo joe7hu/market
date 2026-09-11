@@ -4,8 +4,10 @@ import pytest
 
 import investment_panel.domain.signals.catalog as signal_catalog
 import investment_panel.domain.strategies.implementations as strategy_implementations
-from investment_panel.domain.strategies.catalog import resolve_builtin_strategy
-from investment_panel.workflows.strategies import StrategyWorkflow
+from investment_panel.domain.strategies.catalog import evaluate_strategy, resolve_builtin_strategy
+from investment_panel.domain.strategies.implementations import factor_snapshot_for_inputs
+from investment_panel.domain.factors import EvaluationContext
+from investment_panel.workflows.strategies import StrategyWorkflow, _input_manifest
 
 
 class MemoryStrategyRepository:
@@ -78,3 +80,20 @@ def test_persisted_strategy_workflow_reuses_context_and_replay_keeps_new_generat
     )
     assert [result.signal.model_dump() for result in replay] == [result.signal.model_dump() for result in results]
     assert all(result.mode == "replay" for result in replay)
+
+
+def test_strategy_manifests_are_local_while_context_memo_is_shared() -> None:
+    repository = MemoryStrategyRepository()
+    inputs = _inputs()["AAA"]
+    snapshot = factor_snapshot_for_inputs(inputs)
+    context = EvaluationContext(snapshot)
+    manifests = []
+    for spec in repository.specs.values():
+        context.begin_evaluation()
+        result = evaluate_strategy(spec, inputs, factor_context=context)
+        manifests.append(_input_manifest(spec, {**inputs, "scope": "AAA"}, snapshot, "research", context))
+        assert result.status == "available"
+    first_keys = {item["key"] for item in manifests[0]["factor_computation"]["manifest"]}
+    second_keys = {item["key"] for item in manifests[1]["factor_computation"]["manifest"]}
+    assert first_keys == {"price.momentum"}
+    assert second_keys == {"price.momentum", "risk.realized_volatility"}

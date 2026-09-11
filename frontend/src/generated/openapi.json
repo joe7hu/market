@@ -12446,6 +12446,17 @@
             ],
             "title": "Net Return Lower Bound"
           },
+          "output_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Hash"
+          },
           "period_end": {
             "anyOf": [
               {

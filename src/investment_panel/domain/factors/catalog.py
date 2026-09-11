@@ -189,10 +189,17 @@ class EvaluationContext:
     computation_count: int = 0
     manifest: list[dict[str, Any]] = field(default_factory=list)
     active_requests: set[str] = field(default_factory=set)
+    evaluation_trace: list[dict[str, str]] = field(default_factory=list)
+    evaluation_manifest: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.max_computations <= 0:
             raise ValueError("factor evaluation computation bound must be positive")
+
+    def begin_evaluation(self) -> None:
+        """Start a strategy-local provenance window without clearing the memo."""
+        self.evaluation_trace.clear()
+        self.evaluation_manifest.clear()
 
 
 FactorEvaluator = Callable[[InputSnapshot, FactorParameters, Mapping[str, FactorResult]], FactorResult]
@@ -607,6 +614,7 @@ def evaluate_factors(
             active_context.active_requests.discard(normalized_request.request_id)
 
     results = FactorResults(aliases=aliases)
+    canonical_request_ids: list[str] = []
     for request in requests:
         result = evaluate(request)
         definition = definitions[request.key]
@@ -617,6 +625,38 @@ def evaluate_factors(
         )
         aliases[request] = canonical_request
         results[canonical_request] = result
+        canonical_request_ids.append(canonical_request.request_id)
+
+    manifest_by_request = {
+        str(item["request_id"]): item for item in active_context.manifest
+    }
+    required_request_ids = set(canonical_request_ids)
+    pending = list(canonical_request_ids)
+    while pending:
+        request_id = pending.pop()
+        entry = manifest_by_request.get(request_id)
+        if entry is None:
+            continue
+        for dependency_id in entry.get("dependencies", ()):
+            dependency_key = str(dependency_id)
+            if dependency_key not in required_request_ids:
+                required_request_ids.add(dependency_key)
+                pending.append(dependency_key)
+    selected_manifest = [
+        manifest_by_request[request_id]
+        for request_id in sorted(required_request_ids)
+        if request_id in manifest_by_request
+    ]
+    selected_trace = [
+        item for item in active_context.trace
+        if str(item.get("request_id")) in required_request_ids
+    ]
+    for target, selected in (
+        (active_context.evaluation_manifest, selected_manifest),
+        (active_context.evaluation_trace, selected_trace),
+    ):
+        known = {str(item.get("request_id")) for item in target}
+        target.extend(item for item in selected if str(item.get("request_id")) not in known)
     return results
 
 

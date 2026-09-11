@@ -5826,6 +5826,8 @@ export interface components {
             mode?: string | null;
             /** Net Return Lower Bound */
             net_return_lower_bound?: number | null;
+            /** Output Hash */
+            output_hash?: string | null;
             /** Period End */
             period_end?: string | null;
             /** Period Start */
