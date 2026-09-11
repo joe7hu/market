@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from typing import Any, Iterable, Mapping
 
 from psycopg.types.json import Jsonb
@@ -40,6 +41,101 @@ class StrategyFactoryRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
+    @staticmethod
+    def _validate_supersedes_parent(connection: Any, spec: StrategySpec, supersedes_id: int) -> None:
+        parent = connection.execute(
+            """SELECT id, strategy_key, revision, authority_group
+                 FROM analysis.strategy_revision
+                WHERE id = %s
+                FOR UPDATE""",
+            [supersedes_id],
+        ).fetchone()
+        if parent is None:
+            raise ValueError("superseded strategy revision is missing")
+        parent_base, separator, _parent_version = str(parent["strategy_key"]).rpartition("_v")
+        strategy_base, strategy_separator, _strategy_version = spec.strategy_key.rpartition("_v")
+        if (
+            not separator
+            or not strategy_separator
+            or parent_base != strategy_base
+            or int(parent["revision"]) >= spec.revision
+            or parent["authority_group"] != f"phase3:{parent['strategy_key']}"
+        ):
+            raise ValueError("superseded strategy revision is not a valid parent")
+
+    def start_strategy_run(
+        self,
+        *,
+        strategy_keys: tuple[str, ...],
+        strategy_revisions: tuple[tuple[str, int], ...] = (),
+        scopes: tuple[str, ...],
+        input_cutoff: datetime,
+        mode: str,
+    ) -> dict[str, Any]:
+        if mode not in {"research", "replay"}:
+            raise ValueError("strategy run mode is invalid")
+        input_hash = content_hash({
+            "strategy_keys": strategy_keys, "strategy_revisions": strategy_revisions,
+            "scopes": scopes, "cutoff": input_cutoff.isoformat(), "mode": mode,
+        })
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            row = connection.execute(
+                """INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, feature_versions,
+                     input_hash, started_at, status, summary, inputs)
+                   VALUES ('strategy_research', %s, %s, %s, %s, clock_timestamp(), 'running', %s, %s)
+                RETURNING id, started_at""",
+                [input_cutoff, os.environ.get("MARKET_BACKEND_COMMIT", "unknown"),
+                 Jsonb({"strategy_workflow": "v2"}), input_hash,
+                 Jsonb({"planned_count": len(strategy_keys) * len(scopes), "mode": mode}),
+                 Jsonb({"strategy_keys": list(strategy_keys), "strategy_revisions": [list(item) for item in strategy_revisions],
+                        "scopes": list(scopes), "mode": mode})],
+            ).fetchone()
+        return {"run_id": str(row["id"]), "started_at": row["started_at"], "input_hash": input_hash}
+
+    def finish_strategy_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        summary: Mapping[str, Any],
+        input_manifest: Mapping[str, Any] | None = None,
+    ) -> None:
+        if status not in {"succeeded", "partial", "failed", "canceled"}:
+            raise ValueError("strategy run terminal status is invalid")
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            run = connection.execute(
+                """SELECT status, input_hash
+                     FROM analysis.run
+                    WHERE id = %s AND run_type = 'strategy_research'
+                    FOR UPDATE""",
+                [run_id],
+            ).fetchone()
+            if run is None or run["status"] != "running":
+                raise ValueError("strategy run is missing or already terminal")
+            if input_manifest is None:
+                connection.execute(
+                    """UPDATE analysis.run
+                          SET status = %s, finished_at = clock_timestamp(), summary = %s
+                        WHERE id = %s""",
+                    [status, Jsonb(dict(summary)), run_id],
+                )
+                return
+            resolved_manifest = dict(input_manifest)
+            final_input_hash = content_hash({
+                "planned_input_hash": run["input_hash"],
+                "resolved_input_manifest": resolved_manifest,
+            })
+            connection.execute(
+                """UPDATE analysis.run
+                      SET status = %s, finished_at = clock_timestamp(), summary = %s,
+                          input_hash = %s,
+                          inputs = inputs || %s
+                    WHERE id = %s""",
+                [status, Jsonb(dict(summary)), final_input_hash,
+                 Jsonb({"resolved_input_manifest": resolved_manifest}), run_id],
+            )
+
     def register(self, spec: StrategySpec, *, status: str = "candidate", supersedes_id: int | None = None) -> int:
         family = "martingale" if is_martingale_family(
             spec.strategy_key, spec.mechanism_class, spec.name, spec.strategy_family,
@@ -56,12 +152,16 @@ class StrategyFactoryRepository:
                 """SELECT id, name, mechanism_class, economic_mechanism, falsification_rule,
                           source_definition_version, strategy_family, promotability,
                           actionability, p3_enabled, parameters, authority_group,
-                          implementation_id, implementation_version, definition_blockers
+                          implementation_id, implementation_version, definition_blockers, supersedes_id
                      FROM analysis.strategy_revision
                     WHERE strategy_key = %s AND revision = %s""",
                 [spec.strategy_key, spec.revision],
             ).fetchone()
             if existing is not None:
+                if supersedes_id is not None:
+                    if existing["supersedes_id"] != supersedes_id:
+                        raise ValueError("strategy revision supersession identity conflicts")
+                    self._validate_supersedes_parent(connection, spec, supersedes_id)
                 manifest = connection.execute(
                     """SELECT source_definition_version, source_manifest, data_manifest,
                               cost_manifest, capacity_manifest, failure_manifest
@@ -88,6 +188,12 @@ class StrategyFactoryRepository:
                 ):
                     raise ValueError("strategy revision or manifest identity conflicts")
                 return int(existing["id"])
+            if supersedes_id is not None:
+                self._validate_supersedes_parent(connection, spec, supersedes_id)
+                connection.execute(
+                    "UPDATE analysis.strategy_revision SET p3_enabled = false WHERE id = %s",
+                    [supersedes_id],
+                )
             revision = connection.execute(
                 """INSERT INTO analysis.strategy_revision
                    (strategy_key, revision, name, status, parameters, supersedes_id,
@@ -154,7 +260,8 @@ class StrategyFactoryRepository:
                 [
                     row["id"], input_cutoff, input_cutoff, signal.status,
                     Jsonb({"value": signal.value, "direction": signal.direction,
-                           "actionability": signal.actionability, "horizon": signal.horizon}),
+                           "actionability": signal.actionability, "horizon": signal.horizon,
+                           "regime": signal.regime}),
                     Jsonb([signal.evidence]), input_hash,
                            Jsonb({"mode": mode, "scope": scope, "input_snapshot_identity": input_snapshot_identity,
                            "strategy_key": strategy_key, "revision": revision,
@@ -164,6 +271,104 @@ class StrategyFactoryRepository:
                 ],
             )
         return input_hash
+
+    def record_signal_evaluation_record(
+        self,
+        strategy_key: str,
+        revision: int,
+        signal: StrategySignal,
+        *,
+        run_id: str,
+        scope: str,
+        input_snapshot_identity: str | None,
+        input_cutoff: datetime,
+        mode: str,
+        input_manifest: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one immutable signal with separate input and output identities."""
+        if mode not in {"research", "replay"}:
+            raise ValueError("strategy signal publication mode is invalid")
+        if input_cutoff.tzinfo is None:
+            raise ValueError("strategy signal input cutoff must be timezone-aware")
+        if signal.strategy_key != strategy_key:
+            raise ValueError("strategy signal identity does not match strategy key")
+        payload = signal.model_dump(mode="json")
+        output_hash = content_hash(payload)
+        input_hash = content_hash({
+            "strategy_key": strategy_key, "revision": revision, "scope": scope,
+            "input_snapshot_identity": input_snapshot_identity,
+            "cutoff": input_cutoff.isoformat(), "mode": mode, "manifest": input_manifest,
+        })
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            run = connection.execute(
+                """SELECT run_type, status, input_cutoff, inputs
+                     FROM analysis.run
+                    WHERE id = %s
+                    FOR UPDATE""",
+                [run_id],
+            ).fetchone()
+            if run is None or run["run_type"] != "strategy_research" or run["status"] != "running":
+                raise ValueError("strategy evaluation requires a running strategy research run")
+            if run["input_cutoff"] != input_cutoff:
+                raise ValueError("strategy evaluation cutoff does not match its run")
+            run_inputs = run["inputs"] if isinstance(run["inputs"], Mapping) else {}
+            if run_inputs.get("mode") != mode:
+                raise ValueError("strategy evaluation mode does not match its run")
+            planned_revisions = {
+                (str(item[0]), int(item[1]))
+                for item in run_inputs.get("strategy_revisions", ())
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            }
+            if (strategy_key, revision) not in planned_revisions:
+                raise ValueError("strategy evaluation revision is not part of its run")
+            if scope not in {str(item) for item in run_inputs.get("scopes", ())}:
+                raise ValueError("strategy evaluation scope is not part of its run")
+            row = connection.execute(
+                """SELECT id, implementation_id, implementation_version
+                     FROM analysis.strategy_revision
+                    WHERE strategy_key = %s AND revision = %s""",
+                [strategy_key, revision],
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown PostgreSQL strategy key: {strategy_key}")
+            existing = connection.execute(
+                """INSERT INTO analysis.strategy_evaluation
+                    (strategy_revision_id, evaluation_type, evaluated_at, period_start,
+                     period_end, verdict, metrics, evidence, input_hash, lineage,
+                     run_id, scope, mode, input_manifest, output_hash)
+                   VALUES (%s, 'strategy_signal', clock_timestamp(), %s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s, %s)
+                   ON CONFLICT (run_id, strategy_revision_id, scope, mode, input_hash) WHERE run_id IS NOT NULL DO NOTHING
+                RETURNING id, evaluated_at, available_at""",
+                [row["id"], input_cutoff, input_cutoff, signal.status,
+                 Jsonb({"value": signal.value, "direction": signal.direction,
+                        "actionability": signal.actionability, "horizon": signal.horizon,
+                        "regime": signal.regime}),
+                 Jsonb(signal.evidence), input_hash,
+                 Jsonb({"mode": mode, "scope": scope, "input_snapshot_identity": input_snapshot_identity,
+                        "strategy_key": strategy_key, "revision": revision,
+                        "implementation_id": row["implementation_id"],
+                        "implementation_version": row["implementation_version"],
+                        "blockers": list(signal.blockers)}), run_id, scope, mode,
+                 Jsonb(dict(input_manifest)), output_hash],
+            ).fetchone()
+            if existing is None:
+                existing = connection.execute(
+                    """SELECT id, evaluated_at, available_at, output_hash
+                         FROM analysis.strategy_evaluation
+                        WHERE run_id = %s AND strategy_revision_id = %s
+                          AND scope = %s AND mode = %s AND input_hash = %s""",
+                    [run_id, row["id"], scope, mode, input_hash],
+                ).fetchone()
+                if existing is None or existing.get("output_hash") != output_hash:
+                    raise ValueError("strategy evaluation retry identity conflicts")
+            return {
+                "evaluation_id": str(existing["id"]),
+                "evaluated_at": existing["evaluated_at"],
+                "available_at": existing["available_at"],
+                "input_hash": input_hash,
+                "output_hash": output_hash,
+            }
 
     def record_pnl_tape(self, rows: Iterable[Mapping[str, Any]]) -> int:
         records = tuple(rows)
@@ -252,6 +457,7 @@ class StrategyFactoryRepository:
             "mechanism_class": row["mechanism_class"], "economic_mechanism": row["economic_mechanism"],
             "falsification_rule": row["falsification_rule"], "source_definition_version": row["source_definition_version"],
             "strategy_family": row["strategy_family"], "promotability": row["promotability"], "actionability": row["actionability"],
+            "enabled": bool(row["p3_enabled"]),
             "parameters": row["parameters"], "manifest": {key: row[f"{key}_manifest"] for key in MANIFEST_PARTS},
             "implementation_id": row["implementation_id"],
             "implementation_version": row["implementation_version"],

@@ -41,6 +41,7 @@ export function ResearchResults({ data, onOpenTicker }: { data: Summary; onOpenT
         <p className="font-medium">{titleLabel(evaluation.stage)} · {titleLabel(evaluation.verdict)}</p>
         <p className="text-xs text-muted-foreground">Measured period: {evaluation.period_start && evaluation.period_end ? `${new Date(evaluation.period_start).toLocaleDateString()} – ${new Date(evaluation.period_end).toLocaleDateString()}` : "not recorded"}. Evaluated: {evaluation.evaluated_at ? new Date(evaluation.evaluated_at).toLocaleString() : "not recorded"}.</p>
         <p>Independent observations: {evaluation.independent_sample_count ?? "unknown"}</p>
+        {evaluation.stage === "strategy_signal" && evaluation.signal_regime ? <p>Signal regime: {titleLabel(evaluation.signal_regime)}</p> : null}
         <p>Return after {evaluation.evidence_basis === "independent_options_paper" ? "actual paper" : "modeled"} costs, lower estimate: {evaluation.net_return_lower_bound == null ? "unknown" : formatPct(evaluation.net_return_lower_bound * 100)}</p>
         <p>Probability error (Brier): {evaluation.brier_score == null ? "unknown" : evaluation.brier_score.toFixed(3)}</p>
         {evaluation.evidence_basis.startsWith("independent_options_") ? <p className="text-xs text-muted-foreground">Comparison: {evaluation.comparison_denominator ?? "unknown"} episodes · window {evaluation.comparison_window_complete == null ? "unknown" : evaluation.comparison_window_complete ? "complete" : "incomplete"} · {evaluation.unmatched_episodes ?? "unknown"} unknown outcomes.</p> : null}

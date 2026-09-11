@@ -26,6 +26,9 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const dataRef = useRef(data);
   const inFlightScopesRef = useRef(new Map<string, Promise<void>>());
+  const generationsRef = useRef(new Map<string, number>());
+  const scopeGenerationsRef = useRef(new Map<string, number>());
+  const eventScoutGenerationRef = useRef(0);
   dataRef.current = data;
 
   const loadScope = useCallback(async (scope: PanelScope, options?: PanelScopeOptions) => {
@@ -38,14 +41,21 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
     const requestKey = `${scope}:${JSON.stringify(options ?? {})}`;
     const inFlight = inFlightScopesRef.current.get(requestKey);
     if (inFlight) return inFlight;
+    const generation = (generationsRef.current.get(requestKey) ?? 0) + 1;
+    generationsRef.current.set(requestKey, generation);
+    const scopeGeneration = (scopeGenerationsRef.current.get(scope) ?? 0) + 1;
+    scopeGenerationsRef.current.set(scope, scopeGeneration);
     const request = (async () => {
       setLoading(true);
       dataRef.current = withScopeStatus(dataRef.current, scope, { state: "loading" });
       setData(dataRef.current);
       try {
         const loaded = await loadPanelScope(scope, options);
+        if (generationsRef.current.get(requestKey) !== generation || scopeGenerationsRef.current.get(scope) !== scopeGeneration) return;
         let supplemental;
+        let eventScoutGeneration: number | undefined;
         if (scope === "today" || scope === "options-radar") {
+          eventScoutGeneration = ++eventScoutGenerationRef.current;
           try {
             supplemental = await loadEventScoutSnapshot();
           } catch {
@@ -53,13 +63,17 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
             // its existing last-good snapshot when the event endpoint is down.
           }
         }
-        let nextData = mergeSnapshot(dataRef.current, loaded.snapshot, options);
+        if (generationsRef.current.get(requestKey) !== generation || scopeGenerationsRef.current.get(scope) !== scopeGeneration) return;
+        let nextData = mergeSnapshot(dataRef.current, loaded.snapshot, { ...options, queryKey: scope, generation: scopeGeneration });
         if (loaded.settings) nextData = { ...nextData, settings: loaded.settings };
-        if (supplemental) nextData = mergeSnapshot(nextData, supplemental);
+        if (supplemental && eventScoutGeneration === eventScoutGenerationRef.current) {
+          nextData = mergeSnapshot(nextData, supplemental, { queryKey: "event-scout", generation: eventScoutGeneration });
+        }
         dataRef.current = nextData;
         setData(nextData);
-        setLastRefresh(new Date());
+        if (nextData.scopeStatus[scope]?.state !== "failed") setLastRefresh(new Date());
       } catch (error) {
+        if (generationsRef.current.get(requestKey) !== generation || scopeGenerationsRef.current.get(scope) !== scopeGeneration) return;
         const message = error instanceof Error ? error.message : "Unable to load this page.";
         const failed = withScopeStatus(dataRef.current, scope, { state: "failed", error: message });
         dataRef.current = failed;

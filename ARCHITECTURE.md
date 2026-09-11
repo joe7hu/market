@@ -46,6 +46,16 @@ and publication identity. A new factor, signal, or strategy adds its concrete
 owner, explicit catalog registration, workflow coverage, and tests; it does
 not add a shared dispatch branch or a second runtime implementation.
 
+Strategy research resolves the union of typed dataset requirements before the
+first evaluation. `infrastructure/postgres/strategy_inputs.py` uses the
+existing point-in-time price authority and exact completed-session calendar;
+the largest price lookback requests one additional close and never substitutes
+an older session. Event and option requirements remain named unavailable when
+their source facts are absent. A strategy run records its resolved revisions,
+scopes, mode, terminal status, input manifest, and separate input/output
+identities. Only a succeeded research run is current; replay rows remain
+labeled historical evidence.
+
 The product remains advisory and paper-only: PostgreSQL is authoritative,
 research and publication evidence is immutable, and missing authorization or
 data blocks action. A Publication is the versioned output selected for API use;
@@ -84,7 +94,7 @@ and mutation routes remain separate.
 | `src/investment_panel/application/read_models/loaders.py` | bounded panel query composition | a Read Model scope needs bounded loading |
 | `src/investment_panel/api/job_control.py` | refresh start, heartbeat, and subprocess boundary | refresh control changes |
 | `src/investment_panel/workflows/options.py` | option workflow sequencing and fail-closed gates | options actions change |
-| `src/investment_panel/workflows/strategies.py` | persisted strategy resolution, factor/signal evaluation, replay, and research evidence | strategy workflow sequencing changes |
+| `src/investment_panel/workflows/strategies.py` | persisted strategy resolution, requirement-driven evaluation, run completion, replay, and research evidence | strategy workflow sequencing changes |
 | `src/investment_panel/workflows/market.py` | market cutoff, input loading, computation, and publication sequencing | MarketState publication behavior changes |
 | `src/investment_panel/workflows/market_data.py` | normalized market-data ingestion and scoped refresh policy | source refresh behavior changes |
 | `src/investment_panel/workflows/ticker_decisions.py` | ticker decision loading, ranking, publication, and paper-only sequencing | ticker decision publication changes |
@@ -94,6 +104,8 @@ and mutation routes remain separate.
 | `src/investment_panel/domain/signals/catalog.py` | reusable typed signal definitions and factor requests | a reusable interpretation changes |
 | `src/investment_panel/domain/strategies/implementations.py` | pure concrete strategy calculations and input normalization | a strategy calculation changes |
 | `src/investment_panel/domain/strategies/catalog.py` | immutable strategy definitions and explicit implementation bindings | a strategy revision or binding changes |
+| `src/investment_panel/domain/market/publication.py` | pure Market publication calculation and contract shaping | MarketState calculation or evidence semantics change |
+| `src/investment_panel/infrastructure/postgres/strategy_inputs.py` | exact-session and declared-requirement loading | a supported strategy dataset requirement changes |
 | `src/investment_panel/domain/portfolio/contracts.py` | account-aware portfolio and decision contracts | portfolio valuation or policy meaning changes |
 | `src/investment_panel/domain/panel/` | panel contract and payload rules | a canonical panel shape changes |
 | `src/investment_panel/core/event_scout.py` | Event Scout public rules and packet interface | signal normalization changes |
@@ -135,8 +147,11 @@ OpenAPI files are reproducible build outputs. `frontend/src/apiTransport.ts`
 owns transport behavior; domain request modules own URL and request shaping;
 views import domain modules directly. Panel requests return bounded snapshots.
 `MarketDataProvider` merges each snapshot once into current state, and its
-in-flight map owns loading status. Never return captured application state
-from a request helper. `RowRecord` is kept only at the dynamic
+in-flight map owns loading status. Scope generations reject late responses
+across query options; accepted-data freshness is separate from attempted
+refresh. An owning successful empty portfolio snapshot emits explicit
+empty/null fields, while failures retain only labeled last-good state. Never
+return captured application state from a request helper. `RowRecord` is kept only at the dynamic
 panel-table seam. Do not hand-edit or routinely inspect generated schemas,
 bundles, or full build logs. Use the contract checks, TypeScript check, and
 production build to verify them.
@@ -180,6 +195,10 @@ uv run python scripts/architecture_inventory.py --area config
 uv run python scripts/architecture_inventory.py --area options
 uv run python scripts/architecture_inventory.py --area providers
 uv run python scripts/architecture_inventory.py --area frontend
+uv run python scripts/architecture_inventory.py --area factors
+uv run python scripts/architecture_inventory.py --area signals
+uv run python scripts/architecture_inventory.py --area strategies
+uv run python scripts/architecture_inventory.py --area workflows
 ```
 
 The full output stays below 200 lines. Area output stays below 120 lines. The

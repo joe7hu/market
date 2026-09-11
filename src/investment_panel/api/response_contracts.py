@@ -416,12 +416,20 @@ class DecisionInboxUsefulnessResponse(BaseModel):
 class ResearchEvaluationResponse(BaseModel):
     stage: str
     verdict: str
+    evaluation_id: str | None = None
+    run_id: str | None = None
+    scope: str | None = None
+    mode: str | None = None
     evaluated_at: datetime | None = None
+    available_at: datetime | None = None
     period_start: datetime | None = None
     period_end: datetime | None = None
+    input_hash: str | None = None
+    output_hash: str | None = None
     actionability: str | None = None
     signal_value: float | None = None
     signal_direction: str | None = None
+    signal_regime: str | None = None
     independent_sample_count: int | None = None
     net_return_lower_bound: float | None = None
     brier_score: float | None = None
@@ -433,6 +441,8 @@ class ResearchEvaluationResponse(BaseModel):
     unmatched_episodes: int | None = Field(default=None, ge=0)
     comparison_window_complete: bool | None = None
     failed_gates: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResearchStrategySummaryResponse(BaseModel):

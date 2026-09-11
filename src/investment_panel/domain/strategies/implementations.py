@@ -7,7 +7,7 @@ module owns the calculations those bindings point at.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from math import isfinite
 from typing import Any, Literal
 
@@ -80,9 +80,10 @@ def _daily_rows(inputs: Mapping[str, Any]) -> list[Mapping[str, Any]]:
             continue
         observed = _parse_clock(raw_row.get("observed_at"))
         available = _parse_clock(raw_row.get("available_at"))
-        if observed is not None and observed > cutoff or available is not None and available > cutoff:
-            continue
         session = raw_row.get("trading_date") or raw_row.get("date")
+        session_date = _parse_session(session)
+        if session_date is not None and session_date > cutoff.date():
+            continue
         if observed is None and available is None and not str(session or "").strip():
             continue
         row = dict(raw_row)
@@ -92,12 +93,65 @@ def _daily_rows(inputs: Mapping[str, Any]) -> list[Mapping[str, Any]]:
             and row.get("disabled") is False
             and observed is not None
             and available is not None
+            and observed <= cutoff
+            and available <= cutoff
         )
         if not authoritative:
             row["close"] = None
             row["open"] = None
         rows.append(row)
-    return sorted(rows, key=lambda row: (str(row.get("trading_date") or row.get("date") or ""), str(row.get("id") or "")))
+    rows = sorted(rows, key=lambda row: (str(row.get("trading_date") or row.get("date") or ""), str(row.get("id") or "")))
+    required = _required_sessions(inputs)
+    if required:
+        by_date = {_parse_session(row.get("trading_date") or row.get("date")): row for row in rows}
+        rows = [
+            by_date.get(session, {"trading_date": session.isoformat(), "close": None, "open": None, "status": "missing"})
+            for session in required
+        ]
+    return rows
+
+
+def _parse_session(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _required_sessions(inputs: Mapping[str, Any]) -> tuple[date, ...]:
+    raw = inputs.get("required_trading_dates")
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    parsed = tuple(session for session in (_parse_session(item) for item in raw) if session is not None)
+    return tuple(sorted(parsed))
+
+
+def _daily_input_blockers(inputs: Mapping[str, Any]) -> tuple[str, ...]:
+    dates = [
+        _parse_session(row.get("trading_date") or row.get("date"))
+        for row in inputs.get("daily_bars", ())
+        if isinstance(row, Mapping)
+    ]
+    blockers: list[str] = []
+    if any(session is None for session in dates):
+        blockers.append("daily_session_date_invalid")
+    present = [session for session in dates if session is not None]
+    if len(set(present)) != len(present):
+        blockers.append("daily_session_dates_duplicate")
+    required_raw = inputs.get("required_trading_dates")
+    if isinstance(required_raw, (list, tuple)):
+        required = [_parse_session(item) for item in required_raw]
+        if any(item is None for item in required):
+            blockers.append("required_trading_dates_invalid")
+        if len(set(item for item in required if item is not None)) != len([item for item in required if item is not None]):
+            blockers.append("required_trading_dates_duplicate")
+    return tuple(dict.fromkeys(blockers))
 
 
 def _parse_clock(value: Any) -> datetime | None:
@@ -120,9 +174,19 @@ def factor_snapshot_for_inputs(inputs: Mapping[str, Any]) -> InputSnapshot | Non
     if cutoff is None:
         return None
     rows = _daily_rows(inputs)
-    values: dict[str, Any] = {"daily_closes": [_number(row.get("close")) for row in rows]}
+    values: dict[str, Any] = {
+        "daily_closes": [_number(row.get("close")) for row in rows],
+        "daily_close_dates": [row.get("trading_date") or row.get("date") for row in rows],
+        "daily_opens": [_number(row.get("open")) for row in rows],
+        "daily_open_dates": [row.get("trading_date") or row.get("date") for row in rows],
+    }
     if "benchmark_closes" in inputs:
         values["benchmark_closes"] = inputs["benchmark_closes"]
+    if "benchmark_close_dates" in inputs:
+        values["benchmark_close_dates"] = inputs["benchmark_close_dates"]
+    for key in ("event", "full_chain_state", "oi_volume_state", "dividend_state", "quote_quality"):
+        if key in inputs:
+            values[key] = inputs[key]
     evidence_refs = tuple(str(item) for item in inputs.get("evidence_refs", ()) if str(item).strip())
     return InputSnapshot(
         str(inputs.get("input_snapshot_identity") or content_hash({"cutoff": inputs.get("input_cutoff"), "bars": rows})),
@@ -138,6 +202,8 @@ def daily_trend_underreaction(
     params: TrendParameters | None = None, factor_context: EvaluationContext | None = None,
 ) -> StrategySignal:
     rows = _daily_rows(inputs)
+    if blockers := _daily_input_blockers(inputs):
+        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=blockers)
     closes = [_number(row.get("close")) for row in rows]
     if len(closes) < 2:
         return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("daily_close_history_incomplete",))
@@ -165,6 +231,8 @@ def daily_gap_regime(
     params: EmptyParameters | None = None, factor_context: EvaluationContext | None = None,
 ) -> StrategySignal:
     rows = _daily_rows(inputs)
+    if blockers := _daily_input_blockers(inputs):
+        return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=blockers)
     if len(rows) < 2:
         return StrategySignal(strategy_key=strategy_key, status="unavailable", blockers=("daily_gap_history_incomplete",))
     current, previous = rows[-1], rows[-2]

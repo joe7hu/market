@@ -12302,6 +12302,25 @@
             ],
             "title": "Actionability"
           },
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
           "brier_score": {
             "anyOf": [
               {
@@ -12348,6 +12367,22 @@
             ],
             "title": "Evaluated At"
           },
+          "evaluation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Id"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "title": "Evidence",
+            "type": "object"
+          },
           "evidence_basis": {
             "enum": [
               "independent_stock_episodes",
@@ -12378,6 +12413,28 @@
             ],
             "title": "Independent Sample Count"
           },
+          "input_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Hash"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
           "net_return_lower_bound": {
             "anyOf": [
               {
@@ -12388,6 +12445,17 @@
               }
             ],
             "title": "Net Return Lower Bound"
+          },
+          "output_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Hash"
           },
           "period_end": {
             "anyOf": [
@@ -12413,6 +12481,28 @@
             ],
             "title": "Period Start"
           },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
           "signal_direction": {
             "anyOf": [
               {
@@ -12423,6 +12513,17 @@
               }
             ],
             "title": "Signal Direction"
+          },
+          "signal_regime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal Regime"
           },
           "signal_value": {
             "anyOf": [

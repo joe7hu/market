@@ -30,6 +30,12 @@ def test_research_summary_reads_latest_evidence_and_feedback_separately(
                 VALUES ('summary-test', 1, 'Summary test strategy', 'draft', '{}', 'summary-test', %s)
                 RETURNING id
             """, [now]).fetchone()["id"]
+            run_id = connection.execute("""
+                INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+                VALUES ('strategy_research', %s, 'summary-test', %s, %s, %s, 'succeeded')
+                RETURNING id
+            """, [now, "a" * 64, now, now]).fetchone()["id"]
             for offset, sample in [(-2, 8), (-1, 12), (10, 900)]:
                 connection.execute("""
                     INSERT INTO analysis.strategy_evaluation
@@ -40,6 +46,21 @@ def test_research_summary_reads_latest_evidence_and_feedback_separately(
                         "lower_confidence_net_utility_after_costs": 0.04,
                         "validation": {"gates": {"sample_size": {"passed": False}}}}),
                     Jsonb({"walk_forward": True, "purge_embargo": True})])
+            for offset in range(9):
+                connection.execute("""
+                    INSERT INTO analysis.strategy_evaluation
+                        (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics, evidence,
+                         run_id, scope, mode)
+                    VALUES (%s, 'strategy_signal', %s, %s, 'available', %s, '[]', %s, 'SUMMARY', 'research')
+                """, [strategy_id, now - timedelta(seconds=offset + 1), now - timedelta(seconds=offset + 1),
+                    Jsonb({"actionability": "research_only", "value": 0.1, "direction": "long"}), run_id])
+            connection.execute("""
+                INSERT INTO analysis.strategy_evaluation
+                    (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics, evidence, lineage)
+                VALUES (%s, 'strategy_signal', %s, %s, 'available', %s, '[]', %s)
+            """, [strategy_id, now - timedelta(seconds=20), now - timedelta(seconds=20),
+                Jsonb({"actionability": "research_only", "value": 0.2, "direction": "short"}),
+                Jsonb({"mode": "replay"})])
             ids = []
             for state in ["open", "acknowledged", "review_complete"]:
                 ids.append(str(connection.execute("""
@@ -48,7 +69,10 @@ def test_research_summary_reads_latest_evidence_and_feedback_separately(
                 """, [str(uuid4()), state, now if state == "review_complete" else None]).fetchone()["id"]))
         before = research_summary(runtime, typed_config(application_postgres_dsn))
         strategy = next(row for row in before["strategies"] if row["strategy_revision_id"] == strategy_id)
-        assert strategy["evaluations"][0]["independent_sample_count"] == 12
+        oos = next(item for item in strategy["evaluations"] if item["stage"] == "out_of_sample")
+        assert oos["independent_sample_count"] == 12
+        assert sum(item["stage"] == "strategy_signal" for item in strategy["evaluations"]) == 8
+        assert any(item["stage"] == "out_of_sample" for item in strategy["evaluations"])
         assert strategy["failed_gates"] == ["sample_size"]
         assert strategy["included_count"] is None
         assert strategy["excluded_count"] is None

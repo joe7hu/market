@@ -70,3 +70,19 @@ it("deduplicates a pending request and clears loading after failure without losi
   expect(render().loading).toBe(false);
   expect(render().scopeStatus.market).toMatchObject({ state: "failed", error: "offline" });
 });
+
+it.each([false, true])("keeps the newest same-scope request after an older response=%s", async (oldFails) => {
+  const old = deferred();
+  const current = deferred();
+  harness.request.mockImplementation((url: string) => url.includes("limit=10") ? old.promise : current.promise);
+  const context = render();
+  const older = context.loadScope("market", { limit: 10 });
+  const newest = context.loadScope("market", { limit: 20 });
+  current.resolve({ scope: "market", tables: { quotes: { rows: [{ ticker: "NEW" }] } } });
+  await newest;
+  if (oldFails) old.reject(new Error("late failure"));
+  else old.resolve({ scope: "market", tables: { quotes: { rows: [{ ticker: "OLD" }] } } });
+  await older;
+  expect(render().data.quotes.rows).toEqual([{ ticker: "NEW" }]);
+  expect(render().scopeStatus.market.state).toBe("ready");
+});

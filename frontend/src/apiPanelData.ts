@@ -53,7 +53,11 @@ export function emptyPanelData(): PanelData {
   } as PanelData;
 }
 
-export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload, options: { append?: boolean } = {}): PanelData {
+export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload, options: { append?: boolean; queryKey?: string; generation?: number } = {}): PanelData {
+  if (options.queryKey && options.generation !== undefined &&
+      (existing.snapshotGenerations?.[options.queryKey] ?? 0) > options.generation) {
+    return existing;
+  }
   const unavailable = explicitlyUnavailable(snapshot.status, snapshot.portfolio_integrated, snapshot.tables);
   const contradictsUnavailable = snapshot.status?.metadata?.phase4_authority === "unavailable" && !unavailable;
   const incomingTables = phase4Identity(snapshot.tables);
@@ -84,7 +88,14 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
       errors: { ...existing.errors, portfolio: "Phase 4 snapshot identity diverged; retained the prior immutable view." },
     };
   }
-  const next: PanelData = { ...existing, errors: { ...existing.errors }, scopeStatus: { ...existing.scopeStatus } };
+  const next: PanelData = {
+    ...existing,
+    errors: { ...existing.errors },
+    scopeStatus: { ...existing.scopeStatus },
+    snapshotGenerations: options.queryKey && options.generation !== undefined
+      ? { ...(existing.snapshotGenerations ?? {}), [options.queryKey]: options.generation }
+      : existing.snapshotGenerations,
+  };
   const validScopedRollover = Boolean(snapshot.scope && PHASE4_WORKSPACES.has(snapshot.scope)
     && existingPhase4.state === "valid" && incomingPhase4.state === "valid"
     && existingPhase4.value !== incomingPhase4.value);

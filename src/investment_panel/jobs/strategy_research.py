@@ -7,8 +7,8 @@ import json
 from typing import Any, Literal
 
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
-from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.infrastructure.postgres.strategy_factory import StrategyFactoryRepository
+from investment_panel.infrastructure.postgres.strategy_inputs import load_strategy_inputs
 from investment_panel.settings import load_config
 from investment_panel.workflows.strategies import StrategyWorkflow
 
@@ -18,6 +18,7 @@ def run(
     *,
     strategy_keys: list[str] | None = None,
     symbols: list[str] | None = None,
+    benchmark_symbols: list[str] | None = None,
     as_of: datetime | None = None,
     mode: Literal["research", "replay"] = "research",
 ) -> dict[str, Any]:
@@ -27,6 +28,7 @@ def run(
     if reference.tzinfo is None:
         raise ValueError("strategy research cutoff must be timezone-aware")
     reference = reference.astimezone(UTC)
+    repository = StrategyFactoryRepository(runtime)
     with runtime.read() as connection:
         if strategy_keys:
             keys = tuple(strategy_keys)
@@ -41,30 +43,11 @@ def run(
             )
         if not keys:
             raise ValueError("no persisted strategy definitions are available")
-        rows = connection.execute(
-            "SELECT id, upper(symbol) AS symbol FROM catalog.instrument "
-            "WHERE (%s::text[] IS NULL OR upper(symbol) = ANY(%s::text[])) "
-            "ORDER BY symbol LIMIT 10000",
-            [symbols, symbols],
-        ).fetchall()
-        ids = [int(row["id"]) for row in rows]
-        bars = confirmed_daily_bars(connection, ids, as_of=reference, max_bars=252)
-    inputs = {
-        str(row["symbol"]): {
-            "input_cutoff": reference.isoformat(),
-            "input_snapshot_identity": f"instrument:{row['id']}:price-bars:{reference.isoformat()}",
-            "daily_bars": [
-                {**bar, "status": "confirmed", "confirmed": True, "disabled": False}
-                for bar in bars.get(int(row["id"]), [])
-            ],
-            "evidence_refs": tuple(
-                f"{bar.get('fact_table', 'raw.price_bar')}:{bar.get('fact_id')}"
-                for bar in bars.get(int(row["id"]), []) if bar.get("fact_id") is not None
-            ),
-        }
-        for row in rows
-    }
-    repository = StrategyFactoryRepository(runtime)
+    specs = tuple(repository.resolve(key) for key in keys)
+    with runtime.read() as connection:
+        inputs = load_strategy_inputs(
+            connection, specs, as_of=reference, symbols=symbols, benchmark_symbols=benchmark_symbols,
+        )
     workflow = StrategyWorkflow(repository)
     results = workflow.run(keys, inputs, input_cutoff=reference, mode=mode)
     return {
@@ -89,11 +72,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--strategy", action="append", dest="strategy_keys")
     parser.add_argument("--ticker", action="append", dest="symbols")
+    parser.add_argument("--benchmark", action="append", dest="benchmark_symbols")
     parser.add_argument("--as-of")
     parser.add_argument("--mode", choices=("research", "replay"), default="research")
     args = parser.parse_args(argv)
     as_of = datetime.fromisoformat(args.as_of.replace("Z", "+00:00")) if args.as_of else None
-    print(json.dumps(run(args.config, strategy_keys=args.strategy_keys, symbols=args.symbols, as_of=as_of, mode=args.mode), indent=2, default=str))
+    print(json.dumps(run(args.config, strategy_keys=args.strategy_keys, symbols=args.symbols, benchmark_symbols=args.benchmark_symbols, as_of=as_of, mode=args.mode), indent=2, default=str))
 
 
 __all__ = ["main", "run"]

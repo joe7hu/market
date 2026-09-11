@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Iterable
 
-from investment_panel.domain.decision import MARKET_TZ, is_us_market_day, market_session_bounds
+from investment_panel.domain.decision import MARKET_TZ, completed_trading_dates, is_us_market_day, market_session_bounds
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,7 @@ def confirmed_daily_bars(
     max_fact_versions: int | None = None,
     trading_dates: Iterable[date] | None = None,
     require_session_close: bool = False,
+    require_point_in_time_source_state: bool = False,
 ) -> dict[int, list[dict[str, Any]]]:
     """Confirmed daily bars, optionally retaining point-in-time fact versions."""
 
@@ -64,8 +65,14 @@ def confirmed_daily_bars(
             FROM facts fact
             JOIN ingest.source source
               ON source.id = fact.source_id
-             AND source.enabled
-             AND source.operational_state = 'active'
+            LEFT JOIN LATERAL (
+                SELECT history.enabled, history.operational_state
+                  FROM ingest.source_lifecycle_history history
+                 WHERE history.source_id = source.id
+                   AND history.effective_at <= %s
+                 ORDER BY history.effective_at DESC, history.id DESC
+                 LIMIT 1
+            ) source_state ON true
             LEFT JOIN session_closes ON session_closes.trading_date = fact.trading_date
             JOIN LATERAL (
                 SELECT price_run.finished_at
@@ -82,7 +89,12 @@ def confirmed_daily_bars(
             ) confirmation_run ON true
             WHERE fact.instrument_id = ANY(%s) AND fact.interval = '1d' AND fact.close > 0
               AND fact.observed_at <= %s AND fact.available_at <= %s
-              AND (%s::date[] IS NULL OR fact.trading_date = ANY(%s::date[]))
+             AND (%s::date[] IS NULL OR fact.trading_date = ANY(%s::date[]))
+              AND CASE WHEN %s::boolean
+                       THEN source_state.enabled AND source_state.operational_state = 'active'
+                       ELSE coalesce(source_state.enabled, source.enabled)
+                            AND coalesce(source_state.operational_state, source.operational_state) = 'active'
+                  END
         ), versioned AS (
             SELECT fact.*,
                    row_number() OVER (
@@ -119,7 +131,8 @@ def confirmed_daily_bars(
         ORDER BY instrument_id, trading_date, available_at, confirmed_at, source_id
         """,
         [
-            confirmation_dates, session_closes, reference, ids, reference, reference, dates, dates, include_versions,
+            confirmation_dates, session_closes, reference, reference, ids, reference, reference, dates, dates,
+            require_point_in_time_source_state, include_versions,
             max_bars, max_bars, max_fact_versions, max_fact_versions,
         ],
     ).fetchall()
@@ -210,26 +223,6 @@ def latest_completed_references(
             ingest_run_id=str(row["ingest_run_id"]) if row.get("ingest_run_id") is not None else None,
         ))
     return tuple(selected)
-
-
-def completed_trading_dates(as_of: datetime, *, count: int = 3) -> tuple[date, ...]:
-    """Latest completed US market date and its preceding exact dates."""
-
-    if count <= 0:
-        return ()
-    local = _utc(as_of).astimezone(MARKET_TZ)
-    cursor = local.date()
-    # During RTH the current session has not completed.  After the cash close
-    # it is eligible only if a confirmed bar is actually available; callers
-    # still reject it when the source has not published it yet.
-    if not is_us_market_day(cursor) or local < market_session_bounds(cursor)[1]:
-        cursor -= timedelta(days=1)
-    dates: list[date] = []
-    while len(dates) < count:
-        if is_us_market_day(cursor):
-            dates.append(cursor)
-        cursor -= timedelta(days=1)
-    return tuple(dates)
 
 
 def _positive(value: Any) -> float | None:

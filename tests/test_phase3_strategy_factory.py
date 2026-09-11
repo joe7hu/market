@@ -3,6 +3,8 @@ import pytest
 from investment_panel.domain.strategies.catalog import (
     MECHANISM_CLASSES,
     StrategySpec,
+    StrategyImplementationDefinition,
+    StrategySignal,
     default_strategy_definitions,
     daily_trend_underreaction,
     evaluate_strategy,
@@ -169,6 +171,27 @@ def test_daily_trend_preserves_a_missing_confirmed_session_in_the_requested_wind
     assert "daily_closes_missing_window" in result.blockers
 
 
+def test_gap_snapshot_identity_includes_consumed_open_prices() -> None:
+    from investment_panel.domain.strategies.implementations import factor_snapshot_for_inputs
+
+    base = {
+        "input_cutoff": "2026-09-05T13:00:00Z",
+        "input_snapshot_identity": "gap:AAA:2026-09-05",
+        "daily_bars": [
+            {"status": "confirmed", "confirmed": True, "disabled": False,
+             "observed_at": f"2026-09-0{day}T12:00:00Z", "available_at": f"2026-09-0{day}T12:00:00Z",
+             "trading_date": f"2026-09-0{day}", "open": opening, "close": close}
+            for day, opening, close in ((1, 100, 101), (2, 102, 103))
+        ],
+    }
+    changed = {**base, "daily_bars": [*base["daily_bars"][:-1], {**base["daily_bars"][-1], "open": 112}]}
+    first = factor_snapshot_for_inputs(base)
+    second = factor_snapshot_for_inputs(changed)
+    assert first is not None and second is not None
+    assert first.values["daily_opens"] != second.values["daily_opens"]
+    assert first.content_identity != second.content_identity
+
+
 def test_p3_actionability_is_a_closed_daily_enum() -> None:
     with pytest.raises(ValueError):
         StrategySpec(
@@ -223,6 +246,14 @@ def test_unknown_implementation_and_handler_defaults_fail_closed() -> None:
     assert unknown.blockers == ("strategy_implementation_unavailable",)
 
 
+def test_disabled_definition_is_explicitly_non_executable() -> None:
+    spec = resolve_builtin_strategy("daily_trend_underreaction_v2").model_copy(update={"enabled": False})
+    result = evaluate_strategy(spec, {})
+    assert result.status == "blocked"
+    assert result.actionability == "registration_only"
+    assert result.blockers == ("strategy_disabled",)
+
+
 def test_strategy_output_identity_and_numeric_fields_are_checked(monkeypatch: pytest.MonkeyPatch) -> None:
     spec = resolve_builtin_strategy("volatility_aware_momentum_v1")
     rows = [
@@ -250,3 +281,43 @@ def test_strategy_output_identity_and_numeric_fields_are_checked(monkeypatch: py
             ),
         })
         evaluate_strategy(spec, {})
+
+
+def test_strategy_finalization_freshly_validates_restrictions_and_model_instances(monkeypatch: pytest.MonkeyPatch) -> None:
+    from investment_panel.domain.strategies import catalog
+
+    spec = resolve_builtin_strategy("daily_trend_underreaction_v2").model_copy(update={"blockers": ("approval_required",)})
+    original = catalog.IMPLEMENTATION_CATALOG["daily_trend_underreaction"]
+    monkeypatch.setattr(catalog, "IMPLEMENTATION_CATALOG", {
+        **catalog.IMPLEMENTATION_CATALOG,
+        "daily_trend_underreaction": StrategyImplementationDefinition(
+            original.implementation_id, original.implementation_version, original.parameters_type,
+            lambda _inputs, **_kwargs: StrategySignal.model_construct(
+                strategy_key=spec.strategy_key, status="available", value=0.3,
+            ),
+        ),
+    })
+    restricted = evaluate_strategy(spec, {})
+    assert restricted.status == "blocked"
+    assert restricted.value is None
+    assert "approval_required" in restricted.blockers
+
+    with pytest.raises(ValueError, match="invalid result"):
+        monkeypatch.setattr(catalog, "IMPLEMENTATION_CATALOG", {
+            **catalog.IMPLEMENTATION_CATALOG,
+            "daily_trend_underreaction": StrategyImplementationDefinition(
+                original.implementation_id, original.implementation_version, original.parameters_type,
+                lambda _inputs, **_kwargs: StrategySignal.model_construct(
+                    strategy_key=spec.strategy_key, status="unavailable", value=0.3,
+                ),
+            ),
+        })
+        evaluate_strategy(spec.model_copy(update={"blockers": ()}), {})
+
+
+def test_invalid_account_actionability_ceiling_fails_closed_without_a_value() -> None:
+    spec = resolve_builtin_strategy("daily_trend_underreaction_v2")
+    result = evaluate_strategy(spec, {}, account_actionability="not-a-ceiling")
+    assert result.status == "blocked"
+    assert result.value is None
+    assert "strategy_actionability_invalid" in result.blockers

@@ -9,6 +9,7 @@ from investment_panel.domain.decision.brief import (
 from investment_panel.domain.decision.brief_options import is_option_expired
 from investment_panel.domain.decision.calendar import (
     classify_freshness,
+    completed_trading_dates,
     easter_date,
     is_market_open,
     is_us_equity_early_close,
@@ -259,6 +260,7 @@ __all__ = [
     "best_freshness",
     "catalyst_window",
     "classify_freshness",
+    "completed_trading_dates",
     "decode",
     "decision_basis",
     "dedupe_freshness",

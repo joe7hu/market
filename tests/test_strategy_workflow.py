@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -15,6 +15,7 @@ class MemoryStrategyRepository:
             for key in ("daily_trend_underreaction_v2", "volatility_aware_momentum_v1")
         }
         self.saved: list[tuple[str, str]] = []
+        self.manifests: list[dict[str, object]] = []
 
     def resolve(self, strategy_key: str):
         return self.specs[strategy_key]
@@ -23,6 +24,22 @@ class MemoryStrategyRepository:
         value = f"{strategy_key}:{revision}:{scope}:{input_snapshot_identity}:{input_cutoff.isoformat()}:{mode}:{signal.model_dump_json()}"
         self.saved.append((strategy_key, value))
         return value
+
+    def start_strategy_run(self, *, strategy_keys, strategy_revisions, scopes, input_cutoff, mode):
+        return {"run_id": "memory-run", "started_at": input_cutoff, "input_hash": "planned"}
+
+    def record_signal_evaluation_record(self, strategy_key, revision, signal, *, run_id, scope,
+                                        input_snapshot_identity, input_cutoff, mode, input_manifest):
+        value = f"{strategy_key}:{revision}:{scope}:{input_snapshot_identity}:{input_cutoff.isoformat()}:{mode}:{signal.model_dump_json()}"
+        self.saved.append((strategy_key, value))
+        self.manifests.append(dict(input_manifest))
+        return {
+            "evaluation_id": f"evaluation-{len(self.saved)}", "evaluated_at": input_cutoff + timedelta(minutes=1),
+            "available_at": input_cutoff + timedelta(minutes=1), "input_hash": value, "output_hash": "output",
+        }
+
+    def finish_strategy_run(self, run_id, *, status, summary, input_manifest=None):
+        return None
 
 
 def _inputs() -> dict[str, dict[str, object]]:
@@ -78,3 +95,14 @@ def test_persisted_strategy_workflow_reuses_context_and_replay_keeps_new_generat
     )
     assert [result.signal.model_dump() for result in replay] == [result.signal.model_dump() for result in results]
     assert all(result.mode == "replay" for result in replay)
+
+
+def test_strategy_manifests_are_local_while_context_memo_is_shared() -> None:
+    repository = MemoryStrategyRepository()
+    workflow = StrategyWorkflow(repository, clock=lambda: datetime(2026, 10, 2, 13, tzinfo=UTC))
+    workflow.run(tuple(repository.specs), _inputs(), input_cutoff=datetime(2026, 10, 1, 13, tzinfo=UTC))
+    manifests = repository.manifests
+    first_keys = {item["key"] for item in manifests[0]["factor_computation"]["manifest"]}
+    second_keys = {item["key"] for item in manifests[1]["factor_computation"]["manifest"]}
+    assert first_keys == {"price.momentum"}
+    assert second_keys == {"price.momentum", "risk.realized_volatility"}
