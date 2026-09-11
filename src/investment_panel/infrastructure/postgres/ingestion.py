@@ -7,7 +7,6 @@ import hashlib
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 from uuid import UUID
-from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
@@ -502,11 +501,8 @@ class IngestionRepository:
                 daily_start = policy["daily_start"] if policy else None
             partition, partition_start, partition_end = _partition_bounds(observed_at.date(), daily_start)
             connection.execute(
-                sql.SQL("CREATE TABLE IF NOT EXISTS raw.{} PARTITION OF raw.option_quote FOR VALUES FROM ({}) TO ({})").format(
-                    sql.Identifier(partition),
-                    sql.Literal(partition_start),
-                    sql.Literal(partition_end),
-                )
+                "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
+                [partition, partition_start, partition_end],
             )
             snapshot = connection.execute(
                 """

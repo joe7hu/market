@@ -8,7 +8,6 @@ import re
 from typing import Any
 
 import psycopg
-from psycopg import sql
 
 from investment_panel.domain.decision import is_us_market_day
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
@@ -367,15 +366,9 @@ class RetentionRepository:
                 partition_cutoff = before if day else before.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
                 if partition_start >= partition_cutoff:
                     continue
-                has_rows = connection.execute(
-                    sql.SQL("SELECT EXISTS (SELECT 1 FROM raw.{} LIMIT 1) AS has_rows").format(sql.Identifier(name))
-                ).fetchone()["has_rows"]
-                if not has_rows:
-                    connection.execute(
-                        sql.SQL("ALTER TABLE raw.option_quote DETACH PARTITION raw.{}").format(sql.Identifier(name))
-                    )
-                    connection.execute(sql.SQL("DROP TABLE raw.{}").format(sql.Identifier(name)))
-                    dropped += 1
+                dropped += int(connection.execute(
+                    "SELECT raw.detach_option_quote_partition(%s, true) AS detached", [name]
+                ).fetchone()["detached"])
         return dropped
 
 

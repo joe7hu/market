@@ -255,11 +255,12 @@ class StorageArchiveService:
         execute: bool = False,
         backup_token: str | None = None,
     ) -> dict[str, Any]:
-        """Archive immutable option partitions and optionally detach them.
+        """Archive immutable option partitions and detach empty partitions.
 
         The default is a read-only plan plus archive verification.  A
         partition is detached only after a custom dump, checksum, listing,
-        row-count check, and scratch-database restore all pass.
+        row-count check, and scratch-database restore all pass.  Non-empty
+        partitions remain attached for privileged maintenance.
         """
 
         reference = now or datetime.now(UTC)
@@ -318,17 +319,25 @@ class StorageArchiveService:
                         "SELECT pg_advisory_xact_lock(hashtextextended('raw.option_quote.archive', 0))"
                     )
                     partition_name = str(candidate["partition"])
-                    connection.execute(
-                        f"ALTER TABLE raw.option_quote DETACH PARTITION raw.{_quote_ident(partition_name)}"
+                    detached_now = connection.execute(
+                        "SELECT raw.detach_option_quote_partition(%s, true) AS detached", [partition_name]
+                    ).fetchone()["detached"]
+                if detached_now:
+                    self._update_manifest_metadata(
+                        int(result["manifest_id"]), {"detached_at": datetime.now(UTC).isoformat()}
                     )
-                    connection.execute(f"DROP TABLE raw.{_quote_ident(partition_name)}")
-                self._update_manifest_metadata(
-                    int(result["manifest_id"]), {"detached_at": datetime.now(UTC).isoformat()}
-                )
-                detached += 1
+                    result["detach_status"] = "detached"
+                    detached += 1
+                else:
+                    result["detach_status"] = "retained_non_empty"
         return {
             "phase": "options",
-            "status": "succeeded" if all(item.get("verification_status") == "verified" for item in archived) else "partial",
+            "status": (
+                "succeeded"
+                if all(item.get("verification_status") == "verified" for item in archived)
+                and (not execute or all(item.get("detach_status") == "detached" for item in archived))
+                else "partial"
+            ),
             "cutoff": cutoff,
             "candidates": archived,
             "detached": detached,

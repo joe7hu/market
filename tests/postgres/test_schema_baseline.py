@@ -83,6 +83,13 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260909_0008_backfill_publication_superseded_at.py',
         '20260909_0009_strategy_implementation_identity.py',
         '20260909_0010_strategy_definition_policy.py',
+        '20260910_0011_market_app_option_job_privileges.py',
+        '20260910_0012_market_app_option_capture_pipeline.py',
+        '20260910_0013_market_app_option_partition_maintenance.py',
+        '20260910_0014_market_app_option_partition_access.py',
+        '20260910_0015_market_app_option_partition_authorization.py',
+        '20260910_0016_market_app_option_partition_safety.py',
+        '20260910_0017_market_app_option_partition_locking.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
@@ -106,6 +113,95 @@ def test_previous_strategy_binding_revision_upgrades_to_head(postgres_dsn):
     upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+        connection.execute("SET LOCAL ROLE market_app")
+        for relation, privileges in {
+            'catalog.option_contract': ('INSERT', 'UPDATE'),
+            'analysis.option_recovery_program_session': ('INSERT', 'UPDATE'),
+            'analysis.option_surface_summary': ('INSERT',),
+            'analysis.option_relative_value': ('INSERT',),
+            'analysis.option_surface_shift': ('INSERT',),
+            'analysis.option_relative_value_verification': ('INSERT',),
+            'raw.option_capture_generation': ('INSERT', 'UPDATE'),
+            'raw.option_quote': ('INSERT', 'UPDATE', 'DELETE'),
+            'raw.option_snapshot': ('INSERT', 'UPDATE', 'DELETE'),
+            'ops.option_quote_partition_policy': ('SELECT',),
+        }.items():
+            for privilege in privileges:
+                assert connection.execute(
+                    "SELECT has_table_privilege(current_user,%s,%s)", [relation, privilege]
+                ).fetchone()[0]
+        for sequence in (
+            'analysis.option_relative_value_id_seq',
+            'analysis.option_relative_value_verification_id_seq',
+            'analysis.option_surface_summary_id_seq',
+            'raw.option_capture_generation_id_seq',
+            'raw.option_quote_id_seq',
+            'raw.option_snapshot_id_seq',
+        ):
+            assert connection.execute(
+                "SELECT has_sequence_privilege(current_user,%s,'USAGE')", [sequence]
+                ).fetchone()[0]
+        connection.execute("SELECT count(*) FROM ops.option_quote_partition_policy").fetchone()
+        assert connection.execute(
+            "SELECT has_function_privilege(current_user,%s,'EXECUTE')",
+            ['raw.detach_option_quote_partition(text,boolean)'],
+        ).fetchone()[0]
+        connection.execute(
+            "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
+            ['option_quote_20260910', '2026-09-10', '2026-09-11'],
+        )
+        connection.rollback()
+        connection.execute("CREATE TABLE raw.option_quote_20990103 (id bigint)")
+        connection.execute("SET LOCAL ROLE market_app")
+        with pytest.raises(psycopg.Error, match='relation exists'):
+            connection.execute(
+                "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
+                ['option_quote_20990103', '2099-01-03', '2099-01-04'],
+            )
+        connection.rollback()
+        connection.execute("SET LOCAL ROLE market_app")
+        with pytest.raises(psycopg.Error, match='first day'):
+            connection.execute(
+                "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
+                ['option_quote_209901', '2099-01-10', '2099-02-01'],
+            )
+        connection.rollback()
+        connection.execute("SET LOCAL ROLE market_app")
+        connection.execute(
+            "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
+            ['option_quote_20990102', '2099-01-02', '2099-01-03'],
+        )
+        with pytest.raises(psycopg.Error, match='required'):
+            connection.execute(
+                "SELECT raw.detach_option_quote_partition(%s, %s)",
+                ['option_quote_20990102', None],
+            )
+        connection.rollback()
+        connection.execute("SET LOCAL ROLE market_app")
+        connection.execute(
+            "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
+            ['option_quote_20990102', '2099-01-02', '2099-01-03'],
+        )
+        with pytest.raises(psycopg.Error, match='privileged maintenance'):
+            connection.execute(
+                "SELECT raw.detach_option_quote_partition(%s, false)",
+                ['option_quote_20990102'],
+            )
+        connection.rollback()
+        connection.execute("SET LOCAL ROLE market_app")
+        connection.execute(
+            "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
+            ['option_quote_20990101', '2099-01-01', '2099-01-02'],
+        )
+        assert connection.execute(
+            "SELECT has_table_privilege(current_user,%s,'SELECT')",
+            ['raw.option_quote_20990101'],
+        ).fetchone()[0]
+        assert connection.execute(
+            "SELECT raw.detach_option_quote_partition(%s, true)",
+            ['option_quote_20990101'],
+        ).fetchone()[0]
+        connection.rollback()
 
 
 def test_strategy_definition_policy_upgrade_flushes_revision_trigger_events(postgres_dsn):
