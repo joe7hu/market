@@ -41,6 +41,28 @@ class StrategyFactoryRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
+    @staticmethod
+    def _validate_supersedes_parent(connection: Any, spec: StrategySpec, supersedes_id: int) -> None:
+        parent = connection.execute(
+            """SELECT id, strategy_key, revision, authority_group
+                 FROM analysis.strategy_revision
+                WHERE id = %s
+                FOR UPDATE""",
+            [supersedes_id],
+        ).fetchone()
+        if parent is None:
+            raise ValueError("superseded strategy revision is missing")
+        parent_base, separator, _parent_version = str(parent["strategy_key"]).rpartition("_v")
+        strategy_base, strategy_separator, _strategy_version = spec.strategy_key.rpartition("_v")
+        if (
+            not separator
+            or not strategy_separator
+            or parent_base != strategy_base
+            or int(parent["revision"]) >= spec.revision
+            or parent["authority_group"] != f"phase3:{parent['strategy_key']}"
+        ):
+            raise ValueError("superseded strategy revision is not a valid parent")
+
     def start_strategy_run(
         self,
         *,
@@ -130,12 +152,16 @@ class StrategyFactoryRepository:
                 """SELECT id, name, mechanism_class, economic_mechanism, falsification_rule,
                           source_definition_version, strategy_family, promotability,
                           actionability, p3_enabled, parameters, authority_group,
-                          implementation_id, implementation_version, definition_blockers
+                          implementation_id, implementation_version, definition_blockers, supersedes_id
                      FROM analysis.strategy_revision
                     WHERE strategy_key = %s AND revision = %s""",
                 [spec.strategy_key, spec.revision],
             ).fetchone()
             if existing is not None:
+                if supersedes_id is not None:
+                    if existing["supersedes_id"] != supersedes_id:
+                        raise ValueError("strategy revision supersession identity conflicts")
+                    self._validate_supersedes_parent(connection, spec, supersedes_id)
                 manifest = connection.execute(
                     """SELECT source_definition_version, source_manifest, data_manifest,
                               cost_manifest, capacity_manifest, failure_manifest
@@ -163,25 +189,7 @@ class StrategyFactoryRepository:
                     raise ValueError("strategy revision or manifest identity conflicts")
                 return int(existing["id"])
             if supersedes_id is not None:
-                parent = connection.execute(
-                    """SELECT id, strategy_key, revision, authority_group
-                         FROM analysis.strategy_revision
-                        WHERE id = %s
-                        FOR UPDATE""",
-                    [supersedes_id],
-                ).fetchone()
-                if parent is None:
-                    raise ValueError("superseded strategy revision is missing")
-                parent_base, separator, _parent_version = str(parent["strategy_key"]).rpartition("_v")
-                strategy_base, strategy_separator, _strategy_version = spec.strategy_key.rpartition("_v")
-                if (
-                    not separator
-                    or not strategy_separator
-                    or parent_base != strategy_base
-                    or int(parent["revision"]) >= spec.revision
-                    or parent["authority_group"] != f"phase3:{parent['strategy_key']}"
-                ):
-                    raise ValueError("superseded strategy revision is not a valid parent")
+                self._validate_supersedes_parent(connection, spec, supersedes_id)
                 connection.execute(
                     "UPDATE analysis.strategy_revision SET p3_enabled = false WHERE id = %s",
                     [supersedes_id],

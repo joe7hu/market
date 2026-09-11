@@ -232,6 +232,9 @@ def test_phase3_old_binding_is_preserved_but_disabled_and_new_revision_is_execut
         current = resolve_builtin_strategy("classic_momentum_v2")
         old_id = repository.register(old)
         current_id = repository.register(current, supersedes_id=old_id)
+        unrelated_id = repository.register(resolve_builtin_strategy("classic_mean_reversion_v1"))
+        with pytest.raises(ValueError, match="supersession identity"):
+            repository.register(current, supersedes_id=unrelated_id)
         resolved_old = repository.resolve(old.strategy_key)
         resolved_current = repository.resolve(current.strategy_key)
         assert current_id != old_id
