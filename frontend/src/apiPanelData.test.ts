@@ -102,3 +102,26 @@ it("recovers the current response after historical failures without retaining al
   expect(result.portfolioAllocationItems).toBeUndefined();
   expect(result.errors.portfolio).toBeUndefined();
 });
+
+it("ignores an older same-query response after a newer generation", () => {
+  const first = mergeSnapshot(emptyPanelData(), {
+    scope: "market", tables: { quotes: { rows: [{ ticker: "OLD" }], count: 1 } },
+  }, { queryKey: "market:{}", generation: 1 });
+  const current = mergeSnapshot(first, {
+    scope: "market", tables: { quotes: { rows: [{ ticker: "NEW" }], count: 1 } },
+  }, { queryKey: "market:{}", generation: 2 });
+  const stale = mergeSnapshot(current, {
+    scope: "market", tables: { quotes: { rows: [{ ticker: "OLD" }], count: 1 } },
+  }, { queryKey: "market:{}", generation: 1 });
+  expect(stale.quotes.rows).toEqual([{ ticker: "NEW" }]);
+});
+
+it("clears an owning portfolio snapshot when the authoritative result is empty", () => {
+  const existing = { ...emptyPanelData(), portfolioHoldings: [{ symbol: "AAA" } as never] };
+  const result = mergeSnapshot(existing, {
+    scope: "portfolio",
+    status: { ready: true, metadata: { database: "postgresql", phase4_authority: "unavailable", phase4_shared_allocation_id: null } },
+    portfolio_holdings: [],
+  });
+  expect(result.portfolioHoldings).toEqual([]);
+});

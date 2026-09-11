@@ -179,7 +179,9 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
     if allocation_rows and isinstance(allocation_rows[0].get("canonical_portfolio"), dict):
         payload["portfolio_integrated"] = allocation_rows[0]["canonical_portfolio"]
     portfolio_rows = rows_for_table("portfolio")
-    if portfolio_rows:
+    snapshot_metadata = panel_data.metadata
+    snapshot_succeeded = panel_data.status.ready and not snapshot_metadata.get("snapshot_error") and snapshot_metadata.get("snapshot_state") not in {"stale", "failed"}
+    if portfolio_rows or (scope == "portfolio" and snapshot_succeeded):
         payload["portfolio_holdings"] = [
             PortfolioHoldingDTO.model_validate({
                 "symbol": str(row.get("symbol") or row.get("ticker") or "").strip().upper(),
@@ -209,6 +211,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
     summary_rows = rows_for_table("portfolio_summary")
     if summary_rows:
         payload["portfolio_summary"] = PortfolioSummaryDTO.model_validate(summary_rows[0]).model_dump(mode="json")
+    elif scope == "portfolio" and snapshot_succeeded:
+        payload["portfolio_summary"] = None
     return payload
 
 

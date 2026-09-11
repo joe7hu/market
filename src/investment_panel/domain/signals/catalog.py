@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from investment_panel.domain.factors import (
     EvaluationContext,
@@ -72,7 +72,7 @@ def _direction(value: float) -> SignalDirection:
 
 
 def _momentum_direction(snapshot: InputSnapshot, factors: FactorResults) -> SignalResult:
-    request = FactorRequest("price.momentum", MomentumParams())
+    request = FactorRequest("price.momentum", MomentumParams(), "2")
     factor = factors.by_request(request)
     if not factor.available or factor.value is None:
         return SignalResult(
@@ -96,8 +96,8 @@ def _momentum_direction(snapshot: InputSnapshot, factors: FactorResults) -> Sign
 
 
 def _momentum_volatility(snapshot: InputSnapshot, factors: FactorResults) -> SignalResult:
-    momentum_request = FactorRequest("price.momentum", MomentumParams())
-    volatility_request = FactorRequest("risk.realized_volatility", VolatilityParams())
+    momentum_request = FactorRequest("price.momentum", MomentumParams(), "2")
+    volatility_request = FactorRequest("risk.realized_volatility", VolatilityParams(), "1")
     momentum = factors.by_request(momentum_request)
     volatility = factors.by_request(volatility_request)
     blockers = tuple(dict.fromkeys((*momentum.blockers, *volatility.blockers)))
@@ -125,7 +125,7 @@ def _momentum_volatility(snapshot: InputSnapshot, factors: FactorResults) -> Sig
 MOMENTUM_DIRECTION = SignalDefinition(
     key="signal.momentum_direction",
     implementation_version="1",
-    factor_requests=(FactorRequest("price.momentum", MomentumParams()),),
+    factor_requests=(FactorRequest("price.momentum", MomentumParams(), "2"),),
     evaluate=_momentum_direction,
 )
 
@@ -133,8 +133,8 @@ MOMENTUM_VOLATILITY = SignalDefinition(
     key="signal.momentum_volatility",
     implementation_version="1",
     factor_requests=(
-        FactorRequest("price.momentum", MomentumParams()),
-        FactorRequest("risk.realized_volatility", VolatilityParams()),
+        FactorRequest("price.momentum", MomentumParams(), "2"),
+        FactorRequest("risk.realized_volatility", VolatilityParams(), "1"),
     ),
     evaluate=_momentum_volatility,
 )
@@ -162,7 +162,13 @@ def evaluate_signals(
     factor_results = evaluate_factors(snapshot, factor_requests, context=context)
     results: dict[str, SignalResult] = {}
     for definition in definitions:
-        result = definition.evaluate(snapshot, factor_results)
+        raw_result = definition.evaluate(snapshot, factor_results)
+        try:
+            result = SignalResult.model_validate(
+                raw_result.model_dump(mode="python") if isinstance(raw_result, SignalResult) else raw_result,
+            )
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise ValueError(f"signal evaluator returned an invalid result for {definition.key}") from exc
         if result.key != definition.key or result.implementation_version != definition.implementation_version:
             raise ValueError(f"signal evaluator identity mismatch for {definition.key}")
         results[definition.key] = result

@@ -106,6 +106,23 @@ def latest_completed_market_day(now: datetime) -> date:
     return current
 
 
+def completed_trading_dates(as_of: datetime, *, count: int = 3) -> tuple[date, ...]:
+    """Return the latest completed US sessions in reverse chronological order."""
+
+    if count <= 0:
+        return ()
+    local = normalized_utc(as_of).astimezone(MARKET_TZ)
+    cursor = local.date()
+    if not is_us_market_day(cursor) or local < market_session_bounds(cursor)[1]:
+        cursor -= timedelta(days=1)
+    dates: list[date] = []
+    while len(dates) < count:
+        if is_us_market_day(cursor):
+            dates.append(cursor)
+        cursor -= timedelta(days=1)
+    return tuple(dates)
+
+
 
 
 def is_market_open(now: datetime) -> bool:

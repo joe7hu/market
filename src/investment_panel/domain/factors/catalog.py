@@ -29,7 +29,9 @@ def _freeze(value: Any) -> Any:
         return tuple(_freeze(item) for item in value)
     if isinstance(value, (set, frozenset)):
         return frozenset(_freeze(item) for item in value)
-    return value
+    if value is None or isinstance(value, (str, int, float, bool, date, datetime)):
+        return value
+    raise TypeError(f"unsupported mutable factor input type: {type(value).__name__}")
 
 
 def _jsonable(value: Any) -> Any:
@@ -59,6 +61,7 @@ class InputSnapshot:
     values: Mapping[str, Any]
     evidence_refs: tuple[str, ...] = ()
     source_versions: Mapping[str, str] = field(default_factory=dict)
+    _content_identity: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.identity.strip():
@@ -69,16 +72,17 @@ class InputSnapshot:
         object.__setattr__(self, "values", _freeze(dict(self.values)))
         object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
         object.__setattr__(self, "source_versions", _freeze(dict(self.source_versions)))
-
-    @property
-    def content_identity(self) -> str:
-        return _digest({
+        object.__setattr__(self, "_content_identity", _digest({
             "identity": self.identity,
             "input_cutoff": self.input_cutoff,
             "values": self.values,
             "evidence_refs": self.evidence_refs,
             "source_versions": self.source_versions,
-        })
+        }))
+
+    @property
+    def content_identity(self) -> str:
+        return self._content_identity
 
 
 class FactorParameters(BaseModel):
@@ -181,6 +185,10 @@ class EvaluationContext:
     memo: dict[tuple[str, str], FactorResult] = field(default_factory=dict)
     trace: list[dict[str, str]] = field(default_factory=list)
     max_computations: int = 4096
+    catalog_identity: str | None = None
+    computation_count: int = 0
+    manifest: list[dict[str, Any]] = field(default_factory=list)
+    active_requests: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if self.max_computations <= 0:
@@ -203,11 +211,18 @@ class FactorDefinition:
 class FactorResults(dict[FactorRequest, FactorResult]):
     """Request-keyed results with a safe compatibility lookup by factor key."""
 
+    def __init__(self, *args: Any, aliases: Mapping[FactorRequest, FactorRequest] | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._aliases = aliases if aliases is not None else {}
+
     def __getitem__(self, key: FactorRequest | str) -> FactorResult:
         if isinstance(key, FactorRequest):
             try:
                 return super().__getitem__(key)
             except KeyError:
+                canonical = self._aliases.get(key)
+                if canonical is not None:
+                    return super().__getitem__(canonical)
                 matches = [
                     result
                     for request, result in self.items()
@@ -251,25 +266,61 @@ def _unavailable(
 
 
 def _required_prices(raw_values: Any, period: int) -> tuple[list[float] | None, str | None]:
+    values, _dates, blocker = _required_series(raw_values, None, period, "daily_closes")
+    return values, blocker
+
+
+def _parse_session(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _required_series(
+    raw_values: Any,
+    raw_dates: Any,
+    period: int,
+    label: str,
+) -> tuple[list[float] | None, tuple[date, ...] | None, str | None]:
     if not isinstance(raw_values, Sequence) or isinstance(raw_values, (str, bytes)):
-        return None, "daily_closes_missing"
+        return None, None, f"{label}_missing"
+    pairs = list(enumerate(raw_values))
+    dates: tuple[date, ...] | None = None
+    if raw_dates is not None:
+        if not isinstance(raw_dates, Sequence) or isinstance(raw_dates, (str, bytes)) or len(raw_dates) != len(raw_values):
+            return None, None, f"{label}_dates_invalid"
+        parsed_dates = [_parse_session(item) for item in raw_dates]
+        if any(item is None for item in parsed_dates):
+            return None, None, f"{label}_dates_invalid"
+        dates = tuple(item for item in parsed_dates if item is not None)
+        if len(set(dates)) != len(dates):
+            return None, None, f"{label}_dates_duplicate"
+        pairs.sort(key=lambda item: dates[item[0]])
+        dates = tuple(dates[index] for index, _value in pairs)
     if len(raw_values) <= period:
-        return None, "daily_closes_insufficient"
-    window = raw_values[-(period + 1) :]
+        return None, dates, f"{label}_insufficient"
+    window = pairs[-(period + 1) :]
     values: list[float] = []
-    for value in window:
+    for _index, value in window:
         if value is None:
-            return None, "daily_closes_missing_window"
+            return None, dates, f"{label}_missing_window"
         if isinstance(value, bool):
-            return None, "daily_closes_invalid"
+            return None, dates, f"{label}_invalid"
         try:
             parsed = float(value)
         except (TypeError, ValueError):
-            return None, "daily_closes_invalid"
+            return None, dates, f"{label}_invalid"
         if not isfinite(parsed) or parsed <= 0:
-            return None, "daily_closes_invalid"
+            return None, dates, f"{label}_invalid"
         values.append(parsed)
-    return values, None
+    return values, dates[-(period + 1):] if dates is not None else None, None
 
 
 def _price_momentum(
@@ -277,7 +328,9 @@ def _price_momentum(
     params: MomentumParams,
     _dependencies: Mapping[str, FactorResult],
 ) -> FactorResult:
-    values, blocker = _required_prices(snapshot.values.get("daily_closes"), params.lookback_days)
+    values, _dates, blocker = _required_series(
+        snapshot.values.get("daily_closes"), snapshot.values.get("daily_close_dates"), params.lookback_days, "daily_closes",
+    )
     if blocker is not None or values is None:
         return _unavailable(PRICE_MOMENTUM, blocker or "daily_closes_invalid")
     return FactorResult(
@@ -295,7 +348,9 @@ def _realized_volatility(
     params: VolatilityParams,
     _dependencies: Mapping[str, FactorResult],
 ) -> FactorResult:
-    values, blocker = _required_prices(snapshot.values.get("daily_closes"), params.period)
+    values, _dates, blocker = _required_series(
+        snapshot.values.get("daily_closes"), snapshot.values.get("daily_close_dates"), params.period, "daily_closes",
+    )
     if blocker is not None or values is None:
         return _unavailable(REALIZED_VOLATILITY, blocker or "daily_closes_invalid")
     returns = [log(current / previous) for previous, current in zip(values, values[1:], strict=False)]
@@ -316,8 +371,14 @@ def _relative_strength(
     params: RelativeStrengthParams,
     _dependencies: Mapping[str, FactorResult],
 ) -> FactorResult:
-    prices, blocker = _required_prices(snapshot.values.get("daily_closes"), params.period)
-    benchmark, benchmark_blocker = _required_prices(snapshot.values.get("benchmark_closes"), params.period)
+    prices, price_dates, blocker = _required_series(
+        snapshot.values.get("daily_closes"), snapshot.values.get("daily_close_dates"), params.period, "daily_closes",
+    )
+    benchmark, benchmark_dates, benchmark_blocker = _required_series(
+        snapshot.values.get("benchmark_closes"), snapshot.values.get("benchmark_close_dates"), params.period, "benchmark_closes",
+    )
+    if blocker is None and benchmark_blocker is None and (price_dates is not None or benchmark_dates is not None) and price_dates != benchmark_dates:
+        benchmark_blocker = "relative_strength_dates_misaligned"
     if blocker or benchmark_blocker or prices is None or benchmark is None:
         return _unavailable(
             RELATIVE_STRENGTH,
@@ -401,12 +462,31 @@ def validate_factor_catalog(definitions: Mapping[str, FactorDefinition]) -> None
         visit(key)
 
 
+def _catalog_identity(definitions: Mapping[str, FactorDefinition]) -> str:
+    def dependency_identity(dependency: str | FactorDependency) -> dict[str, Any]:
+        name, request = _dependency_parts(dependency)
+        return {"name": name, "request": request.request_id}
+
+    return _digest({
+        key: {
+            "version": definition.implementation_version,
+            "parameters": definition.parameters_type.__name__,
+            "requires": definition.requires,
+            "dependencies": [dependency_identity(item) for item in definition.dependencies],
+            "evaluator": f"{definition.evaluate.__module__}.{definition.evaluate.__qualname__}",
+        }
+        for key, definition in sorted(definitions.items())
+    })
+
+
 def _requested_items(
     requested: Mapping[str | FactorRequest, Mapping[str, Any] | FactorParameters]
     | Sequence[str | FactorRequest]
     | FactorRequest,
 ) -> list[FactorRequest]:
-    if isinstance(requested, FactorRequest):
+    if isinstance(requested, (FactorRequest, str)):
+        if isinstance(requested, str):
+            return [FactorRequest(requested)]
         return [requested]
     if isinstance(requested, Mapping):
         result: list[FactorRequest] = []
@@ -446,7 +526,13 @@ def evaluate_factors(
     active_context = context or EvaluationContext(snapshot)
     if active_context.snapshot.content_identity != snapshot.content_identity:
         raise ValueError("factor evaluation context snapshot does not match input snapshot")
+    catalog_identity = _catalog_identity(definitions)
+    if active_context.catalog_identity is None:
+        active_context.catalog_identity = catalog_identity
+    elif active_context.catalog_identity != catalog_identity:
+        raise ValueError("factor evaluation context catalog does not match definitions")
     requests = _requested_items(requested)
+    aliases: dict[FactorRequest, FactorRequest] = {}
 
     def evaluate(request: FactorRequest) -> FactorResult:
         definition = definitions.get(request.key)
@@ -463,47 +549,64 @@ def evaluate_factors(
         memo_key = (active_context.snapshot.content_identity, normalized_request.request_id)
         if memo_key in active_context.memo:
             return active_context.memo[memo_key]
-        if len(active_context.memo) >= active_context.max_computations:
+        if normalized_request.request_id in active_context.active_requests:
+            raise ValueError("factor dependency cycle detected")
+        if active_context.computation_count >= active_context.max_computations:
             raise ValueError("factor evaluation context exceeded its computation bound")
+        active_context.computation_count += 1
+        active_context.active_requests.add(normalized_request.request_id)
 
-        dependencies: dict[str, FactorResult] = {}
-        for dependency in definition.dependencies:
-            name, dependency_request = _dependency_parts(dependency)
-            dependencies[name] = evaluate(dependency_request)
-        missing_inputs = tuple(
-            f"{input_name}_missing" for input_name in definition.requires
-            if input_name not in active_context.snapshot.values
-        )
-        unavailable_dependencies = tuple(
-            f"dependency_{name}_unavailable"
-            for name, result in dependencies.items()
-            if not result.available
-        )
-        if missing_inputs or unavailable_dependencies:
-            result = _unavailable(
-                definition,
-                *missing_inputs,
-                *unavailable_dependencies,
-                request=normalized_request,
+        try:
+            dependencies: dict[str, FactorResult] = {}
+            dependency_ids: list[str] = []
+            for dependency in definition.dependencies:
+                name, dependency_request = _dependency_parts(dependency)
+                dependencies[name] = evaluate(dependency_request)
+                dependency_ids.append(dependency_request.request_id)
+            missing_inputs = tuple(
+                f"{input_name}_missing" for input_name in definition.requires
+                if input_name not in active_context.snapshot.values
             )
-        else:
-            try:
-                result = definition.evaluate(active_context.snapshot, params, dependencies)
-                if not isinstance(result, FactorResult):
-                    result = FactorResult.model_validate(result)
-            except (TypeError, ValueError, ValidationError) as exc:
-                raise ValueError(f"factor evaluator rejected output for {request.key}") from exc
-            if result.key != definition.key or result.implementation_version != definition.implementation_version:
-                raise ValueError(f"factor evaluator identity mismatch for {request.key}")
-            result = result.model_copy(update={
+            unavailable_dependencies = tuple(
+                f"dependency_{name}_unavailable"
+                for name, result in dependencies.items()
+                if not result.available
+            )
+            if missing_inputs or unavailable_dependencies:
+                result = _unavailable(
+                    definition,
+                    *missing_inputs,
+                    *unavailable_dependencies,
+                    request=normalized_request,
+                )
+            else:
+                try:
+                    raw_result = definition.evaluate(active_context.snapshot, params, dependencies)
+                    payload = raw_result.model_dump(mode="python") if isinstance(raw_result, FactorResult) else raw_result
+                    result = FactorResult.model_validate(payload)
+                except (TypeError, ValueError, ValidationError) as exc:
+                    raise ValueError(f"factor evaluator rejected output for {request.key}") from exc
+                if result.key != definition.key or result.implementation_version != definition.implementation_version:
+                    raise ValueError(f"factor evaluator identity mismatch for {request.key}")
+                result = FactorResult.model_validate({
+                    **result.model_dump(mode="python"),
+                    "request_id": normalized_request.request_id,
+                    "parameter_identity": normalized_request.parameter_identity,
+                })
+            active_context.memo[memo_key] = result
+            active_context.trace.append({"request_id": normalized_request.request_id, "key": definition.key})
+            active_context.manifest.append({
                 "request_id": normalized_request.request_id,
-                "parameter_identity": normalized_request.parameter_identity,
+                "key": definition.key,
+                "implementation_version": definition.implementation_version,
+                "dependencies": tuple(dependency_ids),
+                "snapshot": active_context.snapshot.content_identity,
             })
-        active_context.memo[memo_key] = result
-        active_context.trace.append({"request_id": normalized_request.request_id, "key": definition.key})
-        return result
+            return result
+        finally:
+            active_context.active_requests.discard(normalized_request.request_id)
 
-    results = FactorResults()
+    results = FactorResults(aliases=aliases)
     for request in requests:
         result = evaluate(request)
         definition = definitions[request.key]
@@ -512,6 +615,7 @@ def evaluate_factors(
             _validated_parameters(definition, request),
             definition.implementation_version,
         )
+        aliases[request] = canonical_request
         results[canonical_request] = result
     return results
 

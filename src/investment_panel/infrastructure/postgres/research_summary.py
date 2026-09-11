@@ -48,13 +48,27 @@ def research_summary(runtime: DatabaseRuntime, config: AppConfig) -> dict[str, A
         evaluations = [dict(row) for row in connection.execute("""
             SELECT latest.* FROM unnest(%s::bigint[]) revision(id)
             CROSS JOIN LATERAL (
-                SELECT DISTINCT ON (evaluation_type)
-                       strategy_revision_id, evaluation_type, verdict, evaluated_at,
-                       period_start, period_end, metrics, evidence
-                FROM analysis.strategy_evaluation
-                WHERE strategy_revision_id = revision.id
-                  AND evaluated_at <= now() AND available_at <= now()
-                ORDER BY evaluation_type, evaluated_at DESC, id DESC LIMIT 8
+                SELECT ranked.*
+                  FROM (
+                    SELECT evaluation.id AS evaluation_id, evaluation.strategy_revision_id,
+                           evaluation.evaluation_type, evaluation.verdict, evaluation.evaluated_at,
+                           evaluation.available_at, evaluation.period_start, evaluation.period_end,
+                           evaluation.metrics, evaluation.evidence, evaluation.input_hash,
+                           evaluation.run_id, evaluation.scope, evaluation.mode, evaluation.lineage,
+                           row_number() OVER (
+                               PARTITION BY evaluation.evaluation_type
+                               ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
+                           ) AS stage_rank
+                      FROM analysis.strategy_evaluation evaluation
+                      LEFT JOIN analysis.run run ON run.id = evaluation.run_id
+                     WHERE evaluation.strategy_revision_id = revision.id
+                       AND evaluation.evaluated_at <= now() AND evaluation.available_at <= now()
+                       AND evaluation.mode IS DISTINCT FROM 'replay'
+                       AND evaluation.lineage->>'mode' IS DISTINCT FROM 'replay'
+                       AND (evaluation.run_id IS NULL OR run.status = 'succeeded')
+                  ) ranked
+                 WHERE ranked.stage_rank <= 8
+                 ORDER BY ranked.evaluated_at DESC, ranked.evaluation_id DESC
             ) latest
         """, [ids]).fetchall()]
         trials = [dict(row) for row in connection.execute("""
@@ -152,7 +166,7 @@ def research_summary(runtime: DatabaseRuntime, config: AppConfig) -> dict[str, A
             "name": row["name"], "status": row["status"], "hypothesis": row["hypothesis"],
             "last_policy_change": row["last_policy_change"],
             "automatic_paper_tuning": bool(automatic and row["authority_group"] in {"options-radar-core", "ticker-stock-alpha"}),
-            "evaluations": stages[:8], "failed_gates": failed[:8],
+            "evaluations": _bounded_stage_evaluations(stages), "failed_gates": failed[:8],
             "trial_status": trial.get("status"), "included_count": trial.get("included"),
             "excluded_count": trial.get("excluded"), "expected_count": trial.get("expected_member_count"),
             "next_observation": (
@@ -180,7 +194,8 @@ def research_summary(runtime: DatabaseRuntime, config: AppConfig) -> dict[str, A
 
 
 def evaluation_summary(row: dict[str, Any]) -> dict[str, Any]:
-    metrics, evidence = _mapping(row.get("metrics")), _mapping(row.get("evidence"))
+    metrics, evidence = _mapping(row.get("metrics")), _evidence(row.get("evidence"))
+    lineage = _mapping(row.get("lineage"))
     validation = _mapping(metrics.get("validation"))
     stage = str(row["evaluation_type"])
     stock = stage == "out_of_sample" and evidence.get("walk_forward") is True
@@ -209,10 +224,17 @@ def evaluation_summary(row: dict[str, Any]) -> dict[str, Any]:
     brier = brier if brier is not None and 0 <= brier <= 1 else None
     failed = [name for name, gate in _mapping(validation.get("gates")).items() if _mapping(gate).get("passed") is False]
     verdict = str(row.get("verdict") or "unavailable")
-    if verdict not in {"pass", "passed"} and not failed:
+    if stage == "strategy_signal":
+        if verdict in {"unavailable", "blocked"} and not failed:
+            failed = [f"{stage}: {verdict}"]
+    elif verdict in {"blocked", "blocked_terminal_evidence", "failed", "rejected", "unavailable"} and not failed:
         failed = [f"{row['evaluation_type']}: {verdict}"]
     return {
         "stage": stage, "verdict": verdict, "evaluated_at": row.get("evaluated_at"),
+        "evaluation_id": str(row["evaluation_id"]) if row.get("evaluation_id") is not None else None,
+        "run_id": str(row["run_id"]) if row.get("run_id") is not None else None,
+        "scope": row.get("scope") or lineage.get("scope"), "mode": row.get("mode") or lineage.get("mode"),
+        "available_at": row.get("available_at"), "input_hash": row.get("input_hash"),
         "period_start": row.get("period_start"), "period_end": row.get("period_end"),
         "actionability": metrics.get("actionability") if stage == "strategy_signal" else None,
         "signal_value": _number(metrics.get("value")) if stage == "strategy_signal" else None,
@@ -223,12 +245,33 @@ def evaluation_summary(row: dict[str, Any]) -> dict[str, Any]:
         "evidence_basis": basis,
         "comparison_denominator": denominator, "unmatched_episodes": unknown,
         "comparison_window_complete": window_complete,
-        "failed_gates": failed[:8],
+        "failed_gates": failed[:8], "blockers": [str(item) for item in lineage.get("blockers", ()) if str(item).strip()],
+        "evidence": evidence,
     }
+
+
+def _bounded_stage_evaluations(stages: list[dict[str, Any]], per_stage: int = 8) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    bounded: list[dict[str, Any]] = []
+    for stage in stages:
+        key = str(stage.get("stage") or "unknown")
+        if counts.get(key, 0) >= per_stage:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        bounded.append(stage)
+    return bounded
 
 
 def _mapping(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _evidence(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return {"items": value}
+    return {}
 
 
 def _count(value: Any) -> int | None:

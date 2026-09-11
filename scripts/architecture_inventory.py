@@ -54,7 +54,7 @@ OWNER_MODULES = (
     "src/investment_panel/infrastructure/scheduler.py",
     "frontend/src/generated/apiSchema.ts",
 )
-AREAS = ("api", "config", "options", "providers", "frontend")
+AREAS = ("api", "config", "options", "providers", "frontend", "factors", "signals", "strategies", "workflows")
 KNOWN_COMPATIBILITY_FILES = frozenset({
     "src/investment_panel/api/deps.py",
     "src/investment_panel/api/panel_contracts.py",
@@ -158,9 +158,10 @@ def layer_violations(graph: dict[str, set[str]] | None = None) -> list[str]:
 
     graph = local_import_graph() if graph is None else graph
     forbidden = {
-        "domain": ("api", "core", "infrastructure", "jobs", "settings", "workflows"),
+        "domain": ("api", "application", "core", "infrastructure", "jobs", "settings", "workflows"),
         "workflows": ("api", "jobs"),
-        "infrastructure": ("api", "jobs", "workflows"),
+        "infrastructure": ("api", "application", "jobs", "workflows"),
+        "application": ("api", "jobs"),
     }
     violations: list[str] = []
     for source, targets in graph.items():
@@ -170,7 +171,7 @@ def layer_violations(graph: dict[str, set[str]] | None = None) -> list[str]:
         source_layer = parts[1]
         for target in sorted(targets):
             target_parts = target.split(".")
-            if len(target_parts) >= 3 and target_parts[:2] == ["investment_panel", target_parts[1]] \
+            if len(target_parts) >= 2 and target_parts[0] == "investment_panel" \
                     and target_parts[1] in forbidden.get(source_layer, ()):
                 violations.append(f"{source} -> {target}")
     return violations
@@ -181,28 +182,46 @@ def computation_purity_violations(roots: Sequence[Path] | None = None) -> list[s
 
     roots = roots or tuple(
         ROOT / "src" / "investment_panel" / name
-        for name in ("domain/factors", "domain/signals", "domain/strategies", "domain/market")
+        for name in (
+            "domain/factors", "domain/signals", "domain/strategies", "domain/market",
+            "domain/options", "domain/research",
+        )
     )
     violations: list[str] = []
     for root in roots:
         for path in root.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+            process_names = {"os", "subprocess", "time", "httpx", "requests", "psycopg", "sqlalchemy"}
+            clock_names = {"datetime", "date", "time"}
+            for imported in ast.walk(tree):
+                if isinstance(imported, ast.Import):
+                    for alias in imported.names:
+                        if alias.name in process_names:
+                            process_names.add(alias.asname or alias.name.split(".")[-1])
+                        if alias.name == "datetime":
+                            clock_names.add(alias.asname or alias.name.split(".")[-1])
+                elif isinstance(imported, ast.ImportFrom):
+                    if imported.module in process_names:
+                        for alias in imported.names:
+                            process_names.add(alias.asname or alias.name)
+                    if imported.module == "datetime":
+                        for alias in imported.names:
+                            if alias.name in {"datetime", "date", "time"}:
+                                clock_names.add(alias.asname or alias.name)
             for node in ast.walk(tree):
                 try:
                     label = path.relative_to(ROOT)
                 except ValueError:
                     label = path
                 if isinstance(node, ast.Import) and any(
-                    alias.name in {"os", "subprocess", "time", "httpx", "requests", "psycopg", "sqlalchemy"}
+                    alias.name in process_names
                     for alias in node.names
                 ):
                     violations.append(f"{label}:{node.lineno} process or I/O import")
-                elif isinstance(node, ast.ImportFrom) and node.module in {
-                    "os", "subprocess", "time", "httpx", "requests", "psycopg", "sqlalchemy",
-                }:
+                elif isinstance(node, ast.ImportFrom) and node.module in process_names:
                     violations.append(f"{label}:{node.lineno} process or I/O import")
                 elif isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv", "now", "utcnow", "today", "time"}:
-                    if isinstance(node.value, ast.Name) and node.value.id in {"os", "datetime", "date", "time"}:
+                    if isinstance(node.value, ast.Name) and node.value.id in process_names | clock_names:
                         violations.append(f"{label}:{node.lineno} implicit process state or clock")
                 elif isinstance(node, ast.Call):
                     function = node.func
@@ -369,6 +388,14 @@ def _area_matches(path: Path, area: str | None) -> bool:
         ))
     if area == "frontend":
         return relative.startswith("frontend/src/") and "generated" not in relative and ".test." not in relative and ".spec." not in relative
+    if area == "factors":
+        return relative.startswith("src/investment_panel/domain/factors/")
+    if area == "signals":
+        return relative.startswith("src/investment_panel/domain/signals/")
+    if area == "strategies":
+        return relative.startswith("src/investment_panel/domain/strategies/")
+    if area == "workflows":
+        return relative.startswith("src/investment_panel/workflows/")
     raise ValueError(f"unknown architecture area: {area}")
 
 

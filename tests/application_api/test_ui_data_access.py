@@ -118,6 +118,22 @@ def test_portfolio_snapshot_exposes_canonical_holding_values() -> None:
     assert holdings[2]["valuation_status"] == "stale_quote"
 
 
+def test_successful_empty_portfolio_snapshot_explicitly_clears_owned_fields() -> None:
+    payload = payloads_owner.panel_snapshot_payload(
+        PanelData(status=DataStatus(True, "ok", "postgresql"), tables={}), "portfolio",
+    )
+    assert payload["portfolio_holdings"] == []
+    assert payload["portfolio_summary"] is None
+
+
+def test_failed_empty_portfolio_snapshot_does_not_claim_a_clear() -> None:
+    payload = payloads_owner.panel_snapshot_payload(
+        PanelData(status=DataStatus(True, "stale", "postgresql"), tables={}, metadata={"snapshot_error": "timeout"}), "portfolio",
+    )
+    assert "portfolio_holdings" not in payload
+    assert "portfolio_summary" not in payload
+
+
 def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -> None:
     monkeypatch.setattr(
         loaders_owner,

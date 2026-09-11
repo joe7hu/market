@@ -5793,6 +5793,10 @@ export interface components {
         ResearchEvaluationResponse: {
             /** Actionability */
             actionability?: string | null;
+            /** Available At */
+            available_at?: string | null;
+            /** Blockers */
+            blockers?: string[];
             /** Brier Score */
             brier_score?: number | null;
             /** Comparison Denominator */
@@ -5801,6 +5805,12 @@ export interface components {
             comparison_window_complete?: boolean | null;
             /** Evaluated At */
             evaluated_at?: string | null;
+            /** Evaluation Id */
+            evaluation_id?: string | null;
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            };
             /**
              * Evidence Basis
              * @enum {string}
@@ -5810,12 +5820,20 @@ export interface components {
             failed_gates?: string[];
             /** Independent Sample Count */
             independent_sample_count?: number | null;
+            /** Input Hash */
+            input_hash?: string | null;
+            /** Mode */
+            mode?: string | null;
             /** Net Return Lower Bound */
             net_return_lower_bound?: number | null;
             /** Period End */
             period_end?: string | null;
             /** Period Start */
             period_start?: string | null;
+            /** Run Id */
+            run_id?: string | null;
+            /** Scope */
+            scope?: string | null;
             /** Signal Direction */
             signal_direction?: string | null;
             /** Signal Value */

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any
 
@@ -68,6 +68,9 @@ class StrategySpec(BaseModel):
     strategy_family: str = "legacy"
     promotability: str = "standard"
     actionability: DAILY_ACTIONABILITY = "daily_research"
+    # Runtime enablement is mutable PostgreSQL state, not part of the
+    # immutable definition identity.  Resolved rows carry it explicitly.
+    enabled: bool = True
     manifest: dict[str, Any]
     parameters: dict[str, Any] = Field(default_factory=dict)
     blockers: tuple[str, ...] = ()
@@ -105,6 +108,47 @@ class StrategyImplementationDefinition:
     implementation_version: str
     parameters_type: type[StrategyParameters]
     evaluate: Callable[..., "StrategySignal"]
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyInputRequirement:
+    """The small loader contract needed by a resolved strategy revision."""
+
+    dataset: str
+    sessions: int = 0
+    fields: tuple[str, ...] = ()
+    benchmark: bool = False
+    calendar_policy: str = "instrument"
+
+
+def requirements_for_strategy(spec: StrategySpec) -> tuple[StrategyInputRequirement, ...]:
+    implementation_id = spec.implementation_id
+    if implementation_id == "daily_trend_underreaction":
+        try:
+            sessions = TrendParameters.model_validate(spec.parameters).lookback_days + 1
+        except ValidationError:
+            sessions = 0
+        return (StrategyInputRequirement("confirmed_daily_bars", sessions, ("open", "close")),)
+    if implementation_id == "daily_gap_regime":
+        return (StrategyInputRequirement("confirmed_daily_bars", 2, ("open", "close")),)
+    if implementation_id == "volatility_aware_momentum":
+        return (StrategyInputRequirement("confirmed_daily_bars", 21, ("close",)),)
+    if implementation_id == "daily_event_propagation":
+        return (StrategyInputRequirement("market_event", fields=("actual", "consensus", "release_at")),)
+    if implementation_id == "options_recovery":
+        return (StrategyInputRequirement("option_snapshot", fields=("full_chain_state", "oi_volume_state", "dividend_state")),)
+    return ()
+
+
+def union_input_requirements(specs: Sequence[StrategySpec]) -> tuple[StrategyInputRequirement, ...]:
+    merged: dict[tuple[str, bool, str], StrategyInputRequirement] = {}
+    for spec in specs:
+        for requirement in requirements_for_strategy(spec):
+            key = (requirement.dataset, requirement.benchmark, requirement.calendar_policy)
+            current = merged.get(key)
+            if current is None or requirement.sessions > current.sessions:
+                merged[key] = requirement
+    return tuple(sorted(merged.values(), key=lambda item: (item.dataset, item.benchmark, item.calendar_policy)))
 
 
 def content_hash(value: Any) -> str:
@@ -147,6 +191,22 @@ def evaluate_strategy(
 ) -> StrategySignal:
     """Evaluate a resolved revision through its exact implementation binding."""
 
+    if spec.implementation_id is None or spec.implementation_version is None:
+        return _finalize_strategy_result(spec, StrategySignal(
+            strategy_key=spec.strategy_key,
+            status="blocked",
+            actionability="registration_only",
+            blockers=("strategy_implementation_unavailable",),
+        ), account_actionability)
+
+    if not spec.enabled:
+        return _finalize_strategy_result(spec, StrategySignal(
+            strategy_key=spec.strategy_key,
+            status="blocked",
+            actionability="registration_only",
+            blockers=("strategy_disabled",),
+        ), account_actionability)
+
     if is_martingale_family(spec.strategy_key, spec.mechanism_class, spec.name, spec.strategy_family):
         return _finalize_strategy_result(spec, StrategySignal(
             strategy_key=spec.strategy_key,
@@ -156,11 +216,7 @@ def evaluate_strategy(
         ), account_actionability)
 
     implementation = IMPLEMENTATION_CATALOG.get(spec.implementation_id or "")
-    if (
-        implementation is None
-        or spec.implementation_version is None
-        or implementation.implementation_version != spec.implementation_version
-    ):
+    if implementation is None or implementation.implementation_version != spec.implementation_version:
         return _finalize_strategy_result(spec, StrategySignal(
             strategy_key=spec.strategy_key,
             status="blocked",
@@ -188,22 +244,26 @@ def _finalize_strategy_result(
     result: StrategySignal,
     account_actionability: str | None,
 ) -> StrategySignal:
-    if not isinstance(result, StrategySignal):
-        try:
-            result = StrategySignal.model_validate(result)
-        except ValidationError as exc:
-            raise ValueError("strategy evaluator returned an invalid result") from exc
+    try:
+        result = StrategySignal.model_validate(
+            result.model_dump(mode="python") if isinstance(result, StrategySignal) else result,
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise ValueError("strategy evaluator returned an invalid result") from exc
     if result.strategy_key != spec.strategy_key:
         raise ValueError("strategy evaluator identity mismatch")
     ceiling = _actionability_min(spec.actionability, account_actionability)
-    if ceiling is None:
-        return result.model_copy(update={"status": "blocked", "actionability": "registration_only", "blockers": (*result.blockers, "strategy_actionability_invalid")})
     blockers = tuple(dict.fromkeys((*spec.blockers, *result.blockers)))
-    return result.model_copy(update={
-        "status": "blocked" if spec.blockers or result.status == "blocked" else result.status,
+    status = "blocked" if ceiling is None or spec.blockers or result.status == "blocked" else result.status
+    payload = {
+        **result.model_dump(mode="python"),
+        "status": status,
         "actionability": _actionability_min(result.actionability, ceiling) or "registration_only",
-        "blockers": blockers,
-    })
+        "blockers": (*blockers, "strategy_actionability_invalid") if ceiling is None else blockers,
+    }
+    if status != "available":
+        payload["value"] = None
+    return StrategySignal.model_validate(payload)
 
 
 def _actionability_min(left: str, right: str | None) -> str | None:
@@ -237,7 +297,8 @@ def _manifest(source: str, data: tuple[str, ...], *, failure: tuple[str, ...] = 
 
 
 BUILTIN_STRATEGIES: tuple[StrategySpec, ...] = (
-    StrategySpec(strategy_key="classic_momentum_v1", revision=1, name="Classic momentum baseline", mechanism_class="trend_underreaction", economic_mechanism="Persistent information is incorporated gradually into daily prices.", falsification_rule="The cost-adjusted out-of-sample return is not positive and stable across parameter neighbors.", source_definition_version="classic-momentum.v1", implementation_id="daily_trend_underreaction", implementation_version="2", manifest=_manifest("classic daily momentum", ("confirmed_daily_close",))),
+    StrategySpec(strategy_key="classic_momentum_v1", revision=1, name="Classic momentum baseline", mechanism_class="trend_underreaction", economic_mechanism="Persistent information is incorporated gradually into daily prices.", falsification_rule="The cost-adjusted out-of-sample return is not positive and stable across parameter neighbors.", source_definition_version="classic-momentum.v1", implementation_id="daily_trend_underreaction", implementation_version="1", manifest=_manifest("classic daily momentum", ("confirmed_daily_close",))),
+        StrategySpec(strategy_key="classic_momentum_v2", revision=2, name="Classic momentum baseline", mechanism_class="trend_underreaction", economic_mechanism="Persistent information is incorporated gradually into daily prices.", falsification_rule="The cost-adjusted out-of-sample return is not positive and stable across parameter neighbors.", source_definition_version="classic-momentum.v2", implementation_id="daily_trend_underreaction", implementation_version="2", manifest=_manifest("classic daily momentum with exact session windows", ("confirmed_daily_close",))),
         StrategySpec(strategy_key="classic_mean_reversion_v1", revision=1, name="Classic mean reversion baseline", mechanism_class="gap_regime", economic_mechanism="Short-lived daily dislocations partially revert after the opening shock.", falsification_rule="The continuation/reversal split has no stable cost-adjusted out-of-sample difference.", source_definition_version="classic-mean-reversion.v1", implementation_id="daily_gap_regime", implementation_version="1", manifest=_manifest("classic daily gap reversion", ("confirmed_daily_open", "confirmed_daily_close"))),
         StrategySpec(strategy_key="martingale_v1", revision=1, name="Martingale negative control", mechanism_class="gap_regime", economic_mechanism="Increasing size after losses has no economic source of return.", falsification_rule="It must not show persistent positive edge and can never be promoted.", source_definition_version="martingale.v1", implementation_id="daily_gap_regime", implementation_version="1", promotability="negative_control", actionability="research_only", manifest=_manifest("classic martingale negative control", ("confirmed_daily_close",), failure=("loss_streak", "ruin",))),
     StrategySpec(strategy_key="daily_trend_underreaction_v2", revision=2, name="Daily trend underreaction", mechanism_class="trend_underreaction", economic_mechanism="Medium-horizon underreaction creates persistent daily drift after information arrives.", falsification_rule="Neutralized and 3x-cost out-of-sample returns do not remain positive.", source_definition_version="daily-trend-underreaction.v2", implementation_id="daily_trend_underreaction", implementation_version="2", manifest=_manifest("daily trend and underreaction with lossless missing-session handling", ("confirmed_daily_open", "confirmed_daily_close", "realized_volatility"))),
@@ -263,9 +324,9 @@ def resolve_builtin_strategy(strategy_key: str) -> StrategySpec:
 
 __all__ = [
     "ACTIONABILITY_LEVELS", "BUILTIN_STRATEGIES", "EmptyParameters", "IMPLEMENTATION_CATALOG", "MANIFEST_PARTS",
-    "MECHANISM_CLASSES", "StrategyImplementationDefinition", "StrategyParameters", "StrategySignal", "StrategySpec",
+    "MECHANISM_CLASSES", "StrategyImplementationDefinition", "StrategyInputRequirement", "StrategyParameters", "StrategySignal", "StrategySpec",
     "TrendParameters", "content_hash", "crypto_funding_basis", "daily_gap_regime", "daily_trend_underreaction",
     "default_strategy_definitions", "evaluate_strategy", "event_propagation", "full_denominator_complete",
     "factor_snapshot_for_inputs", "is_martingale_family", "manifest_hash", "monitoring_complete", "options_recovery_v2", "resolve_builtin_strategy",
-    "strategy_family_for_key",
+    "strategy_family_for_key", "requirements_for_strategy", "union_input_requirements",
 ]

@@ -10,6 +10,7 @@ from investment_panel.domain.factors import (
     FactorRequest,
     InputSnapshot,
     MomentumParams,
+    RELATIVE_STRENGTH,
     evaluate_factors,
 )
 from investment_panel.domain.factors.catalog import EmptyFactorParameters
@@ -158,3 +159,57 @@ def test_snapshot_freezes_nested_values_after_identity_is_established() -> None:
     assert snapshot.values["payload"]["bars"] == (100, 101)
     with pytest.raises(TypeError):
         snapshot.values["payload"]["bars"] += (103,)
+
+
+def test_default_factor_requests_are_retrievable_by_original_and_explicit_identity() -> None:
+    snapshot = InputSnapshot("defaults", datetime(2026, 9, 5, 13, tzinfo=UTC), {"daily_closes": [100 + item for item in range(25)]})
+    results = evaluate_factors(snapshot, [FactorRequest("price.momentum"), FactorRequest("price.momentum", {"lookback_days": 20}, "2")])
+    assert results.by_request(FactorRequest("price.momentum")).value == results.by_request(FactorRequest("price.momentum", MomentumParams(), "2")).value
+    assert len(results) == 1
+
+
+def test_factor_budget_counts_dependency_expansion_and_catalog_identity() -> None:
+    def leaf(_snapshot, _params, _dependencies):
+        return FactorResult(key="leaf", implementation_version="1", available=True, value=1)
+
+    def parent(_snapshot, _params, dependencies):
+        return FactorResult(key="parent", implementation_version="1", available=True, value=dependencies["leaf"].value)
+
+    definitions = {
+        "leaf": FactorDefinition("leaf", "1", EmptyFactorParameters, (), (), leaf),
+        "parent": FactorDefinition("parent", "1", EmptyFactorParameters, (), (FactorDependency("leaf", FactorRequest("leaf")),), parent),
+    }
+    snapshot = InputSnapshot("budget", datetime(2026, 9, 5, 13, tzinfo=UTC), {})
+    with pytest.raises(ValueError, match="computation bound"):
+        evaluate_factors(snapshot, "parent", definitions=definitions, context=EvaluationContext(snapshot, max_computations=1))
+    context = EvaluationContext(snapshot)
+    evaluate_factors(snapshot, "parent", definitions=definitions, context=context)
+    changed = {**definitions, "leaf": FactorDefinition("leaf", "2", EmptyFactorParameters, (), (), leaf)}
+    with pytest.raises(ValueError, match="catalog"):
+        evaluate_factors(snapshot, "parent", definitions=changed, context=context)
+
+
+def test_factor_outputs_revalidate_constructed_models_and_reject_unsupported_inputs() -> None:
+    snapshot = InputSnapshot("mutable", datetime(2026, 9, 5, 13, tzinfo=UTC), {})
+    with pytest.raises(TypeError, match="unsupported mutable"):
+        InputSnapshot("unsupported", snapshot.input_cutoff, {"object": object()})
+
+    def malformed(_snapshot, _params, _dependencies):
+        return FactorResult.model_construct(key="malformed", implementation_version="1", available=False, value=1)
+
+    definitions = {"malformed": FactorDefinition("malformed", "1", EmptyFactorParameters, (), (), malformed)}
+    with pytest.raises(ValueError, match="evaluator rejected"):
+        evaluate_factors(snapshot, "malformed", definitions=definitions)
+
+
+def test_relative_strength_requires_aligned_dated_windows() -> None:
+    snapshot = InputSnapshot(
+        "relative", datetime(2026, 9, 5, 13, tzinfo=UTC),
+        {
+            "daily_closes": [100, 110, 120], "daily_close_dates": ["2026-09-01", "2026-09-02", "2026-09-03"],
+            "benchmark_closes": [100, 105, 110], "benchmark_close_dates": ["2026-09-01", "2026-09-03", "2026-09-04"],
+        },
+    )
+    result = evaluate_factors(snapshot, {RELATIVE_STRENGTH.key: {"period": 2}})[RELATIVE_STRENGTH.key]
+    assert not result.available
+    assert any("misaligned" in blocker for blocker in result.blockers)

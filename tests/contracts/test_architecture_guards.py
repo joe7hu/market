@@ -28,7 +28,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROD_ROOTS = [REPO_ROOT / "src" / "investment_panel"]
 
 KNOWN_CYCLE_COMPONENTS = frozenset()
-KNOWN_PRIVATE_IMPORT_EDGES = frozenset()
+KNOWN_PRIVATE_IMPORT_EDGES = frozenset({
+    # PostgreSQL keeps loader/write ownership while importing the pure Market
+    # calculation contract and its shared constants from the domain owner.
+    "src/investment_panel/infrastructure/postgres/market_analysis.py investment_panel.domain.market.publication",
+})
 
 
 def _prod_py_files() -> list[Path]:
@@ -76,7 +80,7 @@ def test_compact_inventory_is_complete() -> None:
 def test_area_inventory_is_compact_and_available() -> None:
     from scripts import architecture_inventory
 
-    for area in ("api", "config", "options", "providers", "frontend"):
+    for area in ("api", "config", "options", "providers", "frontend", "factors", "signals", "strategies", "workflows"):
         output = StringIO()
         with redirect_stdout(output):
             assert architecture_inventory.main(["--area", area]) == 0
@@ -133,9 +137,25 @@ def test_layer_analyzer_catches_deliberate_cross_owner_edges() -> None:
     ]
 
 
+def test_layer_analyzer_catches_root_and_application_edges() -> None:
+    assert layer_violations({
+        "investment_panel.domain": {"investment_panel.settings"},
+        "investment_panel.infrastructure": {"investment_panel.application.read_models"},
+        "investment_panel.application": {"investment_panel.api"},
+    }) == [
+        "investment_panel.domain -> investment_panel.settings",
+        "investment_panel.infrastructure -> investment_panel.application.read_models",
+        "investment_panel.application -> investment_panel.api",
+    ]
+
+
 def test_computation_analyzer_catches_deliberate_io_fixture(tmp_path: Path) -> None:
     fixture = tmp_path / "bad_domain.py"
-    fixture.write_text("import os\n\ndef bad(runtime):\n    return runtime.read()\n", encoding="utf-8")
+    fixture.write_text(
+        "import os as env\nfrom datetime import datetime as clock\n\n"
+        "def bad(runtime):\n    return env.getenv('X'), clock.now(), runtime.read()\n",
+        encoding="utf-8",
+    )
     violations = computation_purity_violations((tmp_path,))
     assert any("process or I/O import" in violation for violation in violations)
     assert any("direct I/O call" in violation for violation in violations)

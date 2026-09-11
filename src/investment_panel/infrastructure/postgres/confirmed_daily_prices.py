@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Iterable
 
-from investment_panel.domain.decision import MARKET_TZ, is_us_market_day, market_session_bounds
+from investment_panel.domain.decision import MARKET_TZ, completed_trading_dates, is_us_market_day, market_session_bounds
 
 
 @dataclass(frozen=True)
@@ -210,26 +210,6 @@ def latest_completed_references(
             ingest_run_id=str(row["ingest_run_id"]) if row.get("ingest_run_id") is not None else None,
         ))
     return tuple(selected)
-
-
-def completed_trading_dates(as_of: datetime, *, count: int = 3) -> tuple[date, ...]:
-    """Latest completed US market date and its preceding exact dates."""
-
-    if count <= 0:
-        return ()
-    local = _utc(as_of).astimezone(MARKET_TZ)
-    cursor = local.date()
-    # During RTH the current session has not completed.  After the cash close
-    # it is eligible only if a confirmed bar is actually available; callers
-    # still reject it when the source has not published it yet.
-    if not is_us_market_day(cursor) or local < market_session_bounds(cursor)[1]:
-        cursor -= timedelta(days=1)
-    dates: list[date] = []
-    while len(dates) < count:
-        if is_us_market_day(cursor):
-            dates.append(cursor)
-        cursor -= timedelta(days=1)
-    return tuple(dates)
 
 
 def _positive(value: Any) -> float | None:

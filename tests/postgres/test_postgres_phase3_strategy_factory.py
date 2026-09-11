@@ -14,8 +14,12 @@ from investment_panel.domain.research.stock_alpha import content_hash
 from investment_panel.domain.strategies.catalog import evaluate_strategy, resolve_builtin_strategy, StrategySpec
 from investment_panel.infrastructure.postgres.migrations import downgrade_database, upgrade_database
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.confirmed_daily_prices import completed_trading_dates
+from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.source_facts import SourceFactRepository
 from investment_panel.infrastructure.postgres.strategy_factory import StrategyFactoryRepository
+from investment_panel.infrastructure.postgres.strategy_inputs import load_strategy_inputs
 from investment_panel.workflows.agents import AgentActions
 from investment_panel.workflows.strategies import StrategyWorkflow
 
@@ -216,6 +220,38 @@ def test_phase3_repository_resolves_only_postgres_registered_strategy(migrated_p
         runtime.close()
 
 
+def test_phase3_old_binding_is_preserved_but_disabled_and_new_revision_is_executable(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = StrategyFactoryRepository(runtime)
+        old = resolve_builtin_strategy("classic_momentum_v1")
+        current = resolve_builtin_strategy("classic_momentum_v2")
+        old_id = repository.register(old)
+        current_id = repository.register(current, supersedes_id=old_id)
+        resolved_old = repository.resolve(old.strategy_key)
+        resolved_current = repository.resolve(current.strategy_key)
+        assert current_id != old_id
+        assert resolved_old.implementation_version == "1"
+        assert resolved_old.enabled is False
+        assert evaluate_strategy(resolved_old, {}).blockers == ("strategy_disabled",)
+        assert resolved_current.implementation_version == "2"
+        assert resolved_current.enabled is True
+        with runtime.read() as connection:
+            rows = connection.execute(
+                "SELECT strategy_key, implementation_version, p3_enabled FROM analysis.strategy_revision WHERE id = ANY(%s) ORDER BY id",
+                [[old_id, current_id]],
+            ).fetchall()
+        assert rows == [
+            {"strategy_key": old.strategy_key, "implementation_version": "1", "p3_enabled": False},
+            {"strategy_key": current.strategy_key, "implementation_version": "2", "p3_enabled": True},
+        ]
+    finally:
+        runtime.close()
+
+
 def test_phase3_definition_blockers_survive_postgres_round_trip(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -248,6 +284,111 @@ def test_phase3_unbound_definition_is_readable_but_not_executable(migrated_postg
         assert result.status == "blocked"
         assert result.actionability == "registration_only"
         assert result.blockers == ("strategy_implementation_unavailable",)
+    finally:
+        runtime.close()
+
+
+def test_phase3_strategy_loader_uses_exact_persisted_sessions(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        source_id = "phase3-strategy-loader-test"
+        ingestion.register_source(source_id, name="Phase 3 strategy loader", family="test", kind="daily_bars")
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        required_dates = tuple(reversed(completed_trading_dates(cutoff, count=253)))
+        run_id = ingestion.start_run(source_id, "price_bars")
+        assert ingestion.store_price_bars(
+            run_id,
+            source_id,
+            [
+                {
+                    "symbol": "LOADTEST",
+                    "date": trading_date.isoformat(),
+                    "close": 100 + index,
+                    "is_complete": True,
+                }
+                for index, trading_date in enumerate(reversed(required_dates))
+            ],
+            asset_classes={"LOADTEST": "equity"},
+        ) == len(required_dates)
+        ingestion.finish_run(run_id, "succeeded")
+
+        spec = resolve_builtin_strategy("daily_trend_underreaction_v2").model_copy(
+            update={"parameters": {"lookback_days": 252}},
+        )
+        with runtime.read() as connection:
+            loaded = load_strategy_inputs(connection, (spec,), as_of=cutoff, symbols=("LOADTEST",))
+        assert len(loaded["LOADTEST"]["daily_bars"]) == 253
+        assert tuple(row["trading_date"] for row in loaded["LOADTEST"]["daily_bars"]) == required_dates
+        assert loaded["LOADTEST"]["required_trading_dates"] == tuple(item.isoformat() for item in required_dates)
+    finally:
+        runtime.close()
+
+
+def test_phase3_strategy_loader_uses_instrument_event_facts_at_cutoff(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    ingestion = IngestionRepository(runtime)
+    facts = SourceFactRepository(runtime)
+    source_id = "phase3-strategy-event-loader-test"
+    cutoff = datetime.now(UTC) + timedelta(minutes=1)
+    ingestion.register_source(
+        source_id, name="Phase 3 strategy event loader", family="test", kind="events",
+        operational_state="active", health_owner="test", freshness_seconds=86400,
+    )
+    try:
+        with ingestion.run(source_id, "strategy-event-load") as source_run:
+            assert facts.store_market_events(source_run.id, source_id, [{
+                "source_key": "EVENTLOAD-2026-09-11",
+                "symbol": "EVENTLOAD",
+                "event_scope": "company",
+                "event_kind": "earnings",
+                "title": "Event loader earnings",
+                "starts_at": cutoff - timedelta(minutes=2),
+                "verification_status": "confirmed",
+                "details": {"actual": 3.2, "consensus": 3.0},
+            }]) == 1
+            source_run.finish("succeeded")
+        spec = resolve_builtin_strategy("daily_event_propagation_v1")
+        with runtime.read() as connection:
+            loaded = load_strategy_inputs(connection, (spec,), as_of=cutoff, symbols=("EVENTLOAD",))
+        assert loaded["EVENTLOAD"]["event"] == {
+            "status": "confirmed", "confirmed": True, "disabled": False,
+            "actual": 3.2, "consensus": 3.0,
+            "release_at": cutoff - timedelta(minutes=2),
+            "observed_at": cutoff - timedelta(minutes=2),
+            "available_at": loaded["EVENTLOAD"]["event"]["available_at"],
+            "source_id": source_id,
+            "source_version": loaded["EVENTLOAD"]["event"]["source_version"],
+            "observation_id": loaded["EVENTLOAD"]["event"]["observation_id"],
+        }
+    finally:
+        runtime.close()
+
+
+def test_phase3_strategy_loader_exposes_named_option_unavailability(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('OPTIONLOAD', 'Option load', 'equity')",
+            )
+        spec = resolve_builtin_strategy("options_recovery_v2")
+        with runtime.read() as connection:
+            loaded = load_strategy_inputs(
+                connection, (spec,), as_of=datetime.now(UTC), symbols=("OPTIONLOAD",),
+            )
+        assert loaded["OPTIONLOAD"]["full_chain_state"]["status"] == "unavailable"
+        assert loaded["OPTIONLOAD"]["oi_volume_state"]["status"] == "unavailable"
+        assert loaded["OPTIONLOAD"]["dividend_state"]["status"] == "unavailable"
     finally:
         runtime.close()
 
@@ -288,17 +429,30 @@ def test_phase3_strategy_workflow_persists_replays_and_reaches_typed_api(
         assert replay[0].generated_at > replay[0].input_cutoff
         with runtime.read() as connection:
             stored = connection.execute(
-                """SELECT input_hash, lineage, metrics
-                     FROM analysis.strategy_evaluation
-                    WHERE strategy_revision_id = %s AND evaluation_type = 'strategy_signal'
-                    ORDER BY evaluated_at DESC, id DESC LIMIT 1""",
-                [revision_id],
+                """SELECT evaluation.input_hash, evaluation.lineage, evaluation.metrics,
+                           evaluation.run_id, evaluation.scope, evaluation.mode,
+                           evaluation.input_manifest, evaluation.output_hash, run.status AS run_status
+                     FROM analysis.strategy_evaluation evaluation
+                     JOIN analysis.run run ON run.id = evaluation.run_id
+                    WHERE evaluation.strategy_revision_id = %s AND evaluation.evaluation_type = 'strategy_signal'
+                    ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC LIMIT 1""",
+                    [revision_id],
             ).fetchone()
+            run_inputs = connection.execute(
+                "SELECT inputs FROM analysis.run WHERE id = %s", [stored["run_id"]],
+            ).fetchone()["inputs"]
         assert stored["lineage"]["mode"] == "replay"
         assert stored["lineage"]["scope"] == "INTEGRATION"
         assert stored["lineage"]["input_snapshot_identity"]
         assert stored["metrics"]["actionability"] == "research_only"
         assert stored["input_hash"] == replay[0].input_hash
+        assert stored["run_status"] == "succeeded"
+        assert str(stored["run_id"]) == replay[0].run_id
+        assert stored["mode"] == "replay"
+        assert stored["scope"] == "INTEGRATION"
+        assert stored["input_manifest"]["strategy"]["implementation_version"] == "1"
+        assert len(stored["output_hash"]) == 64
+        assert run_inputs["strategy_revisions"] == [[spec.strategy_key, spec.revision]]
 
         config = typed_config(application_postgres_dsn)
         monkeypatch.setitem(
