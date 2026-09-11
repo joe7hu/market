@@ -61,6 +61,42 @@ class FlexibleResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class PaperTradeSummary(FlexibleResponse):
+    """A fill-backed paper trade row; monetary fields may be explicitly null."""
+
+    paper_order_id: str
+    symbol: str
+    lifecycle: str
+    reconciliation_status: str
+    net_pnl: float | None = None
+
+
+class PaperTradeDetail(PaperTradeSummary):
+    """Bounded paper-trade investigation with original artifacts."""
+
+
+class PaperTradePage(FlexibleResponse):
+    rows: list[PaperTradeSummary] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class PaperBookPerformance(FlexibleResponse):
+    """Accounting projection with visible scope and evidence coverage."""
+
+    net_pnl: float | None = None
+    realized_pnl: float | None = None
+    unrealized_pnl: float | None = None
+    quality_status: str
+
+
+class LearningOverview(FlexibleResponse):
+    """Research lanes and their blockers, separate from paper execution state."""
+
+    paper_only: bool = True
+    strategy_lane: dict[str, Any] = Field(default_factory=dict)
+    prediction_lane: dict[str, Any] = Field(default_factory=dict)
+
+
 class ApiStatusResponse(BaseModel):
     ready: bool
     message: str

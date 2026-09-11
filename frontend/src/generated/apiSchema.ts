@@ -921,6 +921,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/paper/performance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Paper Performance */
+        get: operations["paper_performance_api_paper_performance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/paper/trades": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Paper Trades */
+        get: operations["paper_trades_api_paper_trades_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/paper/trades/{trade_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Paper Trade Detail */
+        get: operations["paper_trade_detail_api_paper_trades__trade_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/portfolio/account": {
         parameters: {
             query?: never;
@@ -1103,6 +1154,23 @@ export interface paths {
         put?: never;
         /** Launch Refresh Job Background */
         post: operations["launch_refresh_job_background_api_refresh_jobs__job_name__background_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Overview */
+        get: operations["research_overview_api_research_overview_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3078,6 +3146,27 @@ export interface components {
             /** Value */
             value: string | number;
         };
+        /**
+         * LearningOverview
+         * @description Research lanes and their blockers, separate from paper execution state.
+         */
+        LearningOverview: {
+            /**
+             * Paper Only
+             * @default true
+             */
+            paper_only: boolean;
+            /** Prediction Lane */
+            prediction_lane?: {
+                [key: string]: unknown;
+            };
+            /** Strategy Lane */
+            strategy_lane?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
         /** ManualAccountPreviewResponse */
         ManualAccountPreviewResponse: {
             /** Current Snapshot */
@@ -5028,6 +5117,22 @@ export interface components {
                 [key: string]: components["schemas"]["TablePayloadResponse"];
             };
         };
+        /**
+         * PaperBookPerformance
+         * @description Accounting projection with visible scope and evidence coverage.
+         */
+        PaperBookPerformance: {
+            /** Net Pnl */
+            net_pnl?: number | null;
+            /** Quality Status */
+            quality_status: string;
+            /** Realized Pnl */
+            realized_pnl?: number | null;
+            /** Unrealized Pnl */
+            unrealized_pnl?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** PaperEntryResponse */
         PaperEntryResponse: {
             /** Decision Id */
@@ -5093,6 +5198,51 @@ export interface components {
             status: string;
             /** Trade Plan Id */
             trade_plan_id: string;
+        };
+        /**
+         * PaperTradeDetail
+         * @description Bounded paper-trade investigation with original artifacts.
+         */
+        PaperTradeDetail: {
+            /** Lifecycle */
+            lifecycle: string;
+            /** Net Pnl */
+            net_pnl?: number | null;
+            /** Paper Order Id */
+            paper_order_id: string;
+            /** Reconciliation Status */
+            reconciliation_status: string;
+            /** Symbol */
+            symbol: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** PaperTradePage */
+        PaperTradePage: {
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Rows */
+            rows?: components["schemas"]["PaperTradeSummary"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * PaperTradeSummary
+         * @description A fill-backed paper trade row; monetary fields may be explicitly null.
+         */
+        PaperTradeSummary: {
+            /** Lifecycle */
+            lifecycle: string;
+            /** Net Pnl */
+            net_pnl?: number | null;
+            /** Paper Order Id */
+            paper_order_id: string;
+            /** Reconciliation Status */
+            reconciliation_status: string;
+            /** Symbol */
+            symbol: string;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * PortfolioActionDTO
@@ -9125,6 +9275,105 @@ export interface operations {
             };
         };
     };
+    paper_performance_api_paper_performance_get: {
+        parameters: {
+            query?: {
+                symbol?: string | null;
+                strategy_revision?: number | null;
+                lifecycle?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperBookPerformance"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    paper_trades_api_paper_trades_get: {
+        parameters: {
+            query?: {
+                symbol?: string | null;
+                strategy_revision?: number | null;
+                lifecycle?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperTradePage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    paper_trade_detail_api_paper_trades__trade_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trade_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperTradeDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     manual_account_api_portfolio_account_get: {
         parameters: {
             query?: never;
@@ -9484,6 +9733,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_overview_api_research_overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LearningOverview"];
                 };
             };
         };

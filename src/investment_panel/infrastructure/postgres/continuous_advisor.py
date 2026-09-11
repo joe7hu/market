@@ -590,7 +590,7 @@ class ContinuousAdvisorRepository:
                        packet.cutoff, claim.id AS claim_id, claim.claim_key, claim.claim_kind,
                        claim.horizon, claim.direction, claim.probability,
                        outcome.status, outcome.correct, outcome.excess_return,
-                       outcome.invalidation_correct, outcome.evidence_valid
+                       outcome.invalidation_actual, outcome.invalidation_correct, outcome.evidence_valid
                 FROM analysis.continuous_advisor_forecast_claim claim
                 JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
                 JOIN analysis.continuous_advisor_packet packet ON packet.id = claim.packet_id
@@ -619,7 +619,7 @@ class ContinuousAdvisorRepository:
             bucket = grouped.setdefault(version, {"claims": [], "outcomes": [], "latency": [], "cost": 0.0, "responses_seen": set(), "observations": []})
             bucket["claims"].append({"claim_id": str(row["claim_id"]), "claim_key": row["claim_key"], "claim_kind": row["claim_kind"], "horizon": row["horizon"], "direction": row["direction"], "probability": row["probability"]})
             if row["status"]:
-                outcome = {"claim_id": str(row["claim_id"]), "claim_key": row["claim_key"], "status": row["status"], "correct": row["correct"], "excess_return": row["excess_return"], "invalidation_correct": row["invalidation_correct"], "evidence_valid": row["evidence_valid"]}
+                outcome = {"claim_id": str(row["claim_id"]), "claim_key": row["claim_key"], "status": row["status"], "correct": row["correct"], "excess_return": row["excess_return"], "invalidation_actual": row["invalidation_actual"], "invalidation_correct": row["invalidation_correct"], "evidence_valid": row["evidence_valid"]}
                 bucket["outcomes"].append(outcome)
                 bucket["observations"].append({"claim": bucket["claims"][-1], "outcome": outcome, "cutoff": row["cutoff"]})
             response_id = str(row["response_id"])
@@ -675,7 +675,7 @@ class ContinuousAdvisorRepository:
                        claim.id AS claim_id, claim.claim_key, claim.claim_kind,
                        claim.horizon, claim.direction, claim.probability, outcome.status,
                        outcome.correct, outcome.excess_return,
-                       outcome.invalidation_correct, outcome.evidence_valid
+                       outcome.invalidation_actual, outcome.invalidation_correct, outcome.evidence_valid
                 FROM analysis.continuous_advisor_forecast_claim claim
                 JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
                 JOIN analysis.continuous_advisor_packet packet ON packet.id = claim.packet_id
@@ -712,6 +712,7 @@ class ContinuousAdvisorRepository:
                     "status": row["status"],
                     "correct": row["correct"],
                     "excess_return": row["excess_return"],
+                    "invalidation_actual": row["invalidation_actual"],
                     "invalidation_correct": row["invalidation_correct"],
                     "evidence_valid": row["evidence_valid"],
                 })
@@ -766,6 +767,11 @@ class ContinuousAdvisorRepository:
             ).fetchone()
             if claim is None:
                 raise ValueError(f"forecast claim not found: {claim_id}")
+            metadata = dict(outcome.get("metadata") or {})
+            if outcome.get("event_truth") is not None:
+                metadata.setdefault("event_truth", outcome.get("event_truth"))
+            if outcome.get("scoring_version"):
+                metadata.setdefault("scoring_version", outcome.get("scoring_version"))
             row = connection.execute(
                 "SELECT analysis.write_continuous_advisor_outcome(%s) AS id",
                 [Jsonb(_jsonable({
@@ -780,11 +786,27 @@ class ContinuousAdvisorRepository:
                     "invalidation_actual": outcome.get("invalidation_actual"),
                     "invalidation_correct": outcome.get("invalidation_correct"),
                     "evidence_valid": bool(outcome.get("evidence_valid", False)),
-                    "metadata": outcome.get("metadata") or {},
+                    "metadata": metadata,
                 }))],
             ).fetchone()
             if row is None:
                 row = connection.execute("SELECT id FROM analysis.continuous_advisor_forecast_outcome WHERE claim_id = %s", [claim_id]).fetchone()
+        return str(row["id"])
+
+    def record_resolution_attempt(self, claim_id: str, attempt: Mapping[str, Any]) -> str:
+        """Append a retryable data attempt without terminally resolving the claim."""
+
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            row = connection.execute(
+                "SELECT analysis.write_continuous_advisor_resolution_attempt(%s) AS id",
+                [Jsonb(_jsonable({
+                    "claim_id": claim_id,
+                    "status": attempt.get("status", "waiting"),
+                    "reason": str(attempt.get("reason") or "resolution_data_waiting"),
+                    "measured_through": attempt.get("measured_through"),
+                    "metadata": attempt.get("metadata") or {},
+                }))],
+            ).fetchone()
         return str(row["id"])
 
     def unresolved_claims(self, *, limit: int = 500) -> list[dict[str, Any]]:
@@ -795,11 +817,21 @@ class ContinuousAdvisorRepository:
                        claim.horizon, claim.statement, claim.direction, claim.probability,
                        claim.target, claim.evidence_refs, claim.claim,
                        packet.id AS packet_id, packet.symbol, packet.cutoff,
-                       packet.packet, response.id AS response_id
+                       packet.packet, response.id AS response_id,
+                       attempt.status AS last_attempt_status,
+                       attempt.reason AS last_attempt_reason,
+                       attempt.created_at AS last_attempt_at
                 FROM analysis.continuous_advisor_forecast_claim claim
                 JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
                 JOIN analysis.continuous_advisor_packet packet ON packet.id = claim.packet_id
                 LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
+                LEFT JOIN LATERAL (
+                    SELECT status, reason, created_at
+                    FROM analysis.continuous_advisor_resolution_attempt
+                    WHERE claim_id = claim.id
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                ) attempt ON TRUE
                 WHERE response.status = 'succeeded' AND outcome.id IS NULL
                 ORDER BY packet.cutoff ASC, claim.created_at ASC, claim.id ASC
                 LIMIT %s

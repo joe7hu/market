@@ -7,8 +7,8 @@ describe("primary navigation", () => {
     expect(navItems.map(({ label, to }) => [label, to])).toEqual([
       ["Command Center", "/today"],
       ["Opportunities", "/opportunities"],
-      ["Portfolio", "/portfolio"],
-      ["Research", "/sources"],
+      ["Portfolio", "/portfolio/paper"],
+      ["Research", "/research"],
       ["Advisor", "/agent"],
       ["System", "/health"],
     ]);

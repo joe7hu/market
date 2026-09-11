@@ -3989,6 +3989,29 @@
         "title": "Invalidation",
         "type": "object"
       },
+      "LearningOverview": {
+        "additionalProperties": true,
+        "description": "Research lanes and their blockers, separate from paper execution state.",
+        "properties": {
+          "paper_only": {
+            "default": true,
+            "title": "Paper Only",
+            "type": "boolean"
+          },
+          "prediction_lane": {
+            "additionalProperties": true,
+            "title": "Prediction Lane",
+            "type": "object"
+          },
+          "strategy_lane": {
+            "additionalProperties": true,
+            "title": "Strategy Lane",
+            "type": "object"
+          }
+        },
+        "title": "LearningOverview",
+        "type": "object"
+      },
       "ManualAccountPreviewResponse": {
         "additionalProperties": true,
         "properties": {
@@ -9845,6 +9868,54 @@
         "title": "PanelSnapshotResponse",
         "type": "object"
       },
+      "PaperBookPerformance": {
+        "additionalProperties": true,
+        "description": "Accounting projection with visible scope and evidence coverage.",
+        "properties": {
+          "net_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Pnl"
+          },
+          "quality_status": {
+            "title": "Quality Status",
+            "type": "string"
+          },
+          "realized_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Pnl"
+          },
+          "unrealized_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unrealized Pnl"
+          }
+        },
+        "required": [
+          "quality_status"
+        ],
+        "title": "PaperBookPerformance",
+        "type": "object"
+      },
       "PaperEntryResponse": {
         "additionalProperties": true,
         "properties": {
@@ -10101,6 +10172,113 @@
           "trade_plan_id"
         ],
         "title": "PaperExecutionOutcome",
+        "type": "object"
+      },
+      "PaperTradeDetail": {
+        "additionalProperties": true,
+        "description": "Bounded paper-trade investigation with original artifacts.",
+        "properties": {
+          "lifecycle": {
+            "title": "Lifecycle",
+            "type": "string"
+          },
+          "net_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Pnl"
+          },
+          "paper_order_id": {
+            "title": "Paper Order Id",
+            "type": "string"
+          },
+          "reconciliation_status": {
+            "title": "Reconciliation Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "paper_order_id",
+          "symbol",
+          "lifecycle",
+          "reconciliation_status"
+        ],
+        "title": "PaperTradeDetail",
+        "type": "object"
+      },
+      "PaperTradePage": {
+        "additionalProperties": true,
+        "properties": {
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/PaperTradeSummary"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "PaperTradePage",
+        "type": "object"
+      },
+      "PaperTradeSummary": {
+        "additionalProperties": true,
+        "description": "A fill-backed paper trade row; monetary fields may be explicitly null.",
+        "properties": {
+          "lifecycle": {
+            "title": "Lifecycle",
+            "type": "string"
+          },
+          "net_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Pnl"
+          },
+          "paper_order_id": {
+            "title": "Paper Order Id",
+            "type": "string"
+          },
+          "reconciliation_status": {
+            "title": "Reconciliation Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "paper_order_id",
+          "symbol",
+          "lifecycle",
+          "reconciliation_status"
+        ],
+        "title": "PaperTradeSummary",
         "type": "object"
       },
       "PortfolioActionDTO": {
@@ -20147,6 +20325,238 @@
         "summary": "Panel Snapshot"
       }
     },
+    "/api/paper/performance": {
+      "get": {
+        "operationId": "paper_performance_api_paper_performance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "symbol",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "strategy_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Strategy Revision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lifecycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(staged|open|closed)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lifecycle"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperBookPerformance"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Performance"
+      }
+    },
+    "/api/paper/trades": {
+      "get": {
+        "operationId": "paper_trades_api_paper_trades_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "symbol",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "strategy_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Strategy Revision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lifecycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(staged|open|closed)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lifecycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperTradePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Trades"
+      }
+    },
+    "/api/paper/trades/{trade_id}": {
+      "get": {
+        "operationId": "paper_trade_detail_api_paper_trades__trade_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trade_id",
+            "required": true,
+            "schema": {
+              "title": "Trade Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperTradeDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Trade Detail"
+      }
+    },
     "/api/portfolio/account": {
       "get": {
         "operationId": "manual_account_api_portfolio_account_get",
@@ -20585,6 +20995,24 @@
           }
         },
         "summary": "Launch Refresh Job Background"
+      }
+    },
+    "/api/research/overview": {
+      "get": {
+        "operationId": "research_overview_api_research_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LearningOverview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Research Overview"
       }
     },
     "/api/research/summary": {

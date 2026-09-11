@@ -11,6 +11,9 @@ import { NotFoundRoute } from "./pages/NotFoundRoute";
 import { OpportunitiesRoute } from "./pages/OpportunitiesRoute";
 import { OptionsRadarRoute } from "./pages/OptionsRadarRoute";
 import { PortfolioRoute } from "./pages/PortfolioRoute";
+import { PaperBookRoute } from "./pages/PaperBookRoute";
+import { PaperTradeRoute } from "./pages/PaperTradeRoute";
+import { ResearchWorkbenchRoute } from "./pages/ResearchWorkbenchRoute";
 import { SettingsRoute } from "./pages/SettingsRoute";
 import { SourcesRoute } from "./pages/SourcesRoute";
 import { SuperinvestorsRoute } from "./pages/SuperinvestorsRoute";
@@ -35,7 +38,9 @@ export function App() {
           <Route path="market" element={<MarketRoute />} />
           <Route path="opportunities" element={<OpportunitiesRoute />} />
           <Route path="portfolio" element={<PortfolioRoute />} />
-          <Route path="research" element={<SourcesRoute />} />
+          <Route path="portfolio/paper" element={<PaperBookRoute />} />
+          <Route path="portfolio/paper/trades/:tradeId" element={<PaperTradeRoute />} />
+          <Route path="research" element={<ResearchWorkbenchRoute />} />
           <Route path="research-queue" element={<Navigate to="/sources" replace />} />
           <Route path="options-radar" element={<OptionsRadarRoute />} />
           <Route path="options-chain" element={<Suspense fallback={<p className="text-sm text-muted-foreground">Loading option-chain workstation…</p>}><OptionsChainRoute /></Suspense>} />

@@ -61,64 +61,82 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
         measured_from = cutoff + horizon
         observation_end = _observation_window_end(measured_from)
         if measured_from > reference or (observation_end is not None and observation_end > reference):
+            repository.record_resolution_attempt(
+                str(item["claim_id"]),
+                {
+                    "status": "waiting",
+                    "reason": "horizon_not_reached",
+                    "metadata": {
+                        "target_at": measured_from,
+                        "observation_window_end": observation_end,
+                    },
+                },
+            )
             waiting += 1
+            results.append({"claim_id": item["claim_id"], "status": "waiting", "reason": "horizon_not_reached"})
             continue
         base_price = (((packet.get("evidence") or {}).get("prices") or {}).get("price"))
         quote = repository.quote_at_or_after(
             str(item["symbol"]), measured_from, available_by=reference, observed_to=observation_end
         ) if observation_end is not None else None
         if base_price is None or not quote or quote.get("price") is None or float(base_price) <= 0:
+            reason = "base_price_unavailable" if base_price is None or float(base_price) <= 0 else "price_outcome_unavailable"
+            repository.record_resolution_attempt(
+                str(item["claim_id"]),
+                {
+                    "status": "waiting",
+                    "reason": reason,
+                    "metadata": {
+                        "target_at": measured_from,
+                        "observation_window_end": observation_end,
+                        "available_by": reference,
+                    },
+                },
+            )
+            waiting += 1
+            results.append({"claim_id": item["claim_id"], "status": "waiting", "reason": reason})
+            continue
+        actual_return = float(quote["price"]) / float(base_price) - 1.0
+        excess_return = _excess_return(repository, packet, measured_from, actual_return, reference, observation_end)
+        invalidation_rule = _invalidation_rule(claim)
+        invalidation_quote = (
+            repository.quote_crossing_at_or_after(
+                str(item["symbol"]), cutoff,
+                observed_to=observation_end, available_by=reference,
+                below=invalidation_rule[0], threshold=invalidation_rule[1],
+            )
+            if invalidation_rule is not None and observation_end is not None
+            else None
+        )
+        invalidated = (
+            invalidation_quote is not None
+            if str(claim.get("claim_kind") or "") == "invalidation" and invalidation_rule is not None
+            else _price_invalidation(claim, float(quote["price"]))
+        )
+        if claim.get("claim_kind") == "invalidation" and invalidated is None:
             outcome = {
                 "status": "unresolvable",
                 "evidence_valid": False,
-                "measured_through": measured_from,
-                "metadata": {
-                    "reason": "price_outcome_unavailable" if observation_end is not None else "market_session_unavailable",
-                    "observation_window_end": observation_end,
-                },
+                "measured_through": quote.get("observed_at"),
+                "metadata": {"reason": "invalidation_condition_not_machine_resolvable"},
             }
         else:
-            actual_return = float(quote["price"]) / float(base_price) - 1.0
-            excess_return = _excess_return(repository, packet, measured_from, actual_return, reference, observation_end)
-            invalidation_rule = _invalidation_rule(claim)
-            invalidation_quote = (
-                repository.quote_crossing_at_or_after(
-                    str(item["symbol"]), measured_from,
-                    observed_to=observation_end, available_by=reference,
-                    below=invalidation_rule[0], threshold=invalidation_rule[1],
-                )
-                if invalidation_rule is not None and observation_end is not None
-                else None
+            outcome = resolve_claim(
+                claim,
+                actual_return=actual_return,
+                excess_return=excess_return,
+                invalidated=invalidated,
+                measured_through=quote.get("observed_at"),
+                evidence_valid=True,
             )
-            invalidated = (
-                invalidation_quote is not None
-                if str(claim.get("claim_kind") or "") == "invalidation" and invalidation_rule is not None
-                else _price_invalidation(claim, float(quote["price"]))
-            )
-            if claim.get("claim_kind") == "invalidation" and invalidated is None:
-                outcome = {
-                    "status": "unresolvable",
-                    "evidence_valid": False,
-                    "measured_through": quote.get("observed_at"),
-                    "metadata": {"reason": "invalidation_condition_not_machine_resolvable"},
-                }
-            else:
-                outcome = resolve_claim(
-                    claim,
-                    actual_return=actual_return,
-                    excess_return=excess_return,
-                    invalidated=invalidated,
-                    measured_through=quote.get("observed_at"),
-                    evidence_valid=True,
-                )
-            outcome.setdefault("metadata", {})
-            outcome["metadata"].update({
-                "outcome_quote_observed_at": quote.get("observed_at"),
-                "packet_cutoff": packet.get("cutoff"),
-                "observation_window_end": observation_end,
-            })
-            if invalidation_quote is not None:
-                outcome["metadata"]["invalidation_quote_observed_at"] = invalidation_quote.get("observed_at")
+        outcome.setdefault("metadata", {})
+        outcome["metadata"].update({
+            "outcome_quote_observed_at": quote.get("observed_at"),
+            "packet_cutoff": packet.get("cutoff"),
+            "observation_window_end": observation_end,
+        })
+        if invalidation_quote is not None:
+            outcome["metadata"]["invalidation_quote_observed_at"] = invalidation_quote.get("observed_at")
         repository.record_outcome(str(item["claim_id"]), outcome)
         if outcome["status"] == "quarantined":
             quarantined += 1

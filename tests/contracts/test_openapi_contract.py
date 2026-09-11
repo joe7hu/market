@@ -33,7 +33,7 @@ def test_openapi_baseline_and_json_success_schemas() -> None:
         for method, operation in path.items()
         if method in {"get", "post", "put", "patch", "delete"}
     ]
-    assert len(paths) <= 90
+    assert len(paths) <= 94
     assert operations
     assert contract["components"]["schemas"]
 

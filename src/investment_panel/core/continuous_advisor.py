@@ -29,6 +29,7 @@ MIN_TEST_MATCHES = 3
 MIN_PROMOTION_MATCHES = 30
 PROMOTION_Z = 1.96
 CONTINUOUS_MAX_OUTPUT_TOKENS = 24_000
+SCORING_VERSION = "continuous-advisor-score.v2"
 
 _TIMESTAMP_KEYS = frozenset({
     "observed_at", "available_at", "published_at", "event_at", "finished_at",
@@ -361,19 +362,24 @@ def resolve_claim(
         correct = expected == "neutral" and actual_direction == "flat" or expected == actual_direction
     is_invalidation = str(claim.get("claim_kind") or "") == "invalidation"
     invalidation_correct = None
+    event_truth: float | None = None
     if is_invalidation and invalidated is not None:
         expected_probability = float(claim.get("probability") or 0)
         invalidation_correct = bool(invalidated) == (expected_probability >= 0.5)
+        event_truth = 1.0 if invalidated else 0.0
         correct = invalidation_correct
     probability = float(claim.get("probability") or 0)
     actual = 1.0 if correct else 0.0 if correct is False else None
+    calibration_truth = event_truth if is_invalidation else actual
     return {
+        "scoring_version": SCORING_VERSION,
         "status": "resolved" if actual is not None and evidence_valid else "quarantined" if actual is not None else "unresolvable",
         "actual_return": float(actual_return) if actual_return is not None else None,
         "excess_return": float(excess_return) if excess_return is not None else None,
         "actual_direction": actual_direction,
         "correct": correct,
-        "calibration_error": (probability - actual) ** 2 if actual is not None else None,
+        "calibration_error": (probability - calibration_truth) ** 2 if calibration_truth is not None else None,
+        "event_truth": event_truth,
         "invalidation_actual": invalidated,
         "invalidation_correct": invalidation_correct,
         "evidence_valid": bool(evidence_valid),
@@ -408,11 +414,19 @@ def score_claims(
     for outcome in matched:
         claim = by_id.get(str(outcome.get("claim_id") or "")) or by_key[str(outcome.get("claim_key") or outcome.get("claim_id"))]
         probability = _safe_probability(claim.get("probability"))
-        actual = 1.0 if outcome.get("correct") is True else 0.0
-        brier = (probability - actual) ** 2
+        classification_actual = 1.0 if outcome.get("correct") is True else 0.0 if outcome.get("correct") is False else None
+        event_truth = outcome.get("event_truth")
+        if event_truth is None and claim.get("claim_kind") == "invalidation":
+            invalidation_actual = outcome.get("invalidation_actual")
+            event_truth = 1.0 if invalidation_actual is True else 0.0 if invalidation_actual is False else None
+        if event_truth is None:
+            event_truth = classification_actual
+        brier = (probability - float(event_truth)) ** 2 if event_truth is not None else None
+        if brier is None:
+            continue
         brier_values.append(brier)
-        if outcome.get("correct") is not None and claim.get("claim_kind") != "invalidation":
-            directional.append(actual)
+        if classification_actual is not None and claim.get("claim_kind") != "invalidation":
+            directional.append(classification_actual)
         if outcome.get("excess_return") is not None and claim.get("claim_kind") != "invalidation":
             excess_direction = _direction(float(outcome["excess_return"]))
             expected_excess = {
@@ -422,7 +436,7 @@ def score_claims(
         if outcome.get("invalidation_correct") is not None:
             invalidation.append(1.0 if outcome["invalidation_correct"] else 0.0)
         evidence.append(1.0 if outcome.get("evidence_valid", True) else 0.0)
-        quality_samples.append((1.0 - brier) * 0.55 + actual * 0.25 + (1.0 if outcome.get("evidence_valid", True) else 0.0) * 0.20)
+        quality_samples.append((1.0 - brier) * 0.55 + (classification_actual or 0.0) * 0.25 + (1.0 if outcome.get("evidence_valid", True) else 0.0) * 0.20)
     brier_score = sum(brier_values) / len(brier_values) if brier_values else None
     calibration = 1.0 - brier_score if brier_score is not None else None
     directional_accuracy = sum(directional) / len(directional) if directional else None
@@ -431,9 +445,11 @@ def score_claims(
     evidence_validity = sum(evidence) / len(evidence) if evidence else None
     components = [value for value in (calibration, directional_accuracy, excess_accuracy, invalidation_accuracy, evidence_validity) if value is not None]
     quality_score = sum(components) / len(components) if components else None
+    promotion_quality_score = sum(quality_samples) / len(quality_samples) if quality_samples else None
     return {
-        "matched_outcomes": len(matched),
-        "resolved_claims": len(matched),
+        "scoring_version": SCORING_VERSION,
+        "matched_outcomes": len(brier_values),
+        "resolved_claims": len(brier_values),
         "brier_score": brier_score,
         "calibration_score": calibration,
         "directional_accuracy": directional_accuracy,
@@ -443,6 +459,9 @@ def score_claims(
         "avg_latency_ms": sum(latency_ms or []) / len(latency_ms) if latency_ms else None,
         "token_cost_usd": round(float(token_cost_usd or 0), 6),
         "quality_score": quality_score,
+        "quality_score_basis": "mean_available_metric_components",
+        "promotion_quality_score": promotion_quality_score,
+        "promotion_quality_score_basis": "weighted_resolved_claim_samples",
         "quality_samples": quality_samples,
     }
 
@@ -507,8 +526,20 @@ def promotion_gate(
         comparison = {"lower_confidence_bound": float(candidate.get("lower_confidence_bound") or 0), "positive_lower_confidence_bound": False}
         if comparison["lower_confidence_bound"] <= 0:
             blockers.append("non_positive_lower_confidence_bound")
+    waiting_blockers = {
+        "matched_outcomes_below_test_floor",
+        "matched_outcomes_below_promotion_floor",
+        "walk_forward_failed",
+        "forward_session_failed",
+    }
+    evidence_waiting = matches < MIN_PROMOTION_MATCHES
+    status = "eligible" if not blockers else "waiting" if all(
+        blocker in waiting_blockers or (blocker == "non_positive_lower_confidence_bound" and evidence_waiting)
+        for blocker in blockers
+    ) else "rejected"
     return {
         "eligible": not blockers,
+        "status": status,
         "blockers": sorted(set(blockers)),
         "comparison": comparison,
         "advisory_only": True,

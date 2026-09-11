@@ -152,6 +152,36 @@ def _journal_page(
                    shadow.entry_at, shadow.entry_price, shadow.exit_at, shadow.exit_price,
                    shadow.pending_entry_reason, shadow.entry_cohort_id, option_decision.structure,
                    option_decision.market_regime, shadow.fill_basis, shadow.metrics,
+                   (SELECT sum(journal.quantity * journal.price) FILTER (WHERE journal.action = 'paper_entry')
+                      / nullif(sum(journal.quantity) FILTER (WHERE journal.action = 'paper_entry'), 0)
+                      FROM app.trade_journal journal
+                     WHERE journal.details->>'paper_order_id' = paper_order.id::text
+                       AND journal.decision_id = paper_order.decision_id
+                       AND journal.instrument_id = decision.instrument_id
+                       AND journal.action = 'paper_entry'
+                       AND journal.rationale = 'deterministic_options_paper_execution') AS paper_entry_price,
+                   (SELECT min(journal.created_at)
+                      FROM app.trade_journal journal
+                     WHERE journal.details->>'paper_order_id' = paper_order.id::text
+                       AND journal.decision_id = paper_order.decision_id
+                       AND journal.instrument_id = decision.instrument_id
+                       AND journal.action = 'paper_entry'
+                       AND journal.rationale = 'deterministic_options_paper_execution') AS paper_entry_at,
+                   (SELECT sum(journal.quantity * journal.price) FILTER (WHERE journal.action = 'paper_exit' OR journal.action LIKE 'paper_exit:%%')
+                      / nullif(sum(journal.quantity) FILTER (WHERE journal.action = 'paper_exit' OR journal.action LIKE 'paper_exit:%%'), 0)
+                      FROM app.trade_journal journal
+                     WHERE journal.details->>'paper_order_id' = paper_order.id::text
+                       AND journal.decision_id = paper_order.decision_id
+                       AND journal.instrument_id = decision.instrument_id
+                       AND (journal.action = 'paper_exit' OR journal.action LIKE 'paper_exit:%%')
+                       AND journal.rationale = 'deterministic_options_paper_execution') AS paper_exit_price,
+                   (SELECT max(journal.created_at)
+                      FROM app.trade_journal journal
+                     WHERE journal.details->>'paper_order_id' = paper_order.id::text
+                       AND journal.decision_id = paper_order.decision_id
+                       AND journal.instrument_id = decision.instrument_id
+                       AND (journal.action = 'paper_exit' OR journal.action LIKE 'paper_exit:%%')
+                       AND journal.rationale = 'deterministic_options_paper_execution') AS paper_exit_at,
                    outcome.maturity_state AS outcome_state, outcome.observed_through,
                    outcome.current_return, outcome.return_1d, outcome.return_5d,
                    outcome.return_20d, outcome.return_60d, outcome.peak_return,
@@ -177,11 +207,14 @@ def _journal_payload(row: dict[str, Any], *, record_kind: str) -> dict[str, Any]
     metrics = dict(row.get("metrics") or {})
     details = dict(row.get("decision_details") or {})
     thesis = dict(row.get("thesis_payload") or {})
-    status = str(row.get("shadow_status") or row.get("paper_status") or "pending")
+    status = str((row.get("paper_status") or row.get("shadow_status")) if record_kind == "paper_trade" else (row.get("shadow_status") or row.get("paper_status")) or "pending")
     outcome_state = row.get("outcome_state")
     lifecycle = str(outcome_state) if outcome_state in {"mature", "expired", "observing"} else status
-    latest_mark = _number(metrics.get("mark_price"))
-    entry_price = _number(row.get("entry_price")) or _number(row.get("order_limit_price"))
+    latest_mark = None if record_kind == "paper_trade" else _number(metrics.get("mark_price"))
+    entry_price = _number(row.get("paper_entry_price")) if record_kind == "paper_trade" else _number(row.get("entry_price")) or _number(row.get("order_limit_price"))
+    entry_at = row.get("paper_entry_at") if record_kind == "paper_trade" else row.get("entry_at")
+    exit_price = _number(row.get("paper_exit_price")) if record_kind == "paper_trade" else _number(row.get("exit_price"))
+    exit_at = row.get("paper_exit_at") if record_kind == "paper_trade" else row.get("exit_at")
     return {
         "record_kind": record_kind,
         "paper_order_id": row.get("paper_order_id"),
@@ -189,12 +222,12 @@ def _journal_payload(row: dict[str, Any], *, record_kind: str) -> dict[str, Any]
         "decision_id": str(row["decision_id"]),
         "lifecycle": lifecycle,
         "structure": row.get("structure"),
-        "entry_at": row.get("entry_at"),
+        "entry_at": entry_at,
         "conservative_entry_price": entry_price,
         "conservative_fill_basis": row.get("fill_basis") or metrics.get("fill_basis"),
         "latest_mark": latest_mark,
         "missing_mark_gap": status == "entered" and latest_mark is None,
-        "current_return": _number(row.get("current_return")),
+        "current_return": None if record_kind == "paper_trade" else _number(row.get("current_return")),
         "outcome_state": outcome_state,
         "pending_entry_reason": row.get("pending_entry_reason"),
         "assignment_warning": metrics.get("assignment_warning")
@@ -248,13 +281,13 @@ def _journal_payload(row: dict[str, Any], *, record_kind: str) -> dict[str, Any]
             "entry_cohort_id": (
                 str(row["entry_cohort_id"]) if row.get("entry_cohort_id") is not None else None
             ),
-            "entry_at": row.get("entry_at"),
+            "entry_at": entry_at,
             "entry_price": entry_price,
             "fill_basis": row.get("fill_basis") or metrics.get("fill_basis"),
             "latest_mark": latest_mark,
-            "exit_at": row.get("exit_at"),
-            "exit_price": _number(row.get("exit_price")),
-            "holding_period_hours": _holding_hours(row.get("entry_at"), row.get("observed_through")),
+            "exit_at": exit_at,
+            "exit_price": exit_price,
+            "holding_period_hours": _holding_hours(entry_at, row.get("observed_through")),
         },
         "outcome": {
             "state": outcome_state,

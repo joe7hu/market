@@ -77,7 +77,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
     forward_session = {"status": "pass" if _forward_session_passed(candidate, challenger) else "pending"}
     safety = {"passed": bool(candidate_evaluation.get("schema_validity_rate") == 1 and candidate_evaluation.get("evidence_validity_rate") == 1)}
     gate = promotion_gate(candidate_evaluation, active=active_evaluation, walk_forward=walk_forward, forward_session=forward_session, safety_checks=safety)
-    decision = "activate" if gate["eligible"] else "reject"
+    decision = "activate" if gate["eligible"] else "reject" if gate.get("status") == "rejected" else None
     repository.record_cohort(
         {
             "cohort_key": f"chronological:{active_version}:{candidate_version}:{datetime.now(UTC).date().isoformat()}",
@@ -92,7 +92,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         }
     )
     recorded = False
-    if not (
+    if decision and not (
         latest_promotion.get("candidate_prompt_version") == candidate_version
         and latest_promotion.get("decision") == decision
     ):
@@ -107,7 +107,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         )
         recorded = True
     return {
-        "status": "activated" if gate["eligible"] else "rejected",
+        "status": "activated" if gate["eligible"] else "rejected" if decision == "reject" else "waiting",
         "active_prompt_version": active_version,
         "candidate_prompt_version": candidate_version,
         "gate": gate,

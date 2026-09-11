@@ -255,12 +255,23 @@ def test_invalidation_claims_resolve_without_becoming_directional_accuracy():
     assert scorecard["directional_accuracy"] is None
 
 
+def test_invalidation_brier_uses_event_truth_not_classification_correctness():
+    claim = {"claim_kind": "invalidation", "probability": 0.2, "claim_key": "i1"}
+    outcome = resolve_claim(claim, actual_return=0.05, invalidated=False, evidence_valid=True)
+    scorecard = score_claims([claim], [{"claim_key": "i1", **outcome}])
+    assert outcome["invalidation_correct"] is True
+    assert outcome["event_truth"] == 0
+    assert scorecard["brier_score"] == pytest.approx(0.04)
+    assert scorecard["scoring_version"] == "continuous-advisor-score.v2"
+
+
 def test_promotion_requires_production_floor_and_walk_forward():
     candidate = {"matched_outcomes": 3, "schema_validity_rate": 1, "evidence_validity_rate": 1, "quality_score": 0.9}
     gate = promotion_gate(candidate, walk_forward={"status": "pass"}, forward_session={"status": "pass"}, safety_checks={"passed": True})
     assert not gate["eligible"]
     assert "matched_outcomes_below_promotion_floor" in gate["blockers"]
     assert "non_positive_lower_confidence_bound" in gate["blockers"]
+    assert gate["status"] == "waiting"
 
 
 def test_prompt_mutation_rejects_execution_fields():
