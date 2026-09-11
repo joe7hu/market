@@ -103,6 +103,9 @@ class RetentionRepository:
                         JOIN analysis.option_relative_value_verification verification
                           ON verification.relative_value_id = relative_value.id
                         WHERE relative_value.analysis_run_id = run.id
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM analysis.strategy_evaluation evaluation
+                        WHERE evaluation.run_id = run.id
                     )) AS eligible,
                     count(*) FILTER (WHERE EXISTS (
                         SELECT 1 FROM app.publication publication
@@ -185,6 +188,10 @@ class RetentionRepository:
                           JOIN analysis.option_relative_value_verification verification
                             ON verification.relative_value_id = relative_value.id
                           WHERE relative_value.analysis_run_id = run.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM analysis.strategy_evaluation evaluation
+                          WHERE evaluation.run_id = run.id
                       )
                     ORDER BY run.started_at, run.id
                     LIMIT 1000

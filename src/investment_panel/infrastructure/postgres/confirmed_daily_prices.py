@@ -37,6 +37,7 @@ def confirmed_daily_bars(
     max_fact_versions: int | None = None,
     trading_dates: Iterable[date] | None = None,
     require_session_close: bool = False,
+    require_point_in_time_source_state: bool = False,
 ) -> dict[int, list[dict[str, Any]]]:
     """Confirmed daily bars, optionally retaining point-in-time fact versions."""
 
@@ -64,8 +65,14 @@ def confirmed_daily_bars(
             FROM facts fact
             JOIN ingest.source source
               ON source.id = fact.source_id
-             AND source.enabled
-             AND source.operational_state = 'active'
+            LEFT JOIN LATERAL (
+                SELECT history.enabled, history.operational_state
+                  FROM ingest.source_lifecycle_history history
+                 WHERE history.source_id = source.id
+                   AND history.effective_at <= %s
+                 ORDER BY history.effective_at DESC, history.id DESC
+                 LIMIT 1
+            ) source_state ON true
             LEFT JOIN session_closes ON session_closes.trading_date = fact.trading_date
             JOIN LATERAL (
                 SELECT price_run.finished_at
@@ -82,7 +89,12 @@ def confirmed_daily_bars(
             ) confirmation_run ON true
             WHERE fact.instrument_id = ANY(%s) AND fact.interval = '1d' AND fact.close > 0
               AND fact.observed_at <= %s AND fact.available_at <= %s
-              AND (%s::date[] IS NULL OR fact.trading_date = ANY(%s::date[]))
+             AND (%s::date[] IS NULL OR fact.trading_date = ANY(%s::date[]))
+              AND CASE WHEN %s::boolean
+                       THEN source_state.enabled AND source_state.operational_state = 'active'
+                       ELSE coalesce(source_state.enabled, source.enabled)
+                            AND coalesce(source_state.operational_state, source.operational_state) = 'active'
+                  END
         ), versioned AS (
             SELECT fact.*,
                    row_number() OVER (
@@ -119,7 +131,8 @@ def confirmed_daily_bars(
         ORDER BY instrument_id, trading_date, available_at, confirmed_at, source_id
         """,
         [
-            confirmation_dates, session_closes, reference, ids, reference, reference, dates, dates, include_versions,
+            confirmation_dates, session_closes, reference, reference, ids, reference, reference, dates, dates,
+            require_point_in_time_source_state, include_versions,
             max_bars, max_bars, max_fact_versions, max_fact_versions,
         ],
     ).fetchall()

@@ -18,6 +18,8 @@ from investment_panel.infrastructure.postgres.migrations import upgrade_database
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 import investment_panel.infrastructure.postgres.retention as retention_module
+from investment_panel.domain.strategies.catalog import resolve_builtin_strategy
+from investment_panel.infrastructure.postgres.strategy_factory import StrategyFactoryRepository
 
 
 def _insert_publication(
@@ -117,6 +119,41 @@ def test_retention_prunes_unreferenced_history_and_keeps_published_generation(po
     assert quote_count == 1
     assert kept_run == 1
     assert old_partition is None
+
+
+def test_retention_keeps_runs_referenced_by_strategy_evaluations(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    reference = datetime.now(UTC)
+    factory = StrategyFactoryRepository(runtime)
+    revision_id = factory.register(resolve_builtin_strategy("daily_trend_underreaction_v2"))
+    try:
+        with runtime.transaction() as connection:
+            run_id = connection.execute(
+                """INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, strategy_revision_id,
+                     input_hash, started_at, finished_at, status)
+                   VALUES ('strategy_research', %s, %s, %s, %s, %s, %s, 'succeeded')
+                   RETURNING id""",
+                [reference, "retention-test", revision_id, "1" * 64,
+                 reference - timedelta(days=365), reference - timedelta(days=365)],
+            ).fetchone()["id"]
+            connection.execute(
+                """INSERT INTO analysis.strategy_evaluation
+                    (strategy_revision_id, evaluation_type, evaluated_at, verdict,
+                     metrics, evidence, input_hash, lineage, run_id, scope, mode,
+                     input_manifest, output_hash)
+                   VALUES (%s, 'strategy_signal', %s, 'available', %s, %s, %s, %s,
+                           %s, 'RETENTION', 'research', %s, %s)""",
+                [revision_id, reference - timedelta(days=365), Jsonb({"value": 0.1}), Jsonb([]),
+                 "2" * 64, Jsonb({"scope": "RETENTION"}), run_id, Jsonb({"test": True}), "3" * 64],
+            )
+        RetentionRepository(runtime).prune(now=reference, analysis_days=30)
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) FROM analysis.run WHERE id = %s", [run_id]).fetchone()["count"] == 1
+    finally:
+        runtime.close()
 
 
 def test_publication_retention_is_bounded_dry_run_and_repeatable(postgres_dsn: str) -> None:

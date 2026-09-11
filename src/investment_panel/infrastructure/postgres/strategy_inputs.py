@@ -28,17 +28,19 @@ def load_strategy_inputs(
     benchmark_names = tuple(sorted({str(item).upper() for item in benchmark_symbols or () if str(item).strip()}))
     rows = connection.execute(
         """SELECT id, upper(symbol) AS symbol
-             FROM catalog.instrument
+            FROM catalog.instrument
             WHERE (%s::text[] IS NULL OR upper(symbol) = ANY(%s::text[]))
+              AND created_at <= %s
             ORDER BY symbol LIMIT 10000""",
-        [list(requested_symbols) or None, list(requested_symbols) or None],
+        [list(requested_symbols) or None, list(requested_symbols) or None, reference],
     ).fetchall()
     benchmark_rows = connection.execute(
         """SELECT id, upper(symbol) AS symbol
-             FROM catalog.instrument
+            FROM catalog.instrument
             WHERE (%s::text[] IS NULL OR upper(symbol) = ANY(%s::text[]))
+              AND created_at <= %s
             ORDER BY symbol LIMIT 256""",
-        [list(benchmark_names) or None, list(benchmark_names) or None],
+        [list(benchmark_names) or None, list(benchmark_names) or None, reference],
     ).fetchall() if benchmark_names else []
 
     price_requirement = next((item for item in requirements if item.dataset == "confirmed_daily_bars"), None)
@@ -55,6 +57,7 @@ def load_strategy_inputs(
         max_bars=len(required_dates) or None,
         trading_dates=required_dates if required_dates else None,
         require_session_close=bool(required_dates),
+        require_point_in_time_source_state=True,
     ) if price_requirement else {}
 
     benchmark = _benchmark_input(benchmark_rows, bars, required_dates)
@@ -226,6 +229,7 @@ def _load_option_inputs(
                 FROM raw.option_quote quote
                WHERE quote.snapshot_id = latest.snapshot_id
                  AND quote.available_at <= %s
+                 AND quote.observed_at <= %s
           ) quotes ON true
           LEFT JOIN LATERAL (
               SELECT observation.id, observation.observed_at, ingest_run.finished_at AS available_at
@@ -251,7 +255,7 @@ def _load_option_inputs(
         """,
         [
             reference, symbols, reference, reference, reference, reference,
-            reference, reference, reference, reference,
+            reference, reference, reference, reference, reference,
         ],
     ).fetchall()
     loaded: dict[str, dict[str, Any]] = {}
