@@ -12514,6 +12514,17 @@
             ],
             "title": "Signal Direction"
           },
+          "signal_regime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal Regime"
+          },
           "signal_value": {
             "anyOf": [
               {

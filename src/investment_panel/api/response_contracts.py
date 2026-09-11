@@ -429,6 +429,7 @@ class ResearchEvaluationResponse(BaseModel):
     actionability: str | None = None
     signal_value: float | None = None
     signal_direction: str | None = None
+    signal_regime: str | None = None
     independent_sample_count: int | None = None
     net_return_lower_bound: float | None = None
     brier_score: float | None = None

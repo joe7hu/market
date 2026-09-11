@@ -63,6 +63,15 @@ describe("Research results", () => {
     expect(html).not.toContain("Return after actual paper costs");
   });
 
+  it("shows the persisted regime for an available strategy signal", () => {
+    const data: ResearchSummary = { ...summary, strategies: (summary.strategies ?? []).map((strategy) => ({
+      ...strategy, evaluations: [{ stage: "strategy_signal", verdict: "available", evidence_basis: "independence_unconfirmed",
+        signal_regime: "gap_up", signal_direction: "continuation", signal_value: 0.02 }],
+    })) };
+    const html = renderToStaticMarkup(<ResearchResults data={data} onOpenTicker={() => undefined} />);
+    expect(html).toContain("Signal regime: Gap Up");
+  });
+
   it("labels an actual paper comparison separately from modeled shadow outcomes", () => {
     const data: ResearchSummary = { ...summary, strategies: (summary.strategies ?? []).map((strategy) => ({
       ...strategy, evaluations: [{ stage: "execution_grade_paper", verdict: "pass", evidence_basis: "independent_options_paper",

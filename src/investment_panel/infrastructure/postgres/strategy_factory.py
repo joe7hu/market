@@ -164,7 +164,7 @@ class StrategyFactoryRepository:
                 return int(existing["id"])
             if supersedes_id is not None:
                 parent = connection.execute(
-                    """SELECT id
+                    """SELECT id, strategy_key, revision, authority_group
                          FROM analysis.strategy_revision
                         WHERE id = %s
                         FOR UPDATE""",
@@ -172,6 +172,16 @@ class StrategyFactoryRepository:
                 ).fetchone()
                 if parent is None:
                     raise ValueError("superseded strategy revision is missing")
+                parent_base, separator, _parent_version = str(parent["strategy_key"]).rpartition("_v")
+                strategy_base, strategy_separator, _strategy_version = spec.strategy_key.rpartition("_v")
+                if (
+                    not separator
+                    or not strategy_separator
+                    or parent_base != strategy_base
+                    or int(parent["revision"]) >= spec.revision
+                    or parent["authority_group"] != f"phase3:{parent['strategy_key']}"
+                ):
+                    raise ValueError("superseded strategy revision is not a valid parent")
                 connection.execute(
                     "UPDATE analysis.strategy_revision SET p3_enabled = false WHERE id = %s",
                     [supersedes_id],
@@ -242,7 +252,8 @@ class StrategyFactoryRepository:
                 [
                     row["id"], input_cutoff, input_cutoff, signal.status,
                     Jsonb({"value": signal.value, "direction": signal.direction,
-                           "actionability": signal.actionability, "horizon": signal.horizon}),
+                           "actionability": signal.actionability, "horizon": signal.horizon,
+                           "regime": signal.regime}),
                     Jsonb([signal.evidence]), input_hash,
                            Jsonb({"mode": mode, "scope": scope, "input_snapshot_identity": input_snapshot_identity,
                            "strategy_key": strategy_key, "revision": revision,
@@ -323,7 +334,8 @@ class StrategyFactoryRepository:
                 RETURNING id, evaluated_at, available_at""",
                 [row["id"], input_cutoff, input_cutoff, signal.status,
                  Jsonb({"value": signal.value, "direction": signal.direction,
-                        "actionability": signal.actionability, "horizon": signal.horizon}),
+                        "actionability": signal.actionability, "horizon": signal.horizon,
+                        "regime": signal.regime}),
                  Jsonb(signal.evidence), input_hash,
                  Jsonb({"mode": mode, "scope": scope, "input_snapshot_identity": input_snapshot_identity,
                         "strategy_key": strategy_key, "revision": revision,

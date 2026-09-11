@@ -17,6 +17,7 @@ from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.confirmed_daily_prices import completed_trading_dates
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
+from investment_panel.infrastructure.postgres.research_summary import evaluation_summary
 from investment_panel.infrastructure.postgres.source_facts import SourceFactRepository
 from investment_panel.infrastructure.postgres.strategy_factory import StrategyFactoryRepository
 from investment_panel.infrastructure.postgres.strategy_inputs import load_strategy_inputs
@@ -252,6 +253,32 @@ def test_phase3_old_binding_is_preserved_but_disabled_and_new_revision_is_execut
         runtime.close()
 
 
+def test_phase3_supersedes_parent_must_match_strategy_lineage(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = StrategyFactoryRepository(runtime)
+        old = resolve_builtin_strategy("classic_momentum_v1")
+        unrelated = resolve_builtin_strategy("classic_mean_reversion_v1")
+        current = resolve_builtin_strategy("classic_momentum_v2")
+        old_id = repository.register(old)
+        unrelated_id = repository.register(unrelated)
+        old_enabled = repository.resolve(old.strategy_key).enabled
+        unrelated_enabled = repository.resolve(unrelated.strategy_key).enabled
+        with pytest.raises(ValueError, match="valid parent"):
+            repository.register(current, supersedes_id=unrelated_id)
+        assert repository.resolve(old.strategy_key).enabled is old_enabled
+        assert repository.resolve(unrelated.strategy_key).enabled is unrelated_enabled
+        with runtime.read() as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) AS count FROM analysis.strategy_revision WHERE strategy_key = %s",
+                [current.strategy_key],
+            ).fetchone()["count"] == 0
+        assert old_id != unrelated_id
+    finally:
+        runtime.close()
+
+
 def test_phase3_definition_blockers_survive_postgres_round_trip(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -423,6 +450,47 @@ def test_phase3_evaluation_must_match_a_running_planned_scope(
         runtime.close()
 
 
+def test_phase3_persisted_signal_regime_reaches_typed_summary(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    cutoff = datetime.now(UTC)
+    try:
+        repository = StrategyFactoryRepository(runtime)
+        spec = resolve_builtin_strategy("daily_gap_regime_v1")
+        repository.register(spec)
+        run = repository.start_strategy_run(
+            strategy_keys=(spec.strategy_key,), strategy_revisions=((spec.strategy_key, spec.revision),),
+            scopes=("REGIME",), input_cutoff=cutoff, mode="research",
+        )
+        signal = StrategySignal(
+            strategy_key=spec.strategy_key, status="available", value=0.02,
+            direction="continuation", regime="gap_up",
+        )
+        repository.record_signal_evaluation_record(
+            spec.strategy_key, spec.revision, signal, run_id=run["run_id"], scope="REGIME",
+            input_snapshot_identity="regime:test", input_cutoff=cutoff, mode="research",
+            input_manifest={"strategy": {"implementation_version": "1"}},
+        )
+        repository.finish_strategy_run(run["run_id"], status="succeeded", summary={"test": True})
+        with runtime.read() as connection:
+            row = connection.execute(
+                """SELECT evaluation.id AS evaluation_id, evaluation.evaluation_type,
+                          evaluation.evaluated_at, evaluation.available_at, evaluation.period_start,
+                          evaluation.period_end, evaluation.verdict, evaluation.metrics,
+                          evaluation.evidence, evaluation.input_hash, evaluation.output_hash,
+                          evaluation.lineage, evaluation.run_id, evaluation.scope, evaluation.mode
+                     FROM analysis.strategy_evaluation evaluation
+                    WHERE evaluation.run_id = %s""",
+                [run["run_id"]],
+            ).fetchone()
+        summary = evaluation_summary(dict(row))
+        assert row["metrics"]["regime"] == "gap_up"
+        assert summary["signal_regime"] == "gap_up"
+        assert summary["output_hash"]
+    finally:
+        runtime.close()
+
+
 def test_phase3_strategy_workflow_persists_replays_and_reaches_typed_api(
     migrated_postgres_dsn: str,
     application_postgres_dsn: str,
@@ -475,6 +543,7 @@ def test_phase3_strategy_workflow_persists_replays_and_reaches_typed_api(
         assert stored["lineage"]["scope"] == "INTEGRATION"
         assert stored["lineage"]["input_snapshot_identity"]
         assert stored["metrics"]["actionability"] == "research_only"
+        assert stored["metrics"]["regime"] is None
         assert stored["input_hash"] == replay[0].input_hash
         assert stored["run_status"] == "succeeded"
         assert str(stored["run_id"]) == replay[0].run_id
@@ -498,6 +567,7 @@ def test_phase3_strategy_workflow_persists_replays_and_reaches_typed_api(
         evaluation = next(row for row in summary["evaluations"] if row["stage"] == "strategy_signal")
         assert evaluation["actionability"] == "research_only"
         assert evaluation["signal_direction"] == "long"
+        assert evaluation["signal_regime"] is None
         assert evaluation["output_hash"] == stored["output_hash"]
     finally:
         runtime.close()

@@ -5838,6 +5838,8 @@ export interface components {
             scope?: string | null;
             /** Signal Direction */
             signal_direction?: string | null;
+            /** Signal Regime */
+            signal_regime?: string | null;
             /** Signal Value */
             signal_value?: number | null;
             /** Stage */
