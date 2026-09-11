@@ -30,6 +30,12 @@ def test_research_summary_reads_latest_evidence_and_feedback_separately(
                 VALUES ('summary-test', 1, 'Summary test strategy', 'draft', '{}', 'summary-test', %s)
                 RETURNING id
             """, [now]).fetchone()["id"]
+            run_id = connection.execute("""
+                INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+                VALUES ('strategy_research', %s, 'summary-test', %s, %s, %s, 'succeeded')
+                RETURNING id
+            """, [now, "a" * 64, now, now]).fetchone()["id"]
             for offset, sample in [(-2, 8), (-1, 12), (10, 900)]:
                 connection.execute("""
                     INSERT INTO analysis.strategy_evaluation
@@ -43,10 +49,11 @@ def test_research_summary_reads_latest_evidence_and_feedback_separately(
             for offset in range(9):
                 connection.execute("""
                     INSERT INTO analysis.strategy_evaluation
-                        (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics, evidence)
-                    VALUES (%s, 'strategy_signal', %s, %s, 'available', %s, '[]')
+                        (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics, evidence,
+                         run_id, scope, mode)
+                    VALUES (%s, 'strategy_signal', %s, %s, 'available', %s, '[]', %s, 'SUMMARY', 'research')
                 """, [strategy_id, now - timedelta(seconds=offset + 1), now - timedelta(seconds=offset + 1),
-                    Jsonb({"actionability": "research_only", "value": 0.1, "direction": "long"})])
+                    Jsonb({"actionability": "research_only", "value": 0.1, "direction": "long"}), run_id])
             connection.execute("""
                 INSERT INTO analysis.strategy_evaluation
                     (strategy_revision_id, evaluation_type, evaluated_at, available_at, verdict, metrics, evidence, lineage)

@@ -162,6 +162,20 @@ class StrategyFactoryRepository:
                 ):
                     raise ValueError("strategy revision or manifest identity conflicts")
                 return int(existing["id"])
+            if supersedes_id is not None:
+                parent = connection.execute(
+                    """SELECT id
+                         FROM analysis.strategy_revision
+                        WHERE id = %s
+                        FOR UPDATE""",
+                    [supersedes_id],
+                ).fetchone()
+                if parent is None:
+                    raise ValueError("superseded strategy revision is missing")
+                connection.execute(
+                    "UPDATE analysis.strategy_revision SET p3_enabled = false WHERE id = %s",
+                    [supersedes_id],
+                )
             revision = connection.execute(
                 """INSERT INTO analysis.strategy_revision
                    (strategy_key, revision, name, status, parameters, supersedes_id,

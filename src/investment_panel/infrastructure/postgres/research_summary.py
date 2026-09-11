@@ -66,6 +66,10 @@ def research_summary(runtime: DatabaseRuntime, config: AppConfig) -> dict[str, A
                        AND evaluation.evaluated_at <= now() AND evaluation.available_at <= now()
                        AND evaluation.mode IS DISTINCT FROM 'replay'
                        AND evaluation.lineage->>'mode' IS DISTINCT FROM 'replay'
+                       AND (
+                           evaluation.evaluation_type <> 'strategy_signal'
+                           OR (evaluation.run_id IS NOT NULL AND run.status = 'succeeded')
+                       )
                        AND (evaluation.run_id IS NULL OR run.status = 'succeeded')
                   ) ranked
                  WHERE ranked.stage_rank <= 8
