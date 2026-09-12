@@ -343,12 +343,35 @@ class ResearchWorkbenchRepository:
                 SELECT count(*) AS total,
                        count(*) FILTER (WHERE outcome.status = 'resolved' AND outcome.evidence_valid) AS eligible,
                        count(*) FILTER (WHERE outcome.id IS NULL) AS pending,
+                       count(*) FILTER (WHERE outcome.status = 'unresolvable') AS unresolved,
+                       count(*) FILTER (WHERE outcome.status = 'quarantined') AS unsupported,
+                       count(*) FILTER (WHERE outcome.status = 'resolved' AND outcome.evidence_valid IS FALSE) AS invalid,
                        count(*) FILTER (WHERE outcome.status IN ('unresolvable', 'quarantined')) AS excluded,
                        max(greatest(claim.created_at, COALESCE(outcome.created_at, claim.created_at))) AS source_watermark
                 FROM analysis.continuous_advisor_forecast_claim claim
                 JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
                 LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
                 WHERE {' AND '.join(scope_filters)}
+                """,
+                scope_params,
+            ).fetchone()
+            telemetry = connection.execute(
+                f"""
+                WITH scoped_responses AS (
+                    SELECT DISTINCT response.id, response.latency_ms,
+                           response.input_tokens, response.output_tokens, response.cost_usd
+                    FROM analysis.continuous_advisor_forecast_claim claim
+                    JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
+                    WHERE {' AND '.join(scope_filters)}
+                )
+                SELECT count(*) AS response_count,
+                       count(*) FILTER (WHERE latency_ms IS NOT NULL) AS latency_samples,
+                       avg(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) AS avg_latency_ms,
+                       sum(input_tokens) AS input_tokens,
+                       sum(output_tokens) AS output_tokens,
+                       sum(cost_usd) AS cost_usd,
+                       count(*) FILTER (WHERE cost_usd IS NULL) AS unpriced_responses
+                FROM scoped_responses
                 """,
                 scope_params,
             ).fetchone()
@@ -522,6 +545,24 @@ class ResearchWorkbenchRepository:
             "calibration_bins": _calibration_bins(calibration_bins),
             "brier_time_series": _jsonable([dict(item) for item in brier_series]),
             "coverage": (int(count["eligible"] or 0) / int(count["total"] or 1)) if count["total"] else None,
+            "resolved_coverage": ((int(count["eligible"] or 0) + int(count["invalid"] or 0)) / int(count["total"] or 1)) if count["total"] else None,
+            "abstention_rate": int(count["pending"] or 0) / int(count["total"] or 1) if count["total"] else None,
+            "pending_claims": int(count["pending"] or 0),
+            "excluded_claims": int(count["excluded"] or 0),
+            "unresolved_claims": int(count["unresolved"] or 0),
+            "unsupported_claims": int(count["unsupported"] or 0),
+            "invalid_claims": int(count["invalid"] or 0),
+            "response_count": int(telemetry["response_count"] or 0),
+            "avg_latency_ms": telemetry["avg_latency_ms"],
+            "input_tokens": int(telemetry["input_tokens"] or 0) if telemetry["input_tokens"] is not None else None,
+            "output_tokens": int(telemetry["output_tokens"] or 0) if telemetry["output_tokens"] is not None else None,
+            "cost_usd": telemetry["cost_usd"],
+            "unpriced_response_count": int(telemetry["unpriced_responses"] or 0),
+            "cost_status": "no_data"
+            if not telemetry["response_count"]
+            else "partial"
+            if telemetry["unpriced_responses"]
+            else "complete",
             "quality_score_basis": "display metrics are separate from weighted promotion quality samples",
         })
         if has_more:

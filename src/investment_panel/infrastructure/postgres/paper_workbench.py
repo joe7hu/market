@@ -33,14 +33,34 @@ class PaperWorkbenchRepository:
     def trades(
         self,
         *,
+        book: str = "paper",
+        sleeve: str | None = None,
         symbol: str | None = None,
+        instrument_kind: str | None = None,
         strategy_revision: int | None = None,
         lifecycle: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        lane: str | None = None,
+        structure: str | None = None,
+        evidence_class: str | None = None,
+        reconciliation_status: str | None = None,
         limit: int = 100,
         cursor: tuple[datetime, str] | tuple[datetime, str, datetime] | None = None,
     ) -> dict[str, Any]:
         where, params = _where_clause(
-            symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+            book=book,
+            sleeve=sleeve,
+            symbol=symbol,
+            instrument_kind=instrument_kind,
+            strategy_revision=strategy_revision,
+            lifecycle=lifecycle,
+            date_from=date_from,
+            date_to=date_to,
+            lane=lane,
+            structure=structure,
+            evidence_class=evidence_class,
+            reconciliation_status=reconciliation_status,
         )
         scope_where, scope_params = list(where), list(params)
         snapshot_at = cursor[2] if cursor and len(cursor) > 2 else None
@@ -63,15 +83,35 @@ class PaperWorkbenchRepository:
         rows = rows[:safe_limit]
         return {
             **_scope_payload(
-                symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+                book=book,
+                sleeve=sleeve,
+                symbol=symbol,
+                instrument_kind=instrument_kind,
+                strategy_revision=strategy_revision,
+                lifecycle=lifecycle,
+                date_from=date_from,
+                date_to=date_to,
+                lane=lane,
+                structure=structure,
+                evidence_class=evidence_class,
+                reconciliation_status=reconciliation_status,
             ),
             "as_of": as_of,
             "source_watermark": watermark,
             "calculation_version": CALCULATION_VERSION,
             "snapshot_id": _snapshot_id(
                 symbol=symbol,
+                instrument_kind=instrument_kind,
                 strategy_revision=strategy_revision,
                 lifecycle=lifecycle,
+                book=book,
+                sleeve=sleeve,
+                date_from=date_from,
+                date_to=date_to,
+                lane=lane,
+                structure=structure,
+                evidence_class=evidence_class,
+                reconciliation_status=reconciliation_status,
                 watermark=watermark,
                 as_of=as_of,
             ),
@@ -80,6 +120,7 @@ class PaperWorkbenchRepository:
                 "eligible": total,
                 "pending": _pending,
                 "excluded": 0,
+                "reconciled_orders": _counts["reconciled_orders"],
             },
             "quality_status": "complete" if not has_more and not cursor else "partial",
             "missing_evidence_reasons": _missing_reasons(rows),
@@ -90,29 +131,69 @@ class PaperWorkbenchRepository:
     def export_rows(
         self,
         *,
+        book: str = "paper",
+        sleeve: str | None = None,
         symbol: str | None = None,
+        instrument_kind: str | None = None,
         strategy_revision: int | None = None,
         lifecycle: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        lane: str | None = None,
+        structure: str | None = None,
+        evidence_class: str | None = None,
+        reconciliation_status: str | None = None,
     ) -> dict[str, Any]:
         """Return the bounded full scoped population for explicit export."""
 
         where, params = _where_clause(
-            symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+            book=book,
+            sleeve=sleeve,
+            symbol=symbol,
+            instrument_kind=instrument_kind,
+            strategy_revision=strategy_revision,
+            lifecycle=lifecycle,
+            date_from=date_from,
+            date_to=date_to,
+            lane=lane,
+            structure=structure,
+            evidence_class=evidence_class,
+            reconciliation_status=reconciliation_status,
         )
         rows, total, _pending, _counts, watermark, as_of = self._rows(
             where, params, limit=MAX_PERFORMANCE_ROWS
         )
         return {
             **_scope_payload(
-                symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+                book=book,
+                sleeve=sleeve,
+                symbol=symbol,
+                instrument_kind=instrument_kind,
+                strategy_revision=strategy_revision,
+                lifecycle=lifecycle,
+                date_from=date_from,
+                date_to=date_to,
+                lane=lane,
+                structure=structure,
+                evidence_class=evidence_class,
+                reconciliation_status=reconciliation_status,
             ),
             "as_of": as_of,
             "source_watermark": watermark,
             "calculation_version": CALCULATION_VERSION,
             "snapshot_id": _snapshot_id(
                 symbol=symbol,
+                instrument_kind=instrument_kind,
                 strategy_revision=strategy_revision,
                 lifecycle=lifecycle,
+                book=book,
+                sleeve=sleeve,
+                date_from=date_from,
+                date_to=date_to,
+                lane=lane,
+                structure=structure,
+                evidence_class=evidence_class,
+                reconciliation_status=reconciliation_status,
                 watermark=watermark,
                 as_of=as_of,
             ),
@@ -143,12 +224,32 @@ class PaperWorkbenchRepository:
     def performance(
         self,
         *,
+        book: str = "paper",
+        sleeve: str | None = None,
         symbol: str | None = None,
+        instrument_kind: str | None = None,
         strategy_revision: int | None = None,
         lifecycle: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        lane: str | None = None,
+        structure: str | None = None,
+        evidence_class: str | None = None,
+        reconciliation_status: str | None = None,
     ) -> dict[str, Any]:
         where, params = _where_clause(
-            symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+            book=book,
+            sleeve=sleeve,
+            symbol=symbol,
+            instrument_kind=instrument_kind,
+            strategy_revision=strategy_revision,
+            lifecycle=lifecycle,
+            date_from=date_from,
+            date_to=date_to,
+            lane=lane,
+            structure=structure,
+            evidence_class=evidence_class,
+            reconciliation_status=reconciliation_status,
         )
         rows, total, _pending, counts, watermark, as_of = self._rows(
             where, params, limit=MAX_PERFORMANCE_ROWS
@@ -166,6 +267,10 @@ class PaperWorkbenchRepository:
         unrealized = sum(
             (Decimal(str(row["unrealized_pnl"])) for row in unrealized_rows),
             Decimal("0"),
+        )
+        exposure_rows = [row for row in open_rows if row.get("mark_value") is not None]
+        open_exposure = sum(
+            (Decimal(str(row["mark_value"])) for row in exposure_rows), Decimal("0")
         )
         cumulative = Decimal("0")
         series = []
@@ -219,15 +324,35 @@ class PaperWorkbenchRepository:
         )
         return {
             **_scope_payload(
-                symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+                book=book,
+                sleeve=sleeve,
+                symbol=symbol,
+                instrument_kind=instrument_kind,
+                strategy_revision=strategy_revision,
+                lifecycle=lifecycle,
+                date_from=date_from,
+                date_to=date_to,
+                lane=lane,
+                structure=structure,
+                evidence_class=evidence_class,
+                reconciliation_status=reconciliation_status,
             ),
             "as_of": as_of,
             "source_watermark": watermark,
             "calculation_version": CALCULATION_VERSION,
             "snapshot_id": _snapshot_id(
                 symbol=symbol,
+                instrument_kind=instrument_kind,
                 strategy_revision=strategy_revision,
                 lifecycle=lifecycle,
+                book=book,
+                sleeve=sleeve,
+                date_from=date_from,
+                date_to=date_to,
+                lane=lane,
+                structure=structure,
+                evidence_class=evidence_class,
+                reconciliation_status=reconciliation_status,
                 watermark=watermark,
                 as_of=as_of,
             ),
@@ -237,6 +362,7 @@ class PaperWorkbenchRepository:
             "counts": {
                 "total_orders": total,
                 "filled_orders": counts["filled_orders"],
+                "reconciled_orders": counts["reconciled_orders"],
                 "closed_trades": counts["closed_trades"],
                 "open_trades": counts["open_trades"],
                 "staged_orders": counts["staged_orders"],
@@ -251,14 +377,18 @@ class PaperWorkbenchRepository:
             "realized_pnl": known_realized,
             "realized_pnl_status": "complete" if realized_complete else "partial",
             "unrealized_pnl": known_unrealized,
+            "open_exposure": _money(open_exposure) if exposure_rows else 0.0 if not open_rows else None,
+            "open_exposure_status": "complete" if len(exposure_rows) == len(open_rows) else "partial",
             "nav": None,
+            "nav_status": "unavailable",
             "return_pct": None,
+            "return_status": "unavailable",
+            "capital_status": "unavailable",
+            "flow_status": "unavailable",
             "drawdown": _money(max_drawdown) if series and realized_complete else None,
             "evidence_coverage": {
                 "filled_orders": counts["filled_orders"],
-                "reconciled_orders": sum(
-                    row["reconciliation_status"] == "verified" for row in filled
-                ),
+                "reconciled_orders": counts["reconciled_orders"],
                 "realized_pnl_coverage": len(realized_rows)
                 / len(realized_eligible_rows)
                 if realized_eligible_rows
@@ -278,6 +408,8 @@ class PaperWorkbenchRepository:
                 "display_method": "bucket_first_last_pnl_extremes_and_drawdown_trough.v1",
                 "drawdown_points": [drawdown_series[index] for index in display_indices] if realized_complete else [],
                 "available_series": ["cumulative_net_pnl", "drawdown"],
+                "unavailable_series": ["nav", "capital_normalized_return"],
+                "basis": "verified realized journal exit events",
                 "annotations": [
                     {
                         "at": point["at"],
@@ -298,6 +430,10 @@ class PaperWorkbenchRepository:
                 ],
                 "statistics_basis": "full scoped paper-order population; realized series only; no annualized statistics",
                 "drawdown_basis": "cumulative verified realized net P&L, not NAV",
+                "unavailable_series_reasons": {
+                    "nav": "opening_capital_and_paper_cash_flows_unavailable",
+                    "capital_normalized_return": "opening_capital_unavailable",
+                },
             },
         }
 
@@ -330,10 +466,12 @@ class PaperWorkbenchRepository:
                            count(*) FILTER (WHERE paper.status = ANY(ARRAY['closed', 'exited', 'invalidated']::text[])) AS closed_trades,
                            count(*) FILTER (WHERE paper.status = ANY(ARRAY['open', 'entered', 'partial_exited']::text[])) AS open_trades,
                            count(*) FILTER (WHERE paper.status = ANY(ARRAY['staged', 'pending', 'submitted', 'cancelled', 'rejected']::text[])) AS staged_orders,
+                           count(*) FILTER (WHERE {_reconciliation_predicate("verified")}) AS reconciled_orders,
                            max(greatest(paper.created_at, coalesce(paper.updated_at, paper.created_at))) AS source_watermark
                     FROM app.paper_order paper
                     JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
                     LEFT JOIN analysis.decision decision ON decision.id = paper.decision_id
+                    LEFT JOIN analysis.option_decision option_decision ON option_decision.decision_id = paper.decision_id
                     {("WHERE " + " AND ".join(count_where if count_where is not None else where)) if (count_where or where) else ""}""",
                 [
                     ["staged", "pending", "submitted", "cancelled", "rejected"],
@@ -363,6 +501,7 @@ class PaperWorkbenchRepository:
                 "closed_trades": int(count_row["closed_trades"]),
                 "open_trades": int(count_row["open_trades"]),
                 "staged_orders": int(count_row["staged_orders"]),
+                "reconciled_orders": int(count_row["reconciled_orders"]),
             },
             _max_datetime(count_row["source_watermark"], mark_watermark),
             as_of,
@@ -372,6 +511,8 @@ class PaperWorkbenchRepository:
     def _select_sql(where: list[str]) -> str:
         return f"""
             SELECT paper.id::text AS paper_order_id,
+                   paper.book,
+                   paper.sleeve,
                    paper.decision_id::text AS decision_id,
                    paper.instrument_id,
                    instrument.symbol,
@@ -744,18 +885,36 @@ def _is_credit_order(row: dict[str, Any]) -> bool:
 
 def _snapshot_id(
     *,
+    book: str,
+    sleeve: str | None,
     symbol: str | None,
+    instrument_kind: str | None,
     strategy_revision: int | None,
     lifecycle: str | None,
+    date_from: date | None,
+    date_to: date | None,
+    lane: str | None,
+    structure: str | None,
+    evidence_class: str | None,
+    reconciliation_status: str | None,
     watermark: datetime | None,
     as_of: datetime | None = None,
 ) -> str:
     payload = {
-        "scope": {
-            "symbol": symbol.strip().upper() if symbol else None,
-            "strategy_revision": strategy_revision,
-            "lifecycle": lifecycle,
-        },
+        "scope": _scope_values(
+            book=book,
+            sleeve=sleeve,
+            symbol=symbol,
+            instrument_kind=instrument_kind,
+            strategy_revision=strategy_revision,
+            lifecycle=lifecycle,
+            date_from=date_from,
+            date_to=date_to,
+            lane=lane,
+            structure=structure,
+            evidence_class=evidence_class,
+            reconciliation_status=reconciliation_status,
+        ),
         "source_watermark": watermark.isoformat()
         if isinstance(watermark, datetime)
         else None,
@@ -786,19 +945,47 @@ def _add_snapshot_filter(
 
 
 def _where_clause(
-    *, symbol: str | None, strategy_revision: int | None, lifecycle: str | None
+    *,
+    book: str,
+    sleeve: str | None,
+    symbol: str | None,
+    instrument_kind: str | None,
+    strategy_revision: int | None,
+    lifecycle: str | None,
+    date_from: date | None,
+    date_to: date | None,
+    lane: str | None,
+    structure: str | None,
+    evidence_class: str | None,
+    reconciliation_status: str | None,
 ) -> tuple[list[str], list[Any]]:
-    where = ["paper.paper_only IS TRUE"]
-    params: list[Any] = []
+    normalized_book = str(book or "paper").strip().lower()
+    if normalized_book != "paper":
+        raise ValueError("unsupported paper book")
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise ValueError("paper date_from must be on or before date_to")
+    if evidence_class and reconciliation_status and evidence_class != reconciliation_status:
+        raise ValueError("evidence_class and reconciliation_status must match")
+    status_filter = evidence_class or reconciliation_status
+    if status_filter and status_filter not in {"verified", "partial", "unavailable"}:
+        raise ValueError("unsupported paper evidence class")
+    where = ["paper.paper_only IS TRUE", "paper.book = %s"]
+    params: list[Any] = [normalized_book]
+    if sleeve:
+        where.append("paper.sleeve = %s")
+        params.append(sleeve.strip())
     if symbol:
         where.append("instrument.symbol = %s")
         params.append(symbol.strip().upper())
+    if instrument_kind:
+        where.append("lower(instrument.asset_class) = %s")
+        params.append(instrument_kind.strip().lower())
     if strategy_revision is not None:
         where.append("decision.strategy_revision_id = %s")
         params.append(strategy_revision)
     if lifecycle:
         status_map = {
-            "staged": ("staged", "pending", "submitted"),
+            "staged": ("staged", "pending", "submitted", "cancelled", "rejected"),
             "open": ("open", "entered", "partial_exited"),
             "closed": ("closed", "exited", "invalidated"),
         }
@@ -807,7 +994,96 @@ def _where_clause(
             raise ValueError("unsupported paper lifecycle")
         where.append("paper.status = ANY(%s::text[])")
         params.append(list(statuses))
+    if date_from is not None:
+        where.append("paper.created_at >= %s::date")
+        params.append(date_from)
+    if date_to is not None:
+        where.append("paper.created_at < (%s::date + interval '1 day')")
+        params.append(date_to)
+    if lane:
+        where.append("lower(coalesce(paper.lane, decision.lane, '')) = %s")
+        params.append(lane.strip().lower())
+    if structure:
+        where.append("lower(coalesce(paper.structure, option_decision.structure, '')) = %s")
+        params.append(structure.strip().lower())
+    if status_filter:
+        where.append(_reconciliation_predicate(status_filter))
     return where, params
+
+
+def _reconciliation_predicate(status: str) -> str:
+    """Match the payload's evidence class without using fallback prices."""
+    fill = """
+        EXISTS (
+            SELECT 1
+            FROM app.trade_journal fill
+            WHERE fill.details->>'paper_order_id' = paper.id::text
+              AND fill.decision_id IS NOT DISTINCT FROM paper.decision_id
+              AND fill.instrument_id = paper.instrument_id
+              AND fill.rationale = 'deterministic_options_paper_execution'
+              AND fill.action = 'paper_entry'
+        )
+    """
+    valid_fills = """
+        NOT EXISTS (
+            SELECT 1
+            FROM app.trade_journal fill
+            WHERE fill.details->>'paper_order_id' = paper.id::text
+              AND fill.decision_id IS NOT DISTINCT FROM paper.decision_id
+              AND fill.instrument_id = paper.instrument_id
+              AND fill.rationale = 'deterministic_options_paper_execution'
+              AND (fill.action = 'paper_entry' OR fill.action = 'paper_exit' OR fill.action LIKE 'paper_exit:%%')
+              AND (
+                    NOT coalesce(fill.details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)
+                    OR NOT coalesce(
+                        fill.quantity > 0 AND fill.quantity < 'Infinity'::numeric
+                        AND fill.price >= 0 AND fill.price < 'Infinity'::numeric
+                        AND (fill.action <> 'paper_entry' OR fill.price > 0), false
+                    )
+              )
+        )
+    """
+    is_option = """
+        (
+            option_decision.contract_id IS NOT NULL
+            OR lower(coalesce(paper.structure, option_decision.structure, '')) IN (
+                'cash_secured_put', 'put_credit_spread', 'call_credit_spread',
+                'long_call', 'long_put', 'debit_spread', 'call_debit_spread',
+                'put_debit_spread'
+            )
+            OR lower(coalesce(paper.expression_kind, '')) IN ('call', 'put', 'debit_spread', 'cash_secured_put')
+        )
+    """
+    valid_multiplier = """
+        paper.contract_multiplier > 0
+        AND paper.contract_multiplier < 'Infinity'::numeric
+        AND NOT EXISTS (
+            SELECT 1
+            FROM app.trade_journal fill
+            WHERE fill.details->>'paper_order_id' = paper.id::text
+              AND fill.decision_id IS NOT DISTINCT FROM paper.decision_id
+              AND fill.instrument_id = paper.instrument_id
+              AND fill.rationale = 'deterministic_options_paper_execution'
+              AND (fill.action = 'paper_entry' OR fill.action = 'paper_exit' OR fill.action LIKE 'paper_exit:%%')
+              AND NOT coalesce(
+                  CASE WHEN fill.action = 'paper_entry' THEN
+                      jsonb_typeof(fill.details->'contract_multiplier') = 'number'
+                      AND fill.details->'contract_multiplier' = to_jsonb(paper.contract_multiplier)
+                  ELSE
+                      jsonb_typeof(fill.details->'entry_contract_multiplier') = 'number'
+                      AND jsonb_typeof(fill.details->'exit_contract_multiplier') = 'number'
+                      AND fill.details->'entry_contract_multiplier' = to_jsonb(paper.contract_multiplier)
+                      AND fill.details->'exit_contract_multiplier' = to_jsonb(paper.contract_multiplier)
+                  END, false
+              )
+        )
+    """
+    verified = f"({fill} AND {valid_fills} AND (NOT {is_option} OR {valid_multiplier}))"
+    if status == "verified":
+        return verified
+    if status == "unavailable":
+        return f"NOT ({fill})"
+    return f"({fill} AND NOT {verified})"
 
 
 def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -926,6 +1202,8 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "record_kind": "paper_trade" if has_fill else "paper_order",
         "paper_order_id": row.get("paper_order_id"),
+        "book": row.get("book") or "paper",
+        "sleeve": row.get("sleeve"),
         "symbol": row.get("symbol"),
         "instrument_kind": row.get("asset_class"),
         "decision_id": row.get("decision_id"),
@@ -1441,17 +1719,68 @@ def _paper_mark_payload(
 
 
 def _scope_payload(
-    *, symbol: str | None, strategy_revision: int | None, lifecycle: str | None
+    *,
+    book: str,
+    sleeve: str | None,
+    symbol: str | None,
+    instrument_kind: str | None,
+    strategy_revision: int | None,
+    lifecycle: str | None,
+    date_from: date | None,
+    date_to: date | None,
+    lane: str | None,
+    structure: str | None,
+    evidence_class: str | None,
+    reconciliation_status: str | None,
 ) -> dict[str, Any]:
-    scope = {
-        "symbol": symbol.strip().upper() if symbol else None,
-        "strategy_revision": strategy_revision,
-        "lifecycle": lifecycle,
-    }
+    scope = _scope_values(
+        book=book,
+        sleeve=sleeve,
+        symbol=symbol,
+        instrument_kind=instrument_kind,
+        strategy_revision=strategy_revision,
+        lifecycle=lifecycle,
+        date_from=date_from,
+        date_to=date_to,
+        lane=lane,
+        structure=structure,
+        evidence_class=evidence_class,
+        reconciliation_status=reconciliation_status,
+    )
     scope_id = hashlib.sha256(
         json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:16]
     return {"scope": {**scope, "scope_id": scope_id}}
+
+
+def _scope_values(
+    *,
+    book: str,
+    sleeve: str | None,
+    symbol: str | None,
+    instrument_kind: str | None,
+    strategy_revision: int | None,
+    lifecycle: str | None,
+    date_from: date | None,
+    date_to: date | None,
+    lane: str | None,
+    structure: str | None,
+    evidence_class: str | None,
+    reconciliation_status: str | None,
+) -> dict[str, Any]:
+    return {
+        "book": str(book or "paper").strip().lower(),
+        "sleeve": sleeve.strip() if sleeve else None,
+        "symbol": symbol.strip().upper() if symbol else None,
+        "instrument_kind": instrument_kind.strip().lower() if instrument_kind else None,
+        "strategy_revision": strategy_revision,
+        "lifecycle": lifecycle,
+        "date_from": date_from.isoformat() if date_from else None,
+        "date_to": date_to.isoformat() if date_to else None,
+        "lane": lane.strip().lower() if lane else None,
+        "structure": structure.strip().lower() if structure else None,
+        "evidence_class": evidence_class or reconciliation_status,
+    }
 
 
 def _missing_reasons(rows: list[dict[str, Any]]) -> list[str]:

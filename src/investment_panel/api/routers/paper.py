@@ -7,7 +7,7 @@ import binascii
 import csv
 import io
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -35,16 +35,39 @@ router = APIRouter()
     response_model_exclude_unset=True,
 )
 def paper_performance(
+    book: str = Query(default="paper", pattern="^paper$"),
+    sleeve: str | None = Query(default=None, min_length=1, max_length=64),
     symbol: str | None = Query(default=None, min_length=1, max_length=16),
+    instrument_kind: str | None = Query(default=None, min_length=1, max_length=32),
     strategy_revision: int | None = Query(default=None, ge=1),
     lifecycle: str | None = Query(default=None, pattern="^(staged|open|closed)$"),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    lane: str | None = Query(default=None, min_length=1, max_length=32),
+    structure: str | None = Query(default=None, min_length=1, max_length=64),
+    evidence_class: str | None = Query(default=None, pattern="^(verified|partial|unavailable)$"),
+    reconciliation_status: str | None = Query(default=None, pattern="^(verified|partial|unavailable)$"),
     repository: dependencies.PaperWorkbenchRepository = Depends(
         dependencies.get_paper_workbench
     ),
 ) -> dict[str, Any]:
-    payload = repository.performance(
-        symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
-    )
+    try:
+        payload = repository.performance(
+            book=book,
+            sleeve=sleeve,
+            symbol=symbol,
+            instrument_kind=instrument_kind,
+            strategy_revision=strategy_revision,
+            lifecycle=lifecycle,
+            date_from=date_from,
+            date_to=date_to,
+            lane=lane,
+            structure=structure,
+            evidence_class=evidence_class,
+            reconciliation_status=reconciliation_status,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     rows = payload.get("trades") or []
     scope_id = (payload.get("scope") or {}).get("scope_id")
     payload["next_cursor"] = (
@@ -67,9 +90,18 @@ def paper_performance(
     response_model_exclude_unset=True,
 )
 def paper_trades(
+    book: str = Query(default="paper", pattern="^paper$"),
+    sleeve: str | None = Query(default=None, min_length=1, max_length=64),
     symbol: str | None = Query(default=None, min_length=1, max_length=16),
+    instrument_kind: str | None = Query(default=None, min_length=1, max_length=32),
     strategy_revision: int | None = Query(default=None, ge=1),
     lifecycle: str | None = Query(default=None, pattern="^(staged|open|closed)$"),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    lane: str | None = Query(default=None, min_length=1, max_length=32),
+    structure: str | None = Query(default=None, min_length=1, max_length=64),
+    evidence_class: str | None = Query(default=None, pattern="^(verified|partial|unavailable)$"),
+    reconciliation_status: str | None = Query(default=None, pattern="^(verified|partial|unavailable)$"),
     limit: int = Query(default=100, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=1024),
     repository: dependencies.PaperWorkbenchRepository = Depends(
@@ -79,9 +111,18 @@ def paper_trades(
     try:
         decoded = _decode_cursor(cursor)
         payload = repository.trades(
+            book=book,
+            sleeve=sleeve,
             symbol=symbol,
+            instrument_kind=instrument_kind,
             strategy_revision=strategy_revision,
             lifecycle=lifecycle,
+            date_from=date_from,
+            date_to=date_to,
+            lane=lane,
+            structure=structure,
+            evidence_class=evidence_class,
+            reconciliation_status=reconciliation_status,
             limit=limit,
             cursor=decoded,
         )
@@ -109,9 +150,18 @@ def paper_trades(
 
 @router.get("/api/paper/trades/export")
 def paper_trades_export(
+    book: str = Query(default="paper", pattern="^paper$"),
+    sleeve: str | None = Query(default=None, min_length=1, max_length=64),
     symbol: str | None = Query(default=None, min_length=1, max_length=16),
+    instrument_kind: str | None = Query(default=None, min_length=1, max_length=32),
     strategy_revision: int | None = Query(default=None, ge=1),
     lifecycle: str | None = Query(default=None, pattern="^(staged|open|closed)$"),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    lane: str | None = Query(default=None, min_length=1, max_length=32),
+    structure: str | None = Query(default=None, min_length=1, max_length=64),
+    evidence_class: str | None = Query(default=None, pattern="^(verified|partial|unavailable)$"),
+    reconciliation_status: str | None = Query(default=None, pattern="^(verified|partial|unavailable)$"),
     export_format: str = Query(default="csv", alias="format", pattern="^(csv|json)$"),
     repository: dependencies.PaperWorkbenchRepository = Depends(
         dependencies.get_paper_workbench
@@ -119,9 +169,18 @@ def paper_trades_export(
 ) -> Response:
     try:
         payload = repository.export_rows(
+            book=book,
+            sleeve=sleeve,
             symbol=symbol,
+            instrument_kind=instrument_kind,
             strategy_revision=strategy_revision,
             lifecycle=lifecycle,
+            date_from=date_from,
+            date_to=date_to,
+            lane=lane,
+            structure=structure,
+            evidence_class=evidence_class,
+            reconciliation_status=reconciliation_status,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -129,9 +188,11 @@ def paper_trades_export(
         return JSONResponse(content=jsonable_encoder(payload))
     output = io.StringIO()
     fields = (
-        "paper_order_id", "symbol", "lifecycle", "decision_at", "staged_at",
-        "entry_price", "mark_price", "realized_pnl", "unrealized_pnl", "net_pnl",
-        "reconciliation_status", "evidence_reasons",
+        "paper_order_id", "book", "sleeve", "symbol", "lane", "structure",
+        "lifecycle", "decision_at", "staged_at", "filled_quantity",
+        "remaining_quantity", "entry_price", "mark_price", "realized_pnl",
+        "unrealized_pnl", "net_pnl", "mark_status", "reconciliation_status",
+        "evidence_reasons",
     )
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
@@ -239,12 +300,12 @@ def research_overview(
         },
         "events": research_repository.events(limit=25),
         "diagnostics": research_repository.diagnostics(),
-        "actions": _research_actions(
-            performance=performance,
-            active_strategy=active_strategy,
-            challenger_strategy=challenger_strategy,
-            challenger_prompt=challenger,
-        ),
+        "actions": [
+            *research_repository.action_items(limit=10),
+            *_research_actions(
+                performance=performance,
+            ),
+        ],
     }
 
 
@@ -281,28 +342,18 @@ def _strategy_lane(
 def _research_actions(
     *,
     performance: dict[str, Any],
-    active_strategy: dict[str, Any] | None,
-    challenger_strategy: dict[str, Any] | None,
-    challenger_prompt: dict[str, Any],
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
-    if challenger_strategy and challenger_strategy.get("status") == "approved":
-        actions.append({
-            "kind": "strategy_review",
-            "severity": "medium",
-            "title": "Strategy challenger awaits review",
-            "explanation": "A candidate revision has evidence attached but is not the paper authority.",
-            "evidence": f"strategy_revision:{challenger_strategy.get('strategy_revision_id')}",
-            "permitted_action": "human_review",
-        })
     if performance.get("counts", {}).get("filled_orders", 0) and performance.get("missing_evidence_reasons"):
         actions.append({
             "kind": "paper_reconciliation",
-            "severity": "high" if active_strategy else "medium",
+            "severity": "high",
             "title": "Paper accounting evidence needs attention",
             "explanation": ", ".join(performance["missing_evidence_reasons"]),
             "evidence": performance.get("snapshot_id"),
             "permitted_action": "inspect_paper_book",
+            "drill_down": "/portfolio/paper",
+            "postcondition": "Review the scoped accounting evidence and resolve or acknowledge each gap.",
         })
     return actions
 

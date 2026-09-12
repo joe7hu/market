@@ -20,6 +20,7 @@ def test_paper_and_research_workbench_routes_are_read_only_and_truthful_on_empty
     export_csv = client.get("/api/paper/trades/export")
     export_json = client.get("/api/paper/trades/export?format=json")
     research = client.get("/api/research/overview")
+    predictions = client.get("/api/research/predictions")
 
     assert performance.status_code == 200
     assert performance.json()["net_pnl"] == 0
@@ -34,3 +35,22 @@ def test_paper_and_research_workbench_routes_are_read_only_and_truthful_on_empty
     assert research.json()["paper_only"] is True
     assert research.json()["strategy_lane"]["status"] == "no_paper_fills"
     assert research.json()["diagnostics"]["quality_status"] == "empty"
+    assert predictions.status_code == 200
+    assert predictions.json()["quality"]["cost_status"] == "no_data"
+    assert predictions.json()["quality"]["brier_time_series"] == []
+
+
+def test_paper_scope_rejects_unknown_book_and_reversed_dates(migrated_postgres_dsn, monkeypatch):
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_config,
+        lambda: typed_config(migrated_postgres_dsn),
+    )
+    client = TestClient(app)
+
+    assert client.get("/api/paper/performance?book=broker").status_code == 422
+    response = client.get(
+        "/api/paper/performance?date_from=2026-09-12&date_to=2026-09-10"
+    )
+    assert response.status_code == 400
+    assert "on or before" in response.json()["detail"]

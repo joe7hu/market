@@ -3333,6 +3333,272 @@
         "title": "ExpressionKind",
         "type": "string"
       },
+      "ForecastQuality": {
+        "additionalProperties": true,
+        "description": "Claim-quality metrics with explicit maturity and cost coverage.",
+        "properties": {
+          "abstention_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Abstention Rate"
+          },
+          "avg_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Latency Ms"
+          },
+          "base_rate_brier": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Rate Brier"
+          },
+          "brier_sample_count": {
+            "default": 0,
+            "title": "Brier Sample Count",
+            "type": "integer"
+          },
+          "brier_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brier Score"
+          },
+          "brier_time_series": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Brier Time Series",
+            "type": "array"
+          },
+          "calibration_bins": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Calibration Bins",
+            "type": "array"
+          },
+          "calibration_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calibration Score"
+          },
+          "cost_status": {
+            "default": "no_data",
+            "title": "Cost Status",
+            "type": "string"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
+          "directional_accuracy": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directional Accuracy"
+          },
+          "event_base_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Base Rate"
+          },
+          "excluded_claims": {
+            "default": 0,
+            "title": "Excluded Claims",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "invalid_claims": {
+            "default": 0,
+            "title": "Invalid Claims",
+            "type": "integer"
+          },
+          "invalidation_accuracy": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation Accuracy"
+          },
+          "invalidation_event_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation Event Rate"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "pending_claims": {
+            "default": 0,
+            "title": "Pending Claims",
+            "type": "integer"
+          },
+          "quality_score_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Score Basis"
+          },
+          "resolved_coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Coverage"
+          },
+          "response_count": {
+            "default": 0,
+            "title": "Response Count",
+            "type": "integer"
+          },
+          "scoring_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scoring Version"
+          },
+          "skill_vs_base_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skill Vs Base Rate"
+          },
+          "status": {
+            "default": "insufficient_evidence",
+            "title": "Status",
+            "type": "string"
+          },
+          "unpriced_response_count": {
+            "default": 0,
+            "title": "Unpriced Response Count",
+            "type": "integer"
+          },
+          "unresolved_claims": {
+            "default": 0,
+            "title": "Unresolved Claims",
+            "type": "integer"
+          },
+          "unsupported_claims": {
+            "default": 0,
+            "title": "Unsupported Claims",
+            "type": "integer"
+          },
+          "valid_resolved_claims": {
+            "default": 0,
+            "title": "Valid Resolved Claims",
+            "type": "integer"
+          }
+        },
+        "title": "ForecastQuality",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -9909,6 +10175,11 @@
             ],
             "title": "Calculation Version"
           },
+          "capital_status": {
+            "default": "unavailable",
+            "title": "Capital Status",
+            "type": "string"
+          },
           "counts": {
             "additionalProperties": {
               "type": "integer"
@@ -9937,6 +10208,11 @@
             "title": "Evidence Coverage",
             "type": "object"
           },
+          "flow_status": {
+            "default": "unavailable",
+            "title": "Flow Status",
+            "type": "string"
+          },
           "missing_evidence_reasons": {
             "items": {
               "type": "string"
@@ -9954,6 +10230,11 @@
               }
             ],
             "title": "Nav"
+          },
+          "nav_status": {
+            "default": "unavailable",
+            "title": "Nav Status",
+            "type": "string"
           },
           "net_pnl": {
             "anyOf": [
@@ -9976,6 +10257,22 @@
               }
             ],
             "title": "Next Cursor"
+          },
+          "open_exposure": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Exposure"
+          },
+          "open_exposure_status": {
+            "default": "partial",
+            "title": "Open Exposure Status",
+            "type": "string"
           },
           "quality_status": {
             "title": "Quality Status",
@@ -10013,6 +10310,11 @@
               }
             ],
             "title": "Return Pct"
+          },
+          "return_status": {
+            "default": "unavailable",
+            "title": "Return Status",
+            "type": "string"
           },
           "scope": {
             "additionalProperties": true,
@@ -10334,6 +10636,123 @@
         "additionalProperties": true,
         "description": "Bounded paper-trade investigation with original artifacts.",
         "properties": {
+          "book": {
+            "default": "paper",
+            "title": "Book",
+            "type": "string"
+          },
+          "decision_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision At"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
+          "entry_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Price"
+          },
+          "evidence_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Reasons",
+            "type": "array"
+          },
+          "evidence_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Status"
+          },
+          "execution": {
+            "additionalProperties": true,
+            "title": "Execution",
+            "type": "object"
+          },
+          "exit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Price"
+          },
+          "filled_quantity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filled Quantity"
+          },
+          "initial_risk": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Initial Risk"
+          },
+          "instrument_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument Kind"
+          },
+          "lane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lane"
+          },
           "lifecycle": {
             "title": "Lifecycle",
             "type": "string"
@@ -10437,9 +10856,76 @@
             "title": "Paper Order Id",
             "type": "string"
           },
+          "realized_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Pnl"
+          },
           "reconciliation_status": {
             "title": "Reconciliation Status",
             "type": "string"
+          },
+          "remaining_quantity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remaining Quantity"
+          },
+          "sleeve": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sleeve"
+          },
+          "staged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staged At"
+          },
+          "strategy_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Revision Id"
+          },
+          "structure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure"
           },
           "symbol": {
             "title": "Symbol",
@@ -10469,10 +10955,47 @@
       "PaperTradePage": {
         "additionalProperties": true,
         "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "calculation_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calculation Version"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
           "has_more": {
             "default": false,
             "title": "Has More",
             "type": "boolean"
+          },
+          "missing_evidence_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Evidence Reasons",
+            "type": "array"
           },
           "next_cursor": {
             "anyOf": [
@@ -10485,12 +11008,45 @@
             ],
             "title": "Next Cursor"
           },
+          "quality_status": {
+            "default": "complete",
+            "title": "Quality Status",
+            "type": "string"
+          },
           "rows": {
             "items": {
               "$ref": "#/components/schemas/PaperTradeSummary"
             },
             "title": "Rows",
             "type": "array"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "title": "Scope",
+            "type": "object"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "source_watermark": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Watermark"
           }
         },
         "title": "PaperTradePage",
@@ -10500,6 +11056,123 @@
         "additionalProperties": true,
         "description": "A fill-backed paper trade row; monetary fields may be explicitly null.",
         "properties": {
+          "book": {
+            "default": "paper",
+            "title": "Book",
+            "type": "string"
+          },
+          "decision_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision At"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
+          "entry_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Price"
+          },
+          "evidence_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Reasons",
+            "type": "array"
+          },
+          "evidence_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Status"
+          },
+          "execution": {
+            "additionalProperties": true,
+            "title": "Execution",
+            "type": "object"
+          },
+          "exit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Price"
+          },
+          "filled_quantity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filled Quantity"
+          },
+          "initial_risk": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Initial Risk"
+          },
+          "instrument_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument Kind"
+          },
+          "lane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lane"
+          },
           "lifecycle": {
             "title": "Lifecycle",
             "type": "string"
@@ -10603,9 +11276,76 @@
             "title": "Paper Order Id",
             "type": "string"
           },
+          "realized_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Pnl"
+          },
           "reconciliation_status": {
             "title": "Reconciliation Status",
             "type": "string"
+          },
+          "remaining_quantity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remaining Quantity"
+          },
+          "sleeve": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sleeve"
+          },
+          "staged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staged At"
+          },
+          "strategy_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Revision Id"
+          },
+          "structure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure"
           },
           "symbol": {
             "title": "Symbol",
@@ -12875,6 +13615,29 @@
       "ResearchClaimPage": {
         "additionalProperties": true,
         "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "calculation_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calculation Version"
+          },
           "count": {
             "additionalProperties": {
               "type": "integer"
@@ -12887,6 +13650,13 @@
             "title": "Has More",
             "type": "boolean"
           },
+          "missing_evidence_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Evidence Reasons",
+            "type": "array"
+          },
           "next_cursor": {
             "anyOf": [
               {
@@ -12898,6 +13668,21 @@
             ],
             "title": "Next Cursor"
           },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastQuality"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quality_status": {
+            "default": "complete",
+            "title": "Quality Status",
+            "type": "string"
+          },
           "rows": {
             "items": {
               "additionalProperties": true,
@@ -12905,6 +13690,23 @@
             },
             "title": "Rows",
             "type": "array"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "title": "Scope",
+            "type": "object"
+          },
+          "source_watermark": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Watermark"
           }
         },
         "title": "ResearchClaimPage",
@@ -21126,6 +21928,35 @@
         "parameters": [
           {
             "in": "query",
+            "name": "book",
+            "required": false,
+            "schema": {
+              "default": "paper",
+              "pattern": "^paper$",
+              "title": "Book",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sleeve",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sleeve"
+            }
+          },
+          {
+            "in": "query",
             "name": "symbol",
             "required": false,
             "schema": {
@@ -21140,6 +21971,24 @@
                 }
               ],
               "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "instrument_kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Instrument Kind"
             }
           },
           {
@@ -21174,6 +22023,110 @@
                 }
               ],
               "title": "Lifecycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lane",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lane"
+            }
+          },
+          {
+            "in": "query",
+            "name": "structure",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Structure"
+            }
+          },
+          {
+            "in": "query",
+            "name": "evidence_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(verified|partial|unavailable)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Evidence Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reconciliation_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(verified|partial|unavailable)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reconciliation Status"
             }
           }
         ],
@@ -21208,6 +22161,35 @@
         "parameters": [
           {
             "in": "query",
+            "name": "book",
+            "required": false,
+            "schema": {
+              "default": "paper",
+              "pattern": "^paper$",
+              "title": "Book",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sleeve",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sleeve"
+            }
+          },
+          {
+            "in": "query",
             "name": "symbol",
             "required": false,
             "schema": {
@@ -21222,6 +22204,24 @@
                 }
               ],
               "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "instrument_kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Instrument Kind"
             }
           },
           {
@@ -21256,6 +22256,110 @@
                 }
               ],
               "title": "Lifecycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lane",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lane"
+            }
+          },
+          {
+            "in": "query",
+            "name": "structure",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Structure"
+            }
+          },
+          {
+            "in": "query",
+            "name": "evidence_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(verified|partial|unavailable)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Evidence Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reconciliation_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(verified|partial|unavailable)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reconciliation Status"
             }
           },
           {
@@ -21319,6 +22423,35 @@
         "parameters": [
           {
             "in": "query",
+            "name": "book",
+            "required": false,
+            "schema": {
+              "default": "paper",
+              "pattern": "^paper$",
+              "title": "Book",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sleeve",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sleeve"
+            }
+          },
+          {
+            "in": "query",
             "name": "symbol",
             "required": false,
             "schema": {
@@ -21333,6 +22466,24 @@
                 }
               ],
               "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "instrument_kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Instrument Kind"
             }
           },
           {
@@ -21367,6 +22518,110 @@
                 }
               ],
               "title": "Lifecycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lane",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lane"
+            }
+          },
+          {
+            "in": "query",
+            "name": "structure",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Structure"
+            }
+          },
+          {
+            "in": "query",
+            "name": "evidence_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(verified|partial|unavailable)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Evidence Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reconciliation_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(verified|partial|unavailable)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reconciliation Status"
             }
           },
           {
