@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { loadLearningOverview, type LearningOverviewPayload } from "@/api/paper";
@@ -25,8 +25,14 @@ export function ResearchWorkbenchRoute() {
   const [events, setEvents] = useState<Array<Record<string, any>>>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestGeneration = useRef(0);
+  const moreController = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    requestGeneration.current += 1;
+    moreController.current?.abort();
+    moreController.current = null;
+    setLoadingMore(false);
     const controller = new AbortController();
     setError(null);
     setOverview(null);
@@ -47,13 +53,17 @@ export function ResearchWorkbenchRoute() {
 
   const loadMore = (kind: "strategies" | "predictions" | "experiments", cursor: string) => {
     const controller = new AbortController();
+    const generation = requestGeneration.current;
+    moreController.current?.abort();
+    moreController.current = controller;
     setLoadingMore(true);
     const request = kind === "strategies" ? loadResearchStrategies(controller.signal, cursor) : kind === "predictions" ? loadResearchPredictions(controller.signal, cursor) : loadResearchExperiments(controller.signal, cursor);
     void request.then((next) => {
+      if (generation !== requestGeneration.current) return;
       if (kind === "strategies") setStrategies((current) => current ? { ...current, rows: [...current.rows, ...next.rows], next_cursor: next.next_cursor, count: next.count } : next as ResearchStrategyPage);
       if (kind === "predictions") setPredictions((current) => current ? { ...current, rows: [...current.rows, ...next.rows], next_cursor: next.next_cursor, count: next.count } : next as ResearchClaimPage);
       if (kind === "experiments") setExperiments((current) => current ? { ...current, rows: [...current.rows, ...next.rows], next_cursor: next.next_cursor, count: next.count } : next as ResearchExperimentPage);
-    }).catch((reason) => setError(reason instanceof Error ? reason.message : "Older research records unavailable.")).finally(() => setLoadingMore(false));
+    }).catch((reason) => { if (generation === requestGeneration.current && !controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Older research records unavailable."); }).finally(() => { if (generation === requestGeneration.current) { setLoadingMore(false); moreController.current = null; } });
   };
 
   const strategy = overview?.strategy_lane ?? {};

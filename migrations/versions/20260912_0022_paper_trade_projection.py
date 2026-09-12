@@ -28,6 +28,27 @@ def upgrade() -> None:
         CREATE INDEX ix_paper_current_mark_projection_source
             ON analysis.paper_current_mark_projection (source_id, projected_at DESC);
 
+        CREATE TABLE analysis.paper_option_mark_projection (
+            contract_id bigint PRIMARY KEY
+                REFERENCES catalog.option_contract(id) ON DELETE CASCADE,
+            bid double precision,
+            ask double precision,
+            mid double precision,
+            last double precision,
+            source_id text NOT NULL,
+            source_kind text NOT NULL,
+            snapshot_id bigint NOT NULL
+                REFERENCES raw.option_snapshot(id) ON DELETE CASCADE,
+            quote_id bigint NOT NULL,
+            capture_generation_id bigint,
+            observed_at timestamptz NOT NULL,
+            available_at timestamptz NOT NULL,
+            projected_at timestamptz NOT NULL DEFAULT clock_timestamp()
+        );
+
+        CREATE INDEX ix_paper_option_mark_projection_source
+            ON analysis.paper_option_mark_projection (source_id, projected_at DESC);
+
         CREATE TABLE analysis.paper_trade_projection (
             paper_order_id uuid PRIMARY KEY
                 REFERENCES app.paper_order(id) ON DELETE CASCADE,
@@ -82,6 +103,72 @@ def upgrade() -> None:
                    priced.source_kind,
                    mark_as_of
             FROM raw.current_price_at(mark_as_of, p_instrument_ids) priced;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_marks(p_contract_ids bigint[])
+        RETURNS void
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        DECLARE mark_as_of timestamptz := clock_timestamp();
+        BEGIN
+            DELETE FROM analysis.paper_option_mark_projection projection
+            WHERE projection.contract_id = ANY(COALESCE(p_contract_ids, ARRAY[]::bigint[]));
+
+            INSERT INTO analysis.paper_option_mark_projection (
+                contract_id,
+                bid,
+                ask,
+                mid,
+                last,
+                source_id,
+                source_kind,
+                snapshot_id,
+                quote_id,
+                capture_generation_id,
+                observed_at,
+                available_at,
+                projected_at
+            )
+            SELECT DISTINCT ON (quote.contract_id)
+                   quote.contract_id,
+                   quote.bid,
+                   quote.ask,
+                   quote.mid,
+                   quote.last,
+                   snapshot.source_id,
+                   source.kind,
+                   snapshot.id,
+                   quote.id,
+                   quote.capture_generation_id,
+                   quote.observed_at,
+                   quote.available_at,
+                   mark_as_of
+            FROM raw.option_quote quote
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            JOIN ingest.run snapshot_run ON snapshot_run.id = snapshot.ingest_run_id
+            JOIN ingest.source source ON source.id = snapshot.source_id
+            LEFT JOIN raw.option_capture_generation generation
+              ON generation.id = quote.capture_generation_id
+            WHERE quote.contract_id = ANY(COALESCE(p_contract_ids, ARRAY[]::bigint[]))
+              AND snapshot.capture_state IN ('complete', 'partial')
+              AND snapshot_run.status IN ('succeeded', 'partial')
+              AND snapshot_run.finished_at IS NOT NULL
+              AND (
+                    generation.id IS NULL
+                    OR (
+                        generation.capture_state IN ('complete', 'partial')
+                        AND generation.capture_finished_at IS NOT NULL
+                    )
+              )
+              AND (
+                    (quote.bid > 0 AND quote.ask >= quote.bid)
+                    OR quote.mid > 0
+              )
+            ORDER BY quote.contract_id, quote.observed_at DESC,
+                     quote.available_at DESC, quote.id DESC;
         END;
         $$;
 
@@ -310,6 +397,200 @@ def upgrade() -> None:
         END;
         $$;
 
+        CREATE FUNCTION analysis.refresh_paper_option_quote_insert_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(SELECT DISTINCT contract_id FROM new_rows)
+            );
+            RETURN NULL;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_quote_update_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(
+                    SELECT DISTINCT contract_id
+                    FROM (
+                        SELECT contract_id FROM new_rows
+                        UNION ALL
+                        SELECT contract_id FROM old_rows
+                    ) changed
+                )
+            );
+            RETURN NULL;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_quote_delete_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(SELECT DISTINCT contract_id FROM old_rows)
+            );
+            RETURN NULL;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_snapshot_insert_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(
+                    SELECT DISTINCT quote.contract_id
+                    FROM raw.option_quote quote
+                    JOIN new_rows changed ON changed.id = quote.snapshot_id
+                )
+            );
+            RETURN NULL;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_snapshot_update_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(
+                    SELECT DISTINCT quote.contract_id
+                    FROM raw.option_quote quote
+                    JOIN (
+                        SELECT id FROM new_rows
+                        UNION ALL
+                        SELECT id FROM old_rows
+                    ) changed ON changed.id = quote.snapshot_id
+                )
+            );
+            RETURN NULL;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_generation_insert_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(
+                    SELECT DISTINCT quote.contract_id
+                    FROM raw.option_quote quote
+                    JOIN new_rows changed ON changed.id = quote.capture_generation_id
+                )
+            );
+            RETURN NULL;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_generation_update_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(
+                    SELECT DISTINCT quote.contract_id
+                    FROM raw.option_quote quote
+                    JOIN (
+                        SELECT id FROM new_rows
+                        UNION ALL
+                        SELECT id FROM old_rows
+                    ) changed ON changed.id = quote.capture_generation_id
+                )
+            );
+            RETURN NULL;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_generation_delete_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(
+                    SELECT DISTINCT quote.contract_id
+                    FROM raw.option_quote quote
+                    JOIN old_rows changed ON changed.id = quote.capture_generation_id
+                )
+            );
+            RETURN NULL;
+        END;
+        $$;
+
+        CREATE FUNCTION analysis.refresh_paper_option_run_update_projection_trigger()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO 'pg_catalog', 'analysis', 'raw', 'ingest'
+        AS $$
+        BEGIN
+            PERFORM analysis.refresh_paper_current_marks(
+                ARRAY(
+                    SELECT DISTINCT instrument_id
+                    FROM (
+                        SELECT quote.instrument_id
+                        FROM raw.quote quote
+                        JOIN new_rows changed ON changed.id = quote.ingest_run_id
+                        UNION ALL
+                        SELECT quote.instrument_id
+                        FROM raw.quote_history quote
+                        JOIN new_rows changed ON changed.id = quote.ingest_run_id
+                        UNION ALL
+                        SELECT bar.instrument_id
+                        FROM raw.price_bar bar
+                        JOIN new_rows changed ON changed.id = bar.ingest_run_id
+                        UNION ALL
+                        SELECT bar.instrument_id
+                        FROM raw.price_bar_history bar
+                        JOIN new_rows changed ON changed.id = bar.ingest_run_id
+                    ) affected
+                )
+            );
+            PERFORM analysis.refresh_paper_option_marks(
+                ARRAY(
+                    SELECT DISTINCT quote.contract_id
+                    FROM raw.option_quote quote
+                    JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+                    JOIN new_rows changed ON changed.id = snapshot.ingest_run_id
+                    UNION ALL
+                    SELECT DISTINCT quote.contract_id
+                    FROM raw.option_quote quote
+                    JOIN raw.option_capture_generation generation
+                      ON generation.id = quote.capture_generation_id
+                    JOIN new_rows changed ON changed.id = generation.ingest_run_id
+                )
+            );
+            RETURN NULL;
+        END;
+        $$;
+
         CREATE FUNCTION analysis.refresh_paper_journal_insert_projection_trigger()
         RETURNS trigger
         LANGUAGE plpgsql
@@ -452,6 +733,60 @@ def upgrade() -> None:
             FOR EACH STATEMENT
             EXECUTE FUNCTION analysis.refresh_paper_bar_mark_delete_projection_trigger();
 
+        CREATE TRIGGER paper_mark_projection_option_quote_insert
+            AFTER INSERT ON raw.option_quote
+            REFERENCING NEW TABLE AS new_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_quote_insert_projection_trigger();
+
+        CREATE TRIGGER paper_mark_projection_option_quote_update
+            AFTER UPDATE ON raw.option_quote
+            REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_quote_update_projection_trigger();
+
+        CREATE TRIGGER paper_mark_projection_option_quote_delete
+            AFTER DELETE ON raw.option_quote
+            REFERENCING OLD TABLE AS old_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_quote_delete_projection_trigger();
+
+        CREATE TRIGGER paper_mark_projection_option_snapshot_insert
+            AFTER INSERT ON raw.option_snapshot
+            REFERENCING NEW TABLE AS new_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_snapshot_insert_projection_trigger();
+
+        CREATE TRIGGER paper_mark_projection_option_snapshot_update
+            AFTER UPDATE ON raw.option_snapshot
+            REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_snapshot_update_projection_trigger();
+
+        CREATE TRIGGER paper_mark_projection_option_generation_insert
+            AFTER INSERT ON raw.option_capture_generation
+            REFERENCING NEW TABLE AS new_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_generation_insert_projection_trigger();
+
+        CREATE TRIGGER paper_mark_projection_option_generation_update
+            AFTER UPDATE ON raw.option_capture_generation
+            REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_generation_update_projection_trigger();
+
+        CREATE TRIGGER paper_mark_projection_option_generation_delete
+            AFTER DELETE ON raw.option_capture_generation
+            REFERENCING OLD TABLE AS old_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_generation_delete_projection_trigger();
+
+        CREATE TRIGGER paper_mark_projection_option_run_update
+            AFTER UPDATE ON ingest.run
+            REFERENCING NEW TABLE AS new_rows
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION analysis.refresh_paper_option_run_update_projection_trigger();
+
         SELECT analysis.refresh_paper_trade_projections(
             ARRAY(SELECT id FROM app.paper_order)
         );
@@ -460,14 +795,33 @@ def upgrade() -> None:
             ARRAY(SELECT id FROM catalog.instrument)
         );
 
+        SELECT analysis.refresh_paper_option_marks(
+            ARRAY(SELECT id FROM catalog.option_contract)
+        );
+
         GRANT SELECT ON TABLE analysis.paper_current_mark_projection TO market_app;
+        GRANT SELECT ON TABLE analysis.paper_option_mark_projection TO market_app;
         GRANT SELECT ON TABLE analysis.paper_trade_projection TO market_app;
-        GRANT EXECUTE ON FUNCTION analysis.refresh_paper_current_marks(bigint[]) TO market_app;
-        GRANT EXECUTE ON FUNCTION analysis.refresh_paper_trade_projections(uuid[]) TO market_app;
-        GRANT EXECUTE ON FUNCTION analysis.refresh_paper_order_projection_trigger() TO market_app;
-        GRANT EXECUTE ON FUNCTION analysis.refresh_paper_journal_insert_projection_trigger() TO market_app;
-        GRANT EXECUTE ON FUNCTION analysis.refresh_paper_journal_update_projection_trigger() TO market_app;
-        GRANT EXECUTE ON FUNCTION analysis.refresh_paper_journal_delete_projection_trigger() TO market_app;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_current_marks(bigint[]) FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_trade_projections(uuid[]) FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_order_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_journal_insert_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_journal_update_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_journal_delete_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_quote_mark_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_quote_mark_delete_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_bar_mark_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_bar_mark_delete_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_marks(bigint[]) FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_quote_insert_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_quote_update_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_quote_delete_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_snapshot_insert_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_snapshot_update_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_generation_insert_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_generation_update_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_generation_delete_projection_trigger() FROM PUBLIC;
+        REVOKE ALL ON FUNCTION analysis.refresh_paper_option_run_update_projection_trigger() FROM PUBLIC;
         """
     )
 
@@ -487,6 +841,15 @@ def downgrade() -> None:
         DROP TRIGGER paper_mark_projection_quote_delete ON raw.quote_confirmation;
         DROP TRIGGER paper_mark_projection_quote_update ON raw.quote_confirmation;
         DROP TRIGGER paper_mark_projection_quote_insert ON raw.quote_confirmation;
+        DROP TRIGGER paper_mark_projection_option_run_update ON ingest.run;
+        DROP TRIGGER paper_mark_projection_option_generation_delete ON raw.option_capture_generation;
+        DROP TRIGGER paper_mark_projection_option_generation_update ON raw.option_capture_generation;
+        DROP TRIGGER paper_mark_projection_option_generation_insert ON raw.option_capture_generation;
+        DROP TRIGGER paper_mark_projection_option_snapshot_update ON raw.option_snapshot;
+        DROP TRIGGER paper_mark_projection_option_snapshot_insert ON raw.option_snapshot;
+        DROP TRIGGER paper_mark_projection_option_quote_delete ON raw.option_quote;
+        DROP TRIGGER paper_mark_projection_option_quote_update ON raw.option_quote;
+        DROP TRIGGER paper_mark_projection_option_quote_insert ON raw.option_quote;
         DROP FUNCTION analysis.refresh_paper_journal_delete_projection_trigger();
         DROP FUNCTION analysis.refresh_paper_journal_update_projection_trigger();
         DROP FUNCTION analysis.refresh_paper_journal_insert_projection_trigger();
@@ -495,11 +858,23 @@ def downgrade() -> None:
         DROP FUNCTION analysis.refresh_paper_bar_mark_projection_trigger();
         DROP FUNCTION analysis.refresh_paper_quote_mark_delete_projection_trigger();
         DROP FUNCTION analysis.refresh_paper_quote_mark_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_run_update_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_generation_delete_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_generation_update_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_generation_insert_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_snapshot_update_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_snapshot_insert_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_quote_delete_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_quote_update_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_quote_insert_projection_trigger();
+        DROP FUNCTION analysis.refresh_paper_option_marks(bigint[]);
         DROP FUNCTION analysis.refresh_paper_current_marks(bigint[]);
         DROP FUNCTION analysis.refresh_paper_trade_projections(uuid[]);
         DROP INDEX analysis.ix_paper_trade_projection_latest_fill;
+        DROP INDEX analysis.ix_paper_option_mark_projection_source;
         DROP INDEX analysis.ix_paper_current_mark_projection_source;
         DROP TABLE analysis.paper_trade_projection;
+        DROP TABLE analysis.paper_option_mark_projection;
         DROP TABLE analysis.paper_current_mark_projection;
         """
     )

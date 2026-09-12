@@ -69,7 +69,6 @@ class PaperTradeSummary(FlexibleResponse):
     book: str = "paper"
     sleeve: str | None = None
     instrument_kind: str | None = None
-    structure: str | None = None
     strike: float | None = None
     option_type: str | None = None
     expiration: date | None = None

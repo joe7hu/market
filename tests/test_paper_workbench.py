@@ -244,3 +244,32 @@ def test_visual_performance_markers_and_attribution_only_use_verified_exits():
     assert attribution["strategy"][0]["label"] == "Recovery"
     assert attribution["strategy"][0]["trades"] == 1
     assert attribution["strategy"][0]["win_rate"] == 1.0
+
+
+def test_holding_period_attribution_uses_bounded_event_fills():
+    from investment_panel.infrastructure.postgres.paper_workbench import paper_performance_visuals
+
+    row = paper_trade_payload(
+        _row(
+            paper_status="closed",
+            entry_quantity=Decimal("1"),
+            exit_quantity=Decimal("1"),
+            entry_units=Decimal("10"),
+            exit_units=Decimal("15"),
+            entry_fees=Decimal("0"),
+            exit_fees=Decimal("0"),
+            actual_fees=Decimal("0"),
+            fill_multipliers_verified=True,
+        )
+    )
+    visuals = paper_performance_visuals(
+        [row],
+        fill_rows_by_order={
+            "order-1": [
+                {"action": "paper_entry", "created_at": "2026-09-01T14:00:00+00:00"},
+                {"action": "paper_exit", "created_at": "2026-09-03T14:00:00+00:00"},
+            ]
+        },
+    )
+
+    assert visuals["attribution"]["holding_period"][0]["label"] == "2–5 days"

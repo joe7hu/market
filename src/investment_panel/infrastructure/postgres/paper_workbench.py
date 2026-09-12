@@ -792,8 +792,51 @@ def _current_marks(
             if row.get("instrument_id") is not None and not _is_option_order(row)
         }
     )
+    option_legs_by_order: dict[str, list[dict[str, Any]]] = {}
+    compact_option_order_ids = [
+        str(row["paper_order_id"])
+        for row in rows
+        if _is_option_order(row) and not _order_legs(row)
+    ]
+    if compact_option_order_ids:
+        leg_rows = connection.execute(
+            """
+            SELECT leg.paper_order_id::text AS paper_order_id,
+                   leg.contract_id, leg.option_type, leg.side,
+                   contract.expiration, contract.multiplier
+            FROM app.paper_order_leg leg
+            JOIN catalog.option_contract contract ON contract.id = leg.contract_id
+            WHERE leg.paper_order_id = ANY(%s::uuid[])
+            ORDER BY leg.paper_order_id, leg.leg_index
+            """,
+            [compact_option_order_ids],
+        ).fetchall()
+        for leg in leg_rows:
+            option_legs_by_order.setdefault(str(leg["paper_order_id"]), []).append(
+                {
+                    "contract_id": int(leg["contract_id"]),
+                    "option_type": leg["option_type"],
+                    "side": leg["side"],
+                    "expiration": leg["expiration"],
+                    "multiplier": leg["multiplier"],
+                }
+            )
+        for row in rows:
+            legs = option_legs_by_order.get(str(row["paper_order_id"]))
+            if legs:
+                row["order_legs"] = legs
     contract_ids = sorted(
-        {contract_id for row in rows for contract_id in _option_contract_ids(row)}
+        {
+            contract_id
+            for row in rows
+            for contract_id in (
+                _option_contract_ids(row)
+                + [
+                    int(leg["contract_id"])
+                    for leg in option_legs_by_order.get(str(row["paper_order_id"]), [])
+                ]
+            )
+        }
     )
     stock_marks: dict[int, dict[str, Any]] = {}
     option_marks: dict[int, dict[str, Any]] = {}
@@ -908,44 +951,69 @@ def _current_marks(
     if contract_ids:
         option_rows = connection.execute(
             """
-            SELECT DISTINCT ON (quote.contract_id)
-                   quote.contract_id, quote.bid, quote.ask, quote.mid, quote.last,
-                   quote.observed_at, quote.available_at, quote.id AS quote_id,
-                   snapshot.source_id, snapshot.id AS snapshot_id,
-                   source.kind AS source_kind,
-                   quote.capture_generation_id
-            FROM raw.option_quote quote
-            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
-            JOIN ingest.run snapshot_run ON snapshot_run.id = snapshot.ingest_run_id
+            SELECT mark.contract_id, mark.bid, mark.ask, mark.mid, mark.last,
+                   mark.observed_at, mark.available_at, mark.quote_id,
+                   mark.source_id, mark.snapshot_id, mark.source_kind,
+                   mark.capture_generation_id
+            FROM analysis.paper_option_mark_projection mark
             JOIN ingest.source source
-              ON source.id = snapshot.source_id
+              ON source.id = mark.source_id
              AND source.enabled
              AND source.operational_state = 'active'
-            LEFT JOIN raw.option_capture_generation generation
-              ON generation.id = quote.capture_generation_id
-            WHERE quote.contract_id = ANY(%s::bigint[])
-              AND quote.observed_at <= %s
-              AND quote.available_at <= %s
-              AND snapshot.capture_state IN ('complete', 'partial')
-              AND snapshot_run.status IN ('succeeded', 'partial')
-              AND snapshot_run.finished_at IS NOT NULL
-              AND snapshot_run.finished_at <= %s
-              AND (
-                    generation.id IS NULL
-                    OR (
-                        generation.capture_state IN ('complete', 'partial')
-                        AND generation.capture_finished_at IS NOT NULL
-                        AND generation.capture_finished_at <= %s
-                    )
-              )
-              AND (
-                    (quote.bid > 0 AND quote.ask >= quote.bid)
-                    OR quote.mid > 0
-              )
-            ORDER BY quote.contract_id, quote.observed_at DESC, quote.available_at DESC, quote.id DESC
+            WHERE mark.contract_id = ANY(%s::bigint[])
+              AND mark.observed_at <= %s
+              AND mark.available_at <= %s
+              AND mark.projected_at <= %s
+            ORDER BY mark.contract_id
             """,
-            [contract_ids, as_of, as_of, as_of, as_of],
+            [contract_ids, as_of, as_of, as_of],
         ).fetchall()
+        projected_ids = {int(row["contract_id"]) for row in option_rows}
+        missing_contract_ids = [
+            contract_id for contract_id in contract_ids if contract_id not in projected_ids
+        ]
+        if missing_contract_ids:
+            option_rows += connection.execute(
+                """
+                SELECT DISTINCT ON (quote.contract_id)
+                       quote.contract_id, quote.bid, quote.ask, quote.mid, quote.last,
+                       quote.observed_at, quote.available_at, quote.id AS quote_id,
+                       snapshot.source_id, snapshot.id AS snapshot_id,
+                       source.kind AS source_kind,
+                       quote.capture_generation_id
+                FROM raw.option_quote quote
+                JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+                JOIN ingest.run snapshot_run ON snapshot_run.id = snapshot.ingest_run_id
+                JOIN ingest.source source
+                  ON source.id = snapshot.source_id
+                 AND source.enabled
+                 AND source.operational_state = 'active'
+                LEFT JOIN raw.option_capture_generation generation
+                  ON generation.id = quote.capture_generation_id
+                WHERE quote.contract_id = ANY(%s::bigint[])
+                  AND quote.observed_at <= %s
+                  AND quote.available_at <= %s
+                  AND snapshot.capture_state IN ('complete', 'partial')
+                  AND snapshot_run.status IN ('succeeded', 'partial')
+                  AND snapshot_run.finished_at IS NOT NULL
+                  AND snapshot_run.finished_at <= %s
+                  AND (
+                        generation.id IS NULL
+                        OR (
+                            generation.capture_state IN ('complete', 'partial')
+                            AND generation.capture_finished_at IS NOT NULL
+                            AND generation.capture_finished_at <= %s
+                        )
+                  )
+                  AND (
+                        (quote.bid > 0 AND quote.ask >= quote.bid)
+                        OR quote.mid > 0
+                  )
+                ORDER BY quote.contract_id, quote.observed_at DESC,
+                         quote.available_at DESC, quote.id DESC
+                """,
+                [missing_contract_ids, as_of, as_of, as_of, as_of],
+            ).fetchall()
         option_marks = {int(row["contract_id"]): dict(row) for row in option_rows}
 
     marks: dict[str, dict[str, Any]] = {}
@@ -953,9 +1021,18 @@ def _current_marks(
     for row in rows:
         order_id = str(row["paper_order_id"])
         if _is_option_order(row):
+            row_contract_ids = list(
+                dict.fromkeys(
+                    _option_contract_ids(row)
+                    + [
+                        int(leg["contract_id"])
+                        for leg in option_legs_by_order.get(order_id, [])
+                    ]
+                )
+            )
             mark_rows = [
                 option_marks[contract_id]
-                for contract_id in _option_contract_ids(row)
+                for contract_id in row_contract_ids
                 if contract_id in option_marks
             ]
             if mark_rows:
@@ -1561,7 +1638,10 @@ def paper_performance_visuals(
     )
     return {
         "event_markers": _performance_event_markers(rows, verified_events, fill_rows_by_order),
-        "attribution": _performance_attribution(realized_rows),
+        "attribution": _performance_attribution(
+            realized_rows,
+            fill_rows_by_order=fill_rows_by_order,
+        ),
     }
 
 
@@ -1698,7 +1778,11 @@ def _performance_event_markers(
     return markers[:4000]
 
 
-def _performance_attribution(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _performance_attribution(
+    rows: list[dict[str, Any]],
+    *,
+    fill_rows_by_order: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Return small, verified cohorts for the decision-led decomposition view."""
 
     dimensions = {
@@ -1715,7 +1799,10 @@ def _performance_attribution(rows: list[dict[str, Any]]) -> dict[str, list[dict[
             pnl = _decimal(row.get("realized_pnl"))
             if pnl is None:
                 continue
-            label = str(bucket_for(row))
+            if dimension == "holding_period":
+                label = _holding_period_bucket(row, fill_rows_by_order=fill_rows_by_order)
+            else:
+                label = str(bucket_for(row))
             group = groups.setdefault(label, {"label": label, "pnl": Decimal("0"), "trades": 0, "wins": 0})
             group["pnl"] += pnl
             group["trades"] += 1
@@ -1734,12 +1821,17 @@ def _performance_attribution(rows: list[dict[str, Any]]) -> dict[str, list[dict[
     return result
 
 
-def _holding_period_bucket(row: dict[str, Any]) -> str:
-    fills = [
-        fill
-        for fill in (row.get("execution") or {}).get("fills", [])
-        if isinstance(fill, dict)
-    ]
+def _holding_period_bucket(
+    row: dict[str, Any],
+    *,
+    fill_rows_by_order: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
+    fills = (
+        fill_rows_by_order.get(str(row["paper_order_id"]), [])
+        if fill_rows_by_order is not None
+        else (row.get("execution") or {}).get("fills", [])
+    )
+    fills = [fill for fill in fills if isinstance(fill, dict)]
     entry = next((_as_datetime(fill.get("created_at")) for fill in fills if fill.get("action") == "paper_entry"), None)
     exits = [_as_datetime(fill.get("created_at")) for fill in fills if str(fill.get("action") or "").startswith("paper_exit")]
     exit_at = max((value for value in exits if value is not None), default=_as_datetime(row.get("exit_at")))

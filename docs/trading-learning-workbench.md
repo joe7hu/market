@@ -47,10 +47,11 @@ whole-scope net P&L, unrealized P&L and drawdown are withheld. The known realize
 subtotal remains labeled partial. This ceiling is not a claim of full-population
 support beyond the documented benchmark.
 
-The workbench reads a PostgreSQL-maintained `analysis.paper_trade_projection` for
-fill totals and event packets and an `analysis.paper_current_mark_projection` for
-confirmed stock marks. Journal/order triggers refresh only the affected rows; detail
-drilldown still reads the canonical ledger and evidence joins.
+The workbench reads PostgreSQL-maintained projections for fill totals, event packets,
+confirmed stock marks and confirmed option marks. Journal/order and market-data
+triggers refresh only affected rows; detail drilldown still reads the canonical
+ledger and evidence joins. Historical or as-of misses use a bounded canonical
+fallback and never turn an unavailable mark into a value.
 
 ## Advisor evaluation contract
 

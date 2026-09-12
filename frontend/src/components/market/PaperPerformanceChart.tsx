@@ -27,7 +27,7 @@ export function PaperPerformanceChart({ points, label, onSelect, events = [], mo
         if (params?.seriesType === "scatter") {
           const event = params.data?.[2] as EventMarker | undefined;
           if (!event) return "";
-          const pnl = event.pnl == null ? "not verified" : `${event.pnl >= 0 ? "+" : ""}$${Math.abs(event.pnl).toFixed(2)}`;
+          const pnl = event.pnl == null ? "not verified" : `${event.pnl > 0 ? "+" : event.pnl < 0 ? "-" : ""}$${Math.abs(event.pnl).toFixed(2)}`;
           return `<strong>${escapeHtml(event.label ?? event.kind)}</strong><br/>${escapeHtml(new Date(event.at).toLocaleString())}<br/>${escapeHtml(event.symbol ?? "")}${event.strategy ? ` · ${escapeHtml(event.strategy)}` : ""}<br/>P&L: ${escapeHtml(pnl)}`;
         }
         const point = points[params?.dataIndex];
