@@ -207,6 +207,7 @@ def research_overview(
             "blockers": [],
         },
         "events": research_repository.events(limit=25),
+        "diagnostics": research_repository.diagnostics(),
         "actions": _research_actions(
             performance=performance,
             active_strategy=active_strategy,

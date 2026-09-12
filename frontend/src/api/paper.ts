@@ -51,6 +51,7 @@ export type LearningOverviewPayload = ApiSchema["LearningOverview"] & {
   paper_only: boolean;
   strategy_lane: Record<string, any>;
   prediction_lane: Record<string, any>;
+  diagnostics: ApiSchema["ResearchDiagnostics"];
   paper: PaperPerformance;
   events?: Array<Record<string, unknown>>;
 };

@@ -113,12 +113,28 @@ class PaperBookPerformance(FlexibleResponse):
     quality_status: str
 
 
+class ResearchDiagnostics(FlexibleResponse):
+    """Descriptive post-core diagnostics with explicit evidence ceilings."""
+
+    as_of: datetime | None = None
+    source_watermark: datetime | None = None
+    calculation_version: str | None = None
+    scope: dict[str, Any] = Field(default_factory=dict)
+    quality_status: str = "empty"
+    decision_quality: dict[str, Any] = Field(default_factory=dict)
+    rejected_opportunities: dict[str, Any] = Field(default_factory=dict)
+    edge_waterfall: dict[str, Any] = Field(default_factory=dict)
+    research_efficiency: dict[str, Any] = Field(default_factory=dict)
+    drift_concentration: dict[str, Any] = Field(default_factory=dict)
+
+
 class LearningOverview(FlexibleResponse):
     """Research lanes and their blockers, separate from paper execution state."""
 
     paper_only: bool = True
     strategy_lane: dict[str, Any] = Field(default_factory=dict)
     prediction_lane: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: ResearchDiagnostics = Field(default_factory=ResearchDiagnostics)
 
 
 class ResearchStrategyPage(FlexibleResponse):

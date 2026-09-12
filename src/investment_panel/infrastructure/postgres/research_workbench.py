@@ -9,6 +9,7 @@ import json
 from typing import Any
 from uuid import UUID
 
+from investment_panel.core.continuous_advisor import SCORING_VERSION
 from investment_panel.infrastructure.postgres.continuous_advisor import (
     ContinuousAdvisorRepository,
 )
@@ -17,6 +18,18 @@ from investment_panel.infrastructure.postgres.runtime import API_PROFILE, Databa
 
 MAX_ROWS = 200
 CALCULATION_VERSION = "research-workbench.v1"
+DIAGNOSTICS_VERSION = "research-diagnostics.v1"
+CURRENT_BRIER_EXPRESSION = """
+    power(
+        claim.probability - CASE
+            WHEN claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS TRUE THEN 1.0
+            WHEN claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS FALSE THEN 0.0
+            WHEN claim.claim_kind <> 'invalidation' AND outcome.correct IS TRUE THEN 1.0
+            WHEN claim.claim_kind <> 'invalidation' AND outcome.correct IS FALSE THEN 0.0
+        END,
+        2
+    )
+"""
 
 
 class ResearchWorkbenchRepository:
@@ -252,6 +265,52 @@ class ResearchWorkbenchRepository:
                 """,
                 scope_params,
             ).fetchone()
+            quality = connection.execute(
+                f"""
+                SELECT count(*) FILTER (
+                           WHERE outcome.status = 'resolved' AND outcome.evidence_valid
+                       ) AS valid_resolved_claims,
+                       count(*) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND (
+                                 (claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS NOT NULL)
+                                 OR (claim.claim_kind <> 'invalidation' AND outcome.correct IS NOT NULL)
+                             )
+                       ) AS brier_sample_count,
+                       avg({CURRENT_BRIER_EXPRESSION}) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND (
+                                 (claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS NOT NULL)
+                                 OR (claim.claim_kind <> 'invalidation' AND outcome.correct IS NOT NULL)
+                             )
+                       ) AS brier_score,
+                       avg(CASE WHEN outcome.correct THEN 1.0 ELSE 0.0 END) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND claim.claim_kind <> 'invalidation'
+                             AND outcome.correct IS NOT NULL
+                       ) AS directional_accuracy,
+                       avg(CASE WHEN outcome.invalidation_correct THEN 1.0 ELSE 0.0 END) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND claim.claim_kind = 'invalidation'
+                             AND outcome.invalidation_correct IS NOT NULL
+                       ) AS invalidation_accuracy,
+                       avg(CASE WHEN outcome.invalidation_actual THEN 1.0 ELSE 0.0 END) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND claim.claim_kind = 'invalidation'
+                             AND outcome.invalidation_actual IS NOT NULL
+                       ) AS invalidation_event_rate
+                FROM analysis.continuous_advisor_forecast_claim claim
+                JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
+                LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
+                WHERE {' AND '.join(scope_filters)}
+                """,
+                scope_params,
+            ).fetchone()
             rows = connection.execute(
                 f"""
                 SELECT claim.id::text AS claim_id, claim.claim_key, claim.claim_kind,
@@ -263,7 +322,9 @@ class ResearchWorkbenchRepository:
                        response.reasoning_effort, response.id::text AS response_id,
                        outcome.status AS outcome_status, outcome.resolved_at,
                        outcome.measured_through, outcome.actual_return, outcome.excess_return,
-                       outcome.actual_direction, outcome.correct, outcome.calibration_error,
+                       outcome.actual_direction, outcome.correct,
+                       outcome.calibration_error AS stored_calibration_error,
+                       {CURRENT_BRIER_EXPRESSION} AS calibration_error,
                        outcome.invalidation_actual, outcome.invalidation_correct,
                        outcome.evidence_valid, outcome.metadata AS outcome_metadata,
                        attempt.status AS last_attempt_status, attempt.reason AS last_attempt_reason,
@@ -288,9 +349,10 @@ class ResearchWorkbenchRepository:
         for row in rows:
             claim = dict(row)
             claim["maturity_state"] = _claim_state(claim)
-            claim["scoring_version"] = _scoring_version(claim)
+            claim["stored_scoring_version"] = _scoring_version(claim)
+            claim["scoring_version"] = SCORING_VERSION
             claim_rows.append(claim)
-        return _page(
+        payload = _page(
             claim_rows,
             total=int(count["total"] or 0),
             eligible=int(count["eligible"] or 0),
@@ -299,6 +361,22 @@ class ResearchWorkbenchRepository:
             watermark=count["source_watermark"],
             scope={"symbol": symbol.strip().upper() if symbol else None, "prompt_version": prompt_version, "limit": safe_limit},
         )
+        quality_row = dict(quality)
+        brier_score = quality_row.get("brier_score")
+        payload["quality"] = _jsonable({
+            "status": "available" if int(quality_row.get("valid_resolved_claims") or 0) else "insufficient_evidence",
+            "scoring_version": SCORING_VERSION,
+            "valid_resolved_claims": int(quality_row.get("valid_resolved_claims") or 0),
+            "brier_sample_count": int(quality_row.get("brier_sample_count") or 0),
+            "brier_score": brier_score,
+            "calibration_score": 1 - brier_score if brier_score is not None else None,
+            "directional_accuracy": quality_row.get("directional_accuracy"),
+            "invalidation_accuracy": quality_row.get("invalidation_accuracy"),
+            "invalidation_event_rate": quality_row.get("invalidation_event_rate"),
+            "coverage": (int(count["eligible"] or 0) / int(count["total"] or 1)) if count["total"] else None,
+            "quality_score_basis": "display metrics are separate from weighted promotion quality samples",
+        })
+        return payload
 
     def forecast_claim(self, claim_id: str) -> dict[str, Any] | None:
         try:
@@ -307,7 +385,7 @@ class ResearchWorkbenchRepository:
             return None
         with self.runtime.snapshot(API_PROFILE) as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT claim.id::text AS claim_id, claim.claim_key, claim.claim_kind,
                        claim.symbol, claim.statement, claim.direction, claim.probability,
                        claim.target, claim.horizon, claim.evidence_refs, claim.claim,
@@ -320,7 +398,9 @@ class ResearchWorkbenchRepository:
                        outcome.id::text AS outcome_id, outcome.status AS outcome_status,
                        outcome.resolved_at, outcome.measured_through, outcome.actual_return,
                        outcome.excess_return, outcome.actual_direction, outcome.correct,
-                       outcome.calibration_error, outcome.invalidation_actual,
+                       outcome.calibration_error AS stored_calibration_error,
+                       {CURRENT_BRIER_EXPRESSION} AS calibration_error,
+                       outcome.invalidation_actual,
                        outcome.invalidation_correct, outcome.evidence_valid,
                        outcome.metadata AS outcome_metadata
                 FROM analysis.continuous_advisor_forecast_claim claim
@@ -350,7 +430,8 @@ class ResearchWorkbenchRepository:
             payload["last_attempt_reason"] = attempts[0]["reason"]
             payload["last_attempt_at"] = attempts[0]["created_at"]
         payload["maturity_state"] = _claim_state(payload)
-        payload["scoring_version"] = _scoring_version(payload)
+        payload["stored_scoring_version"] = _scoring_version(payload)
+        payload["scoring_version"] = SCORING_VERSION
         payload["as_of"] = datetime.now(UTC)
         payload["scope"] = {"claim_id": normalized}
         return payload
@@ -680,6 +761,379 @@ class ResearchWorkbenchRepository:
             ).fetchall()
         return _jsonable([dict(row) for row in rows])
 
+    def diagnostics(self) -> dict[str, Any]:
+        """Expose bounded post-core diagnostics from authoritative evidence.
+
+        These are descriptive read models.  They do not turn a counterfactual
+        return gap into causal attribution or treat sparse slices as drift.
+        """
+        with self.runtime.snapshot(API_PROFILE) as connection:
+            quality = connection.execute(
+                """
+                SELECT count(*) FILTER (WHERE outcome.state = 'resolved') AS resolved_outcome_count,
+                       count(DISTINCT outcome.ticker_decision_id)
+                           FILTER (WHERE outcome.state = 'resolved') AS independent_episode_count,
+                       count(DISTINCT (outcome.ticker_decision_id, outcome.horizon, outcome.horizon_sessions))
+                           FILTER (WHERE outcome.state = 'resolved') AS independent_horizon_episode_count,
+                       count(*) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND outcome.selected_return IS NOT NULL
+                             AND outcome.stock_counterfactual_return IS NOT NULL
+                       ) AS comparable_counterfactual_count,
+                       count(*) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND (outcome.error_type IS NOT NULL OR outcome.mistake_card <> '{}'::jsonb)
+                       ) AS explicitly_diagnosed_count,
+                       count(*) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND outcome.selected_return IS NOT NULL
+                             AND outcome.stock_counterfactual_return IS NOT NULL
+                             AND outcome.selected_return > outcome.stock_counterfactual_return
+                       ) AS selected_outperformed_counterfactual_count,
+                       count(*) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND outcome.selected_return IS NOT NULL
+                             AND outcome.stock_counterfactual_return IS NOT NULL
+                             AND outcome.selected_return < outcome.stock_counterfactual_return
+                       ) AS selected_underperformed_counterfactual_count,
+                       count(*) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND (decision.capital_action->>'action') IN ('AVOID', 'WAIT_FOR_PRICE')
+                             AND outcome.stock_counterfactual_return > 0
+                       ) AS avoided_winner_count,
+                       avg(outcome.selected_return) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND outcome.selected_return IS NOT NULL
+                             AND outcome.stock_counterfactual_return IS NOT NULL
+                       ) AS mean_selected_return,
+                       avg(outcome.stock_counterfactual_return) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND outcome.selected_return IS NOT NULL
+                             AND outcome.stock_counterfactual_return IS NOT NULL
+                       ) AS mean_stock_counterfactual_return,
+                       avg(outcome.selected_return - outcome.stock_counterfactual_return) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND outcome.selected_return IS NOT NULL
+                             AND outcome.stock_counterfactual_return IS NOT NULL
+                       ) AS mean_selection_delta,
+                       percentile_cont(0.5) WITHIN GROUP (
+                           ORDER BY outcome.selected_return - outcome.stock_counterfactual_return
+                       ) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND outcome.selected_return IS NOT NULL
+                             AND outcome.stock_counterfactual_return IS NOT NULL
+                       ) AS median_selection_delta,
+                       avg(
+                           outcome.selected_return
+                           - CASE
+                               WHEN (outcome.metadata->>'cost_adjusted_selected_return') ~ '^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+                               THEN (outcome.metadata->>'cost_adjusted_selected_return')::double precision
+                             END
+                       ) FILTER (
+                           WHERE outcome.state = 'resolved'
+                             AND outcome.selected_return IS NOT NULL
+                             AND (outcome.metadata->>'cost_adjusted_selected_return') ~ '^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+                       ) AS mean_modeled_cost_delta
+                FROM analysis.ticker_outcome outcome
+                JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+                WHERE outcome.metadata->>'plan_authority' = 'canonical'
+                  AND NULLIF(outcome.metadata->>'plan_blocker', '') IS NULL
+                  AND outcome.available_at <= now()
+                """
+            ).fetchone()
+            states = connection.execute(
+                """
+                SELECT state, count(*) AS count
+                FROM analysis.ticker_outcome
+                WHERE metadata->>'plan_authority' = 'canonical'
+                  AND NULLIF(metadata->>'plan_blocker', '') IS NULL
+                  AND available_at <= now()
+                GROUP BY state
+                ORDER BY state
+                """
+            ).fetchall()
+            quality_cases = connection.execute(
+                """
+                SELECT outcome.id::text AS outcome_id, decision.id::text AS decision_id,
+                       instrument.symbol, outcome.horizon, outcome.horizon_sessions,
+                       decision.as_of, decision.capital_action->>'action' AS action,
+                       outcome.selected_return, outcome.stock_counterfactual_return,
+                       outcome.selected_return - outcome.stock_counterfactual_return AS selection_delta,
+                       outcome.error_type, outcome.mistake_card,
+                       outcome.metadata->>'regime_slice' AS regime_slice,
+                       outcome.metadata->>'sector_slice' AS sector_slice
+                FROM analysis.ticker_outcome outcome
+                JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                WHERE outcome.metadata->>'plan_authority' = 'canonical'
+                  AND NULLIF(outcome.metadata->>'plan_blocker', '') IS NULL
+                  AND outcome.state = 'resolved'
+                  AND outcome.available_at <= now()
+                  AND outcome.selected_return IS NOT NULL
+                  AND outcome.stock_counterfactual_return IS NOT NULL
+                ORDER BY abs(outcome.selected_return - outcome.stock_counterfactual_return) DESC,
+                         outcome.updated_at DESC
+                LIMIT %s
+                """,
+                [MAX_ROWS // 4],
+            ).fetchall()
+            universe = connection.execute(
+                """
+                WITH observed AS (
+                    SELECT *,
+                           (
+                               (outcome->>'selected_return') ~ '^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+                               OR (outcome->>'stock_counterfactual_return') ~ '^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+                               OR (outcome->>'realized_return') ~ '^[+-]?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+                           ) AS has_return_observation,
+                           jsonb_typeof(outcome->'executable_exit_policy') = 'object'
+                               AND outcome->'executable_exit_policy' <> '{}'::jsonb AS has_executable_exit_policy
+                    FROM analysis.universe_observation
+                    WHERE available_at <= now() AND observed_at <= now()
+                )
+                SELECT count(*) AS total_observations,
+                       count(*) FILTER (WHERE eligible) AS eligible_observations,
+                       count(*) FILTER (WHERE NOT eligible) AS excluded_observations,
+                       count(*) FILTER (WHERE NOT eligible AND outcome <> '{}'::jsonb) AS excluded_with_observation,
+                       count(*) FILTER (WHERE NOT eligible AND has_return_observation) AS excluded_with_return_observation,
+                       count(*) FILTER (WHERE NOT eligible AND has_return_observation AND has_executable_exit_policy) AS excluded_with_executable_outcome,
+                       count(DISTINCT research_trial_id) AS trial_count
+                FROM observed
+                """
+            ).fetchone()
+            exclusion_reasons = connection.execute(
+                """
+                SELECT coalesce(nullif(exclusion_reason, ''), 'unlabeled') AS reason,
+                       count(*) AS count
+                FROM analysis.universe_observation
+                WHERE NOT eligible AND available_at <= now() AND observed_at <= now()
+                GROUP BY coalesce(nullif(exclusion_reason, ''), 'unlabeled')
+                ORDER BY count DESC, reason
+                LIMIT 20
+                """
+            ).fetchall()
+            agent = connection.execute(
+                """
+                SELECT count(*) AS run_count,
+                       count(*) FILTER (WHERE status = 'succeeded') AS succeeded_run_count,
+                       coalesce(sum(input_tokens), 0) AS input_tokens,
+                       coalesce(sum(output_tokens), 0) AS output_tokens,
+                       coalesce(sum(cost_usd), 0) AS priced_cost_usd,
+                       count(*) FILTER (WHERE cost_usd IS NULL) AS unpriced_cost_run_count,
+                       avg(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) AS mean_latency_ms,
+                       percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                           FILTER (WHERE latency_ms IS NOT NULL) AS p95_latency_ms,
+                       max(coalesce(finished_at, started_at)) AS source_watermark
+                FROM analysis.agent_run
+                WHERE started_at <= now()
+                """
+            ).fetchone()
+            advisor = connection.execute(
+                """
+                SELECT
+                    (SELECT count(*) FROM analysis.continuous_advisor_response WHERE created_at <= now()) AS response_count,
+                    (SELECT count(*) FROM analysis.continuous_advisor_response
+                     WHERE status = 'succeeded' AND created_at <= now()) AS succeeded_response_count,
+                    (SELECT count(*) FROM analysis.continuous_advisor_forecast_outcome
+                     WHERE status = 'resolved' AND evidence_valid AND created_at <= now()) AS valid_resolved_forecast_count,
+                    (SELECT coalesce(sum(input_tokens), 0) FROM analysis.continuous_advisor_response
+                     WHERE created_at <= now()) AS input_tokens,
+                    (SELECT coalesce(sum(output_tokens), 0) FROM analysis.continuous_advisor_response
+                     WHERE created_at <= now()) AS output_tokens,
+                    (SELECT coalesce(sum(cost_usd), 0) FROM analysis.continuous_advisor_response
+                     WHERE created_at <= now()) AS priced_cost_usd,
+                    (SELECT count(*) FROM analysis.continuous_advisor_response
+                     WHERE cost_usd IS NULL AND created_at <= now()) AS unpriced_cost_response_count,
+                    (SELECT avg(latency_ms) FROM analysis.continuous_advisor_response
+                     WHERE latency_ms IS NOT NULL AND created_at <= now()) AS mean_latency_ms,
+                    (SELECT max(greatest(created_at, coalesce(finished_at, created_at)))
+                     FROM analysis.continuous_advisor_response
+                     WHERE created_at <= now()) AS source_watermark
+                """
+            ).fetchone()
+            regimes = connection.execute(
+                """
+                SELECT coalesce(nullif(outcome.metadata->>'regime_slice', ''), 'unknown') AS regime,
+                       count(DISTINCT outcome.ticker_decision_id) AS independent_episode_count,
+                       count(*) AS outcome_count,
+                       avg(outcome.selected_return) FILTER (WHERE outcome.selected_return IS NOT NULL) AS mean_selected_return,
+                       avg(outcome.stock_counterfactual_return)
+                           FILTER (WHERE outcome.stock_counterfactual_return IS NOT NULL) AS mean_stock_counterfactual_return
+                FROM analysis.ticker_outcome outcome
+                WHERE outcome.metadata->>'plan_authority' = 'canonical'
+                  AND NULLIF(outcome.metadata->>'plan_blocker', '') IS NULL
+                  AND outcome.state = 'resolved'
+                  AND outcome.available_at <= now()
+                GROUP BY coalesce(nullif(outcome.metadata->>'regime_slice', ''), 'unknown')
+                ORDER BY independent_episode_count DESC, regime
+                LIMIT 20
+                """
+            ).fetchall()
+            symbols = connection.execute(
+                """
+                SELECT instrument.symbol,
+                       count(DISTINCT outcome.ticker_decision_id) AS independent_episode_count,
+                       count(*) AS outcome_count
+                FROM analysis.ticker_outcome outcome
+                JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                WHERE outcome.metadata->>'plan_authority' = 'canonical'
+                  AND NULLIF(outcome.metadata->>'plan_blocker', '') IS NULL
+                  AND outcome.state = 'resolved'
+                  AND outcome.available_at <= now()
+                GROUP BY instrument.symbol
+                ORDER BY independent_episode_count DESC, instrument.symbol
+                LIMIT 20
+                """
+            ).fetchall()
+            watermark = connection.execute(
+                """
+                SELECT max(value) AS source_watermark
+                FROM (VALUES
+                    ((SELECT max(updated_at)
+                      FROM analysis.ticker_outcome
+                      WHERE metadata->>'plan_authority' = 'canonical'
+                        AND NULLIF(metadata->>'plan_blocker', '') IS NULL
+                        AND available_at <= now())),
+                    ((SELECT max(greatest(observed_at, available_at))
+                      FROM analysis.universe_observation
+                      WHERE observed_at <= now() AND available_at <= now())),
+                    ((SELECT max(coalesce(finished_at, started_at))
+                      FROM analysis.agent_run
+                      WHERE started_at <= now())),
+                    ((SELECT max(greatest(created_at, coalesce(finished_at, created_at)))
+                      FROM analysis.continuous_advisor_response
+                      WHERE created_at <= now())),
+                    ((SELECT max(greatest(created_at, coalesce(resolved_at, created_at)))
+                      FROM analysis.continuous_advisor_forecast_outcome
+                      WHERE created_at <= now() AND status = 'resolved' AND evidence_valid))
+                ) values(value)
+                """
+            ).fetchone()["source_watermark"]
+
+        quality_row = dict(quality)
+        quality_count = int(quality_row.get("comparable_counterfactual_count") or 0)
+        quality_payload = {
+            "status": "available" if quality_count else "insufficient_evidence",
+            "methodology": "Descriptive canonical outcome versus declared counterfactual comparison; causal luck attribution is not inferred.",
+            "counts": {
+                key: int(quality_row.get(key) or 0)
+                for key in (
+                    "resolved_outcome_count", "independent_episode_count",
+                    "independent_horizon_episode_count", "comparable_counterfactual_count",
+                    "explicitly_diagnosed_count", "selected_outperformed_counterfactual_count",
+                    "selected_underperformed_counterfactual_count", "avoided_winner_count",
+                )
+            },
+            "mean_selected_return": quality_row.get("mean_selected_return"),
+            "mean_stock_counterfactual_return": quality_row.get("mean_stock_counterfactual_return"),
+            "mean_selection_delta": quality_row.get("mean_selection_delta"),
+            "median_selection_delta": quality_row.get("median_selection_delta"),
+            "mean_modeled_cost_delta": quality_row.get("mean_modeled_cost_delta"),
+            "outcome_states": {str(row["state"]): int(row["count"] or 0) for row in states},
+            "cases": [_diagnostic_case(dict(row)) for row in quality_cases],
+            "missing_evidence_reasons": [] if quality_count else ["comparable_canonical_outcomes_unavailable"],
+        }
+        universe_row = dict(universe)
+        total_universe = int(universe_row.get("total_observations") or 0)
+        excluded = int(universe_row.get("excluded_observations") or 0)
+        excluded_with_executable = int(universe_row.get("excluded_with_executable_outcome") or 0)
+        rejected_payload = {
+            "status": "available" if total_universe else "no_research_universe",
+            "methodology": "Rejected-universe counts use persisted eligibility and exclusion reasons. Counterfactual winner/loser labels require an explicit executable outcome on the rejected row.",
+            "counts": {
+                key: int(universe_row.get(key) or 0)
+                for key in (
+                    "total_observations", "eligible_observations", "excluded_observations",
+                    "excluded_with_observation", "excluded_with_return_observation",
+                    "excluded_with_executable_outcome", "trial_count",
+                )
+            },
+            "coverage": (1 - excluded / total_universe) if total_universe else None,
+            "exclusion_reasons": _jsonable([dict(row) for row in exclusion_reasons]),
+            "missing_evidence_reasons": (
+                []
+                if excluded == excluded_with_executable
+                else ["rejected_executable_exit_policy_outcomes_incomplete"]
+            ),
+        }
+        efficiency_payload = {
+            "status": "available" if int(agent["run_count"] or 0) or int(advisor["response_count"] or 0) else "no_runs",
+            "agent_runs": _jsonable(dict(agent)),
+            "advisor_responses": _jsonable(dict(advisor)),
+            "methodology": "Telemetry is reported separately for agent runs and continuous-advisor responses; priced cost excludes rows whose provider cost is missing.",
+        }
+        total_regime_episodes = int(quality_row.get("independent_episode_count") or 0)
+        concentration_rows = []
+        for row in symbols:
+            item = dict(row)
+            count = int(item.get("independent_episode_count") or 0)
+            item["episode_share"] = count / total_regime_episodes if total_regime_episodes else None
+            concentration_rows.append(item)
+        drift_payload = {
+            "status": "available" if total_regime_episodes else "insufficient_evidence",
+            "methodology": "Descriptive resolved-outcome slices by declared regime and independent decision episode; no drift or annualized risk claim is made from sparse history.",
+            "independent_episode_count": total_regime_episodes,
+            "regimes": _jsonable([dict(row) for row in regimes]),
+            "symbol_concentration": _jsonable(concentration_rows),
+            "missing_evidence_reasons": [] if total_regime_episodes else ["resolved_regime_history_unavailable"],
+        }
+        components = [
+            {
+                "name": "research_universe_coverage",
+                "value": rejected_payload["coverage"],
+                "status": "available" if total_universe else "unavailable",
+                "basis": "eligible observations divided by persisted research-universe observations",
+            },
+            {
+                "name": "selection_vs_declared_counterfactual",
+                "value": quality_row.get("mean_selection_delta"),
+                "status": "available" if quality_count else "unavailable",
+                "basis": "mean selected return minus declared stock counterfactual return",
+            },
+            {
+                "name": "modeled_cost_drag",
+                "value": quality_row.get("mean_modeled_cost_delta"),
+                "status": "available" if quality_row.get("mean_modeled_cost_delta") is not None else "unavailable",
+                "basis": "gross selected return minus persisted modeled-cost selected return",
+            },
+            {
+                "name": "sizing_and_exit_effect",
+                "value": None,
+                "status": "unavailable",
+                "basis": "requires a matched counterfactual with the executable sizing and exit policy",
+            },
+        ]
+        efficiency_count = int(agent["run_count"] or 0) + int(advisor["response_count"] or 0)
+        evidence_present = bool(quality_count or total_universe or efficiency_count)
+        rejected_evidence_complete = (
+            excluded == 0
+            or excluded == excluded_with_executable
+        )
+        quality_status = (
+            "empty"
+            if not evidence_present
+            else "complete"
+            if quality_count and total_universe and rejected_evidence_complete
+            else "partial"
+        )
+        return _jsonable({
+            "as_of": datetime.now(UTC),
+            "source_watermark": watermark,
+            "calculation_version": DIAGNOSTICS_VERSION,
+            "scope": {"all_available_research_evidence": True},
+            "quality_status": quality_status,
+            "decision_quality": quality_payload,
+            "rejected_opportunities": rejected_payload,
+            "edge_waterfall": {
+                "status": "diagnostic",
+                "methodology": "Components are evidence-backed where available; unavailable components remain gaps rather than zero contribution.",
+                "components": components,
+            },
+            "research_efficiency": efficiency_payload,
+            "drift_concentration": drift_payload,
+        })
+
     def artifact(self, artifact_id: str) -> dict[str, Any] | None:
         normalized = artifact_id.strip()
         if not normalized or len(normalized) > 200 or any(ord(char) < 32 for char in normalized):
@@ -816,6 +1270,22 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, UUID):
         return str(value)
     return value
+
+
+def _diagnostic_case(row: dict[str, Any]) -> dict[str, Any]:
+    if row.get("error_type") or row.get("mistake_card"):
+        assessment = "explicitly_diagnosed"
+    elif row.get("selection_delta") is not None and row["selection_delta"] > 0:
+        assessment = "selected_outperformed_counterfactual"
+    elif row.get("selection_delta") is not None and row["selection_delta"] < 0:
+        assessment = "selected_underperformed_counterfactual"
+    else:
+        assessment = "no_comparable_gap"
+    return {
+        **_jsonable(row),
+        "assessment": assessment,
+        "causal_luck_inference": "not_available",
+    }
 
 
 def _hash(value: Any) -> str:

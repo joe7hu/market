@@ -3993,6 +3993,9 @@
         "additionalProperties": true,
         "description": "Research lanes and their blockers, separate from paper execution state.",
         "properties": {
+          "diagnostics": {
+            "$ref": "#/components/schemas/ResearchDiagnostics"
+          },
           "paper_only": {
             "default": true,
             "title": "Paper Only",
@@ -12877,6 +12880,84 @@
           }
         },
         "title": "ResearchClaimPage",
+        "type": "object"
+      },
+      "ResearchDiagnostics": {
+        "additionalProperties": true,
+        "description": "Descriptive post-core diagnostics with explicit evidence ceilings.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "calculation_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calculation Version"
+          },
+          "decision_quality": {
+            "additionalProperties": true,
+            "title": "Decision Quality",
+            "type": "object"
+          },
+          "drift_concentration": {
+            "additionalProperties": true,
+            "title": "Drift Concentration",
+            "type": "object"
+          },
+          "edge_waterfall": {
+            "additionalProperties": true,
+            "title": "Edge Waterfall",
+            "type": "object"
+          },
+          "quality_status": {
+            "default": "empty",
+            "title": "Quality Status",
+            "type": "string"
+          },
+          "rejected_opportunities": {
+            "additionalProperties": true,
+            "title": "Rejected Opportunities",
+            "type": "object"
+          },
+          "research_efficiency": {
+            "additionalProperties": true,
+            "title": "Research Efficiency",
+            "type": "object"
+          },
+          "scope": {
+            "additionalProperties": true,
+            "title": "Scope",
+            "type": "object"
+          },
+          "source_watermark": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Watermark"
+          }
+        },
+        "title": "ResearchDiagnostics",
         "type": "object"
       },
       "ResearchEvaluationResponse": {

@@ -4,7 +4,7 @@ import { getJson } from "../apiTransport";
 type ApiSchema = components["schemas"];
 
 export type ResearchStrategyPage = ApiSchema["ResearchStrategyPage"] & { rows: Array<Record<string, any>> };
-export type ResearchClaimPage = ApiSchema["ResearchClaimPage"] & { rows: Array<Record<string, any>> };
+export type ResearchClaimPage = ApiSchema["ResearchClaimPage"] & { rows: Array<Record<string, any>>; quality?: Record<string, any> };
 export type ResearchPromptPage = ApiSchema["ResearchPromptPage"] & { rows: Array<Record<string, any>> };
 export type ResearchExperimentPage = ApiSchema["ResearchExperimentPage"] & { rows: Array<Record<string, any>> };
 export type ResearchEventPage = ApiSchema["ResearchEventPage"] & { rows: Array<Record<string, any>> };

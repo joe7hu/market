@@ -3355,6 +3355,7 @@ export interface components {
          * @description Research lanes and their blockers, separate from paper execution state.
          */
         LearningOverview: {
+            diagnostics?: components["schemas"]["ResearchDiagnostics"];
             /**
              * Paper Only
              * @default true
@@ -6270,6 +6271,49 @@ export interface components {
             rows?: {
                 [key: string]: unknown;
             }[];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ResearchDiagnostics
+         * @description Descriptive post-core diagnostics with explicit evidence ceilings.
+         */
+        ResearchDiagnostics: {
+            /** As Of */
+            as_of?: string | null;
+            /** Calculation Version */
+            calculation_version?: string | null;
+            /** Decision Quality */
+            decision_quality?: {
+                [key: string]: unknown;
+            };
+            /** Drift Concentration */
+            drift_concentration?: {
+                [key: string]: unknown;
+            };
+            /** Edge Waterfall */
+            edge_waterfall?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Quality Status
+             * @default empty
+             */
+            quality_status: string;
+            /** Rejected Opportunities */
+            rejected_opportunities?: {
+                [key: string]: unknown;
+            };
+            /** Research Efficiency */
+            research_efficiency?: {
+                [key: string]: unknown;
+            };
+            /** Scope */
+            scope?: {
+                [key: string]: unknown;
+            };
+            /** Source Watermark */
+            source_watermark?: string | null;
         } & {
             [key: string]: unknown;
         };

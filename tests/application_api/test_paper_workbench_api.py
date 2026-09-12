@@ -33,3 +33,4 @@ def test_paper_and_research_workbench_routes_are_read_only_and_truthful_on_empty
     assert research.status_code == 200
     assert research.json()["paper_only"] is True
     assert research.json()["strategy_lane"]["status"] == "no_paper_fills"
+    assert research.json()["diagnostics"]["quality_status"] == "empty"
