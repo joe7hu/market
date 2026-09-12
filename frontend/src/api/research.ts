@@ -47,3 +47,11 @@ export function loadResearchExperiment(experimentId: string, signal?: AbortSigna
 export function loadResearchEvents(signal?: AbortSignal): Promise<ResearchEventPage> {
   return getJson<ResearchEventPage>("/api/research/events", signal);
 }
+
+export function loadResearchRun(runId: string, signal?: AbortSignal): Promise<Record<string, any>> {
+  return getJson(`/api/research/runs/${encodeURIComponent(runId)}`, signal);
+}
+
+export function loadResearchArtifact(artifactId: string, signal?: AbortSignal): Promise<Record<string, any>> {
+  return getJson(`/api/research/artifacts/${encodeURIComponent(artifactId)}`, signal);
+}

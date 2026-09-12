@@ -42,9 +42,23 @@ def paper_performance(
         dependencies.get_paper_workbench
     ),
 ) -> dict[str, Any]:
-    return repository.performance(
+    payload = repository.performance(
         symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
     )
+    rows = payload.get("trades") or []
+    scope_id = (payload.get("scope") or {}).get("scope_id")
+    payload["next_cursor"] = (
+        _encode_cursor(
+            rows[-1]["staged_at"],
+            rows[-1]["paper_order_id"],
+            snapshot_at=payload.get("as_of"),
+            snapshot_id=payload.get("snapshot_id"),
+            scope_id=scope_id,
+        )
+        if rows and payload.get("counts", {}).get("total_orders", 0) > len(rows)
+        else None
+    )
+    return payload
 
 
 @router.get(
@@ -71,15 +85,26 @@ def paper_trades(
             limit=limit,
             cursor=decoded,
         )
+        if decoded and decoded[3] is not None and payload.get("snapshot_id") != decoded[3]:
+            raise ValueError("Paper trade snapshot is no longer available; reload the scope")
+        if decoded and decoded[4] is not None and (payload.get("scope") or {}).get("scope_id") != decoded[4]:
+            raise ValueError("Paper trade cursor does not match the requested scope")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     rows = payload.pop("rows")
+    has_more = bool(payload.pop("has_more", False))
     next_cursor = (
-        _encode_cursor(rows[-1]["staged_at"], rows[-1]["paper_order_id"])
-        if len(rows) == limit
+        _encode_cursor(
+            rows[-1]["staged_at"],
+            rows[-1]["paper_order_id"],
+            snapshot_at=payload.get("as_of"),
+            snapshot_id=payload.get("snapshot_id"),
+            scope_id=(payload.get("scope") or {}).get("scope_id"),
+        )
+        if rows and has_more
         else None
     )
-    return {**payload, "rows": rows, "next_cursor": next_cursor}
+    return {**payload, "rows": rows, "next_cursor": next_cursor, "has_more": has_more}
 
 
 @router.get("/api/paper/trades/export")
@@ -112,7 +137,12 @@ def paper_trades_export(
     writer.writeheader()
     for row in payload["rows"]:
         writer.writerow({field: row.get(field) for field in fields})
-    headers = {"Content-Disposition": "attachment; filename=market-paper-trades.csv"}
+    headers = {
+        "Content-Disposition": "attachment; filename=market-paper-trades.csv",
+        "X-Market-Snapshot-Id": str(payload.get("snapshot_id") or ""),
+        "X-Market-As-Of": str(payload.get("as_of") or ""),
+        "X-Market-Source-Watermark": str(payload.get("source_watermark") or ""),
+    }
     if payload["total"] > len(payload["rows"]):
         headers["X-Market-Export-Limit"] = str(len(payload["rows"]))
     return Response(content=output.getvalue(), media_type="text/csv", headers=headers)
@@ -156,6 +186,7 @@ def research_overview(
     ),
 ) -> dict[str, Any]:
     performance = repository.performance()
+    performance.pop("trades", None)
     advisor = continuous_owner.overview(config)
     strategy_page = research_repository.strategy_revisions(limit=200)
     strategy_rows = strategy_page["rows"]
@@ -225,7 +256,7 @@ def _strategy_lane(
     auto_promotion: bool,
 ) -> dict[str, Any]:
     if challenger:
-        status = "awaiting_human_review"
+        status = "awaiting_human_review" if challenger.get("status") == "approved" else "collecting_outcomes"
     elif active and int(active.get("evaluation_count") or 0) > 0:
         status = "monitoring"
     elif performance["counts"]["filled_orders"]:
@@ -255,7 +286,7 @@ def _research_actions(
     challenger_prompt: dict[str, Any],
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
-    if challenger_strategy:
+    if challenger_strategy and challenger_strategy.get("status") == "approved":
         actions.append({
             "kind": "strategy_review",
             "severity": "medium",
@@ -264,16 +295,7 @@ def _research_actions(
             "evidence": f"strategy_revision:{challenger_strategy.get('strategy_revision_id')}",
             "permitted_action": "human_review",
         })
-    if challenger_prompt:
-        actions.append({
-            "kind": "prompt_review",
-            "severity": "low",
-            "title": "Prompt challenger has a comparison record",
-            "explanation": "Review the matched cohort before any advisory-only prompt activation decision.",
-            "evidence": f"prompt:{challenger_prompt.get('version')}",
-            "permitted_action": "human_review",
-        })
-    if performance.get("missing_evidence_reasons"):
+    if performance.get("counts", {}).get("filled_orders", 0) and performance.get("missing_evidence_reasons"):
         actions.append({
             "kind": "paper_reconciliation",
             "severity": "high" if active_strategy else "medium",
@@ -285,14 +307,23 @@ def _research_actions(
     return actions
 
 
-def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
+def _decode_cursor(cursor: str | None) -> tuple[datetime, str, datetime | None, str | None, str | None] | None:
     if not cursor:
         return None
     try:
         raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
         payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError
         at = datetime.fromisoformat(str(payload["staged_at"]))
-        trade_id = str(payload["paper_order_id"])
+        trade_id = str(UUID(str(payload["paper_order_id"])))
+        snapshot_at = (
+            datetime.fromisoformat(str(payload["snapshot_at"]))
+            if payload.get("snapshot_at")
+            else None
+        )
+        snapshot_id = str(payload["snapshot_id"]) if payload.get("snapshot_id") else None
+        scope_id = str(payload["scope_id"]) if payload.get("scope_id") else None
     except (
         binascii.Error,
         KeyError,
@@ -302,14 +333,32 @@ def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
         json.JSONDecodeError,
     ) as exc:
         raise ValueError("Invalid paper trade cursor") from exc
-    if at.tzinfo is None or not trade_id:
+    if (
+        at.tzinfo is None
+        or snapshot_at is not None and snapshot_at.tzinfo is None
+        or snapshot_id is not None and not 1 <= len(snapshot_id) <= 128
+        or scope_id is not None and not 1 <= len(scope_id) <= 128
+    ):
         raise ValueError("Invalid paper trade cursor")
-    return at, trade_id
+    return at, trade_id, snapshot_at, snapshot_id, scope_id
 
 
-def _encode_cursor(staged_at: datetime, paper_order_id: str) -> str:
+def _encode_cursor(
+    staged_at: datetime,
+    paper_order_id: str,
+    *,
+    snapshot_at: datetime | None = None,
+    snapshot_id: str | None = None,
+    scope_id: str | None = None,
+) -> str:
     raw = json.dumps(
-        {"staged_at": staged_at.isoformat(), "paper_order_id": paper_order_id},
+        {
+            "staged_at": staged_at.isoformat(),
+            "paper_order_id": paper_order_id,
+            "snapshot_at": snapshot_at.isoformat() if snapshot_at else None,
+            "snapshot_id": snapshot_id,
+            "scope_id": scope_id,
+        },
         separators=(",", ":"),
     ).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")

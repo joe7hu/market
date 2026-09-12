@@ -5354,6 +5354,8 @@ export interface components {
             nav?: number | null;
             /** Net Pnl */
             net_pnl?: number | null;
+            /** Next Cursor */
+            next_cursor?: string | null;
             /** Quality Status */
             quality_status: string;
             /** Realized Pnl */
@@ -5374,6 +5376,8 @@ export interface components {
             snapshot_id?: string | null;
             /** Source Watermark */
             source_watermark?: string | null;
+            /** Trades */
+            trades?: components["schemas"]["PaperTradeSummary"][];
             /** Unrealized Pnl */
             unrealized_pnl?: number | null;
         } & {
@@ -5486,6 +5490,11 @@ export interface components {
         };
         /** PaperTradePage */
         PaperTradePage: {
+            /**
+             * Has More
+             * @default false
+             */
+            has_more: boolean;
             /** Next Cursor */
             next_cursor?: string | null;
             /** Rows */
@@ -6265,6 +6274,11 @@ export interface components {
             count?: {
                 [key: string]: number;
             };
+            /**
+             * Has More
+             * @default false
+             */
+            has_more: boolean;
             /** Next Cursor */
             next_cursor?: string | null;
             /** Rows */
@@ -6421,6 +6435,11 @@ export interface components {
             count?: {
                 [key: string]: number;
             };
+            /**
+             * Has More
+             * @default false
+             */
+            has_more: boolean;
             /** Next Cursor */
             next_cursor?: string | null;
             /** Rows */
@@ -6546,6 +6565,11 @@ export interface components {
             count?: {
                 [key: string]: number;
             };
+            /**
+             * Has More
+             * @default false
+             */
+            has_more: boolean;
             /** Next Cursor */
             next_cursor?: string | null;
             /** Rows */

@@ -37,22 +37,30 @@ class PaperWorkbenchRepository:
         strategy_revision: int | None = None,
         lifecycle: str | None = None,
         limit: int = 100,
-        cursor: tuple[datetime, str] | None = None,
+        cursor: tuple[datetime, str] | tuple[datetime, str, datetime] | None = None,
     ) -> dict[str, Any]:
         where, params = _where_clause(
             symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
         )
         scope_where, scope_params = list(where), list(params)
+        snapshot_at = cursor[2] if cursor and len(cursor) > 2 else None
+        if snapshot_at is not None:
+            _add_snapshot_filter(where, params, snapshot_at)
+            _add_snapshot_filter(scope_where, scope_params, snapshot_at)
         if cursor is not None:
             where.append("(paper.created_at, paper.id) < (%s, %s::uuid)")
             params.extend([cursor[0], cursor[1]])
-        rows, total, _pending, watermark, as_of = self._rows(
+        safe_limit = max(1, min(100, limit))
+        rows, total, _pending, _counts, watermark, as_of = self._rows(
             where,
             params,
-            limit=max(1, min(100, limit)),
+            limit=safe_limit + 1,
             count_where=scope_where,
             count_params=scope_params,
+            as_of=snapshot_at,
         )
+        has_more = len(rows) > safe_limit
+        rows = rows[:safe_limit]
         return {
             **_scope_payload(
                 symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
@@ -65,6 +73,7 @@ class PaperWorkbenchRepository:
                 strategy_revision=strategy_revision,
                 lifecycle=lifecycle,
                 watermark=watermark,
+                as_of=as_of,
             ),
             "counts": {
                 "total": total,
@@ -72,8 +81,9 @@ class PaperWorkbenchRepository:
                 "pending": _pending,
                 "excluded": 0,
             },
-            "quality_status": "complete" if len(rows) == total else "partial",
+            "quality_status": "complete" if not has_more and not cursor else "partial",
             "missing_evidence_reasons": _missing_reasons(rows),
+            "has_more": has_more,
             "rows": rows,
         }
 
@@ -89,7 +99,7 @@ class PaperWorkbenchRepository:
         where, params = _where_clause(
             symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
         )
-        rows, total, _pending, watermark, as_of = self._rows(
+        rows, total, _pending, _counts, watermark, as_of = self._rows(
             where, params, limit=MAX_PERFORMANCE_ROWS
         )
         return {
@@ -99,14 +109,21 @@ class PaperWorkbenchRepository:
             "as_of": as_of,
             "source_watermark": watermark,
             "calculation_version": CALCULATION_VERSION,
+            "snapshot_id": _snapshot_id(
+                symbol=symbol,
+                strategy_revision=strategy_revision,
+                lifecycle=lifecycle,
+                watermark=watermark,
+                as_of=as_of,
+            ),
             "total": total,
             "rows": rows,
         }
 
     def trade(self, trade_id: str) -> dict[str, Any] | None:
-        where = ["paper.id = %s::uuid"]
+        where = ["paper.id = %s::uuid", "paper.paper_only IS TRUE"]
         as_of = datetime.now(UTC)
-        with self.runtime.read(JOB_PROFILE) as connection:
+        with self.runtime.snapshot(JOB_PROFILE) as connection:
             row = connection.execute(self._select_sql(where), [trade_id]).fetchone()
             if row is None:
                 return None
@@ -133,11 +150,10 @@ class PaperWorkbenchRepository:
         where, params = _where_clause(
             symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
         )
-        rows, total, _pending, watermark, as_of = self._rows(
+        rows, total, _pending, counts, watermark, as_of = self._rows(
             where, params, limit=MAX_PERFORMANCE_ROWS
         )
         filled = [row for row in rows if row["filled_quantity"] > 0]
-        closed = [row for row in rows if row["lifecycle"] == "closed"]
         realized_rows = [row for row in rows if row["realized_pnl"] is not None]
         realized_eligible_rows = [row for row in rows if row["exited_quantity"] > 0]
         open_rows = [row for row in rows if row["remaining_quantity"] > 0]
@@ -181,13 +197,13 @@ class PaperWorkbenchRepository:
             missing.append("opening_capital_unavailable")
         if total > MAX_PERFORMANCE_ROWS:
             missing.append("performance_population_bounded_at_10000_rows")
-        realized_complete = len(realized_rows) == len(realized_eligible_rows)
+        realized_complete = total <= MAX_PERFORMANCE_ROWS and len(realized_rows) == len(realized_eligible_rows)
         known_realized = (
             _money(realized) if realized_rows or not realized_eligible_rows else None
         )
         known_unrealized = (
             _money(unrealized)
-            if not open_rows or len(unrealized_rows) == len(open_rows)
+            if total <= MAX_PERFORMANCE_ROWS and (not open_rows or len(unrealized_rows) == len(open_rows))
             else None
         )
         net_pnl = (
@@ -195,6 +211,7 @@ class PaperWorkbenchRepository:
             if realized_complete and known_unrealized is not None
             else None
         )
+        display_indices = paper_chart_indices(series, drawdown_series)
         mark_coverage = (
             sum(row.get("mark_value") is not None for row in open_rows) / len(open_rows)
             if open_rows
@@ -212,17 +229,17 @@ class PaperWorkbenchRepository:
                 strategy_revision=strategy_revision,
                 lifecycle=lifecycle,
                 watermark=watermark,
+                as_of=as_of,
             ),
+            "trades": [{key: value for key, value in row.items() if key not in {"decision", "execution", "outcome", "artifacts", "mark"}} for row in rows[:100]],
             "currency": "USD",
             "accounting_basis": "app.paper_order plus deterministic app.trade_journal fills, fees, and multiplier evidence",
             "counts": {
                 "total_orders": total,
-                "filled_orders": len(filled),
-                "closed_trades": len(closed),
-                "open_trades": sum(
-                    row["lifecycle"] in {"open", "partial_exited"} for row in rows
-                ),
-                "staged_orders": sum(row["lifecycle"] == "staged" for row in rows),
+                "filled_orders": counts["filled_orders"],
+                "closed_trades": counts["closed_trades"],
+                "open_trades": counts["open_trades"],
+                "staged_orders": counts["staged_orders"],
                 "realized_pnl_known": len(realized_rows),
                 "realized_pnl_unknown": max(
                     len(realized_eligible_rows) - len(realized_rows), 0
@@ -238,7 +255,7 @@ class PaperWorkbenchRepository:
             "return_pct": None,
             "drawdown": _money(max_drawdown) if series and realized_complete else None,
             "evidence_coverage": {
-                "filled_orders": len(filled),
+                "filled_orders": counts["filled_orders"],
                 "reconciled_orders": sum(
                     row["reconciliation_status"] == "verified" for row in filled
                 ),
@@ -256,8 +273,10 @@ class PaperWorkbenchRepository:
             "missing_evidence_reasons": sorted(set(missing)),
             "series": {
                 "kind": "cumulative_verified_realized_net_pnl",
-                "points": series,
-                "drawdown_points": drawdown_series if realized_complete else [],
+                "points": [series[index] for index in display_indices],
+                "full_resolution_point_count": len(series),
+                "display_method": "bucket_first_last_pnl_extremes_and_drawdown_trough.v1",
+                "drawdown_points": [drawdown_series[index] for index in display_indices] if realized_complete else [],
                 "available_series": ["cumulative_net_pnl", "drawdown"],
                 "annotations": [
                     {
@@ -290,12 +309,27 @@ class PaperWorkbenchRepository:
         limit: int,
         count_where: list[str] | None = None,
         count_params: list[Any] | None = None,
-    ) -> tuple[list[dict[str, Any]], int, int, datetime | None, datetime]:
-        as_of = datetime.now(UTC)
-        with self.runtime.read(JOB_PROFILE) as connection:
+        as_of: datetime | None = None,
+    ) -> tuple[list[dict[str, Any]], int, int, dict[str, int], datetime | None, datetime]:
+        as_of = as_of or datetime.now(UTC)
+        if as_of.tzinfo is None:
+            raise ValueError("paper workbench snapshot must be timezone-aware")
+        with self.runtime.snapshot(JOB_PROFILE) as connection:
             count_row = connection.execute(
                 f"""SELECT count(*) AS count,
                            count(*) FILTER (WHERE paper.status = ANY(%s::text[])) AS pending,
+                           count(*) FILTER (WHERE EXISTS (
+                               SELECT 1
+                               FROM app.trade_journal journal
+                               WHERE journal.details->>'paper_order_id' = paper.id::text
+                                 AND journal.decision_id IS NOT DISTINCT FROM paper.decision_id
+                                 AND journal.instrument_id = paper.instrument_id
+                                 AND journal.rationale = 'deterministic_options_paper_execution'
+                                 AND journal.action = 'paper_entry'
+                           )) AS filled_orders,
+                           count(*) FILTER (WHERE paper.status = ANY(ARRAY['closed', 'exited', 'invalidated']::text[])) AS closed_trades,
+                           count(*) FILTER (WHERE paper.status = ANY(ARRAY['open', 'entered', 'partial_exited']::text[])) AS open_trades,
+                           count(*) FILTER (WHERE paper.status = ANY(ARRAY['staged', 'pending', 'submitted', 'cancelled', 'rejected']::text[])) AS staged_orders,
                            max(greatest(paper.created_at, coalesce(paper.updated_at, paper.created_at))) AS source_watermark
                     FROM app.paper_order paper
                     JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
@@ -324,6 +358,12 @@ class PaperWorkbenchRepository:
             ],
             int(count_row["count"]),
             int(count_row["pending"]),
+            {
+                "filled_orders": int(count_row["filled_orders"]),
+                "closed_trades": int(count_row["closed_trades"]),
+                "open_trades": int(count_row["open_trades"]),
+                "staged_orders": int(count_row["staged_orders"]),
+            },
             _max_datetime(count_row["source_watermark"], mark_watermark),
             as_of,
         )
@@ -348,6 +388,9 @@ class PaperWorkbenchRepository:
                    paper.reserved_collateral,
                    paper.ticket_snapshot,
                    paper.policy_snapshot,
+                   paper.event_id,
+                   paper.event_signal_id,
+                   paper.ticker_decision_id,
                    paper.max_loss,
                    paper.planned_loss,
                    paper.strategy_family AS order_strategy_family,
@@ -489,6 +532,22 @@ class PaperWorkbenchRepository:
             ) legs ON TRUE
             {("WHERE " + " AND ".join(where)) if where else ""}
         """
+
+
+def paper_chart_indices(series: list[dict[str, Any]], drawdowns: list[dict[str, Any]], limit: int = 2000) -> list[int]:
+    """Bound display points while statistics continue using every journal event."""
+    limit = max(5, int(limit))
+    if len(series) <= limit:
+        return list(range(len(series)))
+    width = (len(series) + limit // 5 - 1) // (limit // 5)
+    selected: set[int] = set()
+    for start in range(0, len(series), width):
+        bucket = range(start, min(start + width, len(series)))
+        selected.update((bucket.start, bucket.stop - 1,
+                         min(bucket, key=lambda index: series[index]["cumulative_net_pnl"]),
+                         max(bucket, key=lambda index: series[index]["cumulative_net_pnl"]),
+                         min(bucket, key=lambda index: drawdowns[index]["drawdown"])))
+    return sorted(selected)
 
 
 def _current_marks(
@@ -689,6 +748,7 @@ def _snapshot_id(
     strategy_revision: int | None,
     lifecycle: str | None,
     watermark: datetime | None,
+    as_of: datetime | None = None,
 ) -> str:
     payload = {
         "scope": {
@@ -699,6 +759,7 @@ def _snapshot_id(
         "source_watermark": watermark.isoformat()
         if isinstance(watermark, datetime)
         else None,
+        "as_of": as_of.isoformat() if isinstance(as_of, datetime) else None,
         "calculation_version": CALCULATION_VERSION,
     }
     return hashlib.sha256(
@@ -709,6 +770,19 @@ def _snapshot_id(
 def _max_datetime(*values: Any) -> datetime | None:
     datetimes = [value for value in values if isinstance(value, datetime)]
     return max(datetimes) if datetimes else None
+
+
+def _add_snapshot_filter(
+    where: list[str], params: list[Any], snapshot_at: datetime
+) -> None:
+    """Keep cursor pages on the same visible paper-order snapshot."""
+    where.extend(
+        [
+            "paper.created_at <= %s",
+            "coalesce(paper.updated_at, paper.created_at) <= %s",
+        ]
+    )
+    params.extend([snapshot_at, snapshot_at])
 
 
 def _where_clause(
@@ -808,6 +882,15 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
     )
     if row.get("paper_status") in {"cancelled", "rejected"} and not has_fill:
         lifecycle = "staged"
+    origin = (
+        "ticker_decision_paper_policy"
+        if row.get("ticker_decision_id") is not None
+        else "event_paper_policy"
+        if row.get("event_id") is not None or row.get("event_signal_id") is not None
+        else "decision_linked_paper_order"
+        if row.get("decision_id") is not None
+        else "unattributed_paper_order"
+    )
     mark = _paper_mark_payload(
         row,
         remaining=remaining,
@@ -841,7 +924,7 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
         "model_revision": row.get("model_version"),
     }
     return {
-        "record_kind": "paper_trade",
+        "record_kind": "paper_trade" if has_fill else "paper_order",
         "paper_order_id": row.get("paper_order_id"),
         "symbol": row.get("symbol"),
         "instrument_kind": row.get("asset_class"),
@@ -853,9 +936,7 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
         "exit_at": row.get("paper_exit_at"),
         "lifecycle": lifecycle,
         "paper_status": row.get("paper_status"),
-        "origin": "manually_staged_paper_order"
-        if row.get("decision_id")
-        else "paper_order",
+        "origin": origin,
         "authority": "canonical_paper_order_and_trade_journal",
         "requested_quantity": _number(row.get("requested_quantity")),
         "filled_quantity": _number(filled),

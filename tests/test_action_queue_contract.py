@@ -163,6 +163,18 @@ def test_today_inbox_read_requests_current_projection() -> None:
     assert calls == [{"limit": 10, "cursor": None, "current_only": True}]
 
 
+def test_today_learning_actions_are_read_as_one_canonical_secondary_source() -> None:
+    calls: list[int] = []
+
+    class Research:
+        def action_items(self, *, limit: int) -> list[dict[str, object]]:
+            calls.append(limit)
+            return [{"projection_identity": "learning:1", "source": "learning"}]
+
+    assert panel_router._read_learning_actions(Research()) == [{"projection_identity": "learning:1", "source": "learning"}]
+    assert calls == [10]
+
+
 def test_stored_portfolio_risk_projection_preserves_summary_and_next_step():
     projected = panel_router._today_portfolio_risk_payload([{
         'card_id': 'largest-position', 'risk_type': 'concentration',

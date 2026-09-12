@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 import math
 import os
@@ -25,11 +25,24 @@ from investment_panel.infrastructure.postgres.authority import runtime_for_confi
 from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
 from investment_panel.infrastructure.postgres.thesis import normalize_thesis_v3, thesis_monitor_rows
 from investment_panel.jobs.codex_thesis_monitor import (
+    continuous_prompt_artifact,
     generate_codex_continuous_advisor,
     generate_deepseek_continuous_advisor,
 )
 from investment_panel.jobs.run_thesis_monitor import validate_invalidations, validate_scenarios
 from investment_panel.infrastructure.providers.advisory import AgentProviderError
+
+
+def comparison_prompt(status: dict[str, Any], now: datetime) -> dict[str, Any] | None:
+    promotion = status.get("promotion") or {}
+    created = promotion.get("created_at")
+    if isinstance(created, str):
+        created = datetime.fromisoformat(created)
+    if promotion.get("decision") == "activate" and created and now < created + timedelta(days=90):
+        previous = promotion.get("previous_active_prompt_version")
+        if previous:
+            return {"version": previous, "role": "monitoring_baseline"}
+    return status.get("challenger")
 
 
 def run(
@@ -69,7 +82,8 @@ def run(
     )
     prompt_version = repository.active_prompt_version(configured_prompt)
     prompt_template = repository.prompt_template(prompt_version)
-    challenger = repository.prompt_status(configured_prompt).get("challenger")
+    prompt_status = repository.prompt_status(configured_prompt)
+    challenger = comparison_prompt(prompt_status, wall_clock)
     challenger_version = str(challenger.get("version") or "") if challenger else ""
     challenger_template = repository.prompt_template(challenger_version) if challenger_version else {}
     cadence = max(5, min(720, int(settings.continuous_cadence_minutes or 120)))
@@ -122,7 +136,7 @@ def run(
             )
             result = {
                 **result,
-                "challenger": challenger_result,
+                "challenger": {**challenger_result, "comparison_role": (challenger or {}).get("role", "candidate")},
                 "cost_usd": float(result.get("cost_usd") or 0) + float(challenger_result.get("cost_usd") or 0),
             }
         results.append(result)
@@ -219,6 +233,7 @@ def _run_one(
         "guardrails": packet["authority"],
         "max_output_tokens": CONTINUOUS_MAX_OUTPUT_TOKENS,
     }
+    request["prompt_artifact"] = continuous_prompt_artifact(request)
     estimated_cost: float | None = None
     if not dry_run:
         estimated_cost = _estimated_call_cost(request, config)
@@ -248,7 +263,7 @@ def _run_one(
 
     claim = repository.claim_review(
         packet_row,
-        request={key: request[key] for key in ("workflow", "symbol", "packet_id", "packet_fingerprint", "cutoff", "slot_start", "prompt_version", "reasoning_effort")},
+        request={key: request[key] for key in ("workflow", "symbol", "packet_id", "packet_fingerprint", "cutoff", "slot_start", "prompt_version", "reasoning_effort", "prompt_artifact")},
         provider=config.agents.thesis_monitor.provider,
         model=config.agents.thesis_monitor.model,
         reasoning_effort=config.agents.thesis_monitor.reasoning_effort,
@@ -454,7 +469,7 @@ def _estimated_call_cost(request: dict[str, Any], config: AppConfig) -> float | 
             config.agents.thesis_monitor.model,
             config.agents.thesis_monitor.reasoning_effort,
         )
-        input_tokens = max(1, math.ceil(len(json.dumps(request, default=str, separators=(",", ":"))) / 4))
+        input_tokens = max(1, math.ceil(len(json.dumps(request.get("prompt_artifact") or request, default=str, separators=(",", ":"))) / 4))
         output_tokens = request.get("max_output_tokens") or CONTINUOUS_MAX_OUTPUT_TOKENS
         if isinstance(output_tokens, bool) or not isinstance(output_tokens, int) or output_tokens <= 0:
             return None

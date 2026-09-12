@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from typing import Any, Mapping
 
@@ -303,6 +304,22 @@ def _generate_continuous_advisor(
     return {**result.payload, "_meta": metadata}
 
 
+def continuous_prompt_artifact(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Freeze the exact provider input and effective prompt before issuing a call."""
+    template = request.get("prompt_template") or {}
+    system = _continuous_system_prompt(template)
+    payload = _continuous_payload(request, template)
+    schema = CONTINUOUS_ADVISOR_SCHEMA
+    return {
+        "system_prompt": system,
+        "provider_payload": payload,
+        "schema": schema,
+        "content_hash": hashlib.sha256(json.dumps({"system_prompt": system, "payload": payload, "schema": schema}, sort_keys=True, default=str).encode()).hexdigest(),
+        "retention_state": "stored_with_advisor_task",
+        "origin": "contemporaneous_provider_input",
+    }
+
+
 def _system_prompt() -> str:
     return (
         "You maintain a professional portfolio thesis monitor. Return only the "
@@ -356,6 +373,7 @@ def _continuous_payload(
     """Apply approved prompt controls to the provider copy, not stored lineage."""
 
     payload = dict(request_payload)
+    payload.pop("prompt_artifact", None)
     packet = request_payload.get("evidence_packet")
     if not isinstance(packet, Mapping):
         return payload

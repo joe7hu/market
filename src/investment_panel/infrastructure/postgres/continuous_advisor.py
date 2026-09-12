@@ -14,7 +14,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.continuous_advisor import MIN_TEST_MATCHES, response_claims, score_claims
+from investment_panel.core.continuous_advisor import MIN_TEST_MATCHES, claim_event_identity, independent_forecast_windows, response_claims, score_claims
 from investment_panel.infrastructure.postgres.instruments import canonical_symbol
 from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
@@ -662,7 +662,51 @@ class ContinuousAdvisorRepository:
             scorecards.append(scorecard)
         return scorecards
 
-    def matched_cohort_scorecards(self, active_prompt_version: str, candidate_prompt_version: str) -> dict[str, Any]:
+    def prompt_decided(self, version: str) -> bool:
+        with self.runtime.read(JOB_PROFILE) as connection:
+            return connection.execute(
+                """SELECT 1 FROM analysis.continuous_advisor_promotion_decision WHERE candidate_prompt_version = %s
+                   UNION ALL SELECT 1 FROM analysis.continuous_advisor_evaluation_cohort
+                   WHERE candidate_prompt_version = %s AND scorecard->'gate'->>'status' = 'expired' LIMIT 1""",
+                [version, version],
+            ).fetchone() is not None
+
+    def development_failures(self, version: str) -> list[dict[str, Any]]:
+        """Bounded, already resolved development examples; never prospective labels."""
+        with self.runtime.read(JOB_PROFILE) as connection:
+            rows = connection.execute(
+                """SELECT claim.id::text AS claim_id, claim.claim_kind,
+                          outcome.calibration_error
+                   FROM analysis.continuous_advisor_forecast_claim claim
+                   JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
+                   JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
+                   WHERE response.prompt_version = %s AND outcome.status = 'resolved'
+                     AND outcome.evidence_valid
+                     AND power(claim.probability - CASE
+                         WHEN (outcome.metadata->>'event_truth') ~ '^(0|1)(\\.0+)?$'
+                             THEN (outcome.metadata->>'event_truth')::double precision
+                         WHEN claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS TRUE THEN 1.0
+                         WHEN claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS FALSE THEN 0.0
+                         WHEN claim.claim_kind <> 'invalidation' AND outcome.correct IS TRUE THEN 1.0
+                         WHEN claim.claim_kind <> 'invalidation' AND outcome.correct IS FALSE THEN 0.0
+                     END, 2) > 0.25
+                     AND NOT EXISTS (
+                         SELECT 1 FROM analysis.continuous_advisor_evaluation_cohort cohort
+                         JOIN analysis.continuous_advisor_packet packet ON packet.id = claim.packet_id
+                         WHERE (cohort.active_prompt_version = %s OR cohort.candidate_prompt_version = %s)
+                           AND CASE
+                               WHEN (cohort.scorecard->'manifest'->>'holdout_start') ~ '^[0-9]{4}-'
+                                AND (cohort.scorecard->'manifest'->>'decision_at') ~ '^[0-9]{4}-'
+                               THEN packet.cutoff >= (cohort.scorecard->'manifest'->>'holdout_start')::timestamptz
+                                AND packet.cutoff < (cohort.scorecard->'manifest'->>'decision_at')::timestamptz
+                               ELSE FALSE
+                           END
+                     )
+                   ORDER BY outcome.resolved_at DESC, claim.id DESC LIMIT 20""", [version, version, version]
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def matched_cohort_scorecards(self, active_prompt_version: str, candidate_prompt_version: str, *, cutoff_start: datetime | None = None, cutoff_end: datetime | None = None, holdout_start: datetime | None = None) -> dict[str, Any]:
         """Score active and challenger responses on identical frozen packets."""
 
         versions = [str(active_prompt_version), str(candidate_prompt_version)]
@@ -673,7 +717,8 @@ class ContinuousAdvisorRepository:
                        response.latency_ms, response.cost_usd, packet.cutoff,
                        packet.packet - 'prompt_version' - 'fingerprint' AS frozen_packet,
                        claim.id AS claim_id, claim.claim_key, claim.claim_kind,
-                       claim.horizon, claim.direction, claim.probability, outcome.status,
+                       claim.horizon, claim.direction, claim.probability, claim.target, claim.statement, outcome.measured_through,
+                       response.provider, response.model, response.reasoning_effort, outcome.status,
                        outcome.correct, outcome.excess_return,
                        outcome.invalidation_actual, outcome.invalidation_correct, outcome.evidence_valid
                 FROM analysis.continuous_advisor_forecast_claim claim
@@ -682,9 +727,12 @@ class ContinuousAdvisorRepository:
                 LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
                 WHERE response.prompt_version = ANY(%s::text[])
                   AND response.status = 'succeeded'
+                  AND (%s::timestamptz IS NULL OR packet.cutoff >= %s)
+                  AND (%s::timestamptz IS NULL OR packet.cutoff < %s)
+                  AND (%s::timestamptz IS NULL OR outcome.resolved_at IS NULL OR outcome.resolved_at <= %s)
                 ORDER BY packet.cutoff ASC, response.prompt_version, claim.created_at, claim.claim_key
                 """,
-                [versions],
+                [versions, cutoff_start, cutoff_start, cutoff_end, cutoff_end, cutoff_end, cutoff_end],
             ).fetchall()
         buckets: dict[tuple[str, str], dict[str, Any]] = {}
         for raw in rows:
@@ -703,6 +751,7 @@ class ContinuousAdvisorRepository:
                 "horizon": row["horizon"],
                 "direction": row["direction"],
                 "probability": row["probability"],
+                "comparison_unit": json.dumps(_jsonable([claim_event_identity(row) or str(row["claim_id"]), row["provider"], row["model"], row["reasoning_effort"]]), sort_keys=True),
             }
             bucket["claims"].append(claim)
             if row["status"]:
@@ -713,6 +762,7 @@ class ContinuousAdvisorRepository:
                     "correct": row["correct"],
                     "excess_return": row["excess_return"],
                     "invalidation_actual": row["invalidation_actual"],
+                    "measured_through": row["measured_through"],
                     "invalidation_correct": row["invalidation_correct"],
                     "evidence_valid": row["evidence_valid"],
                 })
@@ -728,8 +778,39 @@ class ContinuousAdvisorRepository:
             active_keys & candidate_keys,
             key=lambda frozen: str(buckets[(versions[0], frozen)]["cutoff"]),
         )
+        # Pair targets before scoring; a shared packet alone is not a shared event.
+        unmatched = {version: 0 for version in versions}
+        for frozen in common_keys:
+            sides = [buckets[(version, frozen)] for version in versions]
+            units = [set(claim["comparison_unit"] for claim in side["claims"]) for side in sides]
+            common_units = units[0] & units[1]
+            for version, side in zip(versions, sides, strict=True):
+                unmatched[version] += sum(claim["comparison_unit"] not in common_units for claim in side["claims"])
+                side["claims"] = [claim for claim in side["claims"] if claim["comparison_unit"] in common_units]
+            resolved_units = []
+            for side in sides:
+                resolved_ids = {outcome["claim_id"] for outcome in side["outcomes"] if outcome["status"] == "resolved" and outcome["evidence_valid"]}
+                units_with_outcomes = {}
+                for claim in side["claims"]:
+                    if claim["claim_id"] in resolved_ids:
+                        units_with_outcomes.setdefault(claim["comparison_unit"], claim)
+                resolved_units.append(units_with_outcomes)
+            paired_units = set(resolved_units[0]) & set(resolved_units[1])
+            for side, resolved in zip(sides, resolved_units, strict=True):
+                side["claims"] = [resolved[unit] for unit in sorted(paired_units)]
+                retained_ids = {claim["claim_id"] for claim in side["claims"]}
+                side["outcomes"] = [outcome for outcome in side["outcomes"] if outcome["claim_id"] in retained_ids]
+        for version in versions:
+            unmatched[version] += sum(len(bucket["claims"]) for (owner, frozen), bucket in buckets.items() if owner == version and frozen not in common_keys)
         holdout_count = max(1, len(common_keys) // 5) if common_keys else 0
-        holdout_keys = common_keys[-holdout_count:] if holdout_count else []
+        holdout_keys = [key for key in common_keys if buckets[(versions[0], key)]["cutoff"] >= holdout_start] if holdout_start else common_keys[-holdout_count:] if holdout_count else []
+
+        windows = []
+        for frozen in common_keys:
+            ends = [outcome.get("measured_through") for version in versions for outcome in buckets[(version, frozen)]["outcomes"]]
+            if ends and all(end is not None for end in ends):
+                windows.append({"key": frozen, "start": buckets[(versions[0], frozen)]["cutoff"], "end": max(ends)})
+        independent = independent_forecast_windows(windows)
 
         def score(version: str, keys: list[str]) -> dict[str, Any]:
             claims: list[dict[str, Any]] = []
@@ -744,7 +825,17 @@ class ContinuousAdvisorRepository:
                     if response["latency_ms"] is not None:
                         latencies.append(float(response["latency_ms"]))
                     cost += float(response["cost_usd"] or 0)
-            return score_claims(claims, outcomes, latency_ms=latencies, token_cost_usd=cost)
+            result = score_claims(claims, outcomes, latency_ms=latencies, token_cost_usd=cost)
+            # Descriptive totals retain all pairs; uncertainty uses disjoint outcome windows.
+            groups: dict[str, list[float]] = {}
+            for frozen in keys:
+                bucket = buckets[(version, frozen)]
+                scored = score_claims(bucket["claims"], bucket["outcomes"])
+                if frozen in independent and scored["promotion_quality_score"] is not None:
+                    groups.setdefault(independent[frozen], []).append(scored["promotion_quality_score"])
+            result["paired_quality_groups"] = {key: sum(values) / len(values) for key, values in groups.items()}
+            result["independent_groups"] = len(groups)
+            return result
 
         active_full = score(versions[0], common_keys)
         candidate_full = score(versions[1], common_keys)
@@ -752,6 +843,9 @@ class ContinuousAdvisorRepository:
         candidate_holdout = score(versions[1], holdout_keys)
         return _jsonable({
             "status": "pass" if common_keys else "pending",
+            "comparison_version": "target-paired-nonoverlapping-windows.v1",
+            "overlap_or_unknown_window_excluded_packets": len(common_keys) - len(independent),
+            "unmatched_claims": unmatched,
             "common_frozen_packets": len(common_keys),
             "common_cutoffs": [buckets[(versions[0], frozen)]["cutoff"] for frozen in common_keys],
             "holdout_cutoff": buckets[(versions[0], holdout_keys[0])]["cutoff"] if holdout_keys else None,
@@ -1045,6 +1139,11 @@ class ContinuousAdvisorRepository:
                       SELECT 1
                       FROM analysis.continuous_advisor_promotion_decision decision
                       WHERE decision.candidate_prompt_version = candidate.version
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM analysis.continuous_advisor_evaluation_cohort cohort
+                      WHERE cohort.candidate_prompt_version = candidate.version
+                        AND cohort.scorecard->'gate'->>'status' = 'expired'
                   )
                 ORDER BY created_at DESC, version DESC LIMIT 1
                 """,

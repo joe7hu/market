@@ -44,7 +44,7 @@ def research_strategies(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     rows = payload["rows"]
-    payload["next_cursor"] = _encode_strategy_cursor(rows[-1]) if len(rows) == limit else None
+    payload["next_cursor"] = _encode_strategy_cursor(rows[-1]) if rows and payload.get("has_more") else None
     return payload
 
 
@@ -78,7 +78,7 @@ def research_predictions(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     rows = payload["rows"]
-    payload["next_cursor"] = _encode_claim_cursor(rows[-1]) if len(rows) == limit else None
+    payload["next_cursor"] = _encode_claim_cursor(rows[-1]) if rows and payload.get("has_more") else None
     return payload
 
 
@@ -125,7 +125,7 @@ def research_experiments(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     rows = payload["rows"]
-    payload["next_cursor"] = _encode_experiment_cursor(rows[-1]) if len(rows) == limit else None
+    payload["next_cursor"] = _encode_experiment_cursor(rows[-1]) if rows and payload.get("has_more") else None
     return payload
 
 

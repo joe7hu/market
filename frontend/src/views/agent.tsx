@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+import { EvidenceFields } from "@/components/market/StoredEvidence";
 import { BrainCircuit, Loader2, Play, Save, Send } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
@@ -399,16 +401,19 @@ function ContinuousAdvisorPanel({ data, onSaved }: { data: ContinuousAdvisor; on
 
 function AdvisorTickerCard({ ticker }: { ticker: ContinuousAdvisor["tickers"][number] }) {
   const verdict = ticker.verdict;
-  const forecast = verdict.forecasts?.[0];
+  const forecasts = verdict.forecasts ?? [];
   return (
     <div className="rounded-lg border border-border bg-background p-4">
-      <div className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{ticker.symbol}</p><h3 className="mt-1 font-semibold">{verdict.thesis || "No verdict yet"}</h3></div><StatusBadge tone={verdict.blockers?.length ? "warn" : "good"}>{verdict.blockers?.length ? `${verdict.blockers.length} blocker${verdict.blockers.length === 1 ? "" : "s"}` : "Ready"}</StatusBadge></div>
+      <div className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{ticker.symbol}</p><h3 className="mt-1 font-semibold">{verdict.thesis || "No verdict yet"}</h3></div><StatusBadge tone={verdict.blockers?.length ? "warn" : "good"}>{verdict.blockers?.length ? `${verdict.blockers.length} blocker${verdict.blockers.length === 1 ? "" : "s"}` : "Research inputs valid"}</StatusBadge></div>
       <p className="mt-2 text-sm text-muted-foreground"><strong>Countercase:</strong> {verdict.countercase || "Unavailable"}</p>
-      {forecast ? <p className="mt-2 text-sm"><strong>Forecast:</strong> {forecast.statement} · {forecast.horizon} · {Math.round(Number(forecast.probability ?? 0) * 100)}% {forecast.direction}</p> : null}
+      {forecasts.map((forecast, index) => <p key={forecast.claim_key ?? index} className="mt-2 text-sm"><strong>Forecast {index + 1}:</strong> {forecast.statement} · {forecast.horizon} · {forecast.probability == null ? "Probability unavailable" : `${Math.round(forecast.probability * 100)}%`} {forecast.direction}</p>)}
+      {(verdict.invalidations ?? []).map((claim, index) => <div key={index} className="mt-2 text-sm"><strong>Invalidation {index + 1}</strong><EvidenceFields value={claim} /></div>)}
+      <p className="mt-2 text-xs text-muted-foreground">Research validity does not establish forecast maturity or paper execution readiness.</p>
+      <Link className="text-sm underline" to="/research?section=predictions">Inspect claim outcomes and prompt history</Link>
       <p className="mt-2 text-xs text-muted-foreground">{verdict.change_since_prior || "No prior cycle"} · Next review: {verdict.next_review_trigger || "—"}{verdict.next_review_at ? ` (${formatTime(verdict.next_review_at)})` : ""}{verdict.outcome_date ? ` · Outcome: ${formatTime(verdict.outcome_date)}` : ""}</p>
       {verdict.evidence_freshness && Object.keys(verdict.evidence_freshness).length ? <p className="mt-1 text-xs text-muted-foreground"><strong>Evidence freshness:</strong> {Object.entries(verdict.evidence_freshness).map(([key, value]) => `${titleLabel(key)} ${value}`).join(" · ")}</p> : null}
       {verdict.blockers?.length ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Blockers: {verdict.blockers.join(", ")}</p> : null}
-      <details className="mt-3 text-xs"><summary className="cursor-pointer text-muted-foreground">Packet provenance</summary><pre className="mt-1 overflow-auto whitespace-pre-wrap text-muted-foreground">{JSON.stringify(ticker.provenance, null, 2)}</pre></details>
+      <details className="mt-3 text-xs"><summary className="cursor-pointer text-muted-foreground">Packet provenance</summary><EvidenceFields value={ticker.provenance} /></details>
     </div>
   );
 }

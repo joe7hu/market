@@ -9,7 +9,7 @@ import json
 from typing import Any
 from uuid import UUID
 
-from investment_panel.core.continuous_advisor import SCORING_VERSION
+from investment_panel.core.continuous_advisor import SCORING_VERSION, claim_event_contract
 from investment_panel.infrastructure.postgres.continuous_advisor import (
     ContinuousAdvisorRepository,
 )
@@ -19,16 +19,18 @@ from investment_panel.infrastructure.postgres.runtime import API_PROFILE, Databa
 MAX_ROWS = 200
 CALCULATION_VERSION = "research-workbench.v1"
 DIAGNOSTICS_VERSION = "research-diagnostics.v1"
-CURRENT_BRIER_EXPRESSION = """
-    power(
-        claim.probability - CASE
-            WHEN claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS TRUE THEN 1.0
-            WHEN claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS FALSE THEN 0.0
-            WHEN claim.claim_kind <> 'invalidation' AND outcome.correct IS TRUE THEN 1.0
-            WHEN claim.claim_kind <> 'invalidation' AND outcome.correct IS FALSE THEN 0.0
-        END,
-        2
-    )
+CURRENT_EVENT_TRUTH_EXPRESSION = """
+    CASE
+        WHEN (outcome.metadata->>'event_truth') ~ '^(0|1)(\\.0+)?$'
+            THEN (outcome.metadata->>'event_truth')::double precision
+        WHEN claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS TRUE THEN 1.0
+        WHEN claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS FALSE THEN 0.0
+        WHEN claim.claim_kind <> 'invalidation' AND outcome.correct IS TRUE THEN 1.0
+        WHEN claim.claim_kind <> 'invalidation' AND outcome.correct IS FALSE THEN 0.0
+    END
+"""
+CURRENT_BRIER_EXPRESSION = f"""
+    power(claim.probability - ({CURRENT_EVENT_TRUTH_EXPRESSION}), 2)
 """
 
 
@@ -37,6 +39,88 @@ class ResearchWorkbenchRepository:
 
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
+
+    def action_items(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Return only research records that need a human or retry action."""
+
+        safe_limit = max(1, min(50, int(limit)))
+        with self.runtime.snapshot(API_PROFILE) as connection:
+            revisions = connection.execute(
+                """
+                SELECT id, strategy_key, created_at, artifact_id
+                FROM analysis.strategy_revision
+                WHERE status = 'approved' AND created_at <= now()
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                [safe_limit],
+            ).fetchall()
+            retries = connection.execute(
+                """
+                SELECT claim.id::text AS claim_id, claim.symbol,
+                       attempt.status, attempt.reason, attempt.created_at
+                FROM analysis.continuous_advisor_forecast_claim claim
+                JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
+                LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
+                JOIN LATERAL (
+                    SELECT status, reason, created_at
+                    FROM analysis.continuous_advisor_resolution_attempt
+                    WHERE claim_id = claim.id
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                ) attempt ON TRUE
+                WHERE response.status = 'succeeded'
+                  AND outcome.id IS NULL
+                  AND attempt.status IN ('waiting', 'blocked')
+                ORDER BY attempt.created_at DESC, claim.id DESC
+                LIMIT %s
+                """,
+                [safe_limit],
+            ).fetchall()
+        items = [
+            {
+                "projection_identity": f"learning:strategy:{row['id']}",
+                "source_authority": f"analysis.strategy_revision:{row['id']}",
+                "source": "learning",
+                "title": f"Strategy challenger {row['strategy_key']} awaits review",
+                "lifecycle_state": "actionable",
+                "current_at": row["created_at"],
+                "primary_blocker": None,
+                "next_action": "Review the registered evidence before changing the active strategy.",
+                "drill_down": f"/research/strategies/{row['id']}?section=strategies",
+                "ticker": None,
+                "action": "REVIEW",
+                "owned": False,
+                "rationale": "An approved strategy revision is not active paper authority.",
+                "policy_version": "strategy-learning.v1",
+            }
+            for row in revisions
+        ]
+        items.extend(
+            {
+                "projection_identity": f"learning:forecast:{row['claim_id']}",
+                "source_authority": f"continuous-advisor-claim:{row['claim_id']}",
+                "source": "learning",
+                "title": f"{row['symbol']} forecast outcome needs attention",
+                "lifecycle_state": "actionable" if row["status"] == "waiting" else "blocked",
+                "transition": str(row["status"]).upper(),
+                "current_at": row["created_at"],
+                "primary_blocker": row["reason"],
+                "next_action": (
+                    "Retry outcome resolution when the required quote is available."
+                    if row["status"] == "waiting"
+                    else "Inspect the blocked resolution and its evidence."
+                ),
+                "drill_down": f"/research/predictions/{row['claim_id']}?section=predictions",
+                "ticker": row["symbol"],
+                "action": "RETRY_RESOLUTION" if row["status"] == "waiting" else "REVIEW",
+                "owned": False,
+                "rationale": "A missing outcome is a data workflow state, not a failed forecast.",
+                "policy_version": "continuous-advisor.v1:advisory",
+            }
+            for row in retries
+        )
+        return _jsonable(items[:safe_limit])
 
     def strategy_revisions(
         self,
@@ -94,7 +178,7 @@ class ResearchWorkbenchRepository:
                          revision.id DESC
                 LIMIT %s
                 """,
-                [*params, safe_limit],
+                [*params, safe_limit + 1],
             ).fetchall()
             total = connection.execute(
                 "SELECT count(*) AS count FROM analysis.strategy_revision WHERE created_at <= now()"
@@ -109,13 +193,16 @@ class ResearchWorkbenchRepository:
                 ) values(value)
                 """
             ).fetchone()["source_watermark"]
+        has_more = len(rows) > safe_limit
+        rows = rows[:safe_limit]
         payload = _page(
             rows,
             total=int(total or 0),
             watermark=watermark,
             scope={"limit": safe_limit, "cursor": cursor[1].isoformat() if cursor else None},
+            has_more=has_more,
         )
-        if len(rows) < int(total or 0):
+        if has_more:
             payload["quality_status"] = "partial"
             payload["missing_evidence_reasons"] = ["strategy_history_page_bounded"]
         return payload
@@ -303,7 +390,15 @@ class ResearchWorkbenchRepository:
                              AND outcome.evidence_valid
                              AND claim.claim_kind = 'invalidation'
                              AND outcome.invalidation_actual IS NOT NULL
-                       ) AS invalidation_event_rate
+                       ) AS invalidation_event_rate,
+                       avg(({CURRENT_EVENT_TRUTH_EXPRESSION})) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND (
+                                 (claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS NOT NULL)
+                                 OR (claim.claim_kind <> 'invalidation' AND outcome.correct IS NOT NULL)
+                             )
+                       ) AS event_base_rate
                 FROM analysis.continuous_advisor_forecast_claim claim
                 JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
                 LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
@@ -311,6 +406,48 @@ class ResearchWorkbenchRepository:
                 """,
                 scope_params,
             ).fetchone()
+            calibration_bins = connection.execute(
+                f"""
+                SELECT floor(least(greatest(claim.probability, 0.0), 0.999999) * 10)::integer AS bin,
+                       count(*) AS sample_count,
+                       avg(claim.probability) AS mean_predicted,
+                       avg(({CURRENT_EVENT_TRUTH_EXPRESSION})) AS observed_rate
+                FROM analysis.continuous_advisor_forecast_claim claim
+                JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
+                LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
+                WHERE {' AND '.join(scope_filters)}
+                  AND outcome.status = 'resolved'
+                  AND outcome.evidence_valid
+                  AND (
+                      (claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS NOT NULL)
+                      OR (claim.claim_kind <> 'invalidation' AND outcome.correct IS NOT NULL)
+                  )
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                scope_params,
+            ).fetchall()
+            brier_series = connection.execute(
+                f"""
+                SELECT date_trunc('day', outcome.resolved_at) AS resolved_at,
+                       count(*) AS sample_count,
+                       avg(({CURRENT_BRIER_EXPRESSION})) AS brier_score
+                FROM analysis.continuous_advisor_forecast_claim claim
+                JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
+                JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
+                WHERE {' AND '.join(scope_filters)}
+                  AND outcome.status = 'resolved'
+                  AND outcome.evidence_valid
+                  AND (
+                      (claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS NOT NULL)
+                      OR (claim.claim_kind <> 'invalidation' AND outcome.correct IS NOT NULL)
+                  )
+                GROUP BY 1
+                ORDER BY 1
+                LIMIT %s
+                """,
+                [*scope_params, MAX_ROWS],
+            ).fetchall()
             rows = connection.execute(
                 f"""
                 SELECT claim.id::text AS claim_id, claim.claim_key, claim.claim_kind,
@@ -319,12 +456,13 @@ class ResearchWorkbenchRepository:
                        claim.created_at AS issued_at, packet.cutoff AS information_cutoff,
                        packet.id::text AS packet_id, packet.fingerprint AS packet_fingerprint,
                        response.prompt_version, response.provider, response.model,
-                       response.reasoning_effort, response.id::text AS response_id,
+                       response.reasoning_effort, response.id::text AS response_id, response.task_id::text AS run_id,
                        outcome.status AS outcome_status, outcome.resolved_at,
                        outcome.measured_through, outcome.actual_return, outcome.excess_return,
                        outcome.actual_direction, outcome.correct,
                        outcome.calibration_error AS stored_calibration_error,
                        {CURRENT_BRIER_EXPRESSION} AS calibration_error,
+                       ({CURRENT_EVENT_TRUTH_EXPRESSION}) AS event_truth,
                        outcome.invalidation_actual, outcome.invalidation_correct,
                        outcome.evidence_valid, outcome.metadata AS outcome_metadata,
                        attempt.status AS last_attempt_status, attempt.reason AS last_attempt_reason,
@@ -343,12 +481,16 @@ class ResearchWorkbenchRepository:
                 ORDER BY claim.created_at DESC, claim.id DESC
                 LIMIT %s
                 """,
-                [*params, safe_limit],
+                [*params, safe_limit + 1],
             ).fetchall()
+        has_more = len(rows) > safe_limit
+        rows = rows[:safe_limit]
         claim_rows: list[dict[str, Any]] = []
         for row in rows:
             claim = dict(row)
             claim["maturity_state"] = _claim_state(claim)
+            claim["resolution_state"] = claim["maturity_state"]
+            claim["event_contract"] = claim_event_contract(claim)
             claim["stored_scoring_version"] = _scoring_version(claim)
             claim["scoring_version"] = SCORING_VERSION
             claim_rows.append(claim)
@@ -360,6 +502,7 @@ class ResearchWorkbenchRepository:
             excluded=int(count["excluded"] or 0),
             watermark=count["source_watermark"],
             scope={"symbol": symbol.strip().upper() if symbol else None, "prompt_version": prompt_version, "limit": safe_limit},
+            has_more=has_more,
         )
         quality_row = dict(quality)
         brier_score = quality_row.get("brier_score")
@@ -373,9 +516,17 @@ class ResearchWorkbenchRepository:
             "directional_accuracy": quality_row.get("directional_accuracy"),
             "invalidation_accuracy": quality_row.get("invalidation_accuracy"),
             "invalidation_event_rate": quality_row.get("invalidation_event_rate"),
+            "event_base_rate": quality_row.get("event_base_rate"),
+            "base_rate_brier": _base_rate_brier(quality_row.get("event_base_rate")),
+            "skill_vs_base_rate": _skill_vs_base_rate(brier_score, quality_row.get("event_base_rate")),
+            "calibration_bins": _calibration_bins(calibration_bins),
+            "brier_time_series": _jsonable([dict(item) for item in brier_series]),
             "coverage": (int(count["eligible"] or 0) / int(count["total"] or 1)) if count["total"] else None,
             "quality_score_basis": "display metrics are separate from weighted promotion quality samples",
         })
+        if has_more:
+            payload["quality_status"] = "partial"
+            payload["missing_evidence_reasons"] = ["prediction_history_page_bounded"]
         return payload
 
     def forecast_claim(self, claim_id: str) -> dict[str, Any] | None:
@@ -393,13 +544,14 @@ class ResearchWorkbenchRepository:
                        packet.id::text AS packet_id, packet.fingerprint AS packet_fingerprint,
                        packet.packet, packet.source_refs, packet.blockers,
                        response.prompt_version, response.provider, response.model,
-                       response.reasoning_effort, response.id::text AS response_id,
+                       response.reasoning_effort, response.id::text AS response_id, response.task_id::text AS run_id,
                        response.response, response.validation,
                        outcome.id::text AS outcome_id, outcome.status AS outcome_status,
                        outcome.resolved_at, outcome.measured_through, outcome.actual_return,
                        outcome.excess_return, outcome.actual_direction, outcome.correct,
                        outcome.calibration_error AS stored_calibration_error,
                        {CURRENT_BRIER_EXPRESSION} AS calibration_error,
+                       ({CURRENT_EVENT_TRUTH_EXPRESSION}) AS event_truth,
                        outcome.invalidation_actual,
                        outcome.invalidation_correct, outcome.evidence_valid,
                        outcome.metadata AS outcome_metadata
@@ -430,6 +582,8 @@ class ResearchWorkbenchRepository:
             payload["last_attempt_reason"] = attempts[0]["reason"]
             payload["last_attempt_at"] = attempts[0]["created_at"]
         payload["maturity_state"] = _claim_state(payload)
+        payload["resolution_state"] = payload["maturity_state"]
+        payload["event_contract"] = claim_event_contract(payload)
         payload["stored_scoring_version"] = _scoring_version(payload)
         payload["scoring_version"] = SCORING_VERSION
         payload["as_of"] = datetime.now(UTC)
@@ -609,7 +763,7 @@ class ResearchWorkbenchRepository:
                 WHERE {' AND '.join(strategy_filters)}
                 ORDER BY comparison.observed_at DESC, comparison.id DESC LIMIT %s
                 """,
-                [*strategy_params, safe_limit],
+                [*strategy_params, safe_limit + 1],
             ).fetchall()
             prompts = connection.execute(
                 f"""
@@ -633,7 +787,7 @@ class ResearchWorkbenchRepository:
                 WHERE {' AND '.join(prompt_filters)}
                 ORDER BY cohort.created_at DESC, cohort.id DESC LIMIT %s
                 """,
-                [*prompt_params, safe_limit],
+                [*prompt_params, safe_limit + 1],
             ).fetchall()
             total = connection.execute(
                 """
@@ -645,13 +799,23 @@ class ResearchWorkbenchRepository:
                      WHERE created_at <= now()) AS count
                 """
             ).fetchone()["count"]
-        rows = sorted([*strategy, *prompts], key=lambda row: row["observed_at"] or datetime.min.replace(tzinfo=UTC), reverse=True)[:safe_limit]
+        rows = sorted(
+            [*strategy, *prompts],
+            key=lambda row: (
+                row["observed_at"] or datetime.min.replace(tzinfo=UTC),
+                row["experiment_id"],
+            ),
+            reverse=True,
+        )
+        has_more = len(rows) > safe_limit
+        rows = rows[:safe_limit]
         payload = _page(
             rows,
             total=int(total or 0),
             scope={"limit": safe_limit, "cursor": cursor[0].isoformat() if cursor else None},
+            has_more=has_more,
         )
-        if len(rows) < int(total or 0):
+        if has_more:
             payload["quality_status"] = "partial"
             payload["missing_evidence_reasons"] = ["experiment_history_page_bounded"]
         return payload
@@ -1242,7 +1406,7 @@ def _prompt_lineage(connection: Any, roots: list[str]) -> list[dict[str, Any]]:
 
 
 def _page(rows: list[Any], *, total: int, eligible: int = 0, pending: int = 0, excluded: int = 0,
-          watermark: Any = None, scope: dict[str, Any]) -> dict[str, Any]:
+          watermark: Any = None, scope: dict[str, Any], has_more: bool = False) -> dict[str, Any]:
     return {
         "rows": _jsonable([dict(row) for row in rows]),
         "count": {"total": total, "eligible": eligible, "pending": pending, "excluded": excluded},
@@ -1251,11 +1415,45 @@ def _page(rows: list[Any], *, total: int, eligible: int = 0, pending: int = 0, e
         "calculation_version": CALCULATION_VERSION,
         "scope": scope,
         "quality_status": "complete" if not excluded else "partial",
+        "has_more": has_more,
     }
 
 
 def _limit(value: int) -> int:
     return max(1, min(MAX_ROWS, int(value)))
+
+
+def _base_rate_brier(rate: Any) -> float | None:
+    try:
+        value = float(rate)
+    except (TypeError, ValueError):
+        return None
+    return value * (1 - value) if 0 <= value <= 1 else None
+
+
+def _skill_vs_base_rate(score: Any, rate: Any) -> float | None:
+    baseline = _base_rate_brier(rate)
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return None
+    return 1 - value / baseline if baseline and baseline > 0 else None
+
+
+def _calibration_bins(rows: list[Any]) -> list[dict[str, Any]]:
+    bins: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        index = int(row.get("bin") or 0)
+        bins.append({
+            "bin": index,
+            "lower_bound": index / 10,
+            "upper_bound": (index + 1) / 10,
+            "sample_count": int(row.get("sample_count") or 0),
+            "mean_predicted": row.get("mean_predicted"),
+            "observed_rate": row.get("observed_rate"),
+        })
+    return _jsonable(bins)
 
 
 def _jsonable(value: Any) -> Any:
@@ -1317,9 +1515,12 @@ def _claim_state(row: dict[str, Any]) -> str:
     if outcome == "quarantined":
         return "unsupported"
     if outcome == "unresolvable":
-        return "blocked"
+        reason = (row.get("outcome_metadata") or {}).get("reason") if isinstance(row.get("outcome_metadata"), dict) else None
+        return "unsupported" if reason in {"unsupported_horizon", "invalidation_condition_not_machine_resolvable"} else "blocked"
     if row.get("last_attempt_status") == "blocked":
         return "blocked"
+    if row.get("last_attempt_status") == "waiting":
+        return "waiting"
     return "pending"
 
 
@@ -1327,7 +1528,7 @@ def _scoring_version(row: dict[str, Any]) -> str:
     metadata = row.get("outcome_metadata")
     if isinstance(metadata, dict) and metadata.get("scoring_version"):
         return str(metadata["scoring_version"])
-    return "continuous-advisor-score.v2"
+    return "legacy_unversioned"
 
 
 def _failure_cases(row: dict[str, Any]) -> list[Any]:

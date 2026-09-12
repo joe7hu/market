@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
-import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { loadPaperPerformance, loadPaperTrades, type PaperFilters, type PaperPerformance, type PaperTrade } from "@/api/paper";
 import { PageHeader, MetricTile, StatusBadge } from "@/components/market/workstation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PaperPerformanceChart } from "@/components/market/PaperPerformanceChart";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -14,6 +15,7 @@ const date = (value: string | null | undefined) => value ? new Date(value).toLoc
 export function PaperBookRoute() {
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const filters: PaperFilters = {
     symbol: searchParams.get("symbol") || undefined,
     strategy_revision: searchParams.get("strategy_revision") || undefined,
@@ -25,18 +27,22 @@ export function PaperBookRoute() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [paging, setPaging] = useState(false);
+  const generation = useRef(0);
 
   useEffect(() => {
+    generation.current += 1;
+    setPaging(false);
     setSymbol(filters.symbol ?? "");
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    Promise.all([loadPaperPerformance(filters, controller.signal), loadPaperTrades(filters, 100, null, controller.signal)])
-      .then(([nextPerformance, page]) => {
+    loadPaperPerformance(filters, controller.signal)
+      .then((nextPerformance) => {
         if (controller.signal.aborted) return;
         setPerformance(nextPerformance);
-        setTrades(page.rows);
-        setNextCursor(page.next_cursor);
+        setTrades(nextPerformance.trades ?? []);
+        setNextCursor(nextPerformance.next_cursor ?? null);
       })
       .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Paper book unavailable."); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
@@ -50,10 +56,13 @@ export function PaperBookRoute() {
   };
 
   const loadOlder = () => {
-    if (!nextCursor) return;
+    if (!nextCursor || paging || loading) return;
+    const requestedGeneration = generation.current;
+    setPaging(true);
     void loadPaperTrades(filters, 100, nextCursor)
-      .then((page) => { setTrades((current) => [...current, ...page.rows]); setNextCursor(page.next_cursor); })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Older paper trades unavailable."));
+      .then((page) => { if (requestedGeneration !== generation.current) return; setTrades((current) => [...current, ...page.rows]); setNextCursor(page.next_cursor); })
+      .catch((reason) => { if (requestedGeneration === generation.current) setError(reason instanceof Error ? reason.message : "Older paper trades unavailable."); })
+      .finally(() => { if (requestedGeneration === generation.current) setPaging(false); });
   };
 
   const points = performance?.series?.points ?? [];
@@ -73,6 +82,7 @@ export function PaperBookRoute() {
         </form>
       {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
       {loading && !performance ? <p className="text-sm text-muted-foreground">Loading paper evidence…</p> : null}
+      {performance && (loading || error) ? <p role="status" className="text-sm text-amber-700">Previous snapshot from {date(performance.as_of)}. {loading ? "Updating the selected scope…" : "Refresh failed; values below are stale and may belong to the previous scope."}</p> : null}
       {performance ? <>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <MetricTile label="Verified realized P&L" value={money(performance.realized_pnl)} caption="Journal fills and explicit fees only." tone={performance.realized_pnl_status === "complete" ? "good" : "warn"} />
@@ -89,15 +99,17 @@ export function PaperBookRoute() {
             <CardContent>
               {chart === "drawdown" && !drawdownPoints.length ? <p className="text-sm text-muted-foreground">Drawdown is unavailable until the realized series is complete. No zero line is being invented.</p> : null}
               {chart === "cumulative_net_pnl" && !points.length ? <p className="text-sm text-muted-foreground">No verified closed fills in this scope. No zero line is being invented.</p> : null}
-              <div className="space-y-2">{chart === "drawdown" ? drawdownPoints.map((point) => <Link key={`${point.at}-${point.trade_id}`} to={`/portfolio/paper/trades/${point.trade_id}${location.search}`} className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-0 hover:bg-accent"><span className="text-muted-foreground">{date(point.at)}</span><span className="font-medium">{money(point.drawdown)}</span></Link>) : points.map((point) => <Link key={`${point.at}-${point.trade_id}`} to={`/portfolio/paper/trades/${point.trade_id}${location.search}`} className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-0 hover:bg-accent"><span className="text-muted-foreground">{date(point.at)}</span><span className="font-medium">{money(point.cumulative_net_pnl)}</span></Link>)}</div>
-              {performance.series?.gaps?.length ? <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Some open positions have stale, missing, or unreconciled marks, so the curve keeps a visible coverage gap.</p> : null}
+              {(chart === "drawdown" ? drawdownPoints : points).length ? <PaperPerformanceChart label={chart === "drawdown" ? "Drawdown of verified realized P&L" : "Cumulative verified realized P&L"} points={chart === "drawdown" ? drawdownPoints.map((point) => ({ ...point, value: point.drawdown })) : points.map((point) => ({ ...point, value: point.cumulative_net_pnl }))} onSelect={(tradeId) => navigate(`/portfolio/paper/trades/${tradeId}${location.search}`)} /> : null}
+              <p className="text-xs text-muted-foreground">Realized fill events only. Open-position valuations are excluded from this series. Select a point to inspect its trade.</p>
+              <details className="mt-3"><summary className="cursor-pointer text-sm">Accessible event table</summary><div className="max-h-72 overflow-auto space-y-2">{chart === "drawdown" ? drawdownPoints.map((point) => <Link key={`${point.at}-${point.trade_id}`} to={`/portfolio/paper/trades/${point.trade_id}${location.search}`} className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-0 hover:bg-accent"><span className="text-muted-foreground">{date(point.at)}</span><span className="font-medium">{money(point.drawdown)}</span></Link>) : points.map((point) => <Link key={`${point.at}-${point.trade_id}`} to={`/portfolio/paper/trades/${point.trade_id}${location.search}`} className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-0 hover:bg-accent"><span className="text-muted-foreground">{date(point.at)}</span><span className="font-medium">{money(point.cumulative_net_pnl)}</span></Link>)}</div></details>
+              {performance.series?.gaps?.length ? <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Some open positions have stale, missing, or unreconciled marks, so the current book total is incomplete.</p> : null}
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-3"><CardTitle>Trade blotter</CardTitle><StatusBadge tone={performance.quality_status === "complete" ? "good" : "warn"}>{performance.quality_status}</StatusBadge></CardHeader>
             <CardContent className="p-0">
               {trades.length ? <Table><TableHeader><TableRow><TableHead>Instrument</TableHead><TableHead>Strategy</TableHead><TableHead>Lifecycle</TableHead><TableHead>Entry / mark</TableHead><TableHead>Realized P&L</TableHead><TableHead>Net P&L</TableHead><TableHead>Evidence</TableHead></TableRow></TableHeader><TableBody>{trades.map((trade) => <TableRow key={trade.paper_order_id}><TableCell><Link className="font-medium underline-offset-4 hover:underline" to={{ pathname: `/portfolio/paper/trades/${trade.paper_order_id}`, search: location.search }}>{trade.symbol}</Link><div className="text-xs text-muted-foreground">{date(trade.decision_at ?? trade.staged_at)}</div></TableCell><TableCell>{trade.strategy?.name ?? trade.strategy?.model_revision ?? "Legacy / unattributed"}</TableCell><TableCell><StatusBadge tone={trade.lifecycle === "closed" ? "good" : trade.lifecycle === "staged" ? "muted" : "info"}>{trade.lifecycle}</StatusBadge></TableCell><TableCell>{money(trade.entry_price)}<div className="text-xs text-muted-foreground">Mark {money(trade.mark_price)} · {trade.mark_status ?? "unavailable"}</div></TableCell><TableCell>{money(trade.realized_pnl)}</TableCell><TableCell>{money(trade.net_pnl)}</TableCell><TableCell><span className="text-xs">{trade.reconciliation_status}</span></TableCell></TableRow>)}</TableBody></Table> : <p className="p-4 text-sm text-muted-foreground">No paper orders match this scope.</p>}
-              {nextCursor ? <div className="border-t border-border p-3"><button type="button" className="text-sm font-medium underline" onClick={loadOlder}>Load older trades</button></div> : null}
+              {nextCursor ? <div className="border-t border-border p-3"><button type="button" className="text-sm font-medium underline" disabled={paging || loading} onClick={loadOlder}>{paging ? "Loading…" : "Load older trades"}</button></div> : null}
             </CardContent>
           </Card>
         </div>
