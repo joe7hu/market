@@ -39,7 +39,7 @@ export type PaperPerformance = ApiSchema["PaperBookPerformance"] & {
   missing_evidence_reasons: string[];
   evidence_coverage?: { realized_pnl_coverage?: number | null; mark_coverage?: number | null; reconciled_orders?: number };
   accounting_basis?: string;
-  series?: { points?: Array<{ at: string; cumulative_net_pnl: number; trade_id: string }>; gaps?: Array<{ reason: string; trade_id?: string }>; drawdown_basis?: string };
+  series?: { points?: Array<{ at: string; cumulative_net_pnl: number; trade_id: string }>; drawdown_points?: Array<{ at: string; drawdown: number; trade_id: string }>; available_series?: string[]; gaps?: Array<{ reason: string; trade_id?: string }>; drawdown_basis?: string };
 };
 
 export type PaperTradePagePayload = ApiSchema["PaperTradePage"] & {

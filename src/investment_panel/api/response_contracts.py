@@ -121,6 +121,74 @@ class LearningOverview(FlexibleResponse):
     prediction_lane: dict[str, Any] = Field(default_factory=dict)
 
 
+class ResearchStrategyPage(FlexibleResponse):
+    rows: list[Row] = Field(default_factory=list)
+    count: dict[str, int] = Field(default_factory=dict)
+    next_cursor: str | None = None
+
+
+class ResearchStrategyDetail(FlexibleResponse):
+    strategy_revision_id: int
+    evaluations: list[Row] = Field(default_factory=list)
+    gates: list[Row] = Field(default_factory=list)
+    trials: list[Row] = Field(default_factory=list)
+    comparisons: list[Row] = Field(default_factory=list)
+
+
+class ResearchClaimPage(FlexibleResponse):
+    rows: list[Row] = Field(default_factory=list)
+    count: dict[str, int] = Field(default_factory=dict)
+    next_cursor: str | None = None
+
+
+class ResearchClaimDetail(FlexibleResponse):
+    claim_id: str
+    resolution_attempts: list[Row] = Field(default_factory=list)
+
+
+class ResearchPromptPage(FlexibleResponse):
+    rows: list[Row] = Field(default_factory=list)
+    count: int = 0
+
+
+class ResearchPromptDetail(FlexibleResponse):
+    version: str
+    effective_template: Row = Field(default_factory=dict)
+    effective_diff: Row = Field(default_factory=dict)
+
+
+class ResearchExperimentPage(FlexibleResponse):
+    rows: list[Row] = Field(default_factory=list)
+    count: dict[str, int] = Field(default_factory=dict)
+    next_cursor: str | None = None
+
+
+class ResearchExperimentDetail(FlexibleResponse):
+    experiment_id: str
+    experiment_kind: str
+
+
+class ResearchEvent(FlexibleResponse):
+    event_type: str
+    event_at: datetime | None = None
+    original_version: str | None = None
+    new_version: str | None = None
+    reason: str | None = None
+    evidence_id: str | None = None
+
+
+class ResearchEventPage(FlexibleResponse):
+    rows: list[ResearchEvent] = Field(default_factory=list)
+    count: int = 0
+
+
+class ResearchArtifactDetail(FlexibleResponse):
+    artifact_id: str
+    records: list[Row] = Field(default_factory=list)
+    content_available: bool = False
+    retention_state: str = "database_metadata_only"
+
+
 class ApiStatusResponse(BaseModel):
     ready: bool
     message: str

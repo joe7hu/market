@@ -77,6 +77,32 @@ class PaperWorkbenchRepository:
             "rows": rows,
         }
 
+    def export_rows(
+        self,
+        *,
+        symbol: str | None = None,
+        strategy_revision: int | None = None,
+        lifecycle: str | None = None,
+    ) -> dict[str, Any]:
+        """Return the bounded full scoped population for explicit export."""
+
+        where, params = _where_clause(
+            symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+        )
+        rows, total, _pending, watermark, as_of = self._rows(
+            where, params, limit=MAX_PERFORMANCE_ROWS
+        )
+        return {
+            **_scope_payload(
+                symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+            ),
+            "as_of": as_of,
+            "source_watermark": watermark,
+            "calculation_version": CALCULATION_VERSION,
+            "total": total,
+            "rows": rows,
+        }
+
     def trade(self, trade_id: str) -> dict[str, Any] | None:
         where = ["paper.id = %s::uuid"]
         as_of = datetime.now(UTC)
@@ -139,10 +165,17 @@ class PaperWorkbenchRepository:
             )
         peak = Decimal("0")
         max_drawdown = Decimal("0")
+        drawdown_series: list[dict[str, Any]] = []
         for point in series:
             value = Decimal(str(point["cumulative_net_pnl"]))
             peak = max(peak, value)
-            max_drawdown = min(max_drawdown, value - peak)
+            drawdown = value - peak
+            max_drawdown = min(max_drawdown, drawdown)
+            drawdown_series.append({
+                "at": point["at"],
+                "drawdown": _money(drawdown),
+                "trade_id": point["trade_id"],
+            })
         missing = _missing_reasons(rows)
         if "opening_capital_unavailable" not in missing:
             missing.append("opening_capital_unavailable")
@@ -224,6 +257,17 @@ class PaperWorkbenchRepository:
             "series": {
                 "kind": "cumulative_verified_realized_net_pnl",
                 "points": series,
+                "drawdown_points": drawdown_series if realized_complete else [],
+                "available_series": ["cumulative_net_pnl", "drawdown"],
+                "annotations": [
+                    {
+                        "at": point["at"],
+                        "kind": "paper_exit",
+                        "trade_id": point["trade_id"],
+                        "journal_id": point.get("journal_id"),
+                    }
+                    for point in series
+                ],
                 "gaps": [
                     {
                         "reason": row.get("mark_gap_reason")

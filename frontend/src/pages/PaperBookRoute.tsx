@@ -57,18 +57,20 @@ export function PaperBookRoute() {
   };
 
   const points = performance?.series?.points ?? [];
+  const drawdownPoints = performance?.series?.drawdown_points ?? [];
+  const chart = searchParams.get("chart") === "drawdown" ? "drawdown" : "cumulative_net_pnl";
   const counts = performance?.counts ?? {};
 
   return (
     <div className="space-y-5">
       <PageHeader eyebrow="Portfolio · Paper" title="Paper book" subtitle="Fill-backed paper history with explicit accounting coverage. Staged limits, shadow observations, and unverified marks stay separate." />
-      <form className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 sm:flex-row" onSubmit={(event) => { event.preventDefault(); updateFilter("symbol", symbol.trim().toUpperCase()); }}>
+        <form className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 sm:flex-row" onSubmit={(event) => { event.preventDefault(); updateFilter("symbol", symbol.trim().toUpperCase()); }}>
         <Input aria-label="Filter symbol" placeholder="All symbols" value={symbol} onChange={(event) => setSymbol(event.target.value)} className="sm:max-w-xs" />
         <Select value={filters.lifecycle ?? "all"} onValueChange={(value) => updateFilter("lifecycle", value === "all" ? "" : value)}>
           <SelectTrigger className="sm:w-44"><SelectValue placeholder="All lifecycles" /></SelectTrigger>
           <SelectContent><SelectItem value="all">All lifecycles</SelectItem><SelectItem value="staged">Staged</SelectItem><SelectItem value="open">Open</SelectItem><SelectItem value="closed">Closed</SelectItem></SelectContent>
         </Select>
-      </form>
+        </form>
       {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
       {loading && !performance ? <p className="text-sm text-muted-foreground">Loading paper evidence…</p> : null}
       {performance ? <>
@@ -83,9 +85,11 @@ export function PaperBookRoute() {
         </div>
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)]">
           <Card>
-            <CardHeader><CardTitle>Verified realized curve</CardTitle></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between gap-3"><CardTitle>{chart === "drawdown" ? "Drawdown curve" : "Verified realized curve"}</CardTitle><Select value={chart} onValueChange={(value) => updateFilter("chart", value)}><SelectTrigger className="w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cumulative_net_pnl">Cumulative net P&L</SelectItem><SelectItem value="drawdown">Drawdown</SelectItem></SelectContent></Select></CardHeader>
             <CardContent>
-              {points.length ? <div className="space-y-2">{points.map((point) => <div key={`${point.at}-${point.trade_id}`} className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-0"><span className="text-muted-foreground">{date(point.at)}</span><span className="font-medium">{money(point.cumulative_net_pnl)}</span></div>)}</div> : <p className="text-sm text-muted-foreground">No verified closed fills in this scope. No zero line is being invented.</p>}
+              {chart === "drawdown" && !drawdownPoints.length ? <p className="text-sm text-muted-foreground">Drawdown is unavailable until the realized series is complete. No zero line is being invented.</p> : null}
+              {chart === "cumulative_net_pnl" && !points.length ? <p className="text-sm text-muted-foreground">No verified closed fills in this scope. No zero line is being invented.</p> : null}
+              <div className="space-y-2">{chart === "drawdown" ? drawdownPoints.map((point) => <Link key={`${point.at}-${point.trade_id}`} to={`/portfolio/paper/trades/${point.trade_id}${location.search}`} className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-0 hover:bg-accent"><span className="text-muted-foreground">{date(point.at)}</span><span className="font-medium">{money(point.drawdown)}</span></Link>) : points.map((point) => <Link key={`${point.at}-${point.trade_id}`} to={`/portfolio/paper/trades/${point.trade_id}${location.search}`} className="flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-0 hover:bg-accent"><span className="text-muted-foreground">{date(point.at)}</span><span className="font-medium">{money(point.cumulative_net_pnl)}</span></Link>)}</div>
               {performance.series?.gaps?.length ? <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">Some open positions have stale, missing, or unreconciled marks, so the curve keeps a visible coverage gap.</p> : null}
             </CardContent>
           </Card>

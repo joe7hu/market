@@ -19,6 +19,7 @@ from investment_panel.infrastructure.postgres.options_execution import OptionsEx
 from investment_panel.infrastructure.postgres.options_decision_system import OptionsDecisionSystemRepository
 from investment_panel.infrastructure.postgres.options_recovery_read import RecoveryReadRepository
 from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+from investment_panel.infrastructure.postgres.research_workbench import ResearchWorkbenchRepository
 from investment_panel.api import job_control
 from investment_panel.api.request_security import require_local_request
 from investment_panel.settings import AppConfig, load_config
@@ -96,6 +97,10 @@ def get_paper_workbench(config: AppConfig = Depends(get_config)) -> PaperWorkben
     return PaperWorkbenchRepository(runtime_for_config(config))
 
 
+def get_research_workbench(config: AppConfig = Depends(get_config)) -> ResearchWorkbenchRepository:
+    return ResearchWorkbenchRepository(runtime_for_config(config))
+
+
 __all__ = [
     "get_options_history",
     "OptionsHistoryService",
@@ -121,6 +126,7 @@ __all__ = [
     "get_superinvestor_query",
     "get_thesis_actions",
     "get_paper_workbench",
+    "get_research_workbench",
     "load_config",
     "runtime_for_config",
 ]

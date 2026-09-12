@@ -12741,6 +12741,38 @@
         "title": "RelativeValueRow",
         "type": "object"
       },
+      "ResearchArtifactDetail": {
+        "additionalProperties": true,
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "content_available": {
+            "default": false,
+            "title": "Content Available",
+            "type": "boolean"
+          },
+          "records": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "retention_state": {
+            "default": "database_metadata_only",
+            "title": "Retention State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "title": "ResearchArtifactDetail",
+        "type": "object"
+      },
       "ResearchBlogsSettingsInput": {
         "properties": {
           "enabled": {
@@ -12790,6 +12822,61 @@
           }
         },
         "title": "ResearchBlogsSettingsInput",
+        "type": "object"
+      },
+      "ResearchClaimDetail": {
+        "additionalProperties": true,
+        "properties": {
+          "claim_id": {
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "resolution_attempts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Resolution Attempts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "claim_id"
+        ],
+        "title": "ResearchClaimDetail",
+        "type": "object"
+      },
+      "ResearchClaimPage": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Count",
+            "type": "object"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "ResearchClaimPage",
         "type": "object"
       },
       "ResearchEvaluationResponse": {
@@ -13068,6 +13155,147 @@
         "title": "ResearchEvaluationResponse",
         "type": "object"
       },
+      "ResearchEvent": {
+        "additionalProperties": true,
+        "properties": {
+          "event_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event At"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
+          },
+          "new_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Version"
+          },
+          "original_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Version"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "event_type"
+        ],
+        "title": "ResearchEvent",
+        "type": "object"
+      },
+      "ResearchEventPage": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchEvent"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "ResearchEventPage",
+        "type": "object"
+      },
+      "ResearchExperimentDetail": {
+        "additionalProperties": true,
+        "properties": {
+          "experiment_id": {
+            "title": "Experiment Id",
+            "type": "string"
+          },
+          "experiment_kind": {
+            "title": "Experiment Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "experiment_id",
+          "experiment_kind"
+        ],
+        "title": "ResearchExperimentDetail",
+        "type": "object"
+      },
+      "ResearchExperimentPage": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Count",
+            "type": "object"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "ResearchExperimentPage",
+        "type": "object"
+      },
       "ResearchIdeaResponse": {
         "properties": {
           "as_of": {
@@ -13197,6 +13425,50 @@
         "title": "ResearchNewsSettingsInput",
         "type": "object"
       },
+      "ResearchPromptDetail": {
+        "additionalProperties": true,
+        "properties": {
+          "effective_diff": {
+            "additionalProperties": true,
+            "title": "Effective Diff",
+            "type": "object"
+          },
+          "effective_template": {
+            "additionalProperties": true,
+            "title": "Effective Template",
+            "type": "object"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "ResearchPromptDetail",
+        "type": "object"
+      },
+      "ResearchPromptPage": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "ResearchPromptPage",
+        "type": "object"
+      },
       "ResearchReviewActivityResponse": {
         "properties": {
           "acknowledged": {
@@ -13285,6 +13557,85 @@
           }
         },
         "title": "ResearchSourcesInput",
+        "type": "object"
+      },
+      "ResearchStrategyDetail": {
+        "additionalProperties": true,
+        "properties": {
+          "comparisons": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Comparisons",
+            "type": "array"
+          },
+          "evaluations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Evaluations",
+            "type": "array"
+          },
+          "gates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Gates",
+            "type": "array"
+          },
+          "strategy_revision_id": {
+            "title": "Strategy Revision Id",
+            "type": "integer"
+          },
+          "trials": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Trials",
+            "type": "array"
+          }
+        },
+        "required": [
+          "strategy_revision_id"
+        ],
+        "title": "ResearchStrategyDetail",
+        "type": "object"
+      },
+      "ResearchStrategyPage": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Count",
+            "type": "object"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "ResearchStrategyPage",
         "type": "object"
       },
       "ResearchStrategySummaryResponse": {
@@ -20843,6 +21194,97 @@
         "summary": "Paper Trades"
       }
     },
+    "/api/paper/trades/export": {
+      "get": {
+        "operationId": "paper_trades_export_api_paper_trades_export_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "symbol",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "strategy_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Strategy Revision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lifecycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(staged|open|closed)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lifecycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "csv",
+              "pattern": "^(csv|json)$",
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Trades Export"
+      }
+    },
     "/api/paper/trades/{trade_id}": {
       "get": {
         "operationId": "paper_trade_detail_api_paper_trades__trade_id__get",
@@ -21322,6 +21764,185 @@
         "summary": "Launch Refresh Job Background"
       }
     },
+    "/api/research/artifacts/{artifact_id}": {
+      "get": {
+        "operationId": "research_artifact_api_research_artifacts__artifact_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchArtifactDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Artifact"
+      }
+    },
+    "/api/research/events": {
+      "get": {
+        "operationId": "research_events_api_research_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchEventPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Events"
+      }
+    },
+    "/api/research/experiments": {
+      "get": {
+        "operationId": "research_experiments_api_research_experiments_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchExperimentPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Experiments"
+      }
+    },
+    "/api/research/experiments/{experiment_id}": {
+      "get": {
+        "operationId": "research_experiment_api_research_experiments__experiment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchExperimentDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Experiment"
+      }
+    },
     "/api/research/overview": {
       "get": {
         "operationId": "research_overview_api_research_overview_get",
@@ -21338,6 +21959,334 @@
           }
         },
         "summary": "Research Overview"
+      }
+    },
+    "/api/research/predictions": {
+      "get": {
+        "operationId": "research_predictions_api_research_predictions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "symbol",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Symbol"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prompt_version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Prompt Version"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchClaimPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Predictions"
+      }
+    },
+    "/api/research/predictions/{claim_id}": {
+      "get": {
+        "operationId": "research_prediction_api_research_predictions__claim_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "title": "Claim Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchClaimDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Prediction"
+      }
+    },
+    "/api/research/prompts": {
+      "get": {
+        "operationId": "research_prompts_api_research_prompts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchPromptPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Research Prompts"
+      }
+    },
+    "/api/research/prompts/{version}": {
+      "get": {
+        "operationId": "research_prompt_api_research_prompts__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchPromptDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Prompt"
+      }
+    },
+    "/api/research/runs/{run_id}": {
+      "get": {
+        "operationId": "research_run_api_research_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContinuousAdvisorRunDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Run"
+      }
+    },
+    "/api/research/strategies": {
+      "get": {
+        "operationId": "research_strategies_api_research_strategies_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchStrategyPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Strategies"
+      }
+    },
+    "/api/research/strategies/{revision_id}": {
+      "get": {
+        "operationId": "research_strategy_api_research_strategies__revision_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "revision_id",
+            "required": true,
+            "schema": {
+              "title": "Revision Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchStrategyDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Research Strategy"
       }
     },
     "/api/research/summary": {

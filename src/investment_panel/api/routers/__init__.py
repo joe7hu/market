@@ -2,7 +2,7 @@
 `ALL_ROUTERS`; do not grow route logic back into `app/main.py`."""
 from __future__ import annotations
 
-from investment_panel.api.routers import agent, continuous_advisor, event_scout, market_data, options, panel, paper, portfolio, sources, storage, system, theses, tickers
+from investment_panel.api.routers import agent, continuous_advisor, event_scout, market_data, options, panel, paper, portfolio, research_workbench, sources, storage, system, theses, tickers
 
 ALL_ROUTERS = [
     panel.router,
@@ -18,4 +18,5 @@ ALL_ROUTERS = [
     agent.router,
     continuous_advisor.router,
     paper.router,
+    research_workbench.router,
 ]

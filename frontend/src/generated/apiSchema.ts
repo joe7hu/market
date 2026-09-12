@@ -955,6 +955,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/paper/trades/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Paper Trades Export */
+        get: operations["paper_trades_export_api_paper_trades_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/paper/trades/{trade_id}": {
         parameters: {
             query?: never;
@@ -1160,6 +1177,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/research/artifacts/{artifact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Artifact */
+        get: operations["research_artifact_api_research_artifacts__artifact_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Events */
+        get: operations["research_events_api_research_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/experiments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Experiments */
+        get: operations["research_experiments_api_research_experiments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/experiments/{experiment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Experiment */
+        get: operations["research_experiment_api_research_experiments__experiment_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/research/overview": {
         parameters: {
             query?: never;
@@ -1169,6 +1254,125 @@ export interface paths {
         };
         /** Research Overview */
         get: operations["research_overview_api_research_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/predictions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Predictions */
+        get: operations["research_predictions_api_research_predictions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/predictions/{claim_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Prediction */
+        get: operations["research_prediction_api_research_predictions__claim_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Prompts */
+        get: operations["research_prompts_api_research_prompts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/prompts/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Prompt */
+        get: operations["research_prompt_api_research_prompts__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Run */
+        get: operations["research_run_api_research_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/strategies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Strategies */
+        get: operations["research_strategies_api_research_strategies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/research/strategies/{revision_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Research Strategy */
+        get: operations["research_strategy_api_research_strategies__revision_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6013,6 +6217,27 @@ export interface components {
             /** Verified At */
             verified_at?: string | null;
         };
+        /** ResearchArtifactDetail */
+        ResearchArtifactDetail: {
+            /** Artifact Id */
+            artifact_id: string;
+            /**
+             * Content Available
+             * @default false
+             */
+            content_available: boolean;
+            /** Records */
+            records?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Retention State
+             * @default database_metadata_only
+             */
+            retention_state: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** ResearchBlogsSettingsInput */
         ResearchBlogsSettingsInput: {
             /** Enabled */
@@ -6021,6 +6246,32 @@ export interface components {
             rss_urls?: string[] | string | null;
             /** Substack Urls */
             substack_urls?: string[] | string | null;
+        };
+        /** ResearchClaimDetail */
+        ResearchClaimDetail: {
+            /** Claim Id */
+            claim_id: string;
+            /** Resolution Attempts */
+            resolution_attempts?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** ResearchClaimPage */
+        ResearchClaimPage: {
+            /** Count */
+            count?: {
+                [key: string]: number;
+            };
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
         };
         /** ResearchEvaluationResponse */
         ResearchEvaluationResponse: {
@@ -6082,6 +6333,59 @@ export interface components {
             /** Verdict */
             verdict: string;
         };
+        /** ResearchEvent */
+        ResearchEvent: {
+            /** Event At */
+            event_at?: string | null;
+            /** Event Type */
+            event_type: string;
+            /** Evidence Id */
+            evidence_id?: string | null;
+            /** New Version */
+            new_version?: string | null;
+            /** Original Version */
+            original_version?: string | null;
+            /** Reason */
+            reason?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ResearchEventPage */
+        ResearchEventPage: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Rows */
+            rows?: components["schemas"]["ResearchEvent"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /** ResearchExperimentDetail */
+        ResearchExperimentDetail: {
+            /** Experiment Id */
+            experiment_id: string;
+            /** Experiment Kind */
+            experiment_kind: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ResearchExperimentPage */
+        ResearchExperimentPage: {
+            /** Count */
+            count?: {
+                [key: string]: number;
+            };
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
+        };
         /** ResearchIdeaResponse */
         ResearchIdeaResponse: {
             /**
@@ -6115,6 +6419,35 @@ export interface components {
             /** Providers */
             providers?: string[] | string | null;
         };
+        /** ResearchPromptDetail */
+        ResearchPromptDetail: {
+            /** Effective Diff */
+            effective_diff?: {
+                [key: string]: unknown;
+            };
+            /** Effective Template */
+            effective_template?: {
+                [key: string]: unknown;
+            };
+            /** Version */
+            version: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ResearchPromptPage */
+        ResearchPromptPage: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
+        };
         /** ResearchReviewActivityResponse */
         ResearchReviewActivityResponse: {
             /** Acknowledged */
@@ -6139,6 +6472,44 @@ export interface components {
             blogs?: components["schemas"]["ResearchBlogsSettingsInput"] | null;
             news?: components["schemas"]["ResearchNewsSettingsInput"] | null;
             x?: components["schemas"]["ResearchXSettingsInput"] | null;
+        };
+        /** ResearchStrategyDetail */
+        ResearchStrategyDetail: {
+            /** Comparisons */
+            comparisons?: {
+                [key: string]: unknown;
+            }[];
+            /** Evaluations */
+            evaluations?: {
+                [key: string]: unknown;
+            }[];
+            /** Gates */
+            gates?: {
+                [key: string]: unknown;
+            }[];
+            /** Strategy Revision Id */
+            strategy_revision_id: number;
+            /** Trials */
+            trials?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** ResearchStrategyPage */
+        ResearchStrategyPage: {
+            /** Count */
+            count?: {
+                [key: string]: number;
+            };
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
         };
         /** ResearchStrategySummaryResponse */
         ResearchStrategySummaryResponse: {
@@ -9426,6 +9797,40 @@ export interface operations {
             };
         };
     };
+    paper_trades_export_api_paper_trades_export_get: {
+        parameters: {
+            query?: {
+                symbol?: string | null;
+                strategy_revision?: number | null;
+                lifecycle?: string | null;
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     paper_trade_detail_api_paper_trades__trade_id__get: {
         parameters: {
             query?: never;
@@ -9820,6 +10225,131 @@ export interface operations {
             };
         };
     };
+    research_artifact_api_research_artifacts__artifact_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchArtifactDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_events_api_research_events_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchEventPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_experiments_api_research_experiments_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchExperimentPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_experiment_api_research_experiments__experiment_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                experiment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchExperimentDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     research_overview_api_research_overview_get: {
         parameters: {
             query?: never;
@@ -9836,6 +10366,216 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LearningOverview"];
+                };
+            };
+        };
+    };
+    research_predictions_api_research_predictions_get: {
+        parameters: {
+            query?: {
+                symbol?: string | null;
+                prompt_version?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchClaimPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_prediction_api_research_predictions__claim_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                claim_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchClaimDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_prompts_api_research_prompts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchPromptPage"];
+                };
+            };
+        };
+    };
+    research_prompt_api_research_prompts__version__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchPromptDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_run_api_research_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinuousAdvisorRunDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_strategies_api_research_strategies_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchStrategyPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    research_strategy_api_research_strategies__revision_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                revision_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchStrategyDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
