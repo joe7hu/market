@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { EvidenceFields } from "@/components/market/StoredEvidence";
+import { EvidenceFields, TechnicalDetails } from "@/components/market/StoredEvidence";
 import { BrainCircuit, Loader2, Play, Save, Send } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
@@ -19,6 +19,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Tone } from "@/ui/tone";
 import { titleLabel, toneFromText } from "@/shared/rowFormat";
+import { evidenceReason } from "@/presentation/evidence";
+import { statusLabel } from "@/presentation/labels";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
 import { DailyResearchPromptPanel } from "@/views/agent/researchPrompt";
 
@@ -390,10 +392,8 @@ function ContinuousAdvisorPanel({ data, onSaved }: { data: ContinuousAdvisor; on
             {data.tickers.map((ticker) => <AdvisorTickerCard key={ticker.symbol} ticker={ticker} />)}
           </div>
         ) : <p className="text-sm text-muted-foreground">No owned or active-watchlist symbols are currently monitored.</p>}
-        <details className="rounded-md border border-border px-3 py-2 text-sm">
-          <summary className="cursor-pointer font-medium">Strategy health and provenance</summary>
-          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{JSON.stringify(health, null, 2)}</pre>
-        </details>
+        <div className="grid gap-3 rounded-lg border border-border bg-background p-4 text-sm sm:grid-cols-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Current prompt</p><p className="mt-1 font-semibold">{titleLabel(health.active_prompt_version ?? "Not selected")}</p></div><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Prompt being tested</p><p className="mt-1 font-semibold">{titleLabel(health.challenger?.version ?? "No challenger")}</p></div><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Learning state</p><p className="mt-1 font-semibold">{statusLabel(health.status ?? (health.coverage?.valid_resolved_forecast_count ? "collecting_outcomes" : "waiting"))}</p></div></div>
+        <TechnicalDetails title="Technical advisor health"><div className="space-y-2 text-xs text-muted-foreground"><p>Coverage: {String(health.coverage?.symbols ?? 0)} monitored symbols · {String(health.coverage?.responses ?? 0)} responses · ${Number(health.coverage?.cost_usd ?? 0).toFixed(4)} priced cost.</p><EvidenceFields value={health} /></div></TechnicalDetails>
       </div>
     </DataTableFrame>
   );
@@ -407,13 +407,13 @@ function AdvisorTickerCard({ ticker }: { ticker: ContinuousAdvisor["tickers"][nu
       <div className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{ticker.symbol}</p><h3 className="mt-1 font-semibold">{verdict.thesis || "No verdict yet"}</h3></div><StatusBadge tone={verdict.blockers?.length ? "warn" : "good"}>{verdict.blockers?.length ? `${verdict.blockers.length} blocker${verdict.blockers.length === 1 ? "" : "s"}` : "Research inputs valid"}</StatusBadge></div>
       <p className="mt-2 text-sm text-muted-foreground"><strong>Countercase:</strong> {verdict.countercase || "Unavailable"}</p>
       {forecasts.map((forecast, index) => <p key={forecast.claim_key ?? index} className="mt-2 text-sm"><strong>Forecast {index + 1}:</strong> {forecast.statement} · {forecast.horizon} · {forecast.probability == null ? "Probability unavailable" : `${Math.round(forecast.probability * 100)}%`} {forecast.direction}</p>)}
-      {(verdict.invalidations ?? []).map((claim, index) => <div key={index} className="mt-2 text-sm"><strong>Invalidation {index + 1}</strong><EvidenceFields value={claim} /></div>)}
+      {(verdict.invalidations ?? []).map((claim, index) => <div key={index} className="mt-2 text-sm"><strong>Watch for:</strong> {String(claim.text ?? claim.event ?? claim.metric ?? "An invalidation condition was recorded.")}</div>)}
       <p className="mt-2 text-xs text-muted-foreground">Research validity does not establish forecast maturity or paper execution readiness.</p>
       <Link className="text-sm underline" to="/research?section=predictions">Inspect claim outcomes and prompt history</Link>
       <p className="mt-2 text-xs text-muted-foreground">{verdict.change_since_prior || "No prior cycle"} · Next review: {verdict.next_review_trigger || "—"}{verdict.next_review_at ? ` (${formatTime(verdict.next_review_at)})` : ""}{verdict.outcome_date ? ` · Outcome: ${formatTime(verdict.outcome_date)}` : ""}</p>
       {verdict.evidence_freshness && Object.keys(verdict.evidence_freshness).length ? <p className="mt-1 text-xs text-muted-foreground"><strong>Evidence freshness:</strong> {Object.entries(verdict.evidence_freshness).map(([key, value]) => `${titleLabel(key)} ${value}`).join(" · ")}</p> : null}
-      {verdict.blockers?.length ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Blockers: {verdict.blockers.join(", ")}</p> : null}
-      <details className="mt-3 text-xs"><summary className="cursor-pointer text-muted-foreground">Packet provenance</summary><EvidenceFields value={ticker.provenance} /></details>
+      {verdict.blockers?.length ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Blockers: {verdict.blockers.map(evidenceReason).join(", ")}</p> : null}
+      <TechnicalDetails title="Packet provenance"><EvidenceFields value={ticker.provenance} /></TechnicalDetails>
     </div>
   );
 }

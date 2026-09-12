@@ -11,9 +11,12 @@ paper book. No live order authority is added.
   one route-backed scope. Its header, realized curve, first 100 trades, cursor pages
   and explicit CSV export carry that scope and snapshot identity. Point selection
   opens the contributing trade. An accessible event table provides the same links.
-- Trade details show stored decision rationale, forecasts, the deterministic policy,
-  the immutable ticket, individual fills, fees, multipliers, mark provenance and
-  research outcomes. An order's origin is unattributed unless evidence establishes it.
+- The primary paper view leads with verified P&L, drawdown, entry/exit/open-position
+  event overlays and attribution cohorts. Empty books show the paper-learning gate
+  and its next action instead of a blank dashboard. Trade details show stored decision
+  rationale, forecasts, the deterministic policy, the immutable ticket, individual
+  fills, fees, multipliers, mark provenance and research outcomes. An order's origin
+  is unattributed unless evidence establishes it.
 - Research contains Overview, Strategies, Predictions and Experiments. Sources stays
   at `/sources`. Revision details link to the canonical paper book under a strategy
   filter and expose failed trials and backend gate measurements.
@@ -43,6 +46,11 @@ reads are bounded at 10,000 orders and disclose that ceiling. If it is exceeded,
 whole-scope net P&L, unrealized P&L and drawdown are withheld. The known realized
 subtotal remains labeled partial. This ceiling is not a claim of full-population
 support beyond the documented benchmark.
+
+The workbench reads a PostgreSQL-maintained `analysis.paper_trade_projection` for
+fill totals and event packets and an `analysis.paper_current_mark_projection` for
+confirmed stock marks. Journal/order triggers refresh only the affected rows; detail
+drilldown still reads the canonical ledger and evidence joins.
 
 ## Advisor evaluation contract
 
@@ -87,15 +95,17 @@ labeled deterministic fixture, not production trading performance.
 
 On macOS 26.6.2, Apple Silicon, September 12, 2026:
 
-| Warm read | Before indexes | With paper scope/fill indexes |
+| Warm read | Before indexes | With maintained workbench projections |
 | --- | ---: | ---: |
-| Summary | 7.5701 s | 4.2743 s |
-| 100-row page | 5.8277 s | 3.2011 s |
-| Trade detail | 0.0327 s | 0.0295 s |
+| Summary | 7.5701 s | 0.4352 s |
+| 100-row page | 5.8277 s | 0.0126 s |
+| Trade detail | 0.0327 s | 0.0021 s |
 
-The proposed sub-second summary/page target is **not met**. The indexed journal
-lookup improves the measured path; confirmed historical mark selection remains a
-material cost. No alternate mark authority or browser cache was introduced.
+The representative sub-second summary/page target is met in this fixture. The
+projection is disposable derived state; the paper order and trade journal remain
+authoritative. If a source is enabled after its facts were confirmed, the reader
+falls back to the canonical point-in-time selector until the next confirmation
+refreshes the projection.
 
 ## Live observations
 

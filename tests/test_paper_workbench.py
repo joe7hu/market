@@ -208,3 +208,39 @@ def test_chart_bound_keeps_extremes_and_drawdown_trough():
     indices = paper_chart_indices(series, drawdowns)
     assert len(indices) <= 2000
     assert {0, 9999, 4321, 4322, 4323} <= set(indices)
+
+
+def test_visual_performance_markers_and_attribution_only_use_verified_exits():
+    from investment_panel.infrastructure.postgres.paper_workbench import paper_performance_visuals
+
+    row = paper_trade_payload(
+        _row(
+            paper_status="closed",
+            entry_quantity=Decimal("1"),
+            exit_quantity=Decimal("1"),
+            entry_units=Decimal("10"),
+            exit_units=Decimal("15"),
+            entry_fees=Decimal("0.10"),
+            exit_fees=Decimal("0.10"),
+            actual_fees=Decimal("0.20"),
+            missing_fees=0,
+            invalid_fills=0,
+            fill_multipliers_verified=True,
+            strategy_name="Recovery",
+            strategy_key="recovery",
+            fill_rows=[
+                {"id": "entry", "action": "paper_entry", "quantity": 1, "price": 10, "fees": 0.10, "created_at": "2026-09-01T14:00:00+00:00"},
+                {"id": "exit", "action": "paper_exit", "quantity": 1, "price": 15, "fees": 0.10, "created_at": "2026-09-03T14:00:00+00:00"},
+            ],
+        )
+    )
+    visuals = paper_performance_visuals([row])
+    markers = visuals["event_markers"]
+    attribution = visuals["attribution"]
+
+    assert [marker["kind"] for marker in markers] == ["entry", "exit"]
+    assert markers[-1]["pnl"] == row["realized_pnl"]
+    assert markers[-1]["cumulative_net_pnl"] == row["realized_pnl"]
+    assert attribution["strategy"][0]["label"] == "Recovery"
+    assert attribution["strategy"][0]["trades"] == 1
+    assert attribution["strategy"][0]["win_rate"] == 1.0

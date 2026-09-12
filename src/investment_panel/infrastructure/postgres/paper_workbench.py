@@ -10,9 +10,6 @@ from math import isfinite
 from typing import Any
 
 from investment_panel.domain.decision import market_session_bounds
-from investment_panel.infrastructure.postgres.options_paper_ledger import (
-    PAPER_FILL_MULTIPLIERS_SQL,
-)
 from investment_panel.infrastructure.postgres.runtime import (
     DatabaseRuntime,
     JOB_PROFILE,
@@ -21,6 +18,7 @@ from investment_panel.infrastructure.postgres.runtime import (
 
 CALCULATION_VERSION = "paper-workbench.v2"
 MAX_PERFORMANCE_ROWS = 10_000
+MAX_PERFORMANCE_EVENT_ORDERS = 4_000
 MARK_STALE_AFTER = timedelta(days=3)
 
 
@@ -78,6 +76,9 @@ class PaperWorkbenchRepository:
             count_where=scope_where,
             count_params=scope_params,
             as_of=snapshot_at,
+            compact=True,
+            include_fill_rows=False,
+            include_legs=False,
         )
         has_more = len(rows) > safe_limit
         rows = rows[:safe_limit]
@@ -252,7 +253,12 @@ class PaperWorkbenchRepository:
             reconciliation_status=reconciliation_status,
         )
         rows, total, _pending, counts, watermark, as_of = self._rows(
-            where, params, limit=MAX_PERFORMANCE_ROWS
+            where,
+            params,
+            limit=MAX_PERFORMANCE_ROWS,
+            compact=True,
+            include_fill_rows=False,
+            include_legs=False,
         )
         filled = [row for row in rows if row["filled_quantity"] > 0]
         realized_rows = [row for row in rows if row["realized_pnl"] is not None]
@@ -274,7 +280,11 @@ class PaperWorkbenchRepository:
         )
         cumulative = Decimal("0")
         series = []
-        for event in _realized_exit_events(realized_rows):
+        # ponytail: cap detailed event fetches at 4k orders; aggregate P&L
+        # remains full-scope and older exits fall back to order exit_at.
+        fill_rows_by_order = self._exit_fill_rows(rows[:MAX_PERFORMANCE_EVENT_ORDERS], as_of)
+        exit_events = _realized_exit_events(realized_rows, fill_rows_by_order)
+        for event in exit_events:
             cumulative += event["pnl"]
             series.append(
                 {
@@ -317,6 +327,8 @@ class PaperWorkbenchRepository:
             else None
         )
         display_indices = paper_chart_indices(series, drawdown_series)
+        visuals = paper_performance_visuals(rows, exit_events, fill_rows_by_order=fill_rows_by_order)
+        event_markers = visuals["event_markers"]
         mark_coverage = (
             sum(row.get("mark_value") is not None for row in open_rows) / len(open_rows)
             if open_rows
@@ -419,6 +431,8 @@ class PaperWorkbenchRepository:
                     }
                     for point in series
                 ],
+                "event_markers": event_markers,
+                "available_event_kinds": sorted({str(event["kind"]) for event in event_markers}),
                 "gaps": [
                     {
                         "reason": row.get("mark_gap_reason")
@@ -435,7 +449,55 @@ class PaperWorkbenchRepository:
                     "capital_normalized_return": "opening_capital_unavailable",
                 },
             },
+            "attribution": visuals["attribution"],
         }
+
+    def _exit_fill_rows(
+        self, rows: list[dict[str, Any]], as_of: datetime
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Load fills only for realized rows that need event-level visuals."""
+
+        order_ids = [
+            str(row["paper_order_id"])
+            for row in rows
+            if row.get("paper_order_id") is not None
+        ]
+        if not order_ids:
+            return {}
+        with self.runtime.snapshot(JOB_PROFILE) as connection:
+            fill_rows = connection.execute(
+                """
+                SELECT journal.details->>'paper_order_id' AS paper_order_id,
+                       journal.id::text AS id,
+                       journal.action,
+                       journal.quantity,
+                       journal.price,
+                       journal.created_at,
+                       journal.details->'fees' AS fees,
+                       journal.details->'contract_multiplier' AS contract_multiplier,
+                       journal.details->'entry_contract_multiplier' AS entry_contract_multiplier,
+                       journal.details->'exit_contract_multiplier' AS exit_contract_multiplier
+                FROM app.trade_journal journal
+                JOIN app.paper_order paper
+                  ON paper.id::text = journal.details->>'paper_order_id'
+                 AND paper.id = ANY(%s::uuid[])
+                 AND paper.paper_only IS TRUE
+                 AND journal.decision_id IS NOT DISTINCT FROM paper.decision_id
+                 AND journal.instrument_id = paper.instrument_id
+                WHERE journal.rationale = 'deterministic_options_paper_execution'
+                  AND (journal.action = 'paper_entry'
+                       OR journal.action = 'paper_exit'
+                       OR journal.action LIKE 'paper_exit:%%')
+                  AND journal.created_at <= %s
+                ORDER BY journal.details->>'paper_order_id', journal.created_at, journal.id
+                """,
+                [order_ids, as_of],
+            ).fetchall()
+        result: dict[str, list[dict[str, Any]]] = {}
+        for row in fill_rows:
+            fill = dict(row)
+            result.setdefault(str(fill.pop("paper_order_id")), []).append(fill)
+        return result
 
     def _rows(
         self,
@@ -446,6 +508,9 @@ class PaperWorkbenchRepository:
         count_where: list[str] | None = None,
         count_params: list[Any] | None = None,
         as_of: datetime | None = None,
+        compact: bool = False,
+        include_fill_rows: bool = True,
+        include_legs: bool = True,
     ) -> tuple[list[dict[str, Any]], int, int, dict[str, int], datetime | None, datetime]:
         as_of = as_of or datetime.now(UTC)
         if as_of.tzinfo is None:
@@ -454,15 +519,7 @@ class PaperWorkbenchRepository:
             count_row = connection.execute(
                 f"""SELECT count(*) AS count,
                            count(*) FILTER (WHERE paper.status = ANY(%s::text[])) AS pending,
-                           count(*) FILTER (WHERE EXISTS (
-                               SELECT 1
-                               FROM app.trade_journal journal
-                               WHERE journal.details->>'paper_order_id' = paper.id::text
-                                 AND journal.decision_id IS NOT DISTINCT FROM paper.decision_id
-                                 AND journal.instrument_id = paper.instrument_id
-                                 AND journal.rationale = 'deterministic_options_paper_execution'
-                                 AND journal.action = 'paper_entry'
-                           )) AS filled_orders,
+                           count(*) FILTER (WHERE coalesce(projection.entry_quantity, 0) > 0) AS filled_orders,
                            count(*) FILTER (WHERE paper.status = ANY(ARRAY['closed', 'exited', 'invalidated']::text[])) AS closed_trades,
                            count(*) FILTER (WHERE paper.status = ANY(ARRAY['open', 'entered', 'partial_exited']::text[])) AS open_trades,
                            count(*) FILTER (WHERE paper.status = ANY(ARRAY['staged', 'pending', 'submitted', 'cancelled', 'rejected']::text[])) AS staged_orders,
@@ -472,6 +529,8 @@ class PaperWorkbenchRepository:
                     JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
                     LEFT JOIN analysis.decision decision ON decision.id = paper.decision_id
                     LEFT JOIN analysis.option_decision option_decision ON option_decision.decision_id = paper.decision_id
+                    LEFT JOIN analysis.paper_trade_projection projection
+                      ON projection.paper_order_id = paper.id
                     {("WHERE " + " AND ".join(count_where if count_where is not None else where)) if (count_where or where) else ""}""",
                 [
                     ["staged", "pending", "submitted", "cancelled", "rejected"],
@@ -481,12 +540,23 @@ class PaperWorkbenchRepository:
             raw_rows = [
                 dict(row)
                 for row in connection.execute(
-                    self._select_sql(where)
+                    self._select_sql(
+                        where,
+                        compact=compact,
+                        include_fill_rows=include_fill_rows,
+                        include_legs=include_legs,
+                    )
                     + " ORDER BY paper.created_at DESC, paper.id DESC LIMIT %s",
                     [*params, limit],
                 ).fetchall()
             ]
-            marks, mark_watermark = _current_marks(connection, raw_rows, as_of)
+            # Closed orders do not need a current quote. Avoid joining every
+            # historical position to the live mark tables on each dashboard read.
+            marks, mark_watermark = _current_marks(
+                connection,
+                [row for row in raw_rows if _raw_has_open_quantity(row)],
+                as_of,
+            )
         return (
             [
                 paper_trade_payload(
@@ -508,7 +578,98 @@ class PaperWorkbenchRepository:
         )
 
     @staticmethod
-    def _select_sql(where: list[str]) -> str:
+    def _select_sql(
+        where: list[str],
+        *,
+        compact: bool = False,
+        include_fill_rows: bool = True,
+        include_legs: bool = True,
+    ) -> str:
+        """Select the bounded list projection or the full detail record."""
+        detail_select = (
+            """
+                   thesis.revision AS thesis_revision,
+                   thesis.thesis AS thesis_payload,
+                   outcome.maturity_state AS outcome_state,
+                   outcome.observed_through,
+                   outcome.current_return,
+                   outcome.realized_exit_return,
+                   outcome.realized_exit_basis,
+                   outcome.mae,
+                   outcome.max_drawdown AS outcome_max_drawdown,
+                   shadow.id::text AS shadow_id,
+                   shadow.status AS shadow_status,
+                   shadow.entry_at AS shadow_entry_at,
+                   shadow.exit_at AS shadow_exit_at,
+                   shadow.metrics AS shadow_metrics,
+                   evidence.items AS decision_evidence,
+"""
+            if not compact
+            else
+            """
+                   NULL::integer AS thesis_revision,
+                   NULL::jsonb AS thesis_payload,
+                   NULL::text AS outcome_state,
+                   NULL::timestamptz AS observed_through,
+                   NULL::double precision AS current_return,
+                   NULL::double precision AS realized_exit_return,
+                   NULL::text AS realized_exit_basis,
+                   NULL::double precision AS mae,
+                   NULL::double precision AS outcome_max_drawdown,
+                   NULL::text AS shadow_id,
+                   NULL::text AS shadow_status,
+                   NULL::timestamptz AS shadow_entry_at,
+                   NULL::timestamptz AS shadow_exit_at,
+                   NULL::jsonb AS shadow_metrics,
+                   NULL::jsonb AS decision_evidence,
+"""
+        )
+        detail_joins = (
+            """
+            LEFT JOIN app.thesis thesis ON thesis.id = option_decision.thesis_id
+            LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = paper.decision_id
+            LEFT JOIN analysis.shadow_trade shadow ON shadow.decision_id = paper.decision_id
+            LEFT JOIN LATERAL (
+                SELECT coalesce(jsonb_agg(jsonb_build_object(
+                           'evidence_kind', evidence.evidence_kind,
+                           'reference_key', evidence.reference_key,
+                           'reference_url', evidence.reference_url,
+                           'detail', evidence.detail
+                       ) ORDER BY evidence.evidence_kind, evidence.reference_key), '[]'::jsonb) AS items
+                FROM analysis.decision_evidence evidence
+                WHERE evidence.decision_id = paper.decision_id
+            ) evidence ON TRUE
+"""
+            if not compact
+            else ""
+        )
+        fill_rows_select = "projection.fill_rows" if include_fill_rows else "NULL::jsonb"
+        legs_select = "legs.items" if include_legs else "NULL::jsonb"
+        legs_join = (
+            """
+            LEFT JOIN LATERAL (
+                SELECT coalesce(jsonb_agg(jsonb_build_object(
+                           'leg_index', leg.leg_index,
+                           'contract_id', leg.contract_id,
+                           'option_type', leg.option_type,
+                           'side', leg.side,
+                           'strike', leg.strike,
+                           'bid', leg.bid,
+                           'ask', leg.ask,
+                           'bid_size', leg.bid_size,
+                           'ask_size', leg.ask_size,
+                           'quote_time', leg.quote_time,
+                           'expiration', contract.expiration,
+                           'multiplier', contract.multiplier
+                       ) ORDER BY leg.leg_index), '[]'::jsonb) AS items
+                FROM app.paper_order_leg leg
+                JOIN catalog.option_contract contract ON contract.id = leg.contract_id
+                WHERE leg.paper_order_id = paper.id
+            ) legs ON TRUE
+            """
+            if include_legs
+            else ""
+        )
         return f"""
             SELECT paper.id::text AS paper_order_id,
                    paper.book,
@@ -573,104 +734,30 @@ class PaperWorkbenchRepository:
                    contract.strike,
                    contract.option_type,
                    contract.multiplier AS catalog_multiplier,
-                   thesis.revision AS thesis_revision,
-                   thesis.thesis AS thesis_payload,
-                   outcome.maturity_state AS outcome_state,
-                   outcome.observed_through,
-                   outcome.current_return,
-                   outcome.realized_exit_return,
-                   outcome.realized_exit_basis,
-                   outcome.mae,
-                   outcome.max_drawdown AS outcome_max_drawdown,
-                   shadow.id::text AS shadow_id,
-                   shadow.status AS shadow_status,
-                   shadow.entry_at AS shadow_entry_at,
-                   shadow.exit_at AS shadow_exit_at,
-                   shadow.metrics AS shadow_metrics,
-                   evidence.items AS decision_evidence,
-                   fills.entry_quantity,
-                   fills.exit_quantity,
-                   fills.entry_units,
-                   fills.exit_units,
-                   fills.actual_fees,
-                   fills.entry_fees,
-                   fills.exit_fees,
-                   fills.missing_fees,
-                       fills.invalid_fills,
-                       fills.fill_multipliers_verified,
-                   fills.latest_fill_at,
-                   fills.journal_ids,
-                   fills.fill_rows,
-                   legs.items AS order_legs
+{detail_select}                   projection.entry_quantity,
+                   projection.exit_quantity,
+                   projection.entry_units,
+                   projection.exit_units,
+                   projection.actual_fees,
+                   projection.entry_fees,
+                   projection.exit_fees,
+                   projection.missing_fees,
+                   projection.invalid_fills,
+                   projection.fill_multipliers_verified,
+                   projection.latest_fill_at,
+                   projection.journal_ids,
+                   {fill_rows_select} AS fill_rows,
+                   {legs_select} AS order_legs
             FROM app.paper_order paper
             JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
             LEFT JOIN analysis.decision decision ON decision.id = paper.decision_id
             LEFT JOIN analysis.strategy_revision revision ON revision.id = decision.strategy_revision_id
             LEFT JOIN analysis.option_decision option_decision ON option_decision.decision_id = paper.decision_id
             LEFT JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
-            LEFT JOIN app.thesis thesis ON thesis.id = option_decision.thesis_id
-            LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = paper.decision_id
-            LEFT JOIN analysis.shadow_trade shadow ON shadow.decision_id = paper.decision_id
-            LEFT JOIN LATERAL (
-                SELECT coalesce(jsonb_agg(jsonb_build_object(
-                           'evidence_kind', evidence.evidence_kind,
-                           'reference_key', evidence.reference_key,
-                           'reference_url', evidence.reference_url,
-                           'detail', evidence.detail
-                       ) ORDER BY evidence.evidence_kind, evidence.reference_key), '[]'::jsonb) AS items
-                FROM analysis.decision_evidence evidence
-                WHERE evidence.decision_id = paper.decision_id
-            ) evidence ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT coalesce(sum(journal.quantity) FILTER (WHERE journal.action = 'paper_entry'), 0) AS entry_quantity,
-                       coalesce(sum(journal.quantity) FILTER (WHERE journal.action <> 'paper_entry'), 0) AS exit_quantity,
-                       coalesce(sum(journal.quantity * journal.price) FILTER (WHERE journal.action = 'paper_entry'), 0) AS entry_units,
-                       coalesce(sum(journal.quantity * journal.price) FILTER (WHERE journal.action <> 'paper_entry'), 0) AS exit_units,
-                       coalesce(sum((journal.details->>'fees')::numeric) FILTER (WHERE journal.details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS actual_fees,
-                       coalesce(sum((journal.details->>'fees')::numeric) FILTER (WHERE journal.action = 'paper_entry' AND journal.details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS entry_fees,
-                       coalesce(sum((journal.details->>'fees')::numeric) FILTER (WHERE journal.action <> 'paper_entry' AND journal.details->>'fees' ~ '^[0-9]+([.][0-9]+)?$'), 0) AS exit_fees,
-                       count(*) FILTER (WHERE NOT coalesce(journal.details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)) AS missing_fees,
-                       count(*) FILTER (WHERE NOT coalesce(journal.quantity > 0 AND journal.quantity < 'Infinity'::numeric AND journal.price >= 0 AND journal.price < 'Infinity'::numeric AND (journal.action <> 'paper_entry' OR journal.price > 0), false)) AS invalid_fills,
-                       max(journal.created_at) AS latest_fill_at,
-                       CASE WHEN count(journal.id) = 0 THEN NULL ELSE {PAPER_FILL_MULTIPLIERS_SQL.replace("action", "journal.action").replace("details", "journal.details").replace("paper.contract_multiplier", "paper.contract_multiplier")} END AS fill_multipliers_verified,
-                       coalesce(array_agg(journal.id::text ORDER BY journal.created_at, journal.id), ARRAY[]::text[]) AS journal_ids,
-                       coalesce(jsonb_agg(jsonb_build_object(
-                           'id', journal.id::text,
-                           'action', journal.action,
-                           'quantity', journal.quantity,
-                           'price', journal.price,
-                           'created_at', journal.created_at,
-                           'fees', journal.details->'fees',
-                           'contract_multiplier', journal.details->'contract_multiplier',
-                           'entry_contract_multiplier', journal.details->'entry_contract_multiplier',
-                           'exit_contract_multiplier', journal.details->'exit_contract_multiplier'
-                       ) ORDER BY journal.created_at, journal.id) FILTER (WHERE journal.id IS NOT NULL), '[]'::jsonb) AS fill_rows
-                FROM app.trade_journal journal
-                WHERE journal.details->>'paper_order_id' = paper.id::text
-                  AND journal.decision_id IS NOT DISTINCT FROM paper.decision_id
-                  AND journal.instrument_id = paper.instrument_id
-                  AND journal.rationale = 'deterministic_options_paper_execution'
-                  AND (journal.action = 'paper_entry' OR journal.action = 'paper_exit' OR journal.action LIKE 'paper_exit:%%')
-            ) fills ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT coalesce(jsonb_agg(jsonb_build_object(
-                           'leg_index', leg.leg_index,
-                           'contract_id', leg.contract_id,
-                           'option_type', leg.option_type,
-                           'side', leg.side,
-                           'strike', leg.strike,
-                           'bid', leg.bid,
-                           'ask', leg.ask,
-                           'bid_size', leg.bid_size,
-                           'ask_size', leg.ask_size,
-                           'quote_time', leg.quote_time,
-                           'expiration', contract.expiration,
-                           'multiplier', contract.multiplier
-                       ) ORDER BY leg.leg_index), '[]'::jsonb) AS items
-                FROM app.paper_order_leg leg
-                JOIN catalog.option_contract contract ON contract.id = leg.contract_id
-                WHERE leg.paper_order_id = paper.id
-            ) legs ON TRUE
+            LEFT JOIN analysis.paper_trade_projection projection
+              ON projection.paper_order_id = paper.id
+{detail_joins}
+{legs_join}
             {("WHERE " + " AND ".join(where)) if where else ""}
         """
 
@@ -713,14 +800,110 @@ def _current_marks(
     if stock_instrument_ids:
         stock_rows = connection.execute(
             """
-            SELECT priced.instrument_id, priced.price, priced.currency, priced.source_id,
-                   priced.observed_at, priced.available_at, priced.valuation_status,
-                   priced.source_kind
-            FROM raw.current_price_at(%s, %s::bigint[]) priced
-            ORDER BY priced.instrument_id
+            SELECT mark.instrument_id, mark.price, mark.currency, mark.source_id,
+                   mark.observed_at, mark.available_at, mark.valuation_status,
+                   mark.source_kind
+            FROM analysis.paper_current_mark_projection mark
+            JOIN ingest.source source
+              ON source.id = mark.source_id
+             AND source.enabled
+             AND source.operational_state = 'active'
+            WHERE mark.instrument_id = ANY(%s::bigint[])
+              AND mark.observed_at <= %s
+              AND mark.available_at <= %s
+              AND mark.projected_at <= %s
+            ORDER BY mark.instrument_id
             """,
-            [as_of, stock_instrument_ids],
+            [stock_instrument_ids, as_of, as_of, as_of],
         ).fetchall()
+        projected_ids = {int(row["instrument_id"]) for row in stock_rows}
+        missing_ids = [
+            instrument_id
+            for instrument_id in stock_instrument_ids
+            if instrument_id not in projected_ids
+        ]
+        if missing_ids:
+            has_daily_source = connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM ingest.source
+                    WHERE enabled AND operational_state = 'active'
+                      AND kind IN ('daily_bars', 'daily_quote')
+                ) AS present
+                """
+            ).fetchone()["present"]
+            if has_daily_source:
+                fallback_rows = connection.execute(
+                    """
+                    SELECT priced.instrument_id, priced.price, priced.currency, priced.source_id,
+                           priced.observed_at, priced.available_at, priced.valuation_status,
+                           priced.source_kind
+                    FROM raw.current_price_at(%s, %s::bigint[]) priced
+                    ORDER BY priced.instrument_id
+                    """,
+                    [as_of, missing_ids],
+                ).fetchall()
+            else:
+                # Keep the common quote-only fallback indexed by instrument
+                # when a source has not populated the projection yet.
+                fallback_rows = connection.execute(
+                    """
+                    SELECT current.instrument_id, current.price, current.currency,
+                           current.source_id, current.observed_at, current.available_at,
+                           'market_quote'::text AS valuation_status, current.source_kind
+                    FROM unnest(%s::bigint[]) requested(instrument_id)
+                    CROSS JOIN LATERAL (
+                        SELECT quote.instrument_id, quote.price, quote.currency,
+                               quote.source_id, quote.observed_at, quote.available_at,
+                               source.kind AS source_kind, run.finished_at AS confirmed_at
+                        FROM raw.quote quote
+                        JOIN raw.quote_fact_availability availability
+                          ON availability.fact_id = quote.id
+                         AND availability.fact_available_at = quote.available_at
+                        JOIN ingest.run run
+                          ON run.id = availability.ingest_run_id
+                         AND run.status IN ('succeeded', 'partial')
+                         AND run.finished_at IS NOT NULL
+                         AND run.finished_at <= %s
+                        JOIN ingest.source source
+                          ON source.id = quote.source_id
+                         AND source.enabled
+                         AND source.operational_state = 'active'
+                        WHERE quote.instrument_id = requested.instrument_id
+                          AND quote.price > 0
+                          AND quote.observed_at <= %s
+                          AND quote.available_at <= %s
+                        UNION ALL
+                        SELECT quote.instrument_id, quote.price, quote.currency,
+                               quote.source_id, quote.observed_at, quote.available_at,
+                               source.kind AS source_kind, run.finished_at AS confirmed_at
+                        FROM raw.quote_history quote
+                        JOIN raw.quote_fact_availability availability
+                          ON availability.fact_id = quote.id
+                         AND availability.fact_available_at = quote.available_at
+                        JOIN ingest.run run
+                          ON run.id = availability.ingest_run_id
+                         AND run.status IN ('succeeded', 'partial')
+                         AND run.finished_at IS NOT NULL
+                         AND run.finished_at <= %s
+                        JOIN ingest.source source
+                          ON source.id = quote.source_id
+                         AND source.enabled
+                         AND source.operational_state = 'active'
+                        WHERE quote.instrument_id = requested.instrument_id
+                          AND quote.price > 0
+                          AND quote.observed_at <= %s
+                          AND quote.available_at <= %s
+                        ORDER BY confirmed_at DESC, observed_at DESC,
+                                 available_at DESC, source_id
+                        LIMIT 1
+                    ) current
+                    ORDER BY current.instrument_id
+                    """,
+                    [missing_ids, as_of, as_of, as_of, as_of, as_of, as_of],
+                ).fetchall()
+            stock_rows.extend(fallback_rows)
         stock_marks = {int(row["instrument_id"]): dict(row) for row in stock_rows}
     if contract_ids:
         option_rows = connection.execute(
@@ -1012,36 +1195,11 @@ def _where_clause(
 
 
 def _reconciliation_predicate(status: str) -> str:
-    """Match the payload's evidence class without using fallback prices."""
-    fill = """
-        EXISTS (
-            SELECT 1
-            FROM app.trade_journal fill
-            WHERE fill.details->>'paper_order_id' = paper.id::text
-              AND fill.decision_id IS NOT DISTINCT FROM paper.decision_id
-              AND fill.instrument_id = paper.instrument_id
-              AND fill.rationale = 'deterministic_options_paper_execution'
-              AND fill.action = 'paper_entry'
-        )
-    """
+    """Match the payload's evidence class from the maintained fill projection."""
+    fill = "coalesce(projection.entry_quantity, 0) > 0"
     valid_fills = """
-        NOT EXISTS (
-            SELECT 1
-            FROM app.trade_journal fill
-            WHERE fill.details->>'paper_order_id' = paper.id::text
-              AND fill.decision_id IS NOT DISTINCT FROM paper.decision_id
-              AND fill.instrument_id = paper.instrument_id
-              AND fill.rationale = 'deterministic_options_paper_execution'
-              AND (fill.action = 'paper_entry' OR fill.action = 'paper_exit' OR fill.action LIKE 'paper_exit:%%')
-              AND (
-                    NOT coalesce(fill.details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)
-                    OR NOT coalesce(
-                        fill.quantity > 0 AND fill.quantity < 'Infinity'::numeric
-                        AND fill.price >= 0 AND fill.price < 'Infinity'::numeric
-                        AND (fill.action <> 'paper_entry' OR fill.price > 0), false
-                    )
-              )
-        )
+        coalesce(projection.missing_fees, 0) = 0
+        AND coalesce(projection.invalid_fills, 0) = 0
     """
     is_option = """
         (
@@ -1054,30 +1212,7 @@ def _reconciliation_predicate(status: str) -> str:
             OR lower(coalesce(paper.expression_kind, '')) IN ('call', 'put', 'debit_spread', 'cash_secured_put')
         )
     """
-    valid_multiplier = """
-        paper.contract_multiplier > 0
-        AND paper.contract_multiplier < 'Infinity'::numeric
-        AND NOT EXISTS (
-            SELECT 1
-            FROM app.trade_journal fill
-            WHERE fill.details->>'paper_order_id' = paper.id::text
-              AND fill.decision_id IS NOT DISTINCT FROM paper.decision_id
-              AND fill.instrument_id = paper.instrument_id
-              AND fill.rationale = 'deterministic_options_paper_execution'
-              AND (fill.action = 'paper_entry' OR fill.action = 'paper_exit' OR fill.action LIKE 'paper_exit:%%')
-              AND NOT coalesce(
-                  CASE WHEN fill.action = 'paper_entry' THEN
-                      jsonb_typeof(fill.details->'contract_multiplier') = 'number'
-                      AND fill.details->'contract_multiplier' = to_jsonb(paper.contract_multiplier)
-                  ELSE
-                      jsonb_typeof(fill.details->'entry_contract_multiplier') = 'number'
-                      AND jsonb_typeof(fill.details->'exit_contract_multiplier') = 'number'
-                      AND fill.details->'entry_contract_multiplier' = to_jsonb(paper.contract_multiplier)
-                      AND fill.details->'exit_contract_multiplier' = to_jsonb(paper.contract_multiplier)
-                  END, false
-              )
-        )
-    """
+    valid_multiplier = "projection.fill_multipliers_verified IS TRUE"
     verified = f"({fill} AND {valid_fills} AND (NOT {is_option} OR {valid_multiplier}))"
     if status == "verified":
         return verified
@@ -1206,6 +1341,10 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
         "sleeve": row.get("sleeve"),
         "symbol": row.get("symbol"),
         "instrument_kind": row.get("asset_class"),
+        "structure": structure,
+        "strike": _number(row.get("strike")),
+        "option_type": row.get("option_type"),
+        "expiration": row.get("expiration"),
         "decision_id": row.get("decision_id"),
         "strategy": strategy,
         "strategy_revision_id": strategy["revision_id"],
@@ -1315,16 +1454,23 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _realized_exit_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _realized_exit_events(
+    rows: list[dict[str, Any]],
+    fill_rows_by_order: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for row in rows:
         if row.get("realized_pnl") is None:
             continue
-        fill_rows = [
-            fill
-            for fill in row.get("execution", {}).get("fills", [])
-            if isinstance(fill, dict)
-        ]
+        fill_rows = (
+            fill_rows_by_order.get(str(row["paper_order_id"]), [])
+            if fill_rows_by_order is not None
+            else [
+                fill
+                for fill in row.get("execution", {}).get("fills", [])
+                if isinstance(fill, dict)
+            ]
+        )
         if not fill_rows:
             if row.get("exit_at") is not None:
                 events.append(
@@ -1389,6 +1535,237 @@ def _realized_exit_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
     )
     return events
+
+
+def _raw_has_open_quantity(row: dict[str, Any]) -> bool:
+    """Only open raw orders need a current mark lookup."""
+
+    entry = _decimal(row.get("entry_quantity")) or Decimal("0")
+    exited = _decimal(row.get("exit_quantity")) or Decimal("0")
+    return entry > exited
+
+
+def paper_performance_visuals(
+    rows: list[dict[str, Any]],
+    exit_events: list[dict[str, Any]] | None = None,
+    *,
+    fill_rows_by_order: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """Return verified event overlays and attribution for a paper scope."""
+
+    realized_rows = [row for row in rows if row.get("realized_pnl") is not None]
+    verified_events = (
+        _realized_exit_events(realized_rows)
+        if exit_events is None
+        else exit_events
+    )
+    return {
+        "event_markers": _performance_event_markers(rows, verified_events, fill_rows_by_order),
+        "attribution": _performance_attribution(realized_rows),
+    }
+
+
+def _performance_event_markers(
+    rows: list[dict[str, Any]],
+    exit_events: list[dict[str, Any]],
+    fill_rows_by_order: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build chart overlays without turning unverified fills into P&L."""
+
+    verified_exits = {
+        str(event.get("journal_id")): event
+        for event in exit_events
+        if event.get("journal_id") is not None
+    }
+    markers: list[dict[str, Any]] = []
+    seen_strategies: set[str] = set()
+    ordered_rows = sorted(
+        rows,
+        key=lambda row: _as_datetime(row.get("decision_at"))
+        or _as_datetime(row.get("staged_at"))
+        or datetime.max.replace(tzinfo=UTC),
+    )
+    for row in ordered_rows:
+        strategy = row.get("strategy") or {}
+        strategy_name = strategy.get("name") or strategy.get("key")
+        strategy_key = str(strategy.get("revision_id") or strategy_name or "")
+        if strategy_key and strategy_key not in seen_strategies:
+            seen_strategies.add(strategy_key)
+            at = _as_datetime(row.get("decision_at")) or _as_datetime(row.get("staged_at"))
+            if at is not None:
+                markers.append(
+                    {
+                        "at": at,
+                        "kind": "strategy_observed",
+                        "trade_id": row.get("paper_order_id"),
+                        "symbol": row.get("symbol"),
+                        "strategy": strategy_name,
+                        "label": "Strategy first observed",
+                        "_pnl": None,
+                    }
+                )
+        fills = (
+            fill_rows_by_order.get(str(row.get("paper_order_id")), [])
+            if fill_rows_by_order is not None
+            else [
+                fill
+                for fill in (row.get("execution") or {}).get("fills", [])
+                if isinstance(fill, dict)
+            ]
+        )
+        for fill in fills:
+            action = str(fill.get("action") or "")
+            at = _as_datetime(fill.get("created_at"))
+            if at is None:
+                continue
+            if action == "paper_entry":
+                markers.append(
+                    {
+                        "at": at,
+                        "kind": "entry",
+                        "trade_id": row.get("paper_order_id"),
+                        "symbol": row.get("symbol"),
+                        "strategy": strategy_name,
+                        "price": _number(fill.get("price")),
+                        "quantity": _number(fill.get("quantity")),
+                        "label": "Entry filled",
+                        "_pnl": None,
+                    }
+                )
+            elif action.startswith("paper_exit"):
+                verified = verified_exits.get(str(fill.get("id")))
+                partial = action != "paper_exit" or row.get("remaining_quantity", 0) > 0
+                markers.append(
+                    {
+                        "at": at,
+                        "kind": "partial_exit" if partial else "exit",
+                        "trade_id": row.get("paper_order_id"),
+                        "symbol": row.get("symbol"),
+                        "strategy": strategy_name,
+                        "price": _number(fill.get("price")),
+                        "quantity": _number(fill.get("quantity")),
+                        "label": "Partial exit" if partial else "Exit filled",
+                        "status": "verified" if verified else "unavailable",
+                        "_pnl": verified.get("pnl") if verified else None,
+                    }
+                )
+        if not fills and row.get("exit_at") is not None:
+            matching = next(
+                (
+                    event
+                    for event in exit_events
+                    if event.get("trade_id") == row.get("paper_order_id")
+                ),
+                None,
+            )
+            markers.append(
+                {
+                    "at": row["exit_at"],
+                    "kind": "exit",
+                    "trade_id": row.get("paper_order_id"),
+                    "symbol": row.get("symbol"),
+                    "strategy": strategy_name,
+                    "label": "Exit recorded",
+                    "status": "verified" if matching else "unavailable",
+                    "_pnl": matching.get("pnl") if matching else None,
+                }
+            )
+        if row.get("remaining_quantity", 0) > 0 and row.get("mark_observed_at") is not None:
+            markers.append(
+                {
+                    "at": row["mark_observed_at"],
+                    "kind": "open_position",
+                    "trade_id": row.get("paper_order_id"),
+                    "symbol": row.get("symbol"),
+                    "strategy": strategy_name,
+                    "label": "Open position",
+                    "status": row.get("mark_status"),
+                    "_pnl": None,
+                }
+            )
+    rank = {"strategy_observed": 0, "entry": 1, "partial_exit": 2, "exit": 3, "open_position": 4}
+    markers.sort(key=lambda marker: (_as_datetime(marker.get("at")) or datetime.max.replace(tzinfo=UTC), rank.get(str(marker.get("kind")), 9)))
+    cumulative = Decimal("0")
+    peak = Decimal("0")
+    for marker in markers:
+        pnl = marker.pop("_pnl", None)
+        marker["pnl"] = _money(pnl) if isinstance(pnl, Decimal) else _number(pnl)
+        if isinstance(pnl, Decimal):
+            cumulative += pnl
+        peak = max(peak, cumulative)
+        marker["cumulative_net_pnl"] = _money(cumulative)
+        marker["drawdown"] = _money(cumulative - peak)
+    return markers[:4000]
+
+
+def _performance_attribution(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Return small, verified cohorts for the decision-led decomposition view."""
+
+    dimensions = {
+        "strategy": lambda row: (row.get("strategy") or {}).get("name") or (row.get("strategy") or {}).get("key") or "Unattributed",
+        "symbol": lambda row: row.get("symbol") or "Unattributed",
+        "structure": lambda row: (row.get("execution") or {}).get("structure") or "Unspecified",
+        "holding_period": _holding_period_bucket,
+        "confidence": _confidence_bucket,
+    }
+    result: dict[str, list[dict[str, Any]]] = {}
+    for dimension, bucket_for in dimensions.items():
+        groups: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            pnl = _decimal(row.get("realized_pnl"))
+            if pnl is None:
+                continue
+            label = str(bucket_for(row))
+            group = groups.setdefault(label, {"label": label, "pnl": Decimal("0"), "trades": 0, "wins": 0})
+            group["pnl"] += pnl
+            group["trades"] += 1
+            group["wins"] += int(pnl > 0)
+        result[dimension] = [
+            {
+                "label": label,
+                "pnl": _money(group["pnl"]),
+                "trades": group["trades"],
+                "wins": group["wins"],
+                "win_rate": group["wins"] / group["trades"] if group["trades"] else None,
+                "average_pnl": _money(group["pnl"] / group["trades"]) if group["trades"] else None,
+            }
+            for label, group in sorted(groups.items(), key=lambda item: item[1]["pnl"], reverse=True)
+        ]
+    return result
+
+
+def _holding_period_bucket(row: dict[str, Any]) -> str:
+    fills = [
+        fill
+        for fill in (row.get("execution") or {}).get("fills", [])
+        if isinstance(fill, dict)
+    ]
+    entry = next((_as_datetime(fill.get("created_at")) for fill in fills if fill.get("action") == "paper_entry"), None)
+    exits = [_as_datetime(fill.get("created_at")) for fill in fills if str(fill.get("action") or "").startswith("paper_exit")]
+    exit_at = max((value for value in exits if value is not None), default=_as_datetime(row.get("exit_at")))
+    if entry is None or exit_at is None or exit_at < entry:
+        return "Unavailable"
+    days = (exit_at - entry).total_seconds() / 86_400
+    if days <= 1:
+        return "1 day or less"
+    if days <= 5:
+        return "2–5 days"
+    if days <= 20:
+        return "6–20 days"
+    return "21+ days"
+
+
+def _confidence_bucket(row: dict[str, Any]) -> str:
+    probability = _decimal((row.get("decision") or {}).get("forecast", {}).get("probability_profit"))
+    if probability is None:
+        return "Unavailable"
+    if probability < Decimal("0.5"):
+        return "Below 50%"
+    if probability < Decimal("0.65"):
+        return "50–65%"
+    if probability < Decimal("0.8"):
+        return "65–80%"
+    return "80%+"
 
 
 def _paper_mark_payload(
