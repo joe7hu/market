@@ -29,6 +29,7 @@ BRIEF_CATEGORY_LIMITS = {"decide_now": 4, "catalysts": 3, "whats_changed": 3, "p
 def today(
     config: AppConfig,
     option_actions: OptionsResearchRepository,
+    research_repository: Any = None,
 ) -> dict[str, Any]:
     """Return one bounded, source-ordered action queue."""
 
@@ -158,7 +159,7 @@ def today(
         visible_capital_actions,
         inbox_actions,
         _portfolio_risk_queue(panel_data.rows("portfolio_risk_cards")),
-        research_queue(panel_data.rows("feed_signals")),
+        [*research_queue(panel_data.rows("feed_signals")), *_read_learning_actions(research_repository)],
     )
     timestamps = [item["current_at"] for item in queue_items if item.get("current_at") is not None]
     timestamps.extend(
@@ -437,6 +438,19 @@ def _read_inbox(option_actions: Any) -> list[dict[str, Any]]:
         return []
     items = payload.get("items") if isinstance(payload, dict) else []
     return [dict(item) for item in items or [] if isinstance(item, dict)]
+
+
+def _read_learning_actions(repository: Any) -> list[dict[str, Any]]:
+    reader = getattr(repository, "action_items", None)
+    if not callable(reader):
+        return []
+    try:
+        rows = reader(limit=ACTION_QUEUE_LIMIT)
+    except Exception:
+        # Research actions are additive; a read outage must not hide the
+        # canonical Today queue or authorize a paper action.
+        return []
+    return [dict(item) for item in rows or [] if isinstance(item, dict)]
 
 
 def decision_inbox_queue(rows: list[dict[str, Any]], *, now: datetime | None = None) -> list[dict[str, Any]]:

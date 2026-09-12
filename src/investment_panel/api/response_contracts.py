@@ -87,6 +87,7 @@ class PaperTradeDetail(PaperTradeSummary):
 class PaperTradePage(FlexibleResponse):
     rows: list[PaperTradeSummary] = Field(default_factory=list)
     next_cursor: str | None = None
+    has_more: bool = False
 
 
 class PaperBookPerformance(FlexibleResponse):
@@ -97,6 +98,8 @@ class PaperBookPerformance(FlexibleResponse):
     snapshot_id: str | None = None
     scope: dict[str, Any] = Field(default_factory=dict)
     calculation_version: str | None = None
+    trades: list[PaperTradeSummary] = Field(default_factory=list)
+    next_cursor: str | None = None
     currency: str = "USD"
     accounting_basis: str | None = None
     counts: dict[str, int] = Field(default_factory=dict)
@@ -141,6 +144,7 @@ class ResearchStrategyPage(FlexibleResponse):
     rows: list[Row] = Field(default_factory=list)
     count: dict[str, int] = Field(default_factory=dict)
     next_cursor: str | None = None
+    has_more: bool = False
 
 
 class ResearchStrategyDetail(FlexibleResponse):
@@ -155,6 +159,7 @@ class ResearchClaimPage(FlexibleResponse):
     rows: list[Row] = Field(default_factory=list)
     count: dict[str, int] = Field(default_factory=dict)
     next_cursor: str | None = None
+    has_more: bool = False
 
 
 class ResearchClaimDetail(FlexibleResponse):
@@ -177,6 +182,7 @@ class ResearchExperimentPage(FlexibleResponse):
     rows: list[Row] = Field(default_factory=list)
     count: dict[str, int] = Field(default_factory=dict)
     next_cursor: str | None = None
+    has_more: bool = False
 
 
 class ResearchExperimentDetail(FlexibleResponse):

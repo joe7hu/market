@@ -262,7 +262,8 @@ def test_invalidation_brier_uses_event_truth_not_classification_correctness():
     assert outcome["invalidation_correct"] is True
     assert outcome["event_truth"] == 0
     assert scorecard["brier_score"] == pytest.approx(0.04)
-    assert scorecard["scoring_version"] == "continuous-advisor-score.v2"
+    assert scorecard["scoring_version"] == "continuous-advisor-score.v3"
+    assert scorecard["promotion_quality_score"] == pytest.approx(0.728)
 
 
 def test_promotion_requires_production_floor_and_walk_forward():
@@ -278,7 +279,7 @@ def test_prompt_mutation_rejects_execution_fields():
     mutation = mutate_prompt_template("continuous_v1", {"forecast_instruction": "Use calibrated probabilities."}, "Improve horizon wording.")
     assert mutation["parent_version"] == "continuous_v1"
     repeat = mutate_prompt_template("continuous_v1", {"forecast_instruction": "Use calibrated probabilities."}, "Retry after rejection.")
-    assert repeat["version"] != mutation["version"]
+    assert repeat["version"] == mutation["version"]
     with pytest.raises(ContinuousAdvisorValidationError, match="not approved"):
         mutate_prompt_template("continuous_v1", {"risk_override": True}, "Unsafe")
     with pytest.raises(ContinuousAdvisorValidationError, match="max_packet_tokens"):
@@ -412,3 +413,87 @@ def test_provider_failure_telemetry_is_priced_from_direct_metadata():
     )
     assert usage["output_tokens"] == 500
     assert cost is not None and cost > 0
+
+
+def test_candidate_without_validation_or_outcomes_keeps_collecting():
+    gate = promotion_gate({"matched_outcomes": 0})
+    assert gate["status"] == "waiting"
+    assert not gate["eligible"]
+    failed = promotion_gate({"matched_outcomes": 0, "schema_validity_rate": 0})
+    assert failed["status"] == "rejected"
+
+
+def test_paired_comparison_uses_independent_groups_not_claim_multiplicity():
+    from investment_panel.core.continuous_advisor import compare_scorecards
+    active = {"paired_quality_groups": {"day1": 0.5, "day2": 0.6}, "quality_samples": [0.0] * 1000}
+    candidate = {"paired_quality_groups": {"day1": 0.7, "day2": 0.8}, "quality_samples": [1.0] * 1000}
+    comparison = compare_scorecards(active, candidate)
+    assert comparison["independent_groups"] == 2
+    assert comparison["quality_delta"] == pytest.approx(0.2)
+    assert comparison["comparison_basis"] == "paired_nonoverlapping_window_differences"
+    gate = promotion_gate({**candidate, "matched_outcomes": 1000, "independent_groups": 2, "schema_validity_rate": 1, "evidence_validity_rate": 1}, active=active, safety_checks={"passed": True})
+    assert not gate["eligible"]
+    assert gate["status"] == "waiting"
+
+
+def test_explicit_excluded_claim_id_cannot_match_a_reused_claim_key():
+    result = score_claims(
+        [{"claim_id": "retained", "claim_key": "f1", "probability": 0.9}],
+        [{"claim_id": "excluded", "claim_key": "f1", "status": "resolved", "correct": True}],
+    )
+    assert result["matched_outcomes"] == 0
+
+
+def test_promotion_floor_counts_only_common_resolved_days():
+    candidate = {"paired_quality_groups": {str(day): 0.9 for day in range(100)}, "independent_groups": 100, "matched_outcomes": 100, "schema_validity_rate": 1, "evidence_validity_rate": 1}
+    active = {"paired_quality_groups": {"0": 0.5, "1": 0.5}}
+    gate = promotion_gate(candidate, active=active, walk_forward={"status": "pass"}, forward_session={"status": "pass"}, safety_checks={"passed": True})
+    assert not gate["eligible"]
+    assert gate["status"] == "waiting"
+
+
+def test_monitoring_baseline_uses_existing_shadow_slot_until_fixed_window_ends():
+    from datetime import timedelta
+    from investment_panel.jobs.run_continuous_advisor import comparison_prompt
+    now = datetime(2026, 9, 12, tzinfo=UTC)
+    status = {"challenger": {"version": "next"}, "promotion": {"decision": "activate", "previous_active_prompt_version": "old", "created_at": now}}
+    assert comparison_prompt(status, now) == {"version": "old", "role": "monitoring_baseline"}
+    assert comparison_prompt(status, now + timedelta(days=90)) == {"version": "next"}
+
+
+def test_prompt_artifact_freezes_provider_input_without_sending_duplicate_artifacts(monkeypatch):
+    from investment_panel.jobs import codex_thesis_monitor as adapter
+    from types import SimpleNamespace
+    captured = []
+    monkeypatch.setattr(adapter, "invoke_structured", lambda request: captured.append(request) or SimpleNamespace(payload={}, metadata=lambda: {}))
+    request = {"prompt_template": {"forecast_instruction": "Use explicit horizons."}, "evidence_packet": {"evidence": {"prices": {"price": 12}}}}
+    artifact = adapter.continuous_prompt_artifact(request)
+    request["prompt_artifact"] = artifact
+    adapter.generate_codex_continuous_advisor(request, model="gpt-5.6-luna")
+    assert artifact["provider_payload"] == captured[0].payload
+    assert artifact["system_prompt"] == captured[0].system_prompt
+    assert adapter.continuous_prompt_artifact(request)["content_hash"] == artifact["content_hash"]
+
+
+def test_event_identity_ignores_prose_but_preserves_horizon_and_barrier():
+    from investment_panel.core.continuous_advisor import claim_event_contract, claim_event_identity
+    claim = {"claim_kind": "forecast", "horizon": "1d", "direction": "up", "statement": "Rise"}
+    assert claim_event_identity(claim) == claim_event_identity({**claim, "statement": "Price appreciates", "horizon": "24h"})
+    assert claim_event_contract({**claim, "direction": "BULLISH"})["direction"] == "up"
+    barrier = {"claim_kind": "invalidation", "horizon": "1d", "statement": "Falls below $12"}
+    assert claim_event_identity(barrier) != claim_event_identity({**barrier, "statement": "Falls below $13"})
+    assert claim_event_identity({**barrier, "statement": "Demand weakens"}) is None
+
+
+def test_legacy_invalidation_without_event_truth_is_not_numerically_scored():
+    result = score_claims([{"claim_key": "i", "claim_kind": "invalidation", "probability": 0.2}], [{"claim_key": "i", "status": "resolved", "correct": True, "invalidation_correct": True}])
+    assert result["brier_score"] is None
+    assert result["matched_outcomes"] == 0
+
+
+def test_overlapping_month_forecasts_do_not_count_as_thirty_independent_days():
+    from investment_panel.core.continuous_advisor import independent_forecast_windows
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    windows = [{"key": str(day), "start": start + timedelta(days=day), "end": start + timedelta(days=day + 30)} for day in range(60)]
+    selected = independent_forecast_windows(windows)
+    assert set(selected) == {"0", "30"}

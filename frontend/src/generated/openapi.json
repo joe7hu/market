@@ -9966,6 +9966,17 @@
             ],
             "title": "Net Pnl"
           },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
           "quality_status": {
             "title": "Quality Status",
             "type": "string"
@@ -10035,6 +10046,13 @@
               }
             ],
             "title": "Source Watermark"
+          },
+          "trades": {
+            "items": {
+              "$ref": "#/components/schemas/PaperTradeSummary"
+            },
+            "title": "Trades",
+            "type": "array"
           },
           "unrealized_pnl": {
             "anyOf": [
@@ -10451,6 +10469,11 @@
       "PaperTradePage": {
         "additionalProperties": true,
         "properties": {
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
           "next_cursor": {
             "anyOf": [
               {
@@ -12859,6 +12882,11 @@
             "title": "Count",
             "type": "object"
           },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
           "next_cursor": {
             "anyOf": [
               {
@@ -13354,6 +13382,11 @@
             "title": "Count",
             "type": "object"
           },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
           "next_cursor": {
             "anyOf": [
               {
@@ -13695,6 +13728,11 @@
             },
             "title": "Count",
             "type": "object"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
           },
           "next_cursor": {
             "anyOf": [

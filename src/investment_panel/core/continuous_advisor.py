@@ -29,7 +29,7 @@ MIN_TEST_MATCHES = 3
 MIN_PROMOTION_MATCHES = 30
 PROMOTION_Z = 1.96
 CONTINUOUS_MAX_OUTPUT_TOKENS = 24_000
-SCORING_VERSION = "continuous-advisor-score.v2"
+SCORING_VERSION = "continuous-advisor-score.v3"
 
 _TIMESTAMP_KEYS = frozenset({
     "observed_at", "available_at", "published_at", "event_at", "finished_at",
@@ -341,6 +341,88 @@ def response_claims(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     return claims
 
 
+_INVALIDATION_RE = re.compile(
+    r"\b(below|under|above|over)\s+\$?([0-9]+(?:\.[0-9]+)?)\b",
+    re.IGNORECASE,
+)
+
+
+def claim_horizon_delta(value: str) -> timedelta | None:
+    match = re.fullmatch(r"\s*(\d+)\s*(m|min|mins|minute|minutes|h|hour|hours|mo|month|months|d|day|days|w|week|weeks)\s*", value.lower())
+    if not match:
+        return None
+    count = int(match.group(1))
+    if count <= 0:
+        return None
+    unit = match.group(2)
+    if unit in {"m", "min", "mins", "minute", "minutes"}:
+        return timedelta(minutes=count)
+    if unit in {"h", "hour", "hours"}:
+        return timedelta(hours=count)
+    if unit in {"mo", "month", "months"}:
+        return timedelta(days=count * 30)
+    if unit in {"w", "week", "weeks"}:
+        return timedelta(days=count * 7)
+    return timedelta(days=count)
+
+
+def claim_invalidation_rule(claim: dict[str, Any]) -> tuple[bool, float] | None:
+    match = _INVALIDATION_RE.search(str(claim.get("condition") or claim.get("statement") or ""))
+    if not match:
+        return None
+    return match.group(1).lower() in {"below", "under"}, float(match.group(2))
+
+
+def claim_event_contract(claim: Mapping[str, Any]) -> dict[str, Any]:
+    """Describe the machine-resolved event and its observation clock."""
+
+    horizon = claim_horizon_delta(str(claim.get("horizon") or ""))
+    if horizon is None:
+        return {"type": "unsupported", "reason": "unsupported_horizon"}
+    if claim.get("claim_kind") == "invalidation":
+        barrier = claim_invalidation_rule(dict(claim))
+        if barrier is None:
+            return {
+                "type": "unsupported",
+                "reason": "invalidation_condition_not_machine_resolvable",
+                "horizon_seconds": horizon.total_seconds(),
+            }
+        below, threshold = barrier
+        return {
+            "type": "barrier_crossing",
+            "operator": "<" if below else ">",
+            "threshold": threshold,
+            "horizon_seconds": horizon.total_seconds(),
+            "observation_start": "information_cutoff",
+            "observation_end": "first_confirmed_market_close_at_or_after_horizon",
+            "truth": "barrier_crossed_during_observation_interval",
+        }
+    direction = {"bullish": "up", "bearish": "down"}.get(
+        str(claim.get("direction") or "").lower(),
+        str(claim.get("direction") or "").lower(),
+    )
+    if direction not in {"up", "down", "neutral", "flat"}:
+        return {"type": "unsupported", "reason": "unsupported_direction"}
+    return {
+        "type": "terminal_direction",
+        "direction": direction,
+        "target": claim.get("target"),
+        "target_semantics": "directional_return_sign",
+        "horizon_seconds": horizon.total_seconds(),
+        "observation": "first_confirmed_quote_at_or_after_horizon",
+        "truth": "terminal_return_direction",
+    }
+
+
+def claim_event_identity(claim: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    event = claim_event_contract(claim)
+    if event.get("type") == "unsupported":
+        return None
+    if event["type"] == "barrier_crossing":
+        return (event["type"], event["horizon_seconds"], event["operator"], event["threshold"])
+    return (event["type"], event["horizon_seconds"], event["direction"], event.get("target"))
+
+
 def resolve_claim(
     claim: Mapping[str, Any],
     *,
@@ -370,7 +452,8 @@ def resolve_claim(
         correct = invalidation_correct
     probability = float(claim.get("probability") or 0)
     actual = 1.0 if correct else 0.0 if correct is False else None
-    calibration_truth = event_truth if is_invalidation else actual
+    event_truth = event_truth if is_invalidation else actual
+    calibration_truth = event_truth
     return {
         "scoring_version": SCORING_VERSION,
         "status": "resolved" if actual is not None and evidence_valid else "quarantined" if actual is not None else "unresolvable",
@@ -403,7 +486,7 @@ def score_claims(
         if str(item.get("status") or "") != "resolved":
             continue
         identity = str(item.get("claim_id") or "")
-        if identity in by_id or str(item.get("claim_key") or "") in by_key:
+        if (identity in by_id) if identity else (str(item.get("claim_key") or "") in by_key):
             matched.append(item)
     brier_values: list[float] = []
     directional: list[float] = []
@@ -419,7 +502,7 @@ def score_claims(
         if event_truth is None and claim.get("claim_kind") == "invalidation":
             invalidation_actual = outcome.get("invalidation_actual")
             event_truth = 1.0 if invalidation_actual is True else 0.0 if invalidation_actual is False else None
-        if event_truth is None:
+        if event_truth is None and claim.get("claim_kind") != "invalidation":
             event_truth = classification_actual
         brier = (probability - float(event_truth)) ** 2 if event_truth is not None else None
         if brier is None:
@@ -436,7 +519,7 @@ def score_claims(
         if outcome.get("invalidation_correct") is not None:
             invalidation.append(1.0 if outcome["invalidation_correct"] else 0.0)
         evidence.append(1.0 if outcome.get("evidence_valid", True) else 0.0)
-        quality_samples.append((1.0 - brier) * 0.55 + (classification_actual or 0.0) * 0.25 + (1.0 if outcome.get("evidence_valid", True) else 0.0) * 0.20)
+        quality_samples.append((1.0 - brier) * 0.55 + (float(event_truth) if event_truth is not None else 0.0) * 0.25 + (1.0 if outcome.get("evidence_valid", True) else 0.0) * 0.20)
     brier_score = sum(brier_values) / len(brier_values) if brier_values else None
     calibration = 1.0 - brier_score if brier_score is not None else None
     directional_accuracy = sum(directional) / len(directional) if directional else None
@@ -466,6 +549,24 @@ def score_claims(
     }
 
 
+def independent_forecast_windows(windows: list[Mapping[str, Any]]) -> dict[str, str]:
+    """Select whole issue cohorts with disjoint observed outcome windows."""
+    by_cutoff: dict[datetime, list[Mapping[str, Any]]] = {}
+    for window in windows:
+        if window.get("end") is not None and window["end"] >= window["start"]:
+            by_cutoff.setdefault(window["start"], []).append(window)
+    selected: dict[str, str] = {}
+    next_start: datetime | None = None
+    for start, cohort in sorted(by_cutoff.items()):
+        if next_start is not None and start < next_start:
+            continue
+        group = start.isoformat()
+        selected.update({str(window["key"]): group for window in cohort})
+        next_day = datetime.combine(start.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+        next_start = max(next_day, *(window["end"] for window in cohort))
+    return selected
+
+
 def compare_scorecards(active: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
     """Compare same-cohort scorecards with a two-sided normal lower bound."""
 
@@ -475,8 +576,22 @@ def compare_scorecards(active: Mapping[str, Any], candidate: Mapping[str, Any]) 
     candidate_mean = _mean(candidate_samples)
     delta = candidate_mean - active_mean
     standard_error = math.sqrt(_variance(active_samples) / max(1, len(active_samples)) + _variance(candidate_samples) / max(1, len(candidate_samples)))
+    paired = active.get("paired_quality_groups") is not None and candidate.get("paired_quality_groups") is not None
+    independent_groups = 0
+    if paired:
+        active_groups = active["paired_quality_groups"]
+        candidate_groups = candidate["paired_quality_groups"]
+        common = sorted(set(active_groups) & set(candidate_groups))
+        differences = [candidate_groups[key] - active_groups[key] for key in common]
+        independent_groups = len(differences)
+        active_mean = _mean([active_groups[key] for key in common])
+        candidate_mean = _mean([candidate_groups[key] for key in common])
+        delta = _mean(differences)
+        standard_error = math.sqrt(_variance(differences) / independent_groups) if independent_groups > 1 else 1.0
     lcb = delta - PROMOTION_Z * standard_error
     return {
+        "comparison_basis": "paired_nonoverlapping_window_differences" if paired else "legacy_separate_samples",
+        "independent_groups": independent_groups if paired else None,
         "active_quality_score": active_mean,
         "candidate_quality_score": candidate_mean,
         "quality_delta": delta,
@@ -498,19 +613,23 @@ def promotion_gate(
     """Apply the bounded advisory-only prompt promotion gates."""
 
     blockers: list[str] = []
-    matches = int(candidate.get("matched_outcomes") or 0)
+    matches = int(candidate.get("independent_groups", candidate.get("matched_outcomes")) or 0)
+    if active is not None and candidate.get("paired_quality_groups") is not None:
+        matches = len(set(candidate["paired_quality_groups"]) & set(active.get("paired_quality_groups") or {}))
     if matches < MIN_TEST_MATCHES:
         blockers.append("matched_outcomes_below_test_floor")
     if matches < MIN_PROMOTION_MATCHES:
         blockers.append("matched_outcomes_below_promotion_floor")
-    if float(candidate.get("schema_validity_rate") or 0) < 1:
+    if candidate.get("schema_validity_rate") is not None and float(candidate["schema_validity_rate"]) < 1:
         blockers.append("schema_validation_failed")
-    if float(candidate.get("evidence_validity_rate") or 0) < 1:
+    if candidate.get("evidence_validity_rate") is not None and float(candidate["evidence_validity_rate"]) < 1:
         blockers.append("evidence_validation_failed")
     if walk_forward is None or str(walk_forward.get("status") or "").lower() != "pass":
         blockers.append("walk_forward_failed")
     if forward_session is None or str(forward_session.get("status") or "").lower() != "pass":
         blockers.append("forward_session_failed")
+    if candidate.get("schema_validity_rate") is None or candidate.get("evidence_validity_rate") is None:
+        blockers.append("validation_evidence_pending")
     safety = safety_checks or {}
     if safety.get("passed") is not True:
         blockers.append("safety_checks_failed")
@@ -531,10 +650,11 @@ def promotion_gate(
         "matched_outcomes_below_promotion_floor",
         "walk_forward_failed",
         "forward_session_failed",
+        "validation_evidence_pending",
     }
     evidence_waiting = matches < MIN_PROMOTION_MATCHES
     status = "eligible" if not blockers else "waiting" if all(
-        blocker in waiting_blockers or (blocker == "non_positive_lower_confidence_bound" and evidence_waiting)
+        blocker in waiting_blockers or (blocker == "safety_checks_failed" and evidence_waiting and candidate.get("schema_validity_rate") is None) or (blocker == "non_positive_lower_confidence_bound" and evidence_waiting)
         for blocker in blockers
     ) else "rejected"
     return {
@@ -574,7 +694,7 @@ def mutate_prompt_template(parent_version: str, changes: Mapping[str, Any], rati
             raise ContinuousAdvisorValidationError(f"{name} must be a non-empty string")
         normalized[name] = _bounded(value)
     version_hash = hashlib.sha256(
-        json.dumps({"changes": normalized, "rationale": rationale}, sort_keys=True, separators=(",", ":"), default=str).encode()
+        json.dumps({"changes": normalized}, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()[:12]
     return {
         "version": f"{parent}.mutation.{version_hash}",

@@ -34,12 +34,11 @@ type NavItem = {
 };
 
 export const navItems: NavItem[] = [
-  { to: "/today", label: "Command Center", icon: Home, aliases: ["/", "/dashboard"] },
+  { to: "/today", label: "Today", icon: Home, aliases: ["/", "/dashboard"] },
+  { to: "/market", label: "Market", icon: Database },
   { to: "/opportunities", label: "Opportunities", icon: Eye, aliases: ["/watchlist"] },
   { to: "/portfolio/paper", label: "Portfolio", icon: Landmark, aliases: ["/portfolio"] },
   { to: "/research", label: "Research", icon: Mic, aliases: ["/sources", "/research-queue"] },
-  { to: "/agent", label: "Advisor", icon: MessageCircle, aliases: ["/thesis-monitor", "/theses"] },
-  { to: "/health", label: "System", icon: HeartPulse, aliases: ["/system"] },
 ];
 
 export function AppShell() {
@@ -174,6 +173,10 @@ function MainNav({ pathname, onNavigate }: { pathname: string; onNavigate: () =>
           </NavLink>
         );
       })}
+      <div className="mt-4 space-y-1 border-t border-border pt-3" aria-label="Operations">
+        <Link to="/agent" onClick={onNavigate} className="flex h-11 items-center gap-3 rounded-md px-3 text-sm text-muted-foreground hover:bg-accent"><MessageCircle className="size-4" />Agent controls</Link>
+        <Link to="/health" onClick={onNavigate} className="flex h-11 items-center gap-3 rounded-md px-3 text-sm text-muted-foreground hover:bg-accent"><HeartPulse className="size-4" />System health</Link>
+      </div>
     </nav>
   );
 }

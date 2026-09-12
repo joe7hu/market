@@ -14,7 +14,7 @@ import { PortfolioRoute } from "./pages/PortfolioRoute";
 import { PaperBookRoute } from "./pages/PaperBookRoute";
 import { PaperTradeRoute } from "./pages/PaperTradeRoute";
 import { ResearchWorkbenchRoute } from "./pages/ResearchWorkbenchRoute";
-import { ResearchExperimentDetailRoute, ResearchPredictionDetailRoute, ResearchPromptDetailRoute, ResearchStrategyDetailRoute } from "./pages/ResearchDetailRoutes";
+import { ResearchArtifactDetailRoute, ResearchRunDetailRoute, ResearchExperimentDetailRoute, ResearchPredictionDetailRoute, ResearchPromptDetailRoute, ResearchStrategyDetailRoute } from "./pages/ResearchDetailRoutes";
 import { SettingsRoute } from "./pages/SettingsRoute";
 import { SourcesRoute } from "./pages/SourcesRoute";
 import { SuperinvestorsRoute } from "./pages/SuperinvestorsRoute";
@@ -42,6 +42,8 @@ export function App() {
           <Route path="portfolio/paper" element={<PaperBookRoute />} />
           <Route path="portfolio/paper/trades/:tradeId" element={<PaperTradeRoute />} />
           <Route path="research" element={<ResearchWorkbenchRoute />} />
+          <Route path="research/runs/:runId" element={<ResearchRunDetailRoute />} />
+          <Route path="research/artifacts/:artifactId" element={<ResearchArtifactDetailRoute />} />
           <Route path="research/strategies/:revisionId" element={<ResearchStrategyDetailRoute />} />
           <Route path="research/predictions/:claimId" element={<ResearchPredictionDetailRoute />} />
           <Route path="research/prompts/:version" element={<ResearchPromptDetailRoute />} />

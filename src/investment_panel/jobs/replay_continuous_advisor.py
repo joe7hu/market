@@ -5,20 +5,15 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime, timedelta
 import json
-import re
 from typing import Any
 
 from investment_panel.settings import load_config
-from investment_panel.core.continuous_advisor import packet_is_replay_safe, resolve_claim
+from investment_panel.core.continuous_advisor import packet_is_replay_safe, resolve_claim, claim_horizon_delta as _horizon_delta, claim_invalidation_rule as _invalidation_rule
 from investment_panel.domain.decision import MARKET_TZ, is_us_market_day, market_session_bounds
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
 
 
-_INVALIDATION_RE = re.compile(
-    r"\b(below|under|above|over)\s+\$?([0-9]+(?:\.[0-9]+)?)\b",
-    re.IGNORECASE,
-)
 
 
 def run(config_path: str | None = None, *, now: datetime | None = None, limit: int = 500) -> dict[str, Any]:
@@ -76,11 +71,39 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
             results.append({"claim_id": item["claim_id"], "status": "waiting", "reason": "horizon_not_reached"})
             continue
         base_price = (((packet.get("evidence") or {}).get("prices") or {}).get("price"))
-        quote = repository.quote_at_or_after(
-            str(item["symbol"]), measured_from, available_by=reference, observed_to=observation_end
-        ) if observation_end is not None else None
-        if base_price is None or not quote or quote.get("price") is None or float(base_price) <= 0:
-            reason = "base_price_unavailable" if base_price is None or float(base_price) <= 0 else "price_outcome_unavailable"
+        try:
+            base_value = float(base_price)
+        except (TypeError, ValueError):
+            base_value = 0.0
+        invalidation_rule = _invalidation_rule(claim)
+        barrier_claim = (
+            str(claim.get("claim_kind") or "") == "invalidation"
+            and invalidation_rule is not None
+            and observation_end is not None
+        )
+        invalidation_quote = (
+            repository.quote_crossing_at_or_after(
+                str(item["symbol"]), cutoff,
+                observed_to=observation_end, available_by=reference,
+                below=invalidation_rule[0], threshold=invalidation_rule[1],
+            )
+            if barrier_claim
+            else None
+        )
+        quote = (
+            repository.quote_at_or_after(
+                str(item["symbol"]), measured_from, available_by=reference, observed_to=observation_end
+            )
+            if observation_end is not None and invalidation_quote is None
+            else None
+        )
+        terminal_quote_required = not barrier_claim or invalidation_quote is None
+        if terminal_quote_required and (
+            not quote
+            or quote.get("price") is None
+            or (base_value <= 0 and claim.get("claim_kind") != "invalidation")
+        ):
+            reason = "base_price_unavailable" if base_value <= 0 and claim.get("claim_kind") != "invalidation" else "price_outcome_unavailable"
             repository.record_resolution_attempt(
                 str(item["claim_id"]),
                 {
@@ -96,21 +119,15 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
             waiting += 1
             results.append({"claim_id": item["claim_id"], "status": "waiting", "reason": reason})
             continue
-        actual_return = float(quote["price"]) / float(base_price) - 1.0
-        excess_return = _excess_return(repository, packet, measured_from, actual_return, reference, observation_end)
-        invalidation_rule = _invalidation_rule(claim)
-        invalidation_quote = (
-            repository.quote_crossing_at_or_after(
-                str(item["symbol"]), cutoff,
-                observed_to=observation_end, available_by=reference,
-                below=invalidation_rule[0], threshold=invalidation_rule[1],
-            )
-            if invalidation_rule is not None and observation_end is not None
+        actual_return = (
+            float(quote["price"]) / base_value - 1.0
+            if quote and quote.get("price") is not None and base_value > 0
             else None
         )
+        excess_return = _excess_return(repository, packet, measured_from, actual_return, reference, observation_end) if actual_return is not None else None
         invalidated = (
             invalidation_quote is not None
-            if str(claim.get("claim_kind") or "") == "invalidation" and invalidation_rule is not None
+            if barrier_claim
             else _price_invalidation(claim, float(quote["price"]))
         )
         if claim.get("claim_kind") == "invalidation" and invalidated is None:
@@ -126,12 +143,12 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
                 actual_return=actual_return,
                 excess_return=excess_return,
                 invalidated=invalidated,
-                measured_through=quote.get("observed_at"),
+                measured_through=(quote or invalidation_quote or {}).get("observed_at"),
                 evidence_valid=True,
             )
         outcome.setdefault("metadata", {})
         outcome["metadata"].update({
-            "outcome_quote_observed_at": quote.get("observed_at"),
+            "outcome_quote_observed_at": (quote or invalidation_quote or {}).get("observed_at"),
             "packet_cutoff": packet.get("cutoff"),
             "observation_window_end": observation_end,
         })
@@ -145,24 +162,6 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
         results.append({"claim_id": item["claim_id"], "status": outcome["status"], "actual_return": outcome.get("actual_return")})
     return {"status": "ok", "resolved": resolved, "quarantined": quarantined, "waiting": waiting, "results": results}
 
-
-def _horizon_delta(value: str) -> timedelta | None:
-    match = re.fullmatch(r"\s*(\d+)\s*(m|min|mins|minute|minutes|h|hour|hours|mo|month|months|d|day|days|w|week|weeks)\s*", value.lower())
-    if not match:
-        return None
-    count = int(match.group(1))
-    if count <= 0:
-        return None
-    unit = match.group(2)
-    if unit in {"m", "min", "mins", "minute", "minutes"}:
-        return timedelta(minutes=count)
-    if unit in {"h", "hour", "hours"}:
-        return timedelta(hours=count)
-    if unit in {"mo", "month", "months"}:
-        return timedelta(days=count * 30)
-    if unit in {"w", "week", "weeks"}:
-        return timedelta(days=count * 7)
-    return timedelta(days=count)
 
 
 def _observation_window_end(target: datetime) -> datetime | None:
@@ -189,12 +188,6 @@ def _price_invalidation(claim: dict[str, Any], price: float) -> bool | None:
     below, threshold = rule
     return price < threshold if below else price > threshold
 
-
-def _invalidation_rule(claim: dict[str, Any]) -> tuple[bool, float] | None:
-    match = _INVALIDATION_RE.search(str(claim.get("condition") or claim.get("statement") or ""))
-    if not match:
-        return None
-    return match.group(1).lower() in {"below", "under"}, float(match.group(2))
 
 
 def _excess_return(

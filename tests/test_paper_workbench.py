@@ -46,6 +46,12 @@ def test_staged_order_does_not_turn_limit_or_shadow_data_into_a_fill():
     assert result["related_research"]["shadow_id"] == "shadow-1"
 
 
+def test_origin_uses_only_explicit_paper_order_lineage():
+    assert paper_trade_payload(_row(decision_id=None))["origin"] == "unattributed_paper_order"
+    assert paper_trade_payload(_row(decision_id="decision-1"))["origin"] == "decision_linked_paper_order"
+    assert paper_trade_payload(_row(ticker_decision_id="ticker-1"))["origin"] == "ticker_decision_paper_policy"
+
+
 def test_partial_exit_uses_verified_journal_fills_and_fees():
     result = paper_trade_payload(
         _row(
@@ -190,3 +196,15 @@ def test_stale_mark_is_visible_but_cannot_value_open_exposure():
     assert result["mark_price"] == 12.0
     assert result["mark_value"] is None
     assert result["unrealized_pnl"] is None
+
+
+def test_chart_bound_keeps_extremes_and_drawdown_trough():
+    from investment_panel.infrastructure.postgres.paper_workbench import paper_chart_indices
+    series = [{"cumulative_net_pnl": 0} for _ in range(10000)]
+    drawdowns = [{"drawdown": 0} for _ in series]
+    series[4321]["cumulative_net_pnl"] = 100
+    series[4322]["cumulative_net_pnl"] = -100
+    drawdowns[4323]["drawdown"] = -200
+    indices = paper_chart_indices(series, drawdowns)
+    assert len(indices) <= 2000
+    assert {0, 9999, 4321, 4322, 4323} <= set(indices)

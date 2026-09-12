@@ -5,12 +5,11 @@ import { criticalDataCoverageTone, navItems } from "./workstation";
 describe("primary navigation", () => {
   it("keeps the primary Command Center destinations on desktop and mobile", () => {
     expect(navItems.map(({ label, to }) => [label, to])).toEqual([
-      ["Command Center", "/today"],
+      ["Today", "/today"],
+      ["Market", "/market"],
       ["Opportunities", "/opportunities"],
       ["Portfolio", "/portfolio/paper"],
       ["Research", "/research"],
-      ["Advisor", "/agent"],
-      ["System", "/health"],
     ]);
   });
 });

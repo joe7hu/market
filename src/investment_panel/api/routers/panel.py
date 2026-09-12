@@ -30,9 +30,10 @@ def _scope_snapshot_payload(*args: Any, **kwargs: Any) -> dict[str, Any]:
 def today(
     config: AppConfig = Depends(dependencies.get_config),
     option_actions: dependencies.OptionsResearchRepository = Depends(dependencies.get_options_research),
+    research_repository: dependencies.ResearchWorkbenchRepository = Depends(dependencies.get_research_workbench),
 ) -> dict[str, Any]:
     """Return one bounded, source-ordered action queue."""
-    return today_actions.today(config, option_actions)
+    return today_actions.today(config, option_actions, research_repository)
 
 
 @router.get("/api/status", response_model=StatusResponse, response_model_exclude_unset=True)

@@ -92,6 +92,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260910_0017_market_app_option_partition_locking.py',
         '20260911_0018_strategy_run_provenance.py',
         '20260911_0019_advisor_resolution_attempts.py',
+        '20260912_0020_workbench_indexes_promotion.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27

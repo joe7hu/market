@@ -8,6 +8,7 @@ from investment_panel.infrastructure.postgres.authority import runtime_for_url
 from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.migrations import upgrade_database
+from investment_panel.infrastructure.postgres.research_workbench import ResearchWorkbenchRepository
 from investment_panel.infrastructure.postgres.thesis import save_thesis
 from conftest import typed_config
 
@@ -159,6 +160,15 @@ def test_active_and_challenger_are_scored_on_the_same_frozen_packet(postgres_dsn
     assert cohort["candidate"]["full"]["matched_outcomes"] == 1
     assert cohort["active"]["full"]["excess_return_accuracy"] == 1
     assert cohort["candidate"]["full"]["excess_return_accuracy"] == 1
+    research = ResearchWorkbenchRepository(runtime).forecast_claims(symbol="MATCH", limit=1)
+    assert research["has_more"] is True
+    assert research["quality"]["brier_score"] == pytest.approx(0.16)
+    assert research["quality"]["calibration_bins"][0]["sample_count"] == 2
+    all_research = ResearchWorkbenchRepository(runtime).forecast_claims(symbol="MATCH", limit=10)
+    assert {row["event_contract"]["type"] for row in all_research["rows"]} >= {
+        "terminal_direction",
+        "unsupported",
+    }
     repository.record_promotion(
         {
             "candidate_prompt_version": "candidate_v1",
@@ -391,3 +401,56 @@ def test_replay_invalidation_finds_a_crossing_before_endpoint_recovery(postgres_
     )
     assert crossing is not None
     assert datetime.fromisoformat(str(crossing["observed_at"])).astimezone(UTC) == crossed
+
+
+def test_promotion_retry_is_idempotent_and_stale_parent_conflicts(postgres_dsn: str):
+    import pytest
+    upgrade_database(postgres_dsn)
+    repository = ContinuousAdvisorRepository(runtime_for_url(postgres_dsn))
+    for version, parent in (("race-root", None), ("race-a", "race-root"), ("race-b", "race-root")):
+        repository.ensure_prompt_version({"version": version, "parent_version": parent, "template": {}, "approved_change_set": []})
+    decision = {"candidate_prompt_version": "race-a", "previous_active_prompt_version": "race-root", "decision": "activate", "reason": "deterministic race fixture"}
+    first = repository.record_promotion(decision)
+    assert repository.record_promotion(decision) == first
+    with pytest.raises(psycopg.errors.SerializationFailure, match="revision changed"):
+        repository.record_promotion({**decision, "candidate_prompt_version": "race-b"})
+    assert repository.active_prompt_version("race-root") == "race-a"
+    assert repository.prompt_decided("race-a")
+    assert not repository.prompt_decided("race-b")
+
+
+def test_advisor_persists_exact_prompt_before_provider_call(postgres_dsn: str, monkeypatch):
+    from investment_panel.jobs import run_continuous_advisor as job
+    upgrade_database(postgres_dsn)
+    config = typed_config(postgres_dsn)
+    repository = ContinuousAdvisorRepository(runtime_for_url(postgres_dsn))
+    with psycopg.connect(postgres_dsn) as connection:
+        connection.execute("INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('PROMPTPROOF', 'Prompt retention fixture', 'equity')")
+    packet = _packet("PROMPTPROOF")
+    monkeypatch.setattr(job, "build_evidence_packet", lambda *args, **kwargs: packet)
+    monkeypatch.setattr(job, "_estimated_call_cost", lambda *args: 0.01)
+    monkeypatch.setattr(repository, "should_review", lambda *args, **kwargs: (True, "fixture"))
+    claim_review = repository.claim_review
+
+    def claim_without_provider(*args, **kwargs):
+        claim = claim_review(*args, **kwargs)
+        return {**claim, "created": False, "reason": "fixture_stops_before_provider"}
+
+    monkeypatch.setattr(repository, "claim_review", claim_without_provider)
+    result = job._run_one(config, repository, {"symbol": "PROMPTPROOF"}, {}, cutoff=datetime(2026, 9, 8, 15, tzinfo=UTC), prompt_version="continuous_v1", cadence_minutes=120, budget_remaining=1, force=True, dry_run=False)
+    stored = repository.run_detail(result["task_id"])["run"]["request"]["prompt_artifact"]
+    assert stored["origin"] == "contemporaneous_provider_input"
+    assert "paper-only" in stored["system_prompt"]
+    assert len(stored["content_hash"]) == 64
+    assert "prompt_artifact" not in stored["provider_payload"]
+
+
+def test_expired_comparison_remains_inspectable_without_collecting_forever(postgres_dsn: str):
+    upgrade_database(postgres_dsn)
+    repository = ContinuousAdvisorRepository(runtime_for_url(postgres_dsn))
+    repository.ensure_prompt_version({"version": "expire-root", "template": {}, "approved_change_set": []})
+    repository.ensure_prompt_version({"version": "expire-candidate", "parent_version": "expire-root", "template": {}, "approved_change_set": []})
+    assert repository.prompt_status("expire-root")["challenger"]["version"] == "expire-candidate"
+    repository.record_cohort({"cohort_key": "fixture-expired", "active_prompt_version": "expire-root", "candidate_prompt_version": "expire-candidate", "matched_outcomes": 0, "scorecard": {"gate": {"status": "expired"}}})
+    assert repository.prompt_status("expire-root")["challenger"] is None
+    assert repository.prompt_decided("expire-candidate")
