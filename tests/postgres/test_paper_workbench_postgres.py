@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 from psycopg.types.json import Jsonb
@@ -244,5 +244,93 @@ def test_paper_workbench_keeps_unresolved_realized_pnl_unknown(migrated_postgres
                 )
                 connection.execute(
                     "DELETE FROM app.paper_order WHERE id = %s::uuid", [str(order_id)]
+                )
+        runtime.close()
+
+
+def test_paper_workbench_filters_use_book_scope_and_exact_evidence_counts(
+    migrated_postgres_dsn,
+):
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    order_ids: list[str] = []
+    try:
+        with runtime.transaction() as connection:
+            instrument_id = reconcile_instrument(connection, f"WB{uuid4().hex[:8]}")
+            created_at = datetime(2026, 9, 10, 14, tzinfo=UTC)
+            verified_id = connection.execute(
+                """INSERT INTO app.paper_order
+                   (instrument_id, side, quantity, limit_price, status, paper_only,
+                    structure, book, sleeve, lane, created_at)
+                   VALUES (%s, 'buy', 1, 10, 'exited', true, 'equity',
+                           'paper', 'growth', 'ticker', %s) RETURNING id""",
+                [instrument_id, created_at],
+            ).fetchone()["id"]
+            partial_id = connection.execute(
+                """INSERT INTO app.paper_order
+                   (instrument_id, side, quantity, limit_price, status, paper_only,
+                    structure, book, sleeve, lane, created_at)
+                   VALUES (%s, 'buy', 1, 10, 'exited', true, 'equity',
+                           'paper', 'growth', 'ticker', %s) RETURNING id""",
+                [instrument_id, created_at],
+            ).fetchone()["id"]
+            staged_id = connection.execute(
+                """INSERT INTO app.paper_order
+                   (instrument_id, side, quantity, limit_price, status, paper_only,
+                    structure, book, sleeve, lane, created_at)
+                   VALUES (%s, 'buy', 1, 10, 'staged', true, 'equity',
+                           'paper', 'income', 'radar', %s) RETURNING id""",
+                [instrument_id, created_at + timedelta(days=1)],
+            ).fetchone()["id"]
+            order_ids = [str(verified_id), str(partial_id), str(staged_id)]
+            connection.cursor().executemany(
+                """INSERT INTO app.trade_journal
+                   (instrument_id, action, quantity, price, rationale, details)
+                   VALUES (%s, %s, 1, %s, 'deterministic_options_paper_execution', %s)""",
+                [
+                    (instrument_id, "paper_entry", 10, Jsonb({"paper_order_id": str(verified_id), "fees": 0.1})),
+                    (instrument_id, "paper_exit:take_profit", 12, Jsonb({"paper_order_id": str(verified_id), "fees": 0.1})),
+                    (instrument_id, "paper_entry", 10, Jsonb({"paper_order_id": str(partial_id)})),
+                    (instrument_id, "paper_exit:take_profit", 12, Jsonb({"paper_order_id": str(partial_id)})),
+                ],
+            )
+
+        repository = PaperWorkbenchRepository(runtime)
+        filters = {
+            "sleeve": "growth",
+            "instrument_kind": "equity",
+            "date_from": date(2026, 9, 10),
+            "date_to": date(2026, 9, 10),
+            "lane": "ticker",
+            "structure": "equity",
+            "evidence_class": "verified",
+        }
+        page = repository.trades(**filters)
+        exported = repository.export_rows(**filters)
+        performance = repository.performance(**filters)
+        assert [row["paper_order_id"] for row in page["rows"]] == [str(verified_id)]
+        assert page["scope"]["book"] == "paper"
+        assert page["scope"]["sleeve"] == "growth"
+        assert page["counts"]["total"] == 1
+        assert page["counts"]["reconciled_orders"] == 1
+        assert exported["scope"]["scope_id"] == page["scope"]["scope_id"]
+        assert performance["counts"]["total_orders"] == 1
+        assert performance["counts"]["reconciled_orders"] == 1
+        assert performance["evidence_coverage"]["reconciled_orders"] == 1
+
+        partial = repository.trades(sleeve="growth", evidence_class="partial")
+        unavailable = repository.trades(sleeve="income", evidence_class="unavailable")
+        assert [row["paper_order_id"] for row in partial["rows"]] == [str(partial_id)]
+        assert [row["paper_order_id"] for row in unavailable["rows"]] == [str(staged_id)]
+    finally:
+        with runtime.transaction() as connection:
+            if order_ids:
+                connection.execute(
+                    "DELETE FROM app.trade_journal WHERE details->>'paper_order_id' = ANY(%s)",
+                    [order_ids],
+                )
+                connection.execute(
+                    "DELETE FROM app.paper_order WHERE id = ANY(%s::uuid[])",
+                    [order_ids],
                 )
         runtime.close()

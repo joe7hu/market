@@ -3131,6 +3131,111 @@ export interface components {
          * @enum {string}
          */
         ExpressionKind: "STOCK" | "CALL" | "PUT" | "DEBIT_SPREAD" | "CASH_SECURED_PUT" | "CRYPTO_SPOT" | "CRYPTO_PERPETUAL" | "CASH";
+        /**
+         * ForecastQuality
+         * @description Claim-quality metrics with explicit maturity and cost coverage.
+         */
+        ForecastQuality: {
+            /** Abstention Rate */
+            abstention_rate?: number | null;
+            /** Avg Latency Ms */
+            avg_latency_ms?: number | null;
+            /** Base Rate Brier */
+            base_rate_brier?: number | null;
+            /**
+             * Brier Sample Count
+             * @default 0
+             */
+            brier_sample_count: number;
+            /** Brier Score */
+            brier_score?: number | null;
+            /** Brier Time Series */
+            brier_time_series?: {
+                [key: string]: unknown;
+            }[];
+            /** Calibration Bins */
+            calibration_bins?: {
+                [key: string]: unknown;
+            }[];
+            /** Calibration Score */
+            calibration_score?: number | null;
+            /**
+             * Cost Status
+             * @default no_data
+             */
+            cost_status: string;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Coverage */
+            coverage?: number | null;
+            /** Directional Accuracy */
+            directional_accuracy?: number | null;
+            /** Event Base Rate */
+            event_base_rate?: number | null;
+            /**
+             * Excluded Claims
+             * @default 0
+             */
+            excluded_claims: number;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /**
+             * Invalid Claims
+             * @default 0
+             */
+            invalid_claims: number;
+            /** Invalidation Accuracy */
+            invalidation_accuracy?: number | null;
+            /** Invalidation Event Rate */
+            invalidation_event_rate?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /**
+             * Pending Claims
+             * @default 0
+             */
+            pending_claims: number;
+            /** Quality Score Basis */
+            quality_score_basis?: string | null;
+            /** Resolved Coverage */
+            resolved_coverage?: number | null;
+            /**
+             * Response Count
+             * @default 0
+             */
+            response_count: number;
+            /** Scoring Version */
+            scoring_version?: string | null;
+            /** Skill Vs Base Rate */
+            skill_vs_base_rate?: number | null;
+            /**
+             * Status
+             * @default insufficient_evidence
+             */
+            status: string;
+            /**
+             * Unpriced Response Count
+             * @default 0
+             */
+            unpriced_response_count: number;
+            /**
+             * Unresolved Claims
+             * @default 0
+             */
+            unresolved_claims: number;
+            /**
+             * Unsupported Claims
+             * @default 0
+             */
+            unsupported_claims: number;
+            /**
+             * Valid Resolved Claims
+             * @default 0
+             */
+            valid_resolved_claims: number;
+        } & {
+            [key: string]: unknown;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -5333,6 +5438,11 @@ export interface components {
             as_of?: string | null;
             /** Calculation Version */
             calculation_version?: string | null;
+            /**
+             * Capital Status
+             * @default unavailable
+             */
+            capital_status: string;
             /** Counts */
             counts?: {
                 [key: string]: number;
@@ -5348,14 +5458,31 @@ export interface components {
             evidence_coverage?: {
                 [key: string]: unknown;
             };
+            /**
+             * Flow Status
+             * @default unavailable
+             */
+            flow_status: string;
             /** Missing Evidence Reasons */
             missing_evidence_reasons?: string[];
             /** Nav */
             nav?: number | null;
+            /**
+             * Nav Status
+             * @default unavailable
+             */
+            nav_status: string;
             /** Net Pnl */
             net_pnl?: number | null;
             /** Next Cursor */
             next_cursor?: string | null;
+            /** Open Exposure */
+            open_exposure?: number | null;
+            /**
+             * Open Exposure Status
+             * @default partial
+             */
+            open_exposure_status: string;
             /** Quality Status */
             quality_status: string;
             /** Realized Pnl */
@@ -5364,6 +5491,11 @@ export interface components {
             realized_pnl_status?: string | null;
             /** Return Pct */
             return_pct?: number | null;
+            /**
+             * Return Status
+             * @default unavailable
+             */
+            return_status: string;
             /** Scope */
             scope?: {
                 [key: string]: unknown;
@@ -5454,6 +5586,35 @@ export interface components {
          * @description Bounded paper-trade investigation with original artifacts.
          */
         PaperTradeDetail: {
+            /**
+             * Book
+             * @default paper
+             */
+            book: string;
+            /** Decision At */
+            decision_at?: string | null;
+            /** Decision Id */
+            decision_id?: string | null;
+            /** Entry Price */
+            entry_price?: number | null;
+            /** Evidence Reasons */
+            evidence_reasons?: string[];
+            /** Evidence Status */
+            evidence_status?: string | null;
+            /** Execution */
+            execution?: {
+                [key: string]: unknown;
+            };
+            /** Exit Price */
+            exit_price?: number | null;
+            /** Filled Quantity */
+            filled_quantity?: number | null;
+            /** Initial Risk */
+            initial_risk?: number | null;
+            /** Instrument Kind */
+            instrument_kind?: string | null;
+            /** Lane */
+            lane?: string | null;
             /** Lifecycle */
             lifecycle: string;
             /** Mark Available At */
@@ -5479,8 +5640,20 @@ export interface components {
             net_pnl?: number | null;
             /** Paper Order Id */
             paper_order_id: string;
+            /** Realized Pnl */
+            realized_pnl?: number | null;
             /** Reconciliation Status */
             reconciliation_status: string;
+            /** Remaining Quantity */
+            remaining_quantity?: number | null;
+            /** Sleeve */
+            sleeve?: string | null;
+            /** Staged At */
+            staged_at?: string | null;
+            /** Strategy Revision Id */
+            strategy_revision_id?: string | null;
+            /** Structure */
+            structure?: string | null;
             /** Symbol */
             symbol: string;
             /** Unrealized Pnl */
@@ -5490,15 +5663,38 @@ export interface components {
         };
         /** PaperTradePage */
         PaperTradePage: {
+            /** As Of */
+            as_of?: string | null;
+            /** Calculation Version */
+            calculation_version?: string | null;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
             /**
              * Has More
              * @default false
              */
             has_more: boolean;
+            /** Missing Evidence Reasons */
+            missing_evidence_reasons?: string[];
             /** Next Cursor */
             next_cursor?: string | null;
+            /**
+             * Quality Status
+             * @default complete
+             */
+            quality_status: string;
             /** Rows */
             rows?: components["schemas"]["PaperTradeSummary"][];
+            /** Scope */
+            scope?: {
+                [key: string]: unknown;
+            };
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Source Watermark */
+            source_watermark?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -5507,6 +5703,35 @@ export interface components {
          * @description A fill-backed paper trade row; monetary fields may be explicitly null.
          */
         PaperTradeSummary: {
+            /**
+             * Book
+             * @default paper
+             */
+            book: string;
+            /** Decision At */
+            decision_at?: string | null;
+            /** Decision Id */
+            decision_id?: string | null;
+            /** Entry Price */
+            entry_price?: number | null;
+            /** Evidence Reasons */
+            evidence_reasons?: string[];
+            /** Evidence Status */
+            evidence_status?: string | null;
+            /** Execution */
+            execution?: {
+                [key: string]: unknown;
+            };
+            /** Exit Price */
+            exit_price?: number | null;
+            /** Filled Quantity */
+            filled_quantity?: number | null;
+            /** Initial Risk */
+            initial_risk?: number | null;
+            /** Instrument Kind */
+            instrument_kind?: string | null;
+            /** Lane */
+            lane?: string | null;
             /** Lifecycle */
             lifecycle: string;
             /** Mark Available At */
@@ -5532,8 +5757,20 @@ export interface components {
             net_pnl?: number | null;
             /** Paper Order Id */
             paper_order_id: string;
+            /** Realized Pnl */
+            realized_pnl?: number | null;
             /** Reconciliation Status */
             reconciliation_status: string;
+            /** Remaining Quantity */
+            remaining_quantity?: number | null;
+            /** Sleeve */
+            sleeve?: string | null;
+            /** Staged At */
+            staged_at?: string | null;
+            /** Strategy Revision Id */
+            strategy_revision_id?: string | null;
+            /** Structure */
+            structure?: string | null;
             /** Symbol */
             symbol: string;
             /** Unrealized Pnl */
@@ -6270,6 +6507,10 @@ export interface components {
         };
         /** ResearchClaimPage */
         ResearchClaimPage: {
+            /** As Of */
+            as_of?: string | null;
+            /** Calculation Version */
+            calculation_version?: string | null;
             /** Count */
             count?: {
                 [key: string]: number;
@@ -6279,12 +6520,26 @@ export interface components {
              * @default false
              */
             has_more: boolean;
+            /** Missing Evidence Reasons */
+            missing_evidence_reasons?: string[];
             /** Next Cursor */
             next_cursor?: string | null;
+            quality?: components["schemas"]["ForecastQuality"] | null;
+            /**
+             * Quality Status
+             * @default complete
+             */
+            quality_status: string;
             /** Rows */
             rows?: {
                 [key: string]: unknown;
             }[];
+            /** Scope */
+            scope?: {
+                [key: string]: unknown;
+            };
+            /** Source Watermark */
+            source_watermark?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -9800,9 +10055,18 @@ export interface operations {
     paper_performance_api_paper_performance_get: {
         parameters: {
             query?: {
+                book?: string;
+                sleeve?: string | null;
                 symbol?: string | null;
+                instrument_kind?: string | null;
                 strategy_revision?: number | null;
                 lifecycle?: string | null;
+                date_from?: string | null;
+                date_to?: string | null;
+                lane?: string | null;
+                structure?: string | null;
+                evidence_class?: string | null;
+                reconciliation_status?: string | null;
             };
             header?: never;
             path?: never;
@@ -9833,9 +10097,18 @@ export interface operations {
     paper_trades_api_paper_trades_get: {
         parameters: {
             query?: {
+                book?: string;
+                sleeve?: string | null;
                 symbol?: string | null;
+                instrument_kind?: string | null;
                 strategy_revision?: number | null;
                 lifecycle?: string | null;
+                date_from?: string | null;
+                date_to?: string | null;
+                lane?: string | null;
+                structure?: string | null;
+                evidence_class?: string | null;
+                reconciliation_status?: string | null;
                 limit?: number;
                 cursor?: string | null;
             };
@@ -9868,9 +10141,18 @@ export interface operations {
     paper_trades_export_api_paper_trades_export_get: {
         parameters: {
             query?: {
+                book?: string;
+                sleeve?: string | null;
                 symbol?: string | null;
+                instrument_kind?: string | null;
                 strategy_revision?: number | null;
                 lifecycle?: string | null;
+                date_from?: string | null;
+                date_to?: string | null;
+                lane?: string | null;
+                structure?: string | null;
+                evidence_class?: string | null;
+                reconciliation_status?: string | null;
                 format?: string;
             };
             header?: never;

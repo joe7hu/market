@@ -66,9 +66,26 @@ class PaperTradeSummary(FlexibleResponse):
 
     paper_order_id: str
     symbol: str
+    book: str = "paper"
+    sleeve: str | None = None
+    instrument_kind: str | None = None
+    decision_id: str | None = None
+    strategy_revision_id: str | None = None
+    decision_at: datetime | None = None
+    staged_at: datetime | None = None
+    lane: str | None = None
+    structure: str | None = None
     lifecycle: str
+    filled_quantity: float | None = None
+    remaining_quantity: float | None = None
+    entry_price: float | None = None
+    exit_price: float | None = None
+    initial_risk: float | None = None
     reconciliation_status: str
+    evidence_status: str | None = None
+    evidence_reasons: list[str] = Field(default_factory=list)
     net_pnl: float | None = None
+    realized_pnl: float | None = None
     unrealized_pnl: float | None = None
     mark_status: str = "unavailable"
     mark_price: float | None = None
@@ -78,6 +95,7 @@ class PaperTradeSummary(FlexibleResponse):
     mark_source: str | None = None
     mark_basis: str | None = None
     mark_stale: bool | None = None
+    execution: dict[str, Any] = Field(default_factory=dict)
 
 
 class PaperTradeDetail(PaperTradeSummary):
@@ -86,6 +104,14 @@ class PaperTradeDetail(PaperTradeSummary):
 
 class PaperTradePage(FlexibleResponse):
     rows: list[PaperTradeSummary] = Field(default_factory=list)
+    as_of: datetime | None = None
+    source_watermark: datetime | None = None
+    snapshot_id: str | None = None
+    scope: dict[str, Any] = Field(default_factory=dict)
+    calculation_version: str | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+    quality_status: str = "complete"
+    missing_evidence_reasons: list[str] = Field(default_factory=list)
     next_cursor: str | None = None
     has_more: bool = False
 
@@ -110,7 +136,13 @@ class PaperBookPerformance(FlexibleResponse):
     realized_pnl_status: str | None = None
     unrealized_pnl: float | None = None
     nav: float | None = None
+    nav_status: str = "unavailable"
     return_pct: float | None = None
+    return_status: str = "unavailable"
+    capital_status: str = "unavailable"
+    flow_status: str = "unavailable"
+    open_exposure: float | None = None
+    open_exposure_status: str = "partial"
     drawdown: float | None = None
     series: dict[str, Any] = Field(default_factory=dict)
     quality_status: str
@@ -155,9 +187,51 @@ class ResearchStrategyDetail(FlexibleResponse):
     comparisons: list[Row] = Field(default_factory=list)
 
 
+class ForecastQuality(FlexibleResponse):
+    """Claim-quality metrics with explicit maturity and cost coverage."""
+
+    status: str = "insufficient_evidence"
+    scoring_version: str | None = None
+    valid_resolved_claims: int = 0
+    brier_sample_count: int = 0
+    brier_score: float | None = None
+    calibration_score: float | None = None
+    directional_accuracy: float | None = None
+    invalidation_accuracy: float | None = None
+    event_base_rate: float | None = None
+    base_rate_brier: float | None = None
+    skill_vs_base_rate: float | None = None
+    coverage: float | None = None
+    resolved_coverage: float | None = None
+    abstention_rate: float | None = None
+    pending_claims: int = 0
+    excluded_claims: int = 0
+    unresolved_claims: int = 0
+    unsupported_claims: int = 0
+    invalid_claims: int = 0
+    response_count: int = 0
+    avg_latency_ms: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    unpriced_response_count: int = 0
+    cost_status: str = "no_data"
+    calibration_bins: list[Row] = Field(default_factory=list)
+    brier_time_series: list[Row] = Field(default_factory=list)
+    invalidation_event_rate: float | None = None
+    quality_score_basis: str | None = None
+
+
 class ResearchClaimPage(FlexibleResponse):
     rows: list[Row] = Field(default_factory=list)
     count: dict[str, int] = Field(default_factory=dict)
+    quality: ForecastQuality | None = None
+    as_of: datetime | None = None
+    source_watermark: datetime | None = None
+    calculation_version: str | None = None
+    scope: dict[str, Any] = Field(default_factory=dict)
+    quality_status: str = "complete"
+    missing_evidence_reasons: list[str] = Field(default_factory=list)
     next_cursor: str | None = None
     has_more: bool = False
 

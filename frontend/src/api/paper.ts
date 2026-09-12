@@ -4,6 +4,13 @@ import { getJson } from "../apiTransport";
 type ApiSchema = components["schemas"];
 
 export type PaperTrade = ApiSchema["PaperTradeDetail"] & {
+  book?: string;
+  sleeve?: string | null;
+  lane?: string | null;
+  structure?: string | null;
+  instrument_kind?: string | null;
+  initial_risk?: number | null;
+  execution?: Record<string, unknown>;
   entry_price?: number | null;
   exit_price?: number | null;
   staged_limit_price?: number | null;
@@ -32,8 +39,14 @@ export type PaperPerformance = ApiSchema["PaperBookPerformance"] & {
   net_pnl: number | null;
   realized_pnl: number | null;
   unrealized_pnl: number | null;
+  open_exposure?: number | null;
+  open_exposure_status?: string;
   nav?: number | null;
+  nav_status?: string;
   return_pct?: number | null;
+  return_status?: string;
+  capital_status?: string;
+  flow_status?: string;
   drawdown?: number | null;
   quality_status: string;
   missing_evidence_reasons: string[];
@@ -56,13 +69,35 @@ export type LearningOverviewPayload = ApiSchema["LearningOverview"] & {
   events?: Array<Record<string, unknown>>;
 };
 
-export type PaperFilters = { symbol?: string; strategy_revision?: string; lifecycle?: string };
+export type PaperFilters = {
+  book?: string;
+  sleeve?: string;
+  symbol?: string;
+  instrument_kind?: string;
+  strategy_revision?: string;
+  lifecycle?: string;
+  date_from?: string;
+  date_to?: string;
+  lane?: string;
+  structure?: string;
+  evidence_class?: string;
+  reconciliation_status?: string;
+};
 
 function query(filters: PaperFilters): string {
   const params = new URLSearchParams();
+  if (filters.book) params.set("book", filters.book);
+  if (filters.sleeve) params.set("sleeve", filters.sleeve);
   if (filters.symbol) params.set("symbol", filters.symbol);
+  if (filters.instrument_kind) params.set("instrument_kind", filters.instrument_kind);
   if (filters.strategy_revision) params.set("strategy_revision", filters.strategy_revision);
   if (filters.lifecycle) params.set("lifecycle", filters.lifecycle);
+  if (filters.date_from) params.set("date_from", filters.date_from);
+  if (filters.date_to) params.set("date_to", filters.date_to);
+  if (filters.lane) params.set("lane", filters.lane);
+  if (filters.structure) params.set("structure", filters.structure);
+  if (filters.evidence_class) params.set("evidence_class", filters.evidence_class);
+  if (filters.reconciliation_status) params.set("reconciliation_status", filters.reconciliation_status);
   return params.toString();
 }
 
@@ -80,6 +115,12 @@ export function loadPaperTrades(filters: PaperFilters, limit = 100, cursor?: str
 
 export function loadPaperTrade(tradeId: string, signal?: AbortSignal): Promise<PaperTrade> {
   return getJson<PaperTrade>(`/api/paper/trades/${encodeURIComponent(tradeId)}`, signal);
+}
+
+export function paperTradesExportUrl(filters: PaperFilters): string {
+  const params = new URLSearchParams(query(filters));
+  params.set("format", "csv");
+  return `/api/paper/trades/export?${params.toString()}`;
 }
 
 export function loadLearningOverview(signal?: AbortSignal): Promise<LearningOverviewPayload> {

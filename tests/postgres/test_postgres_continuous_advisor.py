@@ -150,7 +150,14 @@ def test_active_and_challenger_are_scored_on_the_same_frozen_packet(postgres_dsn
             model="gpt-5.6-luna",
             reasoning_effort="high",
         )
-        repository.finish_review(task["task_id"], status="succeeded", response=response, validation={"schema_valid": True, "evidence_valid": True})
+        repository.finish_review(
+            task["task_id"],
+            status="succeeded",
+            response=response,
+            validation={"schema_valid": True, "evidence_valid": True},
+            usage={"input_tokens": 10, "output_tokens": 20},
+            cost_usd=0.01,
+        )
         claim_id = repository.run_detail(task["task_id"])["claims"][0]["claim_id"]
         repository.record_outcome(claim_id, {"status": "resolved", "correct": True, "evidence_valid": True, "actual_return": 0.01, "excess_return": 0.01})
 
@@ -164,6 +171,11 @@ def test_active_and_challenger_are_scored_on_the_same_frozen_packet(postgres_dsn
     assert research["has_more"] is True
     assert research["quality"]["brier_score"] == pytest.approx(0.16)
     assert research["quality"]["calibration_bins"][0]["sample_count"] == 2
+    assert research["quality"]["pending_claims"] == 2
+    assert research["quality"]["response_count"] == 2
+    assert research["quality"]["input_tokens"] == 20
+    assert research["quality"]["output_tokens"] == 40
+    assert research["quality"]["cost_status"] == "complete"
     all_research = ResearchWorkbenchRepository(runtime).forecast_claims(symbol="MATCH", limit=10)
     assert {row["event_contract"]["type"] for row in all_research["rows"]} >= {
         "terminal_direction",

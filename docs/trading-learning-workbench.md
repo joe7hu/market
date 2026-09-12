@@ -6,8 +6,10 @@ paper book. No live order authority is added.
 
 ## Inspecting evidence
 
-- `/portfolio/paper` shows all-revision paper history. Its header, realized curve,
-  and first 100 trades come from one repeatable PostgreSQL snapshot. Point selection
+- `/portfolio/paper` shows all-revision paper history in the canonical `paper` book.
+  Book/sleeve, symbol, instrument kind, lifecycle, date, lane, structure and evidence filters share
+  one route-backed scope. Its header, realized curve, first 100 trades, cursor pages
+  and explicit CSV export carry that scope and snapshot identity. Point selection
   opens the contributing trade. An accessible event table provides the same links.
 - Trade details show stored decision rationale, forecasts, the deterministic policy,
   the immutable ticket, individual fills, fees, multipliers, mark provenance and
@@ -29,6 +31,11 @@ P&L is shown separately with mark coverage. Opening paper capital and external-f
 history are not available from the present source contract; NAV and capital-normalized
 returns remain unavailable. A staged limit is never treated as a fill. Missing or
 conflicting historical fees and option multipliers remain unreconciled.
+
+The paper scope includes optional sleeve metadata so future sleeves cannot be mixed
+silently. The current schema constrains this workbench to the paper book; no second
+ledger or live-order book is introduced. Reconciliation totals are calculated over
+the full filtered order population, not just the first page.
 
 Display sampling retains bucket endpoints, P&L extrema and drawdown troughs in at
 most 2,000 points. Drawdown statistics use the full realized event series. Performance
@@ -80,11 +87,11 @@ labeled deterministic fixture, not production trading performance.
 
 On macOS 26.6.2, Apple Silicon, September 12, 2026:
 
-| Warm read | Before indexes | With paper cursor/fill indexes |
+| Warm read | Before indexes | With paper scope/fill indexes |
 | --- | ---: | ---: |
-| Summary | 7.5701 s | 3.6693 s |
-| 100-row page | 5.8277 s | 2.0458 s |
-| Trade detail | 0.0327 s | 0.0299 s |
+| Summary | 7.5701 s | 4.2743 s |
+| 100-row page | 5.8277 s | 3.2011 s |
+| Trade detail | 0.0327 s | 0.0295 s |
 
 The proposed sub-second summary/page target is **not met**. The indexed journal
 lookup improves the measured path; confirmed historical mark selection remains a
