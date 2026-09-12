@@ -9,7 +9,7 @@ import json
 from typing import Any
 from uuid import UUID
 
-from investment_panel.core.continuous_advisor import SCORING_VERSION, claim_event_contract
+from investment_panel.core.continuous_advisor import MIN_PROMOTION_MATCHES, SCORING_VERSION, claim_event_contract
 from investment_panel.infrastructure.postgres.continuous_advisor import (
     ContinuousAdvisorRepository,
 )
@@ -531,6 +531,7 @@ class ResearchWorkbenchRepository:
         brier_score = quality_row.get("brier_score")
         payload["quality"] = _jsonable({
             "status": "available" if int(quality_row.get("valid_resolved_claims") or 0) else "insufficient_evidence",
+            "required_independent_outcomes": MIN_PROMOTION_MATCHES,
             "scoring_version": SCORING_VERSION,
             "valid_resolved_claims": int(quality_row.get("valid_resolved_claims") or 0),
             "brier_sample_count": int(quality_row.get("brier_sample_count") or 0),
@@ -634,12 +635,42 @@ class ResearchWorkbenchRepository:
     def prompt_versions(self, *, default_version: str | None = None) -> dict[str, Any]:
         with self.runtime.snapshot(API_PROFILE) as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT prompt.version, prompt.parent_version, prompt.template,
                        prompt.approved_change_set, prompt.mutation_rationale,
                        prompt.created_at,
                        count(DISTINCT response.id) AS response_count,
                        count(DISTINCT claim.id) AS claim_count,
+                       count(DISTINCT claim.id) FILTER (
+                           WHERE outcome.status = 'resolved' AND outcome.evidence_valid
+                       ) AS resolved_claim_count,
+                       count(DISTINCT claim.id) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND (
+                                 (claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS NOT NULL)
+                                 OR (claim.claim_kind <> 'invalidation' AND outcome.correct IS NOT NULL)
+                             )
+                       ) AS brier_sample_count,
+                       avg({CURRENT_BRIER_EXPRESSION}) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND (
+                                 (claim.claim_kind = 'invalidation' AND outcome.invalidation_actual IS NOT NULL)
+                                 OR (claim.claim_kind <> 'invalidation' AND outcome.correct IS NOT NULL)
+                             )
+                       ) AS brier_score,
+                       avg(CASE WHEN outcome.correct THEN 1.0 ELSE 0.0 END) FILTER (
+                           WHERE outcome.status = 'resolved'
+                             AND outcome.evidence_valid
+                             AND claim.claim_kind <> 'invalidation'
+                             AND outcome.correct IS NOT NULL
+                       ) AS directional_accuracy,
+                       (
+                           SELECT coalesce(sum(response_cost.cost_usd), 0)
+                           FROM analysis.continuous_advisor_response response_cost
+                           WHERE response_cost.prompt_version = prompt.version
+                       ) AS cost_usd,
                        max(response.finished_at) AS last_response_at,
                        max(promotion.created_at) AS last_promotion_at,
                        max(promotion.decision) FILTER (WHERE promotion.created_at = (
@@ -652,6 +683,8 @@ class ResearchWorkbenchRepository:
                   ON response.prompt_version = prompt.version
                 LEFT JOIN analysis.continuous_advisor_forecast_claim claim
                   ON claim.response_id = response.id
+                LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome
+                  ON outcome.claim_id = claim.id
                 LEFT JOIN analysis.continuous_advisor_promotion_decision promotion
                   ON promotion.candidate_prompt_version = prompt.version
                 GROUP BY prompt.version

@@ -69,8 +69,13 @@ class PaperTradeSummary(FlexibleResponse):
     book: str = "paper"
     sleeve: str | None = None
     instrument_kind: str | None = None
+    structure: str | None = None
+    strike: float | None = None
+    option_type: str | None = None
+    expiration: date | None = None
     decision_id: str | None = None
     strategy_revision_id: str | None = None
+    strategy: dict[str, Any] | None = None
     decision_at: datetime | None = None
     staged_at: datetime | None = None
     lane: str | None = None
@@ -145,6 +150,7 @@ class PaperBookPerformance(FlexibleResponse):
     open_exposure_status: str = "partial"
     drawdown: float | None = None
     series: dict[str, Any] = Field(default_factory=dict)
+    attribution: dict[str, list[Row]] = Field(default_factory=dict)
     quality_status: str
 
 
@@ -191,6 +197,7 @@ class ForecastQuality(FlexibleResponse):
     """Claim-quality metrics with explicit maturity and cost coverage."""
 
     status: str = "insufficient_evidence"
+    required_independent_outcomes: int = 30
     scoring_version: str | None = None
     valid_resolved_claims: int = 0
     brier_sample_count: int = 0

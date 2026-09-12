@@ -23,6 +23,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { cn } from "@/lib/utils";
 import { useMarketData } from "@/marketData";
 import { loadContextualAssistantPacket, type ContextualAssistantPacket } from "@/api/panel";
+import { BuildMismatchBanner } from "@/components/market/BuildIdentity";
 import type { Tone } from "@/ui/tone";
 
 type NavItem = {
@@ -103,6 +104,7 @@ export function AppShell() {
               </div>
             ) : null}
           </div>
+          <BuildMismatchBanner />
         </header>
         <main className={cn("mx-auto min-w-0 overflow-x-hidden px-3 py-4 sm:px-4 lg:py-6", widePage ? "max-w-none lg:px-3" : "max-w-[1720px] lg:px-6")}>
           <Outlet />

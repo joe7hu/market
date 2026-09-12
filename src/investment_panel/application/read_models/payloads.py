@@ -3,6 +3,8 @@
 from __future__ import annotations
 from datetime import UTC, datetime
 import os
+from pathlib import Path
+import subprocess
 from typing import Any, Mapping
 from investment_panel.infrastructure.scheduler import scheduler_status
 from investment_panel.domain.panel import (
@@ -35,13 +37,32 @@ from investment_panel.infrastructure.postgres.ticker_decisions import select_cur
 DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
 
 
+def _backend_commit() -> str:
+    configured = os.environ.get("MARKET_BACKEND_COMMIT")
+    if configured:
+        return configured
+    try:
+        repository = Path(__file__).resolve().parents[4]
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=1,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
 
 def status_payload(panel_data: PanelData) -> dict[str, Any]:
     metadata = jsonable(panel_data.metadata)
     actual_schema = metadata.get("schema_revision")
     expected_schema = metadata.get("expected_schema_revision") or actual_schema
     metadata["release"] = {
-        "backend_commit": os.environ.get("MARKET_BACKEND_COMMIT", "unknown"),
+        "backend_commit": _backend_commit(),
         "frontend_build": os.environ.get("MARKET_FRONTEND_BUILD", "unknown"),
         "scheduler_release": os.environ.get("MARKET_SCHEDULER_RELEASE", "unknown"),
     }

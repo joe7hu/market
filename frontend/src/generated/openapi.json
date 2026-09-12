@@ -3532,6 +3532,11 @@
             ],
             "title": "Quality Score Basis"
           },
+          "required_independent_outcomes": {
+            "default": 30,
+            "title": "Required Independent Outcomes",
+            "type": "integer"
+          },
           "resolved_coverage": {
             "anyOf": [
               {
@@ -10164,6 +10169,17 @@
             ],
             "title": "As Of"
           },
+          "attribution": {
+            "additionalProperties": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "title": "Attribution",
+            "type": "object"
+          },
           "calculation_version": {
             "anyOf": [
               {
@@ -10709,6 +10725,18 @@
             ],
             "title": "Exit Price"
           },
+          "expiration": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiration"
+          },
           "filled_quantity": {
             "anyOf": [
               {
@@ -10852,6 +10880,17 @@
             ],
             "title": "Net Pnl"
           },
+          "option_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Type"
+          },
           "paper_order_id": {
             "title": "Paper Order Id",
             "type": "string"
@@ -10905,6 +10944,18 @@
             ],
             "title": "Staged At"
           },
+          "strategy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          },
           "strategy_revision_id": {
             "anyOf": [
               {
@@ -10915,6 +10966,17 @@
               }
             ],
             "title": "Strategy Revision Id"
+          },
+          "strike": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strike"
           },
           "structure": {
             "anyOf": [
@@ -11129,6 +11191,18 @@
             ],
             "title": "Exit Price"
           },
+          "expiration": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiration"
+          },
           "filled_quantity": {
             "anyOf": [
               {
@@ -11272,6 +11346,17 @@
             ],
             "title": "Net Pnl"
           },
+          "option_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Type"
+          },
           "paper_order_id": {
             "title": "Paper Order Id",
             "type": "string"
@@ -11325,6 +11410,18 @@
             ],
             "title": "Staged At"
           },
+          "strategy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          },
           "strategy_revision_id": {
             "anyOf": [
               {
@@ -11335,6 +11432,17 @@
               }
             ],
             "title": "Strategy Revision Id"
+          },
+          "strike": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strike"
           },
           "structure": {
             "anyOf": [
