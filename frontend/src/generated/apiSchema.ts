@@ -3197,6 +3197,11 @@ export interface components {
             pending_claims: number;
             /** Quality Score Basis */
             quality_score_basis?: string | null;
+            /**
+             * Required Independent Outcomes
+             * @default 30
+             */
+            required_independent_outcomes: number;
             /** Resolved Coverage */
             resolved_coverage?: number | null;
             /**
@@ -5436,6 +5441,12 @@ export interface components {
             accounting_basis?: string | null;
             /** As Of */
             as_of?: string | null;
+            /** Attribution */
+            attribution?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                }[];
+            };
             /** Calculation Version */
             calculation_version?: string | null;
             /**
@@ -5607,6 +5618,8 @@ export interface components {
             };
             /** Exit Price */
             exit_price?: number | null;
+            /** Expiration */
+            expiration?: string | null;
             /** Filled Quantity */
             filled_quantity?: number | null;
             /** Initial Risk */
@@ -5638,6 +5651,8 @@ export interface components {
             mark_value?: number | null;
             /** Net Pnl */
             net_pnl?: number | null;
+            /** Option Type */
+            option_type?: string | null;
             /** Paper Order Id */
             paper_order_id: string;
             /** Realized Pnl */
@@ -5650,8 +5665,14 @@ export interface components {
             sleeve?: string | null;
             /** Staged At */
             staged_at?: string | null;
+            /** Strategy */
+            strategy?: {
+                [key: string]: unknown;
+            } | null;
             /** Strategy Revision Id */
             strategy_revision_id?: string | null;
+            /** Strike */
+            strike?: number | null;
             /** Structure */
             structure?: string | null;
             /** Symbol */
@@ -5724,6 +5745,8 @@ export interface components {
             };
             /** Exit Price */
             exit_price?: number | null;
+            /** Expiration */
+            expiration?: string | null;
             /** Filled Quantity */
             filled_quantity?: number | null;
             /** Initial Risk */
@@ -5755,6 +5778,8 @@ export interface components {
             mark_value?: number | null;
             /** Net Pnl */
             net_pnl?: number | null;
+            /** Option Type */
+            option_type?: string | null;
             /** Paper Order Id */
             paper_order_id: string;
             /** Realized Pnl */
@@ -5767,8 +5792,14 @@ export interface components {
             sleeve?: string | null;
             /** Staged At */
             staged_at?: string | null;
+            /** Strategy */
+            strategy?: {
+                [key: string]: unknown;
+            } | null;
             /** Strategy Revision Id */
             strategy_revision_id?: string | null;
+            /** Strike */
+            strike?: number | null;
             /** Structure */
             structure?: string | null;
             /** Symbol */

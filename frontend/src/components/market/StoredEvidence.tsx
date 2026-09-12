@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { ReactNode } from "react";
 
 /** React text rendering only: stored source content is never executable HTML. */
 export function EvidenceFields({ value }: { value: unknown }) {
@@ -11,4 +12,8 @@ export function EvidenceFields({ value }: { value: unknown }) {
 
 export function StoredEvidence({ title, value }: { title: string; value: unknown }) {
   return <Card><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent><EvidenceFields value={value} /></CardContent></Card>;
+}
+
+export function TechnicalDetails({ children, title = "Technical details" }: { children: ReactNode; title?: string }) {
+  return <details className="rounded-xl border border-border bg-muted/20 px-4 py-3"><summary className="cursor-pointer text-sm font-semibold">{title}<span className="ml-2 font-normal text-muted-foreground">IDs, hashes, raw evidence and validators</span></summary><div className="mt-4 space-y-4">{children}</div></details>;
 }

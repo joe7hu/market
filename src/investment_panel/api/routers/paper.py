@@ -279,6 +279,7 @@ def research_overview(
     enabled = bool(config.agents.thesis_monitor.continuous_enabled)
     prompt_health = advisor.get("strategy_health") or {}
     challenger = prompt_health.get("challenger") or {}
+    prompt_quality = research_repository.forecast_claims(limit=1).get("quality") or {}
     return {
         "paper_only": True,
         "as_of": performance["as_of"],
@@ -296,6 +297,7 @@ def research_overview(
             "challenger": challenger.get("version"),
             "permitted_automatic_action": "advisory_only",
             "overview": advisor,
+            "quality": prompt_quality,
             "blockers": [],
         },
         "events": research_repository.events(limit=25),

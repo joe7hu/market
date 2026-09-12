@@ -5,7 +5,7 @@ import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucid
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { EmptyState, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
+import { EmptyState, PageHeader, StatusBadge } from "@/components/market/workstation";
 import { DataFieldStateNotice, decisionReason, missingFieldState } from "@/components/market/dataFieldState";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { cn } from "@/lib/utils";
@@ -14,9 +14,9 @@ import type { components } from "@/generated/apiSchema";
 import type { AppModel } from "@/model";
 import type { PanelData, ScopeSnapshotStatus } from "@/types";
 import { expressionLabel } from "@/viewModels/expression";
-import { buildPortfolioViewModel } from "@/viewModels/portfolio";
 import { formatMoney, formatPct, toneFromText, type Tone } from "@/shared/rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
+import { statusLabel as semanticStatusLabel } from "@/presentation/labels";
 
 type TodayPageProps = {
   data: PanelData;
@@ -64,11 +64,6 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
   const whatsChanged = briefItems.filter((item) => item.category === "whats_changed");
   const catalysts = briefItems.filter((item) => item.category === "catalysts").slice().sort((a, b) => (a.days_until ?? Number.MAX_SAFE_INTEGER) - (b.days_until ?? Number.MAX_SAFE_INTEGER));
   const portfolioPulse = briefItems.filter((item) => item.category === "portfolio_pulse");
-  const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
-  const largestHolding = pricedHoldings.slice().sort((a, b) => (b.weight ?? -Infinity) - (a.weight ?? -Infinity))[0];
-  const { summary } = buildPortfolioViewModel(data, model);
-  const hasPortfolioSummary = data.portfolioSummaryDto !== undefined && data.portfolioSummaryDto !== null;
-  const hasTotalPnl = hasPortfolioSummary && summary.totalPnl !== null;
   const hasBrief = Boolean(actionQueue);
 
   return (
@@ -86,46 +81,30 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       />
       <ScopeStatusNotice status={scopeStatus} onRetry={onRefresh} />
 
-      <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricTile
-          label="Total P&L"
-          value={summary.totalPnl !== null && hasTotalPnl ? `${formatMoney(summary.totalPnl, summary.currency)}${summary.totalPnlPct === null ? "" : ` (${formatPct(summary.totalPnlPct)})`}` : "Unavailable"}
-          caption={hasPortfolioSummary ? `Return on invested capital · ${summary.asOf ? new Date(summary.asOf).toLocaleString() : "Quote time unavailable"}` : "Portfolio summary is not loaded."}
-          tone={summary.totalPnl === null || !hasTotalPnl ? "muted" : summary.totalPnl >= 0 ? "good" : "bad"}
-        />
-        <MetricTile label="Decisions due" value={categoryStates.decide_now?.total_count ?? "Unavailable"} caption={`${decideNow.length} shown · candidates, risks, thesis reviews`} tone={decideNow.length ? "warn" : "muted"} />
-        <MetricTile label="Source updates" value={categoryStates.whats_changed?.total_count ?? "Unavailable"} caption={`${whatsChanged.length} shown · published changes; source coverage ${categoryStates.whats_changed?.coverage_status ?? "unknown"}`} tone={whatsChanged.length ? "info" : "muted"} />
-        <MetricTile
-          label="Top exposure"
-          value={largestHolding ? `${largestHolding.ticker} ${holdingWeight(largestHolding.weight)}` : "None"}
-          caption={largestHolding?.nextStep}
-          tone={largestHolding?.weight !== null && largestHolding?.weight !== undefined && largestHolding.weight > 30 ? "warn" : "info"}
-        />
-      </div>
-
-      <ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} />
-      <PreopenBrief brief={actionQueue?.preopen_brief} />
-      <details className="mb-4 rounded-md border border-border p-4"><summary className="cursor-pointer font-semibold">Event research</summary><EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} /></details>
-
-      {hasBrief ? (
-        <>
-          <div className="grid gap-6">
-            <BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk exceptions", subtitle: "The three highest-priority concentration, loss, or thesis-risk exceptions." }} rows={riskExceptions.slice(0, 3)} onOpenTicker={onOpenTicker} columns />
-            <BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns />
-            <CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalyst and macro veto", subtitle: "Near-term events and the current deterministic pre-open veto context." }} rows={catalysts} category={categoryStates.catalysts} onOpenTicker={onOpenTicker} />
-            <BriefSection section={SECTION_BY_KEY.whats_changed} rows={whatsChanged} category={categoryStates.whats_changed} onOpenTicker={onOpenTicker} columns />
-            <BriefSection section={SECTION_BY_KEY.portfolio_pulse} rows={portfolioPulse} category={categoryStates.portfolio_pulse} onOpenTicker={onOpenTicker} columns />
-          </div>
-        </>
-      ) : (
-        <EmptyState title="No daily brief loaded" detail="Refresh /today to load decisions, source changes, catalysts, and portfolio moves." />
-      )}
+      {hasBrief ? <div className="grid gap-8">
+        <section aria-labelledby="today-do-now"><h2 id="today-do-now" className="mb-3 text-xl font-semibold">Do now</h2><ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} /><BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns /></section>
+        <section aria-labelledby="today-changed"><h2 id="today-changed" className="mb-3 text-xl font-semibold">What changed</h2><PreopenBrief brief={actionQueue?.preopen_brief} /><div className="grid gap-6"><BriefSection section={SECTION_BY_KEY.whats_changed} rows={whatsChanged} category={categoryStates.whats_changed} onOpenTicker={onOpenTicker} columns /><CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalysts", subtitle: "Near-term events that can change a decision." }} rows={catalysts} category={categoryStates.catalysts} onOpenTicker={onOpenTicker} /></div></section>
+        <section aria-labelledby="today-system"><div className="mb-3 flex items-end justify-between gap-3"><div><h2 id="today-system" className="text-xl font-semibold">System</h2><p className="text-sm text-muted-foreground">Only the conditions that change today’s trust or action.</p></div><a className="text-sm font-medium text-primary hover:underline" href="/health">Open system health →</a></div><PortfolioPerformanceSummary summary={data.portfolioSummaryDto} /><div className="grid gap-6"><BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk", subtitle: "Concentration, loss, and thesis exceptions." }} rows={riskExceptions.slice(0, 3)} onOpenTicker={onOpenTicker} columns /><BriefSection section={SECTION_BY_KEY.portfolio_pulse} rows={portfolioPulse} category={categoryStates.portfolio_pulse} onOpenTicker={onOpenTicker} columns /></div><details className="mt-4 rounded-md border border-border p-4"><summary className="cursor-pointer text-sm font-semibold">Event research</summary><EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} /></details></section>
+      </div> : <EmptyState title="No daily brief loaded" detail="Refresh Today to load decisions, source changes, catalysts, and portfolio risks." />}
     </section>
   );
 }
 
-function holdingWeight(value: number | null): string {
-  return value === null ? "Unavailable" : `${value.toFixed(1)}%`;
+function PortfolioPerformanceSummary({ summary }: { summary: PanelData["portfolioSummaryDto"] }) {
+  if (!summary || summary.availability !== "complete" || summary.total_pnl == null || summary.total_pnl_pct == null) return null;
+  return (
+    <Card className="mb-6 border-blue-200 bg-blue-50/30">
+      <CardContent className="flex flex-wrap items-center justify-between gap-4 p-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Portfolio snapshot</p>
+          <p className="mt-1 text-sm font-medium">Return on invested capital</p>
+        </div>
+        <p className={cn("text-2xl font-semibold tabular-nums", summary.total_pnl >= 0 ? "text-emerald-700" : "text-red-700")}>
+          {formatMoney(summary.total_pnl)} ({formatPct(summary.total_pnl_pct)})
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { response: TodayResponse | null; loading: boolean; error: string | null; onRefresh: () => void; onOpenTicker: (symbol: string) => void }) {
@@ -261,7 +240,7 @@ function PreopenBrief({ brief }: { brief: TodayPreopenBrief | null | undefined }
           {brief.opening_scenario ? <p className="mt-1 text-sm leading-6 text-muted-foreground">{brief.opening_scenario}</p> : null}
           <div className="mt-3 border-t border-border pt-3">
             <p className="text-sm font-semibold">Forecast loop</p>
-            <p className="mt-1 text-xs text-muted-foreground">{brief.outcome_status} · observed only when a point-in-time QQQ mark is available.</p>
+            <p className="mt-1 text-xs text-muted-foreground">{semanticStatusLabel(brief.outcome_status, "Pending")} · observed only when a point-in-time QQQ mark is available.</p>
             {outcomeStats.length ? <StatRow stats={outcomeStats} className="mt-2" /> : null}
             <p className="mt-1 text-xs text-muted-foreground">Range hit: {brief.within_forecast_range === true ? "yes" : brief.within_forecast_range === false ? "no" : "pending"}; direction: {brief.direction_correct === true ? "correct" : brief.direction_correct === false ? "wrong" : "pending"}.</p>
           </div>
@@ -318,7 +297,7 @@ function BriefSection({ section, rows, category, onOpenTicker, columns }: { sect
           ))}
         </div>
       ) : (
-        <EmptyState title="No published items" detail={category?.coverage_status === "complete" ? `No ${section.title.toLowerCase()} items were found in complete coverage.` : `No ${section.title.toLowerCase()} items are loaded. Coverage is ${category?.coverage_status ?? "unknown"}.`} />
+        <EmptyState title="No published items" detail={category?.coverage_status === "complete" ? `No ${section.title.toLowerCase()} items were found in complete coverage.` : `No ${section.title.toLowerCase()} items are loaded. Coverage is ${semanticStatusLabel(category?.coverage_status, "unknown")}.`} />
       )}
     </div>
   );
@@ -434,7 +413,7 @@ function pctStat(label: string, value: unknown): string | null {
 function ContextChip({ context, sentiment, tone }: { context: string; sentiment: Sentiment; tone: Tone }) {
   if (!context) return sentiment !== "neutral" ? <SentimentMark sentiment={sentiment} /> : null;
   const owned = context.toLowerCase().startsWith("owned");
-  return <StatusBadge tone={owned ? tone : "muted"}>{context}</StatusBadge>;
+  return <StatusBadge tone={owned ? tone : "muted"}>{semanticStatusLabel(context)}</StatusBadge>;
 }
 
 type Sentiment = "bullish" | "bearish" | "neutral";

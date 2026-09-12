@@ -28,6 +28,9 @@ export type PaperTrade = ApiSchema["PaperTradeDetail"] & {
   mark_basis?: string | null;
   mark_stale?: boolean | null;
   mark?: Record<string, unknown>;
+  strike?: number | null;
+  option_type?: string | null;
+  expiration?: string | null;
   strategy?: { revision?: number | null; name?: string | null; model_revision?: string | null };
   decision_at?: string | null;
   staged_at?: string | null;
@@ -52,7 +55,16 @@ export type PaperPerformance = ApiSchema["PaperBookPerformance"] & {
   missing_evidence_reasons: string[];
   evidence_coverage?: { realized_pnl_coverage?: number | null; mark_coverage?: number | null; reconciled_orders?: number };
   accounting_basis?: string;
-  series?: { points?: Array<{ at: string; cumulative_net_pnl: number; trade_id: string }>; drawdown_points?: Array<{ at: string; drawdown: number; trade_id: string }>; available_series?: string[]; gaps?: Array<{ reason: string; trade_id?: string }>; drawdown_basis?: string };
+  series?: {
+    points?: Array<{ at: string; cumulative_net_pnl: number; trade_id: string }>;
+    drawdown_points?: Array<{ at: string; drawdown: number; trade_id: string }>;
+    event_markers?: Array<{ at: string; kind: string; trade_id?: string; symbol?: string; strategy?: string | null; label?: string; value?: number; cumulative_net_pnl?: number; drawdown?: number; pnl?: number | null; price?: number | null; quantity?: number | null; status?: string }>;
+    available_event_kinds?: string[];
+    available_series?: string[];
+    gaps?: Array<{ reason: string; trade_id?: string }>;
+    drawdown_basis?: string;
+  };
+  attribution?: Record<string, Array<{ label: string; pnl: number; trades: number; wins: number; win_rate: number | null; average_pnl: number | null }>>;
 };
 
 export type PaperTradePagePayload = ApiSchema["PaperTradePage"] & {

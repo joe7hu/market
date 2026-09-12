@@ -1,12 +1,21 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath, URL } from "node:url";
 
 const apiProxyTarget = process.env.MARKET_API_PROXY_TARGET ?? "http://127.0.0.1:8000";
+const frontendBuild = process.env.MARKET_FRONTEND_BUILD?.trim() || (() => {
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+  } catch {
+    return "unknown";
+  }
+})();
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: { __MARKET_FRONTEND_BUILD__: JSON.stringify(frontendBuild) },
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

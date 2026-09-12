@@ -55,6 +55,7 @@ export type SourceCatalogRow = {
   capability_health: Array<{ capability: string; status: string; finished_at: string | null; failure_detail: string }>;
 };
 export type SettingsPayload = ApiSchema["SettingsResponse"];
+export type StatusPayload = ApiSchema["StatusResponse"];
 export type TickerPayload = ApiSchema["TickerDetailResponse"] & { dossier: TickerDossier; learning?: TickerLearning };
 export type PanelScopeOptions = {
   offset?: number;
@@ -70,6 +71,10 @@ export { emptyPanelData } from "../apiPanelData";
 
 export async function loadToday(): Promise<TodayResponse> {
   return getJson<TodayResponse>("/api/today");
+}
+
+export function loadStatus(signal?: AbortSignal): Promise<StatusPayload> {
+  return getJson<StatusPayload>("/api/status", signal);
 }
 
 export type ResearchSummary = ApiSchema["ResearchSummaryResponse"];
