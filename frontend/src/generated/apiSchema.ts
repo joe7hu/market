@@ -5122,12 +5122,53 @@ export interface components {
          * @description Accounting projection with visible scope and evidence coverage.
          */
         PaperBookPerformance: {
+            /** Accounting Basis */
+            accounting_basis?: string | null;
+            /** As Of */
+            as_of?: string | null;
+            /** Calculation Version */
+            calculation_version?: string | null;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /**
+             * Currency
+             * @default USD
+             */
+            currency: string;
+            /** Drawdown */
+            drawdown?: number | null;
+            /** Evidence Coverage */
+            evidence_coverage?: {
+                [key: string]: unknown;
+            };
+            /** Missing Evidence Reasons */
+            missing_evidence_reasons?: string[];
+            /** Nav */
+            nav?: number | null;
             /** Net Pnl */
             net_pnl?: number | null;
             /** Quality Status */
             quality_status: string;
             /** Realized Pnl */
             realized_pnl?: number | null;
+            /** Realized Pnl Status */
+            realized_pnl_status?: string | null;
+            /** Return Pct */
+            return_pct?: number | null;
+            /** Scope */
+            scope?: {
+                [key: string]: unknown;
+            };
+            /** Series */
+            series?: {
+                [key: string]: unknown;
+            };
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Source Watermark */
+            source_watermark?: string | null;
             /** Unrealized Pnl */
             unrealized_pnl?: number | null;
         } & {
@@ -5206,6 +5247,25 @@ export interface components {
         PaperTradeDetail: {
             /** Lifecycle */
             lifecycle: string;
+            /** Mark Available At */
+            mark_available_at?: string | null;
+            /** Mark Basis */
+            mark_basis?: string | null;
+            /** Mark Observed At */
+            mark_observed_at?: string | null;
+            /** Mark Price */
+            mark_price?: number | null;
+            /** Mark Source */
+            mark_source?: string | null;
+            /** Mark Stale */
+            mark_stale?: boolean | null;
+            /**
+             * Mark Status
+             * @default unavailable
+             */
+            mark_status: string;
+            /** Mark Value */
+            mark_value?: number | null;
             /** Net Pnl */
             net_pnl?: number | null;
             /** Paper Order Id */
@@ -5214,6 +5274,8 @@ export interface components {
             reconciliation_status: string;
             /** Symbol */
             symbol: string;
+            /** Unrealized Pnl */
+            unrealized_pnl?: number | null;
         } & {
             [key: string]: unknown;
         };
@@ -5233,6 +5295,25 @@ export interface components {
         PaperTradeSummary: {
             /** Lifecycle */
             lifecycle: string;
+            /** Mark Available At */
+            mark_available_at?: string | null;
+            /** Mark Basis */
+            mark_basis?: string | null;
+            /** Mark Observed At */
+            mark_observed_at?: string | null;
+            /** Mark Price */
+            mark_price?: number | null;
+            /** Mark Source */
+            mark_source?: string | null;
+            /** Mark Stale */
+            mark_stale?: boolean | null;
+            /**
+             * Mark Status
+             * @default unavailable
+             */
+            mark_status: string;
+            /** Mark Value */
+            mark_value?: number | null;
             /** Net Pnl */
             net_pnl?: number | null;
             /** Paper Order Id */
@@ -5241,6 +5322,8 @@ export interface components {
             reconciliation_status: string;
             /** Symbol */
             symbol: string;
+            /** Unrealized Pnl */
+            unrealized_pnl?: number | null;
         } & {
             [key: string]: unknown;
         };

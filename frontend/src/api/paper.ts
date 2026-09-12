@@ -12,6 +12,15 @@ export type PaperTrade = ApiSchema["PaperTradeDetail"] & {
   realized_pnl?: number | null;
   unrealized_pnl?: number | null;
   net_pnl?: number | null;
+  mark_status?: string;
+  mark_price?: number | null;
+  mark_value?: number | null;
+  mark_observed_at?: string | null;
+  mark_available_at?: string | null;
+  mark_source?: string | null;
+  mark_basis?: string | null;
+  mark_stale?: boolean | null;
+  mark?: Record<string, unknown>;
   strategy?: { revision?: number | null; name?: string | null; model_revision?: string | null };
   decision_at?: string | null;
   staged_at?: string | null;
@@ -23,11 +32,14 @@ export type PaperPerformance = ApiSchema["PaperBookPerformance"] & {
   net_pnl: number | null;
   realized_pnl: number | null;
   unrealized_pnl: number | null;
+  nav?: number | null;
+  return_pct?: number | null;
+  drawdown?: number | null;
   quality_status: string;
   missing_evidence_reasons: string[];
   evidence_coverage?: { realized_pnl_coverage?: number | null; mark_coverage?: number | null; reconciled_orders?: number };
   accounting_basis?: string;
-  series?: { points?: Array<{ at: string; cumulative_net_pnl: number; trade_id: string }>; gaps?: Array<{ reason: string }> };
+  series?: { points?: Array<{ at: string; cumulative_net_pnl: number; trade_id: string }>; gaps?: Array<{ reason: string; trade_id?: string }>; drawdown_basis?: string };
 };
 
 export type PaperTradePagePayload = ApiSchema["PaperTradePage"] & {

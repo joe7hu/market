@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from math import isfinite
 from typing import Any
 
-from investment_panel.infrastructure.postgres.options_paper_ledger import PAPER_FILL_MULTIPLIERS_SQL
-from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.domain.decision import market_session_bounds
+from investment_panel.infrastructure.postgres.options_paper_ledger import (
+    PAPER_FILL_MULTIPLIERS_SQL,
+)
+from investment_panel.infrastructure.postgres.runtime import (
+    DatabaseRuntime,
+    JOB_PROFILE,
+)
 
 
-CALCULATION_VERSION = "paper-workbench.v1"
+CALCULATION_VERSION = "paper-workbench.v2"
 MAX_PERFORMANCE_ROWS = 10_000
+MARK_STALE_AFTER = timedelta(days=3)
 
 
 class PaperWorkbenchRepository:
@@ -32,12 +39,14 @@ class PaperWorkbenchRepository:
         limit: int = 100,
         cursor: tuple[datetime, str] | None = None,
     ) -> dict[str, Any]:
-        where, params = _where_clause(symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle)
+        where, params = _where_clause(
+            symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+        )
         scope_where, scope_params = list(where), list(params)
         if cursor is not None:
             where.append("(paper.created_at, paper.id) < (%s, %s::uuid)")
             params.extend([cursor[0], cursor[1]])
-        rows, total, _pending, watermark = self._rows(
+        rows, total, _pending, watermark, as_of = self._rows(
             where,
             params,
             limit=max(1, min(100, limit)),
@@ -45,11 +54,24 @@ class PaperWorkbenchRepository:
             count_params=scope_params,
         )
         return {
-            **_scope_payload(symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle),
-            "as_of": datetime.now(UTC),
+            **_scope_payload(
+                symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+            ),
+            "as_of": as_of,
             "source_watermark": watermark,
             "calculation_version": CALCULATION_VERSION,
-            "counts": {"total": total, "eligible": total, "pending": _pending, "excluded": 0},
+            "snapshot_id": _snapshot_id(
+                symbol=symbol,
+                strategy_revision=strategy_revision,
+                lifecycle=lifecycle,
+                watermark=watermark,
+            ),
+            "counts": {
+                "total": total,
+                "eligible": total,
+                "pending": _pending,
+                "excluded": 0,
+            },
             "quality_status": "complete" if len(rows) == total else "partial",
             "missing_evidence_reasons": _missing_reasons(rows),
             "rows": rows,
@@ -57,9 +79,23 @@ class PaperWorkbenchRepository:
 
     def trade(self, trade_id: str) -> dict[str, Any] | None:
         where = ["paper.id = %s::uuid"]
+        as_of = datetime.now(UTC)
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute(self._select_sql(where), [trade_id]).fetchone()
-        return paper_trade_payload(dict(row)) if row else None
+            if row is None:
+                return None
+            raw_row = dict(row)
+            marks, watermark = _current_marks(connection, [raw_row], as_of)
+        raw_row.update(marks.get(str(raw_row["paper_order_id"]), {}))
+        watermark = _max_datetime(
+            watermark, raw_row.get("staged_at"), raw_row.get("updated_at")
+        )
+        return {
+            **paper_trade_payload(raw_row),
+            "as_of": as_of,
+            "source_watermark": watermark,
+            "calculation_version": CALCULATION_VERSION,
+        }
 
     def performance(
         self,
@@ -68,64 +104,137 @@ class PaperWorkbenchRepository:
         strategy_revision: int | None = None,
         lifecycle: str | None = None,
     ) -> dict[str, Any]:
-        where, params = _where_clause(symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle)
-        rows, total, _pending, watermark = self._rows(where, params, limit=MAX_PERFORMANCE_ROWS)
+        where, params = _where_clause(
+            symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+        )
+        rows, total, _pending, watermark, as_of = self._rows(
+            where, params, limit=MAX_PERFORMANCE_ROWS
+        )
         filled = [row for row in rows if row["filled_quantity"] > 0]
         closed = [row for row in rows if row["lifecycle"] == "closed"]
         realized_rows = [row for row in rows if row["realized_pnl"] is not None]
-        realized = sum((Decimal(str(row["realized_pnl"])) for row in realized_rows), Decimal("0"))
-        series_rows = sorted(
-            (row for row in realized_rows if row.get("exit_at") is not None),
-            key=lambda row: (str(row["exit_at"]), row["paper_order_id"]),
+        realized_eligible_rows = [row for row in rows if row["exited_quantity"] > 0]
+        open_rows = [row for row in rows if row["remaining_quantity"] > 0]
+        realized = sum(
+            (Decimal(str(row["realized_pnl"])) for row in realized_rows), Decimal("0")
+        )
+        unrealized_rows = [
+            row for row in open_rows if row.get("unrealized_pnl") is not None
+        ]
+        unrealized = sum(
+            (Decimal(str(row["unrealized_pnl"])) for row in unrealized_rows),
+            Decimal("0"),
         )
         cumulative = Decimal("0")
         series = []
-        for row in series_rows:
-            cumulative += Decimal(str(row["realized_pnl"]))
-            series.append({"at": row["exit_at"], "cumulative_net_pnl": _money(cumulative), "trade_id": row["paper_order_id"]})
+        for event in _realized_exit_events(realized_rows):
+            cumulative += event["pnl"]
+            series.append(
+                {
+                    "at": event["at"],
+                    "cumulative_net_pnl": _money(cumulative),
+                    "trade_id": event["trade_id"],
+                    "journal_id": event.get("journal_id"),
+                }
+            )
+        peak = Decimal("0")
+        max_drawdown = Decimal("0")
+        for point in series:
+            value = Decimal(str(point["cumulative_net_pnl"]))
+            peak = max(peak, value)
+            max_drawdown = min(max_drawdown, value - peak)
         missing = _missing_reasons(rows)
         if "opening_capital_unavailable" not in missing:
             missing.append("opening_capital_unavailable")
         if total > MAX_PERFORMANCE_ROWS:
             missing.append("performance_population_bounded_at_10000_rows")
-        known_realized = _money(realized) if not filled or realized_rows else None
-        has_open_exposure = any(row["remaining_quantity"] > 0 for row in rows)
-        net_pnl = known_realized if not has_open_exposure and len(realized_rows) == len(filled) else None
+        realized_complete = len(realized_rows) == len(realized_eligible_rows)
+        known_realized = (
+            _money(realized) if realized_rows or not realized_eligible_rows else None
+        )
+        known_unrealized = (
+            _money(unrealized)
+            if not open_rows or len(unrealized_rows) == len(open_rows)
+            else None
+        )
+        net_pnl = (
+            _money(realized + unrealized)
+            if realized_complete and known_unrealized is not None
+            else None
+        )
+        mark_coverage = (
+            sum(row.get("mark_value") is not None for row in open_rows) / len(open_rows)
+            if open_rows
+            else 0.0
+        )
         return {
-            **_scope_payload(symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle),
-            "as_of": datetime.now(UTC),
+            **_scope_payload(
+                symbol=symbol, strategy_revision=strategy_revision, lifecycle=lifecycle
+            ),
+            "as_of": as_of,
             "source_watermark": watermark,
             "calculation_version": CALCULATION_VERSION,
+            "snapshot_id": _snapshot_id(
+                symbol=symbol,
+                strategy_revision=strategy_revision,
+                lifecycle=lifecycle,
+                watermark=watermark,
+            ),
             "currency": "USD",
             "accounting_basis": "app.paper_order plus deterministic app.trade_journal fills, fees, and multiplier evidence",
             "counts": {
                 "total_orders": total,
                 "filled_orders": len(filled),
                 "closed_trades": len(closed),
-                "open_trades": sum(row["lifecycle"] in {"open", "partial_exited"} for row in rows),
+                "open_trades": sum(
+                    row["lifecycle"] in {"open", "partial_exited"} for row in rows
+                ),
                 "staged_orders": sum(row["lifecycle"] == "staged" for row in rows),
                 "realized_pnl_known": len(realized_rows),
-                "realized_pnl_unknown": max(len(filled) - len(realized_rows), 0),
+                "realized_pnl_unknown": max(
+                    len(realized_eligible_rows) - len(realized_rows), 0
+                ),
+                "open_mark_known": len(unrealized_rows),
+                "open_mark_unknown": max(len(open_rows) - len(unrealized_rows), 0),
             },
             "net_pnl": net_pnl,
             "realized_pnl": known_realized,
-            "unrealized_pnl": None,
+            "realized_pnl_status": "complete" if realized_complete else "partial",
+            "unrealized_pnl": known_unrealized,
             "nav": None,
             "return_pct": None,
-            "drawdown": None,
+            "drawdown": _money(max_drawdown) if series and realized_complete else None,
             "evidence_coverage": {
                 "filled_orders": len(filled),
-                "reconciled_orders": sum(row["reconciliation_status"] == "verified" for row in filled),
-                "realized_pnl_coverage": len(realized_rows) / len(filled) if filled else None,
-                "mark_coverage": 0.0,
+                "reconciled_orders": sum(
+                    row["reconciliation_status"] == "verified" for row in filled
+                ),
+                "realized_pnl_coverage": len(realized_rows)
+                / len(realized_eligible_rows)
+                if realized_eligible_rows
+                else 1.0
+                if filled
+                else 0.0,
+                "mark_coverage": mark_coverage,
             },
-            "quality_status": "partial" if missing or total > MAX_PERFORMANCE_ROWS else "complete",
+            "quality_status": "partial"
+            if missing or total > MAX_PERFORMANCE_ROWS
+            else "complete",
             "missing_evidence_reasons": sorted(set(missing)),
             "series": {
                 "kind": "cumulative_verified_realized_net_pnl",
                 "points": series,
-                "gaps": [{"reason": "open_positions_without_verified_marks"}] if any(row["remaining_quantity"] > 0 for row in rows) else [],
-                "statistics_basis": "full scoped paper-order population; no annualized statistics",
+                "gaps": [
+                    {
+                        "reason": row.get("mark_gap_reason")
+                        or "verified_current_mark_unavailable",
+                        "trade_id": row["paper_order_id"],
+                    }
+                    for row in open_rows
+                    if row.get("mark_status") != "verified"
+                ],
+                "statistics_basis": "full scoped paper-order population; realized series only; no annualized statistics",
+                "drawdown_basis": "cumulative verified realized net P&L, not NAV",
             },
         }
 
@@ -137,7 +246,8 @@ class PaperWorkbenchRepository:
         limit: int,
         count_where: list[str] | None = None,
         count_params: list[Any] | None = None,
-    ) -> tuple[list[dict[str, Any]], int, int, datetime | None]:
+    ) -> tuple[list[dict[str, Any]], int, int, datetime | None, datetime]:
+        as_of = datetime.now(UTC)
         with self.runtime.read(JOB_PROFILE) as connection:
             count_row = connection.execute(
                 f"""SELECT count(*) AS count,
@@ -146,15 +256,32 @@ class PaperWorkbenchRepository:
                     FROM app.paper_order paper
                     JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
                     LEFT JOIN analysis.decision decision ON decision.id = paper.decision_id
-                    {('WHERE ' + ' AND '.join(count_where if count_where is not None else where)) if (count_where or where) else ''}""",
-                [["staged", "pending", "submitted", "cancelled", "rejected"], *(count_params if count_params is not None else params)],
+                    {("WHERE " + " AND ".join(count_where if count_where is not None else where)) if (count_where or where) else ""}""",
+                [
+                    ["staged", "pending", "submitted", "cancelled", "rejected"],
+                    *(count_params if count_params is not None else params),
+                ],
             ).fetchone()
-            rows = connection.execute(self._select_sql(where) + " ORDER BY paper.created_at DESC, paper.id DESC LIMIT %s", [*params, limit]).fetchall()
+            raw_rows = [
+                dict(row)
+                for row in connection.execute(
+                    self._select_sql(where)
+                    + " ORDER BY paper.created_at DESC, paper.id DESC LIMIT %s",
+                    [*params, limit],
+                ).fetchall()
+            ]
+            marks, mark_watermark = _current_marks(connection, raw_rows, as_of)
         return (
-            [paper_trade_payload(dict(row)) for row in rows],
+            [
+                paper_trade_payload(
+                    {**row, **marks.get(str(row["paper_order_id"]), {})}
+                )
+                for row in raw_rows
+            ],
             int(count_row["count"]),
             int(count_row["pending"]),
-            count_row["source_watermark"],
+            _max_datetime(count_row["source_watermark"], mark_watermark),
+            as_of,
         )
 
     @staticmethod
@@ -243,9 +370,10 @@ class PaperWorkbenchRepository:
                    fills.missing_fees,
                        fills.invalid_fills,
                        fills.fill_multipliers_verified,
-                       fills.latest_fill_at,
-                       fills.journal_ids,
-                   fills.fill_rows
+                   fills.latest_fill_at,
+                   fills.journal_ids,
+                   fills.fill_rows,
+                   legs.items AS order_legs
             FROM app.paper_order paper
             JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
             LEFT JOIN analysis.decision decision ON decision.id = paper.decision_id
@@ -276,7 +404,7 @@ class PaperWorkbenchRepository:
                        count(*) FILTER (WHERE NOT coalesce(journal.details->>'fees' ~ '^[0-9]+([.][0-9]+)?$', false)) AS missing_fees,
                        count(*) FILTER (WHERE NOT coalesce(journal.quantity > 0 AND journal.quantity < 'Infinity'::numeric AND journal.price >= 0 AND journal.price < 'Infinity'::numeric AND (journal.action <> 'paper_entry' OR journal.price > 0), false)) AS invalid_fills,
                        max(journal.created_at) AS latest_fill_at,
-                       CASE WHEN count(journal.id) = 0 THEN NULL ELSE {PAPER_FILL_MULTIPLIERS_SQL.replace('action', 'journal.action').replace('details', 'journal.details').replace('paper.contract_multiplier', 'paper.contract_multiplier')} END AS fill_multipliers_verified,
+                       CASE WHEN count(journal.id) = 0 THEN NULL ELSE {PAPER_FILL_MULTIPLIERS_SQL.replace("action", "journal.action").replace("details", "journal.details").replace("paper.contract_multiplier", "paper.contract_multiplier")} END AS fill_multipliers_verified,
                        coalesce(array_agg(journal.id::text ORDER BY journal.created_at, journal.id), ARRAY[]::text[]) AS journal_ids,
                        coalesce(jsonb_agg(jsonb_build_object(
                            'id', journal.id::text,
@@ -296,11 +424,252 @@ class PaperWorkbenchRepository:
                   AND journal.rationale = 'deterministic_options_paper_execution'
                   AND (journal.action = 'paper_entry' OR journal.action = 'paper_exit' OR journal.action LIKE 'paper_exit:%%')
             ) fills ON TRUE
-            {('WHERE ' + ' AND '.join(where)) if where else ''}
+            LEFT JOIN LATERAL (
+                SELECT coalesce(jsonb_agg(jsonb_build_object(
+                           'leg_index', leg.leg_index,
+                           'contract_id', leg.contract_id,
+                           'option_type', leg.option_type,
+                           'side', leg.side,
+                           'strike', leg.strike,
+                           'bid', leg.bid,
+                           'ask', leg.ask,
+                           'bid_size', leg.bid_size,
+                           'ask_size', leg.ask_size,
+                           'quote_time', leg.quote_time,
+                           'expiration', contract.expiration,
+                           'multiplier', contract.multiplier
+                       ) ORDER BY leg.leg_index), '[]'::jsonb) AS items
+                FROM app.paper_order_leg leg
+                JOIN catalog.option_contract contract ON contract.id = leg.contract_id
+                WHERE leg.paper_order_id = paper.id
+            ) legs ON TRUE
+            {("WHERE " + " AND ".join(where)) if where else ""}
         """
 
 
-def _where_clause(*, symbol: str | None, strategy_revision: int | None, lifecycle: str | None) -> tuple[list[str], list[Any]]:
+def _current_marks(
+    connection: Any,
+    rows: list[dict[str, Any]],
+    as_of: datetime,
+) -> tuple[dict[str, dict[str, Any]], datetime | None]:
+    """Read one verified mark set for a page; never use a staged price as a mark."""
+
+    stock_instrument_ids = sorted(
+        {
+            int(row["instrument_id"])
+            for row in rows
+            if row.get("instrument_id") is not None and not _is_option_order(row)
+        }
+    )
+    contract_ids = sorted(
+        {contract_id for row in rows for contract_id in _option_contract_ids(row)}
+    )
+    stock_marks: dict[int, dict[str, Any]] = {}
+    option_marks: dict[int, dict[str, Any]] = {}
+    if stock_instrument_ids:
+        stock_rows = connection.execute(
+            """
+            SELECT priced.instrument_id, priced.price, priced.currency, priced.source_id,
+                   priced.observed_at, priced.available_at, priced.valuation_status,
+                   priced.source_kind
+            FROM raw.current_price_at(%s, %s::bigint[]) priced
+            ORDER BY priced.instrument_id
+            """,
+            [as_of, stock_instrument_ids],
+        ).fetchall()
+        stock_marks = {int(row["instrument_id"]): dict(row) for row in stock_rows}
+    if contract_ids:
+        option_rows = connection.execute(
+            """
+            SELECT DISTINCT ON (quote.contract_id)
+                   quote.contract_id, quote.bid, quote.ask, quote.mid, quote.last,
+                   quote.observed_at, quote.available_at, quote.id AS quote_id,
+                   snapshot.source_id, snapshot.id AS snapshot_id,
+                   source.kind AS source_kind,
+                   quote.capture_generation_id
+            FROM raw.option_quote quote
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            JOIN ingest.run snapshot_run ON snapshot_run.id = snapshot.ingest_run_id
+            JOIN ingest.source source
+              ON source.id = snapshot.source_id
+             AND source.enabled
+             AND source.operational_state = 'active'
+            LEFT JOIN raw.option_capture_generation generation
+              ON generation.id = quote.capture_generation_id
+            WHERE quote.contract_id = ANY(%s::bigint[])
+              AND quote.observed_at <= %s
+              AND quote.available_at <= %s
+              AND snapshot.capture_state IN ('complete', 'partial')
+              AND snapshot_run.status IN ('succeeded', 'partial')
+              AND snapshot_run.finished_at IS NOT NULL
+              AND snapshot_run.finished_at <= %s
+              AND (
+                    generation.id IS NULL
+                    OR (
+                        generation.capture_state IN ('complete', 'partial')
+                        AND generation.capture_finished_at IS NOT NULL
+                        AND generation.capture_finished_at <= %s
+                    )
+              )
+              AND (
+                    (quote.bid > 0 AND quote.ask >= quote.bid)
+                    OR quote.mid > 0
+              )
+            ORDER BY quote.contract_id, quote.observed_at DESC, quote.available_at DESC, quote.id DESC
+            """,
+            [contract_ids, as_of, as_of, as_of, as_of],
+        ).fetchall()
+        option_marks = {int(row["contract_id"]): dict(row) for row in option_rows}
+
+    marks: dict[str, dict[str, Any]] = {}
+    watermark: datetime | None = None
+    for row in rows:
+        order_id = str(row["paper_order_id"])
+        if _is_option_order(row):
+            mark_rows = [
+                option_marks[contract_id]
+                for contract_id in _option_contract_ids(row)
+                if contract_id in option_marks
+            ]
+            if mark_rows:
+                mark = mark_rows[0]
+                marks[order_id] = {
+                    "option_marks": [
+                        {
+                            "contract_id": int(mark_row["contract_id"]),
+                            "bid": mark_row.get("bid"),
+                            "ask": mark_row.get("ask"),
+                            "mid": mark_row.get("mid"),
+                            "last": mark_row.get("last"),
+                            "observed_at": mark_row.get("observed_at"),
+                            "available_at": mark_row.get("available_at"),
+                            "source": mark_row.get("source_id"),
+                            "source_kind": mark_row.get("source_kind"),
+                            "snapshot_id": mark_row.get("snapshot_id"),
+                            "quote_id": mark_row.get("quote_id"),
+                        }
+                        for mark_row in mark_rows
+                    ],
+                    "option_mark_bid": mark.get("bid"),
+                    "option_mark_ask": mark.get("ask"),
+                    "option_mark_mid": mark.get("mid"),
+                    "option_mark_last": mark.get("last"),
+                    "option_mark_observed_at": mark.get("observed_at"),
+                    "option_mark_available_at": mark.get("available_at"),
+                    "option_mark_source": mark.get("source_id"),
+                    "option_mark_snapshot_id": mark.get("snapshot_id"),
+                    "option_mark_quote_id": mark.get("quote_id"),
+                    "mark_as_of": as_of,
+                }
+                for mark_row in mark_rows:
+                    watermark = _max_datetime(watermark, mark_row.get("available_at"))
+        else:
+            mark = (
+                stock_marks.get(int(row["instrument_id"]))
+                if row.get("instrument_id") is not None
+                else None
+            )
+            if mark is not None:
+                marks[order_id] = {
+                    "stock_mark_price": mark.get("price"),
+                    "stock_mark_currency": mark.get("currency"),
+                    "stock_mark_observed_at": mark.get("observed_at"),
+                    "stock_mark_available_at": mark.get("available_at"),
+                    "stock_mark_source": mark.get("source_id"),
+                    "stock_mark_status": mark.get("valuation_status"),
+                    "stock_mark_source_kind": mark.get("source_kind"),
+                    "mark_as_of": as_of,
+                }
+                watermark = _max_datetime(watermark, mark.get("available_at"))
+    return marks, watermark
+
+
+def _order_legs(row: dict[str, Any]) -> list[dict[str, Any]]:
+    legs = row.get("order_legs")
+    return (
+        [dict(leg) for leg in legs if isinstance(leg, dict)]
+        if isinstance(legs, list)
+        else []
+    )
+
+
+def _option_contract_ids(row: dict[str, Any]) -> list[int]:
+    contract_ids: list[int] = []
+    if row.get("contract_id") is not None:
+        contract_ids.append(int(row["contract_id"]))
+    for leg in _order_legs(row):
+        if leg.get("contract_id") is not None:
+            contract_ids.append(int(leg["contract_id"]))
+    return list(dict.fromkeys(contract_ids))
+
+
+def _is_option_order(row: dict[str, Any]) -> bool:
+    structure = str(row.get("structure") or row.get("decision_structure") or "").lower()
+    expression_kind = str(row.get("expression_kind") or "").lower()
+    return (
+        row.get("contract_id") is not None
+        or bool(_order_legs(row))
+        or structure
+        in {
+            "cash_secured_put",
+            "put_credit_spread",
+            "call_credit_spread",
+            "long_call",
+            "long_put",
+            "debit_spread",
+            "call_debit_spread",
+            "put_debit_spread",
+        }
+        or expression_kind in {"call", "put", "debit_spread", "cash_secured_put"}
+    )
+
+
+def _is_credit_order(row: dict[str, Any]) -> bool:
+    structure = str(row.get("structure") or row.get("decision_structure") or "").lower()
+    return (
+        structure
+        in {
+            "cash_secured_put",
+            "put_credit_spread",
+            "call_credit_spread",
+            "credit_spread",
+            "short_option",
+        }
+        or str(row.get("side") or "").lower() == "sell"
+    )
+
+
+def _snapshot_id(
+    *,
+    symbol: str | None,
+    strategy_revision: int | None,
+    lifecycle: str | None,
+    watermark: datetime | None,
+) -> str:
+    payload = {
+        "scope": {
+            "symbol": symbol.strip().upper() if symbol else None,
+            "strategy_revision": strategy_revision,
+            "lifecycle": lifecycle,
+        },
+        "source_watermark": watermark.isoformat()
+        if isinstance(watermark, datetime)
+        else None,
+        "calculation_version": CALCULATION_VERSION,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+
+def _max_datetime(*values: Any) -> datetime | None:
+    datetimes = [value for value in values if isinstance(value, datetime)]
+    return max(datetimes) if datetimes else None
+
+
+def _where_clause(
+    *, symbol: str | None, strategy_revision: int | None, lifecycle: str | None
+) -> tuple[list[str], list[Any]]:
     where = ["paper.paper_only IS TRUE"]
     params: list[Any] = []
     if symbol:
@@ -332,19 +701,19 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
     remaining = max(filled - max(exit_quantity, Decimal("0")), Decimal("0"))
     has_fill = filled > 0
     entry_price = entry_units / filled if has_fill and entry_units >= 0 else None
-    exit_price = exit_units / exit_quantity if exit_quantity > 0 and exit_units >= 0 else None
+    exit_price = (
+        exit_units / exit_quantity if exit_quantity > 0 and exit_units >= 0 else None
+    )
     structure = row.get("structure") or row.get("decision_structure") or ""
-    is_option = row.get("contract_id") is not None or structure in {
-        "cash_secured_put",
-        "put_credit_spread",
-        "call_credit_spread",
-        "long_call",
-        "long_put",
-        "call_debit_spread",
-        "put_debit_spread",
-    } or row.get("order_multiplier") is not None
-    fees_verified = has_fill and int(row.get("missing_fees") or 0) == 0 and int(row.get("invalid_fills") or 0) == 0
-    multiplier_verified = (not is_option) or row.get("fill_multipliers_verified") is True
+    is_option = _is_option_order(row)
+    fees_verified = (
+        has_fill
+        and int(row.get("missing_fees") or 0) == 0
+        and int(row.get("invalid_fills") or 0) == 0
+    )
+    multiplier_verified = (not is_option) or row.get(
+        "fill_multipliers_verified"
+    ) is True
     evidence_reasons: list[str] = []
     if not has_fill:
         evidence_reasons.append("no_fill_journal")
@@ -352,23 +721,75 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
         evidence_reasons.append("fee_evidence_missing_or_invalid")
     if has_fill and is_option and not multiplier_verified:
         evidence_reasons.append("contract_multiplier_evidence_missing_or_conflicting")
-    reconciliation = "verified" if has_fill and fees_verified and multiplier_verified else "unavailable" if not has_fill else "partial"
-    credit = structure in {"cash_secured_put", "put_credit_spread", "call_credit_spread"} or str(row.get("side") or "").lower() == "sell"
-    multiplier = Decimal("1") if not is_option else _decimal(row.get("order_multiplier"))
+    reconciliation = (
+        "verified"
+        if has_fill and fees_verified and multiplier_verified
+        else "unavailable"
+        if not has_fill
+        else "partial"
+    )
+    credit = _is_credit_order(row)
+    multiplier = (
+        Decimal("1") if not is_option else _decimal(row.get("order_multiplier"))
+    )
     realized_pnl = None
-    if has_fill and fees_verified and multiplier_verified and exit_quantity > 0 and multiplier and multiplier > 0:
+    if (
+        has_fill
+        and fees_verified
+        and multiplier_verified
+        and exit_quantity > 0
+        and multiplier
+        and multiplier > 0
+    ):
         entry_vwap = entry_units / filled
         exit_vwap = exit_units / exit_quantity
         entry_fees = _decimal(row.get("entry_fees")) or Decimal("0")
         exit_fees = _decimal(row.get("exit_fees")) or Decimal("0")
-        gross = (entry_vwap - exit_vwap if credit else exit_vwap - entry_vwap) * multiplier * exit_quantity
-        realized_pnl = _money_decimal(gross - entry_fees * exit_quantity / filled - exit_fees)
-    lifecycle = "staged" if not has_fill else "closed" if remaining == 0 and exit_quantity > 0 else "partial_exited" if exit_quantity > 0 else "open"
+        gross = (
+            (entry_vwap - exit_vwap if credit else exit_vwap - entry_vwap)
+            * multiplier
+            * exit_quantity
+        )
+        realized_pnl = _money_decimal(
+            gross - entry_fees * exit_quantity / filled - exit_fees
+        )
+    lifecycle = (
+        "staged"
+        if not has_fill
+        else "closed"
+        if remaining == 0 and exit_quantity > 0
+        else "partial_exited"
+        if exit_quantity > 0
+        else "open"
+    )
     if row.get("paper_status") in {"cancelled", "rejected"} and not has_fill:
         lifecycle = "staged"
-    net_pnl = realized_pnl if lifecycle == "closed" else None
+    mark = _paper_mark_payload(
+        row,
+        remaining=remaining,
+        filled=filled,
+        entry_price=entry_price,
+        credit=credit,
+        multiplier_verified=multiplier_verified,
+        fees_verified=fees_verified,
+    )
+    net_pnl = None
+    if lifecycle == "closed":
+        net_pnl = realized_pnl
+    elif remaining > 0 and mark["unrealized_pnl"] is not None:
+        if exit_quantity == 0 or realized_pnl is not None:
+            net_pnl = _money_decimal(
+                (
+                    Decimal(str(realized_pnl))
+                    if realized_pnl is not None
+                    else Decimal("0")
+                )
+                + Decimal(str(mark["unrealized_pnl"]))
+            )
     strategy = {
-        "revision_id": str(row["strategy_revision_id"]) if row.get("strategy_revision_id") is not None else None,
+        "revision_id": str(row["strategy_revision_id"])
+        if row.get("strategy_revision_id") is not None
+        else None,
         "key": row.get("strategy_key"),
         "revision": row.get("strategy_revision"),
         "name": row.get("strategy_name"),
@@ -388,7 +809,9 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
         "exit_at": row.get("paper_exit_at"),
         "lifecycle": lifecycle,
         "paper_status": row.get("paper_status"),
-        "origin": "manually_staged_paper_order" if row.get("decision_id") else "paper_order",
+        "origin": "manually_staged_paper_order"
+        if row.get("decision_id")
+        else "paper_order",
         "authority": "canonical_paper_order_and_trade_journal",
         "requested_quantity": _number(row.get("requested_quantity")),
         "filled_quantity": _number(filled),
@@ -398,14 +821,28 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
         "entry_price": _number(entry_price),
         "exit_price": _number(exit_price),
         "realized_pnl": _number(realized_pnl),
-        "unrealized_pnl": None,
+        "unrealized_pnl": mark["unrealized_pnl"],
         "net_pnl": _number(net_pnl),
-        "initial_risk": _number(row.get("planned_loss") or row.get("max_loss") or row.get("decision_max_loss")),
+        "initial_risk": _number(
+            row.get("planned_loss")
+            or row.get("max_loss")
+            or row.get("decision_max_loss")
+        ),
         "reconciliation_status": reconciliation,
         "evidence_status": reconciliation,
-        "evidence_reasons": evidence_reasons or ["fill_fee_and_multiplier_evidence_verified"],
-        "mark_status": "unavailable",
-        "mark_gap_reason": "verified_current_mark_unavailable" if remaining > 0 else None,
+        "evidence_reasons": evidence_reasons
+        or ["fill_fee_and_multiplier_evidence_verified"],
+        "mark_status": mark["mark_status"],
+        "mark_gap_reason": mark["mark_gap_reason"],
+        "mark_price": mark["mark_price"],
+        "mark_value": mark["mark_value"],
+        "mark_observed_at": mark["mark_observed_at"],
+        "mark_available_at": mark["mark_available_at"],
+        "mark_source": mark["mark_source"],
+        "mark_basis": mark["mark_basis"],
+        "mark_multiplier": mark["mark_multiplier"],
+        "mark_stale": mark["mark_stale"],
+        "mark": mark["mark"],
         "decision": {
             "state": row.get("decision_state"),
             "kind": row.get("decision_kind"),
@@ -416,7 +853,9 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
             "forecast": {
                 "probability_profit": _number(row.get("probability_profit")),
                 "expected_value": _number(row.get("expected_value")),
-                "risk_adjusted_expectancy": _number(row.get("risk_adjusted_expectancy")),
+                "risk_adjusted_expectancy": _number(
+                    row.get("risk_adjusted_expectancy")
+                ),
                 "data_confidence": _number(row.get("data_confidence")),
                 "execution_confidence": _number(row.get("execution_confidence")),
             },
@@ -430,12 +869,17 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
             "staged_limit_price": _number(row.get("staged_limit_price")),
             "entry_price": _number(entry_price),
             "exit_price": _number(exit_price),
-            "fees": _number(row.get("actual_fees")) if has_fill and fees_verified else None,
+            "fees": _number(row.get("actual_fees"))
+            if has_fill and fees_verified
+            else None,
             "multiplier": _number(multiplier),
-            "multiplier_evidence": "verified" if multiplier_verified and has_fill else "unavailable",
+            "multiplier_evidence": "verified"
+            if multiplier_verified and has_fill
+            else "unavailable",
             "ticket_snapshot": row.get("ticket_snapshot") or {},
             "policy_result": row.get("policy_result") or {},
             "fills": list(row.get("fill_rows") or []),
+            "legs": list(row.get("order_legs") or []),
         },
         "outcome": {
             "state": row.get("outcome_state"),
@@ -449,7 +893,9 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
         },
         "related_research": {
             "shadow_id": row.get("shadow_id"),
-            "relationship": "same_decision_research_observation" if row.get("shadow_id") else None,
+            "relationship": "same_decision_research_observation"
+            if row.get("shadow_id")
+            else None,
             "paper_book_inclusion": "paper_order_only",
         },
         "artifacts": {
@@ -457,14 +903,429 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
             "decision_evidence": list(row.get("decision_evidence") or []),
             "ticket_snapshot_present": bool(row.get("ticket_snapshot")),
             "policy_snapshot_present": bool(row.get("policy_snapshot")),
-            "source_ids": [item.get("reference_key") for item in row.get("decision_evidence") or [] if isinstance(item, dict)],
+            "source_ids": [
+                item.get("reference_key")
+                for item in row.get("decision_evidence") or []
+                if isinstance(item, dict)
+            ],
         },
     }
 
 
-def _scope_payload(*, symbol: str | None, strategy_revision: int | None, lifecycle: str | None) -> dict[str, Any]:
-    scope = {"symbol": symbol.strip().upper() if symbol else None, "strategy_revision": strategy_revision, "lifecycle": lifecycle}
-    scope_id = hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+def _realized_exit_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("realized_pnl") is None:
+            continue
+        fill_rows = [
+            fill
+            for fill in row.get("execution", {}).get("fills", [])
+            if isinstance(fill, dict)
+        ]
+        if not fill_rows:
+            if row.get("exit_at") is not None:
+                events.append(
+                    {
+                        "at": row["exit_at"],
+                        "pnl": Decimal(str(row["realized_pnl"])),
+                        "trade_id": row["paper_order_id"],
+                    }
+                )
+            continue
+        filled = _decimal(row.get("filled_quantity"))
+        entry_price = _decimal(row.get("entry_price"))
+        multiplier = _decimal(row.get("execution", {}).get("multiplier"))
+        if filled is None or filled <= 0 or entry_price is None or multiplier is None:
+            continue
+        entry_fees = sum(
+            (
+                _decimal(fill.get("fees")) or Decimal("0")
+                for fill in fill_rows
+                if fill.get("action") == "paper_entry"
+            ),
+            Decimal("0"),
+        )
+        row_events: list[dict[str, Any]] = []
+        for fill in fill_rows:
+            if not str(fill.get("action") or "").startswith("paper_exit"):
+                continue
+            quantity = _decimal(fill.get("quantity"))
+            price = _decimal(fill.get("price"))
+            fee = _decimal(fill.get("fees"))
+            at = _as_datetime(fill.get("created_at")) or _as_datetime(
+                row.get("exit_at")
+            )
+            if (
+                quantity is None
+                or quantity <= 0
+                or price is None
+                or fee is None
+                or at is None
+            ):
+                row_events = []
+                break
+            gross = (
+                (entry_price - price if _is_credit_order(row) else price - entry_price)
+                * multiplier
+                * quantity
+            )
+            row_events.append(
+                {
+                    "at": at,
+                    "pnl": gross - entry_fees * quantity / filled - fee,
+                    "trade_id": row["paper_order_id"],
+                    "journal_id": fill.get("id"),
+                }
+            )
+        events.extend(row_events)
+    events.sort(
+        key=lambda event: (
+            _as_datetime(event.get("at")) or datetime.max.replace(tzinfo=UTC),
+            str(event.get("trade_id") or ""),
+            str(event.get("journal_id") or ""),
+        )
+    )
+    return events
+
+
+def _paper_mark_payload(
+    row: dict[str, Any],
+    *,
+    remaining: Decimal,
+    filled: Decimal,
+    entry_price: Decimal | None,
+    credit: bool,
+    multiplier_verified: bool,
+    fees_verified: bool,
+) -> dict[str, Any]:
+    empty = {
+        "unrealized_pnl": None,
+        "mark_status": "not_required" if remaining <= 0 else "unavailable",
+        "mark_gap_reason": None
+        if remaining <= 0
+        else "verified_current_mark_unavailable",
+        "mark_price": None,
+        "mark_value": None,
+        "mark_observed_at": None,
+        "mark_available_at": None,
+        "mark_source": None,
+        "mark_basis": None,
+        "mark_multiplier": None,
+        "mark_stale": None,
+        "mark": {
+            "status": "not_required" if remaining <= 0 else "unavailable",
+            "basis": None,
+            "price": None,
+            "value": None,
+            "observed_at": None,
+            "available_at": None,
+            "source": None,
+            "stale": None,
+        },
+    }
+    if remaining <= 0:
+        return empty
+
+    as_of = _as_datetime(row.get("mark_as_of")) or datetime.now(UTC)
+    is_option = _is_option_order(row)
+    legs = _order_legs(row)
+    if is_option and legs:
+        mark_rows = {
+            int(mark_row["contract_id"]): mark_row
+            for mark_row in row.get("option_marks") or []
+            if isinstance(mark_row, dict) and mark_row.get("contract_id") is not None
+        }
+        missing_contract_ids = [
+            int(leg["contract_id"])
+            for leg in legs
+            if leg.get("contract_id") is None
+            or int(leg["contract_id"]) not in mark_rows
+        ]
+        if missing_contract_ids:
+            empty["mark_gap_reason"] = "verified_option_leg_quote_unavailable"
+            empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+            return empty
+
+        signed_leg_values: list[Decimal] = []
+        observed_values: list[datetime] = []
+        available_values: list[datetime] = []
+        sources: list[str] = []
+        used_mid = False
+        leg_evidence: list[dict[str, Any]] = []
+        package_multiplier: Decimal | None = None
+        for leg in legs:
+            contract_id = int(leg["contract_id"])
+            mark_row = mark_rows[contract_id]
+            expiration = _as_date(leg.get("expiration"))
+            if _option_expired(expiration, as_of):
+                empty["mark_gap_reason"] = "option_expired_without_settlement_evidence"
+                empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+                return empty
+            bid = _decimal(mark_row.get("bid"))
+            ask = _decimal(mark_row.get("ask"))
+            mid = _decimal(mark_row.get("mid"))
+            short = str(leg.get("side") or "").lower() in {"short", "sell"}
+            if bid is not None and ask is not None and bid > 0 and ask >= bid:
+                leg_price = ask if short else bid
+            elif mid is not None and mid > 0:
+                leg_price = mid
+                used_mid = True
+            else:
+                empty["mark_gap_reason"] = "verified_option_leg_quote_unavailable"
+                empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+                return empty
+            leg_multiplier = _decimal(leg.get("multiplier"))
+            if leg_multiplier is None or leg_multiplier <= 0:
+                empty["mark_status"] = "unreconciled"
+                empty["mark_gap_reason"] = (
+                    "contract_multiplier_evidence_missing_or_conflicting"
+                )
+                empty["mark"]["status"] = "unreconciled"
+                empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+                return empty
+            order_multiplier = _decimal(row.get("order_multiplier"))
+            if order_multiplier is None or leg_multiplier != order_multiplier:
+                empty["mark_status"] = "unreconciled"
+                empty["mark_gap_reason"] = (
+                    "contract_multiplier_evidence_missing_or_conflicting"
+                )
+                empty["mark"]["status"] = "unreconciled"
+                empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+                return empty
+            if package_multiplier is None:
+                package_multiplier = leg_multiplier
+            elif package_multiplier != leg_multiplier:
+                empty["mark_status"] = "unreconciled"
+                empty["mark_gap_reason"] = (
+                    "contract_multiplier_evidence_missing_or_conflicting"
+                )
+                empty["mark"]["status"] = "unreconciled"
+                empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+                return empty
+            signed_leg_values.append(
+                (-leg_price if short else leg_price) * leg_multiplier
+            )
+            observed = _as_datetime(mark_row.get("observed_at"))
+            available = _as_datetime(mark_row.get("available_at"))
+            if observed is not None:
+                observed_values.append(observed)
+            if available is not None:
+                available_values.append(available)
+            if mark_row.get("source") is not None:
+                sources.append(str(mark_row["source"]))
+            leg_evidence.append(
+                {
+                    "contract_id": contract_id,
+                    "quote_id": mark_row.get("quote_id"),
+                    "snapshot_id": mark_row.get("snapshot_id"),
+                    "source": mark_row.get("source"),
+                    "source_kind": mark_row.get("source_kind"),
+                    "side": leg.get("side"),
+                }
+            )
+
+        if not multiplier_verified:
+            empty["mark_status"] = "unreconciled"
+            empty["mark_gap_reason"] = (
+                "contract_multiplier_evidence_missing_or_conflicting"
+            )
+            empty["mark"]["status"] = "unreconciled"
+            empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+            return empty
+        if package_multiplier is None:
+            empty["mark_status"] = "unreconciled"
+            empty["mark_gap_reason"] = (
+                "contract_multiplier_evidence_missing_or_conflicting"
+            )
+            empty["mark"]["status"] = "unreconciled"
+            empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+            return empty
+
+        package_mark = sum(signed_leg_values, Decimal("0"))
+        package_price = abs(package_mark) / package_multiplier
+        observed_at = min(observed_values) if observed_values else None
+        available_at = max(available_values) if available_values else None
+        stale = observed_at is None or as_of - observed_at > MARK_STALE_AFTER
+        source_values = list(dict.fromkeys(sources))
+        source = (
+            source_values[0] if len(source_values) == 1 else "multiple_verified_sources"
+        )
+        basis = (
+            "conservative_liquidation_legs_with_mid_fallback"
+            if used_mid
+            else "conservative_liquidation_legs"
+        )
+        base = {
+            "mark_price": _number(package_price),
+            "mark_value": None,
+            "mark_observed_at": observed_at,
+            "mark_available_at": available_at,
+            "mark_source": source,
+            "mark_basis": basis,
+            "mark_multiplier": _number(package_multiplier),
+            "mark_stale": stale,
+            "mark": {
+                "status": "stale" if stale else "verified",
+                "basis": basis,
+                "price": _number(package_price),
+                "value": None,
+                "observed_at": observed_at,
+                "available_at": available_at,
+                "source": source,
+                "stale": stale,
+                "as_of": as_of,
+                "signed_value_per_package": _number(package_mark),
+                "signed_price_per_package": _number(package_mark / package_multiplier),
+                "evidence": {"legs": leg_evidence},
+            },
+            "unrealized_pnl": None,
+            "mark_status": "stale" if stale else "verified",
+            "mark_gap_reason": "verified_mark_stale" if stale else None,
+        }
+        if stale:
+            return base
+
+        mark_value = package_mark * remaining
+        base["mark_value"] = _number(_money_decimal(mark_value))
+        base["mark"]["value"] = base["mark_value"]
+        if entry_price is not None and fees_verified:
+            entry_value_per_package = entry_price * package_multiplier
+            gross_per_unit = (
+                package_mark - entry_value_per_package
+                if not credit
+                else entry_value_per_package + package_mark
+            )
+            entry_fees = _decimal(row.get("entry_fees")) or Decimal("0")
+            base["unrealized_pnl"] = _number(
+                _money_decimal(
+                    gross_per_unit * remaining - entry_fees * remaining / filled
+                )
+            )
+        return base
+
+    if is_option:
+        bid = _decimal(row.get("option_mark_bid"))
+        ask = _decimal(row.get("option_mark_ask"))
+        mid = _decimal(row.get("option_mark_mid"))
+        if bid is not None and ask is not None and bid > 0 and ask >= bid:
+            mark_price = ask if credit else bid
+            basis = (
+                "conservative_liquidation_ask"
+                if credit
+                else "conservative_liquidation_bid"
+            )
+        elif mid is not None and mid > 0:
+            mark_price = mid
+            basis = "mid"
+        else:
+            empty["mark_gap_reason"] = "verified_option_quote_unavailable"
+            empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+            return empty
+        observed_at = row.get("option_mark_observed_at")
+        available_at = row.get("option_mark_available_at")
+        source = row.get("option_mark_source")
+        evidence = {
+            "quote_id": row.get("option_mark_quote_id"),
+            "snapshot_id": row.get("option_mark_snapshot_id"),
+        }
+        expiration = _as_date(row.get("expiration"))
+        if _option_expired(expiration, as_of):
+            empty["mark_gap_reason"] = "option_expired_without_settlement_evidence"
+            empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+            return empty
+    else:
+        mark_price = _decimal(row.get("stock_mark_price"))
+        if mark_price is None or mark_price <= 0:
+            empty["mark_gap_reason"] = "verified_current_mark_unavailable"
+            empty["mark"]["gap_reason"] = empty["mark_gap_reason"]
+            return empty
+        basis = "confirmed_quote_price"
+        observed_at = row.get("stock_mark_observed_at")
+        available_at = row.get("stock_mark_available_at")
+        source = row.get("stock_mark_source")
+        evidence = {
+            "source_kind": row.get("stock_mark_source_kind"),
+            "valuation_status": row.get("stock_mark_status"),
+        }
+
+    as_of = _as_datetime(row.get("mark_as_of")) or datetime.now(UTC)
+    observed = _as_datetime(observed_at)
+    stale = observed is None or as_of - observed > MARK_STALE_AFTER
+    base = {
+        "mark_price": _number(mark_price),
+        "mark_value": None,
+        "mark_observed_at": observed_at,
+        "mark_available_at": available_at,
+        "mark_source": source,
+        "mark_basis": basis,
+        "mark_multiplier": _number(row.get("order_multiplier"))
+        if is_option and multiplier_verified
+        else 1.0
+        if not is_option
+        else None,
+        "mark_stale": stale,
+        "mark": {
+            "status": "stale" if stale else "verified",
+            "basis": basis,
+            "price": _number(mark_price),
+            "value": None,
+            "observed_at": observed_at,
+            "available_at": available_at,
+            "source": source,
+            "stale": stale,
+            "as_of": as_of,
+            "evidence": evidence,
+        },
+        "unrealized_pnl": None,
+        "mark_status": "stale" if stale else "verified",
+        "mark_gap_reason": "verified_mark_stale" if stale else None,
+    }
+    if stale:
+        return base
+
+    multiplier = (
+        Decimal("1") if not is_option else _decimal(row.get("order_multiplier"))
+    )
+    if multiplier is None or multiplier <= 0 or (is_option and not multiplier_verified):
+        base["mark_status"] = "unreconciled"
+        base["mark_gap_reason"] = "contract_multiplier_evidence_missing_or_conflicting"
+        base["mark"]["status"] = "unreconciled"
+        base["mark"]["gap_reason"] = base["mark_gap_reason"]
+        return base
+
+    mark_value = (
+        mark_price
+        * multiplier
+        * remaining
+        * (Decimal("-1") if credit else Decimal("1"))
+    )
+    base["mark_value"] = _number(_money_decimal(mark_value))
+    base["mark"]["value"] = base["mark_value"]
+    if entry_price is not None and fees_verified:
+        entry_value = entry_price * multiplier * remaining
+        gross = (
+            entry_value - (mark_price * multiplier * remaining)
+            if credit
+            else (mark_price * multiplier * remaining) - entry_value
+        )
+        entry_fees = _decimal(row.get("entry_fees")) or Decimal("0")
+        base["unrealized_pnl"] = _number(
+            _money_decimal(gross - entry_fees * remaining / filled)
+        )
+    return base
+
+
+def _scope_payload(
+    *, symbol: str | None, strategy_revision: int | None, lifecycle: str | None
+) -> dict[str, Any]:
+    scope = {
+        "symbol": symbol.strip().upper() if symbol else None,
+        "strategy_revision": strategy_revision,
+        "lifecycle": lifecycle,
+    }
+    scope_id = hashlib.sha256(
+        json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
     return {"scope": {**scope, "scope_id": scope_id}}
 
 
@@ -473,7 +1334,10 @@ def _missing_reasons(rows: list[dict[str, Any]]) -> list[str]:
     for row in rows:
         reasons.update(row.get("evidence_reasons") or [])
         if row.get("remaining_quantity", 0) > 0:
-            reasons.add("verified_current_mark_unavailable")
+            if row.get("mark_status") != "verified":
+                reasons.add(
+                    row.get("mark_gap_reason") or "verified_current_mark_unavailable"
+                )
     return sorted(reasons)
 
 
@@ -485,6 +1349,38 @@ def _decimal(value: Any) -> Decimal | None:
     except (InvalidOperation, TypeError, ValueError):
         return None
     return parsed if parsed.is_finite() else None
+
+
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _option_expired(expiration: date | None, as_of: datetime) -> bool:
+    return bool(
+        expiration is not None
+        and as_of >= market_session_bounds(expiration)[1].astimezone(UTC)
+    )
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return None
 
 
 def _number(value: Any) -> float | None:

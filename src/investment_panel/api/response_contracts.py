@@ -69,6 +69,15 @@ class PaperTradeSummary(FlexibleResponse):
     lifecycle: str
     reconciliation_status: str
     net_pnl: float | None = None
+    unrealized_pnl: float | None = None
+    mark_status: str = "unavailable"
+    mark_price: float | None = None
+    mark_value: float | None = None
+    mark_observed_at: datetime | None = None
+    mark_available_at: datetime | None = None
+    mark_source: str | None = None
+    mark_basis: str | None = None
+    mark_stale: bool | None = None
 
 
 class PaperTradeDetail(PaperTradeSummary):
@@ -83,9 +92,24 @@ class PaperTradePage(FlexibleResponse):
 class PaperBookPerformance(FlexibleResponse):
     """Accounting projection with visible scope and evidence coverage."""
 
+    as_of: datetime | None = None
+    source_watermark: datetime | None = None
+    snapshot_id: str | None = None
+    scope: dict[str, Any] = Field(default_factory=dict)
+    calculation_version: str | None = None
+    currency: str = "USD"
+    accounting_basis: str | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+    evidence_coverage: dict[str, Any] = Field(default_factory=dict)
+    missing_evidence_reasons: list[str] = Field(default_factory=list)
     net_pnl: float | None = None
     realized_pnl: float | None = None
+    realized_pnl_status: str | None = None
     unrealized_pnl: float | None = None
+    nav: float | None = None
+    return_pct: float | None = None
+    drawdown: float | None = None
+    series: dict[str, Any] = Field(default_factory=dict)
     quality_status: str
 
 
