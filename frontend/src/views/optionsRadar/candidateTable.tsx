@@ -2,6 +2,7 @@
 
 import {Fragment, useEffect, useMemo, useState } from "react";
 import {ArrowDownUp, ChevronDown, ChevronLeft, ChevronRight, Search, Target } from "lucide-react";
+import {decisionReason } from "@/components/market/dataFieldState";
 import {DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import {Button } from "@/components/ui/button";
 import {Input } from "@/components/ui/input";
@@ -535,7 +536,7 @@ export function candidateDecisionFacts(row: RowRecord) {
   return {
     whyTicker: first(["why_ticker", "ticker_reason", "symbol_reason"]) || [trend && `Trend ${titleLabel(trend)}`, Number.isFinite(relativeStrength) && `relative strength ${relativeStrength.toFixed(2)}`].filter(Boolean).join(" · "),
     whyStructure: first(["why_structure", "structure_reason", "selection_reason"]) || routeExplanation,
-    blocker: blockers[0] || first(["main_blocker", "primary_blocker"]),
+    blocker: decisionReason(blockers[0] || first(["main_blocker", "primary_blocker"])),
     change: change ? titleLabel(change) : "Retained",
   };
 }

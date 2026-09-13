@@ -28,6 +28,11 @@ describe("radar market-state explanations", () => {
     });
   });
 
+  it("translates stored blocker codes in the primary decision summary", () => {
+    expect(candidateDecisionFacts({ blockers: ["calibrated_probability_required"] }).blocker)
+      .toBe("Calibrated probability required");
+  });
+
   it("does not attribute a different shadow route to the displayed structure", () => {
     const facts = candidateDecisionFacts({
       structure: "long_call",
