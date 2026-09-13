@@ -6,7 +6,15 @@ describe("build identity", () => {
     expect(buildIdsMatch("2608de8", "2608de8406d19d98f5037c0b02b1469b0ac3af0e")).toBe(true);
   });
 
+  it("accepts Git abbreviations shorter than seven characters", () => {
+    expect(buildIdsMatch("2608", "2608de8406d19d98f5037c0b02b1469b0ac3af0e")).toBe(true);
+  });
+
   it("rejects unrelated build identities", () => {
     expect(buildIdsMatch("2608de8", "e524be32d32e6b90b0f1a60108e62207ad06ad07")).toBe(false);
+  });
+
+  it("does not treat shared-prefix labels as matching builds", () => {
+    expect(buildIdsMatch("release-2026", "release-2026-hotfix")).toBe(false);
   });
 });

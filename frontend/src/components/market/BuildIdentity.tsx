@@ -9,10 +9,11 @@ type Release = {
 };
 
 const frontendBuild = typeof __MARKET_FRONTEND_BUILD__ === "string" ? __MARKET_FRONTEND_BUILD__ : "unknown";
+const gitShaPattern = /^[0-9a-f]{4,40}$/i;
 
 export function buildIdsMatch(uiBuild: string, apiBuild: string): boolean {
   return uiBuild === apiBuild || (
-    uiBuild.length >= 7 && apiBuild.length >= 7 &&
+    gitShaPattern.test(uiBuild) && gitShaPattern.test(apiBuild) &&
     (uiBuild.startsWith(apiBuild) || apiBuild.startsWith(uiBuild))
   );
 }
