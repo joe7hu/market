@@ -408,7 +408,7 @@ def test_preopen_narrative_does_not_reuse_future_same_day_publication(
         nonlocal calls
         calls += 1
         return {
-            "headline": "Cutoff-safe pre-open",
+            "headline": f"Cutoff-safe pre-open {calls}",
             "macro_regime": "neutral",
             "narrative": "Use evidence available at the cutoff.",
             "opening_scenario": "balanced",
@@ -439,7 +439,9 @@ def test_preopen_narrative_does_not_reuse_future_same_day_publication(
             )
         third = refresh_today_publication(runtime, now=cutoff, use_agent_narrative=True)
         assert third["preopen_narrative"] == "agent_generated"
-        assert calls == 3
+        assert calls == 2
+        brief = AnalysisRepository(runtime).publication_rows("today", "preopen_daily_brief")
+        assert brief[0]["headline"] == "Cutoff-safe pre-open 2"
     finally:
         runtime.close()
 
