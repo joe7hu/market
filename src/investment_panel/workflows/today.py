@@ -327,7 +327,22 @@ def _today_brief_stats(row: dict[str, Any]) -> list[str]:
         ("Weight", row.get("weight")),
         ("Unrealized P&L", row.get("unrealized_pnl")),
     )
-    return [f"{label} {value}" for label, value in values if _finite_number(value) is not None]
+    output = []
+    for label, value in values:
+        number = _finite_number(value)
+        if number is not None:
+            output.append(f"{label} {_today_stat_value(label, number)}")
+    return output
+
+
+def _today_stat_value(label: str, value: float) -> str:
+    if label == "Weight":
+        return f"{value * 100:.1f}%"
+    if label == "Unrealized P&L":
+        return f"{'-' if value < 0 else ''}${abs(value):,.2f}"
+    if label == "Execution quality":
+        return f"{value:.1f}/100"
+    return f"{value:.0f}" if value.is_integer() else f"{value:.2f}"
 
 
 def _optional_text(value: Any) -> str | None:

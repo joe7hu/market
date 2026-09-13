@@ -237,6 +237,10 @@ def test_today_projects_named_context_contract_without_row_aliases(
                 "sentiment": "bullish",
                 "severity": "warn",
                 "research_rank": 1,
+                "trade_rank": 2,
+                "execution_quality_score": 80,
+                "weight": 0.40785324341121787,
+                "unrealized_pnl": -2991.5786267089857,
             }],
             "preopen_daily_brief": [{
                 "stable_key": "preopen:2026-09-01",
@@ -271,7 +275,7 @@ def test_today_projects_named_context_contract_without_row_aliases(
         "next_action": None,
         "blockers": [],
         "days_until": None,
-        "stats": ["Research rank 1"],
+        "stats": ["Research rank 1", "Trade rank 2", "Execution quality 80.0/100", "Weight 40.8%", "Unrealized P&L -$2,991.58"],
     }]
     risk = payload["portfolio_risk_items"][0]
     assert risk["sentiment"] == "neutral"
