@@ -71,21 +71,32 @@ def source_health_blockers(
     source_ids: Sequence[str],
     *,
     evaluated_at: datetime | None = None,
+    capability: str | None = None,
 ) -> dict[str, list[str]]:
     """Return fail-closed blockers for the source identities used by a decision.
 
     This is deliberately narrower than the catalog projection.  Readiness
     checks need the source that produced the evidence, not a global health
     count, and must re-evaluate it at the point of publication or paper entry.
+    When a source owns multiple capabilities, scope the check to the
+    capability that produced the evidence so an unrelated partial run cannot
+    invalidate an otherwise healthy decision feed.
     """
 
     normalized = sorted({str(source_id).strip() for source_id in source_ids if str(source_id).strip()})
     if not normalized:
         return {}
     reference = evaluated_at or datetime.now(UTC)
+    normalized_capability = str(capability or "").strip() or None
+    capability_filter = " AND run.capability = %s" if normalized_capability else ""
+    query_params: list[Any] = (
+        [normalized_capability, normalized_capability, normalized]
+        if normalized_capability
+        else [normalized]
+    )
     with runtime.read() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT source.id, source.enabled, source.operational_state,
                    source.health_owner, source.freshness_seconds,
                    latest.status AS latest_status,
@@ -95,6 +106,7 @@ def source_health_blockers(
                 SELECT run.status
                 FROM ingest.run AS run
                 WHERE run.source_id = source.id
+                  {capability_filter}
                 ORDER BY run.started_at DESC, run.id DESC
                 LIMIT 1
             ) AS latest ON true
@@ -103,10 +115,11 @@ def source_health_blockers(
                 FROM ingest.run AS run
                 WHERE run.source_id = source.id
                   AND run.status = 'succeeded'
+                  {capability_filter}
             ) AS success ON true
             WHERE source.id = ANY(%s::text[])
             """,
-            [normalized],
+            query_params,
         ).fetchall()
     by_id = {str(row["id"]): row for row in rows}
     blockers: dict[str, list[str]] = {}

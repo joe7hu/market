@@ -312,7 +312,12 @@ class ActionRepository:
             }
             if not source_ids:
                 raise ValueError("paper action blocked: publication source identity is missing")
-            health_blockers = source_health_blockers(self.runtime, sorted(source_ids), evaluated_at=now)
+            health_blockers = source_health_blockers(
+                self.runtime,
+                sorted(source_ids),
+                evaluated_at=now,
+                capability="option_quotes",
+            )
             if health_blockers:
                 details = "; ".join(
                     f"{source_id}={','.join(reasons)}"

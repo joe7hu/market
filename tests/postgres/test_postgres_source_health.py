@@ -183,6 +183,42 @@ def test_source_health_ignores_runs_for_removed_capabilities(migrated_postgres_d
     assert [entry["capability"] for entry in source["capability_health"]] == ["news"]
 
 
+def test_source_health_blockers_can_scope_to_evidence_capability(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = IngestionRepository(runtime)
+    try:
+        repository.register_source(
+            "health_capability_scoped",
+            name="Health Capability Scoped",
+            family="broker",
+            kind="option_chain",
+            origin="test",
+            capabilities={"option_quotes": True, "option_event_strip": True},
+        )
+        _finish(repository, "health_capability_scoped", "succeeded", capability="option_quotes")
+        _finish(
+            repository,
+            "health_capability_scoped",
+            "partial",
+            capability="option_event_strip",
+            failure_detail="unrelated event strip had no executable contracts",
+        )
+        generic = source_health_blockers(runtime, ["health_capability_scoped"])
+        scoped = source_health_blockers(
+            runtime,
+            ["health_capability_scoped"],
+            capability="option_quotes",
+        )
+    finally:
+        runtime.close()
+
+    assert "source_run_partial" in generic["health_capability_scoped"]
+    assert scoped == {}
+
+
 def test_research_enablement_sync_disables_removed_sources_and_live_x_path(
     migrated_postgres_dsn: str,
 ) -> None:

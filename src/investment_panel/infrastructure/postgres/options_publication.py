@@ -480,6 +480,7 @@ def publication_models(
         runtime,
         sorted(source_ids),
         evaluated_at=readiness_evaluated_at,
+        capability="option_quotes",
     )
     for row in all_rows:
         discovery = discovery_by_ticker.get(str(row.get("ticker"))) or {}
