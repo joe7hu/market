@@ -237,6 +237,10 @@ def test_today_projects_named_context_contract_without_row_aliases(
                 "sentiment": "bullish",
                 "severity": "warn",
                 "research_rank": 1,
+                "trade_rank": 2,
+                "execution_quality_score": 80,
+                "weight": 0.40785324341121787,
+                "unrealized_pnl": -2991.5786267089857,
             }],
             "preopen_daily_brief": [{
                 "stable_key": "preopen:2026-09-01",
@@ -271,7 +275,7 @@ def test_today_projects_named_context_contract_without_row_aliases(
         "next_action": None,
         "blockers": [],
         "days_until": None,
-        "stats": ["Research rank 1"],
+        "stats": ["Research rank 1", "Trade rank 2", "Execution quality 80.0/100", "Weight 40.8%", "Unrealized P&L -$2,991.58"],
     }]
     risk = payload["portfolio_risk_items"][0]
     assert risk["sentiment"] == "neutral"
@@ -279,6 +283,27 @@ def test_today_projects_named_context_contract_without_row_aliases(
     assert risk["next_action"] == "Review position size"
     assert payload["preopen_brief"]["headline"] == "Named pre-open headline"
     assert payload["preopen_brief"]["key_events"] == ["Payrolls"]
+
+
+def test_today_brief_stats_formats_positive_pnl_with_a_sign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "today-positive-pnl.json")
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_options_research,
+        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={"daily_brief": [{"category": "portfolio_pulse", "unrealized_pnl": 12.5}]},
+    )
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+
+    response = TestClient(app).get("/api/today")
+
+    assert response.status_code == 200
+    assert response.json()["brief_items"][0]["stats"] == ["Unrealized P&L +$12.50"]
 
 
 def test_today_selects_each_brief_category_before_its_display_limit(
