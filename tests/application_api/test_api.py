@@ -34,6 +34,7 @@ from investment_panel.domain.panel import PANEL_SCOPE_TABLES
 from investment_panel.domain.decision import TRACKED_METRICS, ticker_decision_brief
 from investment_panel.settings import AppConfig
 from conftest import typed_config
+from investment_panel.workflows.today import _today_brief_stats
 
 
 def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
@@ -283,6 +284,10 @@ def test_today_projects_named_context_contract_without_row_aliases(
     assert risk["next_action"] == "Review position size"
     assert payload["preopen_brief"]["headline"] == "Named pre-open headline"
     assert payload["preopen_brief"]["key_events"] == ["Payrolls"]
+
+
+def test_today_brief_stats_formats_positive_pnl_with_a_sign() -> None:
+    assert _today_brief_stats({"unrealized_pnl": 12.5}) == ["Unrealized P&L +$12.50"]
 
 
 def test_today_selects_each_brief_category_before_its_display_limit(

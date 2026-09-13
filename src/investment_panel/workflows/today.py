@@ -339,7 +339,8 @@ def _today_stat_value(label: str, value: float) -> str:
     if label == "Weight":
         return f"{value * 100:.1f}%"
     if label == "Unrealized P&L":
-        return f"{'-' if value < 0 else ''}${abs(value):,.2f}"
+        sign = "+" if value > 0 else "-" if value < 0 else ""
+        return f"{sign}${abs(value):,.2f}"
     if label == "Execution quality":
         return f"{value:.1f}/100"
     return f"{value:.0f}" if value.is_integer() else f"{value:.2f}"
