@@ -34,7 +34,6 @@ from investment_panel.domain.panel import PANEL_SCOPE_TABLES
 from investment_panel.domain.decision import TRACKED_METRICS, ticker_decision_brief
 from investment_panel.settings import AppConfig
 from conftest import typed_config
-from investment_panel.workflows.today import _today_brief_stats
 
 
 def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
@@ -286,8 +285,25 @@ def test_today_projects_named_context_contract_without_row_aliases(
     assert payload["preopen_brief"]["key_events"] == ["Payrolls"]
 
 
-def test_today_brief_stats_formats_positive_pnl_with_a_sign() -> None:
-    assert _today_brief_stats({"unrealized_pnl": 12.5}) == ["Unrealized P&L +$12.50"]
+def test_today_brief_stats_formats_positive_pnl_with_a_sign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "today-positive-pnl.json")
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        dependencies.get_options_research,
+        lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}),
+    )
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={"daily_brief": [{"category": "portfolio_pulse", "unrealized_pnl": 12.5}]},
+    )
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+
+    response = TestClient(app).get("/api/today")
+
+    assert response.status_code == 200
+    assert response.json()["brief_items"][0]["stats"] == ["Unrealized P&L +$12.50"]
 
 
 def test_today_selects_each_brief_category_before_its_display_limit(
