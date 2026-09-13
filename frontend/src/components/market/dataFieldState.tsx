@@ -45,6 +45,8 @@ const REASONS: Record<string, string> = {
   cash_hurdle_missing: "The required return above cash has not been set.",
   scenario_evidence_missing: "There is not enough observed data to assess portfolio stress losses.",
   insufficient_history: "There is not enough price history for this calculation.",
+  max_loss_required: "A defined maximum loss is required before this can be considered.",
+  wait_for_price_discovery_and_complete_liquidity_inputs: "Wait for price discovery and complete liquidity inputs before considering a trade.",
 };
 
 /** Translate diagnostics at the display boundary; stored evidence stays intact. */

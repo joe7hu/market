@@ -254,6 +254,11 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
     assert first_replay["analysis_run_id"] == second_replay["analysis_run_id"]
     assert second_replay["idempotent_replay"] is True
     assert first_replay["mode"] == "historical_evidence"
+    post_fix_replay = history.v3.materialize(
+        snapshot_id=complete["snapshot_id"], capture_generation_id=complete["capture_generation_id"],
+        code_version="post-fix-replay",
+    )
+    assert post_fix_replay["analysis_run_id"] != second_replay["analysis_run_id"]
     with runtime.read() as connection:
         assert connection.execute(
             "SELECT count(*) FROM analysis.shadow_trade WHERE source_kind = 'options_history_v3'"
@@ -261,7 +266,7 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
     with runtime.transaction() as connection:
         candidate = connection.execute(
             "SELECT id FROM analysis.option_relative_value WHERE analysis_run_id = %s LIMIT 1",
-            [second_replay["analysis_run_id"]],
+            [post_fix_replay["analysis_run_id"]],
         ).fetchone()
         connection.execute(
             "UPDATE analysis.option_relative_value SET classification = 'historical_static_arbitrage_candidate' WHERE id = %s",

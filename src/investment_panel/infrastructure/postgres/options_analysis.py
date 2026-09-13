@@ -1,6 +1,7 @@
 """Fast PostgreSQL-native option feature, decision, and publication pipeline."""
 from __future__ import annotations
 from datetime import UTC, datetime
+import os
 from typing import Any, Sequence
 from psycopg.types.json import Jsonb
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
@@ -71,7 +72,7 @@ def refresh_options_radar(
     *,
     source_id: str | None = None,
     symbols: Sequence[str] | None = None,
-    code_version: str = "working-tree",
+    code_version: str | None = None,
     options_risk_sleeve_capital: float | None = None,
     config: object | None = None,
     candidate_revision_id: int | None = None,
@@ -81,6 +82,7 @@ def refresh_options_radar(
     repository = AnalysisRepository(runtime)
     candidate = None
     scope = "options-radar"
+    code_version = str(code_version or os.environ.get("MARKET_BACKEND_COMMIT") or "working-tree").strip()
     if candidate_revision_id is None:
         strategy_id, strategy_parameters = _active_strategy(runtime)
     else:

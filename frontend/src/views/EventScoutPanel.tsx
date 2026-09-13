@@ -1,7 +1,9 @@
 import { AlertTriangle, Clock3, ShieldAlert } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
+import { decisionReason } from "@/components/market/dataFieldState";
 import { StatusBadge } from "@/components/market/workstation";
+import { statusLabel } from "@/presentation/labels";
 import type { RowRecord } from "@/types";
 import { textField } from "@/shared/rowFormat";
 
@@ -45,14 +47,14 @@ export function EventScoutPanel({ truths, packets = [], onOpenTicker }: Props) {
                 </div>
                 <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
                   <span className="inline-flex items-center gap-1"><Clock3 className="size-3" /> as of {textField(truth, ["as_of"], "unknown")}</span>
-                  <span>Blocker: {textField(truth, ["primary_blocker"], "none")}</span>
+                  <span>Blocker: {decisionReason(textField(truth, ["primary_blocker"], "none"))}</span>
                   {shortRecord ? <span>Short record date: {shortRecord}</span> : null}
-                  <span>Execution: {textField(truth, ["execution_state"], "disabled")}</span>
+                  <span>Execution: {statusLabel(textField(truth, ["execution_state"], "disabled").toLowerCase(), "Paused")}</span>
                 </div>
                 {doNotShort ? (
                   <p className="flex items-start gap-2 text-sm font-medium text-amber-700 dark:text-amber-300"><ShieldAlert className="mt-0.5 size-4 shrink-0" />Do not short: squeeze risk is elevated on the available evidence.</p>
                 ) : null}
-                <p className="flex items-start gap-2 text-sm text-muted-foreground"><AlertTriangle className="mt-0.5 size-4 shrink-0" />Next: {textField(truth, ["next_action"], "Refresh evidence.")}</p>
+                <p className="flex items-start gap-2 text-sm text-muted-foreground"><AlertTriangle className="mt-0.5 size-4 shrink-0" />Next: {decisionReason(textField(truth, ["next_action"], "Refresh evidence."))}</p>
               </CardContent>
             </Card>
           );

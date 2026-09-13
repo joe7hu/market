@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { loadOptionTicketDetail } from "@/api/options";
-import { DataFieldStateNotice, missingFieldState } from "@/components/market/dataFieldState";
+import { DataFieldStateNotice, decisionReason, missingFieldState } from "@/components/market/dataFieldState";
+import { EvidenceFields, TechnicalDetails } from "@/components/market/StoredEvidence";
 import { StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
+import { dateTime, evidenceLabel, lifecycleLabel, statusLabel } from "@/presentation/labels";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { JsonValue, RowRecord } from "@/types";
 import { formatMoney, listField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
@@ -60,7 +62,8 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
   const signal = recordOf(detail?.signal);
   const publication = recordOf(detail?.publication);
   const symbol = textField(ticket, ["symbol"], textField(signal, ["ticker", "symbol"]));
-  const state = textField(ticket, ["state"], "RESEARCH").toUpperCase();
+  const state = textField(ticket, ["state"], "research").toLowerCase();
+  const lane = textField(ticket, ["lane"], "radar").toLowerCase();
   const entry = recordOf(ticket.entry);
   const risk = recordOf(ticket.risk);
   const thesis = recordOf(ticket.thesis);
@@ -71,6 +74,7 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
   const agentProvenance = recordOf(detail?.agent_provenance);
   const blockers = listField(ticket, ["blockers"]);
   const resolution = recordOf(ticket.resolution);
+  const primaryBlocker = textField(resolution, ["primary_blocker"]) || blockers[0] || "";
   const requiredFieldStates = [
     textField(ticket, ["required_next_action"]) ? null : missingFieldState({
       field: "required_next_action", source: "option_ticket", reason: "required_next_action_missing",
@@ -87,14 +91,12 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
       <SheetContent side="right" className="flex w-full flex-col gap-0 overflow-y-auto p-0 sm:max-w-xl">
         <SheetHeader className="sticky top-0 z-10 border-b border-border bg-background px-5 py-4 pr-12">
           <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge tone={toneFromText(state)}>{titleLabel(state)}</StatusBadge>
-            <StatusBadge tone="info">{textField(ticket, ["lane"], "radar")}</StatusBadge>
-            <StatusBadge tone="info">Immutable ticket detail</StatusBadge>
+            <StatusBadge tone={toneFromText(state)}>{statusLabel(state, "Research")}</StatusBadge>
+            <StatusBadge tone="info">{statusLabel(lane, "Radar")}</StatusBadge>
+            <StatusBadge tone="info">Paper ticket</StatusBadge>
           </div>
           <SheetTitle>{symbol || "Option decision"}</SheetTitle>
-          <SheetDescription>
-            Immutable decision {decisionId ?? ""}. The canonical current action is on the ticker view.
-          </SheetDescription>
+          <SheetDescription>Review the recorded terms, evidence, and outcome before considering a paper action.</SheetDescription>
         </SheetHeader>
 
         <div className="space-y-5 px-5 py-5">
@@ -107,29 +109,29 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
                   ["Structure", textField(ticket, ["structure"], "—").replaceAll("_", " ")],
                   ["Limit", formatMoney(numberField(entry, ["limit_price"], Number.NaN))],
                   ["Maximum risk", formatMoney(numberField(risk, ["one_unit_max_loss", "one_unit_collateral"], Number.NaN))],
-                  ["Quote expires", textField(ticket, ["expires_at"], textField(entry, ["valid_until"], "—"))],
+                  ["Quote expires", dateTime(textField(ticket, ["expires_at"], textField(entry, ["valid_until"])))],
                   ["Lower-confidence EV / risk", decimal(numberField(ticket, ["lower_confidence_expectancy_per_max_risk"], Number.NaN))],
-                  ["Next action", textField(ticket, ["required_next_action"], "Not supplied")],
-                  ["Resolution", `${textField(resolution, ["eligibility"], "UNKNOWN")} · ${textField(resolution, ["lifecycle"], "—")}`],
-                  ["Authorization", textField(resolution, ["authorization_mode"], "—")],
-                  ["Policy", textField(ticket, ["policy_version", "risk_policy_version"], "—")],
-                  ["Decision revision", textField(ticket, ["decision_revision"], textField(resolution, ["decision_revision"], "—"))],
-                  ["Primary blocker", textField(resolution, ["primary_blocker"], "Not supplied")],
+                  ["Next action", decisionReason(textField(ticket, ["required_next_action"]))],
+                  ["Resolution", `${statusLabel(textField(resolution, ["eligibility"]).toLowerCase(), "Unknown")} · ${lifecycleLabel(textField(resolution, ["lifecycle"]).toLowerCase())}`],
+                  ["Authorization", statusLabel(textField(resolution, ["authorization_mode"]).toLowerCase(), "Not recorded")],
+                  ["Policy", textField(ticket, ["policy_version", "risk_policy_version"]) ? "Current risk policy" : "Not recorded"],
+                  ["Decision revision", textField(ticket, ["decision_revision"], textField(resolution, ["decision_revision"])) ? "Recorded" : "Not recorded"],
+                  ["Primary blocker", decisionReason(primaryBlocker)],
                 ]} />
                 {requiredFieldStates.map((state) => <DataFieldStateNotice key={state.field} state={state} />)}
               </DetailSection>
 
               <DetailSection title="Ticket legs">
                 {legs.length ? <div className="space-y-2">{legs.map((leg, index) => (
-                  <div key={`${textField(leg, ["contract_id"], String(index))}-${index}`} className="rounded-md border border-border p-3 text-sm">
-                    <div className="flex flex-wrap items-center justify-between gap-2 font-medium"><span>{textField(leg, ["side"], "—")} {textField(leg, ["option_type"], "option")} {formatMoney(numberField(leg, ["strike"], Number.NaN))}</span><span className="text-muted-foreground">{textField(leg, ["contract_id", "occ_symbol"], "—")}</span></div>
-                    <div className="mt-1 text-xs text-muted-foreground">Bid {formatMoney(numberField(leg, ["bid"], Number.NaN))} · Ask {formatMoney(numberField(leg, ["ask"], Number.NaN))} · Quote {textField(leg, ["quote_time"], "—")}</div>
+                  <div key={`${textField(leg, ["option_type"], String(index))}-${index}`} className="rounded-md border border-border p-3 text-sm">
+                    <div className="font-medium">{statusLabel(textField(leg, ["side"]).toLowerCase(), "Leg")} {statusLabel(textField(leg, ["option_type"]).toLowerCase(), "Option")} {formatMoney(numberField(leg, ["strike"], Number.NaN))}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">Bid {formatMoney(numberField(leg, ["bid"], Number.NaN))} · Ask {formatMoney(numberField(leg, ["ask"], Number.NaN))} · Quote {dateTime(textField(leg, ["quote_time"]))}</div>
                   </div>
                 ))}</div> : <p className="text-sm text-muted-foreground">No complete execution legs are available. The ticket remains fail-closed.</p>}
               </DetailSection>
 
               <DetailSection title="Primary blocker">
-                {blockers.length ? <ul className="space-y-1 text-sm text-muted-foreground">{blockers.map((blocker) => <li key={blocker}>• {blocker}</li>)}</ul> : <p className="text-sm text-muted-foreground">No blocker is recorded.</p>}
+                {blockers.length ? <ul className="space-y-1 text-sm text-muted-foreground">{blockers.map((blocker) => <li key={blocker}>• {decisionReason(blocker)}</li>)}</ul> : <p className="text-sm text-muted-foreground">No blocker is recorded.</p>}
               </DetailSection>
 
               <DetailSection title="Thesis and exits">
@@ -139,27 +141,29 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
 
               <DetailSection title="Publication and outcome">
                 <MetricGrid values={[
-                  ["Publication", textField(publication, ["id"], textField(ticket, ["publication_id"], "—"))],
-                  ["Published", textField(publication, ["published_at"], "—")],
-                  ["Current", textField(publication, ["current"], "false")],
-                  ["Outcome", textField(outcome, ["maturity_state", "paper_status"], "Not resolved")],
+                  ["Published", dateTime(textField(publication, ["published_at"]))],
+                  ["Current", statusLabel(textField(publication, ["current"]).toLowerCase(), "Not current")],
+                  ["Outcome", statusLabel(textField(outcome, ["maturity_state", "paper_status"]).toLowerCase(), "Not resolved")],
                   ["Return", decimal(numberField(outcome, ["current_return", "return_20d"], Number.NaN))],
                   ["Max drawdown", decimal(numberField(outcome, ["max_drawdown"], Number.NaN))],
                 ]} />
               </DetailSection>
 
               <DetailSection title="Evidence">
-                {evidence.length ? <ul className="space-y-2 text-sm text-muted-foreground">{evidence.slice(0, 12).map((item, index) => <li key={`${textField(item, ["evidence_kind", "reference_key"], String(index))}-${index}`}>• {textField(item, ["evidence_kind", "reference_key"], "Evidence")}</li>)}</ul> : <p className="text-sm text-muted-foreground">No evidence reference is stored.</p>}
+                {evidence.length ? <ul className="space-y-2 text-sm text-muted-foreground">{evidence.slice(0, 12).map((item, index) => <li key={`${textField(item, ["evidence_kind"], String(index))}-${index}`}>• {evidenceLabel(textField(item, ["evidence_kind"], "Evidence"))}</li>)}</ul> : <p className="text-sm text-muted-foreground">No evidence reference is stored.</p>}
               </DetailSection>
 
               <DetailSection title="Agent provenance">
                 {Object.keys(agentProvenance).length ? <MetricGrid values={[
-                  ["Task", textField(agentProvenance, ["option_agent_task_id", "task_id"], "Advisory")],
-                  ["Validation", textField(agentProvenance, ["validation_status", "status"], "Not recorded")],
+                  ["Advisory", Object.keys(agentProvenance).length ? "Attached" : "Not attached"],
+                  ["Validation", statusLabel(textField(agentProvenance, ["validation_status", "status"]).toLowerCase(), "Not recorded")],
                 ]} /> : <p className="text-sm text-muted-foreground">No agent advisory is attached to this ticket.</p>}
               </DetailSection>
 
               {symbol ? <Button type="button" variant="outline" onClick={() => onOpenTicker(symbol)}>Open canonical ticker action</Button> : null}
+              <TechnicalDetails>
+                <EvidenceFields value={{ decision_id: decisionId, ticket, publication, evidence, agent_provenance: agentProvenance }} />
+              </TechnicalDetails>
             </>
           ) : null}
         </div>

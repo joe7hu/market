@@ -1020,18 +1020,21 @@ class AnalysisRepository:
                 """
                 SELECT publication.id, publication.status, publication.bundle_id
                 FROM app.publication publication
+                JOIN app.publication_bundle prior_bundle
+                  ON prior_bundle.id = publication.bundle_id
                 JOIN analysis.run prior_run ON prior_run.id = publication.analysis_run_id
                 WHERE publication.scope = %s
                   AND publication.status IN ('published', 'superseded')
                   AND prior_run.input_hash = %s
                   AND prior_run.code_version = %s
+                  AND prior_bundle.bundle_hash = %s
                 ORDER BY CASE publication.status WHEN 'published' THEN 0 ELSE 1 END,
                          publication.published_at DESC NULLS LAST,
                          publication.created_at DESC, publication.id DESC
                 LIMIT 1
                 FOR UPDATE OF publication
                 """,
-                [scope, run["input_hash"], run["code_version"]],
+                [scope, run["input_hash"], run["code_version"], bundle_hash],
             ).fetchone()
             if existing is not None:
                 existing_id = UUID(str(existing["id"]))

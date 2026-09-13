@@ -177,7 +177,7 @@ class OptionHistoryV3Materializer:
             raise ValueError("capture generation does not belong to snapshot")
         if metadata["capture_state"] != "complete":
             raise ValueError("only complete capture generations can be materialized")
-        existing = self._canonical_succeeded_run(capture_generation_id, model_revision, mode)
+        existing = self._canonical_succeeded_run(capture_generation_id, model_revision, mode, code_version)
         if existing is not None:
             existing.update(surface_shift_run_summary(self.runtime, str(metadata["symbol"]), snapshot_id=snapshot_id, capture_generation_id=capture_generation_id, analysis_run_id=existing["analysis_run_id"], model_revision=model_revision, mode=mode, as_of=metadata["available_at"]))
             return existing
@@ -215,11 +215,13 @@ class OptionHistoryV3Materializer:
         except Exception as exc:
             self.analysis.finish_run(run_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
             raise
-    def _canonical_succeeded_run(self, capture_generation_id: int, model_revision: str, mode: str) -> dict[str, Any] | None:
+    def _canonical_succeeded_run(
+        self, capture_generation_id: int, model_revision: str, mode: str, code_version: str,
+    ) -> dict[str, Any] | None:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                [f"option-history-v3:{capture_generation_id}:{model_revision}:{mode}"],
+                [f"option-history-v3:{capture_generation_id}:{model_revision}:{mode}:{code_version}"],
             )
             row = connection.execute(
                 """
@@ -230,9 +232,10 @@ class OptionHistoryV3Materializer:
                   AND run.summary->>'capture_generation_id' = %s
                   AND run.summary->>'model_revision' = %s
                   AND coalesce(run.summary->>'mode', 'historical_evidence') = %s
+                  AND run.code_version = %s
                 ORDER BY run.finished_at ASC, run.id ASC LIMIT 1
                 """,
-                [str(capture_generation_id), model_revision, mode],
+                [str(capture_generation_id), model_revision, mode, code_version],
             ).fetchone()
         if row is None:
             return None

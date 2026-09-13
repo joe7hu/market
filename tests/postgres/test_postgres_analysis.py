@@ -661,6 +661,32 @@ def test_same_input_and_code_version_reuses_current_publication(analysis_context
     assert run_summary["reused_publication_id"] == str(first_id)
 
 
+def test_same_input_and_code_version_does_not_reuse_changed_bundle(
+    analysis_context,
+) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    first_run = _start_run(repository, "changed-bundle")
+    repository.finish_run(first_run, "succeeded")
+    first_id = repository.publish(
+        first_run,
+        "today",
+        {"daily_brief": [{"stable_key": "brief", "headline": "Original"}]},
+    )
+
+    repeated_run = _start_run(repository, "changed-bundle")
+    repository.finish_run(repeated_run, "succeeded")
+    repeated_id = repository.publish(
+        repeated_run,
+        "today",
+        {"daily_brief": [{"stable_key": "brief", "headline": "Recomputed"}]},
+    )
+
+    assert repeated_id != first_id
+    assert repository.publication_rows("today", "daily_brief") == [
+        {"stable_key": "brief", "headline": "Recomputed"}
+    ]
+
+
 def test_same_input_reactivates_prior_generation_after_intervening_publication(
     analysis_context, postgres_dsn: str,
 ) -> None:

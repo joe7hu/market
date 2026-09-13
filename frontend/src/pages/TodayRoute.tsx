@@ -10,8 +10,6 @@ export function TodayRoute() {
   const [actionQueueLoading, setActionQueueLoading] = useState(true);
   const [actionQueueError, setActionQueueError] = useState<string | null>(null);
   usePanelScope("today");
-  usePanelScope("market");
-  usePanelScope("health");
 
   const loadActionQueue = useCallback(async () => {
     setActionQueueLoading(true);
