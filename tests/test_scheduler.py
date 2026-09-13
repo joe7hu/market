@@ -51,6 +51,17 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
     assert intervals["update_market_valuations"] == 86400
 
 
+def test_decision_publication_refreshes_after_source_updates(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_DECISION_MODEL_REFRESH_SECONDS", raising=False)
+    intervals = scheduler.job_intervals()
+    assert intervals["refresh_decision_models"] == 3600
+
+
+def test_decision_publication_refresh_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("MARKET_DECISION_MODEL_REFRESH_SECONDS", "0")
+    assert "refresh_decision_models" not in scheduler.job_intervals()
+
+
 def test_event_and_disclosure_refreshes_default_to_daily(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_EVENT_CALENDAR_REFRESH_SECONDS", raising=False)
     monkeypatch.delenv("MARKET_DISCLOSURE_REFRESH_SECONDS", raising=False)
@@ -194,6 +205,7 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["learning_refresh_seconds"] == "21600"
     assert status["market_environment_refresh_seconds"] == "0"
     assert status["preopen_brief_refresh_seconds"] == "0"
+    assert status["decision_model_refresh_seconds"] == "3600"
     assert status["external_jobs"]["premarket_options_intelligence"]["owner"] == "launchd"
     assert status["external_jobs"]["premarket_options_intelligence"]["market_calendar_gated"] is True
     assert status["jobs"]["run_option_agents"] == 123

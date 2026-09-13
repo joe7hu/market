@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from investment_panel.settings import AppConfig, load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
+from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
 from investment_panel.infrastructure.postgres.today_analysis import refresh_today_publication
 from investment_panel.workflows.market import refresh_market_publication
@@ -21,27 +22,47 @@ from investment_panel.jobs import (
 from investment_panel.workflows import ticker_decisions
 
 
-def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
+def publish_decisions(
+    config_path: str | None = None,
+    *,
+    include_options_radar: bool = True,
+    include_market_publication: bool = True,
+    include_ticker_outcomes: bool = True,
+    include_option_outcomes: bool = True,
+) -> dict[str, Any]:
     """Rebuild deterministic publications from the latest normalized facts."""
 
     config = load_config(config_path)
     runtime = runtime_for_config(config)
     cutoff = datetime.now(UTC)
-    options = refresh_options_radar.run_deterministic_only(config_path)
-    market = refresh_market_publication(
-        runtime,
-        now=cutoff,
-        configured_watchlist=config.watchlist,
-        configured_watchlist_as_of=cutoff,
+    options = (
+        refresh_options_radar.run_deterministic_only(config_path)
+        if include_options_radar
+        else {"status": "skipped", "reason": "dedicated_options_radar_cadence"}
     )
-    decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
+    if include_market_publication:
+        market = refresh_market_publication(
+            runtime,
+            now=cutoff,
+            configured_watchlist=config.watchlist,
+            configured_watchlist_as_of=cutoff,
+        )
+        decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
+    else:
+        market = _visible_market_publication(runtime, cutoff)
+        decision_cutoff = _publication_input_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
         config_path,
         symbols=_priority_ticker_symbols(config, runtime),
         as_of=decision_cutoff,
         market_state_publication_id=_market_state_publication_id(market),
+        refresh_outcomes=include_ticker_outcomes,
     )
-    outcomes = _refresh_option_outcomes(runtime, config)
+    outcomes = (
+        _refresh_option_outcomes(runtime, config)
+        if include_option_outcomes
+        else {"status": "skipped", "reason": "dedicated_outcome_cadence"}
+    )
     today = refresh_today_publication(runtime, now=decision_cutoff)
     allocation = _refresh_portfolio_allocation(runtime, decision_cutoff)
     status = "ok" if all(
@@ -328,6 +349,31 @@ def _market_state_publication_id(result: dict[str, Any]) -> str | None:
     if str(result.get("status") or "").lower() != "ok":
         return None
     return str(result.get("publication_id") or "") or None
+
+
+def _visible_market_publication(runtime: Any, cutoff: datetime) -> dict[str, Any]:
+    """Reuse the latest valid Market snapshot when its producer owns refresh."""
+
+    publication = AnalysisRepository(runtime).publication_at_or_before("market", cutoff=cutoff)
+    if publication is None:
+        return {"status": "unavailable", "publication_id": None}
+    return {
+        "status": "ok",
+        "publication_id": publication["publication_id"],
+        "published_at": publication.get("published_at"),
+        "input_cutoff": publication.get("input_cutoff"),
+    }
+
+
+def _publication_input_cutoff(result: dict[str, Any], *, fallback: datetime) -> datetime:
+    value = result.get("input_cutoff")
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not isinstance(value, datetime):
+        return _market_publication_cutoff(result, fallback=fallback)
+    if value.tzinfo is None:
+        raise ValueError("market publication input cutoff must be timezone-aware")
+    return value.astimezone(UTC)
 
 
 def _market_publication_cutoff(result: dict[str, Any], *, fallback: datetime) -> datetime:

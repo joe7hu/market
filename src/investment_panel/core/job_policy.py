@@ -42,7 +42,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
     for definition in (
         _job("full_market_refresh"),
         _job("daily_screen"),
-        _job("refresh_decision_models"),
+        _job("refresh_decision_models", timeout_seconds=1200, freshness_seconds=3600),
         _job("update_preopen_daily_brief_scheduled"),
         _job("hourly_options_radar"),
         _job("premarket_options_intelligence"),
@@ -252,6 +252,12 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
     if stock_outcome_seconds > 0:
         intervals["refresh_symbol_decision_outcomes"] = stock_outcome_seconds
 
+    # Source refreshes and deterministic publications are separate jobs. Keep
+    # the user-facing decision snapshot from lagging behind normalized facts.
+    decision_seconds = _env_int("MARKET_DECISION_MODEL_REFRESH_SECONDS", 3600, allow_zero=True)
+    if decision_seconds > 0:
+        intervals["refresh_decision_models"] = decision_seconds
+
     for job, env_name, default in (
         ("update_social_sources", "MARKET_SOCIAL_REFRESH_SECONDS", 1800),
         ("update_research_sources", "MARKET_RESEARCH_REFRESH_SECONDS", 3600),
@@ -299,6 +305,7 @@ def scheduler_status(config: AppConfig | None = None) -> dict[str, Any]:
         "decision_inbox_refresh_seconds": str(intervals.get("sync_decision_inbox", 0)),
         "options_paper_execution_seconds": str(intervals.get("process_options_paper_orders", 0)),
         "symbol_outcome_refresh_seconds": str(intervals.get("refresh_symbol_decision_outcomes", 0)),
+        "decision_model_refresh_seconds": str(intervals.get("refresh_decision_models", 0)),
         "radar_option_source": option_source,
         "external_jobs": {
             "premarket_options_intelligence": {

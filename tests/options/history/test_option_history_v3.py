@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -15,7 +16,7 @@ from investment_panel.core.option_underwriting import (
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.actions import v3_paper_readiness
 from investment_panel.infrastructure.postgres.options_history import OptionHistoryRepository
-from investment_panel.infrastructure.postgres.options_history_v3 import is_later_capture_cohort
+from investment_panel.infrastructure.postgres.options_history_v3 import OptionHistoryV3Materializer, is_later_capture_cohort
 from investment_panel.infrastructure.postgres.options_history_v3_materialization import (
     group_verified_contract_rows,
     surface_summary,
@@ -568,6 +569,30 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         ]
     finally:
         runtime.close()
+
+
+def test_non_qqq_replay_does_not_publish_to_qqq_decision_system(monkeypatch: pytest.MonkeyPatch) -> None:
+    materializer = object.__new__(OptionHistoryV3Materializer)
+    materializer.runtime = object()
+    materializer.analysis = SimpleNamespace(start_run=lambda *args, **kwargs: uuid4())
+    materializer._generation_rows = lambda _snapshot_id, _generation_id: ({
+        "capture_state": "complete", "symbol": "CRCL", "available_at": datetime.now(UTC),
+    }, [])
+    materializer._canonical_succeeded_run = lambda *args: None
+    materializer._persist_run = lambda **kwargs: {"relative_values": 0}
+    monkeypatch.setattr(
+        "investment_panel.infrastructure.postgres.options_history_v3.surface_shift_run_summary",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        materializer,
+        "_publish_decision_system",
+        lambda *args, **kwargs: pytest.fail("non-QQQ replay must not publish QQQ decision-system rows"),
+    )
+
+    result = materializer.materialize(snapshot_id=1, capture_generation_id=2)
+
+    assert result["publication_id"] is None
 
 
 def test_health_counts_observed_dates_and_qualified_sessions_not_snapshots(

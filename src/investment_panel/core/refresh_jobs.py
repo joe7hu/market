@@ -198,7 +198,13 @@ def run_source_with_material_thesis(
 ALLOWLIST: dict[str, JobRunner] = {
     "full_market_refresh": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
     "daily_screen": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
-    "refresh_decision_models": lambda config_path: postgres_refresh.publish_decisions(config_path),
+    "refresh_decision_models": lambda config_path: postgres_refresh.publish_decisions(
+        config_path,
+        include_options_radar=False,
+        include_market_publication=False,
+        include_ticker_outcomes=False,
+        include_option_outcomes=False,
+    ),
     "update_preopen_daily_brief_scheduled": lambda config_path: postgres_refresh.scheduled_preopen(config_path),
     "hourly_options_radar": lambda config_path: refresh_options_radar.run_signal_only(config_path),
     "premarket_options_intelligence": lambda config_path: postgres_refresh.premarket(config_path),

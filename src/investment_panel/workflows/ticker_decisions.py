@@ -51,6 +51,10 @@ PUBLISH_INPUT_TABLES = tuple(
     if name not in {
         "ticker_decisions", "ticker_outcomes",
         "instrument_state_snapshot", "alpha_signal", "opportunity_rank", "trade_plan",
+        # The panel liquidity model is option-chain telemetry. It is not stock
+        # ADV evidence and scanning it here makes every ticker publication read
+        # the full option quote history without changing the decision inputs.
+        "liquidity",
     }
 )
 RANKING_SCOPE = "ticker-opportunity-ranking"
@@ -64,6 +68,7 @@ def publish(
     as_of: datetime | None = None,
     limit: int = 2_000,
     market_state_publication_id: str | None | object = _MARKET_PUBLICATION_ID_UNSET,
+    refresh_outcomes: bool = True,
 ) -> dict[str, Any]:
     """Build and persist one point-in-time decision per equity or ETF ticker.
 
@@ -233,7 +238,11 @@ def publish(
             decisions_for_paper.append(decision)
     # Keep publication bounded to selected history. The scheduled outcome-
     # refresh job owns all-ticker historical maturity.
-    outcome_result = repository.refresh_outcomes(now=reference, symbols=selected)
+    outcome_result = (
+        repository.refresh_outcomes(now=reference, symbols=selected)
+        if refresh_outcomes
+        else {"status": "skipped", "reason": "dedicated_outcome_cadence", "evaluated": 0, "updated": 0, "resolved": 0}
+    )
     paper_staging = _stage_eligible(runtime, config, decisions_for_paper)
     paper_execution = TickerPaperExecutionRepository(runtime, config).process(now=reference)
     status = "ok" if not failures else "partial" if published or skipped else "failed"

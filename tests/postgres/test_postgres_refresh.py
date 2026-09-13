@@ -78,7 +78,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     monkeypatch.setattr(update_ibkr_options, "run", lambda _path: {"status": "gateway_offline"})
     monkeypatch.setattr(update_broker_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh.refresh_options_radar, "run", lambda _path: {"status": "ok"})
-    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None):
+    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None, **_kwargs):
         assert symbols == ["HELD"]
         assert market_state_publication_id == market_publication["publication_id"]
         events.append(("ticker", as_of))
@@ -218,7 +218,7 @@ def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkey
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
-    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None):
+    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None, **_kwargs):
         assert symbols == ["HELD"]
         assert market_state_publication_id == market_publication["publication_id"]
         events.append(("ticker", as_of))
@@ -243,6 +243,55 @@ def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkey
     assert [name for name, _ in events] == ["market", "ticker", "today"]
     assert events[0][1] < events[1][1]
     assert events[1][1] is events[2][1]
+
+
+def test_lightweight_decision_publication_skips_expensive_options_rebuild(monkeypatch) -> None:
+    config = typed_config()
+    calls: list[str] = []
+    market_cutoff = datetime.now(UTC) - timedelta(seconds=1)
+    market_publication = {
+        "status": "ok",
+        "publication_id": "market-publication-test",
+        "input_cutoff": market_cutoff,
+    }
+    monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
+    monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(postgres_refresh, "_priority_ticker_symbols", lambda *_args: [])
+    monkeypatch.setattr(postgres_refresh, "_visible_market_publication", lambda *_args: market_publication)
+    monkeypatch.setattr(
+        postgres_refresh.refresh_options_radar,
+        "run_deterministic_only",
+        lambda _path: calls.append("options") or {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        postgres_refresh,
+        "refresh_market_publication",
+        lambda *_args, **_kwargs: calls.append("market") or {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        postgres_refresh.ticker_decisions,
+        "publish",
+        lambda _path, **kwargs: calls.append(
+            f"ticker:{kwargs['as_of']}:{kwargs['refresh_outcomes']}"
+        ) or {"status": "ok"},
+    )
+    monkeypatch.setattr(postgres_refresh, "refresh_today_publication", lambda *_args, **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(postgres_refresh.OutcomeRepository, "refresh", lambda _self, **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(postgres_refresh, "_refresh_portfolio_allocation", lambda *_args, **_kwargs: {"status": "ok"})
+
+    result = postgres_refresh.publish_decisions(
+        "config.yaml",
+        include_options_radar=False,
+        include_market_publication=False,
+        include_ticker_outcomes=False,
+        include_option_outcomes=False,
+    )
+
+    assert result["status"] == "ok"
+    assert result["options_radar"] == {"status": "skipped", "reason": "dedicated_options_radar_cadence"}
+    assert result["outcomes"] == {"status": "skipped", "reason": "dedicated_outcome_cadence"}
+    assert result["market"] == market_publication
+    assert calls == [f"ticker:{market_cutoff}:False"]
 
 
 def test_premarket_threads_market_publication_id_after_market_publication(monkeypatch) -> None:
@@ -270,7 +319,7 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
-    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None):
+    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None, **_kwargs):
         assert symbols == ["HELD"]
         assert market_state_publication_id == market_publication["publication_id"]
         events.append(("ticker", as_of))

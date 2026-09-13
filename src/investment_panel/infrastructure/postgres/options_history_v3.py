@@ -205,8 +205,13 @@ class OptionHistoryV3Materializer:
                 model_revision=model_revision,
                 mode=mode,
             )
-            publication_id = self._publish_decision_system(run_id, result)
-            result["publication_id"] = str(publication_id)
+            # The decision system is QQQ-only.  Other history symbols still get
+            # immutable analysis rows, but must never replace the global QQQ
+            # publication with an empty or unrelated answer.
+            publication_id = None
+            if str(metadata["symbol"]).upper() == "QQQ":
+                publication_id = self._publish_decision_system(run_id, result)
+            result["publication_id"] = str(publication_id) if publication_id else None
             result.update(surface_shift_run_summary(
                 self.runtime, str(metadata["symbol"]),
                 snapshot_id=snapshot_id, capture_generation_id=capture_generation_id, analysis_run_id=run_id, model_revision=model_revision, mode=mode, as_of=metadata["available_at"],
