@@ -9,6 +9,14 @@ type Release = {
 };
 
 const frontendBuild = typeof __MARKET_FRONTEND_BUILD__ === "string" ? __MARKET_FRONTEND_BUILD__ : "unknown";
+const gitShaPattern = /^[0-9a-f]{4,40}$/i;
+
+export function buildIdsMatch(uiBuild: string, apiBuild: string): boolean {
+  return uiBuild === apiBuild || (
+    gitShaPattern.test(uiBuild) && gitShaPattern.test(apiBuild) &&
+    (uiBuild.startsWith(apiBuild) || apiBuild.startsWith(uiBuild))
+  );
+}
 
 function useBuildStatus() {
   const [status, setStatus] = useState<StatusPayload | null>(null);
@@ -30,7 +38,7 @@ function releaseFrom(status: StatusPayload | null): Release {
 export function BuildMismatchBanner() {
   const release = releaseFrom(useBuildStatus());
   const backend = release.backend_commit;
-  if (!import.meta.env.DEV || !backend || backend === "unknown" || frontendBuild === "unknown" || backend === frontendBuild) return null;
+  if (!import.meta.env.DEV || !backend || backend === "unknown" || frontendBuild === "unknown" || buildIdsMatch(frontendBuild, backend)) return null;
   return <div role="status" className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-900 dark:text-amber-100">Development build mismatch: this UI is {frontendBuild}, but the API is {backend}. Restart the matching frontend/API checkout before trusting visual results.</div>;
 }
 
