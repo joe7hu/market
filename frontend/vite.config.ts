@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, URL } from "node:url";
 
-const apiProxyTarget = process.env.MARKET_API_PROXY_TARGET ?? "http://127.0.0.1:8000";
+const apiProxyTarget = process.env.MARKET_API_PROXY_TARGET ?? "http://127.0.0.1:8010";
 const frontendBuild = process.env.MARKET_FRONTEND_BUILD?.trim() || (() => {
   try {
     return execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();

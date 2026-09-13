@@ -19,7 +19,7 @@ npm install --prefix frontend
 uv run market-db-migrate
 uv run market-full-refresh --config config.yaml
 npm --prefix frontend run build
-uv run uvicorn investment_panel.api.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn investment_panel.api.main:app --host 0.0.0.0 --port 8010
 npm --prefix frontend run dev
 ```
 

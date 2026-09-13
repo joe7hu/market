@@ -11,7 +11,7 @@
     "generate:api": "cd .. && uv run python scripts/generate_openapi.py && openapi-typescript frontend/src/generated/openapi.json -o frontend/src/generated/apiSchema.ts",
     "check:api": "cd .. && uv run python scripts/generate_openapi.py --check && openapi-typescript frontend/src/generated/openapi.json -o frontend/src/generated/apiSchema.ts --check",
     "preview": "vite preview --host 127.0.0.1",
-    "api": "cd .. && uv run uvicorn investment_panel.api.main:app --reload --reload-dir src/investment_panel/api --reload-dir src --host 0.0.0.0 --port 8000"
+    "api": "cd .. && uv run uvicorn investment_panel.api.main:app --reload --reload-dir src/investment_panel/api --reload-dir src --host 0.0.0.0 --port 8010"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

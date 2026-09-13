@@ -264,5 +264,5 @@ is API-only unless `MARKET_FRONTEND_DIST` points to a built distribution and
 
 For live checks, bind API and Vite to `0.0.0.0`, probe `/api/status` and the
 changed routes, and compare the served frontend asset between `:5173` and
-canonical `:8000`. Paper execution, strategy promotion, and Telegram remain
+canonical `:8010`. Paper execution, strategy promotion, and Telegram remain
 fail-closed unless their independent deterministic gates pass.

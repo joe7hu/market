@@ -33,7 +33,7 @@ timelines, and cross-project lessons should be written back to the brain.
 When Joe asks to start or run the Market app, bind both the API and frontend to
 all interfaces so the app can be browsed from another local device:
 
-- API: `uv run uvicorn investment_panel.api.main:app --reload --host 0.0.0.0 --port 8000`
+- API: `uv run uvicorn investment_panel.api.main:app --reload --host 0.0.0.0 --port 8010`
 - Frontend: `npm --prefix frontend run dev`
 
 ## Navigation and checks
