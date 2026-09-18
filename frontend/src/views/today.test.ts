@@ -134,6 +134,15 @@ describe("Today Action Queue", () => {
     expect(markup).not.toContain("2026-09-19");
   });
 
+  it("shows the record date instead of implying an old decision is current", () => {
+    const markup = renderToStaticMarkup(createElement(ActionQueueCard, {
+      item: { ...response.actions![0], current_at: "2026-09-05T17:09:47Z", trade_plan: plan() },
+      onOpenTicker: () => undefined,
+    }));
+    expect(markup).toContain('dateTime="2026-09-05T17:09:47.000Z"');
+    expect(markup).toContain("Record dated");
+  });
+
   it("keeps the three-column queue summary compact", () => {
     const markup = renderToStaticMarkup(createElement(ActionQueueCard, {
       item: { ...response.actions![0], action: "BUY", lifecycle_state: "actionable", trade_plan: plan() },
@@ -473,4 +482,5 @@ it("does not call an empty catalyst list a clear calendar without complete cover
   ] } }));
   expect(complete).toContain("No catalysts found");
   expect(complete).toContain("complete coverage");
+  expect(complete).not.toContain("Brief coverage is incomplete");
 });

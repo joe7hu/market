@@ -79,7 +79,8 @@ export function TickerDecisionPanel({
       <DataTableFrame title={noNewTrade ? "No new trade" : titleLabel(action.action)}>
         <div className="space-y-4 p-5">
           <div>
-            <p className="text-sm text-muted-foreground">{action.owned ? "You hold this stock. A new trade decision does not replace the review of your existing position." : "You do not hold this stock."}</p>
+            <p className="text-xs text-muted-foreground">Assessment as of <time dateTime={decision.as_of}>{new Date(decision.as_of).toLocaleString()}</time>. Newer quotes do not update this assessment.</p>
+            <p className="mt-2 text-sm text-muted-foreground">{action.owned ? "You hold this stock. A new trade decision does not replace the review of your existing position." : "You do not hold this stock."}</p>
             <p className="mt-3 max-w-2xl text-base leading-7">{rationale}</p>
             {resolution?.next_action ? <p className="mt-3 text-sm font-medium">Next: {decisionReason(resolution.next_action)}</p> : null}
             {decision.fundamental.unsupported_assumptions?.length ? <div className="mt-4"><ReasonList title="Assumptions needing evidence" rows={decision.fundamental.unsupported_assumptions} empty="" /></div> : null}
@@ -92,7 +93,7 @@ export function TickerDecisionPanel({
             ) : null}
           </div>
           <div className="space-y-4">
-            <details><summary className="cursor-pointer text-sm font-medium">Time horizon and price conditions</summary><div className="mt-3 grid gap-3 md:grid-cols-2">
+            <details><summary className="cursor-pointer text-sm font-medium">Research direction and price conditions</summary><p className="mt-2 text-xs text-muted-foreground">These are research views. The trade decision above determines whether any expression is eligible.</p><div className="mt-3 grid gap-3 md:grid-cols-2">
               <HorizonCard view={decision.tactical} label="TACTICAL · 1–20 sessions" />
               <HorizonCard view={decision.fundamental} label="FUNDAMENTAL · 3–18 months" />
             </div></details>

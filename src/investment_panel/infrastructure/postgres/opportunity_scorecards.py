@@ -20,9 +20,11 @@ from investment_panel.infrastructure.postgres.opportunity_episodes import (
     SCORECARD_TRUTH_PREFIX,
     has_current_scorecard_truth,
 )
-from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime, RuntimeProfile
 
 
+# Cohort validation reads retained evidence across the full observation window.
+SCORECARD_PROFILE = RuntimeProfile(statement_timeout_ms=10_000)
 LANES = frozenset({"radar", "qqq", "recovery"})
 MIN_RESOLVED_EPISODES = 30
 MIN_TRADING_DAYS = 20
@@ -276,7 +278,7 @@ class OpportunityScorecardRepository:
         from investment_panel.infrastructure.postgres.options_experiments import EXPERIMENT_VERSION
         from investment_panel.infrastructure.postgres.strategy_learning import observation_lineage_matches
 
-        with self.runtime.read(API_PROFILE) as connection:
+        with self.runtime.read(SCORECARD_PROFILE) as connection:
             rows = connection.execute(
                 """
                 WITH active_revision AS MATERIALIZED (
@@ -390,16 +392,21 @@ class OpportunityScorecardRepository:
                          )) AS outcome_sample_eligible,
                        option_decision.probability_profit,
                        paper.status AS paper_status, paper.filled_at, paper.exit_at,
-                       EXISTS (
+                       CASE WHEN decision.retained_shadow_id IS NOT NULL THEN false ELSE EXISTS (
                            SELECT 1 FROM app.publication publication
-                           JOIN app.publication_content_item published ON published.publication_id = publication.id
+                           JOIN LATERAL (
+                               SELECT published.payload FROM app.publication_content_item published
+                               WHERE published.publication_id = publication.id
+                                 AND published.model_name = 'option_radar_opportunity'
+                                 AND published.payload->>'decision_id' = decision.id::text
+                               OFFSET 0
+                           ) published ON true
                            WHERE publication.analysis_run_id = decision.run_id
                              AND publication.scope = 'options-radar'
                              AND publication.status IN ('published', 'superseded')
                              AND publication.published_at <= %(reference)s
-                             AND published.model_name = 'option_radar_opportunity'
-                             AND published.payload->>'decision_id' = decision.id::text
-                       ) AS published
+                           OFFSET 0
+                       ) END AS published
                 FROM canonical_decisions decision
                 JOIN analysis.run run ON run.id = decision.run_id
                 LEFT JOIN analysis.shadow_trade shadow ON shadow.id = decision.retained_shadow_id
@@ -409,9 +416,13 @@ class OpportunityScorecardRepository:
                    AND observation.analysis_run_id = decision.run_id
                    AND observation.status IN ('published', 'superseded')
                    AND observation.published_at <= %(reference)s
-                LEFT JOIN app.publication_content_item item ON item.publication_id = observation.id
-                     AND item.model_name = 'option_paper_experiment'
-                     AND item.payload->>'decision_id' = decision.id::text
+                LEFT JOIN LATERAL (
+                    SELECT item.payload FROM app.publication_content_item item
+                    WHERE item.publication_id = observation.id
+                      AND item.model_name = 'option_paper_experiment'
+                      AND item.payload->>'decision_id' = decision.id::text
+                    OFFSET 0
+                ) item ON true
                 LEFT JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
                 LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
                 LEFT JOIN LATERAL (

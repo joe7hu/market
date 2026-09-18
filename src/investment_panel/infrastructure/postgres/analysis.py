@@ -205,7 +205,13 @@ def current_option_publication_result(
                    instrument.symbol AS authoritative_symbol
             FROM identified_rows identified
             LEFT JOIN analysis.decision decision
-              ON decision.id::text = COALESCE(
+              ON decision.id = CASE
+                   WHEN pg_input_is_valid(COALESCE(
+                       identified.decision_identity, identified.opportunity_identity
+                   ), 'uuid') THEN COALESCE(
+                       identified.decision_identity, identified.opportunity_identity
+                   )::uuid END
+             AND decision.id::text = COALESCE(
                    identified.decision_identity, identified.opportunity_identity
                  )
             LEFT JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id

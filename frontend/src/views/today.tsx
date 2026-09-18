@@ -45,7 +45,7 @@ type TodayCategory = {
 };
 
 const todayCategories: TodayCategory[] = [
-  { key: "decide_now", title: "Decide now", subtitle: "Candidates, risks, and thesis reviews that want an action today", tone: "warn", dot: "bg-amber-500" },
+  { key: "decide_now", title: "Research to review", subtitle: "Stored thesis reviews and candidates; each still needs evidence before a trade", tone: "warn", dot: "bg-amber-500" },
   { key: "whats_changed", title: "What changed", subtitle: "Fresh source-backed signals on names you own or watch", tone: "info", dot: "bg-blue-600" },
   { key: "catalysts", title: "This week", subtitle: "Scheduled catalysts in the next two weeks", tone: "good", dot: "bg-violet-600" },
   { key: "portfolio_pulse", title: "Portfolio pulse", subtitle: "Biggest movers and concentration in your book", tone: "info", dot: "bg-emerald-600" },
@@ -82,9 +82,10 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       <ScopeStatusNotice status={scopeStatus} onRetry={onRefresh} />
 
       {hasBrief ? <div className="grid gap-8">
-        <section aria-labelledby="today-do-now"><h2 id="today-do-now" className="mb-3 text-xl font-semibold">Do now</h2><ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} /><BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns /></section>
+        {Object.values(categoryStates).some((category) => category.coverage_status !== "complete" && category.coverage_message) ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Brief coverage is incomplete; missing items do not confirm that nothing changed.</summary><ul className="mt-2 space-y-1">{Object.values(categoryStates).filter((category) => category.coverage_status !== "complete" && category.coverage_message).map((category) => <li key={category.category}>{SECTION_BY_KEY[category.category]?.title ?? category.category}: {category.coverage_message}</li>)}</ul></details> : null}
+        <section aria-labelledby="today-do-now"><h2 id="today-do-now" className="mb-3 text-xl font-semibold">Decisions and holding risks</h2><ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} /><BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns /></section>
         <section aria-labelledby="today-changed"><h2 id="today-changed" className="mb-3 text-xl font-semibold">What changed</h2><PreopenBrief brief={actionQueue?.preopen_brief} /><div className="grid gap-6"><BriefSection section={SECTION_BY_KEY.whats_changed} rows={whatsChanged} category={categoryStates.whats_changed} onOpenTicker={onOpenTicker} columns /><CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalysts", subtitle: "Near-term events that can change a decision." }} rows={catalysts} category={categoryStates.catalysts} onOpenTicker={onOpenTicker} /></div></section>
-        <section aria-labelledby="today-system"><div className="mb-3 flex items-end justify-between gap-3"><div><h2 id="today-system" className="text-xl font-semibold">System</h2><p className="text-sm text-muted-foreground">Only the conditions that change today’s trust or action.</p></div><a className="text-sm font-medium text-primary hover:underline" href="/health">Open system health →</a></div><PortfolioPerformanceSummary summary={data.portfolioSummaryDto} /><div className="grid gap-6"><BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk", subtitle: "Concentration, loss, and thesis exceptions." }} rows={riskExceptions.slice(0, 3)} onOpenTicker={onOpenTicker} columns /><BriefSection section={SECTION_BY_KEY.portfolio_pulse} rows={portfolioPulse} category={categoryStates.portfolio_pulse} onOpenTicker={onOpenTicker} columns /></div><details className="mt-4 rounded-md border border-border p-4"><summary className="cursor-pointer text-sm font-semibold">Event research</summary><EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} /></details></section>
+        <section aria-labelledby="today-system"><div className="mb-3 flex items-end justify-between gap-3"><div><h2 id="today-system" className="text-xl font-semibold">Your portfolio</h2><p className="text-sm text-muted-foreground">Position performance, concentration and holding risks.</p></div><a className="text-sm font-medium text-primary hover:underline" href="/health">Open system health →</a></div><PortfolioPerformanceSummary summary={data.portfolioSummaryDto} /><div className="grid gap-6"><BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk", subtitle: "Concentration, loss, and thesis exceptions." }} rows={riskExceptions.slice(0, 3)} onOpenTicker={onOpenTicker} columns /><BriefSection section={SECTION_BY_KEY.portfolio_pulse} rows={portfolioPulse} category={categoryStates.portfolio_pulse} onOpenTicker={onOpenTicker} columns /></div><details className="mt-4 rounded-md border border-border p-4"><summary className="cursor-pointer text-sm font-semibold">Event research</summary><EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} /></details></section>
       </div> : <EmptyState title="No daily brief loaded" detail="Refresh Today to load decisions, source changes, catalysts, and portfolio risks." />}
     </section>
   );
@@ -119,7 +120,7 @@ function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { re
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
           <h2 id="action-queue-title" className="text-lg font-semibold">Action Queue</h2>
-          <p className="text-xs text-muted-foreground">Current holding risks and decisions. Open a ticker to review its evidence.</p>
+          <p className="text-xs text-muted-foreground">Holding risks and stored assessments. Check each record date and open the ticker to review its evidence.</p>
         </div>
         {response && !unavailable ? <StatusBadge tone="info">{items.length} shown{missingPlanCount ? ` · ${missingPlanCount} missing plans` : ""}</StatusBadge> : null}
       </div>
@@ -157,6 +158,7 @@ export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: Today
   const statusLabel = item.transition ?? item.action ?? item.lifecycle_state;
   const expiry = item.expires_at ? new Date(item.expires_at).toLocaleDateString() : null;
   const ticker = item.ticker;
+  const recordDate = item.current_at ? new Date(item.current_at) : null;
   return (
     <Card role="listitem" className={cn("min-w-0", toneBorder(tone))}>
       <CardContent className="space-y-3 p-4">
@@ -165,6 +167,7 @@ export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: Today
           {plan === undefined ? <StatusBadge tone={tone}>{decisionReason(statusLabel)}</StatusBadge> : null}
         </div>
         {ticker ? <p className="text-sm font-medium">{item.title.replace(/capital action$/i, "trade assessment")}</p> : null}
+        {recordDate && Number.isFinite(recordDate.getTime()) ? <p className="text-xs text-muted-foreground">Record dated <time dateTime={recordDate.toISOString()}>{recordDate.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</time></p> : null}
         {plan !== undefined ? <CompactPlanSummary plan={plan} fieldStates={item.field_states ?? []} /> : (
           <>
             {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{decisionReason(item.rationale)}</p> : null}
@@ -226,7 +229,7 @@ function PreopenBrief({ brief }: { brief: TodayPreopenBrief | null | undefined }
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-xs font-semibold uppercase text-muted-foreground">Pre-open macro brief</p>
-          <h2 className="mt-1 text-lg font-semibold leading-6">{brief.headline}</h2>
+          <h2 className="mt-1 text-lg font-semibold leading-6">{brief.headline}</h2><p className="mt-1 text-xs text-muted-foreground">Brief for {brief.stable_key}</p>
         </div>
         <StatusBadge tone={bias === "bullish" ? "good" : bias === "bearish" ? "bad" : "info"}>{bias}</StatusBadge>
       </div>
@@ -289,7 +292,6 @@ function BriefSection({ section, rows, category, onOpenTicker, columns }: { sect
   return (
     <div className="min-w-0">
       <SectionHeader section={section} count={rows.length} category={category} />
-      {category?.coverage_message ? <p className="mb-3 text-xs text-muted-foreground">{category.coverage_message}</p> : null}
       {rows.length ? (
         <div className={cn("grid gap-3", columns && "xl:grid-cols-2")}>
           {rows.map((item) => (
@@ -307,7 +309,6 @@ function CatalystSection({ section, rows, category, onOpenTicker }: { section: T
   return (
     <div className="min-w-0">
       <SectionHeader section={section} count={rows.length} category={category} />
-      {category?.coverage_message ? <p className="mb-3 text-xs text-muted-foreground">{category.coverage_message}</p> : null}
       {rows.length ? (
         <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
           {rows.map((item) => (
@@ -413,7 +414,7 @@ function pctStat(label: string, value: unknown): string | null {
 function ContextChip({ context, sentiment, tone }: { context: string; sentiment: Sentiment; tone: Tone }) {
   if (!context) return sentiment !== "neutral" ? <SentimentMark sentiment={sentiment} /> : null;
   const owned = context.toLowerCase().startsWith("owned");
-  return <StatusBadge tone={owned ? tone : "muted"}>{semanticStatusLabel(context)}</StatusBadge>;
+  return <StatusBadge tone={owned ? tone : "muted"}>{context === "decide_now" ? "Research review" : semanticStatusLabel(context)}</StatusBadge>;
 }
 
 type Sentiment = "bullish" | "bearish" | "neutral";

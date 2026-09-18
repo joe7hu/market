@@ -55,6 +55,7 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
 }) {
   const [view, setView] = useState<SavedView>(() => typeof window !== "undefined" && window.localStorage.getItem(OPPORTUNITIES_SAVED_VIEW_KEY) === "screener" ? "screener" : "episodes");
   const [query, setQuery] = useState("");
+  const [includeEmpty, setIncludeEmpty] = useState(false);
   const [sort, setSort] = useState("source");
   const [requestError, setRequestError] = useState<string | null>(null);
   const rankedRows = useMemo(() => dedupeOpportunityEpisodes(opportunityDecisionRows(data.opportunitiesRanked)), [data.opportunitiesRanked]);
@@ -62,7 +63,8 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
   const loadedCount = rows(table).length;
   const total = table?.count ?? loadedCount;
   const needle = query.trim().toLowerCase();
-  const visibleRanks = rankedRows.filter((row) => `${row.ticker} ${row.company_name ?? ""} ${row.rationale ?? ""}`.toLowerCase().includes(needle));
+  const researchRows = rankedRows.filter((row) => row.rationale?.trim() || row.countercase?.trim() || (row.selected_expression_kind && row.selected_expression_kind.toUpperCase() !== "CASH"));
+  const visibleRanks = (includeEmpty || needle ? rankedRows : researchRows).filter((row) => `${row.ticker} ${row.company_name ?? ""} ${row.rationale ?? ""}`.toLowerCase().includes(needle));
   const visibleScreen = rows(data.screener).filter((row) => `${row.symbol} ${row.name}`.toLowerCase().includes(needle)).slice().sort((a, b) => {
     if (sort === "source") return 0;
     if (sort === "symbol") return textField(a, ["symbol"]).localeCompare(textField(b, ["symbol"]));
@@ -92,6 +94,7 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
       {view === "screener" ? <label className="text-sm">Sort loaded rows <select className="ml-2 rounded border border-input bg-background p-2" value={sort} onChange={(event) => setSort(event.target.value)}><option value="source">Portfolio and research order</option><option value="symbol">Ticker A–Z</option>{METRICS.map(([key, label]) => <option key={key} value={key}>{label}: high to low</option>)}</select></label> : null}
       <span className="text-xs text-muted-foreground">{loadedCount} of {total} loaded</span>
     </div>
+    {view === "episodes" && loadedCount > 0 ? <div className="mb-4 space-y-2 text-sm text-muted-foreground"><p>{researchRows.length} loaded assessments contain research or a trade expression. Research hypotheses are not trade approvals.</p><label className="flex items-center gap-2"><input type="checkbox" checked={includeEmpty} onChange={(event) => setIncludeEmpty(event.target.checked)} />Show tickers without research ({rankedRows.length - researchRows.length} loaded)</label></div> : null}
     {loading && !loadedCount ? <p role="status">Loading ideas…</p> : view === "episodes" ? <DataTableFrame title="Research ideas">
       <div className="divide-y divide-border">{visibleRanks.map((row) => <article key={row.opportunity_episode_id} className="space-y-2 p-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2"><Button variant="link" className="h-auto p-0 text-base font-semibold" onClick={() => onOpenTicker(row.ticker)}>{row.ticker}{row.company_name ? ` · ${row.company_name}` : ""}</Button><span className="text-xs text-muted-foreground">Research hypothesis{row.research_as_of ? ` · ${new Date(row.research_as_of).toLocaleDateString()}` : ""}</span></div>
@@ -101,7 +104,7 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
         <Button variant="outline" size="sm" onClick={() => onOpenTicker(row.ticker)}>Review {row.ticker}</Button>
       </article>)}</div>
     </DataTableFrame> : <DataTableFrame title="Company fundamentals"><div className="overflow-x-auto"><table className="w-full min-w-[850px] text-sm"><thead><tr><th className="p-3 text-left">Company</th>{METRICS.map(([key,label]) => <th key={key} className="p-3 text-right">{label}</th>)}<th className="p-3 text-left">Evidence dates</th></tr></thead><tbody>{visibleScreen.map((row) => <tr key={textField(row,["symbol"])} className="border-t border-border"><td className="p-3"><Button variant="link" className="h-auto p-0 font-semibold" onClick={() => onOpenTicker(textField(row,["symbol"]))}>{textField(row,["symbol"])}</Button><p className="text-xs text-muted-foreground">{textField(row,["name"])}</p></td>{METRICS.map(([key,,factor,unit]) => <td key={key} className="p-3 text-right tabular-nums" title={typeof row[key] === "number" ? undefined : "Not reported in the current source data"}>{screenerMetric(row[key],factor,unit)}</td>)}<td className="p-3 text-xs text-muted-foreground">{[["Price",row.observed_at],["Financials",row.market_metrics_observed_at],["SEC period",row.sec_fundamentals_observed_at]].map(([label,date]) => typeof date === "string" ? <p key={String(label)}>{String(label)}: {new Date(date).toLocaleDateString()}</p> : null)}</td></tr>)}</tbody></table></div><p className="p-3 text-xs text-muted-foreground">A dash means the current source has not reported the metric. ROIC and forward P/E do not apply to every asset. These metrics are research context, not trade approval.</p></DataTableFrame>}
-    {!loading && scopeStatus?.state !== "failed" && !(view === "episodes" ? visibleRanks.length : visibleScreen.length) ? <EmptyState title={needle ? "No loaded tickers match" : "No current research rows"} detail={needle && loadedCount < total ? "Load more rows to search more of the universe." : "Try another filter or refresh the list."} /> : null}
+    {!loading && scopeStatus?.state !== "failed" && !(view === "episodes" ? visibleRanks.length : visibleScreen.length) ? <EmptyState title={needle ? "No loaded tickers match" : "No research assessments in these loaded rows"} detail={needle && loadedCount < total ? "Load more rows to search more of the universe." : "Try another filter or refresh the list."} /> : null}
     {loadedCount < total && onLoadMore ? <Button className="mt-4" variant="outline" disabled={loading} onClick={() => void request(() => onLoadMore(view === "screener"))}>Load more ({total - loadedCount} remaining)</Button> : null}
   </section>;
 }

@@ -75,3 +75,11 @@ it("shows evidence and a direct ticker review without diagnostics; formats actua
   expect(screenerMetric(0, 100, "%")).toBe("0%");
   expect(screenerMetric(null, 100, "%")).toBe("—");
 });
+
+ it("keeps empty ticker placeholders out of the default research brief", () => {
+  const data = { ...emptyPanelData(), opportunitiesRanked: { rows: [{ ...backendPayload[0], selected_expression_kind: "CASH" }], count: 1 } };
+  const html = renderToStaticMarkup(createElement(OpportunitiesPage, { data, loading: false, onOpenTicker: () => undefined, onRefresh: async () => undefined, onLoadScreener: async () => undefined }));
+  expect(html).not.toContain("Review NVDA");
+  expect(html).toContain("Show tickers without research (1 loaded)");
+  expect(html).toContain("No research assessments in these loaded rows");
+});

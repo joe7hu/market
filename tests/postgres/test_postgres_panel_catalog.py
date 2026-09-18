@@ -826,3 +826,41 @@ def test_opportunities_fallback_accepts_production_rank_projection(migrated_post
         assert "utility" not in projected
     finally:
         runtime.close()
+
+
+def test_bounded_fundamentals_preserve_values_order_and_full_count(migrated_postgres_dsn):
+    from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source("fundamental-test", name="Test", family="test", kind="equity_fundamental")
+        run_id = ingestion.start_run("fundamental-test", "fundamentals")
+        now = datetime.now(UTC) - timedelta(days=1)
+        ingestion.store_fundamental_observations(run_id, "fundamental-test", "market_metrics", [
+            {"symbol": symbol, "observed_at": now - timedelta(hours=age),
+             "period_end": (now - timedelta(days=age)).date().isoformat(),
+             "values": {"market_cap": 100 + age}}
+            for symbol in ("FUNDA", "FUNDB") for age in range(3)
+        ])
+        ingestion.finish_run(run_id, "succeeded")
+        config = typed_config(migrated_postgres_dsn)
+        with runtime.read() as connection:
+            expected = [dict(row) for row in connection.execute(
+                panel_models.DIRECT_QUERIES["fundamentals"],
+            ).fetchall()]
+        tables, metadata = load_postgres_tables(
+            config, ("fundamentals",), query_symbol_filter={"FUNDA", "FUNDB"},
+            query_row_limits={"fundamentals": 4},
+        )
+        rows = tables["fundamentals"]
+        assert len(rows) == 4
+        assert metadata["table_counts"]["fundamentals"] == 6
+        assert {row["symbol"] for row in rows} == {"FUNDA", "FUNDB"}
+        assert {row["revision"] for row in rows} == {row["revision"] for row in expected[:4]}
+        assert [row["observed_at"] for row in rows] == [row["observed_at"] for row in expected[:4]]
+        assert all(row["values"] in ({"market_cap": 100}, {"market_cap": 101}) for row in rows)
+        assert all("__fact_id" not in row for row in rows)
+    finally:
+        runtime.close()

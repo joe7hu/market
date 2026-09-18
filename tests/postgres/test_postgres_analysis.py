@@ -1839,3 +1839,14 @@ def test_options_learning_api_pages_in_postgresql(
     assert second["next_cursor"] is None
     assert malformed.status_code == 400
     assert invalid_snapshot.status_code == 400
+
+
+@pytest.mark.parametrize("identity", ["not-a-uuid", "", "00000000-0000-0000-0000-000000000000"])
+def test_current_option_publication_invalid_identity_fails_closed(analysis_context, identity):
+    repository = analysis_context["analysis"]
+    run_id = _start_run(repository, "invalid-publication-identity")
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(run_id, "options-radar", {
+        "option_radar_opportunity": [{"decision_id": identity, "symbol": "NVDA"}],
+    })
+    assert repository.publication_rows("options-radar", "option_radar_opportunity") == []

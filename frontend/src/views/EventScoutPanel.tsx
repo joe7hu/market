@@ -21,9 +21,9 @@ export function EventScoutPanel({ truths, packets = [], onOpenTicker }: Props) {
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Intraday Event Scout</h2>
-          <p className="text-xs text-muted-foreground">One timestamped packet feeds both tactical and fundamental conclusions.</p>
+          <p className="text-xs text-muted-foreground">Stored event research with tactical and fundamental assessments.</p>
         </div>
-        <StatusBadge tone="info">{rows.length} current</StatusBadge>
+        <StatusBadge tone="info">{rows.length} stored</StatusBadge>
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
         {rows.map((truth) => {

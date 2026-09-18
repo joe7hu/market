@@ -264,6 +264,7 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
         ("update_arco_data", "MARKET_ARCO_REFRESH_SECONDS", 14400),
         ("update_market_data", "MARKET_MARKET_DATA_REFRESH_SECONDS", 3600),
         ("update_phase2_sources", "MARKET_PHASE2_REFRESH_SECONDS", 86400),
+        ("update_company_financials", "MARKET_COMPANY_FINANCIALS_REFRESH_SECONDS", 86400),
         ("run_stock_alpha_walk_forward", "MARKET_STOCK_ALPHA_REFRESH_SECONDS", 86400),
         ("update_market_valuations", "MARKET_MUNGERMODE_REFRESH_SECONDS", 86400),
         ("update_event_calendar", "MARKET_EVENT_CALENDAR_REFRESH_SECONDS", 86400),

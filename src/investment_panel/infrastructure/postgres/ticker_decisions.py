@@ -1331,6 +1331,19 @@ class TickerDecisionRepository:
         with self.runtime.read(JOB_PROFILE) as connection:
             decisions = connection.execute(
                 f"""
+                WITH selected_decisions AS MATERIALIZED (
+                    SELECT decision.id, outcome_check.last_checked_at, decision.as_of
+                    FROM analysis.ticker_decision decision
+                    JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                    LEFT JOIN LATERAL (
+                        SELECT max(outcome.updated_at) AS last_checked_at
+                        FROM analysis.ticker_outcome outcome
+                        WHERE outcome.ticker_decision_id = decision.id
+                    ) outcome_check ON true
+                    WHERE {" AND ".join(filters)}
+                    ORDER BY outcome_check.last_checked_at ASC NULLS FIRST, decision.as_of, decision.id
+                    LIMIT %s
+                )
                 SELECT decision.id::text AS decision_id, instrument.id AS instrument_id,
                        instrument.symbol AS ticker, decision.as_of,
                        decision.contract_version, decision.decision_revision,
@@ -1374,16 +1387,10 @@ class TickerDecisionRepository:
                        ) AS market_state_snapshot,
                        '{{}}'::jsonb AS portfolio_impacts,
                        NULL::jsonb AS risk_policy_snapshot
-                FROM analysis.ticker_decision decision
+                FROM selected_decisions selected
+                JOIN analysis.ticker_decision decision ON decision.id = selected.id
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                LEFT JOIN LATERAL (
-                    SELECT max(outcome.updated_at) AS last_checked_at
-                    FROM analysis.ticker_outcome outcome
-                    WHERE outcome.ticker_decision_id = decision.id
-                ) outcome_check ON true
-                WHERE {" AND ".join(filters)}
-                ORDER BY outcome_check.last_checked_at ASC NULLS FIRST, decision.as_of, decision.id
-                LIMIT %s
+                ORDER BY selected.last_checked_at ASC NULLS FIRST, selected.as_of, selected.id
                 """,
                 parameters,
             ).fetchall()

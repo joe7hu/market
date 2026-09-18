@@ -531,22 +531,7 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "ticker_decisions": """
         WITH current_candidates AS (
-            SELECT decision.id::text AS ticker_decision_id,
-                   instrument.symbol AS ticker, instrument.symbol,
-                   decision.decision_revision, decision.contract_version,
-                   decision.as_of, decision.published_at, decision.published_at AS available_at,
-                   decision.input_hash,
-                   decision.code_version, decision.experiment_id,
-                   decision.tactical, decision.fundamental, decision.capital_action,
-                   decision.resolution, decision.policy_version,
-                   decision.opportunity_episode_id, decision.opportunity_cutoff,
-                   decision.opportunity_episode, decision.risk_policy, decision.expressions,
-                   decision.selected_expression, decision.data_requests,
-                   decision.learning_history, decision.input_manifest,
-                   decision.market_state_publication_id::text,
-                   decision.market_state_snapshot, decision.portfolio_impacts,
-                   decision.risk_policy_snapshot,
-                   decision.status, decision.created_at,
+            SELECT decision.id,
                    count(*) OVER (
                        PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
                    ) AS authority_count,
@@ -576,24 +561,29 @@ DIRECT_QUERIES: dict[str, str] = {
               AND jsonb_typeof(decision.expressions) = 'object'
               AND jsonb_typeof(decision.input_manifest) = 'object'
         )
-        SELECT ticker_decision_id, ticker, symbol,
-               decision_revision, contract_version,
-               as_of, published_at, available_at,
-               input_hash, code_version, experiment_id,
-               tactical, fundamental, capital_action,
-               resolution, policy_version,
-               opportunity_episode_id, opportunity_cutoff,
-               opportunity_episode, risk_policy, expressions,
-               selected_expression, data_requests,
-               learning_history, input_manifest,
-               market_state_publication_id,
-               market_state_snapshot, portfolio_impacts,
-               risk_policy_snapshot, status
-        FROM current_candidates
+        SELECT decision.id::text AS ticker_decision_id,
+               instrument.symbol AS ticker, instrument.symbol,
+               decision.decision_revision, decision.contract_version,
+               decision.as_of, decision.published_at, decision.published_at AS available_at,
+               decision.input_hash,
+               decision.code_version, decision.experiment_id,
+               decision.tactical, decision.fundamental, decision.capital_action,
+               decision.resolution, decision.policy_version,
+               decision.opportunity_episode_id, decision.opportunity_cutoff,
+               decision.opportunity_episode, decision.risk_policy, decision.expressions,
+               decision.selected_expression, decision.data_requests,
+               decision.learning_history, decision.input_manifest,
+               decision.market_state_publication_id::text,
+               decision.market_state_snapshot, decision.portfolio_impacts,
+               decision.risk_policy_snapshot,
+               decision.status
+        FROM current_candidates candidate
+        JOIN analysis.ticker_decision decision ON decision.id = candidate.id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE current_row = 1
           AND authority_count = 1
           AND opportunity_authority_count = 1
-        ORDER BY as_of DESC, published_at DESC, created_at DESC, ticker_decision_id DESC
+        ORDER BY decision.as_of DESC, decision.published_at DESC, decision.created_at DESC, decision.id DESC
     """,
     "today_ticker_actions": f"""
         WITH current_candidates AS (
@@ -2030,6 +2020,12 @@ def load_postgres_tables(
                             if symbol_scoped and (alias or name) == "research_packets"
                             else policy.query
                         )
+                        # Rank and count narrow facts; load JSON only after pagination.
+                        hydrate_fundamentals = (alias or name) == "fundamentals" and bool(limit)
+                        if hydrate_fundamentals:
+                            selected_query = selected_query.replace(
+                                "observation.values,", "observation.id AS __fact_id,", 1,
+                            )
                         selected_columns = (
                             "daily_research_rows.*, count(*) OVER () AS __panel_total_count"
                             if limit
@@ -2066,8 +2062,23 @@ def load_postgres_tables(
                             bounded_query += " ORDER BY daily_research_rows.starts_at"
                         if limit:
                             bounded_query += f" LIMIT {limit}"
+                        if hydrate_fundamentals:
+                            bounded_query = f"""
+                                WITH bounded AS MATERIALIZED ({bounded_query})
+                                SELECT bounded.*, observation.values
+                                FROM bounded
+                                JOIN raw.fundamental_observation observation
+                                  ON observation.id = bounded.__fact_id
+                                ORDER BY row_number() OVER (
+                                    PARTITION BY bounded.symbol, bounded.metric_set
+                                    ORDER BY bounded.observed_at DESC, bounded.available_at DESC
+                                ), bounded.observed_at DESC, bounded.available_at DESC
+                            """
                         result = connection.execute(bounded_query, parameters) if parameters else connection.execute(bounded_query)
-                        query_cache[cache_key] = [dict(row) for row in result.fetchall()]
+                        query_cache[cache_key] = [
+                            {key: value for key, value in row.items() if key != "__fact_id"}
+                            for row in result.fetchall()
+                        ]
                 tables[name] = query_cache[cache_key]
                 if cache_key in query_cache_counts:
                     query_counts[name] = query_cache_counts[cache_key]

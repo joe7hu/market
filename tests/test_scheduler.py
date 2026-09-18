@@ -497,3 +497,10 @@ def test_deterministic_radar_job_is_allowlisted() -> None:
     assert "premarket_options_intelligence" in ALLOWLIST
     assert "postgres_retention" in ALLOWLIST
     assert "snapshot_database" in ALLOWLIST
+
+
+def test_company_financials_refresh_daily_and_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_COMPANY_FINANCIALS_REFRESH_SECONDS", raising=False)
+    assert scheduler.job_intervals()["update_company_financials"] == 86400
+    monkeypatch.setenv("MARKET_COMPANY_FINANCIALS_REFRESH_SECONDS", "0")
+    assert "update_company_financials" not in scheduler.job_intervals()
