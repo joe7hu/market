@@ -28,12 +28,10 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     ]
     runtime = runtime_for_config(config)
     repository = OptionsPaperExecutionRepository(runtime)
-    try:
-        experiments = run_experiments(runtime, config)
-    except Exception as error:
-        experiments = {"status": "failed", "error": str(error)}
-    # The switches are entry gates only.  ``process`` always manages existing
-    # Radar and QQQ orders, including when one or both creation lanes are off.
+    # Manage the funded paper book before optional challenger work. Research
+    # can be slow or fail; it must not precede this tick's order processing.
+    # Entry switches remain independent: existing positions are still managed
+    # when every creation lane is disabled.
     result = repository.process(
         enabled_lanes=lanes,
         sleeve_capital=settings.options_risk_sleeve_capital,
@@ -41,6 +39,10 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
         max_open_positions=settings.max_recovery_open_positions,
         decision_inbox_enabled=settings.decision_inbox_enabled,
     )
+    try:
+        experiments = run_experiments(runtime, config)
+    except Exception as error:
+        experiments = {"status": "failed", "error": str(error)}
     return {**result, "status": "partial" if experiments["status"] == "failed" else result["status"],
             "experiments": experiments, "paper_only": True, "live_brokerage_submission": False}
 
