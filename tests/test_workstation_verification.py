@@ -92,3 +92,21 @@ def test_malformed_json_numbers_are_rejected(monkeypatch):
     monkeypatch.setattr(check, "urlopen", lambda *_a, **_kw: Response())
     with pytest.raises(check.ContractError):
         check.read_json("http://localhost", "/api/status", 10)
+
+
+def test_runtime_reports_full_commit_for_exact_deployment_verification(monkeypatch):
+    from types import SimpleNamespace
+    from investment_panel.application.read_models import payloads
+    expected = "a" * 40
+    monkeypatch.delenv("MARKET_BACKEND_COMMIT", raising=False)
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(stdout=expected + "\n")
+    monkeypatch.setattr(payloads.subprocess, "run", run)
+    assert payloads._backend_commit() == expected
+    assert commands == [["git", "rev-parse", "HEAD"]]
+    result = check.assess("runtime", {"ready": True, "metadata": {
+        "release": {"backend_commit": expected}, "schema_compatible": True,
+        "schema_revision": "20260919_0025"}}, expected_commit=expected, expected_schema="20260919_0025")
+    assert result["status"] == "pass"
