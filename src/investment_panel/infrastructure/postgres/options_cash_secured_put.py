@@ -37,17 +37,9 @@ def insert_cash_secured_put_decisions(
     delta_min = float(csp.get("delta_min", 0.15))
     delta_max = float(csp.get("delta_max", 0.30))
     max_ticker_nav_pct = float(csp.get("max_ticker_nav_pct", 0.05))
-    with runtime.read(JOB_PROFILE) as connection:
-        account_query = """
-            SELECT net_liquidation, cash_balance, buying_power, observed_at
-            FROM raw.broker_account_snapshot
-        """
-        account_params: list[Any] = []
-        if evaluated_at is not None:
-            account_query += " WHERE observed_at <= %s"
-            account_params.append(evaluated_at)
-        account_query += " ORDER BY observed_at DESC, id DESC LIMIT 1"
-        account = connection.execute(account_query, account_params).fetchone()
+    with runtime.snapshot(JOB_PROFILE) as connection:
+        from investment_panel.infrastructure.postgres.options_risk_context import option_account_snapshot
+        account = option_account_snapshot(runtime, connection, as_of=evaluated_at)
         rows = connection.execute(
             """
             SELECT feature.snapshot_id, feature.contract_id, feature.quote_observed_at,

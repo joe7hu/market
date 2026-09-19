@@ -147,7 +147,7 @@ def journal(
     source: dict[str, Any],
     *,
     action: str,
-    quantity: int,
+    quantity: float,
     price: float | None,
     key: str,
     details: dict[str, Any],
@@ -162,7 +162,7 @@ def journal(
         """,
         [
             source["decision_id"], source["instrument_id"], action, quantity, price,
-            "options_recovery_deterministic_paper_lifecycle",
+            "deterministic_options_paper_execution" if action == "paper_entry" or action.startswith("paper_exit") else "options_recovery_deterministic_paper_lifecycle",
             Jsonb({
                 "idempotency_key": key,
                 "event_id": str(source.get("event_id") or ""),

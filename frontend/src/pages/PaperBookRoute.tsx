@@ -118,6 +118,7 @@ export function PaperBookRoute() {
   const points = visiblePerformance?.series?.points ?? [];
   const drawdownPoints = visiblePerformance?.series?.drawdown_points ?? [];
   const counts = visiblePerformance?.counts ?? {};
+  const account = visiblePerformance?.account;
   const hasVerifiedPerformance = (counts.realized_pnl_known ?? 0) > 0;
   const learningNotStarted = Boolean(visiblePerformance && (counts.filled_orders ?? 0) === 0);
 
@@ -127,6 +128,20 @@ export function PaperBookRoute() {
     {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
     {scopeLoading ? <PortfolioSkeleton /> : null}
     {!scopeLoading && visiblePerformance ? <>
+      {account && account.status !== "unfunded" ? <section className="rounded-2xl border border-border bg-card p-5 sm:p-7" aria-label="Funded paper account">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Whole paper account · simulated USD</p>
+        <h2 className="mt-2 text-3xl font-semibold">{money(account.nav)} <span className="text-sm font-normal text-muted-foreground">net asset value</span></h2>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <SummaryMetric label="Opening cash" value={money(account.opening_cash)} note="Explicit simulated funding" />
+          <SummaryMetric label="Cash balance" value={money(account.cash_balance)} note="After fills and fees" />
+          <SummaryMetric label="Reserved capital" value={money(account.reserved_capital)} note="Pending orders and collateral" />
+          <SummaryMetric label="Available capital" value={money(account.available_capital)} note="Risk limits still apply" />
+          <SummaryMetric label="Account P&L" value={money(account.net_pnl, true)} note={account.return_pct == null ? "Return unavailable" : `${(account.return_pct * 100).toFixed(2)}% since funding`} />
+        </div>
+        <p className="mt-4 text-xs text-muted-foreground">Whole-account balances do not change with trade filters. No live brokerage orders.</p>
+        <details className="mt-3 text-xs text-muted-foreground"><summary className="cursor-pointer">Funding evidence</summary><p className="mt-2">{account.authorization}</p><p>Recorded {account.opened_at ? new Date(account.opened_at).toLocaleString() : "—"}. Balances as of {account.as_of ? new Date(account.as_of).toLocaleString() : "—"}.</p></details>
+        {account.blockers?.length ? <p role="alert" className="mt-3 text-sm text-destructive">Balances withheld: {account.blockers.join(", ").replaceAll("_", " ")}</p> : null}
+      </section> : null}
       <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7" aria-label="Paper portfolio summary">
         <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Paper portfolio · {period === "custom" ? "Selected range" : period.toUpperCase()}</p><h2 className="mt-2 text-3xl font-semibold tracking-tight sm:text-5xl">{hasVerifiedPerformance ? money(visiblePerformance.net_pnl, true) : "No verified exits yet"}</h2><p className="mt-2 max-w-2xl text-sm text-muted-foreground">{hasVerifiedPerformance ? "Verified realized P&L from fill-backed exits. Open P&L is shown only when current marks are authoritative." : "The system has not accumulated a verified exit series in this scope yet."}</p></div><StatusBadge tone={statusTone(visiblePerformance.quality_status)}>{statusLabel(visiblePerformance.quality_status)}</StatusBadge></div>
         {learningNotStarted ? <LearningLifecycle performance={visiblePerformance} /> : <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><SummaryMetric label="Realized P&L" value={money(visiblePerformance.realized_pnl, true)} note={visiblePerformance.realized_pnl_status === "complete" ? "Verified fills" : "Some exits need evidence"} /><SummaryMetric label="Open P&L" value={money(visiblePerformance.unrealized_pnl, true)} note={visiblePerformance.open_exposure_status === "complete" ? "Current marks verified" : "Mark coverage incomplete"} /><SummaryMetric label="Drawdown" value={money(visiblePerformance.drawdown, true)} note="From verified realized curve" /><SummaryMetric label="Closed trades" value={String(counts.closed_trades ?? 0)} note={`${counts.filled_orders ?? 0} filled positions`} /><SummaryMetric label="Evidence" value={`${counts.reconciled_orders ?? 0} / ${counts.filled_orders ?? 0}`} note="Fill records reconciled" /></div>}

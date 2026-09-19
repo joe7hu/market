@@ -436,10 +436,8 @@ class ActionRepository:
             )
             total_risk = unit_risk * quantity
             collateral = total_risk if structure == "cash_secured_put" else 0.0
-            account = connection.execute(
-                "SELECT net_liquidation, cash_balance, buying_power, observed_at "
-                "FROM raw.broker_account_snapshot ORDER BY observed_at DESC, id DESC LIMIT 1"
-            ).fetchone()
+            from investment_panel.infrastructure.postgres.options_risk_context import option_account_snapshot
+            account = option_account_snapshot(self.runtime, connection, as_of=now)
             if account is None or account["net_liquidation"] is None:
                 raise ValueError("fresh broker NAV and account constraints are required")
             observed_at = account["observed_at"]
@@ -473,7 +471,7 @@ class ActionRepository:
             )
             if int(exposures["unvalued_commitments"] or 0) > 0:
                 raise ValueError("active paper commitment has no authoritative valuation")
-            committed_capital = float(exposures["total_committed"] or 0)
+            committed_capital = 0.0 if account.get("source_id") == "paper_account" else float(exposures["total_committed"] or 0)
             if structure == "cash_secured_put":
                 if account["cash_balance"] is None:
                     raise ValueError("current broker cash and NAV are required for a cash-secured put")
@@ -552,6 +550,8 @@ class ActionRepository:
                         leg["quote_time"], leg.get("open_interest"), leg.get("volume"),
                     ],
                 )
+            from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+            PaperWorkbenchRepository(self.runtime).require_reserved_capacity(connection)
         return {
             "status": "staged",
             "paper_order_id": str(row["id"]),

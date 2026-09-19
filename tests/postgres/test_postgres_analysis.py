@@ -1308,7 +1308,7 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
             "UPDATE raw.broker_account_snapshot SET observed_at = now() + interval '10 minutes' "
             "WHERE account_key = 'paper'"
         )
-    with pytest.raises(ValueError, match="constraints are stale"):
+    with pytest.raises(ValueError, match="constraints are stale|account constraints are required"):
         stage(
             decision_id=csp["decision_id"],
             idempotency_key="csp-future-account",

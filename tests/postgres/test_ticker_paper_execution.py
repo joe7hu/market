@@ -816,6 +816,12 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
         assert float(status["filled_quantity"]) == decision.trade_plan.quantity
         assert float(status["exited_quantity"]) == decision.trade_plan.quantity
         assert float(status["fees"]) > 0
+        from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+        trade = PaperWorkbenchRepository(runtime).trade(staged["paper_order_id"])
+        assert trade["reconciliation_status"] == "verified"
+        assert trade["filled_quantity"] == trade["exited_quantity"] == decision.trade_plan.quantity
+        assert trade["realized_pnl"] == round(-10 * decision.trade_plan.quantity - float(status["fees"]), 2)
+
     finally:
         runtime.close()
 
@@ -1408,5 +1414,66 @@ def test_ticker_outcome_refresh_persists_costs_and_learning_metadata(
         assert row["metadata"]["purge_embargo_verified"] is True
         assert row["metadata"]["multiple_trial_correction"] == "single-policy-no-trial-selection-v1"
         assert row["metadata"]["expression_marks"]["STOCK"]["evidence_state"] == "ESTIMATED"
+    finally:
+        runtime.close()
+
+
+def test_funded_stock_exit_reduces_original_lot_without_purchase_cash(migrated_postgres_dsn):
+    from types import SimpleNamespace
+    from investment_panel.domain.decision import ExpressionKind
+    from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        book = PaperWorkbenchRepository(runtime)
+        book.initialize_account(1000, authorization='Explicit test funding')
+        config = typed_config(migrated_postgres_dsn, raw={'analysis': {'options_decision_system': {'mode': 'paper', 'ticker_paper_actions_enabled': True, 'stock_paper_actions_enabled': True}}})
+        execution = TickerPaperExecutionRepository(runtime, config)
+        now = datetime.now(UTC)
+        with runtime.transaction() as connection:
+            instrument = connection.execute("INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('CASHEXIT', 'Exit test', 'equity') RETURNING id").fetchone()['id']
+            connection.execute("INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) VALUES ('exit-test', 'Exit test', 'test', 'quote', 'active', 'test', 3600)")
+            run = connection.execute("INSERT INTO ingest.run (source_id, capability, started_at, finished_at, status) VALUES ('exit-test', 'quotes', %s, %s, 'succeeded') RETURNING id", [now, now]).fetchone()['id']
+            quote = connection.execute("INSERT INTO raw.quote (instrument_id, source_id, ingest_run_id, observed_at, available_at, price) VALUES (%s, 'exit-test', %s, %s, %s, 499) RETURNING id", [instrument, run, now, now]).fetchone()['id']
+            connection.execute("INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id) VALUES (%s, %s, %s)", [quote, now, run])
+            order = connection.execute("INSERT INTO app.paper_order (instrument_id, side, quantity, limit_price, status, paper_only, lane, expression_kind, policy_result) VALUES (%s, 'buy', 2, 499, 'staged', true, 'ticker', 'STOCK', %s) RETURNING id::text", [instrument, Jsonb({'fee_per_unit': .01})]).fetchone()['id']
+        assert execution._manage_one(order, datetime.now(UTC))['status'] == 'filled'
+        account = book.account()
+        assert account['status'] == 'complete', account.get('blockers')
+        assert account['cash_balance'] == 1.98, account
+        plan = SimpleNamespace(trade_plan_id='exit-one-share')
+        with runtime.transaction() as connection:
+            result = execution._request_exit(connection, instrument, ExpressionKind.STOCK, plan, 1, 498, idempotency_key="exit-one-share")
+        assert result['paper_order_id'] == order
+        assert execution._manage_one(order, datetime.now(UTC))['status'] == 'partial'
+        account = book.account()
+        assert account['status'] == 'complete', account
+        assert account['cash_balance'] == 500.97
+        assert account['nav'] == 999.97
+        trade = book.trade(order)
+        assert trade['remaining_quantity'] == 1
+        assert trade['realized_pnl'] == -.02
+        with runtime.transaction() as connection:
+            assert connection.execute('SELECT count(*) AS count FROM app.paper_order').fetchone()['count'] == 1
+            assert execution._request_exit(connection, instrument, ExpressionKind.STOCK, plan, 1, 498, idempotency_key="exit-one-share")['paper_order_id'] == order
+        assert execution._manage_one(order, datetime.now(UTC))['reason'] == 'exit_not_triggered'
+        import pytest
+        from investment_panel.infrastructure.postgres.options_paper_ledger import shared_sleeve_loss_state
+        next_plan = SimpleNamespace(trade_plan_id='exit-last-share')
+        with pytest.raises(ValueError, match='idempotency key'):
+            with runtime.transaction() as connection:
+                execution._request_exit(connection, instrument, ExpressionKind.STOCK, next_plan, 1, 498, idempotency_key='exit-one-share')
+        with runtime.transaction() as connection:
+            execution._request_exit(connection, instrument, ExpressionKind.STOCK, next_plan, 1, 498, idempotency_key='exit-last-share')
+        assert execution._manage_one(order, datetime.now(UTC))['status'] == 'closed'
+        assert book.account()['nav'] == 999.96
+        with runtime.transaction() as connection:
+            replay = execution._request_exit(connection, instrument, ExpressionKind.STOCK, plan, 1, 498, idempotency_key='exit-one-share')
+            assert replay['status'] == 'exited'
+            state = shared_sleeve_loss_state(connection, now=datetime.now(UTC))
+            assert state['unresolved_exits'] == 0
+            assert state['value'] == pytest.approx(-.04)
+
     finally:
         runtime.close()

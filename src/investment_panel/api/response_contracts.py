@@ -128,6 +128,23 @@ class PaperObservationPage(FlexibleResponse):
     accounting_basis: str
 
 
+class PaperAccount(FlexibleResponse):
+    status: str
+    paper_only: bool = True
+    currency: str = "USD"
+    opening_cash: float | None = None
+    cash_balance: float | None = None
+    nav: float | None = None
+    net_pnl: float | None = None
+    return_pct: float | None = None
+    reserved_capital: float | None = None
+    available_capital: float | None = None
+    opened_at: datetime | None = None
+    as_of: datetime | None = None
+    authorization: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+
+
 class PaperBookPerformance(FlexibleResponse):
     """Accounting projection with visible scope and evidence coverage."""
 
@@ -136,6 +153,7 @@ class PaperBookPerformance(FlexibleResponse):
     snapshot_id: str | None = None
     scope: dict[str, Any] = Field(default_factory=dict)
     calculation_version: str | None = None
+    account: PaperAccount | None = None
     trades: list[PaperTradeSummary] = Field(default_factory=list)
     next_cursor: str | None = None
     currency: str = "USD"

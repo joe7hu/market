@@ -482,3 +482,61 @@ def test_paper_workbench_filters_use_book_scope_and_exact_evidence_counts(
                     [order_ids],
                 )
         runtime.close()
+
+
+def test_paper_account_funding_and_journal_reconciliation(migrated_postgres_dsn):
+    import pytest
+    from investment_panel.infrastructure.postgres.options_risk_context import option_account_snapshot
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = PaperWorkbenchRepository(runtime)
+    try:
+        for invalid in (0, -1, 'NaN', 'Infinity', '1.001'):
+            with pytest.raises(ValueError):
+                repository.initialize_account(invalid, authorization='test authorization')
+        with pytest.raises(ValueError):
+            repository.initialize_account(100000, authorization='')
+        opening = repository.initialize_account(100000, authorization='Explicit simulated test capital')
+        assert repository.initialize_account(100000, authorization='retry') == opening
+        with pytest.raises(ValueError, match='cannot be reset'):
+            repository.initialize_account(200000, authorization='reset')
+        assert repository.account(as_of=opening['opened_at'] - timedelta(seconds=1))['status'] == 'unfunded'
+        account = repository.account()
+        assert account['nav'] == account['cash_balance'] == account['available_capital'] == 100000
+        assert account['net_pnl'] == account['return_pct'] == 0
+        assert repository.performance(symbol='IGNORED')['account']['nav'] == 100000
+        assert repository.performance(symbol='IGNORED')['nav'] is None
+        with runtime.read() as connection:
+            assert option_account_snapshot(runtime, connection, as_of=datetime.now(UTC))['net_liquidation'] == 100000
+        with runtime.transaction() as connection:
+            instrument = reconcile_instrument(connection, f'PA{uuid4().hex[:8]}')
+            order = connection.execute(
+                "INSERT INTO app.paper_order (instrument_id, side, quantity, limit_price, status, paper_only, structure) "
+                "VALUES (%s, 'buy', 2, 10, 'staged', true, 'equity') RETURNING id", [instrument],
+            ).fetchone()['id']
+        assert repository.account()['reserved_capital'] == 20
+        assert repository.account()['available_capital'] == 99980
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE app.paper_order SET status = 'exited', filled_quantity = 2, exited_quantity = 2 WHERE id = %s", [order])
+        assert repository.account()['nav'] is None
+        with runtime.transaction() as connection:
+            for action, price, fees in [('paper_entry', 10, 1), ('paper_exit:take_profit', 12, 1)]:
+                connection.execute(
+                    "INSERT INTO app.trade_journal (instrument_id, action, quantity, price, rationale, details) "
+                    "VALUES (%s, %s, 2, %s, 'deterministic_options_paper_execution', %s)",
+                    [instrument, action, price, Jsonb({'paper_order_id': str(order), 'fees': fees})],
+                )
+        account = repository.account()
+        assert account['status'] == 'complete'
+        assert account['cash_balance'] == account['nav'] == account['available_capital'] == 100002
+        assert account['net_pnl'] == 2
+        assert repository.performance()['nav'] == 100002
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE app.paper_order SET filled_quantity = 3 WHERE id = %s", [order])
+        assert 'paper_order_fill_quantity_conflict' in repository.account()['blockers']
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE app.paper_order SET filled_quantity = 2, updated_at = now() + interval '1 day' WHERE id = %s", [order])
+        assert 'paper_account_point_in_time_conflict' in repository.account()['blockers']
+    finally:
+        runtime.close()

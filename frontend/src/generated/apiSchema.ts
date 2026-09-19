@@ -5449,11 +5449,51 @@ export interface components {
                 [key: string]: components["schemas"]["TablePayloadResponse"];
             };
         };
+        /** PaperAccount */
+        PaperAccount: {
+            /** As Of */
+            as_of?: string | null;
+            /** Authorization */
+            authorization?: string | null;
+            /** Available Capital */
+            available_capital?: number | null;
+            /** Blockers */
+            blockers?: string[];
+            /** Cash Balance */
+            cash_balance?: number | null;
+            /**
+             * Currency
+             * @default USD
+             */
+            currency: string;
+            /** Nav */
+            nav?: number | null;
+            /** Net Pnl */
+            net_pnl?: number | null;
+            /** Opened At */
+            opened_at?: string | null;
+            /** Opening Cash */
+            opening_cash?: number | null;
+            /**
+             * Paper Only
+             * @default true
+             */
+            paper_only: boolean;
+            /** Reserved Capital */
+            reserved_capital?: number | null;
+            /** Return Pct */
+            return_pct?: number | null;
+            /** Status */
+            status: string;
+        } & {
+            [key: string]: unknown;
+        };
         /**
          * PaperBookPerformance
          * @description Accounting projection with visible scope and evidence coverage.
          */
         PaperBookPerformance: {
+            account?: components["schemas"]["PaperAccount"] | null;
             /** Accounting Basis */
             accounting_basis?: string | null;
             /** As Of */

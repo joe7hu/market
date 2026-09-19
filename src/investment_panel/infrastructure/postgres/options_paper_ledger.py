@@ -48,7 +48,7 @@ def paper_fill_totals(connection: Any, order: dict[str, Any], *, as_of: datetime
                   array_agg(id::text ORDER BY created_at, id) FILTER (WHERE action = 'paper_entry') AS entry_journal_ids
            FROM app.trade_journal
            CROSS JOIN (SELECT %s::numeric AS contract_multiplier) paper
-           WHERE details->>'paper_order_id' = %s AND decision_id = %s::uuid
+           WHERE details->>'paper_order_id' = %s AND decision_id IS NOT DISTINCT FROM %s::uuid
              AND (action IN ('paper_entry', 'paper_exit') OR action LIKE 'paper_exit:%%')
              AND created_at <= %s AND rationale = 'deterministic_options_paper_execution'""",
         [order.get("contract_multiplier"), str(order["id"]), order.get("decision_id"), as_of],
@@ -93,7 +93,8 @@ def _reconciled_exit_pnl(row: dict[str, Any], fills: dict[str, Any] | None) -> f
         return None
     structure = row.get("structure") or (row.get("ticket_snapshot") or {}).get("structure")
     credit = structure in {"cash_secured_put", "put_credit_spread", "call_credit_spread"}
-    if not credit and structure not in {"long_call", "long_put", "call_debit_spread", "put_debit_spread"}:
+    stock = row.get("expression_kind") == "STOCK" and multiplier == 1 and row.get("side") == "buy"
+    if not credit and not stock and structure not in {"long_call", "long_put", "call_debit_spread", "put_debit_spread"}:
         return None
     entry_vwap = values["entry_units"] / filled
     gross = (entry_vwap - price if credit else price - entry_vwap) * multiplier * quantity
@@ -116,7 +117,7 @@ def shared_sleeve_loss_state(connection: Any, *, now: datetime) -> dict[str, Any
                   journal.price AS journal_price, journal.details AS journal_details
            FROM app.trade_journal journal
            LEFT JOIN app.paper_order paper ON paper.id::text = journal.details->>'paper_order_id'
-                AND paper.decision_id = journal.decision_id AND paper.instrument_id = journal.instrument_id
+                AND paper.decision_id IS NOT DISTINCT FROM journal.decision_id AND paper.instrument_id = journal.instrument_id
                 AND paper.paper_only IS TRUE AND paper.created_at <= %s
            WHERE journal.created_at <= %s AND (
                journal.action = 'paper_exit' OR journal.action LIKE 'paper_exit:%%'

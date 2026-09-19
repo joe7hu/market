@@ -141,6 +141,8 @@ class TickerPaperExecutionRepository:
         structure = _option_structure(kind) if kind in OPTION_EXPRESSIONS else None
 
         with self.runtime.transaction() as connection:
+            from investment_panel.infrastructure.postgres.options_paper_ledger import acquire_shared_sleeve_lock
+            acquire_shared_sleeve_lock(connection)
             instrument = connection.execute(
                 "SELECT id FROM catalog.instrument WHERE symbol = %s AND asset_class IN ('equity', 'etf') LIMIT 1",
                 [symbol],
@@ -176,29 +178,20 @@ class TickerPaperExecutionRepository:
             rank_evidence = self._validate_persisted_context(
                 connection, ticker_decision, decision, kind, plan.trade_plan_id,
             )
+            conflict = connection.execute(
+                """SELECT EXISTS(SELECT 1 FROM app.paper_order WHERE lane = 'ticker' AND (
+                    (policy_result->>'caller_idempotency_key' = %s AND policy_result->>'trade_plan_id' IS DISTINCT FROM %s)
+                    OR EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(policy_result->'paper_exit_requests', '[]'::jsonb)) request
+                               WHERE request->>'caller_idempotency_key' = %s AND request->>'trade_plan_id' IS DISTINCT FROM %s))) AS present""",
+                [idempotency_key.strip(), plan.trade_plan_id, idempotency_key.strip(), plan.trade_plan_id],
+            ).fetchone()["present"]
+            if conflict:
+                raise ValueError("idempotency key was already used for a different ticker paper request")
             if action in EXIT_ACTIONS:
-                if not decision.capital_action.owned:
-                    raise ValueError("TRIM and EXIT require an existing paper position")
-                active = connection.execute(
-                    """
-                    SELECT coalesce(sum(
-                        CASE
-                          WHEN status IN ('staged', 'open') THEN quantity
-                          WHEN status IN ('entered', 'partial_exited')
-                            THEN greatest(coalesce(filled_quantity, quantity) - coalesce(exited_quantity, 0), 0)
-                          ELSE 0
-                        END
-                    ), 0) AS quantity
-                    FROM app.paper_order
-                    WHERE instrument_id = %s
-                      AND paper_only = TRUE
-                      AND status IN ('staged', 'open', 'entered', 'partial_exited')
-                      AND side = 'buy'
-                    """,
-                    [instrument["id"]],
-                ).fetchone()
-                if float(active["quantity"] or 0) < requested_quantity:
-                    raise ValueError("TRIM and EXIT quantity exceeds the existing paper position")
+                exit_request = self._request_exit(connection, instrument["id"], kind, plan, requested_quantity, float(limit), idempotency_key=idempotency_key.strip())
+                return {**exit_request, "ticker": symbol, "expression_kind": kind.value, "quantity": requested_quantity,
+                        "planned_loss": 0.0, "decision_revision": requested_revision, "policy_version": decision.policy_version,
+                        "trade_plan_id": plan.trade_plan_id, "paper_only": True, "live_order_submission": False}
             prior = connection.execute(
                 """
                 SELECT id, status, quantity, limit_price, ticker_decision_revision,
@@ -321,6 +314,8 @@ class TickerPaperExecutionRepository:
                             leg.get("open_interest"), leg.get("volume"),
                         ],
                     )
+            from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+            PaperWorkbenchRepository(self.runtime).require_reserved_capacity(connection)
         return {
             "status": "staged",
             "paper_order_id": str(row["id"]),
@@ -336,6 +331,65 @@ class TickerPaperExecutionRepository:
             "paper_only": True,
             "live_order_submission": False,
         }
+
+    def _request_exit(self, connection: Any, instrument_id: int, kind: ExpressionKind, plan: Any, quantity: int, limit: float, *, idempotency_key: str) -> dict[str, Any]:
+        # ponytail: request history stays with each lot; use indexed receipts if the 10,000-order book bound grows.
+        prior = connection.execute(
+            """SELECT paper.id::text, paper.instrument_id, paper.expression_kind, request,
+                      paper.policy_result->'paper_exit_request' AS current_request
+               FROM app.paper_order paper
+               CROSS JOIN LATERAL jsonb_array_elements(coalesce(paper.policy_result->'paper_exit_requests', '[]'::jsonb)) request
+               WHERE request->>'trade_plan_id' = %s OR request->>'caller_idempotency_key' = %s
+               ORDER BY paper.created_at, paper.id""", [plan.trade_plan_id, idempotency_key],
+        ).fetchall()
+        if prior:
+            if any(row["instrument_id"] != instrument_id or row["expression_kind"] != kind.value
+                   or row["request"]["trade_plan_id"] != plan.trade_plan_id
+                   or row["request"]["requested_quantity"] != quantity or row["request"]["limit_price"] != limit for row in prior):
+                raise ValueError("idempotency key was already used for a different ticker paper request")
+            pending = any((row["current_request"] or {}).get("trade_plan_id") == plan.trade_plan_id
+                          and float((row["current_request"] or {}).get("remaining_quantity") or 0) > 0 for row in prior)
+            return {"status": "staged" if pending else "exited", "paper_order_id": prior[0]["id"], "paper_order_ids": [row["id"] for row in prior], "action": "exit_requested", "idempotent_replay": True}
+        positions = connection.execute(
+            """SELECT id::text, filled_quantity, exited_quantity, policy_result FROM app.paper_order
+               WHERE instrument_id = %s AND lane = 'ticker' AND expression_kind = %s
+                 AND status IN ('open', 'entered', 'partial_exited')
+                 AND coalesce(filled_quantity, 0) > coalesce(exited_quantity, 0)
+               ORDER BY created_at, id FOR UPDATE""", [instrument_id, kind.value],
+        ).fetchall()
+        if kind in OPTION_EXPRESSIONS:
+            contracts = sorted(int(leg["contract_id"]) for leg in plan.selected_expression.legs)
+            positions = [row for row in positions if sorted(int(leg["contract_id"]) for leg in self._stored_option_legs(connection, row["id"])) == contracts]
+        if sum(float(row["filled_quantity"]) - float(row["exited_quantity"] or 0) for row in positions) < quantity:
+            raise ValueError("TRIM and EXIT require enough filled matching paper positions")
+        remaining = quantity
+        ids = []
+        for row in positions:
+            if remaining <= 0:
+                break
+            policy = dict(row["policy_result"] or {})
+            if float((policy.get("paper_exit_request") or {}).get("remaining_quantity") or 0) > 0:
+                raise ValueError("a paper exit request is already pending")
+            closing = min(remaining, float(row["filled_quantity"]) - float(row["exited_quantity"] or 0))
+            request = {"trade_plan_id": plan.trade_plan_id, "caller_idempotency_key": idempotency_key,
+                       "requested_quantity": quantity, "remaining_quantity": closing, "limit_price": limit}
+            policy["paper_exit_request"] = request
+            policy["paper_exit_requests"] = [*policy.get("paper_exit_requests", []), dict(request)]
+            policy["entry_cancelled"] = True
+            connection.execute("UPDATE app.paper_order SET policy_result = %s, status = 'entered', updated_at = clock_timestamp() WHERE id = %s::uuid", [Jsonb(policy), row["id"]])
+            remaining -= closing
+            ids.append(row["id"])
+        return {"status": "staged", "paper_order_id": ids[0], "paper_order_ids": ids, "action": "exit_requested"}
+
+    @staticmethod
+    def _record_fill(connection: Any, order: dict[str, Any], now: datetime, *, action: str, quantity: float, price: float, fees: float, multiplier: float, cumulative: float) -> None:
+        from investment_panel.infrastructure.postgres.options_recovery_execution_support import journal
+        journal(connection, {**order, "decision_id": order.get("decision_id")}, action=action, quantity=quantity, price=price,
+                key=f"ticker:{order['id']}:{action}:{cumulative}",
+                details={"paper_order_id": str(order["id"]), "fees": fees, "contract_multiplier": multiplier,
+                         "entry_contract_multiplier": multiplier, "exit_contract_multiplier": multiplier,
+                         "observed_at": now.isoformat(), "execution_owner": "ticker", "objective_version": None,
+                         "exit_trade_plan_id": ((order.get("policy_result") or {}).get("paper_exit_request") or {}).get("trade_plan_id") if action.startswith("paper_exit") else None})
 
     @staticmethod
     def _validate_decision_context(decision: TickerDecision, kind: ExpressionKind) -> None:
@@ -576,9 +630,11 @@ class TickerPaperExecutionRepository:
 
     def _manage_one(self, paper_order_id: str, now: datetime) -> dict[str, Any] | None:
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            from investment_panel.infrastructure.postgres.options_paper_ledger import acquire_shared_sleeve_lock
+            acquire_shared_sleeve_lock(connection)
             order = connection.execute(
                 """
-                SELECT paper.id::text, paper.instrument_id, paper.status, paper.side,
+                SELECT paper.id::text, paper.decision_id, paper.instrument_id, paper.status, paper.side,
                        paper.quantity, paper.limit_price, paper.actual_fill_price,
                        paper.filled_at, paper.submitted_at, paper.filled_quantity,
                        paper.exited_quantity, paper.fees, paper.expires_at, paper.execution_quote,
@@ -602,7 +658,7 @@ class TickerPaperExecutionRepository:
             filled = _quantity(item.get("filled_quantity"))
             exited = _quantity(item.get("exited_quantity"))
             remaining_entry = max(0.0, quantity - filled)
-            if remaining_entry > 0:
+            if remaining_entry > 0 and not (item.get("policy_result") or {}).get("entry_cancelled"):
                 return self._manage_entry(connection, item, now, remaining_entry)
             return self._manage_open(connection, item, now, filled, exited)
 
@@ -726,6 +782,7 @@ class TickerPaperExecutionRepository:
                 complete, "partial_fill", Jsonb(policy), now, order["id"],
             ],
         )
+        self._record_fill(connection, order, now, action="paper_entry", quantity=fill_quantity, price=market_price, fees=fees, multiplier=1, cumulative=new_filled)
         from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 
         PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
@@ -796,6 +853,7 @@ class TickerPaperExecutionRepository:
             ["entered" if complete else "open", market_price, market_price, fill_quantity, new_filled, now, now, Jsonb({"mid": midpoint, "entry_price": market_price}), multiplier, new_filled, fees, fees, slippage,
              complete, "partial_fill", Jsonb(policy), now, order["id"]],
         )
+        self._record_fill(connection, order, now, action="paper_entry", quantity=fill_quantity, price=market_price, fees=fees, multiplier=multiplier, cumulative=new_filled)
         from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 
         PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
@@ -825,8 +883,6 @@ class TickerPaperExecutionRepository:
             return {"paper_order_id": str(order["id"]), "status": "closed", "reason": "no_remaining_quantity"}
         if str(order.get("expression_kind") or "").upper() in {kind.value for kind in OPTION_EXPRESSIONS}:
             return self._manage_option_open(connection, order, now, remaining)
-        if str(order.get("side") or "buy").lower() != "buy":
-            return self._close_at_market(connection, order, now, remaining, "exit_order_filled")
         quote = connection.execute(
             """
             SELECT price, observed_at, available_at
@@ -854,6 +910,9 @@ class TickerPaperExecutionRepository:
             reason = "target_reached"
         elif expires_at is not None and expires_at <= now:
             reason = "decision_expired"
+        request = (order.get("policy_result") or {}).get("paper_exit_request") or {}
+        if reason is None and float(request.get("remaining_quantity") or 0) > 0 and price >= float(request["limit_price"]):
+            return self._close_at_market(connection, order, now, min(remaining, float(request["remaining_quantity"])), "requested_exit", price=price)
         if reason is None:
             return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "exit_not_triggered"}
         return self._close_at_market(connection, order, now, remaining, reason, price=price)
@@ -930,6 +989,7 @@ class TickerPaperExecutionRepository:
                         [exited_quantity + contract_count, max(strike - underlying_price, 0.0), now, multiplier,
                          assignment_fee, assignment_fee, Jsonb(policy), "assigned_at_expiration", now, order["id"]],
                     )
+                    self._record_fill(connection, order, now, action="paper_exit:assignment", quantity=contract_count, price=max(strike - underlying_price, 0.0), fees=assignment_fee, multiplier=multiplier, cumulative=exited_quantity + contract_count)
                     from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 
                     PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
@@ -937,6 +997,9 @@ class TickerPaperExecutionRepository:
                     )
                     return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
             reason = reason or "expiration"
+        request = (order.get("policy_result") or {}).get("paper_exit_request") or {}
+        if reason is None and float(request.get("remaining_quantity") or 0) > 0:
+            reason = "requested_exit"
         if reason is None:
             return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "exit_not_triggered"}
         quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now) if legs else []
@@ -947,6 +1010,11 @@ class TickerPaperExecutionRepository:
                 [f"{reason}: fresh_executable_exit_quote_required", now, order["id"]],
             )
             return {"paper_order_id": str(order["id"]), "status": "entered", "reason": f"{reason}_pending_executable_quote"}
+        if reason == "requested_exit":
+            credit = is_credit_structure(str(order.get("structure") or ""))
+            if (exit_price > float(request["limit_price"]) if credit else exit_price < float(request["limit_price"])):
+                return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "exit_limit_not_reached"}
+            remaining = min(remaining, float(request["remaining_quantity"]))
         exit_quantity = min(remaining, _option_available_quantity(quoted, remaining, phase="exit"))
         if exit_quantity <= 0:
             connection.execute(
@@ -961,6 +1029,8 @@ class TickerPaperExecutionRepository:
         slippage = abs(exit_price - midpoint) if midpoint is not None else None
         policy = dict(order.get("policy_result") or {})
         policy["exit_fill_count"] = int(_number(policy.get("exit_fill_count")) or 0) + 1
+        if policy.get("paper_exit_request"):
+            policy["paper_exit_request"]["remaining_quantity"] = max(0, float(policy["paper_exit_request"].get("remaining_quantity") or 0) - exit_quantity)
         connection.execute(
             """
             UPDATE app.paper_order
@@ -971,6 +1041,7 @@ class TickerPaperExecutionRepository:
             """,
             ["exited" if terminal else "partial_exited", new_exited, exit_price, now, fees, fees, slippage, Jsonb(policy), now, order["id"]],
         )
+        self._record_fill(connection, order, now, action=f"paper_exit:{reason}", quantity=exit_quantity, price=exit_price, fees=fees, multiplier=float(order["contract_multiplier"]), cumulative=new_exited)
         from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 
         PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
@@ -1013,30 +1084,36 @@ class TickerPaperExecutionRepository:
         *,
         price: float | None = None,
     ) -> dict[str, Any]:
+        if price is None or not isfinite(price) or price < 0:
+            raise ValueError("an observed exit price is required")
         policy = dict(order.get("policy_result") or {})
         fee_per_unit = max(0.0, _number(policy.get("fee_per_unit")) or 0.0)
         fees = quantity * fee_per_unit
         new_exited = _quantity(order.get("exited_quantity")) + quantity
         policy["exit_fill_count"] = int(_number(policy.get("exit_fill_count")) or 0) + 1
+        terminal = new_exited >= _quantity(order.get("filled_quantity"))
+        if policy.get("paper_exit_request"):
+            policy["paper_exit_request"]["remaining_quantity"] = max(0, float(policy["paper_exit_request"].get("remaining_quantity") or 0) - quantity)
         connection.execute(
             """
             UPDATE app.paper_order
-            SET status = 'exited', exited_quantity = %s, exit_price = %s,
+            SET status = %s, exited_quantity = %s, exit_price = %s,
                 exit_at = %s, fees = coalesce(fees, 0) + %s, exit_fees = coalesce(exit_fees, 0) + %s,
                 updated_at = %s, unfilled_reason = NULL, policy_result = %s
             WHERE id = %s::uuid
             """,
-            [new_exited, price, now, fees, fees, now, Jsonb(policy), order["id"]],
+            ["exited" if terminal else "partial_exited", new_exited, price, now, fees, fees, now, Jsonb(policy), order["id"]],
         )
+        self._record_fill(connection, order, now, action=f"paper_exit:{reason}", quantity=quantity, price=price, fees=fees, multiplier=1, cumulative=new_exited)
         from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 
         PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
-            connection, paper_order_id=str(order["id"]), observed_at=now, status="exited",
+            connection, paper_order_id=str(order["id"]), observed_at=now, status="exited" if terminal else "partial_exited",
         )
         return {
             "paper_order_id": str(order["id"]),
-            "status": "closed",
-            "event_status": "exited",
+            "status": "closed" if terminal else "partial",
+            "event_status": "exited" if terminal else None,
             "reason": reason,
             "exit_quantity": quantity,
             "exit_price": price,

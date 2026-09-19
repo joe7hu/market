@@ -634,6 +634,7 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                     [Jsonb({"risk_blockers": shared_blockers}), signal["id"]],
                 )
                 return {"signal_id": str(signal["id"]), "status": "risk_blocked", "blockers": shared_blockers}
+            connection.execute("SAVEPOINT paper_reservation")
             key = f"recovery:{signal['id']}:v4"
             row = connection.execute(
                 """
@@ -678,6 +679,12 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                      leg["bid"], leg["ask"], leg["bid_size"], leg["ask_size"], leg["quote_time"],
                      leg.get("open_interest"), leg.get("volume")],
                 )
+            from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+            try:
+                PaperWorkbenchRepository(self.runtime).require_reserved_capacity(connection)
+            except ValueError as exc:
+                connection.execute("ROLLBACK TO SAVEPOINT paper_reservation")
+                return {"signal_id": str(signal["id"]), "status": "risk_blocked", "blockers": [str(exc)]}
             connection.execute(
                 """INSERT INTO app.alert (decision_id, instrument_id, alert_type, severity, title, detail)
                    VALUES (%s, %s, 'options_recovery_ticket', 'medium', %s, %s)""",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -27,6 +28,125 @@ class PaperWorkbenchRepository:
 
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
+
+    def initialize_account(self, opening_cash: Any, *, authorization: str) -> dict[str, Any]:
+        amount = _decimal(opening_cash)
+        if amount is None or not 0 < amount < Decimal("1000000000000") or amount != amount.quantize(Decimal("0.01")):
+            raise ValueError("positive finite paper starting cash with at most two decimals is required")
+        if not authorization.strip():
+            raise ValueError("paper funding authorization is required")
+        from investment_panel.infrastructure.postgres.options_paper_ledger import acquire_shared_sleeve_lock
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            acquire_shared_sleeve_lock(connection)
+            existing = connection.execute("SELECT * FROM app.paper_account WHERE book = 'paper'").fetchone()
+            if existing:
+                if existing["opening_cash"] != amount:
+                    raise ValueError("paper account already initialized; opening history cannot be reset")
+                return dict(existing)
+            if connection.execute("SELECT EXISTS(SELECT 1 FROM app.paper_order) AS present").fetchone()["present"]:
+                raise ValueError("opening capital must be recorded before paper orders")
+            return dict(connection.execute(
+                "INSERT INTO app.paper_account (book, opening_cash, funding_note) VALUES ('paper', %s, %s) RETURNING *",
+                [amount, authorization.strip()],
+            ).fetchone())
+
+    def account(self, *, as_of: datetime | None = None, connection: Any | None = None) -> dict[str, Any]:
+        reference = as_of or datetime.now(UTC)
+        with (nullcontext(connection) if connection is not None else self.runtime.snapshot(JOB_PROFILE)) as connection:
+            capital = connection.execute("SELECT * FROM app.paper_account WHERE book = 'paper' AND opened_at <= %s", [reference]).fetchone()
+            if capital is None:
+                return {"status": "unfunded", "paper_only": True, "currency": "USD", "opening_cash": None,
+                        "cash_balance": None, "nav": None, "available_capital": None, "as_of": reference}
+            rows, total, _, _, _, _ = self._rows(["paper.book = 'paper'"], [], limit=MAX_PERFORMANCE_ROWS,
+                as_of=reference, compact=True, include_fill_rows=False, include_legs=True, connection=connection)
+        blockers = []
+        if total > MAX_PERFORMANCE_ROWS:
+            blockers.append("paper_account_population_exceeds_10000")
+        cash = Decimal(str(capital["opening_cash"]))
+        position_value = Decimal("0")
+        reserved = Decimal("0")
+        for row in rows:
+            if row["staged_at"] < capital["opened_at"] or row["staged_at"] > reference or (row["latest_fill_at"] and row["latest_fill_at"] > reference) or (row["updated_at"] and row["updated_at"] > reference):
+                blockers.append("paper_account_point_in_time_conflict")
+            if (row["recorded_filled_quantity"] is not None and row["recorded_filled_quantity"] != row["filled_quantity"]
+                or row["recorded_exited_quantity"] is not None and row["recorded_exited_quantity"] != row["exited_quantity"]):
+                blockers.append("paper_order_fill_quantity_conflict")
+            if row["paper_status"] in {"entered", "partial_exited", "exited"} and row["filled_quantity"] <= 0:
+                blockers.append("paper_fill_journal_missing")
+            if row["cash_flow"] is None:
+                blockers.append("paper_fill_cash_flow_unreconciled")
+            else:
+                cash += Decimal(str(row["cash_flow"]))
+            if row["remaining_quantity"] > 0:
+                if row["mark_value"] is None:
+                    blockers.append("paper_position_mark_unavailable")
+                else:
+                    position_value += Decimal(str(row["mark_value"]))
+            if row["paper_status"] not in {"staged", "pending", "submitted", "open", "entered", "partial_exited"}:
+                continue
+            ticket = row["execution"]["ticket_snapshot"]
+            risk = ticket.get("risk") or {}
+            legs = row["execution"]["legs"]
+            multiplier = _decimal(row["execution"]["multiplier"])
+            if multiplier is None and legs:
+                multipliers = {_decimal(leg.get("multiplier")) for leg in legs}
+                if len(multipliers) == 1:
+                    multiplier = multipliers.pop()
+            quantity = _decimal(row["requested_quantity"])
+            filled = Decimal(str(row["filled_quantity"]))
+            remaining = Decimal(str(row["remaining_quantity"]))
+            unfilled = max(quantity - filled, Decimal("0")) if quantity and row["paper_status"] in {"staged", "pending", "submitted", "open"} else Decimal("0")
+            if row["structure"] in {"cash_secured_put", "put_credit_spread", "call_credit_spread"}:
+                unit = _decimal(risk.get("one_unit_collateral") if row["structure"] == "cash_secured_put" else risk.get("one_unit_max_loss"))
+                if row["structure"] == "cash_secured_put" and len(legs) == 1 and multiplier:
+                    strike = _decimal(legs[0].get("strike"))
+                    unit = strike * multiplier if strike else None
+                if unit is None or unit <= 0:
+                    blockers.append("paper_credit_collateral_unavailable")
+                else:
+                    reserved += unit * (remaining + unfilled)
+                    if row["structure"] != "cash_secured_put" and remaining:
+                        entry = _decimal(row["entry_price"])
+                        if entry is None or multiplier is None or multiplier <= 0:
+                            blockers.append("paper_credit_collateral_unavailable")
+                        else:
+                            reserved += entry * multiplier * remaining
+            elif row["execution"]["side"] == "sell" and row["structure"] not in {"equity", ""}:
+                blockers.append("paper_credit_collateral_unavailable")
+            elif unfilled:
+                price = _decimal(row["staged_limit_price"])
+                if price is None or price <= 0 or multiplier is None or multiplier <= 0:
+                    blockers.append("paper_entry_reservation_unavailable")
+                else:
+                    reserved += price * multiplier * unfilled
+            if unfilled:
+                if legs:
+                    from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
+                    reserved += Decimal(str(FEE_PER_CONTRACT_LEG)) * len(legs) * unfilled
+                else:
+                    reserved += (_decimal(row["execution"]["policy_result"].get("fee_per_unit")) or Decimal("0")) * unfilled
+        nav = cash + position_value
+        complete = not blockers
+        return {"status": "complete" if complete else "incomplete", "paper_only": True, "currency": "USD",
+                "source_id": "paper_account", "opening_cash": _money(capital["opening_cash"]),
+                "opened_at": capital["opened_at"], "authorization": capital["funding_note"], "as_of": reference,
+                "cash_balance": _money(cash) if complete else None, "nav": _money(nav) if complete else None,
+                "net_pnl": _money(nav - capital["opening_cash"]) if complete else None,
+                "return_pct": float((nav - capital["opening_cash"]) / capital["opening_cash"]) if complete else None,
+                "reserved_capital": _money(reserved) if complete else None,
+                "available_capital": _money(max(Decimal("0"), min(cash - reserved, nav))) if complete else None,
+                "blockers": sorted(set(blockers)), "order_count": total,
+                "accounting_basis": "Explicit simulated opening cash plus verified journal cash flows and current position marks"}
+
+    def require_reserved_capacity(self, connection: Any) -> None:
+        """Validate the staged order inside the caller's shared sleeve lock."""
+        account = self.account(connection=connection)
+        if account["status"] == "unfunded":
+            return
+        if account["status"] != "complete":
+            raise ValueError("paper account evidence incomplete: " + ", ".join(account["blockers"]))
+        if account["cash_balance"] < account["reserved_capital"] or account["nav"] <= 0:
+            raise ValueError("insufficient unreserved paper cash including entry fees")
 
     def observations(self, *, status: str | None = None, offset: int = 0, limit: int = 20) -> dict[str, Any]:
         """Prospective experiments remain separate from the funded order ledger."""
@@ -345,8 +465,10 @@ class PaperWorkbenchRepository:
                 "drawdown": _money(drawdown),
                 "trade_id": point["trade_id"],
             })
+        account = self.account(as_of=as_of)
+        filtered_scope = any((sleeve, symbol, instrument_kind, strategy_revision, lifecycle, date_from, date_to, lane, structure, evidence_class, reconciliation_status))
         missing = _missing_reasons(rows)
-        if "opening_capital_unavailable" not in missing:
+        if account["status"] == "unfunded":
             missing.append("opening_capital_unavailable")
         if total > MAX_PERFORMANCE_ROWS:
             missing.append("performance_population_bounded_at_10000_rows")
@@ -429,12 +551,13 @@ class PaperWorkbenchRepository:
             "unrealized_pnl": known_unrealized,
             "open_exposure": _money(open_exposure) if exposure_rows else 0.0 if not open_rows else None,
             "open_exposure_status": "complete" if len(exposure_rows) == len(open_rows) else "partial",
-            "nav": None,
-            "nav_status": "unavailable",
-            "return_pct": None,
-            "return_status": "unavailable",
-            "capital_status": "unavailable",
-            "flow_status": "unavailable",
+            "account": account,
+            "nav": account.get("nav") if not filtered_scope else None,
+            "nav_status": account["status"] if not filtered_scope else "account_scope_only",
+            "return_pct": account.get("return_pct") if not filtered_scope else None,
+            "return_status": "account_scope_only" if filtered_scope else account["status"],
+            "capital_status": "recorded" if account["status"] != "unfunded" else "unavailable",
+            "flow_status": account["status"],
             "drawdown": _money(max_drawdown) if series and realized_complete else None,
             "evidence_coverage": {
                 "filled_orders": counts["filled_orders"],
@@ -483,8 +606,8 @@ class PaperWorkbenchRepository:
                 "statistics_basis": "full scoped paper-order population; realized series only; no annualized statistics",
                 "drawdown_basis": "cumulative verified realized net P&L, not NAV",
                 "unavailable_series_reasons": {
-                    "nav": "opening_capital_and_paper_cash_flows_unavailable",
-                    "capital_normalized_return": "opening_capital_unavailable",
+                    "nav": "historical_position_marks_unavailable" if account["status"] != "unfunded" else "opening_capital_unavailable",
+                    "capital_normalized_return": "historical_position_marks_unavailable" if account["status"] != "unfunded" else "opening_capital_unavailable",
                 },
             },
             "attribution": visuals["attribution"],
@@ -549,11 +672,12 @@ class PaperWorkbenchRepository:
         compact: bool = False,
         include_fill_rows: bool = True,
         include_legs: bool = True,
+        connection: Any | None = None,
     ) -> tuple[list[dict[str, Any]], int, int, dict[str, int], datetime | None, datetime]:
         as_of = as_of or datetime.now(UTC)
         if as_of.tzinfo is None:
             raise ValueError("paper workbench snapshot must be timezone-aware")
-        with self.runtime.snapshot(JOB_PROFILE) as connection:
+        with (nullcontext(connection) if connection is not None else self.runtime.snapshot(JOB_PROFILE)) as connection:
             count_row = connection.execute(
                 f"""SELECT count(*) AS count,
                            count(*) FILTER (WHERE paper.status = ANY(%s::text[])) AS pending,
@@ -721,6 +845,8 @@ class PaperWorkbenchRepository:
                    paper.exit_at AS paper_exit_at,
                    paper.side,
                    paper.quantity AS requested_quantity,
+                   paper.filled_quantity AS recorded_filled_quantity,
+                   paper.exited_quantity AS recorded_exited_quantity,
                    paper.limit_price AS staged_limit_price,
                    paper.status AS paper_status,
                    paper.policy_result,
@@ -1450,6 +1576,14 @@ def paper_trade_payload(row: dict[str, Any]) -> dict[str, Any]:
         "model_revision": row.get("model_version"),
     }
     return {
+        "cash_flow": _money((entry_units - exit_units if credit else exit_units - entry_units)
+                            * multiplier - (_decimal(row.get("actual_fees")) or Decimal("0")))
+                     if has_fill and fees_verified and multiplier_verified and multiplier and 0 <= exit_quantity <= filled
+                     else 0.0 if not has_fill and exit_quantity == 0 else None,
+        "latest_fill_at": row.get("latest_fill_at"),
+        "updated_at": row.get("updated_at"),
+        "recorded_filled_quantity": _number(row.get("recorded_filled_quantity")),
+        "recorded_exited_quantity": _number(row.get("recorded_exited_quantity")),
         "record_kind": "paper_trade" if has_fill else "paper_order",
         "paper_order_id": row.get("paper_order_id"),
         "book": row.get("book") or "paper",

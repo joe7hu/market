@@ -1453,3 +1453,35 @@ def test_multiple_public_paper_orders_cannot_supply_one_selected_execution_sampl
         )
     readiness = StrategyGovernanceRepository(runtime).promotion_readiness(candidate, cutoff=cutoff)
     assert blocker in readiness["blockers"] and readiness["promotion_eligible"] is False
+
+
+def test_funded_paper_account_stages_without_broker_cash(experiment_context, application_postgres_dsn, monkeypatch):
+    from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+    owner, ingestion, now, _parent, _candidate = experiment_context
+    application = DatabaseRuntime(application_postgres_dsn)
+    application.open()
+    try:
+        book = PaperWorkbenchRepository(application)
+        book.initialize_account(100000, authorization='Explicit test paper funding')
+        ready = _ready_paper_publication(experiment_context, monkeypatch, analysis_runtime=application)
+        with owner.transaction() as connection:
+            connection.execute('DELETE FROM raw.broker_account_snapshot')
+        staged = ActionRepository(application).stage_option_paper_entry(
+            decision_id=ready.decision_id, idempotency_key='funded-paper', ticket_version=1,
+            quantity=1, limit_price=.5, current_options_risk_sleeve_capital=25000,
+            experiment_publication_id=ready.publication_id,
+        )
+        account = book.account()
+        assert account['status'] == 'complete', account
+        assert account['reserved_capital'] == 50.65
+        assert account['available_capital'] == 99949.35
+        _capture(owner, ingestion, now + timedelta(seconds=10), ask_size=1)
+        filled = OptionsPaperExecutionRepository(application)._manage_one(staged['paper_order_id'], now + timedelta(seconds=11))
+        assert filled['status'] == 'filled'
+        account = book.account(as_of=now + timedelta(seconds=12))
+        assert account['status'] == 'complete', account
+        assert account['cash_balance'] == 99949.35
+        assert account['reserved_capital'] == 0
+        assert account['nav'] <= 100000
+    finally:
+        application.close()

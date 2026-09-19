@@ -38,6 +38,17 @@ class RecoveryOrderLifecycle:
         )
         leg_count = max(1, len(ticket.get("legs") or ()))
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            from investment_panel.infrastructure.postgres.options_paper_ledger import acquire_shared_sleeve_lock
+            acquire_shared_sleeve_lock(connection)
+            current = connection.execute("SELECT * FROM app.paper_order WHERE id = %s FOR UPDATE", [order["id"]]).fetchone()
+            if current is None or float(current["exited_quantity"] or 0) > sum(fill.quantity for fill in result.exit_fills):
+                return {"paper_order_id": str(order["id"]), "status": "unchanged"}
+            order = {**order, **dict(current)}
+            multipliers = connection.execute(
+                "SELECT DISTINCT contract.multiplier FROM app.paper_order_leg leg JOIN catalog.option_contract contract ON contract.id = leg.contract_id WHERE leg.paper_order_id = %s", [order["id"]],
+            ).fetchall()
+            if result.entry_fill_at and (len(multipliers) != 1 or float(multipliers[0]["multiplier"]) != 100):
+                return {"paper_order_id": str(order["id"]), "status": "blocked", "reason": "verified_standard_contract_multiplier_required"}
             if result.entry_fill_at and order.get("filled_at") is None:
                 connection.execute("UPDATE app.paper_order SET status = 'entered', actual_fill_price = %s, filled_at = %s WHERE id = %s", [result.entry_fill_price, result.entry_fill_at, order["id"]])
                 lifecycle_expires_at = event_strip_expiration_after_fill(result.entry_fill_at)
@@ -60,7 +71,7 @@ class RecoveryOrderLifecycle:
                     [lifecycle_expires_at, lifecycle_expires_at, order["event_id"]],
                 )
                 _journal(connection, order, action="paper_entry", quantity=int(order["quantity"]), price=result.entry_fill_price,
-                         key=f"recovery:{order['id']}:entry", details={"paper_order_id": str(order["id"])})
+                         key=f"recovery:{order['id']}:entry", details={"paper_order_id": str(order["id"]), "fees": FEE_PER_CONTRACT_LEG * leg_count * int(order["quantity"]), "contract_multiplier": 100})
             for fill in result.exit_fills:
                 net_pnl = None
                 if result.entry_fill_price is not None:
@@ -72,9 +83,23 @@ class RecoveryOrderLifecycle:
                          price=fill.executable_price, key=f"recovery:{order['id']}:exit:{fill.observed_at.isoformat()}:{fill.reason}",
                          details={
                              "paper_order_id": str(order["id"]),
+                             "fees": FEE_PER_CONTRACT_LEG * leg_count * fill.quantity,
+                             "entry_contract_multiplier": 100, "exit_contract_multiplier": 100,
                              "session_number": fill.session_number,
                              "net_pnl": round(net_pnl, 2) if net_pnl is not None else None,
                          })
+            if result.entry_fill_at:
+                exited = sum(fill.quantity for fill in result.exit_fills)
+                entry_fees = FEE_PER_CONTRACT_LEG * leg_count * int(order["quantity"])
+                exit_fees = FEE_PER_CONTRACT_LEG * leg_count * exited
+                last_exit = result.exit_fills[-1] if result.exit_fills else None
+                connection.execute(
+                    """UPDATE app.paper_order SET filled_quantity = quantity, exited_quantity = %s,
+                       contract_multiplier = 100, entry_fees = %s, exit_fees = %s, fees = %s,
+                       exit_at = %s, exit_price = %s, updated_at = %s WHERE id = %s""",
+                    [exited, entry_fees, exit_fees, entry_fees + exit_fees,
+                     last_exit.observed_at if last_exit else None, last_exit.executable_price if last_exit else None, now, order["id"]],
+                )
             status = _order_status(result, int(order["quantity"]))
             if status != order["status"]:
                 connection.execute("UPDATE app.paper_order SET status = %s, entry_capture_count = %s WHERE id = %s", [status, result.entry_capture_count, order["id"]])

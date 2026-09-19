@@ -10,6 +10,20 @@ from investment_panel.domain.portfolio.risk_policy import compile_risk_policy_sn
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
+def option_account_snapshot(runtime: DatabaseRuntime, connection: Any, *, as_of: datetime | None) -> dict[str, Any] | None:
+    """Paper funding owns paper capacity once explicitly initialized."""
+    from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+    account = PaperWorkbenchRepository(runtime).account(as_of=as_of, connection=connection)
+    if account["status"] != "unfunded":
+        return {**account, "net_liquidation": account["nav"], "buying_power": account["available_capital"],
+                "observed_at": account["as_of"]}
+    return connection.execute(
+        """SELECT source_id, net_liquidation, cash_balance, buying_power, observed_at
+           FROM raw.broker_account_snapshot WHERE (%s::timestamptz IS NULL OR observed_at <= %s)
+           ORDER BY observed_at DESC, id DESC LIMIT 1""", [as_of, as_of],
+    ).fetchone()
+
+
 def option_risk_contexts(
     runtime: DatabaseRuntime,
     symbols: Iterable[str],
@@ -19,17 +33,8 @@ def option_risk_contexts(
     options_risk_sleeve_capital: float | None = None,
 ) -> dict[str, dict[str, Any]]:
     normalized = sorted({str(symbol).upper() for symbol in symbols if str(symbol).strip()})
-    with runtime.read() as connection:
-        account_query = """
-            SELECT source_id, net_liquidation, cash_balance, buying_power, observed_at
-            FROM raw.broker_account_snapshot
-        """
-        account_params: list[Any] = []
-        if evaluated_at is not None:
-            account_query += " WHERE observed_at <= %s"
-            account_params.append(evaluated_at)
-        account_query += " ORDER BY observed_at DESC, id DESC LIMIT 1"
-        account = connection.execute(account_query, account_params).fetchone()
+    with runtime.snapshot() as connection:
+        account = option_account_snapshot(runtime, connection, as_of=evaluated_at)
         exposure_filter = " AND paper_order.created_at <= %s" if evaluated_at is not None else ""
         exposure_params: list[Any] = []
         if evaluated_at is not None:
@@ -44,17 +49,22 @@ def option_risk_contexts(
                 THEN coalesce(
                   (paper_order.ticket_snapshot->'risk'->>'total_risk')::numeric,
                   paper_order.quantity * option_decision.max_loss
-                ) ELSE 0 END), 0) AS defined_risk,
+                ) * remaining.fraction ELSE 0 END), 0) AS defined_risk,
               coalesce(sum(CASE WHEN (
                     paper_order.ticket_version IS NOT NULL
                     OR option_decision.decision_id IS NOT NULL
                   ) AND paper_order.structure = 'cash_secured_put'
-                THEN paper_order.reserved_collateral ELSE 0 END), 0) AS csp_collateral,
-              coalesce(sum(commitment.amount), 0) AS committed_capital,
+                THEN paper_order.reserved_collateral * remaining.fraction ELSE 0 END), 0) AS csp_collateral,
+              coalesce(sum(commitment.amount * remaining.fraction), 0) AS committed_capital,
               count(*) FILTER (WHERE commitment.amount IS NULL) AS unvalued_commitments
             FROM app.paper_order paper_order
             JOIN catalog.instrument instrument ON instrument.id = paper_order.instrument_id
             LEFT JOIN analysis.option_decision option_decision ON option_decision.decision_id = paper_order.decision_id
+            CROSS JOIN LATERAL (
+              SELECT CASE WHEN paper_order.status IN ('entered', 'partial_exited')
+                THEN greatest(coalesce(paper_order.filled_quantity, paper_order.quantity) - coalesce(paper_order.exited_quantity, 0), 0) / nullif(paper_order.quantity, 0)
+                ELSE 1 END AS fraction
+            ) remaining
             CROSS JOIN LATERAL (
               SELECT CASE
                 WHEN candidate.amount IS NOT NULL
@@ -75,7 +85,7 @@ def option_risk_contexts(
                 END AS amount
               ) candidate
             ) commitment
-            WHERE paper_order.status IN ('staged', 'open', 'entered'){exposure_filter}
+            WHERE paper_order.status IN ('staged', 'open', 'entered', 'partial_exited'){exposure_filter}
             GROUP BY instrument.symbol
             """,
             exposure_params,
@@ -105,10 +115,10 @@ def option_risk_contexts(
     if has_unvalued_commitment:
         broker_available = None
         broker_nav = None
-    elif broker_available is not None:
+    elif broker_available is not None and account["source_id"] != "paper_account":
         broker_available = max(broker_available - total_committed, 0.0)
     account_facts = {
-        "account_source": "postgresql",
+        "account_source": "paper_account" if account and account["source_id"] == "paper_account" else "postgresql",
         "broker_available_capital": broker_available,
         "broker_net_liquidation": broker_nav,
         "cash_balance": float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,

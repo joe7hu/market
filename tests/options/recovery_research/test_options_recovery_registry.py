@@ -199,6 +199,7 @@ class _StageResult:
 
 class _StageConnection:
     def __init__(self) -> None:
+        self.order = None
         self.statements: list[str] = []
         self.calls: list[tuple[str, object]] = []
 
@@ -211,6 +212,10 @@ class _StageConnection:
     def execute(self, statement: str, _: object = None) -> _StageResult:
         self.statements.append(statement)
         self.calls.append((statement, _))
+        if "SELECT * FROM app.paper_order" in statement:
+            return _StageResult(self.order)
+        if "SELECT DISTINCT contract.multiplier" in statement:
+            return _StageResult(rows=[{"multiplier": 100}])
         if "SELECT id, status FROM app.paper_order" in statement:
             return _StageResult()
         if "FROM analysis.option_event_signal signal" in statement:
@@ -302,6 +307,7 @@ def test_paper_entry_extends_the_event_tape_from_the_actual_fill() -> None:
         "ticket_snapshot": {"entry": {"limit_price": 1.01}, "legs": [{"contract_id": 42}]},
     }
 
+    connection.order = {**order, "exited_quantity": 0}
     managed = repository._manage_order(order, NOW)
 
     assert managed["status"] == "entered"
