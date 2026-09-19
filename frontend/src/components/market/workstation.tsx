@@ -38,7 +38,8 @@ export const navItems: NavItem[] = [
   { to: "/today", label: "Today", icon: Home, aliases: ["/", "/dashboard"] },
   { to: "/market", label: "Market", icon: Database },
   { to: "/opportunities", label: "Opportunities", icon: Eye, aliases: ["/watchlist"] },
-  { to: "/portfolio/paper", label: "Portfolio", icon: Landmark, aliases: ["/portfolio"] },
+  { to: "/portfolio", label: "Real portfolio", icon: Landmark, end: true },
+  { to: "/portfolio/paper", label: "Paper trading", icon: Landmark },
   { to: "/research", label: "Research", icon: Mic, aliases: ["/sources", "/research-queue"] },
 ];
 
@@ -158,7 +159,7 @@ function MainNav({ pathname, onNavigate }: { pathname: string; onNavigate: () =>
   return (
     <nav className="space-y-1" aria-label="Main navigation">
       {navItems.map((item) => {
-        const active = pathname === item.to || item.aliases?.includes(pathname) || (item.to !== "/" && pathname.startsWith(`${item.to}/`));
+        const active = pathname === item.to || item.aliases?.includes(pathname) || (!item.end && item.to !== "/" && pathname.startsWith(`${item.to}/`));
         return (
           <NavLink
             key={item.to}

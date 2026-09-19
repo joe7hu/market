@@ -8,7 +8,8 @@ describe("primary navigation", () => {
       ["Today", "/today"],
       ["Market", "/market"],
       ["Opportunities", "/opportunities"],
-      ["Portfolio", "/portfolio/paper"],
+      ["Real portfolio", "/portfolio"],
+      ["Paper trading", "/portfolio/paper"],
       ["Research", "/research"],
     ]);
   });

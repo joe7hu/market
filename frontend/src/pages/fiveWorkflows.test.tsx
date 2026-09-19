@@ -8,7 +8,8 @@ describe("primary workflows", () => {
       { label: "Today", to: "/today" },
       { label: "Market", to: "/market" },
       { label: "Opportunities", to: "/opportunities" },
-      { label: "Portfolio", to: "/portfolio/paper" },
+      { label: "Real portfolio", to: "/portfolio" },
+      { label: "Paper trading", to: "/portfolio/paper" },
       { label: "Research", to: "/research" },
     ]);
   });

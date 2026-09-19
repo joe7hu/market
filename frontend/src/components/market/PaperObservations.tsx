@@ -28,7 +28,7 @@ export function PaperObservations() {
           <option value="">All</option>{["pending", "entered", "closed", "unfilled", "rejected", "unmeasurable"].map((value) => <option key={value} value={value}>{humanize(value)}</option>)}
         </select>
       </label>
-      {page ? <p className="text-sm">{page.counts.pending ?? 0} awaiting entry · {page.counts.entered ?? 0} open · {page.counts.closed ?? 0} closed · {page.counts.unfilled ?? 0} unfilled</p> : null}
+      {page ? <p className="text-sm">{page.counts.pending ?? 0} awaiting entry · {page.counts.entered ?? 0} open · {page.counts.closed ?? 0} closed · {page.counts.unfilled ?? 0} unfilled · {page.counts.rejected ?? 0} rejected</p> : null}
     </CardHeader>
     <CardContent>
       {error ? <p role="alert" className="text-destructive">{error}</p> : !page ? <p role="status">Loading experiments…</p> : <>
