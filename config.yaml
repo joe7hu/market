@@ -145,6 +145,7 @@ analysis:
     # Enable automatic promotion only after the stored deterministic
     # backtest/forward-shadow/canary gates pass.  This changes paper signal
     # policy, not brokerage behavior.
+    strategy_experiment_collection_enabled: true
     strategy_auto_promotion_enabled: true
     event_agent_debounce_minutes: 30
     event_agent_max_batches_per_symbol_per_day: 2

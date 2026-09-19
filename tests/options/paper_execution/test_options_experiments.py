@@ -100,7 +100,7 @@ def test_application_login_produces_and_advances_experiment_shadows(experiment_c
         _capture(owner, ingestion, now)
         incumbent = refresh_options_radar(application, source_id="test-experiment", code_version="application-producer")
         assert incumbent["shadow_trades"] == 1
-        enabled = typed_config(application_postgres_dsn, raw={"analysis": {"options_decision_system": {"strategy_auto_promotion_enabled": True}}})
+        enabled = typed_config(application_postgres_dsn, raw={"analysis": {"options_decision_system": {"strategy_experiment_collection_enabled": True, "strategy_auto_promotion_enabled": True}}})
         candidate_run = run_experiments(application, enabled)
         assert candidate_run["status"] == "ok" and candidate_run["candidate_revision_id"] == candidate
         assert candidate_run["publication"]["shadow_trades"] == 1
@@ -153,7 +153,7 @@ def test_incumbent_and_candidate_gain_real_forward_calibration_before_promotion(
     assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=66))["entered"] == 2
     assert advance_experiment_shadows(runtime, now=now + timedelta(seconds=67))["closed"] == 0
     _capture(runtime, ingestion, now + timedelta(seconds=90), bid=1.1, ask=1.12)
-    disabled = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=SimpleNamespace(strategy_auto_promotion_enabled=False)))
+    disabled = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=SimpleNamespace(strategy_experiment_collection_enabled=False, strategy_auto_promotion_enabled=False)))
     completed = run_experiments(runtime, disabled, now=now + timedelta(seconds=91))
     assert completed["status"] == "disabled" and completed["observations"]["closed"] == 2
     with runtime.read() as connection:
@@ -410,7 +410,7 @@ def test_scheduled_candidate_staging_uses_a_clock_after_its_publication(experime
 
     monkeypatch.setattr("investment_panel.jobs.options_paper_execution.refresh_options_radar", publish)
     monkeypatch.setattr(OptionsPaperExecutionRepository, "stage_current_ready", stage)
-    settings = SimpleNamespace(strategy_auto_promotion_enabled=True, options_paper_actions_enabled=True, radar_paper_actions_enabled=True,
+    settings = SimpleNamespace(strategy_experiment_collection_enabled=True, strategy_auto_promotion_enabled=True, options_paper_actions_enabled=True, radar_paper_actions_enabled=True,
                                options_risk_sleeve_capital=25000, daily_loss_halt_pct=.02, max_recovery_open_positions=2)
     config = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=settings))
     assert run_experiments(runtime, config)["status"] == "ok"
@@ -449,7 +449,7 @@ def test_qualified_candidate_after_ten_blocked_candidates_is_not_starved(experim
             )
     monkeypatch.setattr("investment_panel.jobs.options_paper_execution.refresh_options_radar",
                         lambda *_args, **kwargs: {"candidate_revision_id": kwargs["candidate_revision_id"]})
-    settings = SimpleNamespace(strategy_auto_promotion_enabled=True, options_paper_actions_enabled=False,
+    settings = SimpleNamespace(strategy_experiment_collection_enabled=True, strategy_auto_promotion_enabled=True, options_paper_actions_enabled=False,
                                options_risk_sleeve_capital=25000)
     result = run_experiments(runtime, SimpleNamespace(analysis=SimpleNamespace(options_decision_system=settings)))
     assert result["status"] == "ok" and result["candidate_revision_id"] == candidate

@@ -359,7 +359,8 @@ def test_lane_switches_only_control_entry_staging(
     result = options_paper_execution.run("config.yaml")
 
     assert result["paper_only"] is True
-    assert result["experiments"]["status"] == "disabled" and result["experiments"]["observations"]["closed"] == 1
+    assert result["observations"]["closed"] == 1
+    assert result["research_job"] == "run_option_paper_experiments"
     assert calls["process"]["enabled_lanes"] == expected_lanes
 
 

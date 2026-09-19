@@ -54,32 +54,34 @@ class OptionsPaperExecutionRepository:
         now: datetime | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        """Stage eligible tickets, then attempt deterministic fill/exit marks."""
+        """Manage existing risk before admitting new immutable paper tickets."""
 
         reference = _utc(now)
         lanes = tuple(sorted({str(lane).lower() for lane in enabled_lanes} & GENERIC_LANES))
-        staged = (
-            self.stage_current_ready(
+        managed = self.manage_orders(
+            lanes=GENERIC_LANES,
+            decision_inbox_enabled=decision_inbox_enabled,
+            now=reference,
+            limit=limit,
+        )
+        staging_error = None
+        try:
+            staged = self.stage_current_ready(
                 enabled_lanes=lanes,
                 sleeve_capital=sleeve_capital,
                 daily_loss_halt_pct=daily_loss_halt_pct,
                 max_open_positions=max_open_positions,
                 now=reference,
                 limit=limit,
-            )
-            if lanes
-            else []
-        )
-        managed = self.manage_orders(
-            # Entry switches only control staging.  Every existing generic
-            # position remains in lifecycle management until it is terminal.
-            lanes=GENERIC_LANES,
-            decision_inbox_enabled=decision_inbox_enabled,
-            now=reference,
-            limit=limit,
-        )
+            ) if lanes else []
+        except Exception as error:
+            # Lifecycle writes above have their own transaction boundary. Keep
+            # their results visible while reporting entry processing as failed.
+            staged = []
+            staging_error = f"{type(error).__name__}: {error}"
         return {
-            "status": "ok",
+            "status": "partial" if staging_error else "ok",
+            "staging_error": staging_error,
             "paper_only": True,
             "staged": staged,
             "managed": managed,

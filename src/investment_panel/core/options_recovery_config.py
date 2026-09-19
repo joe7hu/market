@@ -27,6 +27,8 @@ class OptionsDecisionSystemConfig:
     max_symbol_risk_pct: float = 0.04
     daily_loss_halt_pct: float = 0.04
     max_recovery_open_positions: int = 5
+    # Collecting candidate evidence does not authorize strategy promotion.
+    strategy_experiment_collection_enabled: bool = False
     strategy_auto_promotion_enabled: bool = False
     event_agent_debounce_minutes: int = 30
     event_agent_max_batches_per_symbol_per_day: int = 2
@@ -58,6 +60,7 @@ def options_decision_system_config(
         max_symbol_risk_pct=_float_or_nan(raw.get("max_symbol_risk_pct", 0.04)),
         daily_loss_halt_pct=_float_or_nan(raw.get("daily_loss_halt_pct", 0.04)),
         max_recovery_open_positions=_int_or_zero(raw.get("max_recovery_open_positions", 5)),
+        strategy_experiment_collection_enabled=raw.get("strategy_experiment_collection_enabled") is True,
         strategy_auto_promotion_enabled=bool(raw.get("strategy_auto_promotion_enabled", False)),
         event_agent_debounce_minutes=int(raw.get("event_agent_debounce_minutes", 30)),
         event_agent_max_batches_per_symbol_per_day=int(raw.get("event_agent_max_batches_per_symbol_per_day", 2)),

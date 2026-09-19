@@ -16,6 +16,7 @@ def test_deployed_config_enables_paper_signal_learning_without_live_brokerage() 
     assert settings.csp_paper_assignment_allowed is False
     assert settings.radar_paper_actions_enabled is True
     assert settings.qqq_paper_actions_enabled is True
+    assert settings.strategy_experiment_collection_enabled is True
     assert settings.strategy_auto_promotion_enabled is True
     assert settings.telegram_notifications_enabled is True
     assert settings.telegram_notifications_dry_run is False

@@ -235,6 +235,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "run_agent_experiment": lambda config_path: run_agent_experiment.run(config_path),
     "run_option_recovery_agents": lambda config_path: run_option_recovery_agents.run(config_path),
     "process_options_paper_orders": lambda config_path: options_paper_execution.run(config_path),
+    "run_option_paper_experiments": lambda config_path: options_paper_execution.run_research(config_path),
     "sync_decision_inbox": lambda config_path: decision_inbox.run(config_path),
     "refresh_symbol_decision_outcomes": lambda config_path: refresh_symbol_decision_outcomes.run(config_path),
     "run_stock_alpha_walk_forward": lambda config_path: stock_alpha_walk_forward.scheduled(config_path),

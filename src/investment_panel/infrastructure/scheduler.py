@@ -38,6 +38,7 @@ CONTINUOUS_SETTINGS_REFRESH_SECONDS = 60
 SCHEDULER_CAPACITY = 2
 FAST_DATABASE_JOBS = frozenset({"process_options_paper_orders", "sync_decision_inbox"})
 _scheduler_semaphore: asyncio.Semaphore | None = None
+_slow_job_semaphore: asyncio.Semaphore | None = None
 _active_jobs: dict[str, float] = {}
 _deferred_jobs = 0
 # Both recovery inputs are point-in-time tapes.  Keep their dispatches on their
@@ -263,9 +264,12 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     next_continuous_settings_refresh = time.monotonic() + CONTINUOUS_SETTINGS_REFRESH_SECONDS
     in_flight: dict[str, asyncio.Task] = {}
     global _scheduler_semaphore
+    global _slow_job_semaphore
     global _deferred_jobs
     previous_semaphore = _scheduler_semaphore
+    previous_slow_semaphore = _slow_job_semaphore
     _scheduler_semaphore = asyncio.Semaphore(SCHEDULER_CAPACITY)
+    _slow_job_semaphore = asyncio.Semaphore(SCHEDULER_CAPACITY - 1)
     _deferred_jobs = 0
 
     try:
@@ -320,6 +324,7 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
         if in_flight:
             await asyncio.gather(*in_flight.values(), return_exceptions=True)
         _scheduler_semaphore = previous_semaphore
+        _slow_job_semaphore = previous_slow_semaphore
         _deferred_jobs = 0
         raise
 
@@ -336,24 +341,31 @@ async def _dispatch(
         await _dispatch_once(job, db_path, config_path, due_at=due_at)
         return
     global _deferred_jobs
-    was_busy = semaphore.locked()
-    if was_busy:
-        _deferred_jobs += 1
+    # Acquire the slow-workload slot before total capacity. A queued collector
+    # must not reserve the last slot while a paper management tick is due.
+    slow = _slow_job_semaphore if job not in FAST_DATABASE_JOBS else None
+    _deferred_jobs += 1
+    slow_acquired = False
     acquired = False
+    waiting = True
     try:
+        if slow is not None:
+            await slow.acquire()
+            slow_acquired = True
         await semaphore.acquire()
         acquired = True
-    finally:
-        if was_busy and not acquired:
-            _deferred_jobs = max(0, _deferred_jobs - 1)
-    if was_busy:
         _deferred_jobs = max(0, _deferred_jobs - 1)
-    _active_jobs[job] = time.monotonic()
-    try:
+        waiting = False
+        _active_jobs[job] = time.monotonic()
         await _dispatch_once(job, db_path, config_path, due_at=due_at)
     finally:
-        _active_jobs.pop(job, None)
-        semaphore.release()
+        if waiting:
+            _deferred_jobs = max(0, _deferred_jobs - 1)
+        if acquired:
+            _active_jobs.pop(job, None)
+            semaphore.release()
+        if slow is not None and slow_acquired:
+            slow.release()
 
 
 async def _dispatch_once(

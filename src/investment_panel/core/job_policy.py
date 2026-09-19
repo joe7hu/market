@@ -66,6 +66,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("run_agent_experiment", timeout_seconds=1_200),
         _job("run_option_recovery_agents", timeout_seconds=600),
         _job("process_options_paper_orders", timeout_seconds=60),
+        _job("run_option_paper_experiments", timeout_seconds=900),
         _job("sync_decision_inbox", timeout_seconds=30),
         _job("refresh_symbol_decision_outcomes", timeout_seconds=900),
         _job("run_stock_alpha_walk_forward", timeout_seconds=1200, freshness_seconds=86400),
@@ -252,6 +253,9 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
     # positions safely after a kill switch is used.
     if paper_seconds > 0:
         intervals["process_options_paper_orders"] = paper_seconds
+    experiment_seconds = _env_int("MARKET_PAPER_EXPERIMENT_REFRESH_SECONDS", 300, allow_zero=True)
+    if decision_settings.strategy_experiment_collection_enabled and experiment_seconds > 0:
+        intervals["run_option_paper_experiments"] = experiment_seconds
     stock_outcome_seconds = _env_int("MARKET_SYMBOL_OUTCOME_REFRESH_SECONDS", 3600, allow_zero=True)
     if stock_outcome_seconds > 0:
         intervals["refresh_symbol_decision_outcomes"] = stock_outcome_seconds
@@ -309,6 +313,7 @@ def scheduler_status(config: AppConfig | None = None) -> dict[str, Any]:
         "preopen_brief_refresh_seconds": str(intervals.get("update_preopen_daily_brief_scheduled", 0)),
         "decision_inbox_refresh_seconds": str(intervals.get("sync_decision_inbox", 0)),
         "options_paper_execution_seconds": str(intervals.get("process_options_paper_orders", 0)),
+        "paper_experiment_refresh_seconds": str(intervals.get("run_option_paper_experiments", 0)),
         "symbol_outcome_refresh_seconds": str(intervals.get("refresh_symbol_decision_outcomes", 0)),
         "decision_model_refresh_seconds": str(intervals.get("refresh_decision_models", 0)),
         "radar_option_source": option_source,
