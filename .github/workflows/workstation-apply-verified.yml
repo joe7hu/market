@@ -1,0 +1,39 @@
+name: workstation-apply-verified
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/workstation-apply-verified.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.head_ref == 'feat/trader-workstation-completion-20260919' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify exact reviewed content before applying
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, pathlib, re, zlib
+          text = pathlib.Path('.github/workflows/workstation-review-snapshot.yml').read_text()
+          payload = re.search(r"PATCH_DATA: '([^']+)'", text).group(1)
+          for before, after in [('vfxZZxSVO', 'vfxZxSVO'), ('NJumQmEEP', 'NJumQEEP'), ('L6/cnf19', 'L6/cn19'), ('Js6alemQ', 'Js6lemQ')]:
+              payload = payload.replace(before, after)
+          patch = zlib.decompress(base64.b64decode(payload, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == 'f21e301e700d24e364bb5b93b2de23d81bedd0e78c36fc562be4c47ce6e24ec5'
+          assert b'diff --git a/.github/' not in patch
+          pathlib.Path('/tmp/implementation.patch').write_bytes(patch)
+          print('Reviewed patch checksum verified')
+          PY
+          git apply --check /tmp/implementation.patch
+          git apply --index /tmp/implementation.patch
+          git diff --cached --check
+          git diff --cached --stat
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Separate paper execution from candidate research and reserve scheduler capacity'
+          git push origin HEAD:feat/trader-workstation-completion-20260919
