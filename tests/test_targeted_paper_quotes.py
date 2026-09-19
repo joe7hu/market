@@ -1,7 +1,6 @@
 """A bounded readonly quote collector follows required contracts without enabling trading."""
 from dataclasses import replace
 from types import SimpleNamespace
-import pytest
 from investment_panel.settings import AppConfig
 from investment_panel.jobs import paper_quotes
 
@@ -53,8 +52,10 @@ def test_busy_provider_does_not_bypass_lease(monkeypatch):
 
 def test_failed_capture_releases_provider_lease(monkeypatch):
     calls = setup(monkeypatch, fail=True)
-    with pytest.raises(RuntimeError, match="quote provider unavailable"):
-        paper_quotes.run()
+    result = paper_quotes.run()
+    assert result["status"] == "failed" and result["source_status"] == "failed"
+    assert result["symbols_attempted"] == [f"T{i}" for i in range(8)]
+    assert "contracts_captured" not in result
     assert calls[-1] == ("release", "lease")
 
 

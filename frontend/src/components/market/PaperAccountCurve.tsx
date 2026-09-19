@@ -9,7 +9,9 @@ export function navSegments(points: NavPoints): NavPoints[] {
     if (point.status !== "complete" || point.nav == null || !Number.isFinite(point.nav) || !Number.isFinite(Date.parse(point.at))) { segments.push([]); continue; }
     const last = segments.at(-1)?.at(-1);
     // Missing hourly captures are gaps too, not continuous observations.
-    if (!segments.length || last && Date.parse(point.at) - Date.parse(last.at) > 2 * 3600000) segments.push([]);
+    const hour = Math.floor(Date.parse(point.at) / 3600000);
+    const lastHour = last ? Math.floor(Date.parse(last.at) / 3600000) : null;
+    if (!segments.length || last && (hour - lastHour! > 1 || Date.parse(point.at) <= Date.parse(last.at))) segments.push([]);
     segments[segments.length - 1].push(point);
   }
   return segments.filter(segment => segment.length);

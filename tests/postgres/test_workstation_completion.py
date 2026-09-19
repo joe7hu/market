@@ -113,3 +113,42 @@ def test_advanced_observations_keep_recent_each_series_beyond_global_500(runtime
     assert {row["dimension"] for row in rows} == {"a-dimension", "z-dimension"}
     assert all(row["value"] >= 222 for row in rows)
     assert all(row["source_id"] == "treasury" for row in rows)
+
+
+def test_budget_limited_manager_reaches_unchecked_tail_of_the_same_batch(runtime, monkeypatch):
+    """Batch claims are not evidence of checks, even if every row fits the batch."""
+    from investment_panel.infrastructure.postgres import options_paper_execution as owner
+    from types import SimpleNamespace
+    with runtime.transaction() as connection:
+        instrument = reconcile_instrument(connection, "BUDGET" + uuid4().hex[:6])
+        for _ in range(5):
+            connection.execute("INSERT INTO app.paper_order (instrument_id, side, quantity, status, lane, paper_only) VALUES (%s, 'buy', 1, 'staged', 'radar', true)", [instrument])
+    checked = []
+    repo = OptionsPaperExecutionRepository(runtime)
+    monkeypatch.setattr(repo, "_manage_one", lambda order_id, now: checked.append(order_id) or {"paper_order_id": order_id, "status": "staged"})
+    start = datetime.now(UTC)
+    for tick in range(5):
+        times = iter([0, 0, 9])
+        monkeypatch.setattr(owner, "time", SimpleNamespace(monotonic=lambda: next(times)))
+        result = repo.manage_orders(lanes=["radar"], decision_inbox_enabled=False,
+            now=start + timedelta(seconds=15 * tick), limit=5, max_work_seconds=8)
+        assert result[-1]["reason"] == "management_budget_exhausted"
+    assert len(checked) == len(set(checked)) == 5
+
+
+def test_failed_targeted_quote_symbols_do_not_starve_other_active_contracts(runtime, monkeypatch):
+    from psycopg.types.json import Jsonb
+    from investment_panel.infrastructure.postgres import options
+    now = datetime.now(UTC)
+    with runtime.transaction() as connection:
+        for symbol in ("FIRST", "SECOND"):
+            instrument = reconcile_instrument(connection, symbol)
+            contract = connection.execute("INSERT INTO catalog.option_contract (underlying_instrument_id, expiration, strike, option_type, multiplier, deliverable_key) VALUES (%s, %s, 100, 'call', 100, %s) RETURNING id",
+                [instrument, now.date() + timedelta(days=30), symbol]).fetchone()["id"]
+            order = connection.execute("INSERT INTO app.paper_order (instrument_id, side, quantity, status, lane, paper_only) VALUES (%s, 'buy', 1, 'staged', 'radar', true) RETURNING id", [instrument]).fetchone()["id"]
+            connection.execute("INSERT INTO app.paper_order_leg (paper_order_id, leg_index, contract_id, option_type, side, strike) VALUES (%s, 0, %s, 'call', 'buy', 100)", [order, contract])
+        connection.execute("INSERT INTO ops.job_run (job_name, status, started_at, finished_at, summary) VALUES ('refresh_paper_quotes', 'failed', %s, %s, %s)",
+            [now - timedelta(minutes=1), now, Jsonb({"source_id": "robinhood", "symbols_attempted": ["FIRST"]})])
+    monkeypatch.setattr(options, "runtime_for_config", lambda _: runtime)
+    selected = options.active_paper_contracts(AppConfig(), "robinhood")
+    assert [row["symbol"] for row in selected] == ["SECOND", "FIRST"]

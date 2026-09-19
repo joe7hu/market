@@ -19641,6 +19641,17 @@
       "WorkstationWorker": {
         "additionalProperties": true,
         "properties": {
+          "downstream_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downstream Status"
+          },
           "heartbeat_at": {
             "anyOf": [
               {
@@ -19707,6 +19718,17 @@
           "reason": {
             "title": "Reason",
             "type": "string"
+          },
+          "source_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Status"
           },
           "status": {
             "title": "Status",

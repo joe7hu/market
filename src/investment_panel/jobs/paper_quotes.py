@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
+import logging
 from investment_panel.settings import load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.options_history_policy import OptionHistoryPolicyRepository
 from investment_panel.domain.decision import is_market_open
 from investment_panel.core.robinhood_options import collect_robinhood_option_chains
 from investment_panel.infrastructure.postgres.options import active_paper_contracts, persist_collected_option_chains
+
+
+logger = logging.getLogger(__name__)
 
 
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
@@ -23,8 +27,9 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     required = active_paper_contracts(config, "robinhood")
     if not required:
         return {"status": "skipped", "reason": "no_active_contracts", "paper_only": True}
-    # The owner orders symbols with the oldest quotes first. Keep every leg
-    # for each selected symbol together, and rotate naturally as quotes land.
+    # The owner prioritizes least-recently attempted symbols, then old quotes.
+    # Failed/unsupported symbols must not repeatedly consume the first batch.
+    # Keep every leg for each selected symbol together.
     symbols = list(dict.fromkeys(row["symbol"] for row in required))[:8]
     selected = [row for row in required if row["symbol"] in symbols]
     bounded = replace(provider, max_collection_seconds=30, timeout_seconds=10)
@@ -34,14 +39,27 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     if lease is None:
         return {"status": "skipped", "reason": "provider_capacity_busy", "paper_only": True,
                 "contracts_required": len(required)}
+    source_status = "failed"
     try:
         collected = collect_robinhood_option_chains(bounded, symbols, required_contracts=selected, required_only=True)
+        source_status = "partial" if collected.get("errors") else "ok"
         persisted = persist_collected_option_chains(config, "robinhood", collected, universe="paper-tickets")
+    except Exception:
+        logger.exception("Targeted paper quote collection/persistence failed")
+        # The scheduler persists this failed attempt, including its universe,
+        # without treating it as a quote capture or resetting source freshness.
+        return {"status": "failed", "reason": "paper_quote_capture_failed", "paper_only": True,
+                "live_brokerage_submission": False, "source_id": "robinhood",
+                "source_status": source_status, "downstream_status": "failed" if source_status != "failed" else "not_run",
+                "symbols_attempted": symbols, "contracts_required": len(required),
+                "contracts_selected": len(selected)}
     finally:
         policy.release_provider_lease(lease.id)
     count = int(persisted.get("contract_count") or 0)
     return {"status": "partial" if collected.get("errors") or count < len(selected) else "ok",
-            "paper_only": True, "live_brokerage_submission": False, "contracts_required": len(required),
+            "paper_only": True, "live_brokerage_submission": False, "source_id": "robinhood",
+            "symbols_attempted": symbols, "source_status": source_status, "downstream_status": "ok",
+            "contracts_required": len(required),
             "contracts_selected": len(selected), "contracts_captured": count,
             "remaining_contracts": len(required) - len(selected), "run_id": persisted.get("run_id"),
             "errors": list(collected.get("errors") or [])[:5]}

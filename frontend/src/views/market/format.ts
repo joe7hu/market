@@ -125,7 +125,9 @@ export function postureFromScore(value: number): string {
 export function numeric(value: JsonValue | undefined): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value !== "string") return undefined;
-  const parsed = Number(value.replace(/[$,%_,]/g, ""));
+  const normalized = value.replace(/[$,%_,]/g, "").trim();
+  if (!normalized) return undefined;
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 

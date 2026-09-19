@@ -212,17 +212,21 @@ class OptionsPaperExecutionRepository:
         deadline = time.monotonic() + max_work_seconds
         with self.runtime.transaction(MANAGEMENT_PROFILE) as connection:
             # Claim fairly without calling an unprocessed claim a completed
-            # check. Metadata is separate from the accounting updated_at clock.
+            # check. Prefer actual checks before claim time: otherwise a tick
+            # that exhausts its budget after the first row can keep reclaiming
+            # the same batch and permanently starve its unchecked tail.
+            # Metadata is separate from the accounting updated_at clock.
             rows = connection.execute(
                 """
                 WITH due AS MATERIALIZED (
                     SELECT id, created_at,
+                           execution_quote #>> '{management,last_checked_at}' AS last_checked_at,
                            execution_quote #>> '{management,last_claimed_at}' AS last_claimed_at,
                            (coalesce(filled_quantity, 0) > coalesce(exited_quantity, 0)) AS exposed
                     FROM app.paper_order
                     WHERE lane = ANY(%s::text[]) AND event_id IS NULL
                       AND status NOT IN ('exited', 'invalidated', 'unfilled', 'rejected', 'unmeasurable')
-                    ORDER BY last_claimed_at NULLS FIRST, exposed DESC, created_at, id
+                    ORDER BY last_checked_at NULLS FIRST, last_claimed_at NULLS FIRST, exposed DESC, created_at, id
                     LIMIT %s FOR UPDATE SKIP LOCKED
                 ), claimed AS (
                     UPDATE app.paper_order paper
@@ -232,7 +236,7 @@ class OptionsPaperExecutionRepository:
                     FROM due WHERE paper.id = due.id
                     RETURNING paper.id
                 ) SELECT claimed.id::text FROM claimed JOIN due USING (id)
-                  ORDER BY due.last_claimed_at NULLS FIRST, due.exposed DESC, due.created_at, due.id
+                  ORDER BY due.last_checked_at NULLS FIRST, due.last_claimed_at NULLS FIRST, due.exposed DESC, due.created_at, due.id
                 """,
                 [normalized, max(1, min(int(limit), 100)), reference.isoformat()],
             ).fetchall()

@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import logging
+from math import isfinite
 from typing import Any
 
 from investment_panel.core.job_policy import scheduler_intervals, scheduler_enabled
-from investment_panel.domain.decision import is_market_open, is_us_market_day, market_session_bounds, MARKET_TZ
+from investment_panel.domain.decision import is_market_open, is_us_market_day, market_session_bounds, completed_trading_dates, MARKET_TZ
 from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime
 from investment_panel.settings import AppConfig
 from investment_panel.infrastructure.postgres.strategy_parameters import PARAMETER_FAILURE_VERDICTS
@@ -54,7 +55,7 @@ def worker_projection(row: dict[str, Any] | None, *, job: str, interval: int | N
                 last_attempt_at=row.get("started_at"), heartbeat_at=row.get("heartbeat_at"),
                 last_success_at=row.get("last_success_at"), run_id=str(row.get("id") or ""))
     finished = row.get("finished_at")
-    if interval and finished:
+    if enabled and interval and finished and row.get("status") != "running":
         base["next_expected_at"] = finished + timedelta(seconds=interval)
     status = str(row.get("status") or "unknown")
     last_activity = row.get("heartbeat_at") if status == "running" else finished or row.get("started_at")
@@ -68,6 +69,50 @@ def worker_projection(row: dict[str, Any] | None, *, job: str, interval: int | N
     if not enabled or not interval:
         base.update(status="disabled", reason="Not scheduled; last recorded run is shown for context.")
     return base
+
+
+def market_readiness(publication: dict[str, Any] | None, counts: dict[str, int],
+                     drivers: list[dict[str, Any]], *, failures: list[str], now: datetime,
+                     max_age_minutes: int) -> dict[str, Any]:
+    """A populated model is not necessarily usable evidence. Optional valuation
+    references do not prevent supported price/trend evidence from being shown.
+    """
+    result = {**(publication or {}), "models": counts, "repair_job": "refresh_market_publication",
+              "valuation_status": "available" if counts.get("market_valuation_reference_charts") else "not_available",
+              "status": "not_published", "reason": "No Market publication has been recorded.",
+              "dimensions": []}
+    if any(key in failures for key in ("market_publication", "market_models", "market_drivers")):
+        return {**result, "status": "unavailable", "reason": "Current Market evidence could not be read."}
+    if not publication:
+        return result
+    for name in ("Price Trend", "Market Breadth", "Risk Appetite"):
+        row = next((value for value in drivers if value.get("category") == name), {})
+        score = row.get("score")
+        usable = (row.get("current_status") == "available" and isinstance(score, (int, float))
+                  and not isinstance(score, bool) and isfinite(score))
+        horizons = row.get("horizon_coverage")
+        coverage = horizons.get("1-5 trading days") if isinstance(horizons, dict) else None
+        coverage = coverage if isinstance(coverage, dict) else {}
+        result["dimensions"].append({"name": name, "status": "available" if usable else "unavailable",
+            "blockers": row.get("blockers") or [], "source": row.get("source"),
+            "eligible_members": coverage.get("eligible_member_count"),
+            "available_members": coverage.get("available_member_count"),
+            "source_available_at": coverage.get("freshness_latest_available_at")})
+    usable = bool(counts.get("market_environment_assets")) and all(
+        row["status"] == "available" for row in result["dimensions"])
+    result.update(status="available" if usable else "partial",
+                  reason="Published price/trend baseline is available; valuation and advanced evidence have separate coverage."
+                  if usable else "The current publication exists, but required price/trend evidence is incomplete.")
+    cutoff, published = publication.get("input_cutoff"), publication.get("published_at")
+    if not isinstance(cutoff, datetime) or cutoff.tzinfo is None or cutoff > now:
+        return {**result, "status": "unavailable", "reason": "The publication input cutoff is missing or inconsistent."}
+    expected = completed_trading_dates(now, count=1)[0]
+    covered = completed_trading_dates(cutoff, count=1)[0]
+    result.update(expected_session=expected, evidence_session=covered)
+    if (covered < expected or not isinstance(published, datetime) or published.tzinfo is None
+        or published > now or (now - published).total_seconds() > max_age_minutes * 60):
+        result.update(status="stale", reason="Publication or its input cutoff is stale; rebuilding alone does not refresh old source facts.")
+    return result
 
 
 class WorkstationRepository:
@@ -108,6 +153,11 @@ class WorkstationRepository:
                 SELECT model_name, count(*)::int AS count FROM app.publication_content_item
                 WHERE publication_id = %s::uuid AND model_name = ANY(%s) GROUP BY model_name
             """, [market[0]["publication_id"], list(BASELINE_MODELS)]) if market else []
+            market_drivers = read("market_drivers", """
+                SELECT payload FROM app.publication_content_item
+                WHERE publication_id = %s::uuid AND model_name = 'market_environment_model'
+                ORDER BY rank LIMIT 12
+            """, [market[0]["publication_id"]]) if market else []
             orders = read("paper_orders", """
                 SELECT lane, status, count(*)::int AS count, min(created_at) AS oldest_at,
                        max(updated_at) AS last_transition_at,
@@ -161,16 +211,9 @@ class WorkstationRepository:
             for worker in workers:
                 worker.update(status="unavailable", reason="Worker state could not be read.")
         counts = {row["model_name"]: row["count"] for row in market_counts}
-        market_projection = {
-            **(market[0] if market else {}), "models": counts,
-            "status": "unavailable" if any(key in failures for key in ("market_publication", "market_models")) else
-                      "not_published" if not market else "partial" if any(not counts.get(key) for key in BASELINE_MODELS) else "available",
-            "repair_job": "refresh_market_publication",
-        }
-        if market_projection["status"] == "available" and market:
-            age = now - market[0]["published_at"]
-            if age.total_seconds() > config.analysis.market_publication_max_age_minutes * 60:
-                market_projection["status"] = "stale"
+        market_projection = market_readiness(market[0] if market else None, counts,
+            [row["payload"] for row in market_drivers if isinstance(row.get("payload"), dict)],
+            failures=failures, now=now, max_age_minutes=config.analysis.market_publication_max_age_minutes)
         order_counts: dict[str, int] = {}
         for row in orders:
             order_counts[row["status"]] = order_counts.get(row["status"], 0) + row["count"]
@@ -179,7 +222,7 @@ class WorkstationRepository:
             observation_counts[row["status"]] = observation_counts.get(row["status"], 0) + row["count"]
         blockers = []
         if market_projection["status"] != "available":
-            blockers.append({"capability": "Market", "reason": "Market publication is incomplete or unavailable.",
+            blockers.append({"capability": "Market", "reason": market_projection["reason"],
                              "action": "Rebuild from stored facts; inspect ingestion only if source facts are missing.",
                              "href": "/market", "job": "refresh_market_publication"})
         manager = next(row for row in workers if row["job"] == "process_options_paper_orders")

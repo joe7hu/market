@@ -18,7 +18,7 @@ def test_worker_status_is_not_investment_quality(status):
         "heartbeat_at": NOW, "started_at": NOW - timedelta(seconds=30)},
         job="process_options_paper_orders", interval=15, now=NOW, enabled=True)
     assert result["status"] == status
-    assert result["next_expected_at"] == NOW + timedelta(seconds=15)
+    assert result["next_expected_at"] == (None if status == "running" else NOW + timedelta(seconds=15))
 
 
 def test_source_success_with_downstream_failure_stays_partial():
@@ -62,3 +62,40 @@ def test_read_failure_is_not_reported_as_zero_or_healthy(failed_table):
         assert all(worker["status"] == "unavailable" for worker in status["workers"])
     if failed_table == "analysis.shadow_trade":
         assert status["observations"]["status"] == "unavailable"
+
+
+def test_disabled_worker_has_no_expected_dispatch():
+    result = worker_projection({"status": "succeeded", "finished_at": NOW},
+        job="j", interval=15, now=NOW, enabled=False)
+    assert result["status"] == "disabled" and result["next_expected_at"] is None
+
+
+def market_status(*, unavailable=False, cutoff=NOW, references=1, failures=None):
+    from investment_panel.infrastructure.postgres.workstation import BASELINE_MODELS, market_readiness
+    counts = dict.fromkeys(BASELINE_MODELS, 1)
+    counts["market_valuation_reference_charts"] = references
+    drivers = [{"category": name, "current_status": "unavailable" if unavailable else "available",
+                "score": None if unavailable else 0, "blockers": ["missing_prices"] if unavailable else []}
+               for name in ("Price Trend", "Market Breadth", "Risk Appetite")]
+    return market_readiness({"published_at": NOW, "input_cutoff": cutoff}, counts, drivers,
+        failures=failures or [], now=NOW, max_age_minutes=1440)
+
+
+def test_populated_placeholder_models_do_not_establish_market_readiness():
+    assert market_status(unavailable=True)["status"] == "partial"
+    assert market_status()["status"] == "available"  # a legitimate score of zero remains usable
+
+
+def test_optional_valuation_does_not_blank_supported_baseline():
+    result = market_status(references=0)
+    assert result["status"] == "available" and result["valuation_status"] == "not_available"
+
+
+def test_republishing_an_old_cutoff_does_not_make_it_current():
+    result = market_status(cutoff=NOW - timedelta(days=2))
+    assert result["status"] == "stale" and result["evidence_session"] < result["expected_session"]
+
+
+def test_unknown_market_evidence_is_not_counted_as_available():
+    assert market_status(failures=["market_drivers"])["status"] == "unavailable"
+    assert market_status(cutoff=None)["status"] == "unavailable"

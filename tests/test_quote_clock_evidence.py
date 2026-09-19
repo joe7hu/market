@@ -62,3 +62,34 @@ def test_ticket_does_not_coerce_malformed_liquidity_into_executable_size(field, 
         one_unit_max_loss=105, state="READY", evaluated_at=NOW, market_session="regular")
     assert ticket["legs"][0][field] is None
     assert ticket["state"] != "READY"
+
+
+@pytest.mark.parametrize("clock", ["observed_at", "available_at", "quote_time"])
+@pytest.mark.parametrize("value", [NOW.replace(tzinfo=None), "2026-09-18T15:30:00", "2026-09-18"])
+def test_execution_never_assumes_timezone_for_naive_quote_evidence(clock, value):
+    result = policy([leg(**{clock: value})])
+    assert result["blockers"]
+    ticket = build_option_trade_ticket(decision_id="test", symbol="ABC", structure="long_call",
+        expiration="2027-01-15", legs=[leg(**{clock: value})], entry_price=1.05,
+        one_unit_max_loss=105, state="READY", evaluated_at=NOW, market_session="regular")
+    # Explicit economic and availability clocks are binding. quote_time is an
+    # informational alias normalized from available_at when both are supplied.
+    if clock != "quote_time":
+        assert ticket["legs"][0][clock] is None
+
+
+@pytest.mark.parametrize("field", ["bid_size", "ask_size", "open_interest"])
+def test_direct_policy_does_not_accept_fractional_contract_counts(field):
+    assert policy([leg(**{field: 100.5})])["blockers"]
+
+
+def test_finite_quotes_with_overflowing_package_do_not_report_nan_slippage():
+    result = policy([leg(bid=1.1e308, ask=1.2e308), leg(contract_id="11", bid=1.1e308, ask=1.2e308)])
+    assert "finite_quote_package_required" in result["blockers"]
+    assert result["expected_slippage"] is None
+
+
+def test_a_single_finite_quote_does_not_overflow_midpoint():
+    result = policy([leg(bid=1.1e308, ask=1.2e308)])
+    assert not result["blockers"]
+    assert result["expected_slippage"] > 0

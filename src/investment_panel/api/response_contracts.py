@@ -121,6 +121,8 @@ class PaperTradePage(FlexibleResponse):
 
 
 class WorkstationWorker(FlexibleResponse):
+    source_status: str | None = None
+    downstream_status: str | None = None
     job: str
     status: str
     reason: str

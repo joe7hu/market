@@ -62,7 +62,6 @@ export function MarketEnvironmentPanel({
   freshness?: { status: string; reason: string };
 }) {
   const score = weightedDriverScore(rows);
-  const valuation = rows.find((row) => textField(row, ["category"]) === "Valuation");
   const trend = rows.find((row) => textField(row, ["category"]) === "Price Trend");
   const breadth = rows.find((row) => textField(row, ["category"]) === "Market Breadth");
   const risk = rows.find((row) => textField(row, ["category"]) === "Risk Appetite");
@@ -86,13 +85,14 @@ export function MarketEnvironmentPanel({
         <ScorePill value={score} posture={postureFromScore(score)} />
       </CardHeader>
       <CardContent className="space-y-4 p-4 pt-2">
+        <IndexBaseline rows={assetRows} />
         <div className="grid gap-2 sm:grid-cols-4">
-          <MiniMetric label="Valuation" value={formatScore(numberField(valuation, ["score"], Number.NaN))} />
+          <ValuationContext rows={referenceRows} />
           <MiniMetric label="Trend" value={formatScore(numberField(trend, ["score"], Number.NaN))} />
           <MiniMetric label="Breadth" value={formatScore(numberField(breadth, ["score"], Number.NaN))} />
           <MiniMetric label="Risk" value={formatScore(numberField(risk, ["score"], Number.NaN))} />
         </div>
-        <DriverRows rows={rows} />
+        <DriverRows rows={rows.filter(row => textField(row, ["category"]) !== "Valuation")} />
         <div className="grid gap-2 sm:grid-cols-2">
           <MiniMetric label="Valuation Series" value={`${referenceRows.length}`} />
           <MiniMetric label="Market Asset Rows" value={`${assetRows.length}`} />
@@ -102,6 +102,32 @@ export function MarketEnvironmentPanel({
       </CardContent>
     </Card>
   );
+}
+
+/** Observed context, not another inferred 0–100 valuation or trade score. */
+export function ValuationContext({ rows }: { rows: RowRecord[] }) {
+  const finite = rows.filter(row => Number.isFinite(numberField(row, ["latest_value"], Number.NaN)));
+  const row = finite.find(row => row.metric === "sp500_forward_pe") ?? finite[0];
+  return <div className="rounded-md border border-border bg-muted/30 p-3" aria-label="Observed valuation context">
+    <p className="text-xs text-muted-foreground">{row ? textField(row, ["label", "metric"], "Valuation reference") : "Valuation reference"}</p>
+    <p className="mt-1 text-sm font-semibold">{row ? formatMetricValue(numberField(row, ["latest_value"], Number.NaN), textField(row, ["suffix"])) : "Not available"}</p>
+    <p className="mt-1 text-[11px] text-muted-foreground">Context, not a score{row ? ` · ${textField(row, ["latest_date"]).slice(0, 10) || "Date not recorded"}` : " · source evidence required"}</p>
+  </div>;
+}
+
+export function IndexBaseline({ rows }: { rows: RowRecord[] }) {
+  const named = ["SPY", "QQQ", "IWM", "DIA"].flatMap(symbol => {
+    const row = rows.find(item => item.symbol === symbol);
+    return row && Number.isFinite(numberField(row, ["price"], Number.NaN)) && numberField(row, ["price"]) > 0 ? [row] : [];
+  });
+  if (!named.length) return null;
+  return <section aria-label="Observed index ETF baseline"><p className="mb-2 text-xs text-muted-foreground">Observed index ETF prices · independent of tracked-universe model coverage</p>
+    <div className="grid gap-2 sm:grid-cols-4">{named.map(row => <div key={String(row.symbol)} className="rounded-md border p-3">
+      <p className="text-sm font-semibold">{String(row.symbol)} · ${numberField(row, ["price"]).toFixed(2)}</p>
+      <p className="mt-1 text-xs">Last daily move: <ReturnCell value={numberField(row, ["return_1d"], Number.NaN)} /></p>
+      <p className="mt-1 text-[11px] text-muted-foreground">{textField(row, ["as_of"]).slice(0, 10) || "Date not recorded"} · {textField(row, ["source"], "Source not recorded")}</p>
+    </div>)}</div>
+  </section>;
 }
 
 export function MarketStateProjection({ snapshotRows, coverageRows, posteriorRows = [], coverageVectorRows = [], scenarioRows = [], optionSlaRows = [], observationRows = [] }: { snapshotRows: RowRecord[]; coverageRows: RowRecord[]; posteriorRows?: RowRecord[]; coverageVectorRows?: RowRecord[]; scenarioRows?: RowRecord[]; optionSlaRows?: RowRecord[]; observationRows?: RowRecord[] }) {

@@ -48,3 +48,15 @@ def test_missing_source_identity_is_not_invented(monkeypatch):
     row = source_row()
     del row["source_id"]
     assert not decode_through_publication(monkeypatch, row)
+
+
+def test_zero_valuation_reference_remains_zero_without_inventing_neutral_posture():
+    draft = publication.build_market_publication(as_of=datetime(2026, 9, 18, 20, 1, tzinfo=UTC), inputs={
+        "instrument_rows": [], "bars_by_id": {}, "price_rows": [],
+        "valuation_rows": [{"symbol": "SPY", "values": {"metric": "equity_risk_premium", "latest_value": 0, "value": 9}}],
+        "event_risk_evidence": {}, "corporate_cycle_evidence": {}, "crypto_volume_evidence": {},
+        "phase2_rows": [], "phase2_source_rows": [],
+    })
+    reference = draft["references"][0]
+    assert reference["latest_value"] == 0
+    assert reference["posture"] is None

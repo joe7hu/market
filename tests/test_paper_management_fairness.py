@@ -32,7 +32,9 @@ def test_one_bad_order_does_not_skip_other_claimed_positions(monkeypatch):
     assert checked == ["0", "1", "2"]
     assert results[0]["status"] == "failed" and results[1]["status"] == "entered"
     assert "SKIP LOCKED" in sql[0][0] and "last_claimed_at" in sql[0][0]
-    assert "last_checked_at" not in sql[0][0]
+    assert "ORDER BY last_checked_at NULLS FIRST, last_claimed_at NULLS FIRST" in sql[0][0]
+    claim_update = sql[0][0].split("SET execution_quote", 1)[1].split("FROM due", 1)[0]
+    assert "last_checked_at" not in claim_update
     assert "updated_at" not in sql[0][0]
 
 

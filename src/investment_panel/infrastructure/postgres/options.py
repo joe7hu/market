@@ -49,26 +49,41 @@ def active_paper_contracts(config: AppConfig, source_id: str) -> list[dict[str, 
                    UNION
                    SELECT CASE WHEN leg->>'contract_id' ~ '^[0-9]{1,18}$' THEN (leg->>'contract_id')::bigint END
                    FROM analysis.shadow_trade shadow
-                   CROSS JOIN LATERAL jsonb_array_elements(shadow.metrics->'ticket'->'legs') leg
+                   CROSS JOIN LATERAL jsonb_array_elements(CASE
+                       WHEN jsonb_typeof(shadow.metrics->'ticket'->'legs') = 'array'
+                       THEN shadow.metrics->'ticket'->'legs' ELSE '[]'::jsonb END) leg
                    WHERE shadow.source_kind = 'options_paper_experiment'
                      AND shadow.status IN ('pending', 'entered') AND shadow.metrics->>'source_id' = %s
+               ), recent_attempts AS MATERIALIZED (
+                   SELECT summary, finished_at FROM ops.job_run
+                   WHERE job_name = 'refresh_paper_quotes' AND finished_at <= now()
+                     AND summary->>'source_id' = %s
+                   ORDER BY finished_at DESC LIMIT 100
+               ), attempts AS (
+                   SELECT symbol, max(finished_at) AS last_attempt_at FROM recent_attempts
+                   CROSS JOIN LATERAL jsonb_array_elements_text(CASE
+                       WHEN jsonb_typeof(summary->'symbols_attempted') = 'array'
+                       THEN summary->'symbols_attempted' ELSE '[]'::jsonb END) AS attempted(symbol)
+                   GROUP BY symbol
                )
                SELECT instrument.symbol, contract.expiration::text AS expiration,
                       contract.id AS contract_id, contract.option_type, contract.strike::double precision AS strike
                FROM active
                JOIN catalog.option_contract contract ON contract.id = active.contract_id
                JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+               LEFT JOIN attempts ON attempts.symbol = instrument.symbol
                LEFT JOIN LATERAL (
                    SELECT max(quote.observed_at) AS observed_at FROM raw.option_quote quote
                    JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
-                   WHERE quote.contract_id = contract.id AND quote.available_at <= now()
+                   WHERE quote.contract_id = contract.id AND quote.available_at <= now() AND quote.observed_at <= now()
                      AND snapshot.source_id = %s AND snapshot.capture_state = 'complete'
                ) latest ON true
                WHERE contract.expiration >= (now() AT TIME ZONE 'America/New_York')::date
-               ORDER BY bool_or(latest.observed_at IS NULL) OVER (PARTITION BY instrument.symbol) DESC,
+               ORDER BY attempts.last_attempt_at NULLS FIRST,
+                        bool_or(latest.observed_at IS NULL) OVER (PARTITION BY instrument.symbol) DESC,
                         min(latest.observed_at) OVER (PARTITION BY instrument.symbol) NULLS FIRST,
                         instrument.symbol, contract.expiration, contract.option_type, contract.strike""",
-            [source_id, source_id],
+            [source_id, source_id, source_id],
         ).fetchall()]
 
 

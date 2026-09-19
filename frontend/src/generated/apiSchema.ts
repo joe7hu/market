@@ -8681,6 +8681,8 @@ export interface components {
         };
         /** WorkstationWorker */
         WorkstationWorker: {
+            /** Downstream Status */
+            downstream_status?: string | null;
             /** Heartbeat At */
             heartbeat_at?: string | null;
             /** Interval Seconds */
@@ -8695,6 +8697,8 @@ export interface components {
             next_expected_at?: string | null;
             /** Reason */
             reason: string;
+            /** Source Status */
+            source_status?: string | null;
             /** Status */
             status: string;
         } & {

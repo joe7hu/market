@@ -51,7 +51,7 @@ export function ResearchWorkbenchRoute() {
           ? loadResearchExperiments(controller.signal).then(value => { if (!controller.signal.aborted) setExperiments(value); })
           : Promise.all([loadLearningOverview(controller.signal), loadResearchEvents(controller.signal)]).then(([state, changes]) => { if (!controller.signal.aborted) { setOverview(state); setEvents(changes.rows); } });
     void request.catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Research workspace unavailable."); });
-    return () => controller.abort();
+    return () => { controller.abort(); moreController.current?.abort(); };
   }, [section, reload]);
 
   const loadMore = (kind: "strategies" | "predictions" | "experiments", cursor: string) => {
@@ -62,11 +62,11 @@ export function ResearchWorkbenchRoute() {
     setLoadingMore(true);
     const request = kind === "strategies" ? loadResearchStrategies(controller.signal, cursor) : kind === "predictions" ? loadResearchPredictions(controller.signal, cursor) : loadResearchExperiments(controller.signal, cursor);
     void request.then((next) => {
-      if (generation !== requestGeneration.current) return;
+      if (generation !== requestGeneration.current || controller.signal.aborted) return;
       if (kind === "strategies") setStrategies((current) => current ? { ...current, rows: [...current.rows, ...next.rows], next_cursor: next.next_cursor, count: next.count } : next as ResearchStrategyPage);
       if (kind === "predictions") setPredictions((current) => current ? { ...current, rows: [...current.rows, ...next.rows], next_cursor: next.next_cursor, count: next.count } : next as ResearchClaimPage);
       if (kind === "experiments") setExperiments((current) => current ? { ...current, rows: [...current.rows, ...next.rows], next_cursor: next.next_cursor, count: next.count } : next as ResearchExperimentPage);
-    }).catch((reason) => { if (generation === requestGeneration.current && !controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Older research records unavailable."); }).finally(() => { if (generation === requestGeneration.current) { setLoadingMore(false); moreController.current = null; } });
+    }).catch((reason) => { if (generation === requestGeneration.current && !controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Older research records unavailable."); }).finally(() => { if (generation === requestGeneration.current && !controller.signal.aborted) { setLoadingMore(false); moreController.current = null; } });
   };
 
   const strategy = overview?.strategy_lane ?? {};
@@ -77,10 +77,10 @@ export function ResearchWorkbenchRoute() {
     <div className="flex justify-end"><button className="rounded border px-3 py-2 text-sm" onClick={() => setReload(value => value + 1)}>Refresh evidence</button></div>
     <nav aria-label="Research sections" className="flex flex-wrap gap-2 border-b border-border pb-3 text-sm">{[["overview", "Overview"], ["strategies", "Strategies"], ["predictions", "Forecast quality"], ["experiments", "Comparisons"]].map(([key, label]) => <Link key={key} className={`rounded-md px-3 py-2 ${section === key ? "bg-primary text-primary-foreground" : "border border-border hover:bg-accent"}`} to={`/research?section=${key}`}>{label}</Link>)}</nav>
     {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
-    {section === "overview" ? <OverviewSection overview={overview} strategy={strategy} prediction={prediction} events={events} /> : null}
-    {section === "strategies" ? <StrategiesSection page={strategies} loadingMore={loadingMore} onLoadMore={(cursor) => loadMore("strategies", cursor)} /> : null}
-    {section === "predictions" ? <PredictionsSection page={predictions} prompts={prompts} loadingMore={loadingMore} onLoadMore={(cursor) => loadMore("predictions", cursor)} /> : null}
-    {section === "experiments" ? <ExperimentsSection page={experiments} loadingMore={loadingMore} onLoadMore={(cursor) => loadMore("experiments", cursor)} /> : null}
+    {section === "overview" && (!error || overview) ? <OverviewSection overview={overview} strategy={strategy} prediction={prediction} events={events} /> : null}
+    {section === "strategies" && (!error || strategies) ? <StrategiesSection page={strategies} loadingMore={loadingMore} onLoadMore={(cursor) => loadMore("strategies", cursor)} /> : null}
+    {section === "predictions" && (!error || predictions) ? <PredictionsSection page={predictions} prompts={prompts} loadingMore={loadingMore} onLoadMore={(cursor) => loadMore("predictions", cursor)} /> : null}
+    {section === "experiments" && (!error || experiments) ? <ExperimentsSection page={experiments} loadingMore={loadingMore} onLoadMore={(cursor) => loadMore("experiments", cursor)} /> : null}
   </div>;
 }
 
@@ -179,19 +179,19 @@ export function ComparisonVisual({ row }: { row: Record<string, any> }) {
     const correlation = numberValue(row.metrics?.return_correlation);
     return <div className="mt-4 rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground"><div className="flex items-center justify-between gap-3"><span>Comparison evidence</span><span>{matched ? `${matched} comparable cases` : "Waiting for paired cases"}</span></div>{correlation != null ? <div className="mt-2">Return path agreement: {percent(correlation)}</div> : null}<p className="mt-2">A paired return chart will appear when both sides have the same resolved evidence window.</p></div>;
   }
-  const pairs = comparisonMetricNames.flatMap(([key, label, kind]) => {
-    const baseline = numberValue(metrics.baseline[key]);
-    const challenger = numberValue(metrics.challenger[key]);
-    return baseline == null && challenger == null ? [] : [{ key, label, kind, baseline, challenger }];
+  const pairs = comparisonMetricNames.flatMap(([keys, label, kind]) => {
+    const key = keys.find(name => numberValue(metrics.baseline[name]) != null && numberValue(metrics.challenger[name]) != null)
+      ?? keys.find(name => numberValue(metrics.baseline[name]) != null || numberValue(metrics.challenger[name]) != null);
+    return key ? [{ key, label, kind, baseline: numberValue(metrics.baseline[key]), challenger: numberValue(metrics.challenger[key]) }] : [];
   });
   if (!pairs.length) return <div className="mt-4 rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">Paired outcomes are present, but no displayable performance metric is recorded yet.</div>;
-  return <div className="mt-4 rounded-lg border border-border p-3" aria-label="Baseline and challenger comparison"><div className="mb-3 flex flex-wrap gap-4 text-xs text-muted-foreground"><span><i className="mr-1 inline-block size-2 rounded-full bg-slate-500" />Baseline</span><span><i className="mr-1 inline-block size-2 rounded-full bg-violet-600" />Challenger</span></div><div className="space-y-3">{pairs.slice(0, 4).map((pair) => { const max = Math.max(0.01, Math.abs(pair.baseline ?? 0), Math.abs(pair.challenger ?? 0)); return <div key={pair.key}><div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{pair.label}</span><span className="text-muted-foreground">{formatComparison(pair.baseline, pair.kind)} / {formatComparison(pair.challenger, pair.kind)}</span></div><div className="mt-1 grid gap-1">{[["Baseline", pair.baseline, "bg-slate-500"], ["Challenger", pair.challenger, "bg-violet-600"]].map(([name, value, color]) => <div key={String(name)} className="flex items-center gap-2"><span className="w-16 text-[10px] text-muted-foreground">{name}</span><div className="h-1.5 flex-1 rounded-full bg-muted"><div className={`h-full rounded-full ${color}`} style={{ width: `${value == null ? 0 : Math.min(100, Math.max(4, Math.abs(Number(value)) / max * 100))}%` }} /></div></div>)}</div></div>; })}</div></div>;
+  return <div className="mt-4 rounded-lg border border-border p-3" aria-label="Baseline and challenger comparison"><div className="mb-3 flex flex-wrap gap-4 text-xs text-muted-foreground"><span><i className="mr-1 inline-block size-2 rounded-full bg-slate-500" />Baseline</span><span><i className="mr-1 inline-block size-2 rounded-full bg-violet-600" />Challenger</span></div><div className="space-y-3">{pairs.slice(0, 4).map((pair) => { const max = Math.max(0.01, Math.abs(pair.baseline ?? 0), Math.abs(pair.challenger ?? 0)); return <div key={pair.key}><div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{pair.label}</span><span className="text-muted-foreground">{formatComparison(pair.baseline, pair.kind)} / {formatComparison(pair.challenger, pair.kind)}</span></div><div className="mt-1 grid gap-1">{[["Baseline", pair.baseline, "bg-slate-500"], ["Challenger", pair.challenger, "bg-violet-600"]].map(([name, value, color]) => <div key={String(name)} className="flex items-center gap-2"><span className="w-16 text-[10px] text-muted-foreground">{name}</span><div className="relative h-2 flex-1 rounded-full bg-muted" aria-label={`${name}: ${formatComparison(value == null ? null : Number(value), pair.kind)}`}><span className="absolute left-1/2 top-0 h-full border-l border-muted-foreground/50" />{value == null ? null : <div className={`absolute h-full rounded-full ${color}`} style={{ ...(Number(value) < 0 ? { right: "50%" } : { left: "50%" }), width: `${Math.abs(Number(value)) / max * 50}%` }} />}</div></div>)}</div></div>; })}</div></div>;
 }
 
-const comparisonMetricNames: Array<[string, string, "money" | "percent" | "brier" | "number"]> = [
-  ["pnl", "P&L", "money"], ["net_pnl", "P&L", "money"], ["return", "Return", "percent"], ["return_pct", "Return", "percent"],
-  ["expectancy", "Expectancy", "percent"], ["brier_score", "Brier", "brier"], ["directional_accuracy", "Accuracy", "percent"],
-  ["lower_95", "Lower bound", "percent"], ["max_drawdown", "Max drawdown", "percent"], ["matched_outcomes", "Comparable cases", "number"],
+const comparisonMetricNames: Array<[string[], string, "money" | "percent" | "brier" | "number"]> = [
+  [["net_pnl", "pnl"], "P&L", "money"], [["return_pct", "return"], "Return", "percent"],
+  [["expectancy"], "Expectancy", "percent"], [["brier_score"], "Brier", "brier"], [["directional_accuracy"], "Accuracy", "percent"],
+  [["lower_95"], "Lower bound", "percent"], [["max_drawdown"], "Max drawdown", "percent"], [["matched_outcomes"], "Comparable cases", "number"],
 ];
 
 function comparisonSides(row: Record<string, any>): { baseline: Record<string, any>; challenger: Record<string, any> } | null {
