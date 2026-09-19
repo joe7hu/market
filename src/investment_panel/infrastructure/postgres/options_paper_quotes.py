@@ -7,6 +7,7 @@ package to decide whether that ticket could conservatively fill or exit.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Any
 
 
@@ -74,7 +75,7 @@ def latest_option_legs(
             "contract_id": str(contract_id),
             "option_type": str(ticket_leg.get("option_type") or quote["option_type"]),
             "side": str(ticket_leg.get("side") or "buy"),
-            "strike": float(quote["strike"]) if quote["strike"] is not None else None,
+            "strike": _number(quote.get("strike")),
             "bid": _number(quote.get("bid")),
             "ask": _number(quote.get("ask")),
             "bid_size": _integer(quote.get("bid_size")),
@@ -95,7 +96,7 @@ def package_price(legs: list[dict[str, Any]], *, phase: str) -> float | None:
 
     ``entry`` is the debit paid for a long/debit order or credit received for a
     short/credit order.  ``exit`` is the value received for a debit order or
-    debit paid to close a credit order.  A missing leg returns ``None``.
+    debit paid to close a credit order.  A missing or invalid leg returns ``None``.
     """
 
     if phase not in {"entry", "exit"} or not legs:
@@ -110,6 +111,9 @@ def package_price(legs: list[dict[str, Any]], *, phase: str) -> float | None:
             signed_cash += -bid if is_short else ask
         else:
             signed_cash += ask if is_short else -bid
+        # Even individually finite inputs can overflow when a package is summed.
+        if not isfinite(signed_cash):
+            return None
     # Debit tickets pay a positive entry amount, whereas credit tickets receive
     # a positive credit.  The same convention applies inversely at exit.
     return round(abs(signed_cash), 6)
@@ -128,18 +132,19 @@ def _contract_id(leg: dict[str, Any]) -> int | None:
 
 
 def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         result = float(value) if value not in (None, "") else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    return result
+    return result if result is not None and isfinite(result) else None
 
 
 def _integer(value: Any) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    # Do not silently truncate malformed quote sizes or OI into usable liquidity.
+    number = _number(value)
+    return int(number) if number is not None and number.is_integer() else None
 
 
 def _utc(value: Any) -> datetime | None:
