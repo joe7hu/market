@@ -921,6 +921,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/paper/account-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Paper Account History */
+        get: operations["paper_account_history_api_paper_account_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/paper/observations": {
         parameters: {
             query?: never;
@@ -1795,6 +1812,23 @@ export interface paths {
         patch: operations["set_watchlist_options_history_endpoint_api_watchlist_symbols__symbol__options_history_patch"];
         trace?: never;
     };
+    "/api/workstation/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Workstation Status */
+        get: operations["workstation_status_api_workstation_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2308,6 +2342,8 @@ export interface components {
              * @default paper_only
              */
             execution_mode: string;
+            /** Explanations */
+            explanations?: components["schemas"]["ContextualExplanation"][];
             /** Limitations */
             limitations?: string[];
             /** Missing Evidence */
@@ -2341,6 +2377,17 @@ export interface components {
              * @default false
              */
             requested_calculation: boolean;
+        };
+        /** ContextualExplanation */
+        ContextualExplanation: {
+            /** Answer */
+            answer: string;
+            /** Citation Ids */
+            citation_ids?: string[];
+            /** Question */
+            question: string;
+            /** Topic */
+            topic: string;
         };
         /** ContinuousAdvisorPromptStatusResponse */
         ContinuousAdvisorPromptStatusResponse: {
@@ -5488,6 +5535,41 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** PaperAccountHistory */
+        PaperAccountHistory: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Basis */
+            basis: string;
+            /**
+             * Book
+             * @default paper
+             */
+            book: string;
+            /** Days */
+            days: number;
+            /**
+             * Paper Only
+             * @default true
+             */
+            paper_only: boolean;
+            /** Points */
+            points?: components["schemas"]["PaperNavPoint"][];
+            /** Sampling */
+            sampling: string;
+            /** Status */
+            status: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        } & {
+            [key: string]: unknown;
+        };
         /**
          * PaperBookPerformance
          * @description Accounting projection with visible scope and evidence coverage.
@@ -5648,6 +5730,22 @@ export interface components {
             status: string;
             /** Trade Plan Id */
             trade_plan_id: string;
+        };
+        /** PaperNavPoint */
+        PaperNavPoint: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Nav */
+            nav?: number | null;
+            /** Net Pnl */
+            net_pnl?: number | null;
+            /** Status */
+            status: string;
+        } & {
+            [key: string]: unknown;
         };
         /** PaperObservationPage */
         PaperObservationPage: {
@@ -8523,6 +8621,89 @@ export interface components {
             /** Symbol */
             symbol: string;
         };
+        /** WorkflowBlocker */
+        WorkflowBlocker: {
+            /** Action */
+            action: string;
+            /** Capability */
+            capability: string;
+            /** Href */
+            href: string;
+            /** Job */
+            job?: string | null;
+            /** Reason */
+            reason: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** WorkstationStatus */
+        WorkstationStatus: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Blockers */
+            blockers?: components["schemas"]["WorkflowBlocker"][];
+            /** Evaluations */
+            evaluations?: {
+                [key: string]: unknown;
+            }[];
+            /** Failed Reads */
+            failed_reads?: string[];
+            /** Market */
+            market?: {
+                [key: string]: unknown;
+            };
+            /** Market Session */
+            market_session: string;
+            /** Next Session At */
+            next_session_at?: string | null;
+            /** Observations */
+            observations?: {
+                [key: string]: unknown;
+            };
+            /** Paper */
+            paper?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Paper Only
+             * @default true
+             */
+            paper_only: boolean;
+            /** Status */
+            status: string;
+            /** Workers */
+            workers?: components["schemas"]["WorkstationWorker"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /** WorkstationWorker */
+        WorkstationWorker: {
+            /** Downstream Status */
+            downstream_status?: string | null;
+            /** Heartbeat At */
+            heartbeat_at?: string | null;
+            /** Interval Seconds */
+            interval_seconds?: number | null;
+            /** Job */
+            job: string;
+            /** Last Attempt At */
+            last_attempt_at?: string | null;
+            /** Last Success At */
+            last_success_at?: string | null;
+            /** Next Expected At */
+            next_expected_at?: string | null;
+            /** Reason */
+            reason: string;
+            /** Source Status */
+            source_status?: string | null;
+            /** Status */
+            status: string;
+        } & {
+            [key: string]: unknown;
+        };
     };
     responses: never;
     parameters: never;
@@ -10162,6 +10343,37 @@ export interface operations {
             };
         };
     };
+    paper_account_history_api_paper_account_history_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperAccountHistory"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     paper_observations_api_paper_observations_get: {
         parameters: {
             query?: {
@@ -11747,6 +11959,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workstation_status_api_workstation_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkstationStatus"];
                 };
             };
         };

@@ -88,6 +88,8 @@ def one_unit_ticket(
             "bid_size": quote.bid_size,
             "ask_size": quote.ask_size,
             "quote_time": quote.available_at,
+            "available_at": quote.available_at,
+            "observed_at": quote.observed_at,
             "open_interest": quote.open_interest,
             "volume": quote.volume,
         }],

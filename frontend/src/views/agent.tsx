@@ -46,7 +46,9 @@ export function AgentPage() {
   const [research, setResearch] = useState<DailyResearchPrompt | null>(null);
   const [researchError, setResearchError] = useState("");
   const [draft, setDraft] = useState<ControlForm | null>(null);
-  const [ticker, setTicker] = useState("");
+  const [ticker, setTicker] = useState(() => typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("ticker") ?? "");
+  const [researchOpen, setResearchOpen] = useState(false);
+  const [runPage, setRunPage] = useState(0);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState<string>("");
   const [message, setMessage] = useState("");
@@ -71,10 +73,16 @@ export function AgentPage() {
 
   useEffect(() => {
     void refresh();
-    void loadAgentResearchPrompt()
-      .then((payload) => { setResearch(payload); setResearchError(""); })
-      .catch((exc) => setResearchError(exc instanceof Error ? exc.message : "Failed to load daily research prompt"));
+
   }, [refresh]);
+
+  useEffect(() => {
+    if (!researchOpen || research) return;
+    let cancelled = false;
+    void loadAgentResearchPrompt().then(payload => { if (!cancelled) { setResearch(payload); setResearchError(""); } })
+      .catch(exc => { if (!cancelled) setResearchError(exc instanceof Error ? exc.message : "Failed to load research packet"); });
+    return () => { cancelled = true; };
+  }, [researchOpen, research]);
 
   // While a run is pending, poll until a new agent_runs row lands (confirms success).
   useEffect(() => {
@@ -164,7 +172,7 @@ export function AgentPage() {
   const queue = data?.queue;
   const materialization = data?.materialization;
   const metrics: MetricSpec[] = [
-    ["Research coverage", research ? `${research.coverage.portfolio_positions + research.coverage.watchlist_symbols} names` : researchError ? "Unavailable" : "—", research ? `${research.coverage.portfolio_positions} held · ${research.coverage.watchlist_symbols} watched` : researchError || "loading context", research ? "info" : researchError ? "warn" : "muted"],
+    ["Research coverage", research ? `${research.coverage.portfolio_positions + research.coverage.watchlist_symbols} names` : researchError ? "Unavailable" : "On demand", research ? `${research.coverage.portfolio_positions} held · ${research.coverage.watchlist_symbols} watched` : researchError || "open the daily research packet to load", research ? "info" : researchError ? "warn" : "muted"],
     ["Auto-run", autoRun ? "On" : "Off", autoRun ? "scheduled pass enabled" : "scheduled pass paused", autoRun ? "good" : "muted"],
     ["On-demand", hasCommand ? "Ready" : "No provider", hasCommand ? "run / analyze available" : "select a provider and model below", hasCommand ? "good" : "warn"],
     ["Open queue", (queue?.total_open ?? 0).toLocaleString(), `${queue?.thesis_open ?? 0} thesis · ${queue?.postmortem_open ?? 0} pm`, queue?.total_open ? "warn" : "good"],
@@ -192,7 +200,7 @@ export function AgentPage() {
       {error ? <Notice tone="bad">{error}</Notice> : null}
 
       {researchError ? <Notice tone="bad">Daily research context unavailable: {researchError}</Notice> : null}
-      <DailyResearchPromptPanel research={research ?? undefined} />
+      <details className="rounded-xl border border-border bg-card p-4" onToggle={event => setResearchOpen(event.currentTarget.open)}><summary className="cursor-pointer font-semibold">Daily research packet — load on demand</summary>{researchOpen ? <DailyResearchPromptPanel research={research ?? undefined} /> : null}</details>
       {continuousError ? <Notice tone="bad">Continuous advisor unavailable: {continuousError}</Notice> : null}
       {continuous ? <ContinuousAdvisorPanel data={continuous} onSaved={(next) => setContinuous(next)} /> : null}
 
@@ -317,13 +325,14 @@ export function AgentPage() {
               </tr>
             </thead>
             <tbody>
-              {(data?.runs ?? []).map((run, index) => <RunRow key={run.id ?? index} run={run} />)}
+              {(data?.runs ?? []).slice(runPage * 20, (runPage + 1) * 20).map((run, index) => <RunRow key={run.id ?? index} run={run} />)}
               {!data?.runs?.length ? (
                 <tr><td colSpan={10} className="px-4 py-6 text-sm text-muted-foreground">No agent runs recorded yet.</td></tr>
               ) : null}
             </tbody>
           </table>
         </div>
+        <div className="flex items-center gap-3 border-t p-3 text-sm"><Button size="sm" variant="outline" disabled={runPage === 0} onClick={() => setRunPage(value => Math.max(0, value - 1))}>Previous</Button><span>Page {runPage + 1} · {data?.runs?.length ?? 0} loaded runs</span><Button size="sm" variant="outline" disabled={(runPage + 1) * 20 >= (data?.runs?.length ?? 0)} onClick={() => setRunPage(value => value + 1)}>Next</Button></div>
       </DataTableFrame>
     </WorkspacePage>
   );
@@ -338,8 +347,8 @@ function RunRow({ run }: { run: AgentRun }) {
       <td className="px-3 py-3">{titleLabel(run.workflow || "option_agent")}</td>
       <td className="px-3 py-3 font-medium">{run.ticker || "—"}</td>
       <td className="px-3 py-3 text-muted-foreground">{run.model || run.provider || "—"}</td>
-      <td className="px-3 py-3 tabular-nums">{(run.input_tokens ?? 0).toLocaleString()}{estimated} / {(run.output_tokens ?? 0).toLocaleString()}</td>
-      <td className="px-3 py-3 tabular-nums">${Number(run.est_cost_usd ?? 0).toFixed(4)}</td>
+      <td className="px-3 py-3 tabular-nums">{(run.input_tokens == null ? "—" : run.input_tokens.toLocaleString())}{estimated} / {(run.output_tokens == null ? "—" : run.output_tokens.toLocaleString())}</td>
+      <td className="px-3 py-3 tabular-nums">{run.est_cost_usd != null && Number.isFinite(Number(run.est_cost_usd)) ? `$${Number(run.est_cost_usd).toFixed(4)}` : "Not metered"}</td>
       <td className="px-3 py-3 tabular-nums">{run.thesis_accepted ?? 0}/{run.thesis_attempted ?? 0}</td>
       <td className="px-3 py-3 tabular-nums">{run.postmortem_accepted ?? 0}/{run.postmortem_attempted ?? 0}</td>
       <td className="px-3 py-3"><StatusBadge tone={toneFromText(run.status || "")}>{titleLabel(run.status || "unknown")}</StatusBadge></td>
@@ -371,6 +380,7 @@ function ContinuousAdvisorPanel({ data, onSaved }: { data: ContinuousAdvisor; on
   };
 
   const health = data.strategy_health;
+  const [visibleTickers, setVisibleTickers] = useState(6);
   return (
     <DataTableFrame title="Continuous Advisor" action={<StatusBadge tone={data.enabled ? "good" : "muted"}>{data.enabled ? "Enabled" : "Disabled"}</StatusBadge>}>
       <div className="space-y-4 p-4">
@@ -381,19 +391,17 @@ function ContinuousAdvisorPanel({ data, onSaved }: { data: ContinuousAdvisor; on
         </div>
         <p className="text-xs text-muted-foreground">Research-only five-minute minimum cadence; the default scheduler cadence is two hours. Missing or stale evidence is shown as a blocker and never inferred.</p>
         <div className="flex items-center justify-between gap-3">
-          <div className="text-sm">Active prompt <strong>{String(health.active_prompt_version ?? "unknown")}</strong> · challenger {String(health.challenger?.version ?? "none")} · coverage {String(health.coverage?.symbols ?? 0)} names · ${Number(health.coverage?.cost_usd ?? 0).toFixed(4)}</div>
+          <div className="text-sm">Active prompt <strong>{String(health.active_prompt_version ?? "unknown")}</strong> · challenger {String(health.challenger?.version ?? "none")} · coverage {String(health.coverage?.symbols ?? 0)} names · {health.coverage?.cost_usd != null && Number.isFinite(Number(health.coverage.cost_usd)) ? `$${Number(health.coverage.cost_usd).toFixed(4)}` : "Cost not metered"}</div>
           <Button type="button" variant="outline" disabled={busy} onClick={() => void save()}>{busy ? "Saving" : "Save advisor settings"}</Button>
         </div>
         {message ? <p className="text-sm text-emerald-700 dark:text-emerald-300">{message}</p> : null}
         {error ? <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p> : null}
 
         {data.tickers.length ? (
-          <div className="grid gap-3 lg:grid-cols-2">
-            {data.tickers.map((ticker) => <AdvisorTickerCard key={ticker.symbol} ticker={ticker} />)}
-          </div>
+          <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer font-medium">Monitored ticker results · {data.tickers.length} names</summary><div className="mt-3 grid gap-3 lg:grid-cols-2">{data.tickers.slice(0, visibleTickers).map((ticker) => <AdvisorTickerCard key={ticker.symbol} ticker={ticker} />)}</div>{visibleTickers < data.tickers.length ? <Button className="mt-3" size="sm" variant="outline" onClick={() => setVisibleTickers(value => value + 6)}>Show more results</Button> : null}</details>
         ) : <p className="text-sm text-muted-foreground">No owned or active-watchlist symbols are currently monitored.</p>}
         <div className="grid gap-3 rounded-lg border border-border bg-background p-4 text-sm sm:grid-cols-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Current prompt</p><p className="mt-1 font-semibold">{titleLabel(health.active_prompt_version ?? "Not selected")}</p></div><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Prompt being tested</p><p className="mt-1 font-semibold">{titleLabel(health.challenger?.version ?? "No challenger")}</p></div><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Learning state</p><p className="mt-1 font-semibold">{statusLabel(health.status ?? (health.coverage?.valid_resolved_forecast_count ? "collecting_outcomes" : "waiting"))}</p></div></div>
-        <TechnicalDetails title="Technical advisor health"><div className="space-y-2 text-xs text-muted-foreground"><p>Coverage: {String(health.coverage?.symbols ?? 0)} monitored symbols · {String(health.coverage?.responses ?? 0)} responses · ${Number(health.coverage?.cost_usd ?? 0).toFixed(4)} priced cost.</p><EvidenceFields value={health} /></div></TechnicalDetails>
+        <TechnicalDetails title="Technical advisor health"><div className="space-y-2 text-xs text-muted-foreground"><p>Coverage: {String(health.coverage?.symbols ?? 0)} monitored symbols · {String(health.coverage?.responses ?? 0)} responses · {health.coverage?.cost_usd != null && Number.isFinite(Number(health.coverage.cost_usd)) ? `$${Number(health.coverage.cost_usd).toFixed(4)}` : "Cost not metered"} priced cost.</p><EvidenceFields value={health} /></div></TechnicalDetails>
       </div>
     </DataTableFrame>
   );

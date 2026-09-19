@@ -202,7 +202,7 @@ def build_option_trade_ticket(
     quote_times = [
         quote_time
         for leg in normalized_legs
-        if (quote_time := _as_datetime(leg.get("quote_time"))) is not None
+        if (quote_time := _as_datetime(leg.get("observed_at"))) is not None
     ]
     valid_until = (
         min(quote_times) + timedelta(seconds=MAX_QUOTE_AGE_SECONDS)
@@ -367,6 +367,7 @@ def execution_policy(
         blockers.append("complete_legs_required")
         return {"blockers": blockers, "expected_slippage": None}
     observed_times: list[datetime] = []
+    availability_times: list[datetime] = []
     midpoint_package = 0.0
     executable_package = 0.0
     for leg in legs:
@@ -374,9 +375,9 @@ def execution_policy(
         if bid is None or ask is None or bid <= 0 or ask < bid:
             blockers.append("positive_uncrossed_bid_ask_required")
             continue
-        if (_number(leg.get("bid_size")) or 0) <= 0 or (_number(leg.get("ask_size")) or 0) <= 0:
+        if (_int_or_none(leg.get("bid_size")) or 0) <= 0 or (_int_or_none(leg.get("ask_size")) or 0) <= 0:
             blockers.append("displayed_size_required")
-        quote_time = _as_datetime(leg.get("quote_time"))
+        quote_time = _quote_datetime(leg.get("quote_time"))
         quote_age = (
             (_utc(evaluated_at) - quote_time).total_seconds()
             if evaluated_at is not None and quote_time is not None
@@ -384,12 +385,28 @@ def execution_policy(
         )
         if quote_age is None or quote_age < 0 or quote_age > MAX_QUOTE_AGE_SECONDS:
             blockers.append("quote_age_over_120_seconds")
-        observed = quote_time
-        if observed is not None:
+        # Observability and economic freshness are independent. In legacy
+        # ticket records quote_time was the provider observation clock. New
+        # database quote packages explicitly carry both clocks.
+        observed = _quote_datetime(leg.get("observed_at")) if "observed_at" in leg else quote_time
+        available = _quote_datetime(leg.get("available_at")) if "available_at" in leg else quote_time
+        if observed is None or available is None:
+            blockers.append("complete_quote_timestamps_required")
+        else:
             observed_times.append(observed)
-        if str(leg.get("side")) in {"long", "buy"} and (_number(leg.get("open_interest")) or 0) < MIN_LONG_LEG_OPEN_INTEREST:
+            availability_times.append(available)
+            if observed > available:
+                blockers.append("quote_observation_after_availability")
+            if evaluated_at is not None:
+                cutoff = _utc(evaluated_at)
+                if available > cutoff:
+                    blockers.append("quote_not_available_at_cutoff")
+                age = (cutoff - observed).total_seconds()
+                if age < 0 or age > MAX_QUOTE_AGE_SECONDS:
+                    blockers.append("quote_observation_stale")
+        if str(leg.get("side")) in {"long", "buy"} and (_int_or_none(leg.get("open_interest")) or 0) < MIN_LONG_LEG_OPEN_INTEREST:
             blockers.append("long_leg_open_interest_below_100")
-        midpoint = (bid + ask) / 2.0
+        midpoint = bid + (ask - bid) / 2.0
         direction = -1.0 if str(leg.get("side")) in {"short", "sell"} else 1.0
         midpoint_package += direction * midpoint
         executable_package += direction * (bid if direction < 0 else ask)
@@ -399,9 +416,14 @@ def execution_policy(
         blockers.append("complete_quote_timestamps_required")
     elif (max(observed_times) - min(observed_times)).total_seconds() > MAX_INTERLEG_SKEW_SECONDS:
         blockers.append("interleg_skew_over_5_seconds")
-    slippage = max(executable_package - midpoint_package, 0.0) if len(legs) > 1 else (
-        max(executable_package - midpoint_package, 0.0) if legs else None
-    )
+    if len(availability_times) == len(legs) and (max(availability_times) - min(availability_times)).total_seconds() > MAX_INTERLEG_SKEW_SECONDS:
+        blockers.append("interleg_availability_skew_over_5_seconds")
+    difference = executable_package - midpoint_package
+    if not all(isfinite(value) for value in (executable_package, midpoint_package, difference)):
+        blockers.append("finite_quote_package_required")
+        slippage = None
+    else:
+        slippage = max(difference, 0.0)
     debit = _positive_number(entry_price)
     if len(legs) > 1 and debit is not None and slippage is not None and slippage > debit * MAX_SPREAD_SLIPPAGE_FRACTION:
         blockers.append("package_slippage_over_15_percent")
@@ -625,7 +647,11 @@ def ticket_recommendation_fields(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ticket_leg(leg: dict[str, Any], evaluated_at: datetime) -> dict[str, Any]:
-    observed = _as_datetime(leg.get("observed_at") or leg.get("captured_at") or leg.get("quote_time"))
+    observed = (_quote_datetime(leg.get("observed_at")) if "observed_at" in leg else
+                _quote_datetime(leg.get("captured_at")) if "captured_at" in leg else
+                _quote_datetime(leg.get("quote_time")))
+    available = (_quote_datetime(leg.get("available_at")) if "available_at" in leg else
+                 _quote_datetime(leg.get("quote_time")) if "quote_time" in leg else observed)
     return {
         "contract_id": str(leg.get("contract_id") or ""),
         "option_type": str(leg.get("option_type") or ""),
@@ -635,7 +661,9 @@ def _ticket_leg(leg: dict[str, Any], evaluated_at: datetime) -> dict[str, Any]:
         "ask": _number(leg.get("ask")),
         "bid_size": _int_or_none(leg.get("bid_size")),
         "ask_size": _int_or_none(leg.get("ask_size")),
-        "quote_time": observed.isoformat() if observed else None,
+        "quote_time": available.isoformat() if available else None,
+        "observed_at": observed.isoformat() if observed else None,
+        "available_at": available.isoformat() if available else None,
         "quote_age_seconds": (evaluated_at - observed).total_seconds() if observed else None,
         "open_interest": _int_or_none(leg.get("open_interest")),
         "volume": _int_or_none(leg.get("volume")),
@@ -692,6 +720,15 @@ def _thesis_direction_blocker(structure: str, thesis: dict[str, Any]) -> str | N
     return None if direction in expected else "thesis_direction_conflicts_with_structure"
 
 
+def _quote_datetime(value: Any) -> datetime | None:
+    """Execution evidence must name a timezone; do not guess an exchange clock."""
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.astimezone(UTC) if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _as_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return _utc(value)
@@ -710,9 +747,9 @@ def _utc(value: datetime) -> datetime:
 def _number(value: Any) -> float | None:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    return number if isfinite(number) else None
+    return number if not isinstance(value, bool) and isfinite(number) else None
 
 
 def _positive_number(value: Any) -> float | None:
@@ -721,10 +758,8 @@ def _positive_number(value: Any) -> float | None:
 
 
 def _int_or_none(value: Any) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    number = _number(value)
+    return int(number) if number is not None and number >= 0 and number.is_integer() else None
 
 
 def _round_price(value: float | None) -> float | None:

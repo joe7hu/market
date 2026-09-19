@@ -120,7 +120,12 @@ def postmortem_system_prompt() -> str:
         "Use the supplied outcome, attribution, candidate, and thesis context. "
         "You may propose rule or parameter changes, but deterministic code decides "
         "backtests, forward tests, and paper-only promotion. Propose only the numeric "
-        "gates in the output schema; use null for unchanged gates. Do not change "
+        "gates in the output schema; use null for unchanged gates. Delta and spread "
+        "gates use fractions from 0 to 1, IV percentile uses 0 to 100, and DTE, "
+        "volume and open interest use whole numbers. Minimums must not exceed "
+        "maximums. Do not propose changes merely to generate activity: identify "
+        "a causal hypothesis, the supporting independent cases, and a condition "
+        "that would falsify it. Missing evidence is not a zero or a loss. Do not change "
         "strategy families, risk budgets, assignment permissions, or execution modes. "
         "Do not recommend trades."
     )

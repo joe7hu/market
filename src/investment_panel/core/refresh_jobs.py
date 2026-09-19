@@ -25,6 +25,8 @@ from investment_panel.infrastructure.postgres.jobs import JobRepository
 from investment_panel.infrastructure.postgres.options_history_policy import OptionHistoryPolicyRepository
 from investment_panel.jobs import (
     postgres_refresh,
+    market_publication,
+    paper_quotes,
     refresh_options_radar,
     run_option_agents,
     run_agent_experiment,
@@ -196,6 +198,8 @@ def run_source_with_material_thesis(
 
 
 ALLOWLIST: dict[str, JobRunner] = {
+    "refresh_market_publication": lambda config_path: market_publication.run(config_path),
+    "refresh_paper_quotes": lambda config_path: paper_quotes.run(config_path),
     "full_market_refresh": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
     "daily_screen": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
     "refresh_decision_models": lambda config_path: postgres_refresh.publish_decisions(
@@ -235,6 +239,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "run_agent_experiment": lambda config_path: run_agent_experiment.run(config_path),
     "run_option_recovery_agents": lambda config_path: run_option_recovery_agents.run(config_path),
     "process_options_paper_orders": lambda config_path: options_paper_execution.run(config_path),
+    "run_option_paper_experiments": lambda config_path: options_paper_execution.run_research(config_path),
     "sync_decision_inbox": lambda config_path: decision_inbox.run(config_path),
     "refresh_symbol_decision_outcomes": lambda config_path: refresh_symbol_decision_outcomes.run(config_path),
     "run_stock_alpha_walk_forward": lambda config_path: stock_alpha_walk_forward.scheduled(config_path),

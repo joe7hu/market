@@ -19,7 +19,12 @@ def published_tables(
 
     if not requested:
         return {}
-    with runtime.read() as connection:
+    market_names = set(requested) & {
+        "market_state_snapshot", "coverage_matrix", "market_valuation_reference_charts",
+        "market_environment_assets", "market_environment_model",
+    }
+    generic_names = tuple(name for name in requested if name not in market_names)
+    with runtime.snapshot() as connection:
         query = """
             WITH compact_latest AS MATERIALIZED (
                 SELECT DISTINCT ON (item.model_name)
@@ -60,7 +65,7 @@ def published_tables(
                 JOIN current_publication publication ON publication.id = latest.id
             )
         """
-        params: list[Any] = [list(requested), list(requested)]
+        params: list[Any] = [list(generic_names), list(generic_names)]
         source_filter = ""
         source_table = "published_rows"
         if symbols is not None:
@@ -91,7 +96,7 @@ def published_tables(
         limits_by_model = {
             name: max(1, int(limit))
             for name, limit in (row_limits or {}).items()
-            if name in requested and limit > 0
+            if name in generic_names and limit > 0
         }
         if limits_by_model:
             query += f"""
@@ -118,10 +123,10 @@ def published_tables(
                    OR ranked_rows.row_number <= requested_limit.row_limit
                 ORDER BY requested_limit.model_name, ranked_rows.rank
             """
-            params.extend((list(requested), [limits_by_model.get(name) for name in requested]))
+            params.extend((list(generic_names), [limits_by_model.get(name) for name in generic_names]))
         else:
             query += f" SELECT model_name, payload, publication_id, published_at, rank FROM {source_table} ORDER BY model_name, rank"
-        rows = connection.execute(query, params).fetchall()
+        rows = connection.execute(query, params).fetchall() if generic_names else []
         option_rows = (
             current_option_publication_rows(
                 connection,
@@ -131,6 +136,28 @@ def published_tables(
             if "option_radar_opportunity" in requested
             else None
         )
+        market_rows = []
+        if market_names:
+            market_rows = connection.execute(
+                """WITH latest AS (
+                    SELECT publication.id, publication.published_at FROM app.publication publication
+                    JOIN analysis.run run ON run.id = publication.analysis_run_id
+                    WHERE publication.scope = 'market' AND publication.status = 'published'
+                      AND publication.published_at <= now() AND run.status = 'succeeded'
+                    ORDER BY publication.published_at DESC, publication.id DESC LIMIT 1
+                ), ranked AS (
+                    SELECT item.model_name, item.payload, latest.id::text AS publication_id,
+                           latest.published_at, item.rank,
+                           count(*) OVER (PARTITION BY item.model_name) AS total_count,
+                           row_number() OVER (PARTITION BY item.model_name ORDER BY item.rank) AS row_number
+                    FROM latest JOIN app.publication_content_item item ON item.publication_id = latest.id
+                    WHERE item.model_name = ANY(%s)
+                ) SELECT ranked.* FROM ranked
+                  JOIN unnest(%s::text[], %s::integer[]) AS bounds(model_name, row_limit) USING (model_name)
+                  WHERE bounds.row_limit IS NULL OR ranked.row_number <= bounds.row_limit
+                  ORDER BY model_name, rank""",
+                [sorted(market_names), sorted(market_names), [(row_limits or {}).get(name) for name in sorted(market_names)]],
+            ).fetchall()
     output: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         model_name = str(row["model_name"])
@@ -146,6 +173,18 @@ def published_tables(
         if published_at is not None:
             payload.setdefault("publication_published_at", published_at.isoformat())
         output[model_name].append(payload)
+    if market_names:
+        # Apply bounds only after pinning all models to the same publication.
+        for name in market_names:
+            selected = [row for row in market_rows if row["model_name"] == name]
+            if total_counts is not None:
+                total_counts[name] = int(selected[0]["total_count"]) if selected else 0
+            bound = (row_limits or {}).get(name)
+            output[name] = [
+                {**dict(row["payload"] or {}), "publication_id": row["publication_id"],
+                 "publication_published_at": row["published_at"].isoformat()}
+                for row in (selected[:bound] if bound else selected)
+            ]
     if option_rows is not None:
         output["option_radar_opportunity"] = []
         for row in option_rows:

@@ -151,6 +151,7 @@ class ResearchWorkbenchRepository:
                        revision.falsification_rule, revision.source_definition_version,
                        COALESCE(evaluation_stats.evaluation_count, 0) AS evaluation_count,
                        evaluation_stats.last_evaluation_at,
+                       latest_evaluations.items AS evaluations,
                        COALESCE(paper_stats.paper_order_count, 0) AS paper_order_count,
                        hypothesis.statement AS hypothesis,
                        hypothesis.falsification AS hypothesis_falsification,
@@ -166,6 +167,14 @@ class ResearchWorkbenchRepository:
                       AND evaluation.evaluated_at <= now()
                       AND evaluation.available_at <= now()
                 ) evaluation_stats ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT jsonb_agg(to_jsonb(latest)) AS items FROM (
+                        SELECT DISTINCT ON (evaluation_type) evaluation_type, verdict, metrics, evidence,
+                               evaluated_at, available_at FROM analysis.strategy_evaluation
+                        WHERE strategy_revision_id = revision.id AND evaluated_at <= now() AND available_at <= now()
+                        ORDER BY evaluation_type, evaluated_at DESC, id DESC
+                    ) latest
+                ) latest_evaluations ON true
                 LEFT JOIN LATERAL (
                     SELECT count(DISTINCT paper.id) AS paper_order_count
                     FROM analysis.decision decision

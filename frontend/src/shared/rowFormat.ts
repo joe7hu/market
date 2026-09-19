@@ -21,7 +21,9 @@ export function numberField(row: RowRecord | undefined, keys: string[], fallback
     const value = row[key];
     if (typeof value === "number" && Number.isFinite(value)) return value;
     if (typeof value === "string") {
-      const parsed = Number(value.trim().replace(/[$,%_,]/g, ""));
+      const normalized = value.trim().replace(/[$,%_,]/g, "").trim();
+      if (!normalized) continue;
+      const parsed = Number(normalized);
       if (Number.isFinite(parsed)) return parsed;
     }
   }

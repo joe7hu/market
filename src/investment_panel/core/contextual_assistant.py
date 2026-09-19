@@ -15,7 +15,7 @@ def build_contextual_packet(payload: dict[str, Any], ticker: str) -> dict[str, A
     dossier = payload.get("dossier") if isinstance(payload.get("dossier"), dict) else {}
     sources = dossier.get("sources") if isinstance(dossier.get("sources"), dict) else {}
     coverage = sources.get("coverage") if isinstance(sources.get("coverage"), dict) else {}
-    source_ids = sorted({str(item) for item in coverage.get("sources", []) if str(item).strip()})
+    source_ids = sorted({str(item) for item in (coverage.get("sources") or []) if isinstance(item, str) and item.strip()}) if isinstance(coverage.get("sources"), list) else []
     missing: list[str] = []
     if not revision:
         missing.append("decision_revision")
@@ -23,6 +23,24 @@ def build_contextual_packet(payload: dict[str, Any], ticker: str) -> dict[str, A
         missing.append("input_manifest")
     if coverage.get("status") != "available":
         missing.append("source_evidence")
+    resolution = decision.get("resolution") if isinstance(decision.get("resolution"), dict) else {}
+    action = decision.get("capital_action") if isinstance(decision.get("capital_action"), dict) else {}
+    requests = [item for item in decision.get("data_requests", []) if isinstance(item, dict)][:12]
+    horizons = {name: decision.get(name) or {} for name in ("tactical", "fundamental")}
+    # Explicitly bounded presentation evidence. Do not serialize the raw input
+    # manifest, account credentials, or arbitrary provider payload into chat.
+    explanation_evidence = {
+        "action": resolution.get("action") or action.get("action"),
+        "eligibility": resolution.get("eligibility"),
+        "rationale": resolution.get("rationale") or action.get("rationale"),
+        "blockers": list(resolution.get("blockers") or []),
+        "next_action": resolution.get("next_action"),
+        "catalyst": resolution.get("catalyst") or action.get("catalyst"),
+        "price_condition": resolution.get("price_condition") or action.get("price_condition"),
+        "requests": [{key: item.get(key) for key in ("field", "why_it_matters", "owner", "collect_now", "required_source")} for item in requests],
+        "horizons": {name: {key: value.get(key) for key in ("stance", "action", "fact_that_would_flip", "evidence_against", "invalidation")}
+                     for name, value in horizons.items() if isinstance(value, dict)},
+    }
     identity = {
         "ticker": symbol,
         "decision_revision": revision,
@@ -31,6 +49,7 @@ def build_contextual_packet(payload: dict[str, Any], ticker: str) -> dict[str, A
         "coverage_status": coverage.get("status"),
         "source_ids": source_ids,
         "missing_evidence": missing,
+        "explanation_evidence": explanation_evidence,
     }
     packet_id = "packet:" + sha256(json.dumps(identity, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()[:24]
     citations = [{
@@ -40,8 +59,26 @@ def build_contextual_packet(payload: dict[str, Any], ticker: str) -> dict[str, A
         "available": bool(revision),
     }]
     citations.extend({"id": f"source:{source}", "label": source, "kind": "source", "available": True} for source in source_ids)
+    decision_citation = citations[0]["id"]
+    why = str(explanation_evidence["rationale"] or "No decision rationale was published for this revision.")
+    blockers = explanation_evidence["blockers"]
+    if blockers:
+        why += " Blocked by: " + "; ".join(str(value).replace("_", " ") for value in blockers[:8]) + "."
+    next_steps = [str(explanation_evidence["next_action"])] if explanation_evidence["next_action"] else []
+    next_steps.extend(f"{item['field']}: {item.get('collect_now') or item.get('why_it_matters') or 'inspect source coverage'} (owner: {item.get('owner') or 'not recorded'})" for item in explanation_evidence["requests"])
+    change = [f"{name}: " + str(values["fact_that_would_flip"].get("statement") or "No falsifying statement recorded")
+              for name, values in explanation_evidence["horizons"].items() if isinstance(values.get("fact_that_would_flip"), dict)]
+    explanations = [
+        {"topic": "decision", "question": "Why this decision?", "answer": why},
+        {"topic": "repair", "question": "What needs to happen next?", "answer": "\n".join(next_steps) or "No concrete next action was recorded. Open the full decision to inspect its missing evidence."},
+        {"topic": "countercase", "question": "What would change the thesis?", "answer": "\n".join(change) or "No falsifying fact was recorded in this decision."},
+    ]
+    for item in explanations:
+        item["citation_ids"] = [decision_citation] if revision else []
     return {
         "packet_id": packet_id,
+        "explanation_evidence": explanation_evidence,
+        "explanations": explanations,
         "ticker": symbol,
         "decision_revision": revision or None,
         "as_of": decision.get("as_of"),

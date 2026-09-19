@@ -1,5 +1,7 @@
 # Trader workstation audit and completion plan
 
+Implementation follow-through: see [the PR #35 engineering and local-verification handoff](trader-workstation-implementation-handoff.md). The findings below describe the original audited baseline, not the status of the updated branch.
+
 Baseline: `053d1d698e7034f70f285937d4c12d319582a26e` (September 19, 2026).
 Scope: the nine supplied production screenshots and the corresponding frontend,
 read-model, publication, strategy, and paper-execution paths. Screenshots and

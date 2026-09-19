@@ -86,7 +86,10 @@ POSTMORTEM_SCHEMA: dict[str, Any] = {
             "type": "object", "additionalProperties": False,
             "required": sorted(EVALUABLE_GATES),
             "properties": {
-                name: {"type": ["number", "null"], "minimum": 0}
+                name: {"type": ["integer" if name in {"min_dte", "max_dte", "min_volume", "min_open_interest"} else "number", "null"], "minimum": 0,
+                       **({"maximum": 1, "description": "Fraction from 0 to 1; null means unchanged."} if name in {"delta_min", "delta_max", "max_spread_pct"} else
+                          {"maximum": 100, "description": "Percentile from 0 to 100; null means unchanged."} if name == "max_iv_percentile" else
+                          {"description": "Nonnegative numeric gate; null means unchanged."})}
                 for name in sorted(EVALUABLE_GATES)
             },
         },

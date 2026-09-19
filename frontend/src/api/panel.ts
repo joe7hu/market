@@ -134,6 +134,7 @@ export async function loadTickerDecisionSnapshot(symbol: string): Promise<Ticker
 
 export type ContextualAssistantPacket = {
   packet_id: string;
+  explanations?: Array<{ topic: string; question: string; answer: string; citation_ids: string[] }>;
   ticker: string;
   decision_revision: string | null;
   as_of: string | null;
@@ -144,8 +145,8 @@ export type ContextualAssistantPacket = {
   limitations: string[];
 };
 
-export async function loadContextualAssistantPacket(symbol: string): Promise<ContextualAssistantPacket> {
-  return getJson<ContextualAssistantPacket>(`/api/tickers/${encodeURIComponent(symbol)}/assistant-packet`);
+export async function loadContextualAssistantPacket(symbol: string, signal?: AbortSignal): Promise<ContextualAssistantPacket> {
+  return getJson<ContextualAssistantPacket>(`/api/tickers/${encodeURIComponent(symbol)}/assistant-packet`, signal);
 }
 
 export async function loadSourceCatalog(): Promise<SourceCatalogPayload> {

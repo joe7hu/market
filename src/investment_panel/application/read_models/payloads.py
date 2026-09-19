@@ -44,7 +44,7 @@ def _backend_commit() -> str:
     try:
         repository = Path(__file__).resolve().parents[4]
         result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            ["git", "rev-parse", "HEAD"],
             cwd=repository,
             capture_output=True,
             text=True,

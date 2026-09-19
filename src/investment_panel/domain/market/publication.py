@@ -13,7 +13,7 @@ import hashlib
 import json
 import math
 from statistics import mean
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from investment_panel.domain.decision import (
     CoverageMatrix,
@@ -87,6 +87,7 @@ class MarketPublicationInputs(TypedDict):
     crypto_volume_evidence: dict[str, dict[str, Any]]
     phase2_rows: list[dict[str, Any]]
     phase2_source_rows: list[dict[str, Any]]
+    optional_errors: NotRequired[dict[str, str]]
 
 def build_market_publication(
     *,
@@ -116,36 +117,43 @@ def build_market_publication(
         as_of, assets, drivers, input_lineage, horizon_evidence, event_risk_evidence,
         volatility_evidence, corporate_cycle_evidence, crypto_volume_evidence,
     )
-    phase2_observations = _phase2_observations(phase2_rows)
-    phase2_lifecycle = _phase2_source_lifecycle(phase2_rows, phase2_source_rows)
-    phase2_statuses = _phase2_source_statuses(phase2_rows, phase2_source_rows)
-    phase2_run_ids = tuple(sorted({row.ingest_run_id for row in phase2_observations if row.ingest_run_id}))
-    phase2_content_hash = phase2_input_content_hash(phase2_observations)
-    phase2_posterior = build_market_state_posterior(
-        phase2_observations, as_of=as_of, source_lifecycle=phase2_lifecycle,
-        source_statuses=phase2_statuses, ingest_run_ids=phase2_run_ids,
-        input_content_hash=phase2_content_hash, parent_snapshot_id=snapshot.snapshot_id,
-    )
-    phase2_coverage = build_coverage_vector(
-        as_of,
-        {
-            "stock": {"daily": ("macro.value", "rates.nominal_yield", "credit.spread"), "positioning": ("positioning.flow",)},
-            "options": {"positioning": ("option.open_interest", "option.volume")},
-            "crypto": {"venue_derivatives": ("crypto.depth",)},
-        },
-        phase2_observations,
-        source_lifecycle=phase2_lifecycle,
-        source_statuses=phase2_statuses,
-        ingest_run_ids=phase2_run_ids,
-        input_content_hash=phase2_content_hash,
-        parent_snapshot_id=snapshot.snapshot_id,
-    )
-    phase2_scenarios = build_scenario_paths(snapshot.snapshot_id, phase2_posterior)
-    snapshot = snapshot.model_copy(update={
-        "phase2_posterior": phase2_posterior.model_dump(mode="json"),
-        "phase2_coverage_vector": phase2_coverage.model_dump(mode="json"),
-        "phase2_scenario_paths": tuple(path.model_dump(mode="json") for path in phase2_scenarios),
-    })
+    optional_errors = dict(inputs.get("optional_errors") or {})
+    phase2_posterior, phase2_coverage, phase2_scenarios = None, None, []
+    try:
+        if "advanced_observations" in optional_errors:
+            raise ValueError("advanced_input_read_failed")
+        phase2_observations = _phase2_observations(phase2_rows)
+        phase2_lifecycle = _phase2_source_lifecycle(phase2_rows, phase2_source_rows)
+        phase2_statuses = _phase2_source_statuses(phase2_rows, phase2_source_rows)
+        phase2_run_ids = tuple(sorted({row.ingest_run_id for row in phase2_observations if row.ingest_run_id}))
+        phase2_content_hash = phase2_input_content_hash(phase2_observations)
+        phase2_posterior = build_market_state_posterior(
+            phase2_observations, as_of=as_of, source_lifecycle=phase2_lifecycle,
+            source_statuses=phase2_statuses, ingest_run_ids=phase2_run_ids,
+            input_content_hash=phase2_content_hash, parent_snapshot_id=snapshot.snapshot_id,
+        )
+        phase2_coverage = build_coverage_vector(
+            as_of,
+            {
+                "stock": {"daily": ("macro.value", "rates.nominal_yield", "credit.spread"), "positioning": ("positioning.flow",)},
+                "options": {"positioning": ("option.open_interest", "option.volume")},
+                "crypto": {"venue_derivatives": ("crypto.depth",)},
+            },
+            phase2_observations,
+            source_lifecycle=phase2_lifecycle,
+            source_statuses=phase2_statuses,
+            ingest_run_ids=phase2_run_ids,
+            input_content_hash=phase2_content_hash,
+            parent_snapshot_id=snapshot.snapshot_id,
+        )
+        phase2_scenarios = build_scenario_paths(snapshot.snapshot_id, phase2_posterior)
+        snapshot = snapshot.model_copy(update={
+            "phase2_posterior": phase2_posterior.model_dump(mode="json"),
+            "phase2_coverage_vector": phase2_coverage.model_dump(mode="json"),
+            "phase2_scenario_paths": tuple(path.model_dump(mode="json") for path in phase2_scenarios),
+        })
+    except (ValueError, TypeError, KeyError, ArithmeticError):
+        optional_errors["advanced_model"] = "model_unavailable"
     coverage_rows = _coverage_rows(snapshot.coverage_matrix)
 
     return {
@@ -164,6 +172,7 @@ def build_market_publication(
         "phase2_posterior": phase2_posterior,
         "phase2_coverage": phase2_coverage,
         "phase2_scenarios": phase2_scenarios,
+        "optional_errors": optional_errors,
     }
 
 def _asset_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -181,6 +190,7 @@ def _asset_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "as_of": latest["observed_at"],
         "price": latest_price,
         "return_1d": _return(latest_price, prices[-2] if len(prices) >= 2 else None, latest.get("change_pct")),
+        "return_1w": _period_return(prices, 5),
         "return_1m": _period_return(prices, 21),
         "return_1y": _period_return(prices, 252),
         "return_ytd": _ytd_return(ordered),
@@ -243,11 +253,11 @@ def _valuation_reference(row: dict[str, Any]) -> dict[str, Any]:
         "stable_key": metric,
         "metric": metric,
         "label": values.get("label") or metric.replace("_", " ").title(),
-        "latest_value": values.get("latest_value") or values.get("value"),
+        "latest_value": values.get("latest_value") if values.get("latest_value") is not None else values.get("value"),
         "latest_date": row.get("period_end") or row.get("observed_at"),
         "percentile": values.get("percentile"),
         "suffix": values.get("suffix") or "",
-        "posture": values.get("posture") or "mixed",
+        "posture": values.get("posture"),
         "higher_is_better": bool(values.get("higher_is_better")),
         "history": values.get("history") or [],
         "history_data_health": values.get("history_data_health"),
@@ -1241,7 +1251,10 @@ def _phase2_observations(rows: list[dict[str, Any]]) -> tuple[PITObservation, ..
     for row in rows:
         try:
             model = EventObservation if any(row.get(key) is not None for key in ("actual", "consensus", "surprise", "revision")) else PITObservation
-            observations.append(model.model_validate({key: value for key, value in row.items() if not key.startswith("source_") and key not in {"ingest_status", "ingest_finished_at"}}))
+            # Source identity/version are required lineage, not loader metadata.
+            # SQL returns nullable event columns for ordinary observations as well.
+            payload = {key: value for key, value in row.items() if key in model.model_fields}
+            observations.append(model.model_validate(payload))
         except (TypeError, ValueError):
             continue
     return tuple(observations)

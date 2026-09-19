@@ -15,9 +15,9 @@ from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JO
 from investment_panel.infrastructure.postgres.options_paper_ledger import PAPER_FILL_MULTIPLIERS_SQL
 from investment_panel.domain.decision import TRACKED_METRICS, MARKET_TZ
 from investment_panel.infrastructure.postgres.strategy_parameters import (
-    merge_strategy_parameters,
     mutation_capability as _evaluation_capability,
     normalize_gates,
+    parameter_preflight, PARAMETER_FAILURE_VERDICTS,
 )
 
 OPTIONS_COMPARISON_VERSION = "options-independent-comparison-v1"
@@ -74,7 +74,19 @@ class StrategyLearningRepository:
             f"{postmortem_task_id}:{json.dumps(changes, sort_keys=True)}".encode()
         ).hexdigest()[:10]
         proposed_key = f"{base['strategy_key']}__agent_{digest}"
-        parameters = merge_strategy_parameters(dict(base["parameters"] or {}), changes)
+        preflight = parameter_preflight(dict(base["parameters"] or {}), changes)
+        if preflight["status"] in {"invalid_parameters", "unsupported_parameters"}:
+            connection.execute(
+                """INSERT INTO analysis.agent_task (task_kind, status, request, result, validation)
+                   VALUES ('strategy_mutation_proposal', 'completed', %s, %s, %s)""",
+                [Jsonb({"postmortem_task_id": postmortem_task_id}),
+                 Jsonb({"source_postmortem_id": postmortem_task_id, "strategy_version": base["strategy_key"],
+                        "proposed_parameter_changes": changes, "candidate_revision_id": None,
+                        "status": preflight["status"], "preflight": preflight}),
+                 Jsonb({"status": preflight["status"], "authority": "deterministic", "preflight": preflight})],
+            )
+            return {"strategy_proposals": 1, "strategy_backtests": 0, "strategy_forward_tests": 0}
+        parameters = preflight["parameters"]
         candidate = connection.execute(
             "SELECT id, status, parameters, supersedes_id, authority_group, "
             "implementation_id, implementation_version "
@@ -192,6 +204,7 @@ class StrategyLearningRepository:
             proposals = connection.execute(
                 "SELECT id FROM analysis.agent_task WHERE task_kind = 'strategy_mutation_proposal' "
                 "AND status = 'completed' AND COALESCE(validation->>'status', '') <> 'promoted' "
+                "AND result->>'candidate_revision_id' IS NOT NULL "
                 "ORDER BY created_at"
             ).fetchall()
             for proposal in proposals:
@@ -202,7 +215,7 @@ class StrategyLearningRepository:
 
     def _evaluate(self, connection: Any, proposal_id: Any) -> dict[str, int]:
         proposal = connection.execute(
-            "SELECT id, created_at, result FROM analysis.agent_task WHERE id = %s FOR UPDATE",
+            "SELECT id, created_at, result, validation FROM analysis.agent_task WHERE id = %s FOR UPDATE",
             [proposal_id],
         ).fetchone()
         if proposal is None:
@@ -213,14 +226,38 @@ class StrategyLearningRepository:
             return {"strategy_backtests": 0, "strategy_forward_tests": 0}
         candidate = connection.execute(
             """
-            SELECT candidate.parameters, candidate.supersedes_id,
-                   base.parameters AS base_parameters
+            SELECT candidate.parameters, candidate.supersedes_id, candidate.implementation_id,
+                   candidate.implementation_version, base.parameters AS base_parameters
             FROM analysis.strategy_revision candidate
             LEFT JOIN analysis.strategy_revision base ON base.id = candidate.supersedes_id
             WHERE candidate.id = %s
             """,
             [candidate_id],
         ).fetchone()
+        if candidate is None:
+            raise ValueError("candidate revision no longer exists")
+        changes = dict(result.get("proposed_parameter_changes") or {})
+        preflight = parameter_preflight(dict(candidate["base_parameters"] or {}), changes)
+        if (candidate["implementation_id"] != OPTIONS_IMPLEMENTATION_ID
+                or candidate["implementation_version"] != OPTIONS_IMPLEMENTATION_VERSION):
+            preflight = {"status": "implementation_version_mismatch", "blocked_parameters": [],
+                         "errors": [f"Expected {OPTIONS_IMPLEMENTATION_ID}@{OPTIONS_IMPLEMENTATION_VERSION}"]}
+        if preflight["status"] not in PARAMETER_FAILURE_VERDICTS and dict(candidate["parameters"] or {}) != preflight.get("parameters"):
+            preflight = {"status": "parameter_lineage_mismatch", "blocked_parameters": [],
+                         "errors": ["Stored candidate parameters do not match its parent and recorded mutation."]}
+        if preflight["status"] in PARAMETER_FAILURE_VERDICTS:
+            fingerprint = hashlib.sha256(json.dumps({"candidate": dict(candidate), "changes": changes,
+                "comparison_version": OPTIONS_COMPARISON_VERSION}, sort_keys=True, default=str).encode()).hexdigest()
+            previous = dict(proposal.get("validation") or {})
+            if previous.get("preflight_fingerprint") != fingerprint:
+                verdict = preflight["status"]
+                failure = {"verdict": verdict, "proposed": {"sample_size": 0}, "preflight": preflight}
+                self._store_evaluation(connection, candidate_id, "walk_forward", failure, [])
+                connection.execute("UPDATE analysis.agent_task SET result = %s, validation = %s, updated_at = now() WHERE id = %s",
+                    [Jsonb({**result, "status": verdict, "preflight": preflight}),
+                     Jsonb({"status": verdict, "authority": "deterministic", "preflight_fingerprint": fingerprint,
+                            "preflight": preflight}), proposal_id])
+            return {"strategy_backtests": 0, "strategy_forward_tests": 0}
         rows = [
             dict(row)
             for row in connection.execute(OUTCOME_QUERY, [candidate["supersedes_id"]] * 2).fetchall()
@@ -259,8 +296,8 @@ class StrategyLearningRepository:
             execution_grade=True,
         )
         execution_grade = evaluate_comparison(execution_source, execution_rows, minimum=20, require_span_days=20, paired=True, **execution_cohort)
-        self._store_evaluation(connection, candidate_id, "walk_forward", backtest, proposed_rows)
-        self._store_evaluation(connection, candidate_id, "shadow", forward, forward_rows)
+        historical_written = self._store_evaluation(connection, candidate_id, "walk_forward", backtest, proposed_rows)
+        forward_written = self._store_evaluation(connection, candidate_id, "shadow", forward, forward_rows)
         if execution_rows:
             self._store_evaluation(
                 connection, candidate_id, "execution_grade_paper", execution_grade,
@@ -274,7 +311,7 @@ class StrategyLearningRepository:
             "UPDATE analysis.agent_task SET result = %s, validation = %s, updated_at = now() WHERE id = %s",
             [Jsonb(result), Jsonb({"status": status, "authority": "deterministic"}), proposal_id],
         )
-        return {"strategy_backtests": 1, "strategy_forward_tests": 1}
+        return {"strategy_backtests": int(historical_written), "strategy_forward_tests": int(forward_written)}
 
     @staticmethod
     def _store_evaluation(
@@ -285,19 +322,30 @@ class StrategyLearningRepository:
         source_rows: list[dict[str, Any]],
         *,
         execution_grade: bool = False,
-    ) -> None:
+    ) -> bool:
         metrics = _phase7_metrics(evaluation, source_rows)
         evidence = _phase7_evidence(
             evaluation, source_rows, execution_grade=execution_grade,
             candidate_revision_id=candidate_id,
         )
+        if evaluation.get("preflight"):
+            evidence["preflight"] = evaluation["preflight"]
+        if evaluation.get("blocked_parameters"):
+            evidence["blocked_parameters"] = evaluation["blocked_parameters"]
         period_start, period_end = _evaluation_period(evaluation.get("cohort"), source_rows)
-        connection.execute(
+        inserted = connection.execute(
             """
             INSERT INTO analysis.strategy_evaluation
                 (strategy_revision_id, evaluation_type, evaluated_at, period_start,
                  period_end, verdict, metrics, evidence)
-            VALUES (%s, %s, now(), %s, %s, %s, %s, %s)
+            SELECT %s, %s, now(), %s, %s, %s, %s, %s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM (
+                    SELECT verdict, metrics, evidence FROM analysis.strategy_evaluation
+                    WHERE strategy_revision_id = %s AND evaluation_type = %s
+                    ORDER BY evaluated_at DESC, id DESC LIMIT 1
+                ) previous WHERE previous.verdict = %s AND previous.metrics = %s AND previous.evidence = %s
+            )
             """,
             [
                 candidate_id,
@@ -307,8 +355,11 @@ class StrategyLearningRepository:
                 evaluation["verdict"],
                 Jsonb(metrics),
                 Jsonb(evidence),
+                candidate_id, evaluation_type, evaluation["verdict"], Jsonb(metrics), Jsonb(evidence),
             ],
         )
+
+        return inserted.rowcount > 0
 
 
 PAPER_EPISODE_ORDERS_SQL = """

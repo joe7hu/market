@@ -62,7 +62,6 @@ export function MarketEnvironmentPanel({
   freshness?: { status: string; reason: string };
 }) {
   const score = weightedDriverScore(rows);
-  const valuation = rows.find((row) => textField(row, ["category"]) === "Valuation");
   const trend = rows.find((row) => textField(row, ["category"]) === "Price Trend");
   const breadth = rows.find((row) => textField(row, ["category"]) === "Market Breadth");
   const risk = rows.find((row) => textField(row, ["category"]) === "Risk Appetite");
@@ -86,21 +85,49 @@ export function MarketEnvironmentPanel({
         <ScorePill value={score} posture={postureFromScore(score)} />
       </CardHeader>
       <CardContent className="space-y-4 p-4 pt-2">
+        <IndexBaseline rows={assetRows} />
         <div className="grid gap-2 sm:grid-cols-4">
-          <MiniMetric label="Valuation" value={formatScore(numberField(valuation, ["score"], Number.NaN))} />
+          <ValuationContext rows={referenceRows} />
           <MiniMetric label="Trend" value={formatScore(numberField(trend, ["score"], Number.NaN))} />
           <MiniMetric label="Breadth" value={formatScore(numberField(breadth, ["score"], Number.NaN))} />
           <MiniMetric label="Risk" value={formatScore(numberField(risk, ["score"], Number.NaN))} />
         </div>
-        <DriverRows rows={rows} />
+        <DriverRows rows={rows.filter(row => textField(row, ["category"]) !== "Valuation")} />
         <div className="grid gap-2 sm:grid-cols-2">
           <MiniMetric label="Valuation Series" value={`${referenceRows.length}`} />
           <MiniMetric label="Market Asset Rows" value={`${assetRows.length}`} />
         </div>
-        <MarketStateProjection snapshotRows={snapshotRows} coverageRows={coverageRows} posteriorRows={posteriorRows} coverageVectorRows={coverageVectorRows} scenarioRows={scenarioRows} optionSlaRows={optionSlaRows} observationRows={observationRows} />
+        <p className="text-xs text-muted-foreground">Breadth is measured over the published benchmark / tracked universe, not automatically all listed stocks. Use coverage details to inspect membership and missing inputs.</p>
+        <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-sm font-medium">Horizon evidence, coverage and advanced models</summary><div className="mt-3"><MarketStateProjection snapshotRows={snapshotRows} coverageRows={coverageRows} posteriorRows={posteriorRows} coverageVectorRows={coverageVectorRows} scenarioRows={scenarioRows} optionSlaRows={optionSlaRows} observationRows={observationRows} /></div></details>
       </CardContent>
     </Card>
   );
+}
+
+/** Observed context, not another inferred 0–100 valuation or trade score. */
+export function ValuationContext({ rows }: { rows: RowRecord[] }) {
+  const finite = rows.filter(row => Number.isFinite(numberField(row, ["latest_value"], Number.NaN)));
+  const row = finite.find(row => row.metric === "sp500_forward_pe") ?? finite[0];
+  return <div className="rounded-md border border-border bg-muted/30 p-3" aria-label="Observed valuation context">
+    <p className="text-xs text-muted-foreground">{row ? textField(row, ["label", "metric"], "Valuation reference") : "Valuation reference"}</p>
+    <p className="mt-1 text-sm font-semibold">{row ? formatMetricValue(numberField(row, ["latest_value"], Number.NaN), textField(row, ["suffix"])) : "Not available"}</p>
+    <p className="mt-1 text-[11px] text-muted-foreground">Context, not a score{row ? ` · ${textField(row, ["latest_date"]).slice(0, 10) || "Date not recorded"}` : " · source evidence required"}</p>
+  </div>;
+}
+
+export function IndexBaseline({ rows }: { rows: RowRecord[] }) {
+  const named = ["SPY", "QQQ", "IWM", "DIA"].flatMap(symbol => {
+    const row = rows.find(item => item.symbol === symbol);
+    return row && Number.isFinite(numberField(row, ["price"], Number.NaN)) && numberField(row, ["price"]) > 0 ? [row] : [];
+  });
+  if (!named.length) return null;
+  return <section aria-label="Observed index ETF baseline"><p className="mb-2 text-xs text-muted-foreground">Observed index ETF prices · independent of tracked-universe model coverage</p>
+    <div className="grid gap-2 sm:grid-cols-4">{named.map(row => <div key={String(row.symbol)} className="rounded-md border p-3">
+      <p className="text-sm font-semibold">{String(row.symbol)} · ${numberField(row, ["price"]).toFixed(2)}</p>
+      <p className="mt-1 text-xs">Last daily move: <ReturnCell value={numberField(row, ["return_1d"], Number.NaN)} /></p>
+      <p className="mt-1 text-[11px] text-muted-foreground">{textField(row, ["as_of"]).slice(0, 10) || "Date not recorded"} · {textField(row, ["source"], "Source not recorded")}</p>
+    </div>)}</div>
+  </section>;
 }
 
 export function MarketStateProjection({ snapshotRows, coverageRows, posteriorRows = [], coverageVectorRows = [], scenarioRows = [], optionSlaRows = [], observationRows = [] }: { snapshotRows: RowRecord[]; coverageRows: RowRecord[]; posteriorRows?: RowRecord[]; coverageVectorRows?: RowRecord[]; scenarioRows?: RowRecord[]; optionSlaRows?: RowRecord[]; observationRows?: RowRecord[] }) {
@@ -175,18 +202,22 @@ export function MarketStateProjection({ snapshotRows, coverageRows, posteriorRow
   );
 }
 
-function Phase2Evidence({ posteriorRows, coverageVectorRows, scenarioRows, optionSlaRows, observationRows }: { posteriorRows: RowRecord[]; coverageVectorRows: RowRecord[]; scenarioRows: RowRecord[]; optionSlaRows: RowRecord[]; observationRows: RowRecord[] }) {
+export function Phase2Evidence({ posteriorRows, coverageVectorRows, scenarioRows, optionSlaRows, observationRows }: { posteriorRows: RowRecord[]; coverageVectorRows: RowRecord[]; scenarioRows: RowRecord[]; optionSlaRows: RowRecord[]; observationRows: RowRecord[] }) {
+  if (!posteriorRows.length && !coverageVectorRows.length && !scenarioRows.length && !optionSlaRows.length && !observationRows.length) {
+    return <p role="status" className="rounded border border-border p-3 text-sm text-muted-foreground">No advanced-model evidence is present in this snapshot. This does not establish missing history specifically. Check the model read / publication status in System health. Baseline market evidence above remains usable within its stated coverage.</p>;
+  }
   const posterior = isRecord(posteriorRows[0]?.payload) ? posteriorRows[0].payload : posteriorRows[0];
-  const status = String(posteriorRows[0]?.status ?? (isRecord(posterior) ? posterior.status : undefined) ?? "MISSING_HISTORY").toUpperCase();
+  const status = String(posteriorRows[0]?.status ?? (isRecord(posterior) ? posterior.status : undefined) ?? "NOT_PUBLISHED").toUpperCase();
   const confidence = isRecord(posterior) ? String(posterior.overall_confidence ?? "unavailable") : "unavailable";
   const missingness = isRecord(posterior) ? String(posterior.missingness ?? "unavailable") : "unavailable";
   const sla = isRecord(optionSlaRows[0]?.payload) ? optionSlaRows[0].payload : optionSlaRows[0];
   const tone = phase2StatusTone(status);
   return <div className="space-y-2 rounded border border-border/70 bg-muted/20 p-3 text-[11px]">
-    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Phase 2 evidence</p><StatusBadge tone={tone}>{status}</StatusBadge></div>
+    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Advanced market evidence</p><StatusBadge tone={tone}>{status}</StatusBadge></div>
     <p className="text-muted-foreground">Posterior status is {status}. Observable baseline and bounded latent challenger are read-only. Advisory-only: no rank or execution authorization.</p>
+    <p className="text-muted-foreground">Advanced evidence cutoff: {isRecord(posterior) ? String(posterior.as_of ?? posterior.input_cutoff ?? "Not recorded") : "Not recorded"}. Advanced and baseline publications may have different cutoffs; these models do not authorize trades.</p>
     <p>Posterior confidence: {confidence} · missingness: {missingness} · retained source facts: {observationRows.length} · reproducible scenarios: {scenarioRows.length}</p>
-    <p>Per-expression coverage rows: {coverageVectorRows.length} · option OI/volume SLA: {isRecord(sla) ? String(sla.status ?? "MISSING_HISTORY").toUpperCase() : "MISSING_HISTORY"} · positioning allowed: {isRecord(sla) ? String(sla.positioning_allowed ?? false) : "false"}</p>
+    <p>Per-expression coverage rows: {coverageVectorRows.length} · option OI/volume SLA: {isRecord(sla) ? String(sla.status ?? "NOT_PUBLISHED").toUpperCase() : "NOT_PUBLISHED"} · positioning allowed: {isRecord(sla) ? String(sla.positioning_allowed ?? false) : "false"}</p>
   </div>;
 }
 

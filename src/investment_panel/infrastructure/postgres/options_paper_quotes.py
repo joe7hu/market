@@ -84,6 +84,7 @@ def latest_option_legs(
             "volume": _integer(quote.get("volume")),
             # Information-time freshness, not a provider's nominal timestamp.
             "quote_time": _utc(quote.get("available_at")),
+            "available_at": _utc(quote.get("available_at")),
             "observed_at": _utc(quote.get("observed_at")),
             "expiration": quote.get("expiration"),
             "multiplier": _number(quote.get("multiplier")),

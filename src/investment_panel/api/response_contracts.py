@@ -120,6 +120,61 @@ class PaperTradePage(FlexibleResponse):
     has_more: bool = False
 
 
+class WorkstationWorker(FlexibleResponse):
+    source_status: str | None = None
+    downstream_status: str | None = None
+    job: str
+    status: str
+    reason: str
+    interval_seconds: int | None = None
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    next_expected_at: datetime | None = None
+
+
+class WorkflowBlocker(FlexibleResponse):
+    capability: str
+    reason: str
+    action: str
+    href: str
+    job: str | None = None
+
+
+class PaperNavPoint(FlexibleResponse):
+    at: datetime
+    nav: float | None = None
+    net_pnl: float | None = None
+    status: str
+
+
+class PaperAccountHistory(FlexibleResponse):
+    paper_only: bool = True
+    book: str = "paper"
+    as_of: datetime
+    days: int
+    points: list[PaperNavPoint] = Field(default_factory=list)
+    status: str
+    truncated: bool = False
+    basis: str
+    sampling: str
+
+
+class WorkstationStatus(FlexibleResponse):
+    as_of: datetime
+    paper_only: bool = True
+    status: str
+    market_session: str
+    next_session_at: datetime | None = None
+    failed_reads: list[str] = Field(default_factory=list)
+    workers: list[WorkstationWorker] = Field(default_factory=list)
+    blockers: list[WorkflowBlocker] = Field(default_factory=list)
+    market: dict[str, Any] = Field(default_factory=dict)
+    paper: dict[str, Any] = Field(default_factory=dict)
+    observations: dict[str, Any] = Field(default_factory=dict)
+    evaluations: list[Row] = Field(default_factory=list)
+
+
 class PaperObservationPage(FlexibleResponse):
     rows: list[Row] = Field(default_factory=list)
     counts: dict[str, int] = Field(default_factory=dict)
@@ -533,8 +588,16 @@ class AssistantCitationResponse(BaseModel):
     available: bool
 
 
+class ContextualExplanation(BaseModel):
+    topic: str
+    question: str
+    answer: str
+    citation_ids: list[str] = Field(default_factory=list)
+
+
 class ContextualAssistantPacketResponse(FlexibleResponse):
     packet_id: str
+    explanations: list[ContextualExplanation] = Field(default_factory=list)
     ticker: str
     decision_revision: str | None = None
     as_of: datetime | None = None

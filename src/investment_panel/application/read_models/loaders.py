@@ -374,11 +374,8 @@ def load_panel_scope_data(
     if scope == "dashboard" and requested_limit is not None:
         requested = tuple(name for name in requested if name in DASHBOARD_DEFAULT_TABLES)
     if scope == "market":
-        # Market scope is publication-backed. Fetch one bounded page window so
-        # the response layer does not materialize every historical chart row.
-        market_limit = requested_limit or 120
-        query_row_limits = {table: page_offset + market_limit for table in requested}
-    elif scope == "dashboard" and requested_limit is not None:
+        return load_market_scope_data(active_config, offset=page_offset, limit=requested_limit or 120)
+    if scope == "dashboard" and requested_limit is not None:
         query_row_limits = {table: page_offset + requested_limit for table in requested}
     else:
         query_row_limits = {
@@ -480,6 +477,43 @@ def load_panel_scope_data(
     return loaded
 
 
+MARKET_BASELINE_TABLES = (
+    "market_state_snapshot", "coverage_matrix", "market_valuation_reference_charts",
+    "market_environment_assets", "market_environment_model",
+)
+
+
+def load_market_scope_data(config: AppConfig, *, offset: int = 0, limit: int = 120) -> PanelData:
+    """Baseline and optional diagnostics have independent read/failure boundaries."""
+    requested = tuple(tables_for_scope("market"))
+    optional = tuple(name for name in requested if name not in MARKET_BASELINE_TABLES)
+    limits = {name: offset + limit for name in requested}
+    baseline = load_panel_data(config, table_names=MARKET_BASELINE_TABLES, query_row_limits=limits)
+    advanced = load_panel_data(config, table_names=optional, query_row_limits=limits)
+    tables = {**baseline.tables, **advanced.tables}
+    model_status = {}
+    for name in requested:
+        owner = baseline if name in MARKET_BASELINE_TABLES else advanced
+        values = owner.rows(name)
+        model_status[name] = {
+            "state": "failed" if not owner.status.ready else "available" if values else "not_published",
+            "required": name in MARKET_BASELINE_TABLES,
+            "row_count": len(values) if owner.status.ready else None,
+            "reason": "model_read_failed" if not owner.status.ready else None if values else "no_current_model_rows",
+            "retry_job": "refresh_market_publication",
+        }
+    metadata = {
+        **baseline.metadata,
+        "table_counts": {**baseline.metadata.get("table_counts", {}), **advanced.metadata.get("table_counts", {})},
+        "market_model_status": model_status,
+        "optional_models_failed": not advanced.status.ready,
+        "optional_models_message": "Optional market diagnostics could not be read." if not advanced.status.ready else None,
+    }
+    # Preserve the core scope's readiness. A failed advanced read must neither
+    # erase current index facts nor cause a stale fallback for the whole page.
+    return PanelData(status=baseline.status, tables=tables, metadata=metadata)
+
+
 def load_opportunities_scope_data(
     config: AppConfig | None = None,
     *,
@@ -520,7 +554,30 @@ def load_opportunities_scope_data(
             panel.metadata["table_counts"] = counts
             panel.metadata["opportunities_rank_source"] = "ticker_decision_input_manifest"
             panel.metadata["opportunities_rank_fallback"] = True
+    if panel.status.ready and panel.rows("opportunities_ranked"):
+        symbols = {str(row.get("ticker") or "").upper() for row in panel.rows("opportunities_ranked")}
+        plans = load_panel_data(active_config, table_names=("trade_plan",), query_symbol_filter=symbols,
+                                query_row_limits={"trade_plan": max(1, len(symbols))})
+        for rank in panel.tables["opportunities_ranked"]:
+            symbol = str(rank.get("ticker") or "").upper()
+            plan = today_plan_for_row(rank, plans.rows("trade_plan"), rank, symbol) if plans.status.ready else None
+            rank["trade_plan"] = plan.model_dump(mode="json") if plan else None
+            rank["plan_read_status"] = "available" if plan else "not_published" if plans.status.ready else "read_failed"
+            rank["presentation_state"] = opportunity_surface_state(rank, plan)
     return panel
+
+
+def opportunity_surface_state(rank: dict[str, Any], plan: TradePlan | None) -> str:
+    """Presentation only. A published plan never substitutes for fill-time gates."""
+    if plan is not None and plan.eligibility == "ACTIONABLE":
+        return "paper_review" if plan.authorization_mode == "PAPER" else "review"
+    blocker = str(rank.get("primary_blocker") or rank.get("trade_rank_unavailable_reason") or "").lower()
+    if "trigger" in blocker:
+        return "watch"
+    if rank.get("plan_read_status") == "read_failed" or any(marker in blocker for marker in
+        ("stale", "source_missing", "publication_missing", "data_unavailable", "portfolio_context_missing", "quote_missing")):
+        return "blocked"
+    return "research"
 
 
 def _load_ticker_decision_opportunity_ranks(

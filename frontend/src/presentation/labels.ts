@@ -144,7 +144,8 @@ export function shortDate(value: unknown, fallback = "—"): string {
 }
 
 export function numberValue(value: unknown): number | null {
-  if (value == null || value === "") return null;
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }

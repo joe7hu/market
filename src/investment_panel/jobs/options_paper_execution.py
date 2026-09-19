@@ -11,6 +11,7 @@ from investment_panel.settings import AppConfig, load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.options_paper_execution import OptionsPaperExecutionRepository
 from investment_panel.infrastructure.postgres.options_analysis import refresh_options_radar
+from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
 from investment_panel.infrastructure.postgres.options_experiments import EXPERIMENT_KIND, EXPERIMENT_VERSION, advance_experiment_shadows, experiment_candidate
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
 
@@ -40,18 +41,40 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
         decision_inbox_enabled=settings.decision_inbox_enabled,
     )
     try:
-        experiments = run_experiments(runtime, config)
+        observations = advance_experiment_shadows(runtime, now=datetime.now(UTC))
     except Exception as error:
-        experiments = {"status": "failed", "error": str(error)}
-    return {**result, "status": "partial" if experiments["status"] == "failed" else result["status"],
-            "experiments": experiments, "paper_only": True, "live_brokerage_submission": False}
+        observations = {"status": "failed", "error": str(error)}
+    try:
+        nav = PaperWorkbenchRepository(runtime).capture_nav()
+    except Exception as error:
+        nav = {"status": "failed", "error": str(error)}
+    return {
+        **result,
+        "status": "partial" if observations.get("status") == "failed" or nav.get("status") == "failed" else result["status"],
+        "nav_observation": nav,
+        "observations": observations,
+        "research_job": "run_option_paper_experiments",
+        "paper_only": True,
+        "live_brokerage_submission": False,
+    }
+
+
+def run_research(config_path: str | None = "config.yaml") -> dict[str, Any]:
+    """Run candidate research independently of the time-sensitive paper manager."""
+
+    config = load_config(config_path)
+    return {
+        **run_experiments(runtime_for_config(config), config),
+        "paper_only": True,
+        "live_brokerage_submission": False,
+    }
 
 
 def run_experiments(runtime: DatabaseRuntime, config: AppConfig, *, now: datetime | None = None) -> dict[str, Any]:
     reference = now or datetime.now(UTC)
     observed = advance_experiment_shadows(runtime, now=reference)
     settings = config.analysis.options_decision_system
-    if not getattr(settings, "strategy_auto_promotion_enabled", False):
+    if not settings.strategy_experiment_collection_enabled:
         return {"status": "disabled", "reason": "new_candidates_disabled", "observations": observed}
     with runtime.read(JOB_PROFILE) as connection:
         count = connection.execute(

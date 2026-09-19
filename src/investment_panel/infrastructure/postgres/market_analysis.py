@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 import json
 import math
+import logging
 from statistics import median
 from typing import Any
 
@@ -38,6 +39,8 @@ from investment_panel.domain.market.publication import (
     market_dimension_v2_fields,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _CRYPTO_BENCHMARK_KEY = "market-crypto-majors"
 _CRYPTO_SOURCE_ID = "daily-market-prices"
@@ -75,14 +78,15 @@ def load_market_inputs(
     # Instrument and source updated_at values are maintenance timestamps touched by
     # idempotent registration. Membership timestamps are semantic and safe to gate.
     with runtime.read() as connection:
-        owned_instrument_ids = (
-            {
-                int(row["instrument_id"])
-                for row in replay_portfolio_at(None, as_of, connection=connection)["positions"]
-            }
-            if benchmark_symbols is None
-            else set()
-        )
+        optional_errors: dict[str, str] = {}
+        try:
+            with connection.transaction():
+                owned_instrument_ids = ({int(row["instrument_id"]) for row in replay_portfolio_at(None, as_of, connection=connection)["positions"]}
+                                        if benchmark_symbols is None else set())
+        except Exception:
+            logger.exception("Optional portfolio membership unavailable for Market snapshot")
+            owned_instrument_ids = set()
+            optional_errors["portfolio_membership"] = "read_failed"
         instrument_rows = [
             dict(row)
             for row in connection.execute(
@@ -161,89 +165,124 @@ def load_market_inputs(
                     "asset_class": instrument["asset_class"],
                     "price": row["close"],
                 })
-        valuation_rows = [
-            {
-                **dict(row),
-                "values": hydrate_history(
-                    dict(row.get("values") or {}),
-                    archive_uri=row.get("payload_archive_uri"),
-                    archive_sha256=row.get("payload_sha256"),
-                ),
-            }
-            for row in connection.execute(
-                """
-                SELECT DISTINCT ON (observation.metric_set)
-                       instrument.symbol, observation.period_end, observation.observed_at,
-                       observation.values, observation.source_id, observation.metric_set,
-                       ingest_run.id::text AS ingest_run_id,
-                       ingest_run.finished_at AS available_at,
-                       payload.archive_uri AS payload_archive_uri, payload.sha256 AS payload_sha256
-                FROM raw.fundamental_observation observation
-                JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
-                JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
-                JOIN ingest.source source
-                  ON source.id = observation.source_id
-                 AND source.enabled
-                 AND source.operational_state = 'active'
-                 AND source.created_at <= %s
-                LEFT JOIN ingest.payload payload ON payload.id = observation.payload_id
-                WHERE (observation.metric_set = 'market_valuation'
-                   OR observation.metric_set LIKE 'market_valuation:%%')
-                  AND observation.observed_at <= %s
-                  AND (observation.filed_at IS NULL OR observation.filed_at <= %s)
-                  AND instrument.created_at <= %s
-                  AND ingest_run.status IN ('succeeded', 'partial')
-                  AND ingest_run.finished_at IS NOT NULL
-                  AND ingest_run.finished_at <= %s
-                ORDER BY observation.metric_set, observation.observed_at DESC
-                """,
-                [as_of, as_of, as_of, as_of, as_of],
-            ).fetchall()
-        ]
-        event_risk_evidence = _event_risk_evidence(connection, as_of)
-        corporate_cycle_evidence = _corporate_cycle_evidence(connection, instrument_rows, as_of)
-        crypto_volume_evidence = _crypto_volume_evidence(connection, instrument_rows, as_of)
-        phase2_rows = [dict(row) for row in connection.execute(
-            """SELECT observation.observation_id, observation.field_name, observation.dimension,
-                      observation.asset_class, observation.source_id, observation.source_version,
-                      observation.value, observation.unit, observation.ingest_run_id::text AS ingest_run_id,
-                      observation.payload_id, observation.content_hash, observation.parent_snapshot_id,
-                      observation.observed_at, observation.available_at, observation.publication_at,
-                      observation.release_at, observation.vintage_at, observation.actual,
-                      observation.consensus, observation.surprise, observation.revision,
-                      observation.status, observation.confidence, observation.metadata,
-                      lifecycle.enabled AS source_enabled, lifecycle.operational_state AS source_operational_state,
-                      ingest_run.status AS ingest_status, ingest_run.finished_at AS ingest_finished_at
-               FROM raw.market_observation observation
-               JOIN ingest.source source ON source.id = observation.source_id
-               JOIN LATERAL (
-                   SELECT history.enabled, history.operational_state
-                   FROM ingest.source_lifecycle_history history
-                   WHERE history.source_id = source.id AND history.effective_at <= %s
-                   ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
-               ) lifecycle ON lifecycle.enabled = true AND lifecycle.operational_state = 'active'
-               JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
-               WHERE observation.observed_at <= %s AND observation.available_at <= %s
-                 AND ingest_run.status IN ('succeeded', 'partial')
-                 AND ingest_run.finished_at IS NOT NULL AND ingest_run.finished_at <= %s
-               ORDER BY observation.dimension, observation.observed_at, observation.observation_id
-               LIMIT 500""",
-            [as_of, as_of, as_of, as_of],
-        ).fetchall()]
-        phase2_source_rows = [dict(row) for row in connection.execute(
-            """SELECT source.id AS source_id, lifecycle.enabled AS source_enabled,
-                      lifecycle.operational_state AS source_operational_state,
-                      source.capabilities->>'phase2_status' AS phase2_status
-               FROM ingest.source source
-               JOIN LATERAL (
-                   SELECT history.enabled, history.operational_state
-                   FROM ingest.source_lifecycle_history history
-                   WHERE history.source_id = source.id AND history.effective_at <= %s
-                   ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
-               ) lifecycle ON true
-               WHERE source.family = 'phase2' AND source.created_at <= %s""",
-            [as_of, as_of],
-        ).fetchall()]
+        try:
+            with connection.transaction():
+                valuation_rows = [
+                    {
+                        **dict(row),
+                        "values": hydrate_history(
+                            dict(row.get("values") or {}),
+                            archive_uri=row.get("payload_archive_uri"),
+                            archive_sha256=row.get("payload_sha256"),
+                        ),
+                    }
+                    for row in connection.execute(
+                        """
+                        SELECT DISTINCT ON (observation.metric_set)
+                               instrument.symbol, observation.period_end, observation.observed_at,
+                               observation.values, observation.source_id, observation.metric_set,
+                               ingest_run.id::text AS ingest_run_id,
+                               ingest_run.finished_at AS available_at,
+                               payload.archive_uri AS payload_archive_uri, payload.sha256 AS payload_sha256
+                        FROM raw.fundamental_observation observation
+                        JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+                        JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
+                        JOIN ingest.source source
+                          ON source.id = observation.source_id
+                         AND source.enabled
+                         AND source.operational_state = 'active'
+                         AND source.created_at <= %s
+                        LEFT JOIN ingest.payload payload ON payload.id = observation.payload_id
+                        WHERE (observation.metric_set = 'market_valuation'
+                           OR observation.metric_set LIKE 'market_valuation:%%')
+                          AND observation.observed_at <= %s
+                          AND (observation.filed_at IS NULL OR observation.filed_at <= %s)
+                          AND instrument.created_at <= %s
+                          AND ingest_run.status IN ('succeeded', 'partial')
+                          AND ingest_run.finished_at IS NOT NULL
+                          AND ingest_run.finished_at <= %s
+                        ORDER BY observation.metric_set, observation.observed_at DESC
+                        """,
+                        [as_of, as_of, as_of, as_of, as_of],
+                    ).fetchall()
+                ]
+        except Exception:
+            logger.exception("Optional valuation history unavailable for Market snapshot")
+            valuation_rows = []
+            optional_errors["valuation_history"] = "read_failed"
+        try:
+            with connection.transaction():
+                event_risk_evidence = _event_risk_evidence(connection, as_of)
+        except Exception:
+            logger.exception("Optional event_risk_evidence unavailable")
+            event_risk_evidence = {}
+            optional_errors["event_risk_evidence"] = "read_failed"
+        try:
+            with connection.transaction():
+                corporate_cycle_evidence = _corporate_cycle_evidence(connection, instrument_rows, as_of)
+        except Exception:
+            logger.exception("Optional corporate_cycle_evidence unavailable")
+            corporate_cycle_evidence = {}
+            optional_errors["corporate_cycle_evidence"] = "read_failed"
+        try:
+            with connection.transaction():
+                crypto_volume_evidence = _crypto_volume_evidence(connection, instrument_rows, as_of)
+        except Exception:
+            logger.exception("Optional crypto_volume_evidence unavailable")
+            crypto_volume_evidence = {}
+            optional_errors["crypto_volume_evidence"] = "read_failed"
+        try:
+            with connection.transaction():
+                phase2_rows = [dict(row) for row in connection.execute(
+                    """SELECT * FROM (SELECT observation.observation_id, observation.field_name, observation.dimension,
+                              observation.asset_class, observation.source_id, observation.source_version,
+                              observation.value, observation.unit, observation.ingest_run_id::text AS ingest_run_id,
+                              observation.payload_id, observation.content_hash, observation.parent_snapshot_id,
+                              observation.observed_at, observation.available_at, observation.publication_at,
+                              observation.release_at, observation.vintage_at, observation.actual,
+                              observation.consensus, observation.surprise, observation.revision,
+                              observation.status, observation.confidence, observation.metadata,
+                              lifecycle.enabled AS source_enabled, lifecycle.operational_state AS source_operational_state,
+                              ingest_run.status AS ingest_status, ingest_run.finished_at AS ingest_finished_at,
+                              row_number() OVER (
+                                  PARTITION BY observation.dimension, observation.field_name, observation.asset_class, observation.source_id
+                                  ORDER BY observation.observed_at DESC, observation.available_at DESC, observation.observation_id DESC
+                              ) AS recent_rank
+                       FROM raw.market_observation observation
+                       JOIN ingest.source source ON source.id = observation.source_id
+                       JOIN LATERAL (
+                           SELECT history.enabled, history.operational_state
+                           FROM ingest.source_lifecycle_history history
+                           WHERE history.source_id = source.id AND history.effective_at <= %s
+                           ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
+                       ) lifecycle ON lifecycle.enabled = true AND lifecycle.operational_state = 'active'
+                       JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
+                       WHERE observation.observed_at <= %s AND observation.available_at <= %s
+                         AND ingest_run.status IN ('succeeded', 'partial')
+                         AND ingest_run.finished_at IS NOT NULL AND ingest_run.finished_at <= %s
+                       ) recent WHERE recent_rank <= 128
+                       ORDER BY dimension, field_name, asset_class, source_id, observed_at, observation_id""",
+                    [as_of, as_of, as_of, as_of],
+                ).fetchall()]
+                phase2_source_rows = [dict(row) for row in connection.execute(
+                    """SELECT source.id AS source_id, lifecycle.enabled AS source_enabled,
+                              lifecycle.operational_state AS source_operational_state,
+                              source.capabilities->>'phase2_status' AS phase2_status
+                       FROM ingest.source source
+                       JOIN LATERAL (
+                           SELECT history.enabled, history.operational_state
+                           FROM ingest.source_lifecycle_history history
+                           WHERE history.source_id = source.id AND history.effective_at <= %s
+                           ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
+                       ) lifecycle ON true
+                       WHERE source.family = 'phase2' AND source.created_at <= %s""",
+                    [as_of, as_of],
+                ).fetchall()]
+        except Exception:
+            logger.exception("Optional advanced Market observations unavailable")
+            phase2_rows, phase2_source_rows = [], []
+            optional_errors["advanced_observations"] = "read_failed"
+
     return {
         "instrument_rows": instrument_rows,
         "bars_by_id": bars_by_id,
@@ -254,6 +293,7 @@ def load_market_inputs(
         "crypto_volume_evidence": crypto_volume_evidence,
         "phase2_rows": phase2_rows,
         "phase2_source_rows": phase2_source_rows,
+        "optional_errors": optional_errors,
     }
 
 
@@ -308,6 +348,7 @@ def persist_market_publication(
             "price_bar_rows": len(price_rows),
             "symbols": sorted(grouped),
             "valuation_rows": len(valuation_rows),
+            "optional_errors": draft.get("optional_errors", {}),
             "source_lineage": [item.model_dump(mode="json") for item in input_lineage],
             "volatility_evidence": volatility_inputs,
             "corporate_cycle_evidence": _corporate_cycle_inputs(corporate_cycle_evidence),
@@ -334,9 +375,17 @@ def persist_market_publication(
     publication = analysis.publication_by_id("market", publication_id)
     if publication is None or publication.get("published_at") is None:
         raise RuntimeError("published MarketState is not visible in PostgreSQL")
-    Phase2Repository(runtime).publish(phase2_posterior, phase2_coverage, phase2_scenarios)
+    optional_errors = dict(draft.get("optional_errors") or {})
+    if phase2_posterior is not None and phase2_coverage is not None:
+        try:
+            Phase2Repository(runtime).publish(phase2_posterior, phase2_coverage, phase2_scenarios)
+        except Exception:
+            logger.exception("Advanced Market publication failed after baseline publication")
+            optional_errors["advanced_publication"] = "publish_failed"
     return {
-        "status": "ok",
+        "status": "partial" if optional_errors else "ok",
+        "baseline_status": "published",
+        "optional_errors": optional_errors,
         "publication_id": str(publication_id),
         "published_at": publication["published_at"],
         "assets": len(assets),
