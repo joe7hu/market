@@ -15,7 +15,6 @@ from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JO
 from investment_panel.infrastructure.postgres.options_paper_ledger import PAPER_FILL_MULTIPLIERS_SQL
 from investment_panel.domain.decision import TRACKED_METRICS, MARKET_TZ
 from investment_panel.infrastructure.postgres.strategy_parameters import (
-    merge_strategy_parameters,
     mutation_capability as _evaluation_capability,
     normalize_gates,
     parameter_preflight, PARAMETER_FAILURE_VERDICTS,
