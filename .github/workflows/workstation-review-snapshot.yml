@@ -9,17 +9,34 @@ jobs:
   source:
     if: github.head_ref == 'feat/trader-workstation-completion-20260919'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Archive tracked source only
-        run: git archive --format=tar --output=source.tar HEAD
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: '0.9.26'
+      - name: Install locked test dependencies
+        run: |
+          uv sync --extra test --locked
+          npm ci --prefix frontend
+      - name: Archive source and dependencies without credentials
+        run: |
+          git archive --format=tar --output=source.tar HEAD
+          tar -czf test-dependencies.tar.gz .venv/lib/python3.11/site-packages frontend/node_modules
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: workstation-source
-          path: source.tar
+          name: workstation-test-environment
+          path: |
+            source.tar
+            test-dependencies.tar.gz
           retention-days: 1
           if-no-files-found: error
