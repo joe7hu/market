@@ -146,7 +146,7 @@ def test_failed_targeted_quote_symbols_do_not_starve_other_active_contracts(runt
             contract = connection.execute("INSERT INTO catalog.option_contract (underlying_instrument_id, expiration, strike, option_type, multiplier, deliverable_key) VALUES (%s, %s, 100, 'call', 100, %s) RETURNING id",
                 [instrument, now.date() + timedelta(days=30), symbol]).fetchone()["id"]
             order = connection.execute("INSERT INTO app.paper_order (instrument_id, side, quantity, status, lane, paper_only) VALUES (%s, 'buy', 1, 'staged', 'radar', true) RETURNING id", [instrument]).fetchone()["id"]
-            connection.execute("INSERT INTO app.paper_order_leg (paper_order_id, leg_index, contract_id, option_type, side, strike) VALUES (%s, 0, %s, 'call', 'buy', 100)", [order, contract])
+            connection.execute("INSERT INTO app.paper_order_leg (paper_order_id, leg_index, contract_id, option_type, side, strike, bid, ask, bid_size, ask_size, quote_time) VALUES (%s, 0, %s, 'call', 'buy', 100, 1, 1.1, 10, 10, %s)", [order, contract, now])
         connection.execute("INSERT INTO ops.job_run (job_name, status, started_at, finished_at, summary) VALUES ('refresh_paper_quotes', 'failed', %s, %s, %s)",
             [now - timedelta(minutes=1), now, Jsonb({"source_id": "robinhood", "symbols_attempted": ["FIRST"]})])
     monkeypatch.setattr(options, "runtime_for_config", lambda _: runtime)
