@@ -172,37 +172,11 @@ After a successful refresh:
 
 ## Suggested Daily Schedule
 
-Use the existing automation runner or launchd to run deterministic options radar
-refreshes during market hours, for example:
-
-```bash
-cd /Users/joehu/proj/market
-uv run python -m investment_panel.jobs.hourly_options_radar --config config.yaml
-```
-
-The checked-in launchd definition is:
-
-```text
-ops/launchd/com.joehu.market.hourly-options-radar.plist
-```
-
-Install or refresh it on the machine that owns the local Market app with:
-
-```bash
-cp ops/launchd/com.joehu.market.hourly-options-radar.plist ~/Library/LaunchAgents/
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.hourly-options-radar.plist 2>/dev/null || true
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.hourly-options-radar.plist
-launchctl print gui/$(id -u)/com.joehu.market.hourly-options-radar
-```
-
-The job refreshes the broad Radar universe every 15 minutes from PostgreSQL. It uses `/tmp/market-hourly-options-radar.lock`, so a slow deterministic
-run skips the next hourly tick instead of starting overlapping radar
-recomputes. It writes
-`/Volumes/agent/data-sources/status/mini-market-hourly-options-radar.json`.
-Do not add provider refreshes back to this hourly job; long provider phases
-increase API contention and can overlap the next cadence even though PostgreSQL
-remains responsive. Provider ingestion belongs in `full_market_refresh`,
-`update_free_sources`, or the premarket options workflow.
+The app scheduler owns regular-session Robinhood source-plus-publication refreshes
+at a 15-minute cadence, active paper-ticket quote refreshes, and hourly outcome
+reviews. It uses the market calendar and the existing provider lease. Keep the
+older hourly and market-open launch agents disabled to avoid duplicate producers
+and after-hours republishes. Their checked-in plists are disabled fallback templates.
 
 Run the broader agent-bearing workflow once before the local investment review
 window, for example:
@@ -235,24 +209,11 @@ once. US market holidays are rejected before an agent can run. The pre-open
 narrative receives a compact decision context capped at 20,000 characters and
 records its own invocation and estimated token usage.
 
-The premarket workflow intentionally composes already-ingested facts. Run a
-separate source-plus-publication refresh after the options market opens so
-`/options-radar` does not merely republish an older Robinhood snapshot. The
-checked-in weekday market-open definition runs at 9:42 AM Eastern, after the
-five-minute recovery detector's 9:40 slot:
-
-```text
-ops/launchd/com.joehu.market.market-open-options-radar.plist
-```
-
-Install or refresh it with:
-
-```bash
-cp ops/launchd/com.joehu.market.market-open-options-radar.plist ~/Library/LaunchAgents/
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.market-open-options-radar.plist 2>/dev/null || true
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.market-open-options-radar.plist
-launchctl print gui/$(id -u)/com.joehu.market.market-open-options-radar
-```
+The premarket workflow composes already-ingested facts. The app scheduler then
+pulls current quotes during the regular session. The disabled fallback template
+`ops/launchd/com.joehu.market.market-open-options-radar.plist` retains the former
+09:42 weekday schedule for installations without the app scheduler. Do not enable
+both owners.
 
 This job runs `options_radar_hard_refresh`, which pulls Robinhood option chains
 before rebuilding the visible publication. It raises the incremental batch to

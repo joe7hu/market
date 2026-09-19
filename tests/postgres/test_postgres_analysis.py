@@ -1850,3 +1850,51 @@ def test_current_option_publication_invalid_identity_fails_closed(analysis_conte
         "option_radar_opportunity": [{"decision_id": identity, "symbol": "NVDA"}],
     })
     assert repository.publication_rows("options-radar", "option_radar_opportunity") == []
+
+
+def test_option_decision_clock_preserves_quote_clock(analysis_context) -> None:
+    repository = analysis_context["analysis"]
+    quote_at = analysis_context["observed_at"]
+    decision_at = quote_at + timedelta(minutes=10)
+    run_id = repository.start_run("options-radar", input_cutoff=decision_at, code_version="clock-test", inputs={})
+    decision_id = repository.store_option_decision(
+        run_id, decision_key="clock-test", instrument_id=analysis_context["instrument_id"],
+        contract_id=analysis_context["contract_id"], snapshot_id=analysis_context["snapshot_id"],
+        quote_observed_at=quote_at, state="WATCH", score=60, rank=1, inputs={},
+    )
+    with repository.runtime.read() as connection:
+        row = connection.execute("SELECT d.as_of, o.quote_observed_at FROM analysis.decision d JOIN analysis.option_decision o ON o.decision_id=d.id WHERE d.id=%s", [decision_id]).fetchone()
+    assert row["as_of"] == decision_at
+    assert row["quote_observed_at"] == quote_at
+    with pytest.raises(ValueError, match="analysis cutoff"):
+        repository.store_option_decision(
+            run_id, decision_key="future-quote", instrument_id=analysis_context["instrument_id"],
+            contract_id=analysis_context["contract_id"], snapshot_id=analysis_context["snapshot_id"],
+            quote_observed_at=decision_at + timedelta(seconds=1), state="WATCH", score=60, rank=1, inputs={},
+        )
+
+
+def test_ticket_only_quotes_do_not_replace_radar_chain(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source("ticket-test", name="Test", family="test", kind="option_chain")
+        now = datetime.now(UTC)
+        for universe, observed_at, strikes in [
+            ("owned+watchlist", now - timedelta(minutes=1), [100, 110]),
+            ("paper-tickets", now, [100]),
+        ]:
+            run_id = ingestion.start_run("ticket-test", "option_quotes", started_at=observed_at)
+            ingestion.store_option_snapshot(run_id, source_id="ticket-test", observed_at=observed_at,
+                market_session="regular", universe=universe,
+                rows=[{"symbol": "NVDA", "expiration": (now + timedelta(days=365)).date().isoformat(),
+                       "strike": strike, "option_type": "call", "bid": 1, "ask": 1.1,
+                       "mid": 1.05, "underlying_price": 100} for strike in strikes])
+            ingestion.finish_run(run_id, "succeeded", summary={"symbols_requested": ["NVDA"]})
+        result = refresh_options_radar(runtime, source_id="ticket-test", symbols=["NVDA"], code_version="ticket-isolation")
+        assert result["option_features"] == 2
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) AS count FROM analysis.option_feature feature JOIN raw.option_snapshot snapshot ON snapshot.id = feature.snapshot_id WHERE snapshot.universe = 'paper-tickets'").fetchone()["count"] == 0
+    finally:
+        runtime.close()

@@ -104,11 +104,22 @@ def test_application_login_produces_and_advances_experiment_shadows(experiment_c
         candidate_run = run_experiments(application, enabled)
         assert candidate_run["status"] == "ok" and candidate_run["candidate_revision_id"] == candidate
         assert candidate_run["publication"]["shadow_trades"] == 1
+        from investment_panel.infrastructure.postgres.options import active_paper_contracts
+        contracts = active_paper_contracts(enabled, "test-experiment")
+        assert contracts and all(row["symbol"] == "NVDA" for row in contracts)
+        assert active_paper_contracts(enabled, "other-source") == []
         _capture(owner, ingestion, now + timedelta(seconds=20))
         assert advance_experiment_shadows(application, now=now + timedelta(seconds=21))["entered"] == 2
         _capture(owner, ingestion, now + timedelta(seconds=40), bid=1.1, ask=1.12)
         completed = run_experiments(application, typed_config(application_postgres_dsn), now=now + timedelta(seconds=41))
         assert completed["status"] == "disabled" and completed["observations"]["closed"] == 2
+        assert active_paper_contracts(enabled, "test-experiment") == []
+        from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+        observations = PaperWorkbenchRepository(application).observations(status="closed", limit=1)
+        assert observations["total"] == 2 and observations["next_offset"] == 1
+        assert observations["rows"][0]["entry_quotes"] and observations["rows"][0]["exit_quotes"]
+        assert observations["rows"][0]["net_return"] > 0
+        assert PaperWorkbenchRepository(application).observations(status="pending")["rows"] == []
         with application.read() as connection:
             outcomes = connection.execute(
                 "SELECT shadow.status, shadow.entry_at, shadow.exit_at, outcome.objective_version, outcome.sample_eligible "

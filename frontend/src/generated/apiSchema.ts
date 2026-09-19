@@ -921,6 +921,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/paper/observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Paper Observations */
+        get: operations["paper_observations_api_paper_observations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/paper/performance": {
         parameters: {
             query?: never;
@@ -5592,6 +5609,28 @@ export interface components {
             /** Trade Plan Id */
             trade_plan_id: string;
         };
+        /** PaperObservationPage */
+        PaperObservationPage: {
+            /** Accounting Basis */
+            accounting_basis: string;
+            /** Counts */
+            counts?: {
+                [key: string]: number;
+            };
+            /** Next Offset */
+            next_offset?: number | null;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+        } & {
+            [key: string]: unknown;
+        };
         /**
          * PaperTradeDetail
          * @description Bounded paper-trade investigation with original artifacts.
@@ -10070,6 +10109,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PanelSnapshotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    paper_observations_api_paper_observations_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperObservationPage"];
                 };
             };
             /** @description Validation Error */

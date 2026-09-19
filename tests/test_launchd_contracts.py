@@ -18,6 +18,7 @@ def test_market_open_options_radar_runs_full_hard_refresh_at_0942_weekdays() -> 
     with plist_path.open("rb") as handle:
         payload = plistlib.load(handle)
 
+    assert payload["Disabled"] is True
     intervals = payload["StartCalendarInterval"]
     assert intervals == [
         {"Weekday": weekday, "Hour": 9, "Minute": 42}
@@ -34,6 +35,7 @@ def test_intraday_radar_refreshes_every_fifteen_minutes_from_postgresql() -> Non
     with plist_path.open("rb") as handle:
         payload = plistlib.load(handle)
 
+    assert payload["Disabled"] is True
     assert payload["StartInterval"] == 900
     command = payload["ProgramArguments"][2]
     assert "investment_panel.core.refresh_jobs refresh_options_radar_signal_robinhood" in command

@@ -178,6 +178,9 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
         intervals["detect_option_events"] = event_detect_seconds
     if option_source == "robinhood":
         hard_seconds = _env_int_optional("MARKET_OPTIONS_RADAR_HARD_REFRESH_SECONDS")
+        if hard_seconds is None and not any(os.environ.get(name) for name in
+                ("MARKET_RADAR_REFRESH_SECONDS", "MARKET_SOURCE_REFRESH_SECONDS")):
+            hard_seconds = 900
         if hard_seconds and hard_seconds > 0:
             intervals["options_radar_hard_refresh"] = hard_seconds
     else:
@@ -198,7 +201,8 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
             intervals[source_job] = source_seconds
 
     learning_mark_seconds = _env_int_optional("MARKET_LEARNING_MARK_REFRESH_SECONDS")
-    if learning_mark_seconds and learning_mark_seconds > 0:
+    learning_mark_seconds = 3600 if learning_mark_seconds is None else learning_mark_seconds
+    if learning_mark_seconds > 0:
         intervals["refresh_options_radar_learning_marks"] = learning_mark_seconds
     learning_seconds = _env_int_optional("MARKET_LEARNING_REFRESH_SECONDS")
     learning_seconds = (21600 if heavy_refresh else 0) if learning_seconds is None else learning_seconds

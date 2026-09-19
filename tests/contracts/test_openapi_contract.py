@@ -33,8 +33,8 @@ def test_openapi_baseline_and_json_success_schemas() -> None:
         for method, operation in path.items()
         if method in {"get", "post", "put", "patch", "delete"}
     ]
-    # The read-only Trading & Learning Workbench adds twelve bounded routes.
-    assert len(paths) <= 103
+    # Includes the bounded prospective paper-observation ledger.
+    assert len(paths) <= 104
     assert operations
     assert contract["components"]["schemas"]
 

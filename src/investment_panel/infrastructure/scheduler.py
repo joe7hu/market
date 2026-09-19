@@ -45,6 +45,7 @@ _deferred_jobs = 0
 # five-minute detector into the next observation bucket.
 SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history", "detect_option_events"})
 SLOT_ALIGNMENT_TOLERANCE_SECONDS = 30.0
+SESSION_JOBS = frozenset({"run_continuous_advisor", "options_radar_hard_refresh"})
 CONTINUOUS_ADVISOR_JOBS = frozenset(
     {"run_continuous_advisor", "run_continuous_advisor_replay", "run_continuous_advisor_evolution"}
 )
@@ -86,7 +87,7 @@ def _initial_delay_seconds(
     *,
     reference_time: datetime | None = None,
 ) -> float:
-    if job == "run_continuous_advisor":
+    if job in SESSION_JOBS:
         reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(UTC)
         return max(0.0, (_next_market_open_at(reference) - reference).total_seconds())
     if job in SLOT_ALIGNED_JOBS:
@@ -133,7 +134,7 @@ def _recurring_delay_seconds(
     waits a full configured interval.  History collection is intentionally
     calendar-aligned; its next recurrence is the *next* quarter-hour slot.
     """
-    if job == "run_continuous_advisor":
+    if job in SESSION_JOBS:
         reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(UTC)
         target = reference + timedelta(seconds=interval)
         return max(0.0, (_next_market_open_at(target) - reference).total_seconds())
@@ -362,6 +363,8 @@ async def _dispatch_once(
     *,
     due_at: datetime | None = None,
 ) -> None:
+    if job in SESSION_JOBS and not is_market_open(datetime.now(UTC)):
+        return
     started_job_id: str | None = None
     try:
         start_kwargs: dict[str, Any] = {}

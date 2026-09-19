@@ -23,7 +23,7 @@ from investment_panel.core.robinhood_options import (
 )
 from investment_panel.core.status import write_source_status
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
-from investment_panel.infrastructure.postgres.options import incremental_option_symbols, option_universe, persist_collected_option_chains
+from investment_panel.infrastructure.postgres.options import active_paper_contracts, incremental_option_symbols, option_universe, persist_collected_option_chains
 from investment_panel.infrastructure.postgres.source_registry import set_source_operational_state
 
 
@@ -100,6 +100,7 @@ def run(
         )
         return {**result, "status_path": str(status_path) if status_path else None}
 
+    required_contracts = active_paper_contracts(config, "robinhood") if not symbols else []
     universe = symbols or option_universe(config, limit=_max_symbols(provider.max_symbols))
     target = universe
     if not symbols and not full and _incremental_enabled():
@@ -112,6 +113,13 @@ def run(
         )
 
     try:
+        if required_contracts:
+            # Publish ticket quotes before the wider scan can make them stale.
+            active = collect_robinhood_option_chains(
+                provider, list(dict.fromkeys(row["symbol"] for row in required_contracts)),
+                client=client, required_contracts=required_contracts, required_only=True,
+            )
+            persist_collected_option_chains(config, "robinhood", active, universe="paper-tickets")
         collected = collect_robinhood_option_chains(provider, target, client=client)
     except RobinhoodAuthRequired as exc:
         result = {

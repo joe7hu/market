@@ -49,7 +49,7 @@ def latest_option_snapshot_by_symbol(
             CROSS JOIN LATERAL jsonb_array_elements_text(
                 COALESCE(ingest_run.summary->'symbols_requested', '[]'::jsonb)
             ) requested(symbol)
-            WHERE snapshot.source_id = %s
+            WHERE snapshot.source_id = %s AND snapshot.universe <> 'paper-tickets'
               AND requested.symbol = ANY(%s)
             GROUP BY requested.symbol
             """,

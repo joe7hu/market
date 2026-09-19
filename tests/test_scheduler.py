@@ -21,13 +21,13 @@ def test_scheduler_enabled_respects_off_values(monkeypatch) -> None:
         assert scheduler.scheduler_enabled() is False
 
 
-def test_job_intervals_default_to_daily_premarket_options(monkeypatch) -> None:
+def test_job_intervals_refresh_quotes_within_paper_entry_window(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.delenv("MARKET_SOURCE_REFRESH_SECONDS", raising=False)
     monkeypatch.delenv("MARKET_RADAR_REFRESH_SECONDS", raising=False)
     monkeypatch.delenv("MARKET_OPTIONS_RADAR_HARD_REFRESH_SECONDS", raising=False)
     intervals = scheduler.job_intervals()
-    assert "options_radar_hard_refresh" not in intervals
+    assert intervals["options_radar_hard_refresh"] == 900
 
 
 def test_operational_source_refreshes_default_on(monkeypatch) -> None:
@@ -132,7 +132,7 @@ def test_source_pull_can_be_disabled(monkeypatch) -> None:
     assert "refresh_options_radar_signal_robinhood" in intervals
 
 
-def test_radar_freshness_loop_defaults_to_premarket_only(monkeypatch) -> None:
+def test_radar_quote_and_learning_loops_default_on(monkeypatch) -> None:
     for var in (
         "MARKET_RADAR_OPTION_SOURCE",
         "MARKET_IN_PROCESS_HEAVY_REFRESH",
@@ -143,8 +143,8 @@ def test_radar_freshness_loop_defaults_to_premarket_only(monkeypatch) -> None:
     ):
         monkeypatch.delenv(var, raising=False)
     intervals = scheduler.job_intervals()
-    assert "options_radar_hard_refresh" not in intervals
-    assert "refresh_options_radar_learning_marks" not in intervals
+    assert intervals["options_radar_hard_refresh"] == 900
+    assert intervals["refresh_options_radar_learning_marks"] == 3600
     assert "refresh_options_radar_deterministic" not in intervals
     assert "update_market_environment" not in intervals
     assert "update_preopen_daily_brief_scheduled" not in intervals
@@ -198,10 +198,10 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     )
 
     assert status["agent_refresh_seconds"] == "123"
-    assert status["radar_refresh_seconds"] == "0"
-    assert status["source_refresh_seconds"] == "0"
-    assert status["options_hard_refresh_seconds"] == "0"
-    assert status["learning_mark_refresh_seconds"] == "0"
+    assert status["radar_refresh_seconds"] == "900"
+    assert status["source_refresh_seconds"] == "900"
+    assert status["options_hard_refresh_seconds"] == "900"
+    assert status["learning_mark_refresh_seconds"] == "3600"
     assert status["learning_refresh_seconds"] == "21600"
     assert status["market_environment_refresh_seconds"] == "0"
     assert status["preopen_brief_refresh_seconds"] == "0"
@@ -249,7 +249,8 @@ def test_continuous_advisor_settings_refresh_without_restart(monkeypatch) -> Non
 
 
 def test_source_writers_wait_one_interval_before_first_run() -> None:
-    assert scheduler._initial_delay_seconds("options_radar_hard_refresh", 900, 0) == 900
+    assert scheduler._initial_delay_seconds("options_radar_hard_refresh", 900, 0,
+        reference_time=datetime(2026, 7, 20, 9, 30, tzinfo=ZoneInfo("America/New_York"))) == 0
     assert scheduler._initial_delay_seconds("update_robinhood_options", 120, 1) == 120
     assert scheduler._initial_delay_seconds("refresh_options_radar_signal_robinhood", 60, 2) == 2 * scheduler.STAGGER_SECONDS
 
@@ -262,8 +263,9 @@ def test_overdue_source_writers_start_immediately_but_staggered() -> None:
         "update_disclosures", 86400, 1, overdue_jobs={"update_disclosures"}
     ) == scheduler.STAGGER_SECONDS
     assert scheduler._startup_delay_seconds(
-        "options_radar_hard_refresh", 900, 0, overdue_jobs=set()
-    ) == 900
+        "options_radar_hard_refresh", 900, 0, overdue_jobs=set(),
+        reference_time=datetime(2026, 7, 20, 9, 30, tzinfo=ZoneInfo("America/New_York"))
+    ) == 0
 
 
 def test_option_history_starts_on_the_next_quarter_hour() -> None:
@@ -504,3 +506,13 @@ def test_company_financials_refresh_daily_and_can_be_disabled(monkeypatch) -> No
     assert scheduler.job_intervals()["update_company_financials"] == 86400
     monkeypatch.setenv("MARKET_COMPANY_FINANCIALS_REFRESH_SECONDS", "0")
     assert "update_company_financials" not in scheduler.job_intervals()
+
+
+def test_quote_refresh_waits_until_next_regular_session() -> None:
+    eastern = ZoneInfo("America/New_York")
+    close = datetime(2026, 7, 24, 16, 0, tzinfo=eastern)
+    monday = datetime(2026, 7, 27, 9, 30, tzinfo=eastern)
+    assert scheduler._initial_delay_seconds("options_radar_hard_refresh", 900, 0,
+        reference_time=close) == (monday - close).total_seconds()
+    assert scheduler._recurring_delay_seconds("options_radar_hard_refresh", 900,
+        reference_time=close) == (monday - close).total_seconds()

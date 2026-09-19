@@ -257,6 +257,8 @@ def collect_robinhood_option_chains(
     collect_puts: bool | None = None,
     quote_batch_size: int | None = None,
     near_term_dte: int | None = None,
+    required_contracts: list[dict[str, Any]] | None = None,
+    required_only: bool = False,
 ) -> dict[str, Any]:
     """Collect option rows from Robinhood for Market's radar universe."""
 
@@ -313,6 +315,8 @@ def collect_robinhood_option_chains(
                 collect_puts=collect_puts,
                 quote_batch_size=quote_batch_size,
                 near_term_dte=near_term_dte,
+                required_contracts=[row for row in required_contracts or [] if row["symbol"] == symbol],
+                required_only=required_only,
                 deadline=deadline,
             )
         except Exception as exc:  # noqa: BLE001 - keep the rest of the universe moving
@@ -452,6 +456,8 @@ def _collect_symbol(
     collect_puts: bool,
     quote_batch_size: int,
     near_term_dte: int = 0,
+    required_contracts: list[dict[str, Any]] | None = None,
+    required_only: bool = False,
     deadline: float | None = None,
 ) -> list[dict[str, Any]]:
     chains = _payload_list(client.get_option_chains(symbol), "chains")
@@ -472,8 +478,14 @@ def _collect_symbol(
             near_term = select_near_term_expiry(expiration_dates, today=today, target_dte=near_term_dte)
             if near_term and near_term not in expiries:
                 expiries = [near_term, *expiries]
+        required = required_contracts or []
+        expiries = list(dict.fromkeys([row["expiration"] for row in required] + ([] if required_only else expiries)))
         for expiry in expiries:
-            for option_type in (["call", "put"] if collect_puts else ["call"]):
+            option_types = list(dict.fromkeys(
+                [row["option_type"] for row in required if row["expiration"] == expiry]
+                + ([] if required_only else ["call", "put"] if collect_puts else ["call"])
+            ))
+            for option_type in option_types:
                 if _deadline_expired(deadline):
                     return rows
                 instruments = attach_chain_metadata(
@@ -484,7 +496,12 @@ def _collect_symbol(
                     chain,
                     symbol,
                 )
-                selected = _select_instruments(instruments, spot, option_type=option_type, count=strikes_around_spot)
+                selected = [] if required_only else _select_instruments(instruments, spot, option_type=option_type, count=strikes_around_spot)
+                required_strikes = {row["strike"] for row in required
+                                    if row["expiration"] == expiry and row["option_type"] == option_type}
+                selected_ids = {item["id"] for item in selected}
+                selected = [item for item in instruments
+                            if as_float(item.get("strike_price")) in required_strikes and item["id"] not in selected_ids] + selected
                 quoted = _quote_instruments(client, selected, quote_batch_size=quote_batch_size, deadline=deadline)
                 for row in quoted:
                     row["underlying_price"] = spot

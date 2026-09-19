@@ -50,6 +50,7 @@
   "/api/options/shadow-observations": ["GET"],
   "/api/options/tickets/{decision_id}": ["GET"],
   "/api/options/workspace": ["GET"],
+  "/api/paper/observations": ["GET"],
   "/api/paper/performance": ["GET"],
   "/api/paper/trades": ["GET"],
   "/api/paper/trades/export": ["GET"],

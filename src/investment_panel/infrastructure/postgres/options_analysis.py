@@ -283,7 +283,7 @@ def _latest_snapshot_time(
                 """
                 SELECT max(snapshot.observed_at) AS observed_at
                 FROM raw.option_snapshot snapshot
-                WHERE snapshot.market_session = ANY(%s)
+                WHERE snapshot.universe <> 'paper-tickets' AND snapshot.market_session = ANY(%s)
                   AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
                 """,
                 [list(RADAR_QUOTE_SESSIONS), source_id, source_id],
@@ -298,7 +298,7 @@ def _latest_snapshot_time(
             SELECT max(snapshot.observed_at) AS observed_at
             FROM raw.option_snapshot snapshot
             JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
-            WHERE snapshot.market_session = ANY(%s)
+            WHERE snapshot.universe <> 'paper-tickets' AND snapshot.market_session = ANY(%s)
               AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
               AND COALESCE(ingest_run.summary->'symbols_requested', '[]'::jsonb) ?| %s::text[]
             """,
@@ -310,7 +310,7 @@ def _latest_snapshot_time(
             """
             SELECT max(snapshot.observed_at) AS observed_at
             FROM raw.option_snapshot snapshot
-            WHERE snapshot.market_session = ANY(%s)
+            WHERE snapshot.universe <> 'paper-tickets' AND snapshot.market_session = ANY(%s)
               AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
               AND EXISTS (
                   SELECT 1
@@ -347,13 +347,13 @@ def _insert_features(
                 JOIN raw.option_quote quote ON quote.snapshot_id = snapshot.id
                 JOIN catalog.option_contract contract ON contract.id = quote.contract_id
                 JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-                WHERE snapshot.observed_at <= %s
+                WHERE snapshot.universe <> 'paper-tickets' AND snapshot.observed_at <= %s
                   AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
                   AND NOT EXISTS (
                       SELECT 1
                       FROM raw.option_snapshot attempted
                       JOIN ingest.run attempted_run ON attempted_run.id = attempted.ingest_run_id
-                      WHERE attempted.observed_at = %s
+                      WHERE attempted.universe <> 'paper-tickets' AND attempted.observed_at = %s
                         AND (CAST(%s AS text) IS NULL OR attempted.source_id = %s)
                         AND COALESCE(attempted_run.summary->'symbols_requested', '[]'::jsonb) ? instrument.symbol
                         AND NOT EXISTS (
@@ -504,7 +504,7 @@ def _insert_decisions(
                 SELECT feature.*,
                        instrument.id AS instrument_id,
                        contract.option_type,
-                       analysis_run.feature_versions,
+                       analysis_run.feature_versions, analysis_run.input_cutoff AS decision_at,
                        quote.mid, quote.bid, quote.ask, quote.open_interest, quote.volume,
                        %s * feature.liquidity_score + %s * feature.convexity_score AS score,
                        array_remove(ARRAY[
@@ -549,7 +549,7 @@ def _insert_decisions(
                 quality_status, strategy_revision_id, reasons, blockers, input_hash,
                 lane, episode_key, sample_eligible, quarantine_reason, calibration_cohort
             )
-            SELECT %s, contract_id::text, 'option', instrument_id, quote_observed_at,
+            SELECT %s, contract_id::text, 'option', instrument_id, decision_at,
                    CASE WHEN cardinality(blockers) > 0 THEN 'REJECTED'
                         WHEN score >= 85 THEN 'SETUP'
                         WHEN score >= 70 THEN 'SETUP'

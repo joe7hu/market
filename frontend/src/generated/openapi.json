@@ -10648,6 +10648,51 @@
         "title": "PaperExecutionOutcome",
         "type": "object"
       },
+      "PaperObservationPage": {
+        "additionalProperties": true,
+        "properties": {
+          "accounting_basis": {
+            "title": "Accounting Basis",
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accounting_basis"
+        ],
+        "title": "PaperObservationPage",
+        "type": "object"
+      },
       "PaperTradeDetail": {
         "additionalProperties": true,
         "description": "Bounded paper-trade investigation with original artifacts.",
@@ -22028,6 +22073,65 @@
           }
         },
         "summary": "Panel Snapshot"
+      }
+    },
+    "/api/paper/observations": {
+      "get": {
+        "operationId": "paper_observations_api_paper_observations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(pending|entered|closed|unfilled|rejected|unmeasurable)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperObservationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Observations"
       }
     },
     "/api/paper/performance": {

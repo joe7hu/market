@@ -27,6 +27,23 @@ paper book. No live order authority is added.
 - `/research/artifacts/:artifactId` shows known database artifact metadata and its
   bounded preview. Metadata-only records do not claim retained file contents.
 
+## Prospective paper experiments
+
+The paper page also lists `options_paper_experiment` observations separately from
+funded orders. Status filters and pagination expose pending, entered, closed,
+unfilled, rejected and unmeasurable cases. Each record includes its frozen ticket,
+decision time, entry and exit quote evidence, and after-cost return when available.
+This section covers all experiments, independent of the portfolio filters above.
+
+The default Robinhood source-plus-radar refresh runs every 15 minutes during regular
+US market sessions. Existing explicit split-cadence overrides remain supported.
+Active paper ticket contracts are quoted and saved before the broad scan, including
+strikes or expirations outside the normal sample. These `paper-tickets` snapshots
+can support execution checks but cannot replace full radar chains or postpone their
+refresh. Outcome reviews run hourly. Entry windows still require later fresh quotes;
+missed windows remain unfilled. Decision time is the analysis input cutoff, while
+source quote time remains separate. Historical missing fills are never backfilled.
+
 ## Accounting and scope limits
 
 The chart is **verified realized net P&L**, not a whole-book NAV series. Open-position

@@ -521,7 +521,7 @@ class OptionHistoryV3Materializer:
                 calibration_cohort = EXCLUDED.calibration_cohort
             RETURNING id
             """,
-            [run_id, decision_key, quote["instrument_id"], quote["quote_observed_at"],
+            [run_id, decision_key, quote["instrument_id"], as_of,
              decision_state(state["paper_state"]), value.get("modeled_net_edge"), quality_status,
              state["reasons"], state["blockers"], _hash({"value": value, "structure": structure, "scenario": scenario}),
              scorecard_lane, episode_key, sample_eligible, quarantine_reason,

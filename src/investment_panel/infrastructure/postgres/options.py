@@ -37,10 +37,39 @@ def incremental_option_symbols(
     return [symbol for _bucket, _observed, _index, symbol in ranked[:limit]]
 
 
+def active_paper_contracts(config: AppConfig, source_id: str) -> list[dict[str, Any]]:
+    """Keep immutable paper ticket legs in the collector's sampling universe."""
+    with runtime_for_config(config).read() as connection:
+        return [dict(row) for row in connection.execute(
+            """WITH active AS (
+                   SELECT leg.contract_id AS contract_id
+                   FROM app.paper_order paper
+                   JOIN app.paper_order_leg leg ON leg.paper_order_id = paper.id
+                   WHERE paper.status NOT IN ('exited', 'invalidated', 'unfilled', 'rejected', 'unmeasurable')
+                   UNION
+                   SELECT CASE WHEN leg->>'contract_id' ~ '^[0-9]{1,18}$' THEN (leg->>'contract_id')::bigint END
+                   FROM analysis.shadow_trade shadow
+                   CROSS JOIN LATERAL jsonb_array_elements(shadow.metrics->'ticket'->'legs') leg
+                   WHERE shadow.source_kind = 'options_paper_experiment'
+                     AND shadow.status IN ('pending', 'entered') AND shadow.metrics->>'source_id' = %s
+               )
+               SELECT instrument.symbol, contract.expiration::text AS expiration,
+                      contract.option_type, contract.strike::double precision AS strike
+               FROM active
+               JOIN catalog.option_contract contract ON contract.id = active.contract_id
+               JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+               WHERE contract.expiration >= CURRENT_DATE
+               ORDER BY instrument.symbol, contract.expiration, contract.option_type, contract.strike""",
+            [source_id],
+        ).fetchall()]
+
+
 def persist_collected_option_chains(
     config: AppConfig,
     source_id: str,
     collected: dict[str, Any],
+    *,
+    universe: str = "owned+watchlist",
 ) -> dict[str, Any]:
     runtime = runtime_for_config(config)
     repository = IngestionRepository(runtime)
@@ -58,7 +87,7 @@ def persist_collected_option_chains(
             source_id=source_id,
             observed_at=observed_at,
             market_session=_market_session(observed_at),
-            universe="owned+watchlist",
+            universe=universe,
             rows=flattened,
             completeness=_completeness(collected),
         )

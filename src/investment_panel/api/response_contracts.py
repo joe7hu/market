@@ -120,6 +120,14 @@ class PaperTradePage(FlexibleResponse):
     has_more: bool = False
 
 
+class PaperObservationPage(FlexibleResponse):
+    rows: list[Row] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    total: int = 0
+    next_offset: int | None = None
+    accounting_basis: str
+
+
 class PaperBookPerformance(FlexibleResponse):
     """Accounting projection with visible scope and evidence coverage."""
 

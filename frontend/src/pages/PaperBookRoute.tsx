@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { loadPaperPerformance, loadPaperTrades, paperTradesExportUrl, type PaperFilters, type PaperPerformance, type PaperTrade } from "@/api/paper";
+import { PaperObservations } from "@/components/market/PaperObservations";
 import { PaperPerformanceChart } from "@/components/market/PaperPerformanceChart";
 import { PageHeader, StatusBadge } from "@/components/market/workstation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -127,13 +128,14 @@ export function PaperBookRoute() {
     {scopeLoading ? <PortfolioSkeleton /> : null}
     {!scopeLoading && visiblePerformance ? <>
       <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7" aria-label="Paper portfolio summary">
-        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Paper portfolio · {period === "custom" ? "Selected range" : period.toUpperCase()}</p><h2 className="mt-2 text-3xl font-semibold tracking-tight sm:text-5xl">{hasVerifiedPerformance ? money(visiblePerformance.net_pnl, true) : "Learning has not started"}</h2><p className="mt-2 max-w-2xl text-sm text-muted-foreground">{hasVerifiedPerformance ? "Verified realized P&L from fill-backed exits. Open P&L is shown only when current marks are authoritative." : "The system has not accumulated a verified exit series in this scope yet."}</p></div><StatusBadge tone={statusTone(visiblePerformance.quality_status)}>{statusLabel(visiblePerformance.quality_status)}</StatusBadge></div>
+        <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Paper portfolio · {period === "custom" ? "Selected range" : period.toUpperCase()}</p><h2 className="mt-2 text-3xl font-semibold tracking-tight sm:text-5xl">{hasVerifiedPerformance ? money(visiblePerformance.net_pnl, true) : "No verified exits yet"}</h2><p className="mt-2 max-w-2xl text-sm text-muted-foreground">{hasVerifiedPerformance ? "Verified realized P&L from fill-backed exits. Open P&L is shown only when current marks are authoritative." : "The system has not accumulated a verified exit series in this scope yet."}</p></div><StatusBadge tone={statusTone(visiblePerformance.quality_status)}>{statusLabel(visiblePerformance.quality_status)}</StatusBadge></div>
         {learningNotStarted ? <LearningLifecycle performance={visiblePerformance} /> : <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><SummaryMetric label="Realized P&L" value={money(visiblePerformance.realized_pnl, true)} note={visiblePerformance.realized_pnl_status === "complete" ? "Verified fills" : "Some exits need evidence"} /><SummaryMetric label="Open P&L" value={money(visiblePerformance.unrealized_pnl, true)} note={visiblePerformance.open_exposure_status === "complete" ? "Current marks verified" : "Mark coverage incomplete"} /><SummaryMetric label="Drawdown" value={money(visiblePerformance.drawdown, true)} note="From verified realized curve" /><SummaryMetric label="Closed trades" value={String(counts.closed_trades ?? 0)} note={`${counts.filled_orders ?? 0} filled positions`} /><SummaryMetric label="Evidence" value={`${counts.reconciled_orders ?? 0} / ${counts.filled_orders ?? 0}`} note="Fill records reconciled" /></div>}
       </section>
       {!learningNotStarted ? <>
         <PerformanceVisual performance={visiblePerformance} chart={chart} points={points} drawdownPoints={drawdownPoints} locationSearch={location.search} onChart={(value) => updateFilters({ chart: value })} onSelect={(tradeId) => navigate(`/portfolio/paper/trades/${encodeURIComponent(tradeId)}${location.search}`)} onRangeChange={onRangeChange} />
         <Attribution performance={visiblePerformance} />
       </> : null}
+      <PaperObservations />
       <TradeBlotter trades={trades} performance={visiblePerformance} locationSearch={location.search} onLoadOlder={loadOlder} paging={paging} />
     </> : null}
   </div>;

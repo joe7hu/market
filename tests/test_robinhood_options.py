@@ -557,3 +557,25 @@ data_sources:
     assert result["status"] == "error"
     assert result["provider"] == "robinhood"
     assert "timed out" in result["error"]
+
+
+def test_paper_ticket_contract_is_quoted_outside_normal_expiry_and_strike_sample() -> None:
+    result = collect_robinhood_option_chains(
+        _ProviderConfig(), ["NVDA"], client=_FakeRobinhoodClient(),
+        strikes_around_spot=1, near_term_dte=0,
+        required_contracts=[{"symbol": "NVDA", "expiration": "2026-06-26",
+                             "option_type": "call", "strike": 300.0}],
+    )
+    assert result["errors"] == []
+    assert any(row["expiry"] == "2026-06-26" and row["strike"] == 300
+               for row in result["rows"]["NVDA"])
+
+
+def test_active_ticket_refresh_does_not_scan_unrelated_contracts() -> None:
+    result = collect_robinhood_option_chains(
+        _ProviderConfig(), ["NVDA"], client=_FakeRobinhoodClient(), required_only=True,
+        required_contracts=[{"symbol": "NVDA", "expiration": "2026-06-26",
+                             "option_type": "call", "strike": 300.0}],
+    )
+    assert result["errors"] == []
+    assert [(row["expiry"], row["strike"]) for row in result["rows"]["NVDA"]] == [("2026-06-26", 300.0)]

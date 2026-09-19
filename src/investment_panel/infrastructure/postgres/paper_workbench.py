@@ -28,6 +28,44 @@ class PaperWorkbenchRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
+    def observations(self, *, status: str | None = None, offset: int = 0, limit: int = 20) -> dict[str, Any]:
+        """Prospective experiments remain separate from the funded order ledger."""
+        with self.runtime.snapshot(JOB_PROFILE) as connection:
+            counts = connection.execute(
+                """SELECT status, count(*) AS count FROM analysis.shadow_trade
+                   WHERE source_kind = 'options_paper_experiment' GROUP BY status"""
+            ).fetchall()
+            rows = connection.execute(
+                """SELECT shadow.id::text, instrument.symbol, shadow.status, shadow.created_at,
+                          shadow.entry_at, shadow.entry_price, shadow.exit_at, shadow.exit_price,
+                          shadow.pending_entry_reason AS reason, shadow.structure,
+                          decision.id::text AS decision_id, decision.as_of AS decision_at,
+                          decision.score, decision.state, decision.blockers, revision.name AS strategy,
+                          shadow.metrics #>> '{ticket,thesis,summary}' AS thesis_summary,
+                          shadow.metrics #>> '{ticket,required_next_action}' AS required_next_action,
+                          revision.id AS strategy_revision_id,
+                          shadow.metrics->'ticket' AS ticket,
+                          shadow.metrics->'entry_quotes' AS entry_quotes,
+                          shadow.metrics->'exit_quotes' AS exit_quotes,
+                          shadow.metrics->'current_return' AS net_return,
+                          shadow.metrics->'fees' AS fees,
+                          shadow.metrics->>'exit_reason' AS exit_reason,
+                          shadow.metrics->>'entry_deadline' AS entry_deadline
+                   FROM analysis.shadow_trade shadow
+                   JOIN analysis.decision decision ON decision.id = shadow.decision_id
+                   JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                   JOIN analysis.strategy_revision revision ON revision.id = decision.strategy_revision_id
+                   WHERE shadow.source_kind = 'options_paper_experiment'
+                     AND (%s::text IS NULL OR shadow.status = %s)
+                   ORDER BY shadow.created_at DESC, shadow.id DESC LIMIT %s OFFSET %s""",
+                [status, status, limit, offset],
+            ).fetchall()
+        totals = {row["status"]: row["count"] for row in counts}
+        total = totals.get(status, 0) if status else sum(totals.values())
+        return {"rows": [dict(row) for row in rows], "counts": totals, "total": total,
+                "next_offset": offset + len(rows) if offset + len(rows) < total else None,
+                "accounting_basis": "One-contract prospective quote observations; excluded from paper account P&L."}
+
     def trades(
         self,
         *,

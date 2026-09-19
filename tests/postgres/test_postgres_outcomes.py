@@ -43,7 +43,7 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
             ).fetchone()["id"]
         analysis = AnalysisRepository(runtime)
         run_id = analysis.start_run(
-            "options_radar", input_cutoff=datetime.now(UTC), code_version="legacy-generic-outcome-test",
+            "options_radar", input_cutoff=entry_at, code_version="legacy-generic-outcome-test",
             inputs={"fixture": "generic_mark_history"},
             feature_versions={"option": "option-professional-v3-ticket"}, strategy_revision_id=strategy_id,
         )

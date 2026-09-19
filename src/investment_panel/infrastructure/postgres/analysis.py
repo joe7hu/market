@@ -890,6 +890,10 @@ class AnalysisRepository:
             ).fetchone()
             if instrument is None:
                 raise ValueError(f"unknown option instrument: {instrument_id}")
+            run = connection.execute("SELECT input_cutoff FROM analysis.run WHERE id = %s", [run_id]).fetchone()
+            if run is None or quote_observed_at > run["input_cutoff"]:
+                raise ValueError("option quote must be known at the analysis cutoff")
+            decision_at = run["input_cutoff"]
             symbol = str(instrument["symbol"])
             nested_details = option.get("details")
             event_id = option.get("event_id")
@@ -929,7 +933,7 @@ class AnalysisRepository:
                 RETURNING id
                 """,
                 [
-                    run_id, decision_key, instrument_id, quote_observed_at, state, rank, score,
+                    run_id, decision_key, instrument_id, decision_at, state, rank, score,
                     quality_status, strategy_revision_id, list(reasons), list(blockers), _hash(inputs),
                     decision_lane, episode_key, sample_eligible, quarantine_reason,
                     calibration_cohort,

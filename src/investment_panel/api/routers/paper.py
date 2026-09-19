@@ -20,6 +20,7 @@ from investment_panel.api.data_access import continuous_advisor as continuous_ow
 from investment_panel.api.response_contracts import (
     LearningOverview,
     PaperBookPerformance,
+    PaperObservationPage,
     PaperTradeDetail,
     PaperTradePage,
 )
@@ -27,6 +28,15 @@ from investment_panel.settings import AppConfig
 
 
 router = APIRouter()
+
+
+@router.get("/api/paper/observations", response_model=PaperObservationPage)
+def paper_observations(
+    status: str | None = Query(default=None, pattern="^(pending|entered|closed|unfilled|rejected|unmeasurable)$"),
+    offset: int = Query(default=0, ge=0, le=100000),
+    repository: dependencies.PaperWorkbenchRepository = Depends(dependencies.get_paper_workbench),
+) -> dict[str, Any]:
+    return repository.observations(status=status, offset=offset)
 
 
 @router.get(

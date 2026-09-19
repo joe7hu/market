@@ -138,3 +138,21 @@ export function paperTradesExportUrl(filters: PaperFilters): string {
 export function loadLearningOverview(signal?: AbortSignal): Promise<LearningOverviewPayload> {
   return getJson<LearningOverviewPayload>("/api/research/overview", signal);
 }
+
+export type PaperObservation = {
+  id: string; symbol: string; status: string; strategy: string; structure: string;
+  decision_id: string; decision_at: string; created_at: string;
+  entry_at: string | null; exit_at: string | null;
+  entry_price: number | null; exit_price: number | null; net_return: number | null;
+  reason: string | null; exit_reason: string | null; entry_deadline: string | null;
+  blockers: string[]; thesis_summary: string | null; required_next_action: string | null;
+  ticket: unknown; entry_quotes: unknown; exit_quotes: unknown;
+};
+export type PaperObservationPage = Omit<ApiSchema["PaperObservationPage"], "rows"> & { rows: PaperObservation[]; counts: Record<string, number>; total: number; next_offset: number | null; accounting_basis: string };
+
+
+export function loadPaperObservations(status: string, offset: number, signal?: AbortSignal): Promise<PaperObservationPage> {
+  const query = new URLSearchParams({ offset: String(offset) });
+  if (status) query.set("status", status);
+  return getJson<PaperObservationPage>(`/api/paper/observations?${query}`, signal);
+}
