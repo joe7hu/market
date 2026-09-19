@@ -1,3 +1,4 @@
+import { WorkflowReadiness } from "@/components/market/WorkflowReadiness";
 import { useState } from "react";
 import { setDecisionInboxState } from "@/api/options";
 import { InboxStateControls, InboxUsefulnessControls, type InboxStateChange } from "./decisionInbox";
@@ -58,7 +59,8 @@ export function tradePlanForAction(item: TodayAction) {
 const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCategories.map((category) => [category.key, category]));
 export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLoading, actionQueueError, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
   const briefItems = actionQueue?.brief_items ?? [];
-  const riskExceptions = actionQueue?.portfolio_risk_items ?? [];
+  const queuedRiskTitles = new Set((actionQueue?.actions ?? []).filter(item => item.source === "portfolio_risk").map(item => item.title));
+  const riskExceptions = (actionQueue?.portfolio_risk_items ?? []).filter(item => !queuedRiskTitles.has(item.title));
   const categoryStates = Object.fromEntries((actionQueue?.brief_categories ?? []).map((category) => [category.category, category]));
   const decideNow = briefItems.filter((item) => item.category === "decide_now");
   const whatsChanged = briefItems.filter((item) => item.category === "whats_changed");
@@ -79,11 +81,13 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
           </Button>
         }
       />
+      <WorkflowReadiness view="today" />
+      <div className="h-5" />
       <ScopeStatusNotice status={scopeStatus} onRetry={onRefresh} />
 
       {hasBrief ? <div className="grid gap-8">
         {Object.values(categoryStates).some((category) => category.coverage_status !== "complete" && category.coverage_message) ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Brief coverage is incomplete; missing items do not confirm that nothing changed.</summary><ul className="mt-2 space-y-1">{Object.values(categoryStates).filter((category) => category.coverage_status !== "complete" && category.coverage_message).map((category) => <li key={category.category}>{SECTION_BY_KEY[category.category]?.title ?? category.category}: {category.coverage_message}</li>)}</ul></details> : null}
-        <section aria-labelledby="today-do-now"><h2 id="today-do-now" className="mb-3 text-xl font-semibold">Decisions and holding risks</h2><ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} /><BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns /></section>
+        <section aria-labelledby="today-do-now"><h2 id="today-do-now" className="mb-3 text-xl font-semibold">Decisions and holding risks</h2><ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} /><details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-semibold">Research reading list · {decideNow.length} loaded</summary><BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns /></details></section>
         <section aria-labelledby="today-changed"><h2 id="today-changed" className="mb-3 text-xl font-semibold">What changed</h2><PreopenBrief brief={actionQueue?.preopen_brief} /><div className="grid gap-6"><BriefSection section={SECTION_BY_KEY.whats_changed} rows={whatsChanged} category={categoryStates.whats_changed} onOpenTicker={onOpenTicker} columns /><CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalysts", subtitle: "Near-term events that can change a decision." }} rows={catalysts} category={categoryStates.catalysts} onOpenTicker={onOpenTicker} /></div></section>
         <section aria-labelledby="today-system"><div className="mb-3 flex items-end justify-between gap-3"><div><h2 id="today-system" className="text-xl font-semibold">Your portfolio</h2><p className="text-sm text-muted-foreground">Position performance, concentration and holding risks.</p></div><a className="text-sm font-medium text-primary hover:underline" href="/health">Open system health →</a></div><PortfolioPerformanceSummary summary={data.portfolioSummaryDto} /><div className="grid gap-6"><BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk", subtitle: "Concentration, loss, and thesis exceptions." }} rows={riskExceptions.slice(0, 3)} onOpenTicker={onOpenTicker} columns /><BriefSection section={SECTION_BY_KEY.portfolio_pulse} rows={portfolioPulse} category={categoryStates.portfolio_pulse} onOpenTicker={onOpenTicker} columns /></div><details className="mt-4 rounded-md border border-border p-4"><summary className="cursor-pointer text-sm font-semibold">Event research</summary><EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} /></details></section>
       </div> : <EmptyState title="No daily brief loaded" detail="Refresh Today to load decisions, source changes, catalysts, and portfolio risks." />}
@@ -110,8 +114,8 @@ function PortfolioPerformanceSummary({ summary }: { summary: PanelData["portfoli
 
 function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { response: TodayResponse | null; loading: boolean; error: string | null; onRefresh: () => void; onOpenTicker: (symbol: string) => void }) {
   const [showAll, setShowAll] = useState(false);
-  const sorted = (response?.actions ?? []).slice().sort((a, b) => Number(b.source === "portfolio_risk") - Number(a.source === "portfolio_risk"));
-  const items = showAll ? sorted : sorted.slice(0, 10);
+  const sorted = dedupeTodayActions(response?.actions ?? []).sort((a, b) => Number(b.source === "portfolio_risk") - Number(a.source === "portfolio_risk"));
+  const items = showAll ? sorted : sorted.slice(0, 5);
   const missingPlanCount = response?.missing_plan_count ?? 0;
   const unavailable = Boolean(response && !response.status.ready);
   const queueError = error ?? (unavailable ? response?.status.message ?? "Action Queue unavailable." : null);
@@ -127,11 +131,11 @@ function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { re
       {queueError ? <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900"><span>{error && response ? `Showing the last Action Queue. ${error}` : `Action Queue unavailable: ${queueError}`}</span><Button type="button" size="sm" variant="outline" onClick={onRefresh}>Retry</Button></div> : null}
       {loading && !response ? <p role="status" className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">Loading Action Queue…</p> : null}
       {missingPlanCount ? <p role="status" className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{missingPlanCount} unranked ticker decisions remain CASH / NO TRADE because canonical trade plans are missing.</p> : null}
-      {!loading && !queueError && !items.length && !missingPlanCount ? <EmptyState title="Action Queue is clear" detail="No current actionable or transition items are available." /> : null}
+      {!loading && !queueError && !items.length && !missingPlanCount ? <EmptyState title="Action Queue is clear" detail="No current action items are published. Check workflow readiness above before interpreting this as a decision to stay in cash." /> : null}
       {!unavailable && items.length ? (
         <div className="grid gap-3 lg:grid-cols-3" role="list">
           {items.map((item) => <ActionQueueCard key={item.projection_identity} item={item} onOpenTicker={onOpenTicker} onRefresh={onRefresh} />)}
-          {sorted.length > 10 ? <Button variant="outline" onClick={() => setShowAll(!showAll)}>{showAll ? "Show top ten" : `Show all ${sorted.length} current items`}</Button> : null}
+          {sorted.length > 5 ? <Button variant="outline" onClick={() => setShowAll(!showAll)}>{showAll ? "Show top five" : `Show all ${sorted.length} current items`}</Button> : null}
         </div>
       ) : null}
     </section>
@@ -449,4 +453,14 @@ function dueLabel(days: number): string {
   if (days <= 0) return "Today";
   if (days === 1) return "Tomorrow";
   return `${days}d`;
+}
+
+export function dedupeTodayActions(items: TodayAction[]): TodayAction[] {
+  const seen = new Set<string>();
+  return items.filter(item => {
+    const identity = item.projection_identity;
+    if (!identity) return true;
+    if (seen.has(identity)) return false;
+    seen.add(identity); return true;
+  });
 }

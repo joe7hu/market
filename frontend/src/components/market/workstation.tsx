@@ -117,33 +117,47 @@ export function AppShell() {
 
 function ContextualAgentDrawer() {
   const location = useLocation();
+  const { model } = useMarketData();
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [query, setQuery] = useState("");
+  const [topic, setTopic] = useState("decision");
   const [packet, setPacket] = useState<ContextualAssistantPacket | null>(null);
   const [packetError, setPacketError] = useState<string | null>(null);
   const tickerMatch = location.pathname.match(/^\/tickers\/([^/]+)/i);
-  const ticker = tickerMatch ? decodeURIComponent(tickerMatch[1]).toUpperCase() : "";
+  const ticker = tickerMatch ? decodeURIComponent(tickerMatch[1]).toUpperCase() : selected;
   useEffect(() => {
-    setPacket(null);
-    setPacketError(null);
-    if (ticker) void loadContextualAssistantPacket(ticker).then(setPacket).catch((error) => setPacketError(error instanceof Error ? error.message : "Packet unavailable."));
-  }, [ticker]);
-  return (
-    <Sheet>
-      <SheetTrigger asChild>
-        <Button type="button" variant="outline" size="icon" aria-label="Open contextual agent drawer" title="Ask agent about this page"><MessageCircle /></Button>
-      </SheetTrigger>
-      <SheetContent side="right" className="w-full sm:max-w-md">
-        <SheetHeader>
-          <SheetTitle>Contextual agent</SheetTitle>
-          <SheetDescription>Research help for the current Market surface.</SheetDescription>
-        </SheetHeader>
-        <div className="space-y-4 py-5 text-sm">
-          <div className="rounded-lg border border-border bg-card p-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Immutable packet</p><p className="mt-2 font-medium">{packet?.packet_id ?? (ticker ? "Loading…" : location.pathname)}</p><p className="mt-1 text-muted-foreground">The agent may cite only evidence in this PostgreSQL packet. It cannot authorize an order or calculate authoritative values.</p>{packetError ? <p role="alert" className="mt-2 text-[var(--destructive)]">{packetError}</p> : null}{packet?.missing_evidence.length ? <p className="mt-2 text-amber-700 dark:text-amber-300">Evidence unavailable: {packet.missing_evidence.join(", ")}.</p> : null}{packet?.citations.length ? <ul className="mt-3 space-y-1 text-xs text-muted-foreground">{packet.citations.map((citation) => <li key={citation.id}>[{citation.id}] {citation.label}{citation.available ? "" : " · unavailable"}</li>)}</ul> : null}</div>
-          <p className="text-muted-foreground">Agent actions remain advisory and paper-only. Open the full workspace to submit a bounded research request.</p>
-          <Button asChild className="w-full"><Link to={`/agent?context=${encodeURIComponent(location.pathname)}${packet ? `&packet_id=${encodeURIComponent(packet.packet_id)}` : ""}`}>Open agent workspace</Link></Button>
-        </div>
-      </SheetContent>
-    </Sheet>
-  );
+    setPacket(null); setPacketError(null);
+    if (!open || !ticker) return;
+    const controller = new AbortController();
+    void loadContextualAssistantPacket(ticker, controller.signal).then(value => {
+      if (!controller.signal.aborted && value.ticker === ticker) setPacket(value);
+    }).catch(error => { if (!controller.signal.aborted) setPacketError(error instanceof Error ? error.message : "Packet unavailable."); });
+    return () => controller.abort();
+  }, [ticker, open]);
+  const answer = packet?.explanations?.find(item => item.topic === topic);
+  return <Sheet open={open} onOpenChange={setOpen}>
+    <SheetTrigger asChild><Button type="button" variant="outline" size="icon" aria-label="Open contextual agent drawer" title="Explain the current decision"><MessageCircle /></Button></SheetTrigger>
+    <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
+      <SheetHeader><SheetTitle>Decision evidence</SheetTitle><SheetDescription>Explain the frozen decision and its missing inputs. These are recorded facts, not a new trade recommendation.</SheetDescription></SheetHeader>
+      <div className="space-y-4 py-5 text-sm">
+        {!tickerMatch ? <><form className="flex gap-2" onSubmit={event => { event.preventDefault(); const value = query.trim().toUpperCase(); if (/^[A-Z0-9.^=-]{1,16}$/.test(value)) { setSelected(value); setTopic("decision"); } }}><Input aria-label="Ticker to explain" placeholder="Ticker to explain" value={query} onChange={e => setQuery(e.target.value)} /><Button type="submit">Open</Button></form>{model.holdings.length ? <div className="flex flex-wrap gap-2">{model.holdings.slice(0, 8).map(holding => <button key={holding.ticker} className="rounded border px-2 py-1 text-xs hover:bg-accent" onClick={() => { setSelected(holding.ticker); setQuery(holding.ticker); }}>{holding.ticker}</button>)}</div> : null}</> : null}
+        {packetError ? <p role="alert" className="text-destructive">{packetError}</p> : null}
+        {!packet && ticker && !packetError ? <p role="status">Loading {ticker}'s recorded decision…</p> : null}
+        {!ticker ? <p className="text-muted-foreground">Choose a ticker from this page or enter a symbol to inspect its decision.</p> : null}
+        {packet ? <>
+          <div className="rounded-lg border bg-muted/30 p-3"><strong>{packet.ticker}</strong><p className="mt-1 text-xs text-muted-foreground">Decision as of {packet.as_of ? new Date(packet.as_of).toLocaleString() : "not recorded"} · revision {packet.decision_revision ?? "unavailable"}</p></div>
+          <div role="tablist" aria-label="Decision questions" className="flex flex-wrap gap-2">{packet.explanations?.map(item => <button key={item.topic} role="tab" aria-selected={topic === item.topic} onClick={() => setTopic(item.topic)} className={cn("rounded-md border px-3 py-2 text-xs", topic === item.topic && "bg-primary text-primary-foreground")}>{item.question}</button>)}</div>
+          {answer ? <div role="tabpanel" className="rounded-lg border p-4"><p className="whitespace-pre-wrap leading-6">{answer.answer}</p><p className="mt-3 break-all text-xs text-muted-foreground">{answer.citation_ids.map(id => `[${id}]`).join(" ") || "No usable decision citation in this packet."}</p></div> : <p>The server has not supplied an explanation for this packet.</p>}
+          {packet.missing_evidence.length ? <p className="rounded border border-amber-300 p-3 text-amber-800 dark:text-amber-200">Missing: {packet.missing_evidence.join(", ")}. The explanation cannot substitute for this evidence.</p> : null}
+          <details><summary className="cursor-pointer text-xs font-medium">Packet and sources</summary><p className="mt-2 break-all text-xs">{packet.packet_id}</p><ul className="mt-2 space-y-1 text-xs text-muted-foreground">{packet.citations.map(citation => <li key={citation.id}>{citation.label}{citation.available ? "" : " · not available"}</li>)}</ul></details>
+          <Button asChild variant="outline" className="w-full"><Link onClick={() => setOpen(false)} to={`/tickers/${encodeURIComponent(packet.ticker)}`}>Open complete decision and trade plan</Link></Button>
+        </> : null}
+        <Button asChild className="w-full"><Link onClick={() => setOpen(false)} to={`/agent?context=${encodeURIComponent(location.pathname)}${packet ? `&ticker=${encodeURIComponent(packet.ticker)}&packet_id=${encodeURIComponent(packet.packet_id)}` : ""}`}>Request additional research</Link></Button>
+        <p className="text-xs text-muted-foreground">Advisory only. Research requests are reviewed separately; this drawer cannot place orders or change risk limits.</p>
+      </div>
+    </SheetContent>
+  </Sheet>;
 }
 
 function ShellBrand() {

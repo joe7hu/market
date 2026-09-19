@@ -1,3 +1,5 @@
+import { WorkflowReadiness } from "@/components/market/WorkflowReadiness";
+import { useCallback } from "react";
 import { Link } from "react-router-dom";
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
@@ -16,7 +18,7 @@ export function MarketRoute() {
   const status = scopeStatus.market;
   const loading = !status || status.state === "loading";
   // The provider owns the error state and preserves labeled last-good data.
-  const reload = () => { void loadScope("market", { force: true }).catch(() => undefined); };
+  const reload = useCallback(() => { void loadScope("market", { force: true }).catch(() => undefined); }, [loadScope]);
 
   const referenceRows = rows(data.marketValuationReferenceCharts);
   const assetRows = rows(data.marketEnvironmentAssets);
@@ -47,6 +49,7 @@ export function MarketRoute() {
       subtitle="Broad market valuation, trend, breadth, risk appetite, and leadership."
       actions={<Button type="button" variant="outline" onClick={reload} disabled={loading}>{loading ? "Loading…" : "Reload snapshot"}</Button>}
     >
+      <WorkflowReadiness view="market" onDataChanged={reload} />
       <ScopeStatusNotice status={status} onRetry={reload} />
       {!hasSnapshot ? (
         <section role="status" className="rounded-xl border border-border bg-card p-6">

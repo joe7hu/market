@@ -11,6 +11,7 @@ from investment_panel.settings import AppConfig, load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.options_paper_execution import OptionsPaperExecutionRepository
 from investment_panel.infrastructure.postgres.options_analysis import refresh_options_radar
+from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
 from investment_panel.infrastructure.postgres.options_experiments import EXPERIMENT_KIND, EXPERIMENT_VERSION, advance_experiment_shadows, experiment_candidate
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
 
@@ -43,9 +44,14 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
         observations = advance_experiment_shadows(runtime, now=datetime.now(UTC))
     except Exception as error:
         observations = {"status": "failed", "error": str(error)}
+    try:
+        nav = PaperWorkbenchRepository(runtime).capture_nav()
+    except Exception as error:
+        nav = {"status": "failed", "error": str(error)}
     return {
         **result,
-        "status": "partial" if observations.get("status") == "failed" else result["status"],
+        "status": "partial" if observations.get("status") == "failed" or nav.get("status") == "failed" else result["status"],
+        "nav_observation": nav,
         "observations": observations,
         "research_job": "run_option_paper_experiments",
         "paper_only": True,

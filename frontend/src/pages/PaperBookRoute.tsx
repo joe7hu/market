@@ -1,3 +1,5 @@
+import { PaperAccountCurve } from "@/components/market/PaperAccountCurve";
+import { WorkflowReadiness } from "@/components/market/WorkflowReadiness";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
@@ -58,6 +60,7 @@ export function PaperBookRoute() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [paging, setPaging] = useState(false);
+  const [reload, setReload] = useState(0);
   const [loadedScopeKey, setLoadedScopeKey] = useState<string | null>(null);
   const generation = useRef(0);
   const rangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -90,7 +93,16 @@ export function PaperBookRoute() {
       .catch((reason) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Paper book unavailable."); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [scopeKey]);
+  }, [scopeKey, reload]);
+
+  // A refresh starts a new coherent performance/cursor snapshot. Pause
+  // automatic refresh when the user has paged into that snapshot.
+  useEffect(() => {
+    if (paging || trades.length > 100) return;
+    const timer = setInterval(() => { if (document.visibilityState === "visible") setReload(value => value + 1); }, 60000);
+    return () => clearInterval(timer);
+  }, [paging, trades.length]);
+  useEffect(() => () => { if (rangeTimer.current) clearTimeout(rangeTimer.current); generation.current += 1; }, []);
 
   const updateFilters = useCallback((updates: Record<string, string>) => {
     const next = new URLSearchParams(searchParams);
@@ -123,7 +135,9 @@ export function PaperBookRoute() {
   const learningNotStarted = Boolean(visiblePerformance && (counts.filled_orders ?? 0) === 0);
 
   return <div className="space-y-5">
-    <PageHeader eyebrow="Portfolio · Paper" title="Paper portfolio" subtitle="See verified performance, what drove it, and which evidence still needs to accumulate." actions={<a className="rounded-md border border-border px-3 py-2 text-sm underline-offset-4 hover:underline" href={paperTradesExportUrl(filters)} download>Export CSV</a>} />
+    <PageHeader eyebrow="Portfolio · Paper" title="Paper portfolio" subtitle="See verified performance, what drove it, and which evidence still needs to accumulate." actions={<div className="flex gap-2"><button className="rounded-md border border-border px-3 py-2 text-sm" disabled={loading} onClick={() => setReload(value => value + 1)}>Reload book</button><a className="rounded-md border border-border px-3 py-2 text-sm underline-offset-4 hover:underline" href={paperTradesExportUrl(filters)} download>Export CSV</a></div>} />
+    <WorkflowReadiness view="paper" />
+    <PaperAccountCurve />
     <PaperFilters period={period} filters={filters} symbol={symbol} sleeve={sleeve} instrumentKind={instrumentKind} dateFrom={dateFrom} dateTo={dateTo} structure={structure} setSymbol={setSymbol} setSleeve={setSleeve} setInstrumentKind={setInstrumentKind} setDateFrom={setDateFrom} setDateTo={setDateTo} setStructure={setStructure} updateFilters={updateFilters} />
     {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div> : null}
     {scopeLoading ? <PortfolioSkeleton /> : null}

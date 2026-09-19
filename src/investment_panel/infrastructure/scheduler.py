@@ -37,6 +37,7 @@ TICK_SECONDS = 15
 CONTINUOUS_SETTINGS_REFRESH_SECONDS = 60
 SCHEDULER_CAPACITY = 2
 FAST_DATABASE_JOBS = frozenset({"process_options_paper_orders", "sync_decision_inbox"})
+PRIORITY_JOBS = FAST_DATABASE_JOBS | {"refresh_paper_quotes"}
 _scheduler_semaphore: asyncio.Semaphore | None = None
 _slow_job_semaphore: asyncio.Semaphore | None = None
 _active_jobs: dict[str, float] = {}
@@ -343,7 +344,7 @@ async def _dispatch(
     global _deferred_jobs
     # Acquire the slow-workload slot before total capacity. A queued collector
     # must not reserve the last slot while a paper management tick is due.
-    slow = _slow_job_semaphore if job not in FAST_DATABASE_JOBS else None
+    slow = _slow_job_semaphore if job not in PRIORITY_JOBS else None
     _deferred_jobs += 1
     slow_acquired = False
     acquired = False
@@ -366,6 +367,7 @@ async def _dispatch(
             semaphore.release()
         if slow is not None and slow_acquired:
             slow.release()
+
 
 
 async def _dispatch_once(

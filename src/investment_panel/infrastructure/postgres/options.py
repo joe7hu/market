@@ -54,13 +54,21 @@ def active_paper_contracts(config: AppConfig, source_id: str) -> list[dict[str, 
                      AND shadow.status IN ('pending', 'entered') AND shadow.metrics->>'source_id' = %s
                )
                SELECT instrument.symbol, contract.expiration::text AS expiration,
-                      contract.option_type, contract.strike::double precision AS strike
+                      contract.id AS contract_id, contract.option_type, contract.strike::double precision AS strike
                FROM active
                JOIN catalog.option_contract contract ON contract.id = active.contract_id
                JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-               WHERE contract.expiration >= CURRENT_DATE
-               ORDER BY instrument.symbol, contract.expiration, contract.option_type, contract.strike""",
-            [source_id],
+               LEFT JOIN LATERAL (
+                   SELECT max(quote.observed_at) AS observed_at FROM raw.option_quote quote
+                   JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+                   WHERE quote.contract_id = contract.id AND quote.available_at <= now()
+                     AND snapshot.source_id = %s AND snapshot.capture_state = 'complete'
+               ) latest ON true
+               WHERE contract.expiration >= (now() AT TIME ZONE 'America/New_York')::date
+               ORDER BY bool_or(latest.observed_at IS NULL) OVER (PARTITION BY instrument.symbol) DESC,
+                        min(latest.observed_at) OVER (PARTITION BY instrument.symbol) NULLS FIRST,
+                        instrument.symbol, contract.expiration, contract.option_type, contract.strike""",
+            [source_id, source_id],
         ).fetchall()]
 
 

@@ -42,6 +42,8 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
     for definition in (
         _job("full_market_refresh"),
         _job("daily_screen"),
+        _job("refresh_market_publication", timeout_seconds=120, freshness_seconds=3600),
+        _job("refresh_paper_quotes", timeout_seconds=45, freshness_seconds=60),
         _job("refresh_decision_models", timeout_seconds=1200, freshness_seconds=3600),
         _job("update_preopen_daily_brief_scheduled"),
         _job("hourly_options_radar"),
@@ -256,6 +258,12 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
     experiment_seconds = _env_int("MARKET_PAPER_EXPERIMENT_REFRESH_SECONDS", 300, allow_zero=True)
     if decision_settings.strategy_experiment_collection_enabled and experiment_seconds > 0:
         intervals["run_option_paper_experiments"] = experiment_seconds
+    quote_seconds = _env_int("MARKET_PAPER_QUOTE_REFRESH_SECONDS", 60, allow_zero=True)
+    if active_config.data_sources.brokers.robinhood.enabled and quote_seconds > 0:
+        intervals["refresh_paper_quotes"] = quote_seconds
+    market_seconds = _env_int("MARKET_MARKET_PUBLICATION_REFRESH_SECONDS", 3600, allow_zero=True)
+    if market_seconds > 0:
+        intervals["refresh_market_publication"] = market_seconds
     stock_outcome_seconds = _env_int("MARKET_SYMBOL_OUTCOME_REFRESH_SECONDS", 3600, allow_zero=True)
     if stock_outcome_seconds > 0:
         intervals["refresh_symbol_decision_outcomes"] = stock_outcome_seconds
@@ -309,7 +317,8 @@ def scheduler_status(config: AppConfig | None = None) -> dict[str, Any]:
         "mungermode_refresh_seconds": str(intervals.get("update_market_valuations", 0)),
         "event_calendar_refresh_seconds": str(intervals.get("update_event_calendar", 0)),
         "disclosures_refresh_seconds": str(intervals.get("update_disclosures", 0)),
-        "market_environment_refresh_seconds": "0",
+        "market_environment_refresh_seconds": str(intervals.get("refresh_market_publication", 0)),
+        "paper_quote_refresh_seconds": str(intervals.get("refresh_paper_quotes", 0)),
         "preopen_brief_refresh_seconds": str(intervals.get("update_preopen_daily_brief_scheduled", 0)),
         "decision_inbox_refresh_seconds": str(intervals.get("sync_decision_inbox", 0)),
         "options_paper_execution_seconds": str(intervals.get("process_options_paper_orders", 0)),

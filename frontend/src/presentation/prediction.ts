@@ -15,18 +15,20 @@ export function calibrationBinLabel(bin: Record<string, any>): string {
 
 export function calibrationPoints(quality: Record<string, any>): Array<{ label: string; predicted: number; observed: number; count: number }> {
   const bins = Array.isArray(quality.calibration_bins) ? quality.calibration_bins : [];
-  return bins.map((bin: Record<string, any>) => ({
-    label: calibrationBinLabel(bin),
-    predicted: Number(bin.mean_predicted ?? 0),
-    observed: Number(bin.observed_rate ?? 0),
-    count: Number(bin.sample_count ?? 0),
-  })).filter((point) => Number.isFinite(point.predicted) && Number.isFinite(point.observed));
+  return bins.filter((bin: Record<string, any>) =>
+    typeof bin.mean_predicted === "number" && Number.isFinite(bin.mean_predicted) && bin.mean_predicted >= 0 && bin.mean_predicted <= 1 &&
+    typeof bin.observed_rate === "number" && Number.isFinite(bin.observed_rate) && bin.observed_rate >= 0 && bin.observed_rate <= 1 &&
+    typeof bin.sample_count === "number" && Number.isInteger(bin.sample_count) && bin.sample_count > 0
+  ).map((bin: Record<string, any>) => ({
+    label: calibrationBinLabel(bin), predicted: bin.mean_predicted,
+    observed: bin.observed_rate, count: bin.sample_count,
+  })).sort((a: { predicted: number }, b: { predicted: number }) => a.predicted - b.predicted);
 }
 
 export function promptMetric(value: unknown, kind: "number" | "percent" | "brier" = "number"): string {
   if (value == null || value === "") return "—";
   const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return String(value);
+  if (typeof value === "boolean" || !Number.isFinite(numeric)) return "—";
   if (kind === "percent") return percent(numeric);
   if (kind === "brier") return numeric.toFixed(3);
   return numeric.toLocaleString();

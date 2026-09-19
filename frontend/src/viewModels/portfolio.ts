@@ -37,6 +37,7 @@ export type CorrelationEdge = {
   observations: number;
   correlation: number | null;
   combinedWeight: number;
+  weightKnown?: boolean;
   riskLevel: string;
   asOf: string;
   dataStatus: string;
@@ -87,14 +88,16 @@ export function buildPortfolioViewModel(data: PanelData, model: AppModel, correl
         peerSymbol: textField(row, ["peer_symbol"]),
         lookbackDays: numberField(row, ["lookback_days"]),
         observations: numberField(row, ["observations"]),
-        correlation: row.correlation === null || row.correlation === undefined ? null : numberField(row, ["correlation"]),
+        correlation: typeof row.correlation === "number" && Number.isFinite(row.correlation) && Math.abs(row.correlation) <= 1 ? row.correlation : null,
         combinedWeight: numberField(row, ["combined_weight"]),
+        weightKnown: typeof row.combined_weight === "number" && Number.isFinite(row.combined_weight),
         riskLevel: textField(row, ["risk_level"], "context"),
         asOf: textField(row, ["as_of"]),
         dataStatus: textField(row, ["data_status"], "insufficient_history"),
         interpretation: textField(row, ["interpretation"]),
       }))
-      .filter((row) => row.lookbackDays === correlationWindow),
+      .filter((row) => row.lookbackDays === correlationWindow)
+      .sort((a, b) => sharedExposurePriority(b) - sharedExposurePriority(a)),
     riskRows: rows(data.portfolioRiskCards),
     reviewRows: rows(data.reviewActions),
     exposureClusterRows: rows(data.exposureClusters),
@@ -142,4 +145,8 @@ export function performanceRangeRows(input: RowRecord[], range: PerformanceRange
   }
   threshold.setUTCHours(0, 0, 0, 0);
   return dated.filter((item) => item.date >= threshold).map((item) => item.row);
+}
+
+export function sharedExposurePriority(row: CorrelationEdge): number {
+  return row.correlation === null || row.weightKnown === false ? -1 : Math.max(0, row.correlation) * row.combinedWeight;
 }

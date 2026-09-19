@@ -97,7 +97,8 @@ export function MarketEnvironmentPanel({
           <MiniMetric label="Valuation Series" value={`${referenceRows.length}`} />
           <MiniMetric label="Market Asset Rows" value={`${assetRows.length}`} />
         </div>
-        <MarketStateProjection snapshotRows={snapshotRows} coverageRows={coverageRows} posteriorRows={posteriorRows} coverageVectorRows={coverageVectorRows} scenarioRows={scenarioRows} optionSlaRows={optionSlaRows} observationRows={observationRows} />
+        <p className="text-xs text-muted-foreground">Breadth is measured over the published benchmark / tracked universe, not automatically all listed stocks. Use coverage details to inspect membership and missing inputs.</p>
+        <details className="rounded-lg border border-border p-3"><summary className="cursor-pointer text-sm font-medium">Horizon evidence, coverage and advanced models</summary><div className="mt-3"><MarketStateProjection snapshotRows={snapshotRows} coverageRows={coverageRows} posteriorRows={posteriorRows} coverageVectorRows={coverageVectorRows} scenarioRows={scenarioRows} optionSlaRows={optionSlaRows} observationRows={observationRows} /></div></details>
       </CardContent>
     </Card>
   );
@@ -175,18 +176,22 @@ export function MarketStateProjection({ snapshotRows, coverageRows, posteriorRow
   );
 }
 
-function Phase2Evidence({ posteriorRows, coverageVectorRows, scenarioRows, optionSlaRows, observationRows }: { posteriorRows: RowRecord[]; coverageVectorRows: RowRecord[]; scenarioRows: RowRecord[]; optionSlaRows: RowRecord[]; observationRows: RowRecord[] }) {
+export function Phase2Evidence({ posteriorRows, coverageVectorRows, scenarioRows, optionSlaRows, observationRows }: { posteriorRows: RowRecord[]; coverageVectorRows: RowRecord[]; scenarioRows: RowRecord[]; optionSlaRows: RowRecord[]; observationRows: RowRecord[] }) {
+  if (!posteriorRows.length && !coverageVectorRows.length && !scenarioRows.length && !optionSlaRows.length && !observationRows.length) {
+    return <p role="status" className="rounded border border-border p-3 text-sm text-muted-foreground">No advanced-model evidence is present in this snapshot. This does not establish missing history specifically. Check the model read / publication status in System health. Baseline market evidence above remains usable within its stated coverage.</p>;
+  }
   const posterior = isRecord(posteriorRows[0]?.payload) ? posteriorRows[0].payload : posteriorRows[0];
-  const status = String(posteriorRows[0]?.status ?? (isRecord(posterior) ? posterior.status : undefined) ?? "MISSING_HISTORY").toUpperCase();
+  const status = String(posteriorRows[0]?.status ?? (isRecord(posterior) ? posterior.status : undefined) ?? "NOT_PUBLISHED").toUpperCase();
   const confidence = isRecord(posterior) ? String(posterior.overall_confidence ?? "unavailable") : "unavailable";
   const missingness = isRecord(posterior) ? String(posterior.missingness ?? "unavailable") : "unavailable";
   const sla = isRecord(optionSlaRows[0]?.payload) ? optionSlaRows[0].payload : optionSlaRows[0];
   const tone = phase2StatusTone(status);
   return <div className="space-y-2 rounded border border-border/70 bg-muted/20 p-3 text-[11px]">
-    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Phase 2 evidence</p><StatusBadge tone={tone}>{status}</StatusBadge></div>
+    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Advanced market evidence</p><StatusBadge tone={tone}>{status}</StatusBadge></div>
     <p className="text-muted-foreground">Posterior status is {status}. Observable baseline and bounded latent challenger are read-only. Advisory-only: no rank or execution authorization.</p>
+    <p className="text-muted-foreground">Advanced evidence cutoff: {isRecord(posterior) ? String(posterior.as_of ?? posterior.input_cutoff ?? "Not recorded") : "Not recorded"}. Advanced and baseline publications may have different cutoffs; these models do not authorize trades.</p>
     <p>Posterior confidence: {confidence} · missingness: {missingness} · retained source facts: {observationRows.length} · reproducible scenarios: {scenarioRows.length}</p>
-    <p>Per-expression coverage rows: {coverageVectorRows.length} · option OI/volume SLA: {isRecord(sla) ? String(sla.status ?? "MISSING_HISTORY").toUpperCase() : "MISSING_HISTORY"} · positioning allowed: {isRecord(sla) ? String(sla.positioning_allowed ?? false) : "false"}</p>
+    <p>Per-expression coverage rows: {coverageVectorRows.length} · option OI/volume SLA: {isRecord(sla) ? String(sla.status ?? "NOT_PUBLISHED").toUpperCase() : "NOT_PUBLISHED"} · positioning allowed: {isRecord(sla) ? String(sla.positioning_allowed ?? false) : "false"}</p>
   </div>;
 }
 

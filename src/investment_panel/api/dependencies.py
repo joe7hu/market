@@ -19,6 +19,7 @@ from investment_panel.infrastructure.postgres.options_execution import OptionsEx
 from investment_panel.infrastructure.postgres.options_decision_system import OptionsDecisionSystemRepository
 from investment_panel.infrastructure.postgres.options_recovery_read import RecoveryReadRepository
 from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+from investment_panel.infrastructure.postgres.workstation import WorkstationRepository
 from investment_panel.infrastructure.postgres.research_workbench import ResearchWorkbenchRepository
 from investment_panel.api import job_control
 from investment_panel.api.request_security import require_local_request
@@ -150,3 +151,7 @@ def get_options_decision_system(config: AppConfig = Depends(get_config)) -> Opti
 
 def get_options_recovery(config: AppConfig = Depends(get_config)) -> RecoveryReadRepository:
     return RecoveryReadRepository(runtime_for_config(config), recovery_paper_actions_enabled=config.analysis.options_decision_system.recovery_paper_actions_enabled)
+
+
+def get_workstation(config: AppConfig = Depends(get_config)) -> WorkstationRepository:
+    return WorkstationRepository(runtime_for_config(config))

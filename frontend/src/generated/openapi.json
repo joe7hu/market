@@ -1273,6 +1273,13 @@
             "title": "Execution Mode",
             "type": "string"
           },
+          "explanations": {
+            "items": {
+              "$ref": "#/components/schemas/ContextualExplanation"
+            },
+            "title": "Explanations",
+            "type": "array"
+          },
           "limitations": {
             "items": {
               "type": "string"
@@ -1354,6 +1361,36 @@
           "packet_id"
         ],
         "title": "ContextualAssistantResponseInput",
+        "type": "object"
+      },
+      "ContextualExplanation": {
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "citation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citation Ids",
+            "type": "array"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "topic": {
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "question",
+          "answer"
+        ],
+        "title": "ContextualExplanation",
         "type": "object"
       },
       "ContinuousAdvisorPromptStatusResponse": {
@@ -10285,6 +10322,63 @@
         "title": "PaperAccount",
         "type": "object"
       },
+      "PaperAccountHistory": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "basis": {
+            "title": "Basis",
+            "type": "string"
+          },
+          "book": {
+            "default": "paper",
+            "title": "Book",
+            "type": "string"
+          },
+          "days": {
+            "title": "Days",
+            "type": "integer"
+          },
+          "paper_only": {
+            "default": true,
+            "title": "Paper Only",
+            "type": "boolean"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/PaperNavPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "sampling": {
+            "title": "Sampling",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "as_of",
+          "days",
+          "status",
+          "basis",
+          "sampling"
+        ],
+        "title": "PaperAccountHistory",
+        "type": "object"
+      },
       "PaperBookPerformance": {
         "additionalProperties": true,
         "description": "Accounting projection with visible scope and evidence coverage.",
@@ -10799,6 +10893,48 @@
           "trade_plan_id"
         ],
         "title": "PaperExecutionOutcome",
+        "type": "object"
+      },
+      "PaperNavPoint": {
+        "additionalProperties": true,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "nav": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nav"
+          },
+          "net_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Pnl"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "status"
+        ],
+        "title": "PaperNavPoint",
         "type": "object"
       },
       "PaperObservationPage": {
@@ -19375,6 +19511,215 @@
         ],
         "title": "WatchlistSymbolInput",
         "type": "object"
+      },
+      "WorkflowBlocker": {
+        "additionalProperties": true,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "capability": {
+            "title": "Capability",
+            "type": "string"
+          },
+          "href": {
+            "title": "Href",
+            "type": "string"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability",
+          "reason",
+          "action",
+          "href"
+        ],
+        "title": "WorkflowBlocker",
+        "type": "object"
+      },
+      "WorkstationStatus": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "blockers": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowBlocker"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "evaluations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Evaluations",
+            "type": "array"
+          },
+          "failed_reads": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Failed Reads",
+            "type": "array"
+          },
+          "market": {
+            "additionalProperties": true,
+            "title": "Market",
+            "type": "object"
+          },
+          "market_session": {
+            "title": "Market Session",
+            "type": "string"
+          },
+          "next_session_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Session At"
+          },
+          "observations": {
+            "additionalProperties": true,
+            "title": "Observations",
+            "type": "object"
+          },
+          "paper": {
+            "additionalProperties": true,
+            "title": "Paper",
+            "type": "object"
+          },
+          "paper_only": {
+            "default": true,
+            "title": "Paper Only",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "workers": {
+            "items": {
+              "$ref": "#/components/schemas/WorkstationWorker"
+            },
+            "title": "Workers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "as_of",
+          "status",
+          "market_session"
+        ],
+        "title": "WorkstationStatus",
+        "type": "object"
+      },
+      "WorkstationWorker": {
+        "additionalProperties": true,
+        "properties": {
+          "heartbeat_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At"
+          },
+          "interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Seconds"
+          },
+          "job": {
+            "title": "Job",
+            "type": "string"
+          },
+          "last_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "next_expected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Expected At"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job",
+          "status",
+          "reason"
+        ],
+        "title": "WorkstationWorker",
+        "type": "object"
       }
     }
   },
@@ -22228,6 +22573,48 @@
         "summary": "Panel Snapshot"
       }
     },
+    "/api/paper/account-history": {
+      "get": {
+        "operationId": "paper_account_history_api_paper_account_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 90,
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperAccountHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Account History"
+      }
+    },
     "/api/paper/observations": {
       "get": {
         "operationId": "paper_observations_api_paper_observations_get",
@@ -24869,6 +25256,24 @@
           }
         },
         "summary": "Set Watchlist Options History Endpoint"
+      }
+    },
+    "/api/workstation/status": {
+      "get": {
+        "operationId": "workstation_status_api_workstation_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkstationStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Workstation Status"
       }
     }
   }

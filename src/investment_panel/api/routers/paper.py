@@ -7,6 +7,7 @@ import binascii
 import csv
 import io
 import json
+from math import isfinite
 from datetime import date, datetime
 from typing import Any
 from uuid import UUID
@@ -19,6 +20,8 @@ from investment_panel.api import dependencies
 from investment_panel.api.data_access import continuous_advisor as continuous_owner
 from investment_panel.api.response_contracts import (
     LearningOverview,
+    WorkstationStatus,
+    PaperAccountHistory,
     PaperBookPerformance,
     PaperObservationPage,
     PaperTradeDetail,
@@ -28,6 +31,22 @@ from investment_panel.settings import AppConfig
 
 
 router = APIRouter()
+
+
+@router.get("/api/workstation/status", response_model=WorkstationStatus)
+def workstation_status(
+    config: AppConfig = Depends(dependencies.get_config),
+    repository: dependencies.WorkstationRepository = Depends(dependencies.get_workstation),
+) -> dict[str, Any]:
+    return repository.status(config)
+
+
+@router.get("/api/paper/account-history", response_model=PaperAccountHistory)
+def paper_account_history(
+    days: int = Query(default=90, ge=1, le=365),
+    repository: dependencies.PaperWorkbenchRepository = Depends(dependencies.get_paper_workbench),
+) -> dict[str, Any]:
+    return repository.account_history(days=days)
 
 
 @router.get("/api/paper/observations", response_model=PaperObservationPage)
@@ -322,31 +341,55 @@ def research_overview(
 
 
 def _strategy_lane(
-    *,
-    active: dict[str, Any] | None,
-    challenger: dict[str, Any] | None,
-    performance: dict[str, Any],
-    auto_promotion: bool,
+    *, active: dict[str, Any] | None, challenger: dict[str, Any] | None,
+    performance: dict[str, Any], auto_promotion: bool,
 ) -> dict[str, Any]:
-    if challenger:
+    subject = challenger or active or {}
+    evaluations = {str(row.get("evaluation_type")): row for row in subject.get("evaluations") or []}
+    preflight_failures = [row for row in evaluations.values() if row.get("verdict") in
+        {"unsupported_parameters", "invalid_parameters", "implementation_version_mismatch", "parameter_lineage_mismatch"}]
+    if preflight_failures:
+        status = "misconfigured"
+    elif challenger:
         status = "awaiting_human_review" if challenger.get("status") == "approved" else "collecting_outcomes"
-    elif active and int(active.get("evaluation_count") or 0) > 0:
+    elif active and evaluations:
         status = "monitoring"
-    elif performance["counts"]["filled_orders"]:
+    elif performance["counts"].get("filled_orders", 0):
         status = "collecting_outcomes"
     else:
         status = "no_paper_fills"
     blockers = list(performance.get("missing_evidence_reasons") or [])
     if not active:
         blockers.append("no_deployed_strategy_revision")
+    for row in preflight_failures:
+        evidence = row.get("evidence") or {}
+        preflight = evidence.get("preflight") or {}
+        blockers.extend(preflight.get("errors") or [])
+        blockers.extend(f"{row['verdict']}: {name}" for name in preflight.get("blocked_parameters") or evidence.get("blocked_parameters") or [])
+        if not preflight:
+            blockers.append(str(row["verdict"]))
+    progress: dict[str, Any] = {}
+    # These are the actual options comparison floors, not a count of job runs.
+    core = subject.get("authority_group") == "options-radar-core"
+    for name, kind, floor in (("historical", "walk_forward", 100), ("forward", "shadow", 30), ("paper", "execution_grade_paper", 20)):
+        row = evaluations.get(kind, {})
+        evidence, metrics = row.get("evidence") or {}, row.get("metrics") or {}
+        sample = evidence.get("sample_size")
+        if sample is None:
+            sample = (metrics.get("proposed") or {}).get("sample_size")
+        progress[f"{name}_completed"] = sample if isinstance(sample, (int, float)) and not isinstance(sample, bool) and isfinite(sample) and sample >= 0 and int(sample) == sample else 0
+        progress[f"{name}_required"] = floor if core else None
+        progress[f"{name}_verdict"] = row.get("verdict", "not_evaluated")
     return {
-        "status": status,
-        "deployed_version": active.get("strategy_key") if active else None,
+        "status": status, "deployed_version": active.get("strategy_key") if active else None,
         "challenger": challenger.get("strategy_key") if challenger else None,
+        "subject_revision_id": subject.get("strategy_revision_id"),
+        "hypothesis": subject.get("hypothesis") or subject.get("economic_mechanism"),
+        "falsification": subject.get("falsification_rule") or subject.get("hypothesis_falsification"),
+        "parameters": subject.get("parameters"), "evaluations": list(evaluations.values()), "progress": progress,
         "permitted_automatic_action": "deterministic_policy_gates_only" if auto_promotion else "human_review_required",
-        "evidence_counts": performance["counts"],
-        "blockers": sorted(set(blockers)),
-        "operational_health": "database_read_available",
+        "evidence_counts": performance["counts"], "blockers": sorted(set(blockers)),
+        "operational_health": "misconfigured" if preflight_failures else "database_read_available",
         "investment_quality": "not_established_by_run_health",
     }
 

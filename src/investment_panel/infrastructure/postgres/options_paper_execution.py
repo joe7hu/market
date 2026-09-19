@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from math import floor, isfinite
+import logging
+import time
 from typing import Any, Iterable
 
 from psycopg.types.json import Jsonb
@@ -27,13 +29,16 @@ from investment_panel.infrastructure.postgres.options_paper_quotes import (
     latest_option_legs,
     package_price,
 )
-from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE, RuntimeProfile
 
+
+logger = logging.getLogger(__name__)
 
 GENERIC_LANES = frozenset({"radar", "qqq"})
 TERMINAL_STATUSES = frozenset({"exited", "invalidated", "unfilled", "rejected", "unmeasurable"})
 PAPER_MARK_KEY = "observed_liquidation_v1"
 ENTRY_CANCELLATION_KEY = "entry_remainder_cancellation_v1"
+MANAGEMENT_PROFILE = RuntimeProfile(statement_timeout_ms=5000, lock_timeout_ms=1000)
 
 
 class OptionsPaperExecutionRepository:
@@ -64,7 +69,11 @@ class OptionsPaperExecutionRepository:
             now=reference,
             limit=limit,
         )
-        staging_error = None
+        management_failed = any(
+            row.get("status") == "failed" or row.get("reason") == "management_budget_exhausted"
+            for row in managed
+        )
+        staging_error = "existing_order_management_failed" if management_failed else None
         try:
             staged = self.stage_current_ready(
                 enabled_lanes=lanes,
@@ -73,7 +82,7 @@ class OptionsPaperExecutionRepository:
                 max_open_positions=max_open_positions,
                 now=reference,
                 limit=limit,
-            ) if lanes else []
+            ) if lanes and not management_failed else []
         except Exception as error:
             # Lifecycle writes above have their own transaction boundary. Keep
             # their results visible while reporting entry processing as failed.
@@ -86,7 +95,7 @@ class OptionsPaperExecutionRepository:
             "staged": staged,
             "managed": managed,
             "lane_count": len(lanes),
-            "entry_staging": "enabled" if lanes else "disabled",
+            "entry_staging": "blocked" if staging_error else "enabled" if lanes else "disabled",
         }
 
     def stage_current_ready(
@@ -192,36 +201,74 @@ class OptionsPaperExecutionRepository:
         decision_inbox_enabled: bool,
         now: datetime | None,
         limit: int,
+        max_work_seconds: float = 8.0,
     ) -> list[dict[str, Any]]:
         normalized = [lane for lane in lanes if lane in GENERIC_LANES]
         if not normalized:
             return []
+        if not isfinite(max_work_seconds) or max_work_seconds <= 0:
+            raise ValueError("paper management requires a positive finite work budget")
         reference = _utc(now)
-        with self.runtime.read(JOB_PROFILE) as connection:
+        deadline = time.monotonic() + max_work_seconds
+        with self.runtime.transaction(MANAGEMENT_PROFILE) as connection:
+            # Claim fairly without calling an unprocessed claim a completed
+            # check. Metadata is separate from the accounting updated_at clock.
             rows = connection.execute(
                 """
-                SELECT id::text
-                FROM app.paper_order
-                WHERE lane = ANY(%s::text[])
-                  AND event_id IS NULL
-                  AND status NOT IN ('exited', 'invalidated', 'unfilled', 'rejected', 'unmeasurable')
-                ORDER BY created_at, id
-                LIMIT %s
+                WITH due AS MATERIALIZED (
+                    SELECT id, created_at,
+                           execution_quote #>> '{management,last_claimed_at}' AS last_claimed_at,
+                           (coalesce(filled_quantity, 0) > coalesce(exited_quantity, 0)) AS exposed
+                    FROM app.paper_order
+                    WHERE lane = ANY(%s::text[]) AND event_id IS NULL
+                      AND status NOT IN ('exited', 'invalidated', 'unfilled', 'rejected', 'unmeasurable')
+                    ORDER BY last_claimed_at NULLS FIRST, exposed DESC, created_at, id
+                    LIMIT %s FOR UPDATE SKIP LOCKED
+                ), claimed AS (
+                    UPDATE app.paper_order paper
+                    SET execution_quote = coalesce(paper.execution_quote, '{}'::jsonb) ||
+                        jsonb_build_object('management', coalesce(paper.execution_quote->'management', '{}'::jsonb) ||
+                            jsonb_build_object('last_claimed_at', %s::text))
+                    FROM due WHERE paper.id = due.id
+                    RETURNING paper.id
+                ) SELECT claimed.id::text FROM claimed JOIN due USING (id)
+                  ORDER BY due.last_claimed_at NULLS FIRST, due.exposed DESC, due.created_at, due.id
                 """,
-                [normalized, max(1, min(int(limit), 100))],
+                [normalized, max(1, min(int(limit), 100)), reference.isoformat()],
             ).fetchall()
         results: list[dict[str, Any]] = []
-        for row in rows:
-            update = self._manage_one(str(row["id"]), reference)
+        for index, row in enumerate(rows):
+            if time.monotonic() >= deadline:
+                results.append({"status": "deferred", "reason": "management_budget_exhausted",
+                                "remaining_claims": len(rows) - index})
+                break
+            try:
+                update = self._manage_one(str(row["id"]), reference)
+            except Exception:
+                logger.exception("Paper management failed for order %s", row["id"])
+                update = {"paper_order_id": str(row["id"]), "status": "failed", "reason": "order_management_failed"}
             if update is None:
                 continue
             results.append(update)
-            event_status = str(update.get("event_status") or "")
-            if decision_inbox_enabled and event_status in {"entered", "exited", "invalidated"}:
-                DecisionInboxRepository(self.runtime).record_paper_lifecycle(
-                    str(update["paper_order_id"]), status=event_status,
-                    payload={"reason": update.get("reason")},
-                )
+            try:
+                with self.runtime.transaction(MANAGEMENT_PROFILE) as connection:
+                    connection.execute(
+                        "UPDATE app.paper_order SET execution_quote = coalesce(execution_quote, '{}'::jsonb) || "
+                        "jsonb_build_object('management', coalesce(execution_quote->'management', '{}'::jsonb) || %s::jsonb) WHERE id = %s::uuid",
+                        [Jsonb({"last_checked_at": reference.isoformat(), "result": update}), row["id"]],
+                    )
+                event_status = str(update.get("event_status") or "")
+                if decision_inbox_enabled and event_status in {"entered", "exited", "invalidated"}:
+                    DecisionInboxRepository(self.runtime).record_paper_lifecycle(
+                        str(update["paper_order_id"]), status=event_status,
+                        payload={"reason": update.get("reason")},
+                    )
+            except Exception:
+                # The order transition already committed. Preserve it, report
+                # the diagnostic failure, and continue protecting other orders.
+                logger.exception("Paper lifecycle notification failed for %s", row["id"])
+                results.append({"paper_order_id": str(row["id"]), "status": "failed",
+                                "reason": "management_diagnostic_write_failed"})
         return results
 
     def _radar_gate(self, now: datetime) -> dict[str, Any]:
@@ -230,7 +277,7 @@ class OptionsPaperExecutionRepository:
         )
 
     def _manage_one(self, paper_order_id: str, now: datetime) -> dict[str, Any] | None:
-        with self.runtime.transaction(JOB_PROFILE) as connection:
+        with self.runtime.transaction(MANAGEMENT_PROFILE) as connection:
             acquire_shared_sleeve_lock(connection)
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import time
+from math import isfinite
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -12,7 +14,7 @@ from investment_panel.domain.decision import is_market_open
 from investment_panel.core.option_trade_ticket import execution_policy, exit_reason
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.infrastructure.postgres.options_paper_quotes import latest_option_legs, package_price
-from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
+from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE, RuntimeProfile
 from investment_panel.infrastructure.postgres.strategy_parameters import merge_strategy_parameters, mutation_capability
 
 
@@ -183,10 +185,13 @@ def seed_experiment_shadows(runtime: Any, rows: list[dict[str, Any]], *, publica
     return count
 
 
-def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50) -> dict[str, int]:
+def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50, max_work_seconds: float = 4.0) -> dict[str, int]:
     """Observe one unit with later complete quotes, then record after-cost outcomes."""
+    if not isfinite(max_work_seconds) or max_work_seconds <= 0:
+        raise ValueError("shadow management budget must be positive and finite")
+    deadline = time.monotonic() + max_work_seconds
     counts = {"entered": 0, "closed": 0, "unfilled": 0, "unmeasurable": 0, "rejected": 0}
-    with runtime.transaction(JOB_PROFILE) as connection:
+    with runtime.transaction(RuntimeProfile(statement_timeout_ms=4000, lock_timeout_ms=1000)) as connection:
         rows = connection.execute(
             """SELECT shadow.*, decision.as_of, decision.strategy_revision_id, decision.episode_key,
                       decision.calibration_cohort, decision.run_id::text AS run_id,
@@ -197,7 +202,10 @@ def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50) 
                LIMIT %s FOR UPDATE OF shadow SKIP LOCKED""",
             [SHADOW_SOURCE, max(1, min(limit, 100))],
         ).fetchall()
-        for source in rows:
+        for index, source in enumerate(rows):
+            if time.monotonic() >= deadline:
+                counts["deferred"] = len(rows) - index
+                break
             row, metrics = dict(source), dict(source["metrics"] or {})
             metrics["last_checked_at"] = now.isoformat()
             connection.execute("UPDATE analysis.shadow_trade SET metrics = %s WHERE id = %s", [_jsonb(metrics), row["id"]])
@@ -236,6 +244,12 @@ def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50) 
                 and leg.get("multiplier") == 100 for leg in legs
             )
             if row["status"] == "pending":
+                waiting_reason = ("later_complete_quote_required" if not ordered else
+                                  policy["blockers"][0] if policy["blockers"] else "limit_not_reached")
+                connection.execute(
+                    "UPDATE analysis.shadow_trade SET pending_entry_reason = %s WHERE id = %s",
+                    [waiting_reason, row["id"]],
+                )
                 if expiry is None or expiry <= now:
                     connection.execute("UPDATE analysis.shadow_trade SET status = 'unfilled', pending_entry_reason = 'entry_window_elapsed' WHERE id = %s", [row["id"]])
                     counts["unfilled"] += 1

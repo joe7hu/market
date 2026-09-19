@@ -25,6 +25,8 @@ from investment_panel.infrastructure.postgres.jobs import JobRepository
 from investment_panel.infrastructure.postgres.options_history_policy import OptionHistoryPolicyRepository
 from investment_panel.jobs import (
     postgres_refresh,
+    market_publication,
+    paper_quotes,
     refresh_options_radar,
     run_option_agents,
     run_agent_experiment,
@@ -196,6 +198,8 @@ def run_source_with_material_thesis(
 
 
 ALLOWLIST: dict[str, JobRunner] = {
+    "refresh_market_publication": lambda config_path: market_publication.run(config_path),
+    "refresh_paper_quotes": lambda config_path: paper_quotes.run(config_path),
     "full_market_refresh": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
     "daily_screen": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
     "refresh_decision_models": lambda config_path: postgres_refresh.publish_decisions(

@@ -96,19 +96,16 @@ def run_for_config(
                 "market_metric_failures": len(metric_errors),
             },
         )
-    market = (
-        refresh_market_publication(
-            runtime,
-            configured_watchlist=config.watchlist,
-        )
-        if publish and not requested
-        else {
-            "status": "deferred",
-            **({"reason": "scoped_refresh"} if requested else {}),
-        }
-    )
+    try:
+        market = (refresh_market_publication(runtime, configured_watchlist=config.watchlist)
+                  if publish and not requested else {"status": "deferred", "reason": "scoped_refresh" if requested else "publication_disabled"})
+    except Exception as exc:
+        market = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+    downstream_failed = market.get("status") in {"failed", "partial"}
     return {
-        "status": "partial" if errors or metric_errors else "ok",
+        "status": "partial" if errors or metric_errors or downstream_failed else "ok",
+        "source_status": "partial" if errors or metric_errors else "ok",
+        "downstream_status": market.get("status"),
         "database": "postgresql",
         "run_id": str(run_id),
         "symbols": len(universe_rows),

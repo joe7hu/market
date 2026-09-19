@@ -14,6 +14,7 @@ from investment_panel.domain.decision import market_session_bounds
 from investment_panel.infrastructure.postgres.runtime import (
     DatabaseRuntime,
     JOB_PROFILE,
+    RuntimeProfile,
 )
 
 
@@ -147,6 +148,67 @@ class PaperWorkbenchRepository:
             raise ValueError("paper account evidence incomplete: " + ", ".join(account["blockers"]))
         if account["cash_balance"] < account["reserved_capital"] or account["nav"] <= 0:
             raise ValueError("insufficient unreserved paper cash including entry fees")
+
+    def capture_nav(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Observe the funded book prospectively once per five-minute bucket.
+
+        The first attempt is immutable. Incomplete marks create a gap, never a
+        synthetic zero. This runs in the manager, not from a browser GET.
+        """
+        from psycopg.types.json import Jsonb
+        from investment_panel.infrastructure.postgres.options_paper_ledger import acquire_shared_sleeve_lock
+        with self.runtime.transaction(RuntimeProfile(statement_timeout_ms=5000, lock_timeout_ms=1000)) as connection:
+            acquire_shared_sleeve_lock(connection)
+            reference = now or datetime.now(UTC)
+            if reference.tzinfo is None:
+                raise ValueError("paper NAV requires a timezone-aware observation time")
+            reference = reference.astimezone(UTC)
+            bucket = reference.replace(minute=reference.minute // 5 * 5, second=0, microsecond=0)
+            if connection.execute("SELECT 1 FROM app.paper_nav_observation WHERE book = 'paper' AND bucket_at = %s", [bucket]).fetchone():
+                return {"status": "already_recorded", "bucket_at": bucket}
+            account = self.account(as_of=reference, connection=connection)
+            if account["status"] == "unfunded":
+                return {"status": "unfunded"}
+            connection.execute(
+                """INSERT INTO app.paper_nav_observation
+                       (book, bucket_at, observed_at, status, nav, cash_balance,
+                        reserved_capital, net_pnl, blockers, calculation_version)
+                   VALUES ('paper', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (book, bucket_at) DO NOTHING""",
+                [bucket, reference, account["status"], account.get("nav"), account.get("cash_balance"),
+                 account.get("reserved_capital"), account.get("net_pnl"), Jsonb(account.get("blockers", [])), CALCULATION_VERSION],
+            )
+            return {"status": account["status"], "observed_at": reference, "bucket_at": bucket}
+
+    def account_history(self, *, days: int = 90) -> dict[str, Any]:
+        """Whole-book hourly samples of recorded NAV, not filtered trade P&L."""
+        days = max(1, min(int(days), 365))
+        now = datetime.now(UTC)
+        with self.runtime.snapshot(RuntimeProfile(statement_timeout_ms=3000)) as connection:
+            # Include any gap within an hour as a gap in the downsampled curve.
+            # Do not silently bridge a missing interval using its last good mark.
+            rows = connection.execute(
+                """WITH hours AS (
+                       SELECT *, date_trunc('hour', observed_at) AS hour,
+                              bool_or(status <> 'complete') OVER
+                                (PARTITION BY date_trunc('hour', observed_at)) AS has_gap,
+                              row_number() OVER (PARTITION BY date_trunc('hour', observed_at)
+                                ORDER BY observed_at DESC) AS rank
+                       FROM app.paper_nav_observation
+                       WHERE book = 'paper' AND observed_at >= %s AND observed_at <= %s
+                   ) SELECT observed_at AS at, CASE WHEN has_gap THEN NULL ELSE nav END AS nav,
+                            CASE WHEN has_gap THEN NULL ELSE net_pnl END AS net_pnl,
+                            CASE WHEN has_gap THEN 'incomplete' ELSE status END AS status
+                     FROM hours WHERE rank = 1 ORDER BY observed_at DESC LIMIT 4097""",
+                [now - timedelta(days=days), now],
+            ).fetchall()
+        truncated = len(rows) > 4096
+        points = [dict(row) for row in reversed(rows[:4096])]
+        return {"paper_only": True, "book": "paper", "as_of": now, "days": days,
+                "points": points, "truncated": truncated,
+                "status": "collecting" if not points else "partial" if any(p["status"] != "complete" for p in points) else "available",
+                "basis": "Prospectively recorded whole-book NAV after journal cash flows and admissible marks; hourly samples. Trade filters do not apply.",
+                "sampling": "five_minute_observations_hourly_display"}
 
     def observations(self, *, status: str | None = None, offset: int = 0, limit: int = 20) -> dict[str, Any]:
         """Prospective experiments remain separate from the funded order ledger."""
