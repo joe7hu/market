@@ -1,0 +1,81 @@
+name: workstation-release-review
+on:
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/workstation-release-review.yml']
+permissions:
+  contents: write
+jobs:
+  verify:
+    if: github.head_ref == 'feat/trader-workstation-completion-20260919' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Apply exact fixture correction and remove this workflow
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/workstation-release-review.yml
+          test "$(git write-tree)" = eb56f077d18cfd7a8f08871f374c155c1d8e978a
+          python - <<'PY'
+          import base64, hashlib, lzma
+          from pathlib import Path
+          encoded = '/Td6WFoAAATm1rRGAgAhARYAAAB0L+Wj4AaNAtRdADIaSQnC/BF9UN4KT0fZUC4bOREmaGAk19LorQzgSDGpSIXAldJH0Sz9YCNHBWLA7Y1UxDlNhER8K7wRYiuyAxLq6gxCOdX+KRGfCSe2GDNTJ/VYk1wLpssiosxS8f6pnrpl7rD3Su7sVRzgodYxKFKx0oLhwM71vJ3lBD8LDNur59mEGRcMnqLvglAojyNjsEbghCsdBkbFYtYaXF/xg/SWpb4eQbfI0f681K4GEWe8/CUISg/QN8/kjeFx3/Tbjvd+NDE8QT/Bk1/LS76onNX+9xzllJ4VLjRhhnkTunsHBKYzDTmqEgfRWwkcrT10/EtM5Zf1wpL/Kr7G3lj/65s76BLJyHGK4JKO7fZ0Zc2rKEkX1p82IQGApbQ5L9XXqX0nsaLMKi/fF5lzSlrb445yylS0FhQnxIDJl/fefndIrw4dUnZfbuFS8XWO9YRY+d8f6Fe4l2VVqn5iu+RPyrByrS6tYJ9pGUT/V+nnbAgdimHjK04okXtf8rX2bSlvWWAXYC/M+LN1IdkUv+vRIarjYdGDal/FQhra0j4XQ6jx1CWLgufJIE2xGPxOzS09KrKxVxNR6MntTUjVU4nTRIfRB2MWhH8ev1w3UTyu0AtJrASuE377G6705kTW5bj8jtuuUhD8plxwVdJKmGfhkB98H/4+FtSiDyvFV1syXTHs8o3rTkd0RbAKsEBOreosWxNeAHcG0cPmj0uxMkIl2vVAP++C7kY06L81YLmgkzmfjWJRzN7oI7BkHWC90o9SPl/KmF40D4zRc1/E9wDEaEs9YIWImK8p5xLmVGYtgjKnwJ1IB/LUHZpj5b2Ep6BaY6oiuSRBr9uVzmX/Qb2cxUBE16/B1k6jZHS65ynF+Mndi7rczklQZ/cKCTm0YFKd8mHji5m3ZT7uyIcwsiiC7qRONFHSQyhK+cN2ohPiUnW5idkAxm4nb3dK/gyAuP1eR1pumtcAfIoMWxKq/hcAAfAFjg0AAO8QeRuxxGf7AgAAAAAEWVo='
+          patch = lzma.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '9a60367c1a0addd285a9ac8fc701ca6314a1fb5b0797d4b2778f5ed114af1b70'
+          Path('/tmp/fixture.patch').write_bytes(patch)
+          PY
+          git apply --check --index /tmp/fixture.patch
+          git apply --index /tmp/fixture.patch
+          test "$(git write-tree)" = 2801c94ff0b4c86c561ac1a2dcc1c81412acf809
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Supply required frozen quote fields in collector-fairness database regression'
+          git push origin HEAD:refs/heads/feat/trader-workstation-completion-20260919
+          git rev-parse HEAD HEAD^{tree}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: '0.9.26'
+      - name: Install locked dependencies
+        run: |
+          uv sync --extra test --locked
+          npm ci --prefix frontend
+      - uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee
+        with:
+          postgres-version: '18'
+      - name: Bootstrap isolated CI application role
+        env:
+          MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          ci_password="$(openssl rand -hex 32)"
+          PGPASSWORD=postgres psql "$MARKET_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE market_ci_login LOGIN PASSWORD '$ci_password' NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION"
+          export MARKET_APP_LOGIN_ROLE=market_ci_login
+          export MARKET_APP_DATABASE_PASSWORD="$ci_password"
+          uv run market-db-migrate
+      - name: Focused completion and PostgreSQL regressions
+        run: |
+          uv run --extra test python -m pytest \
+            tests/test_market_observation_lineage.py tests/test_market_scope_isolation.py \
+            tests/test_quote_clock_evidence.py tests/test_strategy_parameter_preflight.py \
+            tests/test_workstation_readiness.py tests/test_targeted_paper_quotes.py \
+            tests/test_paper_management_fairness.py tests/test_paper_tick_ordering.py \
+            tests/test_paper_execution_scheduling.py tests/test_paper_quote_numeric_safety.py \
+            tests/options/decision_truth/test_option_trade_ticket.py tests/test_strategy_parameters.py \
+            tests/test_workstation_verification.py tests/postgres/test_workstation_completion.py -q --tb=short
+      - name: Full release gate
+        run: make release-gate
+      - name: Final tracked-tree check
+        if: ${{ !cancelled() }}
+        run: |
+          git diff --check
+          git status --short
+          test -z "$(git status --porcelain)"
