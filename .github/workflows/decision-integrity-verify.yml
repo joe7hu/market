@@ -1,0 +1,17 @@
+name: Decision integrity verification
+on:
+  push:
+    branches: [fix/decision-service-integrity]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: git archive --format=tar --output=/tmp/market-source.tar HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: market-integrity-source
+          path: /tmp/market-source.tar
+          retention-days: 1
