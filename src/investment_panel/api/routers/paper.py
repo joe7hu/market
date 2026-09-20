@@ -362,7 +362,8 @@ def _strategy_lane(
     if not active:
         blockers.append("no_deployed_strategy_revision")
     for row in preflight_failures:
-        evidence = row.get("evidence") or {}
+        evidence = row.get("evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
         preflight = evidence.get("preflight") or {}
         blockers.extend(preflight.get("errors") or [])
         blockers.extend(f"{row['verdict']}: {name}" for name in preflight.get("blocked_parameters") or evidence.get("blocked_parameters") or [])
@@ -373,7 +374,10 @@ def _strategy_lane(
     core = subject.get("authority_group") == "options-radar-core"
     for name, kind, floor in (("historical", "walk_forward", 100), ("forward", "shadow", 30), ("paper", "execution_grade_paper", 20)):
         row = evaluations.get(kind, {})
-        evidence, metrics = row.get("evidence") or {}, row.get("metrics") or {}
+        evidence = row.get("evidence")
+        metrics = row.get("metrics")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        metrics = metrics if isinstance(metrics, dict) else {}
         sample = evidence.get("sample_size")
         if sample is None:
             sample = (metrics.get("proposed") or {}).get("sample_size")
