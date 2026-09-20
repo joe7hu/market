@@ -91,7 +91,7 @@ The original audit remains the acceptance specification.
 ## Apply and restart
 
 Use the repository checkout, not a review ZIP. Build and migrate before restarting
-both API and scheduler. Schema head is `20260920_0026`.
+both API and scheduler. Schema head is `20260920_0027`.
 
 ```sh
 uv sync --extra test --locked

@@ -100,6 +100,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260919_0024_paper_account.py',
         '20260919_0025_paper_nav.py',
         '20260920_0026_options_radar_binding_repair.py',
+        '20260920_0027_options_radar_orphan_candidate_repair.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
@@ -411,6 +412,49 @@ def test_options_radar_binding_repair_rejects_invalid_active_v4_parameters(postg
         assert connection.execute(
             "SELECT status FROM analysis.strategy_revision WHERE strategy_key = 'options-radar-core' AND revision = 4",
         ).fetchone()[0] == 'active'
+
+
+def test_options_radar_orphan_candidate_repair_migration_supersedes_detached_candidate(postgres_dsn):
+    upgrade_database(postgres_dsn, '20260920_0026')
+    with psycopg.connect(postgres_dsn) as connection:
+        parent = connection.execute(
+            """INSERT INTO analysis.strategy_revision
+               (strategy_key, revision, name, status, parameters, authority_group,
+                implementation_id, implementation_version)
+               VALUES ('options-radar-orphan-parent', 1, 'Retired parent', 'superseded', '{}',
+                       'options-radar-core', 'unavailable', '1') RETURNING id""",
+        ).fetchone()[0]
+        candidate = connection.execute(
+            """INSERT INTO analysis.strategy_revision
+               (strategy_key, revision, name, status, parameters, supersedes_id, authority_group,
+                implementation_id, implementation_version)
+               VALUES ('options-radar-orphan-candidate', 1, 'Detached candidate', 'candidate', '{}', %s,
+                       'options-radar-core', 'unavailable', '1') RETURNING id""",
+            [parent],
+        ).fetchone()[0]
+        run = connection.execute(
+            """INSERT INTO analysis.run
+               (run_type, input_cutoff, code_version, feature_versions, strategy_revision_id,
+                input_hash, started_at, finished_at, status)
+               VALUES ('options-paper-experiment', now(), 'orphan-test', '{}', %s, %s,
+                       now(), now(), 'succeeded') RETURNING id""",
+            [candidate, 'f' * 64],
+        ).fetchone()[0]
+        publication = connection.execute(
+            """INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+               VALUES (concat('options-paper-experiment:', %s), %s, 'published', now()) RETURNING id""",
+            [candidate, run],
+        ).fetchone()[0]
+
+    upgrade_database(postgres_dsn)
+
+    with psycopg.connect(postgres_dsn) as connection:
+        assert connection.execute(
+            "SELECT status FROM analysis.strategy_revision WHERE id = %s", [candidate],
+        ).fetchone()[0] == 'superseded'
+        assert connection.execute(
+            "SELECT status FROM app.publication WHERE id = %s", [publication],
+        ).fetchone()[0] == 'superseded'
 
 
 def test_strategy_definition_policy_upgrade_flushes_revision_trigger_events(postgres_dsn):
