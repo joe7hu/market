@@ -20,7 +20,9 @@ from investment_panel.infrastructure.postgres.strategy_parameters import PARAMET
 logger = logging.getLogger(__name__)
 
 WORKFLOW_JOBS = (
-    "update_market_data", "update_market_valuations", "refresh_market_publication",
+    "update_market_data",
+    "update_research_sources", "update_phase2_sources", "update_event_calendar",
+    "update_market_valuations", "refresh_market_publication",
     "refresh_decision_models", "process_options_paper_orders", "refresh_paper_quotes",
     "run_option_paper_experiments", "run_stock_alpha_walk_forward",
     "refresh_symbol_decision_outcomes", "run_continuous_advisor_replay",

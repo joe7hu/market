@@ -23,7 +23,7 @@ def stale_after_label(source_type: str) -> str:
         "closing_quote": "previous close while market is closed",
         "crypto_quote": "36 hours",
         "options": "4 market hours",
-        "news": "4 market hours",
+        "news": "4 elapsed hours, including nights and weekends",
         "daily": "1 trading day",
         "arco_thesis": "7 days",
         "filing": "filing cadence",

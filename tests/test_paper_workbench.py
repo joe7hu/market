@@ -273,3 +273,35 @@ def test_holding_period_attribution_uses_bounded_event_fills():
     )
 
     assert visuals["attribution"]["holding_period"][0]["label"] == "2–5 days"
+
+
+def test_last_close_valuation_survives_long_weekend_without_a_synthetic_timestamp():
+    observed = datetime(2026, 9, 4, 19, 59, tzinfo=UTC)
+    result = paper_trade_payload(_row(contract_id=None, structure='equity', paper_status='entered',
+        order_multiplier=1, entry_quantity=1, entry_units=10, entry_fees=0,
+        stock_mark_price=12, stock_mark_observed_at=observed, stock_mark_available_at=observed,
+        stock_mark_source='confirmed-test', mark_as_of=datetime(2026, 9, 8, 12, tzinfo=UTC)))
+    assert result['mark_status'] == 'verified'
+    assert result['mark_value'] == 12
+    assert result['mark_observed_at'] == observed
+    assert result['mark']['valuation_only'] is True
+    assert result['mark']['session_state'] == 'last_completed_session'
+
+
+def test_option_leg_without_contract_identity_is_unavailable_not_a_crash():
+    result = paper_trade_payload(_row(contract_id=None, structure='debit_spread', paper_status='entered',
+        entry_quantity=1, entry_units=2, fill_multipliers_verified=True,
+        order_legs=[{'contract_id': None, 'side': 'long', 'multiplier': 100}], option_marks=[]))
+    assert result['mark_status'] == 'unavailable'
+    assert result['mark_value'] is None
+
+
+def test_one_leg_missing_source_clock_cannot_value_an_entire_package():
+    now = datetime(2026, 9, 18, 15, tzinfo=UTC)
+    result = paper_trade_payload(_row(contract_id=None, structure='debit_spread', paper_status='entered',
+        entry_quantity=1, entry_units=2, fill_multipliers_verified=True, mark_as_of=now,
+        order_legs=[{'contract_id': 101, 'side': 'long', 'multiplier': 100}, {'contract_id': 102, 'side': 'short', 'multiplier': 100}],
+        option_marks=[{'contract_id': 101, 'bid': 2, 'ask': 2.1, 'observed_at': now, 'available_at': now},
+                      {'contract_id': 102, 'bid': 1, 'ask': 1.1, 'available_at': now}]))
+    assert result['mark_status'] == 'stale'
+    assert result['mark_value'] is None

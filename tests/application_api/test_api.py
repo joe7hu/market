@@ -43,6 +43,10 @@ from conftest import typed_config
 def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     panel_owner.invalidate_context_cache()
     config = typed_config(status_dir=db_path.parent / "status")
+    # Today adds research actions; a panel-only test must not open the real
+    # default PostgreSQL database through that otherwise-unmocked dependency.
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_research_workbench,
+                        lambda: SimpleNamespace(action_items=lambda **_kwargs: []))
     monkeypatch.setitem(app.dependency_overrides, dependencies.get_config, lambda: config)
     monkeypatch.setattr(panel_owner, "load_config", lambda: config)
 
@@ -181,7 +185,7 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
         "source": "trade_plan",
         "reason": "trade_plan_missing",
         "blocking": True,
-        "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+        "next_action": "Open the ticker assessment; refresh decision models to publish entry, position size, invalidation and maximum loss before staging paper orders.",
     }]
 
 
@@ -415,6 +419,7 @@ def test_today_missing_plan_field_state_preserves_blocker_semantics(
     reason: str, availability_status: str,
 ) -> None:
     from investment_panel.workflows.today import today_field_states
+    from investment_panel.domain.decision import next_action_for
 
     states = today_field_states(identity_missing=False, plan_missing=True, reason=reason)
 
@@ -424,7 +429,7 @@ def test_today_missing_plan_field_state_preserves_blocker_semantics(
         "source": "trade_plan",
         "reason": reason,
         "blocking": True,
-        "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+        "next_action": next_action_for(reason),
     }]
 
 

@@ -99,3 +99,16 @@ def test_republishing_an_old_cutoff_does_not_make_it_current():
 def test_unknown_market_evidence_is_not_counted_as_available():
     assert market_status(failures=["market_drivers"])["status"] == "unavailable"
     assert market_status(cutoff=None)["status"] == "unavailable"
+
+
+def test_news_macro_and_calendar_are_visible_and_do_not_wait_for_market_open():
+    from investment_panel.infrastructure import scheduler
+    from investment_panel.infrastructure.postgres.workstation import WORKFLOW_JOBS
+    sunday = datetime(2026, 9, 20, 15, tzinfo=UTC)
+    for job in ('update_research_sources', 'update_phase2_sources', 'update_event_calendar'):
+        assert job in WORKFLOW_JOBS
+        assert job not in scheduler.SESSION_JOBS
+        assert scheduler._recurring_delay_seconds(job, 3600, reference_time=sunday) == 3600
+        projection = worker_projection({'status': 'succeeded', 'finished_at': sunday},
+            job=job, interval=3600, now=sunday, enabled=True)
+        assert projection['next_expected_at'] == sunday + timedelta(hours=1)

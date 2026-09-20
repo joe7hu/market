@@ -21,6 +21,10 @@ from investment_panel.domain.decision import (
     trade_expression_identity,
 )
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
+from investment_panel.core.option_trade_ticket import execution_policy
+from investment_panel.domain.decision import is_market_open, market_session_bounds
+from investment_panel.domain.portfolio.paper_execution import CONSUMPTION_KEY, consumed_quote_evidence, quote_consumption_blocker
+from investment_panel.infrastructure.postgres.options_paper_execution import expiration_mark
 from investment_panel.infrastructure.postgres.options_paper_quotes import is_credit_structure, latest_option_legs, package_price
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
 
@@ -131,7 +135,7 @@ class TickerPaperExecutionRepository:
             raise ValueError("trade plan maximum loss is unavailable")
         planned_loss = float(plan.planned_loss or 0.0) if action in ENTRY_ACTIONS else 0.0
         now = datetime.now(UTC)
-        expires_at = plan.expiry
+        expires_at = market_session_bounds(plan.expiry)[1] if isinstance(plan.expiry, date) and not isinstance(plan.expiry, datetime) else plan.expiry
         nav = decision.risk_policy.loss_budget / decision.risk_policy.loss_budget_pct if decision.risk_policy.loss_budget is not None else None
         if nav is None or nav <= 0:
             raise ValueError("fresh broker NAV is required before paper staging")
@@ -384,9 +388,16 @@ class TickerPaperExecutionRepository:
     @staticmethod
     def _record_fill(connection: Any, order: dict[str, Any], now: datetime, *, action: str, quantity: float, price: float, fees: float, multiplier: float, cumulative: float) -> None:
         from investment_panel.infrastructure.postgres.options_recovery_execution_support import journal
+        consumption = (order.get("execution_quote") or {}).get(CONSUMPTION_KEY)
+        if consumption:
+            connection.execute(
+                "UPDATE app.paper_order SET execution_quote = coalesce(execution_quote, '{}'::jsonb) || %s WHERE id = %s::uuid",
+                [Jsonb({CONSUMPTION_KEY: consumption}), order["id"]],
+            )
         journal(connection, {**order, "decision_id": order.get("decision_id")}, action=action, quantity=quantity, price=price,
                 key=f"ticker:{order['id']}:{action}:{cumulative}",
                 details={"paper_order_id": str(order["id"]), "fees": fees, "contract_multiplier": multiplier,
+                         CONSUMPTION_KEY: consumption,
                          "entry_contract_multiplier": multiplier, "exit_contract_multiplier": multiplier,
                          "observed_at": now.isoformat(), "execution_owner": "ticker", "objective_version": None,
                          "exit_trade_plan_id": ((order.get("policy_result") or {}).get("paper_exit_request") or {}).get("trade_plan_id") if action.startswith("paper_exit") else None})
@@ -636,7 +647,7 @@ class TickerPaperExecutionRepository:
                 """
                 SELECT paper.id::text, paper.decision_id, paper.instrument_id, paper.status, paper.side,
                        paper.quantity, paper.limit_price, paper.actual_fill_price,
-                       paper.filled_at, paper.submitted_at, paper.filled_quantity,
+                       paper.created_at, paper.filled_at, paper.exit_at, paper.submitted_at, paper.filled_quantity,
                        paper.exited_quantity, paper.fees, paper.expires_at, paper.execution_quote,
                        paper.fill_evidence_at, paper.contract_multiplier,
                        paper.expression_kind, paper.structure, paper.policy_result, paper.thesis_snapshot,
@@ -682,16 +693,13 @@ class TickerPaperExecutionRepository:
                     ["entry_limit_expired", now, order["id"]],
                 )
                 return {"paper_order_id": str(order["id"]), "status": "unfilled", "reason": "entry_limit_expired"}
+            policy = {**dict(order.get("policy_result") or {}), "entry_cancelled": True}
             connection.execute(
-                "UPDATE app.paper_order SET status = 'entered', unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
-                ["entry_limit_expired_after_partial_fill", now, order["id"]],
+                "UPDATE app.paper_order SET status = 'entered', unfilled_reason = %s, policy_result = %s, updated_at = %s WHERE id = %s::uuid",
+                ["entry_limit_expired_after_partial_fill", Jsonb(policy), now, order["id"]],
             )
-            return {
-                "paper_order_id": str(order["id"]),
-                "status": "entered",
-                "reason": "entry_limit_expired_after_partial_fill",
-                "filled_quantity": filled,
-            }
+            return self._manage_open(connection, {**order, "policy_result": policy, "status": "entered"},
+                                     now, filled, _quantity(order.get("exited_quantity")))
 
         expression_kind = str(order.get("expression_kind") or "").upper()
         if expression_kind in {kind.value for kind in OPTION_EXPRESSIONS}:
@@ -714,7 +722,7 @@ class TickerPaperExecutionRepository:
 
         quote = connection.execute(
             """
-            SELECT price, observed_at, available_at
+            SELECT id AS quote_id, source_id, price, observed_at, available_at
             FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
             WHERE observed_at <= %s
             ORDER BY observed_at DESC, available_at DESC
@@ -738,6 +746,9 @@ class TickerPaperExecutionRepository:
                 "reason": "fresh_confirmed_quote_required",
             }
 
+        blocker = quote_consumption_blocker(order, [dict(quote)], now=now, phase="entry")
+        if blocker or float(quote["price"]) <= 0:
+            return self._pending_quote(connection, order, now, blocker or "positive_stock_price_required", phase="entry")
         market_price = float(quote["price"])
         limit_price = _number(order.get("limit_price"))
         side = str(order.get("side") or "buy").lower()
@@ -765,6 +776,8 @@ class TickerPaperExecutionRepository:
         slippage = abs(market_price - (limit_price or market_price))
         new_status = "entered" if complete else "open"
         policy["entry_fill_count"] = int(_number(policy.get("entry_fill_count")) or 0) + 1
+        order["execution_quote"] = {**consumed_quote_evidence(order, [dict(quote)], now=now, phase="entry"),
+                                    "mid": market_price, "basis": "confirmed_last_price_paper_model"}
         connection.execute(
             """
             UPDATE app.paper_order
@@ -778,7 +791,7 @@ class TickerPaperExecutionRepository:
             WHERE id = %s::uuid
             """,
             [
-                new_status, market_price, market_price, fill_quantity, new_filled, now, now, Jsonb({"mid": market_price}), new_filled, fees, fees, slippage,
+                new_status, market_price, market_price, fill_quantity, new_filled, now, now, Jsonb(order["execution_quote"]), new_filled, fees, fees, slippage,
                 complete, "partial_fill", Jsonb(policy), now, order["id"],
             ],
         )
@@ -815,6 +828,11 @@ class TickerPaperExecutionRepository:
             )
             return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "fresh_executable_option_quote_required"}
         structure = str(order.get("structure") or "")
+        blockers = execution_policy(quoted, structure=structure, entry_price=_number(order.get("limit_price")),
+                                    market_session="regular" if is_market_open(now) else "closed", evaluated_at=now)["blockers"]
+        consumption_blocker = quote_consumption_blocker(order, quoted, now=now, phase="entry")
+        if blockers or consumption_blocker:
+            return self._pending_quote(connection, order, now, consumption_blocker or blockers[0], phase="entry")
         credit = is_credit_structure(structure)
         market_price = package_price(quoted, phase="entry")
         limit_price = _number(order.get("limit_price"))
@@ -831,13 +849,17 @@ class TickerPaperExecutionRepository:
         new_filled = prior_filled + fill_quantity
         complete = new_filled >= _quantity(order.get("quantity"))
         multiplier = _number(legs[0].get("multiplier")) if legs else None
-        if multiplier is None or multiplier <= 0:
-            return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "contract_multiplier_missing"}
+        if (multiplier is None or multiplier <= 0
+            or any(_number(leg.get("multiplier")) != multiplier for leg in [*legs, *quoted])
+            or (prior_filled > 0 and _number(order.get("contract_multiplier")) != multiplier)):
+            return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "contract_multiplier_missing_or_conflicting"}
         fees = FEE_PER_CONTRACT_LEG * len(quoted) * fill_quantity
         midpoint = _option_midpoint(quoted)
         slippage = abs(market_price - midpoint) if midpoint is not None else None
         policy = dict(order.get("policy_result") or {})
         policy["entry_fill_count"] = int(_number(policy.get("entry_fill_count")) or 0) + 1
+        order["execution_quote"] = {**consumed_quote_evidence(order, quoted, now=now, phase="entry"),
+                                    "mid": midpoint, "entry_price": market_price}
         connection.execute(
             """
             UPDATE app.paper_order
@@ -850,7 +872,7 @@ class TickerPaperExecutionRepository:
                 policy_result = %s, updated_at = %s
             WHERE id = %s::uuid
             """,
-            ["entered" if complete else "open", market_price, market_price, fill_quantity, new_filled, now, now, Jsonb({"mid": midpoint, "entry_price": market_price}), multiplier, new_filled, fees, fees, slippage,
+            ["entered" if complete else "open", market_price, market_price, fill_quantity, new_filled, now, now, Jsonb(order["execution_quote"]), multiplier, new_filled, fees, fees, slippage,
              complete, "partial_fill", Jsonb(policy), now, order["id"]],
         )
         self._record_fill(connection, order, now, action="paper_entry", quantity=fill_quantity, price=market_price, fees=fees, multiplier=multiplier, cumulative=new_filled)
@@ -885,7 +907,7 @@ class TickerPaperExecutionRepository:
             return self._manage_option_open(connection, order, now, remaining)
         quote = connection.execute(
             """
-            SELECT price, observed_at, available_at
+            SELECT id AS quote_id, source_id, price, observed_at, available_at
             FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
             WHERE observed_at <= %s
             ORDER BY observed_at DESC, available_at DESC
@@ -895,6 +917,8 @@ class TickerPaperExecutionRepository:
         ).fetchone()
         if quote is None or _number(quote["price"]) is None:
             return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "fresh_confirmed_quote_required_for_exit"}
+        if float(quote["price"]) <= 0:
+            return self._pending_quote(connection, order, now, "positive_stock_price_required", phase="exit")
         price = float(quote["price"])
         snapshot = dict(order.get("thesis_snapshot") or {})
         selected = dict(snapshot.get("selected_expression") or {})
@@ -911,11 +935,16 @@ class TickerPaperExecutionRepository:
         elif expires_at is not None and expires_at <= now:
             reason = "decision_expired"
         request = (order.get("policy_result") or {}).get("paper_exit_request") or {}
+        exit_quantity = remaining
         if reason is None and float(request.get("remaining_quantity") or 0) > 0 and price >= float(request["limit_price"]):
-            return self._close_at_market(connection, order, now, min(remaining, float(request["remaining_quantity"])), "requested_exit", price=price)
+            reason, exit_quantity = "requested_exit", min(remaining, float(request["remaining_quantity"]))
         if reason is None:
             return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "exit_not_triggered"}
-        return self._close_at_market(connection, order, now, remaining, reason, price=price)
+        blocker = quote_consumption_blocker(order, [dict(quote)], now=now, phase="exit")
+        if blocker:
+            return self._pending_quote(connection, order, now, blocker, phase="exit")
+        order["execution_quote"] = consumed_quote_evidence(order, [dict(quote)], now=now, phase="exit")
+        return self._close_at_market(connection, order, now, exit_quantity, reason, price=price)
 
     def _manage_option_open(
         self,
@@ -956,13 +985,17 @@ class TickerPaperExecutionRepository:
         legs = self._stored_option_legs(connection, order["id"])
         expiration = _option_expiration(selected, legs)
         structure = str(order.get("structure") or _option_structure(ExpressionKind(str(order.get("expression_kind").upper()))))
-        if expiration is not None and expiration <= now.date():
-            if structure == "cash_secured_put" and underlying_price is not None and legs:
+        if expiration is not None and now >= market_session_bounds(expiration)[1]:
+            if structure == "cash_secured_put" and legs:
+                settlement, pending = expiration_mark(connection, order, legs, now=now)
+                if settlement is None:
+                    return self._pending_quote(connection, order, now, f"expiration_settlement_pending: {pending}", phase="exit")
+                underlying_price = settlement["close"]
                 strike = _number(legs[0].get("strike"))
-                if strike is not None and underlying_price <= strike:
+                if strike is not None and strike > 0:
                     policy = dict(order.get("policy_result") or {})
                     multiplier = int(legs[0].get("multiplier") or 0)
-                    if multiplier <= 0:
+                    if multiplier <= 0 or _number(order.get("contract_multiplier")) != multiplier:
                         return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "assignment_multiplier_missing"}
                     # Assignment settles only the still-open contracts.  The
                     # requested order quantity is not fill evidence and may
@@ -970,11 +1003,12 @@ class TickerPaperExecutionRepository:
                     contract_count = _quantity(remaining)
                     exited_quantity = _quantity(order.get("exited_quantity"))
                     assignment_fee = FEE_PER_CONTRACT_LEG * len(legs) * contract_count
-                    settlement_value = (strike - underlying_price) * multiplier * contract_count
+                    settlement_value = max(strike - underlying_price, 0) * multiplier * contract_count
+                    settlement_reason = "assignment" if underlying_price < strike else "expiration_unassigned"
                     policy["assignment"] = {
-                        "status": "assigned", "strike": strike, "underlying_price": underlying_price,
+                        "status": "assigned" if settlement_reason == "assignment" else "expired_unassigned", "expiration_mark": settlement, "strike": strike, "underlying_price": underlying_price,
                         "multiplier": multiplier, "contract_count": contract_count, "settlement_value": settlement_value,
-                        "settled_at": now, "assignment_fee": assignment_fee,
+                        "settled_at": now.isoformat(), "assignment_fee": assignment_fee,
                     }
                     policy["exit_fill_count"] = int(_number(policy.get("exit_fill_count")) or 0) + 1
                     connection.execute(
@@ -987,22 +1021,29 @@ class TickerPaperExecutionRepository:
                         WHERE id = %s::uuid
                         """,
                         [exited_quantity + contract_count, max(strike - underlying_price, 0.0), now, multiplier,
-                         assignment_fee, assignment_fee, Jsonb(policy), "assigned_at_expiration", now, order["id"]],
+                         assignment_fee, assignment_fee, Jsonb(policy), settlement_reason + "_at_expiration", now, order["id"]],
                     )
-                    self._record_fill(connection, order, now, action="paper_exit:assignment", quantity=contract_count, price=max(strike - underlying_price, 0.0), fees=assignment_fee, multiplier=multiplier, cumulative=exited_quantity + contract_count)
+                    self._record_fill(connection, order, now, action=f"paper_exit:{settlement_reason}", quantity=contract_count, price=max(strike - underlying_price, 0.0), fees=assignment_fee, multiplier=multiplier, cumulative=exited_quantity + contract_count)
                     from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 
                     PortfolioLoopRepository(self.runtime).record_existing_paper_order_fill(
                         connection, paper_order_id=str(order["id"]), observed_at=now, status="exited",
                     )
-                    return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
-            reason = reason or "expiration"
+                    return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": settlement_reason, "assigned_strike": strike if settlement_reason == "assignment" else None}
+            return self._pending_quote(connection, order, now, "expiration_settlement_evidence_required", phase="exit")
         request = (order.get("policy_result") or {}).get("paper_exit_request") or {}
         if reason is None and float(request.get("remaining_quantity") or 0) > 0:
             reason = "requested_exit"
         if reason is None:
             return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "exit_not_triggered"}
         quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now) if legs else []
+        blockers = execution_policy(quoted, structure=structure, entry_price=_number(order.get("actual_fill_price")),
+                                    market_session="regular" if is_market_open(now) else "closed", evaluated_at=now)["blockers"]
+        consumption_blocker = quote_consumption_blocker(order, quoted, now=now, phase="exit")
+        if blockers or consumption_blocker:
+            return self._pending_quote(connection, order, now, consumption_blocker or blockers[0], phase="exit")
+        if any(_number(leg.get("multiplier")) != _number(order.get("contract_multiplier")) for leg in quoted):
+            return self._pending_quote(connection, order, now, "contract_multiplier_missing_or_conflicting", phase="exit")
         exit_price = package_price(quoted, phase="exit") if quoted else None
         if exit_price is None:
             connection.execute(
@@ -1041,6 +1082,7 @@ class TickerPaperExecutionRepository:
             """,
             ["exited" if terminal else "partial_exited", new_exited, exit_price, now, fees, fees, slippage, Jsonb(policy), now, order["id"]],
         )
+        order["execution_quote"] = consumed_quote_evidence(order, quoted, now=now, phase="exit")
         self._record_fill(connection, order, now, action=f"paper_exit:{reason}", quantity=exit_quantity, price=exit_price, fees=fees, multiplier=float(order["contract_multiplier"]), cumulative=new_exited)
         from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 
@@ -1119,6 +1161,14 @@ class TickerPaperExecutionRepository:
             "exit_price": price,
             "fees": fees,
         }
+
+    @staticmethod
+    def _pending_quote(connection: Any, order: dict[str, Any], now: datetime, reason: str, *, phase: str) -> dict[str, Any]:
+        connection.execute(
+            "UPDATE app.paper_order SET unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
+            [reason, now, order["id"]],
+        )
+        return {"paper_order_id": str(order["id"]), "status": "submitted" if phase == "entry" else "entered", "reason": reason}
 
     def _check_switches(self, kind: ExpressionKind) -> None:
         settings = self.config.analysis.options_decision_system

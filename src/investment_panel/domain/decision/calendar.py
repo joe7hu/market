@@ -24,8 +24,13 @@ def classify_freshness(source_type: str, observed: datetime | None, status: str,
     if observed is None:
         return "unknown"
     checked_at = normalized_utc(now or datetime.now(UTC))
+    observed = normalized_utc(observed)
     age = checked_at - observed
-    if source_type in {"intraday_quote", "options", "news"}:
+    if age < timedelta():
+        return "unknown"
+    if source_type == "news":
+        return "fresh" if age <= timedelta(hours=INTRADAY_STALE_HOURS) else "stale"
+    if source_type in {"intraday_quote", "options"}:
         market_age = market_session_elapsed(observed, checked_at)
         return "fresh" if market_age <= timedelta(hours=INTRADAY_STALE_HOURS) else "stale"
     if source_type == "crypto_quote":
@@ -44,6 +49,37 @@ def classify_freshness(source_type: str, observed: datetime | None, status: str,
         return "fresh" if age <= timedelta(days=1) else "stale"
     return "fresh"
 
+
+
+
+def valuation_mark_is_stale(
+    observed: datetime | None, available: datetime | None, as_of: datetime,
+    *, continuous: bool = False,
+) -> bool:
+    """Valuation only, never fill authorization; retain the last completed session.
+
+    Both source clocks must be known and causal. An exchange closure does not
+    consume quote age, but a missed completed session is not silently carried
+    indefinitely. Continuous markets retain their wall-clock quote budget.
+    """
+    if observed is None or available is None:
+        return True
+    observed, available, as_of = map(normalized_utc, (observed, available, as_of))
+    if not observed <= available <= as_of:
+        return True
+    if continuous:
+        return as_of - observed > timedelta(hours=36)
+    expected_open, _ = market_session_bounds(latest_completed_market_day(as_of))
+    return observed < expected_open or market_session_elapsed(observed, as_of) > timedelta(hours=INTRADAY_STALE_HOURS)
+
+
+def market_deadline_passed(deadline: date | datetime | None, now: datetime) -> bool:
+    """Date-only trade deadlines last through that session, not UTC midnight."""
+    if deadline is None:
+        return False
+    if isinstance(deadline, datetime):
+        return normalized_utc(deadline) <= normalized_utc(now)
+    return market_session_bounds(deadline)[1] <= normalized_utc(now)
 
 
 

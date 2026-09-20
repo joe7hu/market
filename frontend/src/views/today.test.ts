@@ -100,26 +100,26 @@ describe("Today Action Queue", () => {
 
     expect(blocked).toContain("NO TRADE");
     expect(blocked).toContain("No new trade");
-    expect(blocked).toContain("The evidence needed for this assessment is incomplete.");
+    expect(blocked).toContain("rank missing. Supply this input and recalculate the ticker decision before staging paper orders.");
     expect(blocked).toContain("Refresh the ticker decision.");
     expect(blocked).not.toContain("BUY");
     expect(blocked).not.toContain("contract-1");
     expect(missing).toContain("NO TRADE");
     expect(missing).toContain("No new trade");
-    expect(missing).toContain("A complete trade plan is not available.");
-    expect(missing).toContain("ticker decision");
+    expect(missing).toContain("No published entry, position size, invalidation and maximum loss are linked to this decision.");
+    expect(missing).toContain("Open the ticker assessment; refresh decision models");
     expect(missing).not.toContain("BUY");
   });
 
-  it("does not leak queue terms when a capital plan is missing", () => {
+  it("does not show unsupported trade terms but preserves the recorded blocker and next step", () => {
     const markup = renderToStaticMarkup(createElement(ActionQueueCard, {
       item: {
         ...response.actions![0],
         action: "BUY",
         lifecycle_state: "actionable",
         rationale: "queue rationale leak",
-        primary_blocker: "queue blocker leak",
-        next_action: "queue next action leak",
+        primary_blocker: "Position size has not been published.",
+        next_action: "Refresh AAA portfolio inputs before sizing.",
         expires_at: "2026-09-19T13:30:00Z",
         trade_plan: null,
       },
@@ -129,8 +129,8 @@ describe("Today Action Queue", () => {
     expect(markup).toContain("No new trade");
     expect(markup).not.toContain("BUY");
     expect(markup).not.toContain("queue rationale leak");
-    expect(markup).not.toContain("queue blocker leak");
-    expect(markup).not.toContain("queue next action leak");
+    expect(markup).toContain("Position size has not been published.");
+    expect(markup).toContain("Refresh AAA portfolio inputs before sizing.");
     expect(markup).not.toContain("2026-09-19");
   });
 
@@ -483,4 +483,14 @@ it("does not call an empty catalyst list a clear calendar without complete cover
   expect(complete).toContain("No catalysts found");
   expect(complete).toContain("complete coverage");
   expect(complete).not.toContain("Brief coverage is incomplete");
+});
+
+it("names the missing input and gives a ticker-specific action instead of a vague evidence instruction", () => {
+  const item = { ...response.actions![0], primary_blocker: "portfolio_context_missing",
+    next_action: "Refresh portfolio balances before sizing AAA.", drill_down: "/ticker/AAA", trade_plan: null };
+  const html = renderToStaticMarkup(createElement(ActionQueueCard, { item, onOpenTicker: () => undefined }));
+  expect(html).toContain("Refresh portfolio balances before sizing AAA.");
+  expect(html).toContain("Open AAA trade assessment");
+  expect(html).not.toContain("Review evidence");
+  expect(html).not.toContain("complete trade plan is not available");
 });

@@ -43,6 +43,8 @@ class _RecordingConnection:
 def _open_order(*, filled_quantity: float = 1, exited_quantity: float = 0) -> dict[str, object]:
     return {
         "id": "paper-order-1",
+        "created_at": NOW - timedelta(minutes=10),
+        "filled_at": NOW - timedelta(minutes=5),
         "instrument_id": 1,
         "lane": "radar",
         "status": "entered",
@@ -64,6 +66,8 @@ def _executable_long_quote(*, quote_time: datetime, bid_size: int = 1) -> dict[s
         "ask_size": bid_size,
         "open_interest": 100,
         "quote_time": quote_time,
+        "observed_at": quote_time,
+        "available_at": quote_time,
     }
 
 
@@ -522,7 +526,7 @@ def test_cancelled_partial_holding_measures_its_exact_filled_basis(monkeypatch, 
                                 "journal_ids": ["actual-entry"], "entry_journal_ids": ["actual-entry"]})
             return super().execute(statement, parameters)
 
-    at = datetime.now(UTC)
+    at = NOW
     connection = JournalConnection()
     key, cancellation_key = paper_execution_database.PAPER_MARK_KEY, paper_execution_database.ENTRY_CANCELLATION_KEY
     order = {**_open_order(filled_quantity=1), "quantity": 2, "status": "open", "decision_id": "decision-id",
@@ -542,7 +546,7 @@ def test_cancelled_partial_holding_measures_its_exact_filled_basis(monkeypatch, 
                     "requested_quantity": 2, "filled_quantity": 1 if valid_cancellation else 2, "cancelled_quantity": 1}
     order.update(status="entered", execution_quote={key: pending, cancellation_key: cancellation})
     later = {**quote, "quote_id": "later-holding-quote", "bid": .6, "ask": .62, "capture_complete": True,
-             "observed_at": at + timedelta(seconds=11), "quote_time": at + timedelta(seconds=11)}
+             "observed_at": at + timedelta(seconds=11), "available_at": at + timedelta(seconds=11), "quote_time": at + timedelta(seconds=11)}
     paper_execution_database._record_liquidation_mark(connection, order, [later], now=at + timedelta(seconds=11), execution_blockers=[])
     mark = connection.statements[-1][1][0].obj[key]
     if not valid_cancellation:
@@ -555,13 +559,13 @@ def test_cancelled_partial_holding_measures_its_exact_filled_basis(monkeypatch, 
     assert mark["mark_count"] == (2 if entry_quote_available else 1) and mark["journal_ids"] == ["actual-entry"]
     order["execution_quote"][key] = mark
     exit_quote = {**later, "quote_id": "actual-exit-quote", "bid": .2, "ask": .22,
-                  "observed_at": at + timedelta(seconds=21), "quote_time": at + timedelta(seconds=21)}
+                  "observed_at": at + timedelta(seconds=21), "available_at": at + timedelta(seconds=21), "quote_time": at + timedelta(seconds=21)}
     monkeypatch.setattr(paper_execution_database, "latest_option_legs", lambda *_args, **_kwargs: [exit_quote])
     monkeypatch.setattr(paper_execution_database, "is_market_open", lambda _now: True)
     repository = OptionsPaperExecutionRepository.__new__(OptionsPaperExecutionRepository)
     exited = repository._manage_open(connection, order, {"exits": {"loss_price": .25}}, [quote], at + timedelta(seconds=21))
     assert exited["status"] == "closed" and exited["exit_quantity"] == 1
-    mark = next(parameters[0].obj[key] for statement, parameters in reversed(connection.statements) if "execution_quote = coalesce" in statement)
+    mark = next(parameters[0].obj[key] for statement, parameters in reversed(connection.statements) if "execution_quote = coalesce" in statement and key in parameters[0].obj)
     assert mark["current_net_return"] == pytest.approx(-.626)
     assert mark["max_drawdown"] == pytest.approx(.374 / 1.174 - 1) and mark["mark_count"] == (3 if entry_quote_available else 2)
     assert mark["drawdown_peak_quotes"][0]["quote_id"] == "later-holding-quote"

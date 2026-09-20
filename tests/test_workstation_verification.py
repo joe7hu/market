@@ -53,7 +53,7 @@ def test_transport_errors_do_not_echo_sensitive_exception_text(monkeypatch):
         raise URLError("postgres://private-secret@localhost/customer-account")
     monkeypatch.setattr(check, "read_json", fail)
     result = check.verify("http://127.0.0.1:8010")
-    assert result["status"] == "failed" and len(seen) == 6
+    assert result["status"] == "failed" and len(seen) == len(check.ENDPOINTS)
     assert all(path.startswith("/api/") for path in seen)
     assert "private-secret" not in json.dumps(result)
 
@@ -126,3 +126,29 @@ def test_workstation_cli_defaults_to_current_schema(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["verify_workstation.py"])
     assert check.main() == 0
     assert seen["expected_schema"] == HEAD_REVISION
+
+
+def test_today_names_the_blocker_without_reporting_private_action_text():
+    payload = {"status": {"ready": True}, "actions": [{"primary_blocker": "trade_plan_missing", "next_action": "Review the evidence below: private-symbol"}]}
+    result = check.assess("today", payload)
+    assert result["status"] == "needs_attention"
+    assert "private-symbol" not in json.dumps(result)
+    payload["actions"][0]["next_action"] = "Refresh portfolio inputs before sizing."
+    assert check.assess("today", payload)["status"] == "pass"
+
+
+def test_expired_opportunity_must_have_blocked_presentation_and_recovery_action():
+    row = {"presentation_state": "paper_review", "presentation_blocker": "trade_plan_expired", "trade_plan": {"eligibility": "ACTIONABLE"}}
+    payload = {"scope": "opportunities", "status": {"ready": True}, "tables": {"opportunities_ranked": {"rows": [row], "count": 1}}}
+    with pytest.raises(check.ContractError):
+        check.assess("opportunities", payload)
+    row.update(presentation_state="blocked", presentation_next_action="Publish a current plan.")
+    assert check.assess("opportunities", payload)["status"] == "pass"
+
+
+def test_old_but_verified_price_does_not_fail_read_only_clock_check():
+    row = {"mark_status": "verified", "mark_stale": False, "mark_observed_at": "2026-09-18T20:00:00Z", "mark_available_at": "2026-09-18T20:01:00Z"}
+    assert check.assess("paper_trades", {"rows": [row]})["status"] == "pass"
+    row.update(mark_stale=True, remaining_quantity=1, unrealized_pnl=123)
+    with pytest.raises(check.ContractError):
+        check.assess("paper_trades", {"rows": [row]})
