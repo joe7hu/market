@@ -8216,6 +8216,8 @@ export interface components {
             catalyst?: string | null;
             /** Current At */
             current_at?: string | null;
+            /** Current At Is Fallback */
+            current_at_is_fallback?: boolean | null;
             /** Decision Revision */
             decision_revision?: string | null;
             /** Drill Down */

@@ -487,6 +487,7 @@ class TodayCapitalAction(FlexibleResponse):
     lifecycle_state: str
     transition: str | None = None
     current_at: datetime | None = None
+    current_at_is_fallback: bool | None = None
     primary_blocker: str | None = None
     next_action: str
     drill_down: str | None = None

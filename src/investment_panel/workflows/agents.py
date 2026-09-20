@@ -10,6 +10,7 @@ from investment_panel.infrastructure.postgres.agents import AgentRepository
 from investment_panel.infrastructure.postgres.agent_experiments import AgentExperimentRepository
 from investment_panel.infrastructure.postgres.authority import database_url, runtime_for_config
 from investment_panel.infrastructure.postgres.research_summary import research_summary
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE
 
 
 class AgentActions:
@@ -39,7 +40,7 @@ class AgentActions:
         option_agent = _option_agent_settings(self.config)
         if not self.config.agents.option_agent.command:
             raise ValueError("Set the option agent command before running on-demand analysis.")
-        request = self.repository.queue_thesis(normalized, prompt=prompt, trigger="ondemand")
+        request = self.repository.queue_thesis(normalized, prompt=prompt, trigger="ondemand", profile=API_PROFILE)
         job = self.start_job("run_option_agents_ondemand", database_url(self.config))
         return {"ticker": normalized, "request_id": request["request_id"], "job": job}
 

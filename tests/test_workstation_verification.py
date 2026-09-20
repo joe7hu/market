@@ -3,6 +3,7 @@ import json
 import sys
 from urllib.error import URLError
 import pytest
+from investment_panel.domain.panel import PANEL_SCOPE_TABLES
 from scripts import verify_workstation as check
 
 
@@ -53,7 +54,8 @@ def test_transport_errors_do_not_echo_sensitive_exception_text(monkeypatch):
         raise URLError("postgres://private-secret@localhost/customer-account")
     monkeypatch.setattr(check, "read_json", fail)
     result = check.verify("http://127.0.0.1:8010")
-    assert result["status"] == "failed" and len(seen) == len(check.ENDPOINTS)
+    assert result["status"] == "failed"
+    assert len(seen) == len(check.ENDPOINTS) + len(check.TODAY_STABILITY_ENDPOINTS) * check.TODAY_STABILITY_ATTEMPTS
     assert all(path.startswith("/api/") for path in seen)
     assert "private-secret" not in json.dumps(result)
 
@@ -108,9 +110,13 @@ def test_runtime_reports_full_commit_for_exact_deployment_verification(monkeypat
     assert payloads._backend_commit() == expected
     assert commands == [["git", "rev-parse", "HEAD"]]
     result = check.assess("runtime", {"ready": True, "metadata": {
-        "release": {"backend_commit": expected}, "schema_compatible": True,
+        "release": {"backend_commit": expected, "frontend_build": expected[:7], "scheduler_release": expected}, "schema_compatible": True,
         "schema_revision": "20260919_0025"}}, expected_commit=expected, expected_schema="20260919_0025")
     assert result["status"] == "pass"
+    result = check.assess("runtime", {"ready": True, "metadata": {
+        "release": {"backend_commit": expected, "frontend_build": "stale", "scheduler_release": expected}, "schema_compatible": True,
+        "schema_revision": "20260919_0025"}}, expected_commit=expected, expected_schema="20260919_0025")
+    assert result["status"] == "needs_attention"
 
 
 def test_workstation_cli_defaults_to_current_schema(monkeypatch):
@@ -135,6 +141,64 @@ def test_today_names_the_blocker_without_reporting_private_action_text():
     assert "private-symbol" not in json.dumps(result)
     payload["actions"][0]["next_action"] = "Refresh portfolio inputs before sizing."
     assert check.assess("today", payload)["status"] == "pass"
+
+
+def test_release_candidate_repeats_today_and_snapshot_reads(monkeypatch):
+    expected = "a" * 40
+    calls = []
+    runtime = {"ready": True, "metadata": {"release": {"backend_commit": expected, "frontend_build": expected, "scheduler_release": expected}, "schema_compatible": True, "schema_revision": "test"}}
+    payloads = {
+        "/api/status": runtime,
+        "/api/today": {"status": {"ready": True}, "actions": []},
+        "/api/panel-snapshot?scope=today": {"scope": "today", "status": {"ready": True},
+            "tables": {name: {"rows": [], "count": 0} for name in PANEL_SCOPE_TABLES["today"]}},
+    }
+
+    def read(_base, endpoint, _timeout):
+        calls.append(endpoint)
+        return payloads[endpoint]
+
+    monkeypatch.setattr(check, "read_json", read)
+    result = check.verify("http://127.0.0.1:8010", expected_commit=expected, expected_schema="test", release_candidate=True)
+    assert result["status"] == "pass"
+    assert calls == ["/api/status", *(["/api/today", "/api/panel-snapshot?scope=today"] * check.TODAY_STABILITY_ATTEMPTS)]
+    assert [row["attempt"] for row in result["checks"][1:]] == [1, 1, 2, 2, 3, 3]
+
+
+def test_release_candidate_flags_changed_today_content(monkeypatch):
+    expected = "a" * 40
+    attempt = 0
+    runtime = {"ready": True, "metadata": {"release": {"backend_commit": expected, "frontend_build": expected,
+        "scheduler_release": expected}, "schema_compatible": True, "schema_revision": "test"}}
+
+    def read(_base, endpoint, _timeout):
+        nonlocal attempt
+        if endpoint == "/api/status":
+            return runtime
+        if endpoint == "/api/today":
+            attempt += 1
+            return {"status": {"ready": True}, "actions": [{"action_identity": f"action-{attempt}"}]}
+        return {"scope": "today", "status": {"ready": True},
+            "tables": {name: {"rows": [], "count": 0} for name in PANEL_SCOPE_TABLES["today"]}}
+
+    monkeypatch.setattr(check, "read_json", read)
+    result = check.verify("http://127.0.0.1:8010", expected_commit=expected, expected_schema="test", release_candidate=True)
+    assert result["status"] == "needs_attention"
+    assert "Repeated today response changed during the smoke check" in result["checks"][3]["warnings"]
+
+
+def test_today_stability_ignores_only_the_presentation_clock():
+    first = {"actions": [{"action_identity": "one", "action": "NO_TRADE", "current_at": "2026-09-20T13:00:00Z", "current_at_is_fallback": True}]}
+    second = {"actions": [{"action_identity": "one", "action": "NO_TRADE", "current_at": "2026-09-20T13:00:01Z", "current_at_is_fallback": True}]}
+    assert check.stability_digest("today", first) == check.stability_digest("today", second)
+
+    second["actions"][0]["current_at_is_fallback"] = False
+    assert check.stability_digest("today", first) != check.stability_digest("today", second)
+
+
+def test_today_snapshot_requires_its_contract_tables():
+    with pytest.raises(check.ContractError):
+        check.assess("today_snapshot", {"scope": "today", "status": {"ready": True}, "tables": {}})
 
 
 def test_expired_opportunity_must_have_blocked_presentation_and_recovery_action():

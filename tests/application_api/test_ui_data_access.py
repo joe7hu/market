@@ -1524,6 +1524,20 @@ def test_status_payload_exposes_release_and_schema_readiness(monkeypatch: pytest
     assert metadata["required_capability_ready"] is False
 
 
+def test_status_payload_reports_unconfigured_component_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MARKET_FRONTEND_BUILD", raising=False)
+    monkeypatch.delenv("MARKET_SCHEDULER_RELEASE", raising=False)
+    monkeypatch.setattr(payloads_owner, "_backend_commit", lambda: "current-commit")
+
+    metadata = payloads_owner.status_payload(PanelData(status=DataStatus(True, "ok")))["metadata"]
+
+    assert metadata["release"] == {
+        "backend_commit": "current-commit",
+        "frontend_build": "unknown",
+        "scheduler_release": "current-commit",
+    }
+
+
 def test_fastapi_config_reports_runtime_database_override(tmp_path, monkeypatch) -> None:
     runtime_url = "postgresql://localhost/runtime"
     monkeypatch.setenv("MARKET_DATABASE_URL", runtime_url)

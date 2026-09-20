@@ -61,10 +61,12 @@ def status_payload(panel_data: PanelData) -> dict[str, Any]:
     metadata = jsonable(panel_data.metadata)
     actual_schema = metadata.get("schema_revision")
     expected_schema = metadata.get("expected_schema_revision") or actual_schema
+    release_commit = _backend_commit()
     metadata["release"] = {
-        "backend_commit": _backend_commit(),
+        "backend_commit": release_commit,
         "frontend_build": os.environ.get("MARKET_FRONTEND_BUILD", "unknown"),
-        "scheduler_release": os.environ.get("MARKET_SCHEDULER_RELEASE", "unknown"),
+        # The scheduler runs in this backend process; Vite is a separate process.
+        "scheduler_release": os.environ.get("MARKET_SCHEDULER_RELEASE", release_commit),
     }
     metadata["schema_compatible"] = bool(actual_schema and expected_schema and actual_schema == expected_schema)
     metadata["required_capability_ready"] = bool(panel_data.status.ready and metadata["schema_compatible"])

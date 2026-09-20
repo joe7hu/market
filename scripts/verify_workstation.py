@@ -9,27 +9,35 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 from decimal import Decimal
+from hashlib import sha256
 import json
 from math import isfinite
 from pathlib import Path
+import re
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from investment_panel.domain.panel import PANEL_SCOPE_TABLES
 from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
 
+RUNTIME_ENDPOINT = ("runtime", "/api/status")
 ENDPOINTS = (
-    ("runtime", "/api/status"),
+    RUNTIME_ENDPOINT,
     ("workflow", "/api/workstation/status"),
     ("market", "/api/panel-snapshot?scope=market&limit=120"),
     ("paper", "/api/paper/performance?book=paper"),
     ("nav", "/api/paper/account-history?days=7"),
     ("learning", "/api/research/overview"),
-    ("today", "/api/today"),
     ("opportunities", "/api/panel-snapshot?scope=opportunities&limit=20"),
     ("paper_trades", "/api/paper/trades?book=paper&limit=20"),
 )
+TODAY_STABILITY_ENDPOINTS = (
+    ("today", "/api/today"),
+    ("today_snapshot", "/api/panel-snapshot?scope=today"),
+)
+TODAY_STABILITY_ATTEMPTS = 3
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
@@ -55,6 +63,26 @@ def count_value(value: Any, name: str) -> int:
     return value
 
 
+def frontend_build_matches(actual: object, expected: str) -> bool:
+    value = str(actual or "")
+    return value == expected or bool(re.fullmatch(r"[0-9a-f]{4,40}", value, re.I) and expected.startswith(value))
+
+
+def stability_digest(name: str, payload: dict[str, Any]) -> str:
+    if name == "today":
+        actions = payload.get("actions")
+        value = [
+            {key: field for key, field in action.items()
+             if key != "current_at" or action.get("current_at_is_fallback") is not True}
+            for action in actions
+        ] if isinstance(actions, list) else actions
+    elif name == "today_snapshot":
+        value = {"scope": payload.get("scope"), "tables": payload.get("tables")}
+    else:
+        raise ValueError("Unknown stability check")
+    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def read_json(base_url: str, path: str, timeout: float) -> dict[str, Any]:
     request = Request(base_url.rstrip("/") + path, method="GET", headers={"Accept": "application/json"})
     with urlopen(request, timeout=timeout) as response:
@@ -76,15 +104,25 @@ def assess(name: str, payload: dict[str, Any], *, expected_commit: str | None = 
             raise ContractError("Runtime readiness must be explicit")
         metadata = object_value(payload.get("metadata"), "runtime.metadata")
         release = object_value(metadata.get("release"), "runtime.release")
-        evidence.update(backend_commit=release.get("backend_commit"), schema=metadata.get("schema_revision"))
+        evidence.update(
+            backend_commit=release.get("backend_commit"),
+            frontend_build=release.get("frontend_build"),
+            scheduler_release=release.get("scheduler_release"),
+            schema=metadata.get("schema_revision"),
+        )
         if payload["ready"] is not True:
             warnings.append("Runtime reports incomplete source/read readiness")
         if metadata.get("schema_compatible") is not True:
             warnings.append("Database schema compatibility is not established")
         if expected_schema and metadata.get("schema_revision") != expected_schema:
             warnings.append("Deployed schema does not match the requested revision")
-        if expected_commit and release.get("backend_commit") != expected_commit:
-            warnings.append("Deployed backend is not the requested full commit SHA")
+        if expected_commit:
+            if release.get("backend_commit") != expected_commit:
+                warnings.append("Deployed backend_commit is not the requested full commit SHA")
+            if release.get("frontend_build") not in {None, "", "unknown"} and not frontend_build_matches(release.get("frontend_build"), expected_commit):
+                warnings.append("Deployed frontend_build is not the requested commit SHA")
+            if release.get("scheduler_release") != expected_commit:
+                warnings.append("Deployed scheduler_release is not the requested full commit SHA")
     elif name == "workflow":
         if payload.get("paper_only") is not True:
             raise ContractError("Workflow must explicitly declare paper-only scope")
@@ -150,6 +188,18 @@ def assess(name: str, payload: dict[str, Any], *, expected_commit: str | None = 
             if item.get("primary_blocker") and not str(item.get("next_action") or "").strip():
                 raise ContractError("Blocked action has no next step")
         evidence.update(loaded_action_count=len(actions), blocked_action_count=blocked_count)
+    elif name == "today_snapshot":
+        if payload.get("scope") != "today":
+            raise ContractError("Today snapshot has the wrong scope")
+        status = object_value(payload.get("status"), "today_snapshot.status")
+        tables = object_value(payload.get("tables"), "today_snapshot.tables")
+        for table_name in PANEL_SCOPE_TABLES["today"]:
+            table = object_value(tables.get(table_name), f"today_snapshot.{table_name}")
+            rows = list_value(table.get("rows"), f"today_snapshot.{table_name}.rows")
+            if count_value(table.get("count"), f"today_snapshot.{table_name}.count") < len(rows):
+                raise ContractError("Today snapshot table count is smaller than its loaded rows")
+        if status.get("ready") is not True:
+            warnings.append("Today snapshot is not ready")
     elif name == "opportunities":
         if payload.get("scope") != "opportunities":
             raise ContractError("Opportunity response has the wrong scope")
@@ -250,24 +300,46 @@ def assess(name: str, payload: dict[str, Any], *, expected_commit: str | None = 
     return result
 
 
+def _check_endpoint(name: str, endpoint: str, base_url: str, timeout: float, *, expected_commit: str | None,
+                    expected_schema: str | None, attempt: int | None = None) -> tuple[dict[str, Any], str | None]:
+    payload: dict[str, Any] | None = None
+    try:
+        payload = read_json(base_url, endpoint, timeout)
+        check = assess(name, payload, expected_commit=expected_commit, expected_schema=expected_schema)
+    except HTTPError as error:
+        check = {"check": name, "status": "failed", "error": f"HTTP {error.code}; inspect local server logs"}
+    except (URLError, OSError, ValueError, TypeError) as error:
+        # Do not publish response bodies or raw exception strings: they can
+        # contain account data, SQL, URLs or credentials from a local server.
+        check = {"check": name, "status": "failed", "error": type(error).__name__ + "; inspect this endpoint locally"}
+    return ({**check, "endpoint": endpoint, **({"attempt": attempt} if attempt is not None else {})},
+            stability_digest(name, payload) if attempt is not None and payload is not None and check["status"] != "failed" else None)
+
+
 def verify(base_url: str, *, timeout: float = 20, expected_commit: str | None = None,
-           expected_schema: str | None = None) -> dict[str, Any]:
+           expected_schema: str | None = None, release_candidate: bool = False) -> dict[str, Any]:
     parsed = urlsplit(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
         raise ValueError("Use an http(s) server origin without credentials, query or path")
     if not isfinite(timeout) or not 0 < timeout <= 60:
         raise ValueError("Timeout must be between zero and 60 seconds")
+    endpoints = (RUNTIME_ENDPOINT,) if release_candidate else ENDPOINTS
     checks = []
-    for name, endpoint in ENDPOINTS:
-        try:
-            check = assess(name, read_json(base_url, endpoint, timeout), expected_commit=expected_commit, expected_schema=expected_schema)
-        except HTTPError as error:
-            check = {"check": name, "status": "failed", "error": f"HTTP {error.code}; inspect local server logs"}
-        except (URLError, OSError, ValueError, TypeError) as error:
-            # Do not publish response bodies or raw exception strings: they can
-            # contain account data, SQL, URLs or credentials from a local server.
-            check = {"check": name, "status": "failed", "error": type(error).__name__ + "; inspect this endpoint locally"}
-        checks.append({**check, "endpoint": endpoint})
+    for name, endpoint in endpoints:
+        check, _digest = _check_endpoint(name, endpoint, base_url, timeout, expected_commit=expected_commit,
+                                         expected_schema=expected_schema)
+        checks.append(check)
+    previous_digests: dict[str, str] = {}
+    for attempt in range(1, TODAY_STABILITY_ATTEMPTS + 1):
+        for name, endpoint in TODAY_STABILITY_ENDPOINTS:
+            check, digest = _check_endpoint(name, endpoint, base_url, timeout, expected_commit=expected_commit,
+                                            expected_schema=expected_schema, attempt=attempt)
+            if digest and name in previous_digests and digest != previous_digests[name]:
+                check["status"] = "needs_attention"
+                check.setdefault("warnings", []).append(f"Repeated {name} response changed during the smoke check")
+            if digest:
+                previous_digests[name] = digest
+            checks.append(check)
     return {"checked_at": datetime.now(UTC).isoformat(), "read_only": True,
             "status": "failed" if any(row["status"] == "failed" for row in checks) else
                       "needs_attention" if any(row["status"] == "needs_attention" for row in checks) else "pass",
@@ -281,11 +353,13 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=20)
     parser.add_argument("--expected-commit")
     parser.add_argument("--expected-schema", default=HEAD_REVISION)
+    parser.add_argument("--release-candidate", action="store_true", help="Check runtime identity and repeat the Today read paths after restart")
     parser.add_argument("--strict", action="store_true", help="Return nonzero for operational warnings as well as contract/transport failures")
     parser.add_argument("--output", type=Path, help="Optional local JSON report; raw financial response bodies are never written")
     args = parser.parse_args()
     try:
-        report = verify(args.base_url, timeout=args.timeout, expected_commit=args.expected_commit, expected_schema=args.expected_schema)
+        report = verify(args.base_url, timeout=args.timeout, expected_commit=args.expected_commit,
+                        expected_schema=args.expected_schema, release_candidate=args.release_candidate)
     except ValueError as error:
         parser.error(str(error))
     rendered = json.dumps(report, indent=2, allow_nan=False) + "\n"

@@ -10,6 +10,9 @@
 #   make test-workflow - focused production-role and fixture-isolation checks
 #   make test-migrations - raw-database migration/recovery checks
 #   make release-gate - full release gate
+#   make release-smoke - post-restart runtime identity and Today stability gate
+#   make release-fixture-smoke - seeded local API smoke; no production database
+#   make fast-gate - focused iteration gate for release-smoke changes
 #
 # `check` is intentionally green-or-bust and quick so it can run on every commit.
 # The full backend suite uses ephemeral PostgreSQL fixtures. Storage archive
@@ -18,7 +21,7 @@
 PY := uv run --extra test python
 RUFF := uvx ruff
 
-.PHONY: check contracts guards lint frontend typecheck test test-unit test-api test-options test-postgres test-all coverage build test-workflow test-migrations release-gate
+.PHONY: check contracts guards lint frontend typecheck test test-unit test-api test-options test-postgres test-all coverage build test-workflow test-migrations release-gate release-smoke release-fixture-smoke fast-gate
 
 check: contracts guards lint frontend
 	@echo "✓ check passed"
@@ -77,4 +80,18 @@ build:
 
 release-gate: check build
 	@$(PY) -m pytest tests -q --run-slow --cov=src/investment_panel/infrastructure/postgres --cov=src/investment_panel/api --cov-fail-under=80
+	@git diff --check
+
+release-smoke:
+	@market_release=$$(git rev-parse HEAD); frontend_build=$$(curl --fail --silent --show-error --max-time 10 -D - -o /dev/null http://127.0.0.1:5173/health | awk -F ': ' 'tolower($$1) == "x-market-frontend-build" { gsub("\\r", "", $$2); print $$2 }'); if [ -z "$$frontend_build" ]; then echo "Frontend did not report a build" >&2; exit 1; fi; case "$$market_release" in "$$frontend_build"*) ;; *) echo "Frontend does not report the requested build" >&2; exit 1;; esac
+	@$(PY) scripts/verify_workstation.py --release-candidate --strict --expected-commit "$$(git rev-parse HEAD)"
+
+release-fixture-smoke:
+	@$(PY) -m pytest -q tests/application_api/test_release_smoke.py
+
+fast-gate: release-fixture-smoke
+	@$(PY) -m pytest -q tests/test_workstation_verification.py tests/test_premarket_options_intelligence.py
+	@npm --prefix frontend run test:frontend -- src/pages/HealthRoute.availability.test.tsx
+	@npm --prefix frontend run build
+	@$(RUFF) check scripts/verify_workstation.py src/investment_panel/application/read_models/payloads.py src/investment_panel/workflows/agents.py tests/test_workstation_verification.py tests/test_premarket_options_intelligence.py tests/application_api/test_release_smoke.py
 	@git diff --check

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from investment_panel.workflows.agents import AgentActions
 from investment_panel.jobs import premarket_options_intelligence
 from investment_panel.infrastructure.postgres import agents
-from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE, JOB_PROFILE
 
 
 def test_premarket_intelligence_uses_postgresql_today_composition(monkeypatch) -> None:
@@ -29,3 +32,19 @@ def test_scheduled_agent_queue_uses_the_job_database_profile(monkeypatch) -> Non
     assert repository.queue_current_candidates(limit=1) == 1
     assert calls[0][0] == "NVDA"
     assert calls[0][1]["profile"] == JOB_PROFILE
+
+
+def test_on_demand_agent_queue_uses_the_api_database_profile(monkeypatch) -> None:
+    repository = agents.AgentRepository(object())
+    calls = []
+    monkeypatch.setattr(repository, "queue_thesis", lambda ticker, **kwargs: calls.append((ticker, kwargs)) or {"request_id": "request"})
+    action = AgentActions.__new__(AgentActions)
+    action.config = SimpleNamespace(
+        agents=SimpleNamespace(option_agent=SimpleNamespace(command="agent")),
+        database=SimpleNamespace(url="postgresql:///test"),
+    )
+    action.repository = repository
+    action.start_job = lambda *_args: {"status": "queued"}
+
+    assert action.queue_analysis("nvda")["ticker"] == "NVDA"
+    assert calls == [("NVDA", {"prompt": "", "trigger": "ondemand", "profile": API_PROFILE})]

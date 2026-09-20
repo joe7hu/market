@@ -18171,6 +18171,17 @@
             ],
             "title": "Current At"
           },
+          "current_at_is_fallback": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current At Is Fallback"
+          },
           "decision_revision": {
             "anyOf": [
               {

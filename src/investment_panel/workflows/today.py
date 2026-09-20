@@ -107,6 +107,7 @@ def today(
             # for compatibility. The queue must expose its fail-closed state.
             capital["action"] = "NO_TRADE"
         authority = identity or "missing"
+        current_at = _queue_datetime(row.get("published_at") or row.get("available_at") or row.get("as_of"))
         capital_actions.append({
             **capital,
             "projection_identity": f"capital:ticker-decision:{authority}",
@@ -116,7 +117,8 @@ def today(
             "title": f"{symbol} capital action" if symbol else "Ticker decision needs identity",
             "lifecycle_state": "unavailable" if identity_missing else "blocked" if blocked else "actionable",
             "transition": None,
-            "current_at": _queue_datetime(row.get("published_at") or row.get("available_at") or row.get("as_of")),
+            "current_at": current_at,
+            "current_at_is_fallback": False,
             "primary_blocker": "ticker_decision_identity_missing" if identity_missing else (rank_reason or "trade_plan_blocked") if blocked else None,
             "next_action": _today_next_action(plan) if plan is not None else next_action_for(rank_reason),
             "drill_down": f"/tickers/{quote(symbol)}" if symbol else None,
@@ -528,6 +530,7 @@ def decision_inbox_queue(rows: list[dict[str, Any]], *, now: datetime | None = N
             "lifecycle_state": lifecycle,
             "transition": event_type.upper(),
             "current_at": created_at or reference,
+            "current_at_is_fallback": created_at is None,
             "expires_at": expiry,
             "primary_blocker": blocker,
             "next_action": _queue_text(
@@ -561,6 +564,7 @@ def _portfolio_risk_queue(rows: list[dict[str, Any]], *, now: datetime | None = 
             blocker = "portfolio_risk_identity_missing"
         elif severity == "critical" and not blocker:
             blocker = _queue_text(row.get("risk_type"), "portfolio_risk_exception")
+        current_at = _queue_datetime(row.get("updated_at") or row.get("available_at"))
         output.append({
             "projection_identity": f"portfolio:{authority}",
             "source_authority": authority,
@@ -568,7 +572,8 @@ def _portfolio_risk_queue(rows: list[dict[str, Any]], *, now: datetime | None = 
             "title": title,
             "lifecycle_state": "unavailable" if identity_missing else "blocked" if severity == "critical" else "current",
             "transition": None,
-            "current_at": _queue_datetime(row.get("updated_at") or row.get("available_at")) or reference,
+            "current_at": current_at or reference,
+            "current_at_is_fallback": current_at is None,
             "expires_at": _queue_datetime(_queue_value(row, {}, "expires_at", "expiry")),
             "primary_blocker": blocker,
             "next_action": _queue_text(row.get("next_step") or row.get("next_action"), "Review the portfolio risk exception."),
@@ -616,6 +621,7 @@ def research_queue(rows: list[dict[str, Any]], *, now: datetime | None = None) -
             "lifecycle_state": "unavailable" if identity_missing or expiry_invalid else "expired" if expired else "current",
             "transition": None,
             "current_at": current_at or reference,
+            "current_at_is_fallback": current_at is None,
             "expires_at": expiry,
             "primary_blocker": blocker,
             "next_action": _queue_text(row.get("next_action") or row.get("next_step"), "Review the source evidence."),
