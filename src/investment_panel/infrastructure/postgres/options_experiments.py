@@ -23,6 +23,43 @@ EXPERIMENT_KIND = "options-paper-experiment"
 SHADOW_SOURCE = "options_paper_experiment"
 
 
+def retire_options_candidates(
+    connection: Any, *, parent_ids: list[int], retained_id: int | None = None,
+) -> list[int]:
+    """Supersede candidate siblings once their parent loses authority."""
+    if not parent_ids:
+        return []
+    rows = connection.execute(
+        """SELECT id FROM analysis.strategy_revision
+           WHERE authority_group = 'options-radar-core' AND supersedes_id = ANY(%s)
+             AND status = ANY(%s) FOR UPDATE""",
+        [parent_ids, ["candidate", "testing", "approved"]],
+    ).fetchall()
+    candidate_ids = [int(row["id"]) for row in rows if int(row["id"]) != retained_id]
+    if not candidate_ids:
+        return []
+    connection.execute(
+        "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = ANY(%s)",
+        [candidate_ids],
+    )
+    scopes = [f"options-paper-experiment:{candidate_id}" for candidate_id in candidate_ids]
+    connection.execute(
+        "UPDATE app.publication SET status = 'superseded', superseded_at = COALESCE(superseded_at, now()) "
+        "WHERE scope = ANY(%s) AND status = 'published'",
+        [scopes],
+    )
+    connection.execute("DELETE FROM app.current_publication_item WHERE scope = ANY(%s)", [scopes])
+    connection.execute(
+        """UPDATE analysis.shadow_trade shadow
+           SET status = 'unfilled', pending_entry_reason = 'candidate_authority_changed'
+           FROM analysis.decision decision
+           WHERE shadow.decision_id = decision.id AND shadow.status = 'pending'
+             AND shadow.source_kind = %s AND decision.strategy_revision_id = ANY(%s)""",
+        [SHADOW_SOURCE, candidate_ids],
+    )
+    return candidate_ids
+
+
 def experiment_candidate(connection: Any, candidate_id: int, *, as_of: datetime, require_shadow: bool = False, for_entry: bool = True) -> dict[str, Any]:
     row = connection.execute(
         """SELECT candidate.id, candidate.parameters, candidate.created_at, candidate.supersedes_id,

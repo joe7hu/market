@@ -87,6 +87,12 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                 "VALUES ('options-radar-core__agent_auto', 1, 'auto', 'candidate', %s, %s, 'options-radar-core') RETURNING id",
                 [Jsonb({"contract_version": 2, "gates": {"max_spread_pct": .10 if proposal_case == "mismatched_parameters" else .20}}), base_id],
             ).fetchone()["id"]
+            sibling_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
+                "VALUES ('options-radar-core__agent_auto_sibling', 1, 'sibling', 'candidate', %s, %s, 'options-radar-core') RETURNING id",
+                [Jsonb({"contract_version": 2, "gates": {"max_spread_pct": .18}}), base_id],
+            ).fetchone()["id"]
             task_id = connection.execute(
                 "INSERT INTO analysis.agent_task (task_kind, status, request, result, validation) "
                 "VALUES ('strategy_mutation_proposal', 'completed', %s, %s, %s) RETURNING id",
@@ -190,18 +196,18 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
         assert governance.automatic_promote_eligible() == int(eligible)
         with runtime.read() as connection:
             statuses = connection.execute(
-                "SELECT id, status FROM analysis.strategy_revision WHERE id IN (%s, %s) ORDER BY id",
-                [base_id, candidate_id],
+                "SELECT id, status FROM analysis.strategy_revision WHERE id IN (%s, %s, %s) ORDER BY id",
+                [base_id, candidate_id, sibling_id],
             ).fetchall()
             validation = connection.execute(
                 "SELECT validation FROM analysis.agent_task WHERE id = %s", [task_id]
             ).fetchone()["validation"]
         if eligible:
-            assert [row["status"] for row in statuses] == ["superseded", "active"]
+            assert [row["status"] for row in statuses] == ["superseded", "active", "superseded"]
             assert validation["authority"] == "automatic_deterministic_governance"
             assert governance.automatic_promote_eligible() == 0
         else:
-            assert [row["status"] for row in statuses] == ["superseded" if proposal_case == "stale_parent" else "active", "candidate"]
+            assert [row["status"] for row in statuses] == ["superseded" if proposal_case == "stale_parent" else "active", "candidate", "candidate"]
             assert validation["status"] == "ready"
     finally:
         runtime.close()
@@ -1584,6 +1590,18 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                 "'options-radar-core') RETURNING id",
                 [Jsonb({"max_spread_pct": 0.2}), base_id],
             ).fetchone()["id"]
+            sibling_proposal = connection.execute(
+                "INSERT INTO analysis.agent_task (task_kind, status, request, result) "
+                "VALUES ('strategy_mutation_proposal', 'completed', %s, %s) RETURNING id",
+                [Jsonb({"source": "sibling"}), Jsonb({"status": "approved", "proposed_strategy_version": "sibling-v2"})],
+            ).fetchone()["id"]
+            sibling_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
+                "VALUES ('sibling-v2', 1, 'sibling', 'candidate', %s, %s, "
+                "'options-radar-core') RETURNING id",
+                [Jsonb({}), base_id],
+            ).fetchone()["id"]
             evidence_run_id = connection.execute(
                 "INSERT INTO analysis.run "
                 "(run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status, strategy_revision_id) "
@@ -1657,6 +1675,46 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                 "VALUES ('options-radar', %s, 'published', now()) RETURNING id",
                 [analysis_run_id],
             ).fetchone()["id"]
+            sibling_run_id = connection.execute(
+                """INSERT INTO analysis.run
+                   (run_type, input_cutoff, code_version, feature_versions, strategy_revision_id,
+                    input_hash, started_at, finished_at, status)
+                   VALUES ('options-paper-experiment', now(), 'sibling-test', '{}', %s, %s,
+                           now(), now(), 'succeeded') RETURNING id""",
+                [sibling_id, uuid4().hex * 2],
+            ).fetchone()["id"]
+            sibling_publication_id = connection.execute(
+                """INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+                   VALUES (concat('options-paper-experiment:', %s), %s, 'published', now()) RETURNING id""",
+                [sibling_id, sibling_run_id],
+            ).fetchone()["id"]
+            sibling_content_hash = uuid4().hex * 2
+            connection.execute(
+                "INSERT INTO app.publication_payload (content_hash, payload) VALUES (%s, '{}')",
+                [sibling_content_hash],
+            )
+            connection.execute(
+                """INSERT INTO app.current_publication_item
+                   (scope, publication_id, model_name, stable_key, rank, content_hash)
+                   VALUES (concat('options-paper-experiment:', %s), %s,
+                           'option_paper_experiment', 'sibling', 1, %s)""",
+                [sibling_id, sibling_publication_id, sibling_content_hash],
+            )
+            sibling_decision_id = connection.execute(
+                """INSERT INTO analysis.decision
+                   (run_id, decision_key, kind, instrument_id, as_of, state, input_hash,
+                    strategy_revision_id, sample_eligible)
+                   VALUES (%s, 'sibling-shadow', 'option', %s, now(), 'READY', %s, %s, true)
+                   RETURNING id""",
+                [sibling_run_id, instrument_id, uuid4().hex * 2, sibling_id],
+            ).fetchone()["id"]
+            sibling_shadow_id = connection.execute(
+                """INSERT INTO analysis.shadow_trade
+                   (decision_id, status, source_kind, pending_entry_reason, metrics)
+                   VALUES (%s, 'pending', 'options_paper_experiment', 'later_quote_required', '{}')
+                   RETURNING id""",
+                [sibling_decision_id],
+            ).fetchone()["id"]
         assert actions.acknowledge_alert(str(alert_id)) is True
         assert actions.acknowledge_alert(str(alert_id)) is False
         assert actions.promote_strategy_proposal(str(proposal_id), approved_by="joe") == "new-v2"
@@ -1671,29 +1729,26 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
             publication_status = connection.execute(
                 "SELECT status FROM app.publication WHERE id = %s", [publication_id]
             ).fetchone()["status"]
+            sibling_status = connection.execute(
+                "SELECT status FROM analysis.strategy_revision WHERE id = %s", [sibling_id]
+            ).fetchone()["status"]
+            sibling_publication_status = connection.execute(
+                "SELECT status FROM app.publication WHERE id = %s", [sibling_publication_id]
+            ).fetchone()["status"]
+            sibling_current_items = connection.execute(
+                "SELECT count(*) FROM app.current_publication_item WHERE scope = concat('options-paper-experiment:', %s)",
+                [sibling_id],
+            ).fetchone()["count"]
+            sibling_shadow = connection.execute(
+                "SELECT status, pending_entry_reason FROM analysis.shadow_trade WHERE id = %s", [sibling_shadow_id]
+            ).fetchone()
         assert promotion["validation"] == {"status": "promoted", "approved_by": "joe"}
         assert publication_status == "superseded"
-        with runtime.transaction() as connection:
-            sibling_proposal = connection.execute(
-                "INSERT INTO analysis.agent_task (task_kind, status, request, result) "
-                "VALUES ('strategy_mutation_proposal', 'completed', %s, %s) RETURNING id",
-                [Jsonb({"source": "sibling"}), Jsonb({"status": "approved", "proposed_strategy_version": "sibling-v2"})],
-            ).fetchone()["id"]
-            sibling_id = connection.execute(
-                "INSERT INTO analysis.strategy_revision "
-                "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
-                "VALUES ('sibling-v2', 1, 'sibling', 'candidate', %s, %s, "
-                "'options-radar-core') RETURNING id",
-                [Jsonb({}), base_id],
-            ).fetchone()["id"]
-            for evaluation_type in ("backtest", "forward_shadow_test"):
-                connection.execute(
-                    "INSERT INTO analysis.strategy_evaluation "
-                    "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics) "
-                    "VALUES (%s, %s, now(), 'pass', %s)",
-                    [sibling_id, evaluation_type, Jsonb({"sample_size": 100})],
-                )
-        with pytest.raises(ValueError, match="base is no longer active"):
+        assert sibling_status == "superseded"
+        assert sibling_publication_status == "superseded"
+        assert sibling_current_items == 0
+        assert sibling_shadow == {"status": "unfilled", "pending_entry_reason": "candidate_authority_changed"}
+        with pytest.raises(ValueError, match="persisted candidate revision"):
             actions.promote_strategy_proposal(str(sibling_proposal), approved_by="joe")
     finally:
         runtime.close()

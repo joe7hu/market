@@ -25,6 +25,7 @@ from investment_panel.infrastructure.postgres.options_paper_ledger import (
     active_paper_exposure,
     shared_sleeve_blockers,
 )
+from investment_panel.infrastructure.postgres.options_experiments import retire_options_candidates
 from investment_panel.infrastructure.postgres.source_health import source_health_blockers
 
 
@@ -660,6 +661,7 @@ class ActionRepository:
                     "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = ANY(%s)",
                     [active_ids],
                 )
+                retire_options_candidates(connection, parent_ids=active_ids, retained_id=int(candidate["id"]))
             connection.execute(
                 "UPDATE analysis.strategy_revision SET status = 'active', promoted_at = now() WHERE id = %s",
                 [candidate["id"]],

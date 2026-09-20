@@ -13,6 +13,7 @@ from investment_panel.infrastructure.postgres.options_expressions import (
     insert_call_debit_spreads,
     insert_put_debit_spreads,
 )
+from investment_panel.infrastructure.postgres.options_experiments import retire_options_candidates
 from investment_panel.infrastructure.postgres.options_calibration import calibration_profiles
 from investment_panel.core.option_trade_ticket import calibrated_cohort_ready
 from investment_panel.infrastructure.postgres.options_discovery import materialize_discovery_foundation
@@ -446,21 +447,10 @@ def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
                 [STRATEGY_KEY],
             )
             legacy_ids = [int(row["id"]) for row in current]
-            children = connection.execute(
-                """SELECT id FROM analysis.strategy_revision
-                   WHERE supersedes_id = ANY(%s) AND status = ANY(%s) FOR UPDATE""",
-                [legacy_ids, ["candidate", "testing", "approved"]],
-            ).fetchall()
-            child_ids = [int(row["id"]) for row in children]
-            if child_ids:
-                connection.execute(
-                    "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = ANY(%s)",
-                    [child_ids],
-                )
+            retire_options_candidates(connection, parent_ids=legacy_ids)
             scopes = [
                 "options-radar",
                 *(f"options-paper-incumbent:{revision_id}" for revision_id in legacy_ids),
-                *(f"options-paper-experiment:{revision_id}" for revision_id in child_ids),
             ]
             connection.execute(
                 "UPDATE app.publication SET status = 'superseded', superseded_at = COALESCE(superseded_at, now()) "
@@ -478,7 +468,7 @@ def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
                    WHERE shadow.decision_id = decision.id AND shadow.status = 'pending'
                      AND shadow.source_kind = 'options_paper_experiment'
                      AND decision.strategy_revision_id = ANY(%s)""",
-                [legacy_ids + child_ids],
+                [legacy_ids],
             )
         if not professional and not external_active:
             existing = connection.execute(

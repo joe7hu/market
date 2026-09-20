@@ -12,6 +12,7 @@ from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JO
 from investment_panel.domain.decision import promotion_readiness
 from investment_panel.infrastructure.postgres.strategy_parameters import merge_strategy_parameters, mutation_capability
 from investment_panel.infrastructure.postgres.options_paper_ledger import PAPER_FILL_MULTIPLIERS_SQL
+from investment_panel.infrastructure.postgres.options_experiments import retire_options_candidates
 
 
 class StrategyGovernanceRepository:
@@ -158,6 +159,9 @@ class StrategyGovernanceRepository:
                 connection.execute(
                     "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s",
                     [proposal["supersedes_id"]],
+                )
+                retire_options_candidates(
+                    connection, parent_ids=[int(proposal["supersedes_id"])], retained_id=int(proposal["candidate_id"]),
                 )
                 connection.execute(
                     "UPDATE analysis.strategy_revision SET status = 'active', promoted_at = now() WHERE id = %s",
