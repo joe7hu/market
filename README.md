@@ -1,7 +1,13 @@
-# Market: Personal Investment Panel
+# Market: Evidence-backed trading workstation
 
-Local research command center for public equities, crypto, Arco/Birdclaw thesis
-flow, thesis tracking, portfolio-aware risk, and evidence-backed decision memory.
+A personal investment research and paper-trading assistant for equities, options,
+and crypto. Connect market conditions and new evidence to explicit trade
+assessments, portfolio risk, prospective experiments, and reconciled outcomes.
+The goal is better risk-adjusted decisions—not more trades or guaranteed profits.
+
+Start with the [product goals](docs/product-goals.md),
+[architecture and owner map](ARCHITECTURE.md), and
+[paper/opportunities audit and verification guide](docs/paper-opportunities-audit-20260920.md).
 
 ## Stack
 
@@ -137,11 +143,12 @@ screenshot/free-form strategy into structured legs.
 
 The web app defaults to `/today`, a dense operational brief that answers what
 changed, what matters, what should be reviewed or ignored, and what is blocked
-by stale or missing evidence. Navigation is organized around Today, Portfolio
-Risk, Watchlist, Options Radar, Thesis Monitor, Filings, Calendar, Health, and Settings.
-Broker, paper-order, and TradingView-style charting surfaces are hidden unless
-their providers are explicitly enabled; Market should not duplicate charting,
-screening, or execution platforms. The valuation endpoint is a low-confidence
+by stale or missing evidence. Primary navigation is Today, Market, Opportunities, Real portfolio,
+Paper trading, and Research. Supporting source health, settings, ticker detail,
+calendar and filing views remain drill-downs. Real portfolio data, funded paper
+orders, and research observations have distinct accounting authorities.
+Paper trading is a first-class workspace; provider, funding, risk, and execution
+gates remain explicit. Market does not submit live brokerage orders. The valuation endpoint is a low-confidence
 proxy only; it drops rows with implausible fundamentals and reports upside in
 percentage points.
 
@@ -201,3 +208,40 @@ them as normal navigation material; inspect the owning interface and run the
 focused check instead.
 
 Database schema changes: [maintenance guide](docs/database-maintenance.md).
+
+## Closed markets, paper trading, and diagnostics
+
+A previous-session price can remain a valid **valuation**, with its original
+observation and availability times visible. This does not authorize a fill.
+News, event and macro-source refreshes keep their own elapsed-time/provider
+cadences; rebuilding a publication does not make old source facts new.
+
+Paper fills require causal, fresh regular-session quotes. A repeated quote
+cannot repeatedly supply the same order's partial fills. Expired trade terms
+are removed from actionable presentation while their research record is kept.
+An empty or waiting paper book is not itself a fault—and is never permission
+to relax risk or quote requirements.
+
+Run the existing read-only deployment check (no funding, refresh or order writes):
+
+```bash
+uv run python scripts/verify_workstation.py \
+  --base-url http://127.0.0.1:8010 \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --output /tmp/market-verification.json
+```
+
+Experimental WebMCP diagnostics are **off by default**. On a browser/origin that
+supports `document.modelContext`, enable the five read-only inspection tools:
+
+```bash
+VITE_MARKET_WEBMCP=true npm --prefix frontend run dev
+# For the bundled frontend, the flag must be set when building:
+VITE_MARKET_WEBMCP=true npm --prefix frontend run build
+```
+
+This exposes private app evidence to your trusted browser agent, not to a new
+public service. No tool can place orders, fund accounts, run jobs or change
+settings. Unsupported browsers keep the normal app. See the
+[verification guide](docs/paper-opportunities-audit-20260920.md#webmcp) for browser
+requirements, limitations and acceptance checks.

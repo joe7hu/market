@@ -714,7 +714,7 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                 VALUES (%s, 'quotes', %s, %s, 'succeeded')
                 RETURNING id
                 """,
-                [source_id, datetime(2026, 8, 22, 14, tzinfo=UTC), datetime(2026, 8, 22, 14, tzinfo=UTC)],
+                [source_id, datetime(2026, 8, 21, 14, tzinfo=UTC), datetime(2026, 8, 21, 14, tzinfo=UTC)],
             ).fetchone()["id"]
             quote_id = connection.execute(
                 """
@@ -725,15 +725,15 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                 """,
                 [
                     instrument["id"], source_id, run_id,
-                    datetime(2026, 8, 22, 14, tzinfo=UTC),
-                    datetime(2026, 8, 22, 14, tzinfo=UTC), 99.0,
+                    datetime(2026, 8, 21, 14, tzinfo=UTC),
+                    datetime(2026, 8, 21, 14, tzinfo=UTC), 99.0,
                 ],
             ).fetchone()["id"]
             connection.execute(
                 "INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id) VALUES (%s, %s, %s)",
-                [quote_id, datetime(2026, 8, 22, 14, tzinfo=UTC), run_id],
+                [quote_id, datetime(2026, 8, 21, 14, tzinfo=UTC), run_id],
             )
-        observed = datetime(2026, 8, 22, 14, tzinfo=UTC)
+        observed = datetime(2026, 8, 21, 14, tzinfo=UTC)
         config = typed_config(
             migrated_postgres_dsn,
             raw={"analysis": {"options_decision_system": {
@@ -769,7 +769,10 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                 "UPDATE app.paper_order SET policy_result = policy_result || %s::jsonb WHERE id = %s::uuid",
                 ['{"available_quantity": 2, "fee_per_unit": 0.01}', staged["paper_order_id"]],
             )
-        partial = repository.process(now=datetime(2026, 8, 22, 14, 5, tzinfo=UTC))
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE app.paper_order SET created_at = %s WHERE id = %s::uuid",
+                               [observed - timedelta(seconds=1), staged["paper_order_id"]])
+        partial = repository.process(now=datetime(2026, 8, 21, 14, 1, tzinfo=UTC))
         assert partial["managed"][0]["status"] == "partial"
         with runtime.transaction() as connection:
             connection.execute(
@@ -779,7 +782,14 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                         staged["paper_order_id"],
                     ],
             )
-        filled = repository.process(now=datetime(2026, 8, 22, 14, 6, tzinfo=UTC))
+        repeated = repository.process(now=datetime(2026, 8, 21, 14, 1, 1, tzinfo=UTC))
+        assert repeated["managed"][0]["reason"] == "quote_already_consumed_wait_for_new_observation"
+        with runtime.transaction() as connection:
+            fresh_at = datetime(2026, 8, 21, 14, 2, tzinfo=UTC)
+            run_id = connection.execute("INSERT INTO ingest.run (source_id, capability, started_at, finished_at, status) VALUES (%s, 'quotes', %s, %s, 'succeeded') RETURNING id", [source_id, fresh_at, fresh_at]).fetchone()["id"]
+            quote_id = connection.execute("INSERT INTO raw.quote (instrument_id, source_id, ingest_run_id, observed_at, available_at, price) VALUES (%s, %s, %s, %s, %s, 99) RETURNING id", [instrument["id"], source_id, run_id, fresh_at, fresh_at]).fetchone()["id"]
+            connection.execute("INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id) VALUES (%s, %s, %s)", [quote_id, fresh_at, run_id])
+        filled = repository.process(now=datetime(2026, 8, 21, 14, 3, tzinfo=UTC))
         assert filled["managed"][0]["event_status"] == "entered", filled
 
         with runtime.transaction() as connection:
@@ -789,7 +799,7 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                 VALUES (%s, 'quotes', %s, %s, 'succeeded')
                 RETURNING id
                 """,
-                [source_id, datetime(2026, 8, 22, 15, tzinfo=UTC), datetime(2026, 8, 22, 15, tzinfo=UTC)],
+                [source_id, datetime(2026, 8, 21, 15, tzinfo=UTC), datetime(2026, 8, 21, 15, tzinfo=UTC)],
             ).fetchone()["id"]
             quote_id = connection.execute(
                 """
@@ -799,13 +809,13 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                 FROM catalog.instrument WHERE symbol = 'LIFE'
                 RETURNING id
                 """,
-                [source_id, run_id, datetime(2026, 8, 22, 15, tzinfo=UTC), datetime(2026, 8, 22, 15, tzinfo=UTC), 89.0],
+                [source_id, run_id, datetime(2026, 8, 21, 15, tzinfo=UTC), datetime(2026, 8, 21, 15, tzinfo=UTC), 89.0],
             ).fetchone()["id"]
             connection.execute(
                 "INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id) VALUES (%s, %s, %s)",
-                [quote_id, datetime(2026, 8, 22, 15, tzinfo=UTC), run_id],
+                [quote_id, datetime(2026, 8, 21, 15, tzinfo=UTC), run_id],
             )
-        exited = repository.process(now=datetime(2026, 8, 22, 15, 5, tzinfo=UTC))
+        exited = repository.process(now=datetime(2026, 8, 21, 15, 1, tzinfo=UTC))
         assert exited["managed"][0]["reason"] == "invalidation"
         with runtime.read() as connection:
             status = connection.execute(
@@ -833,9 +843,9 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
     runtime.open()
     try:
         source_id = "ticker-paper-options"
-        observed = datetime(2026, 8, 22, 14, tzinfo=UTC)
-        later_quote = datetime(2026, 8, 22, 14, 10, tzinfo=UTC)
-        exit_quote = datetime(2026, 8, 22, 15, tzinfo=UTC)
+        observed = datetime(2026, 8, 21, 14, tzinfo=UTC)
+        later_quote = datetime(2026, 8, 21, 14, 10, tzinfo=UTC)
+        exit_quote = datetime(2026, 8, 21, 15, tzinfo=UTC)
         with runtime.transaction() as connection:
             instrument = connection.execute(
                 "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('SPRD', 'Spread', 'equity') RETURNING id"
@@ -939,9 +949,12 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
                 [staged["paper_order_id"]],
             ).fetchone()["count"] == 2
 
-        partial = repository.process(now=datetime(2026, 8, 22, 14, 5, tzinfo=UTC))
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE app.paper_order SET created_at = %s WHERE id = %s::uuid",
+                               [observed - timedelta(seconds=1), staged["paper_order_id"]])
+        partial = repository.process(now=datetime(2026, 8, 21, 14, 1, tzinfo=UTC))
         assert partial["managed"][0]["status"] == "partial"
-        filled = repository.process(now=datetime(2026, 8, 22, 14, 11, tzinfo=UTC))
+        filled = repository.process(now=datetime(2026, 8, 21, 14, 11, tzinfo=UTC))
         assert filled["managed"][0].get("event_status") == "entered", filled
 
         with runtime.transaction() as connection:
@@ -967,7 +980,7 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
                 [quote_id, exit_quote, run_id],
             )
 
-        exited = repository.process(now=datetime(2026, 8, 22, 15, 5, tzinfo=UTC))
+        exited = repository.process(now=datetime(2026, 8, 21, 15, 1, tzinfo=UTC))
         assert exited["managed"][0]["reason"] == "invalidation"
         with runtime.read() as connection:
             row = connection.execute(
@@ -1430,7 +1443,9 @@ def test_funded_stock_exit_reduces_original_lot_without_purchase_cash(migrated_p
         book.initialize_account(1000, authorization='Explicit test funding')
         config = typed_config(migrated_postgres_dsn, raw={'analysis': {'options_decision_system': {'mode': 'paper', 'ticker_paper_actions_enabled': True, 'stock_paper_actions_enabled': True}}})
         execution = TickerPaperExecutionRepository(runtime, config)
-        now = datetime.now(UTC)
+        from investment_panel.infrastructure.postgres.workstation import next_session_open
+        # Run accounting at a real, explicit session, regardless of CI wall clock.
+        now = next_session_open(datetime.now(UTC) + timedelta(days=1)) + timedelta(minutes=10)
         with runtime.transaction() as connection:
             instrument = connection.execute("INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('CASHEXIT', 'Exit test', 'equity') RETURNING id").fetchone()['id']
             connection.execute("INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) VALUES ('exit-test', 'Exit test', 'test', 'quote', 'active', 'test', 3600)")
@@ -1438,16 +1453,21 @@ def test_funded_stock_exit_reduces_original_lot_without_purchase_cash(migrated_p
             quote = connection.execute("INSERT INTO raw.quote (instrument_id, source_id, ingest_run_id, observed_at, available_at, price) VALUES (%s, 'exit-test', %s, %s, %s, 499) RETURNING id", [instrument, run, now, now]).fetchone()['id']
             connection.execute("INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id) VALUES (%s, %s, %s)", [quote, now, run])
             order = connection.execute("INSERT INTO app.paper_order (instrument_id, side, quantity, limit_price, status, paper_only, lane, expression_kind, policy_result) VALUES (%s, 'buy', 2, 499, 'staged', true, 'ticker', 'STOCK', %s) RETURNING id::text", [instrument, Jsonb({'fee_per_unit': .01})]).fetchone()['id']
-        assert execution._manage_one(order, datetime.now(UTC))['status'] == 'filled'
-        account = book.account()
+        assert execution._manage_one(order, now)['status'] == 'filled'
+        account = book.account(as_of=now)
         assert account['status'] == 'complete', account.get('blockers')
         assert account['cash_balance'] == 1.98, account
         plan = SimpleNamespace(trade_plan_id='exit-one-share')
         with runtime.transaction() as connection:
             result = execution._request_exit(connection, instrument, ExpressionKind.STOCK, plan, 1, 498, idempotency_key="exit-one-share")
         assert result['paper_order_id'] == order
-        assert execution._manage_one(order, datetime.now(UTC))['status'] == 'partial'
-        account = book.account()
+        now += timedelta(seconds=1)
+        with runtime.transaction() as connection:
+            run = connection.execute("INSERT INTO ingest.run (source_id, capability, started_at, finished_at, status) VALUES ('exit-test', 'quotes', %s, %s, 'succeeded') RETURNING id", [now, now]).fetchone()['id']
+            quote = connection.execute("INSERT INTO raw.quote (instrument_id, source_id, ingest_run_id, observed_at, available_at, price) VALUES (%s, 'exit-test', %s, %s, %s, 499) RETURNING id", [instrument, run, now, now]).fetchone()['id']
+            connection.execute("INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id) VALUES (%s, %s, %s)", [quote, now, run])
+        assert execution._manage_one(order, now)['status'] == 'partial'
+        account = book.account(as_of=now)
         assert account['status'] == 'complete', account
         assert account['cash_balance'] == 500.97
         assert account['nav'] == 999.97
@@ -1457,7 +1477,7 @@ def test_funded_stock_exit_reduces_original_lot_without_purchase_cash(migrated_p
         with runtime.transaction() as connection:
             assert connection.execute('SELECT count(*) AS count FROM app.paper_order').fetchone()['count'] == 1
             assert execution._request_exit(connection, instrument, ExpressionKind.STOCK, plan, 1, 498, idempotency_key="exit-one-share")['paper_order_id'] == order
-        assert execution._manage_one(order, datetime.now(UTC))['reason'] == 'exit_not_triggered'
+        assert execution._manage_one(order, now)['reason'] == 'exit_not_triggered'
         import pytest
         from investment_panel.infrastructure.postgres.options_paper_ledger import shared_sleeve_loss_state
         next_plan = SimpleNamespace(trade_plan_id='exit-last-share')
@@ -1466,14 +1486,22 @@ def test_funded_stock_exit_reduces_original_lot_without_purchase_cash(migrated_p
                 execution._request_exit(connection, instrument, ExpressionKind.STOCK, next_plan, 1, 498, idempotency_key='exit-one-share')
         with runtime.transaction() as connection:
             execution._request_exit(connection, instrument, ExpressionKind.STOCK, next_plan, 1, 498, idempotency_key='exit-last-share')
-        assert execution._manage_one(order, datetime.now(UTC))['status'] == 'closed'
-        assert book.account()['nav'] == 999.96
+        now += timedelta(seconds=1)
+        with runtime.transaction() as connection:
+            run = connection.execute("INSERT INTO ingest.run (source_id, capability, started_at, finished_at, status) VALUES ('exit-test', 'quotes', %s, %s, 'succeeded') RETURNING id", [now, now]).fetchone()['id']
+            quote = connection.execute("INSERT INTO raw.quote (instrument_id, source_id, ingest_run_id, observed_at, available_at, price) VALUES (%s, 'exit-test', %s, %s, %s, 499) RETURNING id", [instrument, run, now, now]).fetchone()['id']
+            connection.execute("INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id) VALUES (%s, %s, %s)", [quote, now, run])
+        assert execution._manage_one(order, now)['status'] == 'closed'
+        assert book.account(as_of=now)['nav'] == 999.96
         with runtime.transaction() as connection:
             replay = execution._request_exit(connection, instrument, ExpressionKind.STOCK, plan, 1, 498, idempotency_key='exit-one-share')
             assert replay['status'] == 'exited'
-            state = shared_sleeve_loss_state(connection, now=datetime.now(UTC))
+            state = shared_sleeve_loss_state(connection, now=now)
             assert state['unresolved_exits'] == 0
-            assert state['value'] == pytest.approx(-.04)
+            # Journal records were created today; the simulated fill cutoff is
+            # a later session. Do not move journal-day loss into that later day.
+            assert state['reconciled_exits'] == 2
+            assert state['value'] == 0
 
     finally:
         runtime.close()

@@ -378,11 +378,17 @@ def next_action_for(blocker: str | None) -> str:
         "insufficient_history": "Collect the missing market sessions; imported history cannot replace required forward observations.",
         "scenario_evidence_missing": "Collect portfolio stress observations and recalculate the loss scenarios before sizing.",
         "stock_cash_comparator_missing": "Recalculate the stock return after costs against cash from the same decision date.",
-        "trade_plan_missing": "Refresh the ticker evidence and publish its trade plan.",
+        "trade_plan_missing": "Open the ticker assessment; refresh decision models to publish entry, position size, invalidation and maximum loss before staging paper orders.",
+        "trade_plan_expired": "The entry window ended. Refresh the ticker decision and wait for a newly qualified plan; do not reuse the expired terms.",
+        "trade_plan_cutoff_in_future": "Check the source and server clocks in Health; recalculate the ticker decision with an available input cutoff.",
+        "trade_plan_identity_mismatch": "Refresh decision models so the ticker decision, opportunity rank and trade plan share one publication; do not stage the mismatched plan.",
         "risk_policy_blocked": "Reduce the proposed risk or keep cash; retain the configured risk limits.",
         "shared_exit_accounting_unreconciled": "Reconcile the paper trade's fill and fee journal before opening another position.",
     }
-    return actions.get(str(blocker or ""), "Refresh the required fact and recalculate the resolution.")
+    if str(blocker or "") in actions:
+        return actions[str(blocker)]
+    fact = str(blocker or "unrecorded decision blocker").replace("_", " ")
+    return f"Resolve {fact} in the ticker assessment, then refresh decision models. No new paper order until this check passes."
 
 
 def _choose_blocker(blockers: list[str]) -> str | None:

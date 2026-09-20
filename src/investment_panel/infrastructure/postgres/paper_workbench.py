@@ -10,7 +10,7 @@ import json
 from math import isfinite
 from typing import Any
 
-from investment_panel.domain.decision import market_session_bounds
+from investment_panel.domain.decision import is_market_open, market_session_bounds, valuation_mark_is_stale
 from investment_panel.infrastructure.postgres.runtime import (
     DatabaseRuntime,
     JOB_PROFILE,
@@ -18,10 +18,9 @@ from investment_panel.infrastructure.postgres.runtime import (
 )
 
 
-CALCULATION_VERSION = "paper-workbench.v2"
+CALCULATION_VERSION = "paper-workbench.v3"
 MAX_PERFORMANCE_ROWS = 10_000
 MAX_PERFORMANCE_EVENT_ORDERS = 4_000
-MARK_STALE_AFTER = timedelta(days=3)
 
 
 class PaperWorkbenchRepository:
@@ -2142,7 +2141,7 @@ def _paper_mark_payload(
             if isinstance(mark_row, dict) and mark_row.get("contract_id") is not None
         }
         missing_contract_ids = [
-            int(leg["contract_id"])
+            leg.get("contract_id")
             for leg in legs
             if leg.get("contract_id") is None
             or int(leg["contract_id"]) not in mark_rows
@@ -2251,7 +2250,10 @@ def _paper_mark_payload(
         package_price = abs(package_mark) / package_multiplier
         observed_at = min(observed_values) if observed_values else None
         available_at = max(available_values) if available_values else None
-        stale = observed_at is None or as_of - observed_at > MARK_STALE_AFTER
+        stale = any(valuation_mark_is_stale(
+            _as_datetime(mark_rows[int(leg["contract_id"])].get("observed_at")),
+            _as_datetime(mark_rows[int(leg["contract_id"])].get("available_at")), as_of,
+        ) for leg in legs)
         source_values = list(dict.fromkeys(sources))
         source = (
             source_values[0] if len(source_values) == 1 else "multiple_verified_sources"
@@ -2280,6 +2282,8 @@ def _paper_mark_payload(
                 "source": source,
                 "stale": stale,
                 "as_of": as_of,
+                "valuation_only": True,
+                "session_state": "regular" if is_market_open(as_of) else "last_completed_session",
                 "signed_value_per_package": _number(package_mark),
                 "signed_price_per_package": _number(package_mark / package_multiplier),
                 "evidence": {"legs": leg_evidence},
@@ -2356,7 +2360,8 @@ def _paper_mark_payload(
 
     as_of = _as_datetime(row.get("mark_as_of")) or datetime.now(UTC)
     observed = _as_datetime(observed_at)
-    stale = observed is None or as_of - observed > MARK_STALE_AFTER
+    stale = valuation_mark_is_stale(observed, _as_datetime(available_at), as_of,
+                                    continuous=str(row.get("asset_class") or "").lower() == "crypto")
     base = {
         "mark_price": _number(mark_price),
         "mark_value": None,
@@ -2380,6 +2385,8 @@ def _paper_mark_payload(
             "source": source,
             "stale": stale,
             "as_of": as_of,
+            "valuation_only": True,
+            "session_state": "continuous" if str(row.get("asset_class") or "").lower() == "crypto" else "regular" if is_market_open(as_of) else "last_completed_session",
             "evidence": evidence,
         },
         "unrealized_pnl": None,

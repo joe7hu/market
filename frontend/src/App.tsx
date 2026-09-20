@@ -1,4 +1,5 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
+import { startMarketDiagnostics, type DiagnosticDocument } from "@/diagnostics/webmcp";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/market/workstation";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
@@ -25,6 +26,10 @@ import { TodayRoute } from "./pages/TodayRoute";
 const OptionsChainRoute = lazy(async () => ({ default: (await import("./pages/OptionsChainRoute")).OptionsChainRoute }));
 
 export function App() {
+  useEffect(() => startMarketDiagnostics((document as DiagnosticDocument).modelContext, {
+    enabled: import.meta.env.VITE_MARKET_WEBMCP === "true",
+    onError: () => console.warn("Market read-only WebMCP diagnostics could not register; normal app operation is unchanged."),
+  }), []);
   return (
     <MarketDataProvider>
       <Routes>

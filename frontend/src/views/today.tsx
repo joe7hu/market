@@ -172,7 +172,7 @@ export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: Today
         </div>
         {ticker ? <p className="text-sm font-medium">{item.title.replace(/capital action$/i, "trade assessment")}</p> : null}
         {recordDate && Number.isFinite(recordDate.getTime()) ? <p className="text-xs text-muted-foreground">Record dated <time dateTime={recordDate.toISOString()}>{recordDate.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</time></p> : null}
-        {plan !== undefined ? <CompactPlanSummary plan={plan} fieldStates={item.field_states ?? []} /> : (
+        {plan !== undefined ? <CompactPlanSummary plan={plan} fieldStates={item.field_states ?? []} blocker={item.primary_blocker} nextAction={item.next_action} /> : (
           <>
             {item.rationale ? <p className="line-clamp-3 text-sm text-muted-foreground">{decisionReason(item.rationale)}</p> : null}
             {item.primary_blocker ? <p className="text-xs text-muted-foreground"><span className="font-semibold">Blocker:</span> {decisionReason(item.primary_blocker)}</p> : null}
@@ -183,7 +183,7 @@ export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: Today
         {item.inbox_item_id ? <InboxStateControls itemId={item.inbox_item_id} busy={busy} onState={updateState} /> : null}
         {item.inbox_item_id ? <InboxUsefulnessControls itemId={item.inbox_item_id} useful={item.useful} /> : null}
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
-        {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>Review evidence</a> : null}
+        {item.drill_down ? <a aria-label={`Open ${item.title} drill-down`} className="inline-flex min-h-9 items-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={item.drill_down}>{ticker ? `Open ${ticker} trade assessment` : item.source === "portfolio_risk" ? "Open portfolio risk" : "Open decision detail"}</a> : null}
       </CardContent>
     </Card>
   );
@@ -191,13 +191,13 @@ export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: Today
 
 type TradePlan = components["schemas"]["TodayTradePlanSummaryResponse"];
 
-function CompactPlanSummary({ plan, fieldStates }: { plan: TradePlan | null; fieldStates: components["schemas"]["DataFieldStateV1"][] }) {
+function CompactPlanSummary({ plan, fieldStates, blocker, nextAction }: { plan: TradePlan | null; fieldStates: components["schemas"]["DataFieldStateV1"][]; blocker?: string | null; nextAction?: string | null }) {
   if (!plan) {
     const state = fieldStates.find((candidate) => candidate.field === "trade_plan") ?? missingFieldState({
       field: "trade_plan", source: "trade_plan", reason: "trade_plan_missing",
       nextAction: "Refresh the ticker decision and publish its canonical TradePlan.",
     });
-    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">No new trade</p><div className="mt-2"><DataFieldStateNotice state={state} /></div></div>;
+    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">No new trade</p><div className="mt-2"><DataFieldStateNotice state={{ ...state, reason: blocker || state.reason, next_action: nextAction || state.next_action }} /></div></div>;
   }
   return (
     <div className="rounded-md border border-border p-3 text-sm">

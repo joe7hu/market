@@ -186,6 +186,8 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
         "publication_id": "publication-1",
         "trade_plan": None,
         "plan_read_status": "not_published",
+        "presentation_blocker": None,
+        "presentation_next_action": None,
         "presentation_state": "research",
     }]
     assert panel.metadata["opportunities_rank_fallback"] is True

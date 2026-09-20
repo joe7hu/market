@@ -26,6 +26,9 @@ ENDPOINTS = (
     ("paper", "/api/paper/performance?book=paper"),
     ("nav", "/api/paper/account-history?days=7"),
     ("learning", "/api/research/overview"),
+    ("today", "/api/today"),
+    ("opportunities", "/api/panel-snapshot?scope=opportunities&limit=20"),
+    ("paper_trades", "/api/paper/trades?book=paper&limit=20"),
 )
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
@@ -131,6 +134,64 @@ def assess(name: str, payload: dict[str, Any], *, expected_commit: str | None = 
         if len(publications) > 1:
             raise ContractError("Required Market models mix different publications")
         evidence.update(model_counts=model_counts, publication_count=len(publications))
+    elif name == "today":
+        status = object_value(payload.get("status"), "today.status")
+        actions = list_value(payload.get("actions"), "today.actions")
+        if status.get("ready") is not True:
+            warnings.append("Today read is not ready")
+        vague = ("a complete trade plan is not available", "review the evidence below", "review evidence")
+        blocked_count = 0
+        for source in actions:
+            item = object_value(source, "today action")
+            blocked_count += int(bool(item.get("primary_blocker")))
+            text = " ".join(str(item.get(key) or "") for key in ("next_action", "rationale")).lower()
+            if any(phrase in text for phrase in vague):
+                warnings.append("An action still uses vague plan/evidence copy; inspect the corresponding ticker locally")
+            if item.get("primary_blocker") and not str(item.get("next_action") or "").strip():
+                raise ContractError("Blocked action has no next step")
+        evidence.update(loaded_action_count=len(actions), blocked_action_count=blocked_count)
+    elif name == "opportunities":
+        if payload.get("scope") != "opportunities":
+            raise ContractError("Opportunity response has the wrong scope")
+        status = object_value(payload.get("status"), "opportunities.status")
+        table = object_value(object_value(payload.get("tables"), "opportunities.tables").get("opportunities_ranked"), "opportunities table")
+        rows = list_value(table.get("rows"), "opportunities.rows")
+        total = count_value(table.get("count"), "opportunities.count")
+        if total < len(rows):
+            raise ContractError("Loaded opportunities exceed the declared population")
+        if status.get("ready") is not True:
+            warnings.append("Opportunity read is not ready")
+        states: dict[str, int] = {}
+        for source in rows:
+            row = object_value(source, "opportunity")
+            state = row.get("presentation_state")
+            if state not in {"paper_review", "review", "watch", "research", "blocked"}:
+                raise ContractError("Opportunity presentation state is missing or invalid")
+            states[state] = states.get(state, 0) + 1
+            if row.get("presentation_blocker") and (state != "blocked" or not row.get("presentation_next_action")):
+                raise ContractError("Expired or inconsistent plan must be blocked with a next step")
+            if state in {"paper_review", "review"}:
+                plan = object_value(row.get("trade_plan"), "opportunity trade plan")
+                if plan.get("eligibility") != "ACTIONABLE":
+                    raise ContractError("Published-terms state lacks actionable published terms")
+        evidence.update(loaded_count=len(rows), total_count=total, state_counts=states)
+    elif name == "paper_trades":
+        rows = list_value(payload.get("rows"), "paper trades")
+        verified = 0
+        for source in rows:
+            row = object_value(source, "paper trade")
+            if row.get("mark_status") != "verified" or row.get("mark_stale"):
+                if row.get("remaining_quantity") and row.get("unrealized_pnl") is not None:
+                    raise ContractError("Unverified open mark must not claim unrealized P&L")
+                continue
+            # Age alone is not failure: the last completed-session mark can be
+            # valid on a weekend. Verify causal source clocks, never redate them.
+            observed = datetime.fromisoformat(str(row.get("mark_observed_at")).replace("Z", "+00:00"))
+            available = datetime.fromisoformat(str(row.get("mark_available_at")).replace("Z", "+00:00"))
+            if observed.tzinfo is None or available.tzinfo is None or not observed <= available <= datetime.now(UTC):
+                raise ContractError("Verified valuation mark has missing or inconsistent clocks")
+            verified += 1
+        evidence.update(loaded_order_count=len(rows), verified_mark_count=verified)
     elif name == "paper":
         counts = object_value(payload.get("counts"), "paper.counts")
         total = count_value(counts.get("total_orders"), "paper.total_orders")

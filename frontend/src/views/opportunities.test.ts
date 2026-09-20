@@ -83,3 +83,16 @@ it("shows evidence and a direct ticker review without diagnostics; formats actua
   expect(html).toContain("Show tickers without research (1 loaded)");
   expect(html).toContain("No research assessments in these loaded rows");
 });
+
+it("keeps expired plan evidence but does not render its stale entry as executable", () => {
+  const row = { ...backendPayload[0], rationale: "A durable research thesis.", selected_expression_kind: "STOCK",
+    presentation_state: "blocked", presentation_blocker: "trade_plan_expired",
+    presentation_next_action: "Reprice NVDA and publish a new plan before staging.",
+    trade_plan: { eligibility: "ACTIONABLE", selected_expression_kind: "STOCK", entry_limit: 12345.67, quantity: 10, planned_loss: 100, next_action: "Stage this obsolete plan." } };
+  const html = renderToStaticMarkup(createElement(OpportunitiesPage, { data: { ...emptyPanelData(), opportunitiesRanked: { rows: [row] } }, loading: false, onOpenTicker: () => undefined, onRefresh: async () => undefined, onLoadScreener: async () => undefined }));
+  expect(html).toContain("Reprice NVDA and publish a new plan before staging.");
+  expect(html).toContain("A durable research thesis.");
+  expect(html).not.toContain("12,345.67");
+  expect(html).not.toContain("Stage this obsolete plan.");
+  expect(row.trade_plan.eligibility).toBe("ACTIONABLE");
+});

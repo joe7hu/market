@@ -71,7 +71,7 @@ describe("Ticker decision usability", () => {
     const snapshot = { ...decision, alpha_signals: [], trade_plan: null, data_requests: [], learning: {} } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"];
     const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={decision} snapshot={snapshot} />);
     expect(html).toContain("No new trade");
-    expect(html).toContain("A complete trade plan is not available.");
+    expect(html).toContain("No published entry, position size, invalidation and maximum loss are linked to this decision.");
     expect(html).not.toContain("proposed impact");
     expect(html).not.toContain("Field unavailable:");
   });

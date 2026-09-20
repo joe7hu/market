@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Iterable
 
 from investment_panel.settings import AppConfig, load_config
-from investment_panel.domain.decision import OpportunityRank, TradePlan, trade_plan_rank_identity_matches
+from investment_panel.domain.decision import OpportunityRank, TradePlan, market_deadline_passed, normalized_utc, next_action_for, trade_plan_rank_identity_matches
 from investment_panel.domain.panel import DASHBOARD_UNAVAILABLE_MODELS, tables_for_scope
 from investment_panel.application.read_models.types import DataStatus, PanelData
 from investment_panel.domain.panel import (
@@ -558,17 +558,34 @@ def load_opportunities_scope_data(
         symbols = {str(row.get("ticker") or "").upper() for row in panel.rows("opportunities_ranked")}
         plans = load_panel_data(active_config, table_names=("trade_plan",), query_symbol_filter=symbols,
                                 query_row_limits={"trade_plan": max(1, len(symbols))})
+        presentation_at = datetime.now(UTC)
         for rank in panel.tables["opportunities_ranked"]:
             symbol = str(rank.get("ticker") or "").upper()
             plan = today_plan_for_row(rank, plans.rows("trade_plan"), rank, symbol) if plans.status.ready else None
             rank["trade_plan"] = plan.model_dump(mode="json") if plan else None
             rank["plan_read_status"] = "available" if plan else "not_published" if plans.status.ready else "read_failed"
-            rank["presentation_state"] = opportunity_surface_state(rank, plan)
+            rank["presentation_blocker"] = plan_currentness_blocker(plan, now=presentation_at)
+            rank["presentation_next_action"] = next_action_for(rank["presentation_blocker"]) if rank["presentation_blocker"] else None
+            rank["presentation_state"] = opportunity_surface_state(rank, plan, now=presentation_at)
     return panel
 
 
-def opportunity_surface_state(rank: dict[str, Any], plan: TradePlan | None) -> str:
+def plan_currentness_blocker(plan: TradePlan | None, *, now: datetime | None = None) -> str | None:
+    """Published terms can expire while a market is closed; research stays visible."""
+    if plan is None or plan.eligibility != "ACTIONABLE":
+        return None
+    reference = normalized_utc(now or datetime.now(UTC))
+    if normalized_utc(plan.cutoff) > reference:
+        return "trade_plan_cutoff_in_future"
+    if market_deadline_passed(plan.expiry, reference):
+        return "trade_plan_expired"
+    return None
+
+
+def opportunity_surface_state(rank: dict[str, Any], plan: TradePlan | None, *, now: datetime | None = None) -> str:
     """Presentation only. A published plan never substitutes for fill-time gates."""
+    if plan_currentness_blocker(plan, now=now):
+        return "blocked"
     if plan is not None and plan.eligibility == "ACTIONABLE":
         return "paper_review" if plan.authorization_mode == "PAPER" else "review"
     blocker = str(rank.get("primary_blocker") or rank.get("trade_rank_unavailable_reason") or "").lower()

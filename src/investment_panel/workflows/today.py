@@ -62,6 +62,9 @@ def today(
             rank_reason = "trade_plan_missing" if plan is None else rank_reason
             plan = None
             resolution = None
+        currentness_blocker = loaders.plan_currentness_blocker(plan)
+        if currentness_blocker:
+            plan, rank_reason = None, currentness_blocker
         if plan is None:
             if not rank_reason:
                 rank_reason = "trade_plan_missing"
@@ -115,7 +118,7 @@ def today(
             "transition": None,
             "current_at": _queue_datetime(row.get("published_at") or row.get("available_at") or row.get("as_of")),
             "primary_blocker": "ticker_decision_identity_missing" if identity_missing else (rank_reason or "trade_plan_blocked") if blocked else None,
-            "next_action": _today_next_action(plan) if plan is not None else "Refresh the ticker decision and trade plan.",
+            "next_action": _today_next_action(plan) if plan is not None else next_action_for(rank_reason),
             "drill_down": f"/tickers/{quote(symbol)}" if symbol else None,
             "ticker": symbol,
             "decision_revision": revision or None,
@@ -388,7 +391,7 @@ def today_field_states(*, identity_missing: bool, plan_missing: bool, reason: st
             "source": "trade_plan",
             "reason": reason,
             "blocking": True,
-            "next_action": "Refresh the ticker decision and publish its canonical TradePlan.",
+            "next_action": next_action_for(reason),
         })
     return states
 

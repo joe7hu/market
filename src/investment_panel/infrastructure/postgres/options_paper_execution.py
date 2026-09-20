@@ -17,6 +17,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.domain.decision import MARKET_TZ, is_market_open, is_us_market_day, market_session_bounds
 from investment_panel.core.option_trade_ticket import execution_policy, exit_reason
+from investment_panel.domain.portfolio.paper_execution import CONSUMPTION_KEY, consumed_quote_evidence, quote_consumption_blocker
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.infrastructure.postgres.actions import ActionRepository
 from investment_panel.infrastructure.postgres.analysis import current_option_publication_answers, current_option_publication_rows
@@ -291,7 +292,7 @@ class OptionsPaperExecutionRepository:
                 """
                 SELECT paper.id::text, paper.decision_id::text, paper.instrument_id,
                        paper.lane, paper.status, paper.quantity, paper.limit_price,
-                       paper.actual_fill_price, paper.filled_at, paper.submitted_at,
+                       paper.actual_fill_price, paper.filled_at, paper.exit_at, paper.submitted_at,
                        paper.filled_quantity, paper.exited_quantity, paper.fees, paper.entry_fees,
                        paper.fill_evidence_at, paper.execution_quote, paper.contract_multiplier,
                        paper.ticket_version, paper.ticket_snapshot, paper.structure, paper.policy_result,
@@ -368,6 +369,9 @@ class OptionsPaperExecutionRepository:
                     market_session="regular" if is_market_open(now) else "closed",
                     evaluated_at=now,
                 )
+                consumption_blocker = quote_consumption_blocker(item, quoted, now=now, phase="entry")
+                if consumption_blocker:
+                    current_execution["blockers"].append(consumption_blocker)
                 if current_execution["blockers"]:
                     connection.execute(
                         "UPDATE app.paper_order SET submitted_at = coalesce(submitted_at, %s), updated_at = %s WHERE id = %s::uuid",
@@ -395,7 +399,7 @@ class OptionsPaperExecutionRepository:
                 if multiplier is None or not isfinite(multiplier) or multiplier <= 0 or any(_number(leg.get("multiplier")) != multiplier for leg in quoted):
                     return {"paper_order_id": paper_order_id, "status": "submitted", "reason": "contract_multiplier_missing"}
                 quote_payload = {
-                    **dict(item.get("execution_quote") or {}),
+                    **consumed_quote_evidence(item, quoted, now=now, phase="entry"),
                     "mid": _midpoint_package(quoted),
                     "spread": sum(float(leg["ask"]) - float(leg["bid"]) for leg in quoted),
                     "leg_count": len(quoted),
@@ -418,6 +422,7 @@ class OptionsPaperExecutionRepository:
                     price=fill_price, key=f"generic:{paper_order_id}:entry:{now.isoformat()}",
                     details={"lane": item["lane"], "paper_order_id": paper_order_id, "slippage": slippage, "fees": fees,
                              "contract_multiplier": multiplier,
+                             CONSUMPTION_KEY: quote_payload[CONSUMPTION_KEY],
                              **_experiment_quote_evidence(ticket, quoted)},
                 )
                 _record_liquidation_mark(connection, {
@@ -460,7 +465,7 @@ class OptionsPaperExecutionRepository:
         if structure == "cash_secured_put" and legs and any(
             leg.get("expiration") is not None and leg["expiration"] <= now.astimezone(MARKET_TZ).date() for leg in legs
         ):
-            mark, pending_reason = _expiration_mark(connection, order, legs, now=now)
+            mark, pending_reason = expiration_mark(connection, order, legs, now=now)
             strike = _number(legs[0].get("strike"))
             multiplier = _number(legs[0].get("multiplier"))
             if mark is not None and any(value is None or not isfinite(value) or value <= 0 for value in (strike, multiplier)):
@@ -529,6 +534,9 @@ class OptionsPaperExecutionRepository:
         credit = is_credit_structure(structure)
         exit_price = package_price(quoted, phase="exit")
         policy_blockers = list(execution.get("blockers") or [])
+        consumption_blocker = quote_consumption_blocker(order, quoted, now=now, phase="exit")
+        if consumption_blocker:
+            policy_blockers.append(consumption_blocker)
         _record_liquidation_mark(connection, order, quoted, now=now, execution_blockers=policy_blockers)
         trigger_reason = exit_reason(
             ticket=ticket, exits=exits, credit=credit, entry_price=_number(order.get("actual_fill_price")),
@@ -595,8 +603,13 @@ class OptionsPaperExecutionRepository:
             details={
                 "lane": order["lane"], "paper_order_id": str(order["id"]),
                 **accounting, "slippage": slippage, "fees": fees,
+                CONSUMPTION_KEY: consumed_quote_evidence(order, quoted, now=now, phase="exit")[CONSUMPTION_KEY],
                 **_experiment_quote_evidence(ticket, quoted),
             },
+        )
+        connection.execute(
+            "UPDATE app.paper_order SET execution_quote = coalesce(execution_quote, '{}'::jsonb) || %s WHERE id = %s::uuid",
+            [Jsonb({CONSUMPTION_KEY: consumed_quote_evidence(order, quoted, now=now, phase="exit")[CONSUMPTION_KEY]}), order["id"]],
         )
         self._record_phase4_fill(
             connection, paper_order_id=str(order["id"]), observed_at=now, status=status,
@@ -723,7 +736,7 @@ class OptionsPaperExecutionRepository:
         return {"paper_order_id": str(order["id"]), "status": "closed" if status in {"exited", "invalidated"} else status, "reason": reason, "event_status": status if status in {"exited", "invalidated"} else None}
 
 
-def _expiration_mark(
+def expiration_mark(
     connection: Any, order: dict[str, Any], legs: list[dict[str, Any]], *, now: datetime,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Use an exact confirmed expiration close; a stored spot is not settlement."""
@@ -914,9 +927,7 @@ def _experiment_quote_scope(ticket: dict[str, Any]) -> dict[str, Any]:
 
 
 def _experiment_quote_evidence(ticket: dict[str, Any], legs: list[dict[str, Any]]) -> dict[str, Any]:
-    if not ticket.get("experiment"):
-        return {}
-    return {"experiment": ticket["experiment"], "quotes": [
+    return {**({"experiment": ticket["experiment"]} if ticket.get("experiment") else {}), "quotes": [
         {key: value.isoformat() if isinstance(value, (date, datetime)) else value for key, value in leg.items()}
         for leg in legs
     ]}

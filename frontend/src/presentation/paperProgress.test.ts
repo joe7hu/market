@@ -31,3 +31,12 @@ describe("paper observation progress", () => {
     expect(paperObservationProgress({ closed: value }).title).toBe("Observation counts need attention");
   });
 });
+
+
+import { paperValuationDescription } from "./paperProgress";
+it("labels retained last-session prices without claiming a live quote or changing their timestamp", () => {
+  const text = paperValuationDescription({ mark_status: "verified", mark_stale: false, mark_observed_at: "2026-09-18T20:00:00Z", mark: { session_state: "last_completed_session" } });
+  expect(text).toContain("not a live quote or fill authorization");
+  expect(text).toContain("2026-09-18T20:00:00Z");
+  expect(paperValuationDescription({ mark_status: "verified", mark_stale: true })).toContain("unavailable");
+});

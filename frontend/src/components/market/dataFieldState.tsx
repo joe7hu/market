@@ -32,11 +32,15 @@ export function DataFieldStateNotice({ state, compact = false }: { state: DataFi
 }
 
 const REASONS: Record<string, string> = {
-  "Refresh the required fact and recalculate the resolution.": "Review the evidence needed below. Complete the missing inputs before considering a new trade.",
+  "Refresh the required fact and recalculate the resolution.": "Open the ticker assessment, resolve its named input blocker, then refresh decision models. Do not stage a paper order before that check passes.",
   cash_comparator: "No new trade is selected. Review the investment case and required evidence.",
   forecast_missing: "A supported return forecast is not available.",
   alpha_strategy_revision_missing: "The investment signal has not passed strategy validation.",
-  trade_plan_missing: "A complete trade plan is not available.",
+  trade_plan_missing: "No published entry, position size, invalidation and maximum loss are linked to this decision.",
+  trade_plan_expired: "This plan's entry window has ended. Refresh the ticker decision; the old terms cannot authorize a paper order.",
+  trade_plan_cutoff_in_future: "This plan uses a future input cutoff. Check source and server clocks in Health before recalculating it.",
+  "Refresh the ticker decision and publish its canonical TradePlan.": "Open the ticker assessment; refresh decision models to publish entry, position size, invalidation and maximum loss before staging paper orders.",
+  "Refresh the ticker decision and trade plan.": "Open the ticker assessment; refresh decision models to publish entry, position size, invalidation and maximum loss before staging paper orders.",
   trade_plan_identity_mismatch: "The trade plan and decision refer to different evidence. Reload the ticker before acting.",
   risk_policy_blocked: "The proposed trade does not meet the portfolio risk limits.",
   selected_expression_missing: "No investment structure has been selected.",
@@ -51,12 +55,12 @@ const REASONS: Record<string, string> = {
 
 /** Translate diagnostics at the display boundary; stored evidence stays intact. */
 export function decisionReason(reason: string | null | undefined): string {
-  if (!reason) return "Review the evidence before deciding.";
+  if (!reason) return "No next step was recorded. Open the ticker assessment to check its input and publication status.";
   if (REASONS[reason]) return REASONS[reason];
   if (/^[a-z0-9]+(?:_[a-z0-9]+)+$/i.test(reason)) {
-    if (/mismatch|conflict/.test(reason)) return "The evidence does not agree. Reload the ticker before acting.";
-    if (/stale|expired/.test(reason)) return "This evidence is out of date. Refresh it before deciding.";
-    if (/missing|unavailable|incomplete/.test(reason)) return "The evidence needed for this assessment is incomplete.";
+    if (/mismatch|conflict/.test(reason)) return `${reason.replaceAll("_", " ")}. Refresh the linked decision and plan together before staging paper orders.`;
+    if (/stale|expired/.test(reason)) return `${reason.replaceAll("_", " ")}. Refresh that source and recalculate the ticker decision before staging paper orders.`;
+    if (/missing|unavailable|incomplete/.test(reason)) return `${reason.replaceAll("_", " ")}. Supply this input and recalculate the ticker decision before staging paper orders.`;
     return reason.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
   }
   return reason

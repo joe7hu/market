@@ -27,3 +27,16 @@ export function paperObservationProgress(counts: Readonly<Record<string, number 
   }
   return { title: "No observations recorded", detail: "Research observations have not been recorded yet. They remain separate from funded paper orders and their P&L.", attention: false };
 }
+
+
+/** Session state is server-owned; this formatter never ages or promotes a quote. */
+export function paperValuationDescription(trade: {
+  mark_status?: string; mark_stale?: boolean | null; mark_observed_at?: string | null;
+  mark?: Record<string, unknown>;
+}): string {
+  if (trade.mark_status !== "verified" || trade.mark_stale) return "Open P&L is unavailable until every position leg has a verified valuation mark.";
+  const at = trade.mark_observed_at ? ` Observed ${trade.mark_observed_at}.` : "";
+  return trade.mark?.session_state === "last_completed_session"
+    ? `Last available session price retained for valuation; this is not a live quote or fill authorization.${at}`
+    : `Verified valuation only; a paper fill still requires a fresh executable quote.${at}`;
+}

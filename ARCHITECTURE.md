@@ -66,6 +66,70 @@ Event time, observation time, and availability time remain distinct. The
 scheduler keeps its fixed capacity of two, and long collector/provider work
 stays isolated from database transactions.
 
+## Product and evidence authorities
+
+The [product goals](docs/product-goals.md) define the user-facing contract.
+Today, Market, Opportunities, the two portfolio books, and Research are views
+of the same evidence—not separate recommendation engines. A published research
+rank is not a trade authorization, and paper observations are not funded-account
+fills. Empty, unavailable, stale, blocked, and legitimately closed-market states
+must remain distinguishable.
+
+### Four clocks, two quote uses
+
+Keep provider event/observation time, application availability time, decision
+cutoff and publication/read time separate. `domain/decision/calendar.py` owns
+session-aware valuation age and date-only market deadlines. News freshness is
+wall-clock based; source-health SQL and `core/job_policy.py` retain each
+collector's independent cadence. The scheduler's session allowlist must not
+silence research, event, macro, Market publication or decision publication work.
+
+`paper_workbench.py` may value a holding from the last completed session over a
+weekend, holiday or early close, but never relabels that source timestamp as now.
+Missing sessions, unknown/future clocks, incomplete option legs, and expired
+unsettled contracts remain evidence gaps. Crypto uses elapsed time, not the US
+session calendar. `mark.valuation_only` and `mark.session_state` are explanatory
+fields, never admission signals.
+
+`domain/portfolio/paper_execution.py` owns the shared causal quote-consumption
+rule. Ticker and generic option owners call it at actual entry/exit time in
+addition to their limit, size, risk and option-liquidity checks. Each phase's
+per-leg provider observation and quote identity is persisted in
+`execution_quote.quote_consumption_v1` and the immutable fill journal within the
+same transaction. A new database row with the same provider timestamp is not
+new liquidity. Existing rows without that ledger require post-fill observations;
+history is not backfilled or rewritten. This is per-order consumption, not a
+simulation of an exchange-wide order book.
+
+When an entry expires after a partial fill, only the unfilled remainder is
+cancelled; the actual holding continues through exit management. Cash-secured
+put expiration uses the shared confirmed expiration-close selector after the
+actual session close, never an intraday underlying quote. The existing
+intrinsic-value paper settlement model is not a claim of physical stock delivery.
+
+### Current presentation versus immutable publication
+
+`application/read_models/loaders.py` and `workflows/today.py` project plan expiry
+and future-cutoff blockers at read time. They do not edit persisted TradePlans.
+Published evidence can remain inspectable after its terms stop being actionable.
+Today carries the specific missing fact and concrete next step through the UI;
+a missing plan must not erase a more informative account/source/lineage blocker.
+
+### Optional browser diagnostics
+
+`frontend/src/diagnostics/webmcp.ts` is a small, default-off adapter over the
+existing typed API clients. It uses the experimental `document.modelContext`
+contract; tool registration and requests have an abortable component lifetime.
+Five bounded tools expose workstation status, Today, Opportunities, the funded
+paper book, and one paper order. There is no generic URL, SQL, shell, job,
+settings, funding, promotion, or order-write tool. Read-only annotations describe
+the implementation; they do not replace server authorization or data privacy.
+No cross-origin exposure is configured. Source text remains untrusted content.
+
+The existing `scripts/verify_workstation.py` remains the portable read-only
+smoke check; WebMCP is not a test oracle, browser DOM verifier, provider feed,
+remote debugger, or replacement for PostgreSQL integration tests.
+
 ## Request flow
 
 ```text
