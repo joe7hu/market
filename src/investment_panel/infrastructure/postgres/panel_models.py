@@ -27,6 +27,8 @@ from investment_panel.infrastructure.postgres.runtime import API_PROFILE, Runtim
 
 __all__ = ["load_postgres_tables", "today_authority_pages"]
 
+TODAY_AUTHORITY_PROFILE = RuntimeProfile(statement_timeout_ms=10_000)
+
 
 class SchemaRevisionMismatch(RuntimeError):
     def __init__(self, actual: str, expected: str) -> None:
@@ -1756,7 +1758,7 @@ def today_authority_pages(
         ORDER BY positioned_actions.decision_position
     """
     runtime = runtime_for_config(config)
-    with runtime.snapshot(API_PROFILE) as connection:
+    with runtime.snapshot(TODAY_AUTHORITY_PROFILE) as connection:
         with connection.cursor(name="today_authority") as cursor:
             cursor.execute(query)
             while rows := cursor.fetchmany(safe_batch_size):

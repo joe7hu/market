@@ -57,6 +57,8 @@ def experiment_context(migrated_postgres_dsn, monkeypatch):
             [candidate, now - timedelta(minutes=59), now - timedelta(minutes=59)],
         )
     monkeypatch.setattr("investment_panel.infrastructure.postgres.options_experiments.is_market_open", lambda _: True)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.options_paper_execution.is_market_open", lambda _: True)
+    monkeypatch.setattr("investment_panel.domain.portfolio.paper_execution.is_market_open", lambda _: True)
     try:
         yield runtime, ingestion, now, parent, candidate
     finally:

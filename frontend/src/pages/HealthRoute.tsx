@@ -22,7 +22,6 @@ import { loadDecisionFunnel, type DecisionFunnel } from "@/api/panel";
 import { numberFromRecord, recordField } from "@/views/optionsRadarData";
 import { DecisionFunnelPanel } from "@/views/health/decisionFunnel";
 import { displayField } from "@/shared/rowFormat";
-import { Phase4SharedDecision } from "@/components/market/phase4SharedDecision";
 import { WorkflowReadiness } from "@/components/market/WorkflowReadiness";
 import { BuildIdentityCard } from "@/components/market/BuildIdentity";
 
@@ -110,7 +109,6 @@ export function HealthRoute() {
     >
       <WorkflowReadiness view="health" />
       <details className="rounded-xl border border-border bg-card p-4"><summary className="cursor-pointer font-semibold">Source coverage and storage — separate from decision readiness</summary><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{metrics.map(([label, value, caption]) => <div key={label} className="rounded border p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-semibold">{scopeStatus.health?.state === "loading" && !sourceRows.length ? "Loading" : value}</p><p className="mt-1 text-xs text-muted-foreground">{caption}</p></div>)}</div></details>
-      <Phase4SharedDecision data={data} scope="health" status={scopeStatus?.health} onRetry={() => void loadScope("health", { force: true })} />
       <BuildIdentityCard />
       {scopeStatus.health?.state === "loading" && sourceRows.length === 0 ? (
         <div role="status" className="rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">

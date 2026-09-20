@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from investment_panel.api.contracts import OptionsHistoryToggleInput
 from investment_panel.api.routers.portfolio import delete_watchlist_symbol_endpoint, set_watchlist_options_history_endpoint
+from investment_panel.domain.decision import market_session_bounds
 from investment_panel.infrastructure.postgres.options_paper_execution import OptionsPaperExecutionRepository
 from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 from investment_panel.infrastructure.postgres.ticker_execution import TickerPaperExecutionRepository
@@ -506,18 +507,20 @@ def test_csp_assignment_charges_each_contract_and_persists_multiplier(monkeypatc
     repository = TickerPaperExecutionRepository.__new__(TickerPaperExecutionRepository)
     repository.runtime = object()
     monkeypatch.setattr(repository, "_stored_option_legs", lambda *_args: [{"strike": 100, "multiplier": 100, "expiration": AS_OF.date()}])
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.ticker_execution.expiration_mark", lambda *_args, **_kwargs: ({"close": 90}, None))
     seen = []
     monkeypatch.setattr(PortfolioLoopRepository, "record_existing_paper_order_fill", lambda *_args, **kwargs: seen.append(kwargs))
     order = {
         "id": "00000000-0000-0000-0000-000000000001", "instrument_id": 1,
         "expression_kind": "CASH_SECURED_PUT", "structure": "cash_secured_put", "quantity": 2,
         "filled_quantity": 2, "exited_quantity": 0, "policy_result": {}, "side": "sell",
-        "expires_at": AS_OF.date(),
+        "expires_at": AS_OF.date(), "contract_multiplier": 100,
     }
-    result = repository._manage_option_open(Connection(), order, AS_OF, 2)
+    settled_at = market_session_bounds(AS_OF.date())[1].astimezone(UTC) + timedelta(seconds=1)
+    result = repository._manage_option_open(Connection(), order, settled_at, 2)
     assert result["reason"] == "assignment"
     assert result["assigned_strike"] == 100
-    assert seen == [{"paper_order_id": order["id"], "observed_at": AS_OF, "status": "exited"}]
+    assert seen == [{"paper_order_id": order["id"], "observed_at": settled_at, "status": "exited"}]
 
 
 def test_execution_snapshot_persistence_rechecks_canonical_digest() -> None:

@@ -24,7 +24,7 @@ from investment_panel.infrastructure.postgres.option_thesis_materialization impo
     accept_agent_task_result,
     option_thesis_materialization_summary,
 )
-from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime, JOB_PROFILE, RuntimeProfile
 
 class AgentRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
@@ -39,11 +39,12 @@ class AgentRepository:
         context: dict[str, Any] | None = None,
         context_sources: dict[str, bool] | None = None,
         current_option_rows: list[dict[str, Any]] | None = None,
+        profile: RuntimeProfile = API_PROFILE,
     ) -> dict[str, Any]:
         symbol = str(ticker).strip().upper()
         if not symbol:
             raise ValueError("ticker is required")
-        with self.runtime.transaction() as connection:
+        with self.runtime.transaction(profile) as connection:
             instrument = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [symbol]).fetchone()
             published_decision_id = str((context or {}).get("decision_id") or "").strip() or None
             decision = connection.execute(
@@ -139,6 +140,7 @@ class AgentRepository:
                 context=context,
                 context_sources=context_sources,
                 current_option_rows=[{"payload": context}],
+                profile=JOB_PROFILE,
             )
             if result.get("status") == "queued":
                 queued += 1
