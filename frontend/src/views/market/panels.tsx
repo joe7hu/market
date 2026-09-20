@@ -13,6 +13,7 @@ import {
   MiniMetric,
   RangeCell,
   ReturnCell,
+  ReturnValue,
   ReturnProfile,
   ScorePill,
   TrendMark,
@@ -124,7 +125,7 @@ export function IndexBaseline({ rows }: { rows: RowRecord[] }) {
   return <section aria-label="Observed index ETF baseline"><p className="mb-2 text-xs text-muted-foreground">Observed index ETF prices · independent of tracked-universe model coverage</p>
     <div className="grid gap-2 sm:grid-cols-4">{named.map(row => <div key={String(row.symbol)} className="rounded-md border p-3">
       <p className="text-sm font-semibold">{String(row.symbol)} · ${numberField(row, ["price"]).toFixed(2)}</p>
-      <p className="mt-1 text-xs">Last daily move: <ReturnCell value={numberField(row, ["return_1d"], Number.NaN)} /></p>
+      <p className="mt-1 text-xs">Last daily move: <ReturnValue value={numberField(row, ["return_1d"], Number.NaN)} /></p>
       <p className="mt-1 text-[11px] text-muted-foreground">{textField(row, ["as_of"]).slice(0, 10) || "Date not recorded"} · {textField(row, ["source"], "Source not recorded")}</p>
     </div>)}</div>
   </section>;

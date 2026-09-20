@@ -16,14 +16,15 @@ export function GroupPill({ value }: { value: string }) {
 }
 
 export function ReturnCell({ value }: { value: number }) {
-  const tone = returnToneClass(value);
   return (
     <td className="px-3 py-3 text-right">
-      <span className={`inline-flex min-w-16 justify-end rounded-md px-2 py-1 font-semibold tabular-nums ${tone}`}>
-        {formatMaybePct(value)}
-      </span>
+      <ReturnValue value={value} />
     </td>
   );
+}
+
+export function ReturnValue({ value }: { value: number }) {
+  return <span className={`inline-flex min-w-16 justify-end rounded-md px-2 py-1 font-semibold tabular-nums ${returnToneClass(value)}`}>{formatMaybePct(value)}</span>;
 }
 
 export function RangeCell({ value }: { value: number }) {
