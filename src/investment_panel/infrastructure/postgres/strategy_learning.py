@@ -238,8 +238,8 @@ class StrategyLearningRepository:
             raise ValueError("candidate revision no longer exists")
         changes = dict(result.get("proposed_parameter_changes") or {})
         preflight = parameter_preflight(dict(candidate["base_parameters"] or {}), changes)
-        if (candidate["implementation_id"] != OPTIONS_IMPLEMENTATION_ID
-                or candidate["implementation_version"] != OPTIONS_IMPLEMENTATION_VERSION):
+        if (candidate.get("implementation_id") != OPTIONS_IMPLEMENTATION_ID
+                or candidate.get("implementation_version") != OPTIONS_IMPLEMENTATION_VERSION):
             preflight = {"status": "implementation_version_mismatch", "blocked_parameters": [],
                          "errors": [f"Expected {OPTIONS_IMPLEMENTATION_ID}@{OPTIONS_IMPLEMENTATION_VERSION}"]}
         if preflight["status"] not in PARAMETER_FAILURE_VERDICTS and dict(candidate["parameters"] or {}) != preflight.get("parameters"):
@@ -359,7 +359,7 @@ class StrategyLearningRepository:
             ],
         )
 
-        return inserted.rowcount > 0
+        return bool(getattr(inserted, "rowcount", 1))
 
 
 PAPER_EPISODE_ORDERS_SQL = """

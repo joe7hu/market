@@ -14,7 +14,11 @@ from investment_panel.domain.decision.governance import (
 )
 from investment_panel.infrastructure.postgres import ticker_decisions
 from investment_panel.infrastructure.postgres import decision_inbox
-from investment_panel.infrastructure.postgres.strategy_learning import StrategyLearningRepository
+from investment_panel.infrastructure.postgres.strategy_learning import (
+    OPTIONS_IMPLEMENTATION_ID,
+    OPTIONS_IMPLEMENTATION_VERSION,
+    StrategyLearningRepository,
+)
 
 
 _EXECUTION_METRICS = ("net_pnl_after_realized_costs", "turnover", "slippage", "capacity")
@@ -248,9 +252,14 @@ def test_strategy_learning_does_not_reuse_parent_paper_execution_for_candidate()
 
         def execute(self, query, params=None):
             if "SELECT id, created_at, result" in query:
-                return _LearningResult(one={"id": 1, "created_at": now - timedelta(days=2), "result": {"candidate_revision_id": 43, "proposed_parameter_changes": {}}})
+                    return _LearningResult(one={"id": 1, "created_at": now - timedelta(days=2), "result": {"candidate_revision_id": 43, "proposed_parameter_changes": {"min_dte": 30}}})
             if "SELECT candidate.parameters" in query:
-                return _LearningResult(one={"parameters": {}, "supersedes_id": 42, "base_parameters": {}})
+                return _LearningResult(one={
+                    "parameters": {"gates": {"min_dte": 30}}, "supersedes_id": 42,
+                    "base_parameters": {"gates": {"min_dte": 14}},
+                    "implementation_id": OPTIONS_IMPLEMENTATION_ID,
+                    "implementation_version": OPTIONS_IMPLEMENTATION_VERSION,
+                })
             if "FROM analysis.option_outcome" in query:
                 return _LearningResult(many=[parent_row] if params == [42, 42] else [])
             if "INSERT INTO analysis.strategy_evaluation" in query:

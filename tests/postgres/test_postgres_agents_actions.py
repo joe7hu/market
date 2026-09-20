@@ -1761,11 +1761,11 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
                 [[row["id"] for row in candidates]],
             ).fetchall()
         assert tightened["strategy_backtests"] == 1
-        assert unsupported["strategy_backtests"] == 1
+        assert unsupported["strategy_backtests"] == 0
         assert alias["strategy_backtests"] == 1
         assert candidates[0]["parameters"]["gates"]["min_dte"] == 30
-        assert candidates[2]["parameters"]["gates"]["max_spread_pct"] == 0.05
-        assert "reject_spread_pct" not in candidates[2]["parameters"]["gates"]
+        assert candidates[1]["parameters"]["gates"]["max_spread_pct"] == 0.05
+        assert "reject_spread_pct" not in candidates[1]["parameters"]["gates"]
         assert {row["evaluation_type"] for row in evaluations} == {"walk_forward", "shadow"}
         assert all(
             row["evidence"]["method"] == "retained_actionable_decisions_forward_evaluation"
@@ -1779,9 +1779,7 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
             if row["evaluation_type"] == "execution_grade_paper"
         ]
         assert execution_evidence == []
-        assert [row["verdict"] for row in verdicts] == [
-            "collecting_data", "unsupported_parameters", "collecting_data"
-        ]
+        assert [row["verdict"] for row in verdicts] == ["collecting_data", "collecting_data"]
     finally:
         runtime.close()
 
@@ -1820,7 +1818,7 @@ def test_strategy_learning_does_not_create_agent_named_active_base(postgres_dsn:
         runtime.close()
 
 
-def test_postmortem_submission_rolls_back_when_strategy_materialization_fails(
+def test_postmortem_submission_records_invalid_strategy_parameters(
     postgres_dsn: str,
 ) -> None:
     upgrade_database(postgres_dsn)
@@ -1832,25 +1830,25 @@ def test_postmortem_submission_rolls_back_when_strategy_materialization_fails(
             connection.execute(
                 "UPDATE analysis.agent_task SET status = 'queued' WHERE id = %s", [task_id]
             )
-        with pytest.raises((TypeError, ValueError)):
-            AgentRepository(runtime).submit_postmortem(
-                {
-                    "request_id": task_id,
-                    "failure_type": "invalid_change",
-                    "proposed_parameter_changes": {"dte_min": "not-a-number"},
-                }
-            )
+        _, counts = AgentRepository(runtime).submit_postmortem(
+            {
+                "request_id": task_id,
+                "failure_type": "invalid_change",
+                "proposed_parameter_changes": {"dte_min": "not-a-number"},
+            }
+        )
+        assert counts == {"strategy_proposals": 1, "strategy_backtests": 0, "strategy_forward_tests": 0}
         with runtime.read() as connection:
             task = connection.execute(
                 "SELECT status, result FROM analysis.agent_task WHERE id = %s", [task_id]
             ).fetchone()
-            proposal_count = connection.execute(
-                "SELECT count(*) AS count FROM analysis.agent_task "
+            proposal = connection.execute(
+                "SELECT result, validation FROM analysis.agent_task "
                 "WHERE task_kind = 'strategy_mutation_proposal'"
-            ).fetchone()["count"]
-        assert task["status"] == "queued"
-        assert task["result"] is None
-        assert proposal_count == 0
+            ).fetchone()
+        assert task["status"] == "completed"
+        assert proposal["result"]["status"] == "invalid_parameters"
+        assert proposal["validation"]["status"] == "invalid_parameters"
     finally:
         runtime.close()
 

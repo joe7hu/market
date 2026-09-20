@@ -33,8 +33,8 @@ def test_openapi_baseline_and_json_success_schemas() -> None:
         for method, operation in path.items()
         if method in {"get", "post", "put", "patch", "delete"}
     ]
-    # Includes the bounded prospective paper-observation ledger.
-    assert len(paths) <= 104
+    # Includes bounded paper observations, history, and workstation readiness.
+    assert len(paths) <= 106
     assert operations
     assert contract["components"]["schemas"]
 

@@ -203,7 +203,7 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["options_hard_refresh_seconds"] == "900"
     assert status["learning_mark_refresh_seconds"] == "3600"
     assert status["learning_refresh_seconds"] == "21600"
-    assert status["market_environment_refresh_seconds"] == "0"
+    assert status["market_environment_refresh_seconds"] == "3600"
     assert status["preopen_brief_refresh_seconds"] == "0"
     assert status["decision_model_refresh_seconds"] == "3600"
     assert status["external_jobs"]["premarket_options_intelligence"]["owner"] == "launchd"

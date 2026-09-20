@@ -138,6 +138,23 @@ def published_tables(
         )
         market_rows = []
         if market_names:
+            market_symbol_filter = ""
+            market_params: list[Any] = [sorted(market_names)]
+            if symbols is not None:
+                market_symbol_filter = """
+                    AND (
+                        COALESCE(UPPER(COALESCE(
+                            item.payload->>'ticker', item.payload->>'symbol', item.payload->>'underlying',
+                            item.payload->'ticker_decision'->>'ticker'
+                        )), '') = ANY(%s)
+                        OR COALESCE(
+                            item.payload->>'ticker', item.payload->>'symbol', item.payload->>'underlying',
+                            item.payload->'ticker_decision'->>'ticker'
+                        ) IS NULL
+                    )
+                """
+                market_params.append(sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}))
+            market_params.extend((sorted(market_names), [(row_limits or {}).get(name) for name in sorted(market_names)]))
             market_rows = connection.execute(
                 """WITH latest AS (
                     SELECT publication.id, publication.published_at FROM app.publication publication
@@ -152,11 +169,12 @@ def published_tables(
                            row_number() OVER (PARTITION BY item.model_name ORDER BY item.rank) AS row_number
                     FROM latest JOIN app.publication_content_item item ON item.publication_id = latest.id
                     WHERE item.model_name = ANY(%s)
+                    """ + market_symbol_filter + """
                 ) SELECT ranked.* FROM ranked
                   JOIN unnest(%s::text[], %s::integer[]) AS bounds(model_name, row_limit) USING (model_name)
                   WHERE bounds.row_limit IS NULL OR ranked.row_number <= bounds.row_limit
                   ORDER BY model_name, rank""",
-                [sorted(market_names), sorted(market_names), [(row_limits or {}).get(name) for name in sorted(market_names)]],
+                market_params,
             ).fetchall()
     output: dict[str, list[dict[str, Any]]] = {}
     for row in rows:

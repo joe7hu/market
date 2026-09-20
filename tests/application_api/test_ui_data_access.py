@@ -184,6 +184,9 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
         "rank_id": "rank-1",
         "ranking_publication_id": "publication-1",
         "publication_id": "publication-1",
+        "trade_plan": None,
+        "plan_read_status": "not_published",
+        "presentation_state": "research",
     }]
     assert panel.metadata["opportunities_rank_fallback"] is True
     assert panel.metadata["table_counts"]["opportunities_ranked"] == 10
@@ -1819,7 +1822,13 @@ def test_opportunities_preserves_maximum_page(monkeypatch, offset, limit, fallba
         ).model_dump(mode="json"),
         "ranking_publication_id": f"publication-{i}",
     } for i in range(count)]
-    def load(*_a, query_row_limits, **_kw):
+    def load(*_a, table_names, query_row_limits, **_kw):
+        if table_names == ("trade_plan",):
+            return PanelData(
+                status=DataStatus(True, "ok", "postgresql"),
+                tables={"trade_plan": []},
+                metadata={"table_counts": {"trade_plan": 0}},
+            )
         assert query_row_limits["opportunities_ranked"] == offset + limit
         return PanelData(
             status=DataStatus(True, "ok", "postgresql"),

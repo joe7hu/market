@@ -14,6 +14,10 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import Headers
 
 from investment_panel.infrastructure.postgres.options_constants import DEFAULT_STRATEGY_VERSION
+from investment_panel.infrastructure.postgres.strategy_learning import (
+    OPTIONS_IMPLEMENTATION_ID,
+    OPTIONS_IMPLEMENTATION_VERSION,
+)
 from investment_panel.infrastructure.postgres.authority import close_cached_runtimes
 from investment_panel.infrastructure.postgres.agents import AgentRepository
 from investment_panel.infrastructure.postgres.authority import runtime_for_url
@@ -808,7 +812,7 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
     assert payload["agents"]["scheduler"]["agent_refresh_seconds"] == "0"
     assert payload["agents"]["scheduler"]["radar_refresh_seconds"] == "900"
     assert payload["agents"]["scheduler"]["source_refresh_seconds"] == "900"
-    assert payload["agents"]["scheduler"]["market_environment_refresh_seconds"] == "0"
+    assert payload["agents"]["scheduler"]["market_environment_refresh_seconds"] == "3600"
     sources = payload["sources"]["rows"]
     assert len(sources) == 5
     bloomberg = next(row for row in sources if row["source_id"] == "news_bloomberg")
@@ -1604,12 +1608,14 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
         ).fetchone()
         strategy = connection.execute(
             "INSERT INTO analysis.strategy_revision "
-            "(strategy_key, revision, name, status, parameters, authority_group, promoted_at) "
-            "VALUES (%s, 1, %s, 'active', %s, 'options-radar-core', now()) RETURNING id",
+            "(strategy_key, revision, name, status, parameters, authority_group, implementation_id, implementation_version, promoted_at) "
+            "VALUES (%s, 1, %s, 'active', %s, 'options-radar-core', %s, %s, now()) RETURNING id",
             [
                 "options-radar-core",
                 "options-radar-core",
                 Jsonb({"delta_min": 0.20, "dte_min": 14, "dte_max": 900}),
+                OPTIONS_IMPLEMENTATION_ID,
+                OPTIONS_IMPLEMENTATION_VERSION,
             ],
         ).fetchone()
         decision = connection.execute(

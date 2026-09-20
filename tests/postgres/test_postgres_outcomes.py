@@ -10,7 +10,11 @@ from investment_panel.infrastructure.postgres.ingestion import IngestionReposito
 from investment_panel.infrastructure.postgres.options_analysis import DEFAULT_PARAMETERS, refresh_options_radar
 from investment_panel.infrastructure.postgres.outcomes import OutcomeRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
-from investment_panel.infrastructure.postgres.strategy_learning import StrategyLearningRepository
+from investment_panel.infrastructure.postgres.strategy_learning import (
+    OPTIONS_IMPLEMENTATION_ID,
+    OPTIONS_IMPLEMENTATION_VERSION,
+    StrategyLearningRepository,
+)
 from psycopg.types.json import Jsonb
 from conftest import typed_config
 
@@ -37,9 +41,10 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
             ).fetchone()
             strategy_id = connection.execute(
                 """INSERT INTO analysis.strategy_revision
-                   (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
-                   VALUES ('options-radar-core', 1, 'Core fixture', 'active', %s, 'options-radar-core', now())
-                   RETURNING id""", [Jsonb(DEFAULT_PARAMETERS)],
+                   (strategy_key, revision, name, status, parameters, authority_group,
+                    implementation_id, implementation_version, promoted_at)
+                   VALUES ('options-radar-core', 1, 'Core fixture', 'active', %s, 'options-radar-core', %s, %s, now())
+                   RETURNING id""", [Jsonb(DEFAULT_PARAMETERS), OPTIONS_IMPLEMENTATION_ID, OPTIONS_IMPLEMENTATION_VERSION],
             ).fetchone()["id"]
         analysis = AnalysisRepository(runtime)
         run_id = analysis.start_run(
