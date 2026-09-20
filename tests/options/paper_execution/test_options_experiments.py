@@ -14,7 +14,7 @@ from investment_panel.infrastructure.postgres.actions import ActionRepository
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository, current_option_publication_answers
 from investment_panel.infrastructure.postgres.confirmed_daily_prices import completed_trading_dates, confirmed_daily_bars
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
-from investment_panel.infrastructure.postgres.options_analysis import DEFAULT_PARAMETERS, FEATURE_VERSION, refresh_options_radar
+from investment_panel.infrastructure.postgres.options_analysis import DEFAULT_PARAMETERS, FEATURE_VERSION, IMPLEMENTATION_ID, refresh_options_radar
 from investment_panel.infrastructure.postgres.options_calibration import calibration_profiles
 from investment_panel.infrastructure.postgres.options_paper_execution import PAPER_MARK_KEY, OptionsPaperExecutionRepository
 from investment_panel.infrastructure.postgres.options_paper_ledger import shared_sleeve_blockers
@@ -36,15 +36,15 @@ def experiment_context(migrated_postgres_dsn, monkeypatch):
     ingestion.register_source("test-experiment", name="Experiment test", family="test", kind="option_chain")
     with runtime.transaction() as connection:
         parent = connection.execute(
-            "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, created_at, promoted_at) "
-            "VALUES ('options-radar-core', 3, 'Incumbent', 'active', %s, 'options-radar-core', %s, %s) RETURNING id",
-            [Jsonb(DEFAULT_PARAMETERS), now - timedelta(days=150), now - timedelta(days=150)],
+            "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, implementation_id, implementation_version, created_at, promoted_at) "
+            "VALUES ('options-radar-core', 4, 'Incumbent', 'active', %s, 'options-radar-core', %s, %s, %s, %s) RETURNING id",
+            [Jsonb(DEFAULT_PARAMETERS), IMPLEMENTATION_ID, FEATURE_VERSION, now - timedelta(days=150), now - timedelta(days=150)],
         ).fetchone()["id"]
         changes = {"min_open_interest": 100}
         candidate = connection.execute(
-            "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, supersedes_id, created_at) "
-            "VALUES ('options-radar-core__experiment', 1, 'Candidate', 'candidate', %s, 'options-radar-core', %s, %s) RETURNING id",
-            [Jsonb(merge_strategy_parameters(DEFAULT_PARAMETERS, changes)), parent, now - timedelta(hours=1)],
+            "INSERT INTO analysis.strategy_revision (strategy_key, revision, name, status, parameters, authority_group, implementation_id, implementation_version, supersedes_id, created_at) "
+            "VALUES ('options-radar-core__experiment', 1, 'Candidate', 'candidate', %s, 'options-radar-core', %s, %s, %s, %s) RETURNING id",
+            [Jsonb(merge_strategy_parameters(DEFAULT_PARAMETERS, changes)), IMPLEMENTATION_ID, FEATURE_VERSION, parent, now - timedelta(hours=1)],
         ).fetchone()["id"]
         connection.execute(
             "INSERT INTO analysis.agent_task (task_kind, status, request, result, created_at) "

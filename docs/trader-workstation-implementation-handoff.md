@@ -91,7 +91,7 @@ The original audit remains the acceptance specification.
 ## Apply and restart
 
 Use the repository checkout, not a review ZIP. Build and migrate before restarting
-both API and scheduler. Schema head is `20260919_0025`.
+both API and scheduler. Schema head is `20260920_0026`.
 
 ```sh
 uv sync --extra test --locked
@@ -217,7 +217,6 @@ After installing, migrating, building and restarting, run:
 uv run python scripts/verify_workstation.py \
   --base-url http://127.0.0.1:8010 \
   --expected-commit "$(git rev-parse HEAD)" \
-  --expected-schema 20260919_0025 \
   --output /tmp/market-workstation-verification.json
 ```
 

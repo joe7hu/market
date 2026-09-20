@@ -17,6 +17,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
+
 ENDPOINTS = (
     ("runtime", "/api/status"),
     ("workflow", "/api/workstation/status"),
@@ -217,7 +219,7 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8010")
     parser.add_argument("--timeout", type=float, default=20)
     parser.add_argument("--expected-commit")
-    parser.add_argument("--expected-schema", default="20260919_0025")
+    parser.add_argument("--expected-schema", default=HEAD_REVISION)
     parser.add_argument("--strict", action="store_true", help="Return nonzero for operational warnings as well as contract/transport failures")
     parser.add_argument("--output", type=Path, help="Optional local JSON report; raw financial response bodies are never written")
     args = parser.parse_args()

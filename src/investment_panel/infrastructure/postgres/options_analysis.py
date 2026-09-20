@@ -25,7 +25,7 @@ from investment_panel.infrastructure.postgres.symbol_trends import refresh_symbo
 from investment_panel.infrastructure.postgres.event_studies import materialize_event_studies
 FEATURE_VERSION = "option-professional-v3-ticket"
 STRATEGY_KEY = "options-radar-core"
-STRATEGY_REVISION = 3
+STRATEGY_REVISION = 4
 IMPLEMENTATION_ID = "options_radar"
 RADAR_QUOTE_SESSIONS = ("regular", "afterhours")
 DEFAULT_PARAMETERS = {
@@ -425,29 +425,74 @@ def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
             [f"strategy:{STRATEGY_KEY}"],
         )
         current = connection.execute(
-            "SELECT id, strategy_key, revision, parameters FROM analysis.strategy_revision "
+            "SELECT id, strategy_key, revision, parameters, implementation_id, implementation_version FROM analysis.strategy_revision "
             "WHERE authority_group = %s AND status = 'active' FOR UPDATE",
             [STRATEGY_KEY],
         ).fetchall()
-        professional = [row for row in current if int(dict(row["parameters"] or {}).get("contract_version") or 0) >= 3]
+        professional = [
+            row for row in current
+            if str(row["strategy_key"]) == STRATEGY_KEY
+            and int(row["revision"]) == STRATEGY_REVISION
+            and dict(row["parameters"] or {}).get("contract_version") == 3
+            and dict(row["parameters"] or {}).get("feature_version") == FEATURE_VERSION
+            and row["implementation_id"] == IMPLEMENTATION_ID
+            and row["implementation_version"] == FEATURE_VERSION
+        ]
         external_active = [row for row in current if str(row["strategy_key"]) != STRATEGY_KEY]
-        if not professional and not external_active:
+        if current and not professional and not external_active:
             connection.execute(
                 "UPDATE analysis.strategy_revision SET status = 'superseded' "
                 "WHERE authority_group = %s AND status = 'active'",
                 [STRATEGY_KEY],
             )
+            legacy_ids = [int(row["id"]) for row in current]
+            children = connection.execute(
+                """SELECT id FROM analysis.strategy_revision
+                   WHERE supersedes_id = ANY(%s) AND status = ANY(%s) FOR UPDATE""",
+                [legacy_ids, ["candidate", "testing", "approved"]],
+            ).fetchall()
+            child_ids = [int(row["id"]) for row in children]
+            if child_ids:
+                connection.execute(
+                    "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = ANY(%s)",
+                    [child_ids],
+                )
+            scopes = [
+                "options-radar",
+                *(f"options-paper-incumbent:{revision_id}" for revision_id in legacy_ids),
+                *(f"options-paper-experiment:{revision_id}" for revision_id in child_ids),
+            ]
+            connection.execute(
+                "UPDATE app.publication SET status = 'superseded', superseded_at = COALESCE(superseded_at, now()) "
+                "WHERE scope = ANY(%s) AND status = 'published'",
+                [scopes],
+            )
+            connection.execute(
+                "DELETE FROM app.current_publication_item WHERE scope = ANY(%s)",
+                [scopes],
+            )
+            connection.execute(
+                """UPDATE analysis.shadow_trade shadow
+                   SET status = 'unfilled', pending_entry_reason = 'candidate_authority_changed'
+                   FROM analysis.decision decision
+                   WHERE shadow.decision_id = decision.id AND shadow.status = 'pending'
+                     AND shadow.source_kind = 'options_paper_experiment'
+                     AND decision.strategy_revision_id = ANY(%s)""",
+                [legacy_ids + child_ids],
+            )
         if not professional and not external_active:
             existing = connection.execute(
-                "SELECT implementation_id, implementation_version FROM analysis.strategy_revision "
+                "SELECT implementation_id, implementation_version, parameters FROM analysis.strategy_revision "
                 "WHERE strategy_key = %s AND revision = %s",
                 [STRATEGY_KEY, STRATEGY_REVISION],
             ).fetchone()
             if existing is not None and (
                 existing["implementation_id"] != IMPLEMENTATION_ID
                 or existing["implementation_version"] != FEATURE_VERSION
+                or dict(existing["parameters"] or {}).get("contract_version") != 3
+                or dict(existing["parameters"] or {}).get("feature_version") != FEATURE_VERSION
             ):
-                raise ValueError("options radar strategy implementation identity is immutable")
+                raise ValueError("options radar strategy binding is immutable")
             connection.execute(
                 """
                 INSERT INTO analysis.strategy_revision

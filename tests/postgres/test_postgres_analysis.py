@@ -17,7 +17,13 @@ from investment_panel.infrastructure.postgres.actions import ActionRepository
 from investment_panel.domain.decision import build_ticker_decision, is_us_market_day
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.migrations import upgrade_database
-from investment_panel.infrastructure.postgres.options_analysis import published_options_radar_rows, refresh_options_radar
+from investment_panel.infrastructure.postgres.options_analysis import (
+    FEATURE_VERSION,
+    IMPLEMENTATION_ID,
+    STRATEGY_REVISION,
+    published_options_radar_rows,
+    refresh_options_radar,
+)
 from investment_panel.infrastructure.postgres.options_publication import RANKING_VERSION
 from investment_panel.infrastructure.postgres.outcomes import OutcomeRepository
 from investment_panel.infrastructure.postgres.panel_publications import published_tables
@@ -38,6 +44,116 @@ def test_no_regular_snapshot_replaces_legacy_contract_with_explicit_empty_public
         assert summary[0]["contract_version"] == 3
         assert summary[0]["degraded_reason"] == "no_complete_regular_session_publication"
         assert published_options_radar_rows(runtime, "option_radar_opportunity") == []
+    finally:
+        runtime.close()
+
+
+def test_options_radar_replaces_legacy_active_implementation_identity(postgres_dsn: str, monkeypatch) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            legacy_id = connection.execute(
+                """INSERT INTO analysis.strategy_revision
+                   (strategy_key, revision, name, status, parameters, authority_group,
+                    implementation_id, implementation_version, promoted_at)
+                   VALUES ('options-radar-core', 3, 'Professional options radar', 'active', %s,
+                           'options-radar-core', 'unavailable', '1', now())
+                   RETURNING id""",
+                [Jsonb({'feature_version': 'option-professional-v2', 'contract_version': 3})],
+            ).fetchone()["id"]
+            run_id = connection.execute(
+                """INSERT INTO analysis.run
+                   (run_type, input_cutoff, code_version, feature_versions, strategy_revision_id,
+                    input_hash, started_at, finished_at, status)
+                   VALUES ('options_radar', now(), 'legacy-implementation-repair', '{}', %s, %s,
+                           now(), now(), 'succeeded')
+                   RETURNING id""",
+                [legacy_id, '0' * 64],
+            ).fetchone()["id"]
+            publication_id = connection.execute(
+                """INSERT INTO app.publication (scope, analysis_run_id, status, published_at)
+                   VALUES ('options-radar', %s, 'published', now())
+                   RETURNING id""",
+                [run_id],
+            ).fetchone()["id"]
+            content_hash = 'a' * 64
+            connection.execute(
+                "INSERT INTO app.publication_payload (content_hash, payload) VALUES (%s, '{}')",
+                [content_hash],
+            )
+            connection.execute(
+                """INSERT INTO app.current_publication_item
+                   (scope, publication_id, model_name, stable_key, rank, content_hash)
+                   VALUES ('options-radar', %s, 'option_radar_summary', 'legacy', 1, %s)""",
+                [publication_id, content_hash],
+            )
+
+        def fail_start_run(*_args, **_kwargs):
+            raise RuntimeError("stop after strategy repair")
+
+        monkeypatch.setattr(AnalysisRepository, "start_run", fail_start_run)
+        with pytest.raises(RuntimeError, match="stop after strategy repair"):
+            refresh_options_radar(runtime, code_version="legacy-implementation-repair")
+
+        with runtime.read() as connection:
+            legacy = connection.execute(
+                "SELECT status FROM analysis.strategy_revision WHERE id = %s", [legacy_id],
+            ).fetchone()
+            active = connection.execute(
+                """SELECT revision, implementation_id, implementation_version,
+                          parameters->>'feature_version' AS feature_version
+                     FROM analysis.strategy_revision
+                WHERE strategy_key = 'options-radar-core' AND status = 'active'""",
+            ).fetchone()
+            retired_publication = connection.execute(
+                "SELECT status, superseded_at IS NOT NULL AS is_superseded FROM app.publication WHERE id = %s",
+                [publication_id],
+            ).fetchone()
+            current_items = connection.execute(
+                "SELECT count(*) AS count FROM app.current_publication_item WHERE scope = 'options-radar'",
+            ).fetchone()["count"]
+        assert legacy["status"] == "superseded"
+        assert dict(active) == {
+            "revision": STRATEGY_REVISION,
+            "implementation_id": IMPLEMENTATION_ID,
+            "implementation_version": FEATURE_VERSION,
+            "feature_version": FEATURE_VERSION,
+        }
+        assert dict(retired_publication) == {"status": "superseded", "is_superseded": True}
+        assert current_items == 0
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize('parameters', [
+    {'feature_version': 'option-professional-v2', 'contract_version': 3},
+    {'feature_version': FEATURE_VERSION, 'contract_version': '3'},
+])
+def test_options_radar_rejects_immutable_active_v4_parameters(postgres_dsn: str, parameters) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            connection.execute(
+                """INSERT INTO analysis.strategy_revision
+                   (strategy_key, revision, name, status, parameters, authority_group,
+                    implementation_id, implementation_version, promoted_at)
+                   VALUES ('options-radar-core', %s, 'Invalid successor', 'active', %s,
+                           'options-radar-core', %s, %s, now())""",
+                [STRATEGY_REVISION, Jsonb(parameters), IMPLEMENTATION_ID, FEATURE_VERSION],
+            )
+
+        with pytest.raises(ValueError, match='binding is immutable'):
+            refresh_options_radar(runtime, code_version='invalid-active-v4')
+
+        with runtime.read() as connection:
+            assert connection.execute(
+                "SELECT status FROM analysis.strategy_revision WHERE strategy_key = 'options-radar-core' AND revision = %s",
+                [STRATEGY_REVISION],
+            ).fetchone()['status'] == 'active'
     finally:
         runtime.close()
 

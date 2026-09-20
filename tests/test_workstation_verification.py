@@ -1,5 +1,6 @@
 """The local handoff is executable, bounded, read-only, and does not leak balances."""
 import json
+import sys
 from urllib.error import URLError
 import pytest
 from scripts import verify_workstation as check
@@ -110,3 +111,18 @@ def test_runtime_reports_full_commit_for_exact_deployment_verification(monkeypat
         "release": {"backend_commit": expected}, "schema_compatible": True,
         "schema_revision": "20260919_0025"}}, expected_commit=expected, expected_schema="20260919_0025")
     assert result["status"] == "pass"
+
+
+def test_workstation_cli_defaults_to_current_schema(monkeypatch):
+    from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
+
+    seen = {}
+
+    def verify(*_args, **kwargs):
+        seen.update(kwargs)
+        return {"status": "pass"}
+
+    monkeypatch.setattr(check, "verify", verify)
+    monkeypatch.setattr(sys, "argv", ["verify_workstation.py"])
+    assert check.main() == 0
+    assert seen["expected_schema"] == HEAD_REVISION
