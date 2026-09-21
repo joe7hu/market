@@ -1491,7 +1491,7 @@ def test_funded_paper_account_stages_without_broker_cash(experiment_context, app
 
 
 def test_experiment_event_journal_follows_real_worker_entry_marks_exit_and_not_account_nav(experiment_context, application_postgres_dsn):
-    from investment_panel.infrastructure.postgres.experiment_events import experiment_history, record_experiment_event
+    from investment_panel.infrastructure.postgres.experiment_events import experiment_history, record_experiment_event, experiment_progress
     from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
     import psycopg
     runtime, ingestion, now, _parent, _candidate = experiment_context
@@ -1513,6 +1513,14 @@ def test_experiment_event_journal_follows_real_worker_entry_marks_exit_and_not_a
         assert float(entry["net_pnl"]) == pytest.approx(-3.3)  # Spread $2 + round-trip fees $1.30.
         assert float(entry["fees"]) == pytest.approx(1.3)
         assert entry["quote_observed_at"] == now + timedelta(seconds=20)
+        progress = experiment_progress(application, now=now + timedelta(seconds=23))
+        assert progress["counts"] == {"entered": 1}
+        assert progress["active"] == 1 and progress["incidents"] == []
+        assert progress["management_status"] in {"collecting", "market_closed"}
+        stalled = experiment_progress(application, now=now + timedelta(days=4))
+        assert stalled["management_status"] == "overdue"
+        assert {item["reason"] for item in stalled["incidents"]} == {"experiment_management_overdue", "experiment_quote_overdue"}
+        assert {item["job"] for item in stalled["incidents"]} == {"process_options_paper_orders", "refresh_paper_quotes"}
         with application.read() as connection:
             assert connection.execute("SELECT pending_entry_reason FROM analysis.shadow_trade WHERE id=%s", [shadow_id]).fetchone()["pending_entry_reason"] is None
             assert connection.execute("SELECT count(*) AS n FROM app.paper_order").fetchone()["n"] == 0
