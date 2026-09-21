@@ -12,44 +12,21 @@ jobs:
   snapshot:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Archive tracked source only
-        run: git archive --format=tar HEAD > /tmp/market-source.tar
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: market-review-source
-          path: /tmp/market-source.tar
-          retention-days: 1
-      - name: Build isolated Python verification tools
+      - name: Extract PostgreSQL 18 verification runtime
         run: |
-          mkdir -p /tmp/review-tools
-          docker run --rm -v "$PWD:/src:ro" -v /tmp/review-tools:/out python:3.13-slim-trixie bash -ec '
-            apt-get update -qq
-            apt-get install -y --no-install-recommends postgresql-17 >/dev/null
-            pip install -q uv==0.9.26
-            cd /src
-            uv export --frozen --extra test --no-emit-project -o /out/requirements.txt >/dev/null
-            pip install -q --target /out/site-packages -r /out/requirements.txt
-            pip install -q --target /out/site-packages ruff
-            mkdir -p /out/postgresql /out/pg-libs
-            cp -a /usr/lib/postgresql/17 /out/postgresql/
-            cp -a /usr/share/postgresql /out/pg-share
-            for f in /usr/lib/postgresql/17/bin/{postgres,initdb,pg_ctl,psql}; do
+          mkdir -p /tmp/review-postgres
+          docker run --rm --entrypoint bash -v /tmp/review-postgres:/out postgres:18-trixie -ec '
+            mkdir -p /out/postgresql /out/pg-libs /out/pg-share
+            cp -a /usr/lib/postgresql/18 /out/postgresql/
+            cp -a /usr/share/postgresql/18 /out/pg-share/
+            for f in /usr/lib/postgresql/18/bin/{postgres,initdb,pg_ctl,psql}; do
               ldd "$f" | awk "/=> \\// {print \$3}" | xargs -r -I{} cp -L {} /out/pg-libs/
             done
           '
-          tar -C /tmp/review-tools -czf /tmp/review-python-tools.tar.gz .
-      - name: Install browser verification dependencies
-        run: |
-          npm ci --prefix frontend
-          tar -C frontend -czf /tmp/review-node-tools.tar.gz node_modules
+          tar -C /tmp/review-postgres -czf /tmp/review-postgres18.tar.gz .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: market-review-tools
-          path: |
-            /tmp/review-python-tools.tar.gz
-            /tmp/review-node-tools.tar.gz
+          name: market-review-postgres18
+          path: /tmp/review-postgres18.tar.gz
           retention-days: 1
           compression-level: 0
