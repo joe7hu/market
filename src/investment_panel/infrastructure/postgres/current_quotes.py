@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Iterable
 
 
@@ -10,6 +11,7 @@ def current_quote_rows(
     *,
     symbols: Iterable[str] | None = None,
     limit: int | None = None,
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Read current quotes, passing a concrete instrument set to the PIT selector.
 
@@ -22,6 +24,7 @@ def current_quote_rows(
     # empty portfolio or watchlist requests no instruments.
     if symbols is not None and not normalized:
         return []
+    cutoff = as_of or datetime.now(UTC)
     if normalized:
         identifiers = [
             int(row["id"])
@@ -31,11 +34,11 @@ def current_quote_rows(
         ]
         if not identifiers:
             return []
-        selector = "raw.current_price_at(now(), %s::bigint[])"
-        parameters: list[Any] = [identifiers]
+        selector = "raw.current_price_at(%s, %s::bigint[])"
+        parameters: list[Any] = [cutoff, identifiers]
     else:
-        selector = "raw.current_price_at(now(), NULL::bigint[])"
-        parameters = []
+        selector = "raw.current_price_at(%s, NULL::bigint[])"
+        parameters = [cutoff]
     bounded = "" if limit is None else " LIMIT %s"
     if limit is not None:
         parameters.append(max(1, int(limit)))

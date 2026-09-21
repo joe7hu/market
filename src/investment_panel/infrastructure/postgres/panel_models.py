@@ -1822,6 +1822,7 @@ def load_postgres_tables(
     portfolio_summary_include_performance: bool = True,
     thesis_monitor_include_current_prices: bool = True,
     compact_ticker_decisions: bool = False,
+    quote_as_of: datetime | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
@@ -1972,6 +1973,7 @@ def load_postgres_tables(
                             # requested instruments. Count it before the
                             # defensive row limit so pagination stays exact.
                             limit=None if symbol_scoped else limit,
+                            as_of=quote_as_of,
                         )
                         if symbol_scoped:
                             query_cache_counts[cache_key] = len(rows)

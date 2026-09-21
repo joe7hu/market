@@ -399,7 +399,10 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         monkeypatch.setattr(ticker_decisions, "load_config", lambda _path: config)
         monkeypatch.setattr(ticker_decisions, "replay_portfolio_at", lambda *_args, **_kwargs: _portfolio_replay(decision_cutoff))
 
-        def bounded_tables(_config, _names, *, query_symbol_filter, **_kwargs):
+        quote_cutoffs = []
+
+        def bounded_tables(_config, _names, *, query_symbol_filter, **kwargs):
+            quote_cutoffs.append(kwargs.get("quote_as_of"))
             symbol = next(iter(query_symbol_filter))
             if symbol == "BROKEN":
                 raise RuntimeError("isolated fixture failure")
@@ -415,6 +418,7 @@ def test_qualified_stock_reaches_action_queue(migrated_postgres_dsn: str, monkey
         assert result["status"] == "partial"
         assert result["published_count"] == 1
         assert result["failed_count"] == 1
+        assert quote_cutoffs == [decision_cutoff, decision_cutoff]
 
         decision = TickerDecisionRepository(runtime).latest("LANE", reference=decision_cutoff)
         assert decision is not None

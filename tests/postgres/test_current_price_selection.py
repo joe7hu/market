@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.migrations import upgrade_database
@@ -150,6 +150,60 @@ def test_current_price_orders_by_information_time_not_daily_nominal_close(
         assert selected["source_id"] == "robinhood"
         assert selected["observed_at"] == datetime(2026, 8, 12, 19, 58, tzinfo=UTC)
         assert selected["available_at"] == robinhood_available
+    finally:
+        runtime.close()
+
+
+def test_current_quote_rows_respects_an_explicit_information_cutoff(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = IngestionRepository(runtime)
+    first_available = datetime(2026, 8, 12, 19, 31, tzinfo=UTC)
+    second_available = datetime(2026, 8, 12, 19, 59, tzinfo=UTC)
+    try:
+        repository.register_source("first-test", name="First", family="broker", kind="quote")
+        repository.register_source("second-test", name="Second", family="broker", kind="quote")
+        first_run = repository.start_run("first-test", "quotes")
+        repository.store_quotes(
+            first_run,
+            "first-test",
+            [{"symbol": "TSLA", "observed_at": datetime(2026, 8, 12, 19, 30, tzinfo=UTC), "price": 330}],
+        )
+        repository.finish_run(first_run, "succeeded")
+        second_run = repository.start_run("second-test", "quotes")
+        repository.store_quotes(
+            second_run,
+            "second-test",
+            [{"symbol": "TSLA", "observed_at": datetime(2026, 8, 12, 19, 30, tzinfo=UTC), "price": 335}],
+        )
+        repository.finish_run(second_run, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE ingest.run SET finished_at = %s WHERE id = %s", [first_available, first_run])
+            connection.execute("UPDATE ingest.run SET finished_at = %s WHERE id = %s", [second_available, second_run])
+            connection.execute(
+                "UPDATE raw.quote SET available_at = %s WHERE source_id = 'first-test'",
+                [first_available],
+            )
+            connection.execute(
+                "UPDATE raw.quote SET available_at = %s WHERE source_id = 'second-test'",
+                [second_available],
+            )
+            connection.execute("DELETE FROM raw.quote_confirmation")
+            connection.execute("DELETE FROM raw.quote_fact_availability")
+            connection.execute(
+                """INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id)
+                   SELECT id, available_at, ingest_run_id FROM raw.quote"""
+            )
+        with runtime.read() as connection:
+            rows = current_quote_rows(
+                connection,
+                symbols=["TSLA"],
+                as_of=first_available + timedelta(seconds=1),
+            )
+        assert rows[0]["price"] == 330
+        assert rows[0]["observed_at"] == datetime(2026, 8, 12, 19, 30, tzinfo=UTC)
     finally:
         runtime.close()
 
