@@ -115,14 +115,25 @@ def test_codex_subprocess_failure_is_typed(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
     def fake_run(*_args: Any, **kwargs: Any):
-        captured["preexec_fn"] = kwargs["preexec_fn"]
+        captured.update(kwargs)
         return type("Completed", (), {"returncode": 3, "stderr": "child failed", "stdout": ""})()
 
     monkeypatch.setattr(advisory.subprocess, "run", fake_run)
     request = replace(_request(provider="codex", model="gpt-5.6-luna"), max_output_tokens=24_000)
     with pytest.raises(AgentProviderError, match="Codex agent failed 3"):
         invoke_structured(request)
-    assert callable(captured["preexec_fn"])
+    assert "preexec_fn" not in captured
+
+
+def test_codex_subprocess_failure_keeps_the_diagnostic_tail(monkeypatch) -> None:
+    monkeypatch.setattr(advisory, "resolve_codex_bin", lambda: "codex-test")
+
+    def fake_run(*_args: Any, **_kwargs: Any):
+        return type("Completed", (), {"returncode": 3, "stderr": "start\n" + "x" * 600 + "\nroot cause", "stdout": ""})()
+
+    monkeypatch.setattr(advisory.subprocess, "run", fake_run)
+    with pytest.raises(AgentProviderError, match="root cause"):
+        invoke_structured(_request(provider="codex", model="gpt-5.6-luna"))
 
 
 def test_codex_timeout_is_typed(monkeypatch) -> None:
@@ -148,3 +159,52 @@ def test_codex_invalid_json_is_typed(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(advisory.subprocess, "run", fake_run)
     with pytest.raises(AgentProviderError, match="invalid JSON"):
         invoke_structured(_request(provider="codex", model="gpt-5.6-luna"))
+
+
+def test_codex_output_cap_is_checked_after_completion(monkeypatch) -> None:
+    monkeypatch.setattr(advisory, "resolve_codex_bin", lambda: "codex-test")
+
+    def fake_run(cmd, **_kwargs: Any):
+        output_path = cmd[cmd.index("-o") + 1]
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write('{"ok": true}' * 8)
+        return type("Completed", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    monkeypatch.setattr(advisory.subprocess, "run", fake_run)
+    request = replace(_request(provider="codex", model="gpt-5.6-luna"), max_output_tokens=3)
+    with pytest.raises(AgentProviderError, match="output exceeded"):
+        invoke_structured(request)
+
+
+def test_codex_schema_makes_nullable_optional_fields_explicit() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "required": {"type": "string"},
+            "optional": {"type": ["string", "null"]},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"target": {"type": ["number", "null"]}},
+                    "required": [],
+                },
+            },
+        },
+        "required": ["required", "items"],
+    }
+
+    strict = advisory._codex_output_schema(schema)
+
+    assert strict["required"] == ["required", "items", "optional"]
+    assert strict["properties"]["items"]["items"]["required"] == ["target"]
+    assert schema["required"] == ["required", "items"]
+
+
+def test_codex_schema_rejects_nonnullable_optional_fields() -> None:
+    with pytest.raises(ValueError, match="nullable optional field: optional"):
+        advisory._codex_output_schema({
+            "type": "object",
+            "properties": {"optional": {"type": "string"}},
+            "required": [],
+        })

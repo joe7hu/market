@@ -1167,6 +1167,7 @@ def test_scheduled_stock_experiment_skips_unchanged_evidence(
 
         monkeypatch.setattr(job, "build_control_results", should_not_rerun)
         repeated = job.scheduled()
+        assert repeated["status"] == "skipped"
         assert repeated["skipped"] is True
         assert repeated["reason"] == "no_new_stock_alpha_evidence"
         assert repeated["strategy_revision_id"] == first["strategy_revision_id"]

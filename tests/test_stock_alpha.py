@@ -320,3 +320,37 @@ def test_scheduled_stock_promotion_uses_configured_paper_boundary(
         assert calls[1]["cutoff"] == calls[0]["cutoff"]
         assert calls[1]["authorization_mode"] == "PAPER"
         assert calls[1]["promotion_cutoff"] >= calls[1]["cutoff"]
+
+
+def test_scheduled_stock_alpha_skips_when_repeated_controls_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from investment_panel.jobs import stock_alpha_walk_forward as job
+
+    runtime = MagicMock()
+    runtime.read.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = None
+    config = SimpleNamespace(analysis=SimpleNamespace(options_decision_system=SimpleNamespace(strategy_auto_promotion_enabled=False)))
+    monkeypatch.setattr(job, "load_config", lambda _path: config)
+    monkeypatch.setattr(job, "runtime_for_config", lambda _config: runtime)
+    monkeypatch.setattr(job, "load_observations", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(job, "load_universe_members", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        job,
+        "build_control_results",
+        lambda *_args, **_kwargs: {"randomized_label_returns": [], "white_noise_market_returns": [], "control_metadata": {}},
+    )
+    monkeypatch.setattr(job, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("controls are required before evaluation")))
+
+    result = job.scheduled()
+
+    assert result == {
+        "status": "skipped",
+        "reason": "repeated_control_observations_unavailable",
+        "skipped": True,
+        "complete": False,
+        "observations": 0,
+        "control_metadata": {},
+    }

@@ -1246,7 +1246,7 @@ def scheduled(config_path: str | None = None) -> dict[str, Any]:
         ).fetchone()
     if previous and not (auto_promote and previous["verdict"] == "pass" and previous["status"] == "candidate"):
         return {
-            "status": "ok" if previous["verdict"] == "pass" else "partial",
+            "status": "skipped",
             "reason": "no_new_stock_alpha_evidence", "skipped": True,
             "observations": len(observations), "dataset_hash": dataset_hash,
             "complete": previous["verdict"] == "pass",
@@ -1258,6 +1258,15 @@ def scheduled(config_path: str | None = None) -> dict[str, Any]:
         cutoff = previous["input_cutoff"]
     controls = build_control_results(observations, cutoff=cutoff)
     controls_missing = not controls["randomized_label_returns"] or not controls["white_noise_market_returns"]
+    if controls_missing:
+        return {
+            "status": "skipped",
+            "reason": "repeated_control_observations_unavailable",
+            "skipped": True,
+            "complete": False,
+            "observations": len(observations),
+            "control_metadata": controls.get("control_metadata") or {},
+        }
     result = run(
         runtime, observations, cutoff=cutoff,
         universe_members=members,
@@ -1272,8 +1281,8 @@ def scheduled(config_path: str | None = None) -> dict[str, Any]:
             universe_members=members, control_results=controls,
         )
     return {
-        "status": "partial" if controls_missing or not result["complete"] else "ok",
-        "reason": "repeated_control_observations_unavailable" if controls_missing else None,
+        "status": "partial" if not result["complete"] else "ok",
+        "reason": None,
         "observations": len(observations),
         "control_metadata": controls.get("control_metadata") or {},
         **result,

@@ -7,14 +7,11 @@ state. The caller owns task prompts, schemas, and evidence normalization.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-try:
-    import resource
-except ImportError:  # pragma: no cover - Market runs on POSIX hosts
-    resource = None  # type: ignore[assignment]
 import subprocess
 import tempfile
 from typing import Any, Literal
@@ -163,17 +160,10 @@ def _invoke_codex(
         estimated=True,
     )
     codex_bin = resolve_codex_bin()
-    output_limit = request.max_output_tokens
-    if output_limit is not None and resource is None:
-        raise AgentProviderError(
-            "Codex advisory output cap is unavailable on this host",
-            provider="codex", model=model, reasoning_effort=reasoning_effort,
-            token_metadata=tokens,
-        )
     with tempfile.NamedTemporaryFile(
         "w", suffix=f"-{request.schema_name}.schema.json", delete=False
     ) as schema_file:
-        json.dump(request.schema, schema_file)
+        json.dump(_codex_output_schema(request.schema), schema_file)
         schema_path = schema_file.name
     with tempfile.NamedTemporaryFile(
         "w", suffix=f"-{request.schema_name}.out.json", delete=False
@@ -195,7 +185,6 @@ def _invoke_codex(
             timeout=request.timeout_seconds,
             check=False,
             env=_codex_child_env(),
-            preexec_fn=_codex_output_limit(output_limit) if output_limit is not None else None,
         )
         output_text = _read_codex_output(output_path, completed.stdout)
     except subprocess.TimeoutExpired as exc:
@@ -218,7 +207,7 @@ def _invoke_codex(
                 pass
     if completed.returncode != 0:
         raise AgentProviderError(
-            f"Codex agent failed {completed.returncode}: {completed.stderr.strip()[:500]}",
+            f"Codex agent failed {completed.returncode}: {completed.stderr.strip()[-500:]}",
             provider="codex", model=model, reasoning_effort=reasoning_effort,
             token_metadata=ProviderTokenMetadata(
                 input_tokens=tokens.input_tokens,
@@ -453,27 +442,38 @@ def _codex_command(
     return command
 
 
-def _codex_output_limit(max_output_tokens: int):
-    """Install a pre-execution hard cap for Codex's output file."""
-
-    if resource is None:  # pragma: no cover - guarded by the caller
-        raise RuntimeError("Codex output cap requires POSIX resource limits")
-    max_bytes = max(1, int(max_output_tokens)) * 4
-
-    def apply_limit() -> None:
-        soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
-        bounded_soft = max_bytes if hard == resource.RLIM_INFINITY else min(max_bytes, hard)
-        resource.setrlimit(resource.RLIMIT_FSIZE, (bounded_soft, hard))
-
-    return apply_limit
-
-
 def _codex_child_env() -> dict[str, str]:
     allowed = {
         "CODEX_HOME", "HOME", "LANG", "LC_ALL", "LOGNAME", "PATH", "SHELL",
         "SSL_CERT_DIR", "SSL_CERT_FILE", "TEMP", "TMP", "TMPDIR", "USER", "XDG_CONFIG_HOME",
     }
     return {key: value for key, value in os.environ.items() if key in allowed}
+
+
+def _codex_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Make nullable optional fields explicit for Codex strict schemas."""
+
+    strict = deepcopy(schema)
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            properties = value.get("properties")
+            if isinstance(properties, dict):
+                required = [str(name) for name in value.get("required") or []]
+                optional = [name for name in properties if name not in required]
+                for name in optional:
+                    field = properties[name]
+                    if not (isinstance(field, dict) and isinstance(field.get("type"), list) and "null" in field["type"]):
+                        raise ValueError(f"Codex strict schema requires nullable optional field: {name}")
+                value["required"] = [*required, *optional]
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(strict)
+    return strict
 
 
 def _read_codex_output(output_path: str, stdout: str) -> str:

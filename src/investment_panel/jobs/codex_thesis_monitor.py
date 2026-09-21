@@ -168,6 +168,7 @@ CONTINUOUS_ADVISOR_SCHEMA: dict[str, Any] = {
         },
         "forecasts": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -175,8 +176,14 @@ CONTINUOUS_ADVISOR_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "claim_key": {"type": "string"},
                     "statement": {"type": "string"},
-                    "horizon": {"type": "string"},
-                    "direction": {"type": "string"},
+                    "horizon": {
+                        "type": "string",
+                        "pattern": "^\\s*[1-9][0-9]*\\s*(m|min|mins|minute|minutes|h|hour|hours|mo|month|months|d|day|days|w|week|weeks)\\s*$",
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "flat", "bullish", "bearish", "neutral"],
+                    },
                     "probability": {"type": "number"},
                     "target": {"type": ["number", "null"]},
                     "evidence_refs": {"type": "array", "items": {"type": "string"}},
@@ -185,6 +192,7 @@ CONTINUOUS_ADVISOR_SCHEMA: dict[str, Any] = {
         },
         "invalidations": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -192,7 +200,10 @@ CONTINUOUS_ADVISOR_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "claim_key": {"type": "string"},
                     "condition": {"type": "string"},
-                    "horizon": {"type": "string"},
+                    "horizon": {
+                        "type": "string",
+                        "pattern": "^\\s*[1-9][0-9]*\\s*(m|min|mins|minute|minutes|h|hour|hours|mo|month|months|d|day|days|w|week|weeks)\\s*$",
+                    },
                     "probability": {"type": "number"},
                     "evidence_refs": {"type": "array", "items": {"type": "string"}},
                 },
@@ -287,7 +298,9 @@ def _generate_continuous_advisor(
         StructuredProviderRequest(
             provider=selection.provider,  # type: ignore[arg-type]
             model=selection.model,
-            timeout_seconds=90,
+            # Forecast packets are larger than thesis refreshes. The scheduler
+            # gives this research-only job a longer bounded window.
+            timeout_seconds=180,
             reasoning_effort=selection.reasoning_effort,
             schema_name="continuous_advisor_v1",
             schema=CONTINUOUS_ADVISOR_SCHEMA,

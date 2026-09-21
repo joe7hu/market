@@ -259,6 +259,16 @@ def test_response_horizons_match_the_replay_grammar():
         validate_continuous_response(response, packet)
 
 
+def test_provider_schema_matches_forecast_validation_grammar():
+    forecast = codex_thesis_monitor.CONTINUOUS_ADVISOR_SCHEMA["properties"]["forecasts"]["items"]["properties"]
+    invalidation = codex_thesis_monitor.CONTINUOUS_ADVISOR_SCHEMA["properties"]["invalidations"]["items"]["properties"]
+
+    assert forecast["direction"]["enum"] == ["up", "down", "flat", "bullish", "bearish", "neutral"]
+    assert forecast["horizon"]["pattern"] == invalidation["horizon"]["pattern"]
+    assert codex_thesis_monitor.CONTINUOUS_ADVISOR_SCHEMA["properties"]["forecasts"]["minItems"] == 1
+    assert codex_thesis_monitor.CONTINUOUS_ADVISOR_SCHEMA["properties"]["invalidations"]["minItems"] == 1
+
+
 def test_forecast_and_invalidation_claim_keys_must_be_unique_together():
     packet = _packet()
     response = {
@@ -371,6 +381,7 @@ def test_prompt_mutation_reaches_provider_and_orders_packet_copy(monkeypatch):
     provider_request = captured["request"]
     assert "Focus: Compare the countercase first." in provider_request.system_prompt
     assert "Forecast instruction: Use calibrated probabilities." in provider_request.system_prompt
+    assert provider_request.timeout_seconds == 180
     assert provider_request.max_output_tokens == 24_000
     assert list(provider_request.payload["evidence_packet"]["evidence"]) == ["source_evidence", "prices", "thesis"]
     assert len(provider_request.payload["evidence_packet"]["evidence"]["source_evidence"]) == 1
