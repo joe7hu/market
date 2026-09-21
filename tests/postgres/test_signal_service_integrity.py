@@ -10,7 +10,7 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from conftest import typed_config
-from investment_panel.domain.decision.calendar import is_us_market_day, latest_completed_market_day, market_session_bounds
+from investment_panel.domain.decision.calendar import is_market_open, is_us_market_day, latest_completed_market_day, market_session_bounds
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
@@ -54,7 +54,8 @@ def seed_history(runtime, symbols):
     for symbol, crypto in symbols.items():
         source = "assessment-crypto-quotes" if crypto else "assessment-equity-quotes"
         repository.register_source(source, name="Assessment fixture", family="market_data", kind="crypto_quote" if crypto else "intraday_quote", operational_state="active")
-        observed = datetime.now(UTC) if crypto else market_session_bounds(latest_completed_market_day(datetime.now(UTC)))[1].astimezone(UTC)
+        quote_time = datetime.now(UTC)
+        observed = quote_time if crypto or is_market_open(quote_time) else market_session_bounds(latest_completed_market_day(quote_time))[1].astimezone(UTC)
         with repository.run(source, "fixture-reference") as ingestion:
             assert repository.store_quotes(ingestion.id, source, [{"symbol": symbol, "asset_class": "crypto" if crypto else "etf", "price": last[symbol], "observed_at": observed}]) == 1
             ingestion.finish("succeeded", item_count=1)
@@ -105,6 +106,7 @@ def test_real_price_feature_and_publisher_deliver_the_same_signal_to_all_readers
     # It is still NOT globally healthy: no scheduler/Market publication is invented.
     assert status["status"] == "partial"
     assert any(item["job"] == "refresh_market_publication" for item in status["blockers"])
+    # It is still NOT globally healthy: no scheduler/Market publication is invented.
     with runtime.read() as connection:
         assert connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()["count"] == 0
 
