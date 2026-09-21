@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import Depends, Request
 
+from investment_panel.application.read_models import panel_snapshot
 from investment_panel.workflows.agents import AgentActions
 from investment_panel.workflows.options import OptionsActions
 from investment_panel.workflows.portfolio import PortfolioActions
@@ -155,3 +156,13 @@ def get_options_recovery(config: AppConfig = Depends(get_config)) -> RecoveryRea
 
 def get_workstation(config: AppConfig = Depends(get_config)) -> WorkstationRepository:
     return WorkstationRepository(runtime_for_config(config))
+
+
+def load_workstation_status(config: AppConfig, repository: WorkstationRepository) -> dict[str, Any]:
+    """Coalesce the bounded Health snapshot shared by status endpoints."""
+    _, status = panel_snapshot.context(
+        cache_key="workstation-status",
+        loader=lambda active_config: repository.status(active_config),
+        config_loader=lambda: config,
+    )
+    return status

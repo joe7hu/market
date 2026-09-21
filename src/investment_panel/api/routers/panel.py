@@ -49,7 +49,7 @@ def status(
     response = payloads.status_payload(panel_data)
     response["transport_ready"] = bool(response.get("ready"))
     try:
-        health = workstation.status(config)
+        health = dependencies.load_workstation_status(config, workstation)
         response["workstation"] = health
         response["service_ready"] = health["status"] == "available"
     except Exception as exc:

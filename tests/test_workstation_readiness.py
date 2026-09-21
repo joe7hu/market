@@ -1,12 +1,13 @@
 """Independent source, publication, execution and evidence-collection states."""
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from investment_panel.settings import AppConfig
-from investment_panel.infrastructure.postgres.workstation import WorkstationRepository, worker_projection, next_session_open
+from investment_panel.infrastructure.postgres.workstation import WORKFLOW_JOBS, WorkstationRepository, configured_workflow_jobs, worker_projection, next_session_open
 from investment_panel.api.response_contracts import WorkstationStatus
 
 NOW = datetime(2026, 9, 18, 15, tzinfo=UTC)
@@ -70,6 +71,15 @@ def test_disabled_worker_has_no_expected_dispatch():
     result = worker_projection({"status": "succeeded", "finished_at": NOW},
         job="j", interval=15, now=NOW, enabled=False)
     assert result["status"] == "disabled" and result["next_expected_at"] is None
+
+
+def test_health_excludes_intentionally_disabled_broker_and_advisor_stages():
+    config = AppConfig()
+    assert {"update_broker_account", "run_continuous_advisor", "run_continuous_advisor_replay"}.isdisjoint(configured_workflow_jobs(config))
+    enabled = replace(config, data_sources=replace(config.data_sources, brokers=replace(
+        config.data_sources.brokers, ibkr=replace(config.data_sources.brokers.ibkr, enabled=True),
+    )), agents=replace(config.agents, thesis_monitor=replace(config.agents.thesis_monitor, continuous_enabled=True)))
+    assert configured_workflow_jobs(enabled) == WORKFLOW_JOBS
 
 
 def market_status(*, unavailable=False, cutoff=NOW, references=1, failures=None):

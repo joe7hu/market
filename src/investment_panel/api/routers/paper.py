@@ -38,7 +38,7 @@ def workstation_status(
     config: AppConfig = Depends(dependencies.get_config),
     repository: dependencies.WorkstationRepository = Depends(dependencies.get_workstation),
 ) -> dict[str, Any]:
-    return repository.status(config)
+    return dependencies.load_workstation_status(config, repository)
 
 
 @router.get("/api/paper/account-history", response_model=PaperAccountHistory)

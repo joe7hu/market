@@ -38,6 +38,17 @@ BASELINE_MODELS = (
 )
 
 
+def configured_workflow_jobs(config: AppConfig) -> tuple[str, ...]:
+    """Report only workflow stages enabled for this workstation."""
+    excluded: set[str] = set()
+    brokers = config.data_sources.brokers
+    if not brokers.enabled or not (brokers.ibkr.enabled or brokers.moomoo.enabled):
+        excluded.add("update_broker_account")
+    if not config.agents.thesis_monitor.continuous_enabled:
+        excluded.update(("run_continuous_advisor", "run_continuous_advisor_replay"))
+    return tuple(job for job in WORKFLOW_JOBS if job not in excluded)
+
+
 def next_session_open(now: datetime) -> datetime:
     local = now.astimezone(MARKET_TZ)
     for offset in range(10):
@@ -132,6 +143,7 @@ class WorkstationRepository:
         failures: list[str] = []
         intervals = scheduler_intervals(config)
         settings = config.analysis.options_decision_system
+        workflow_jobs = configured_workflow_jobs(config)
         with self.runtime.snapshot(API_PROFILE) as connection:
             def read(name: str, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
                 try:
@@ -149,7 +161,7 @@ class WorkstationRepository:
                     AND started_at <= %s ORDER BY started_at DESC, id DESC LIMIT 1) latest ON true
                 LEFT JOIN LATERAL (SELECT max(finished_at) AS last_success_at FROM ops.job_run
                     WHERE job_name = name.job AND status = 'succeeded' AND finished_at <= %s) success ON true
-            """, [list(WORKFLOW_JOBS), now, now])
+            """, [list(workflow_jobs), now, now])
             stored_universe = read("monitored_universe", """
                 SELECT instrument.symbol, instrument.asset_class,
                        coalesce(position.quantity, 0) <> 0 AS is_owned, watchlist.watch_state
@@ -303,7 +315,7 @@ class WorkstationRepository:
             basis="Unresolved horizons are pending, not losses; only independently resolved outcomes enter calibration.")
         by_job = {row["job_name"]: row for row in jobs}
         workers = [worker_projection(by_job.get(job), job=job, interval=intervals.get(job), now=now,
-                                     enabled=scheduler_enabled()) for job in WORKFLOW_JOBS]
+                                     enabled=scheduler_enabled()) for job in workflow_jobs]
         if "jobs" in failures:
             for worker in workers:
                 worker.update(status="unavailable", reason="Worker state could not be read.")

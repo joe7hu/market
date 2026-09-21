@@ -1273,6 +1273,35 @@ def test_context_cache_coalesces_concurrent_same_key_loads() -> None:
     assert panel_owner._CONTEXT_INFLIGHT == {}
 
 
+def test_workstation_status_coalesces_concurrent_health_reads() -> None:
+    panel_owner.invalidate_context_cache()
+    config = typed_config("postgresql:///workstation-health-flight")
+    started, release = threading.Event(), threading.Event()
+    calls = 0
+    snapshot = {"status": "available"}
+
+    def load(_config: AppConfig) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=5)
+        return snapshot
+
+    repository = SimpleNamespace(status=load)
+    results: list[dict[str, str]] = []
+    threads = [threading.Thread(target=lambda: results.append(dependencies.load_workstation_status(config, repository))) for _ in range(2)]
+    threads[0].start()
+    assert started.wait(timeout=1)
+    threads[1].start()
+    threads[1].join(timeout=0.05)
+    assert threads[1].is_alive()
+    release.set()
+    for thread in threads:
+        thread.join(timeout=1)
+    assert calls == 1 and results == [snapshot, snapshot]
+    panel_owner.invalidate_context_cache()
+
+
 def test_context_cache_loader_error_wakes_waiter_and_does_not_poison_cache() -> None:
     panel_owner.invalidate_context_cache()
     config = typed_config("postgresql:///single-flight-error")
