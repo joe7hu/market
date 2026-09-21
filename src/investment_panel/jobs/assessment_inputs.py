@@ -69,9 +69,16 @@ def features(config_path: str | None = None) -> dict[str, Any]:
         code_version="monitored-features.v1", inputs={"symbols": symbols})
     try:
         result = refresh_symbol_trend_features(runtime, run_id, as_of=reference, symbols=symbols)
-        status = "succeeded" if not result["failures"] else "partial" if result["complete_count"] else "failed"
-        analysis_repository.finish_run(run_id, status, {"feature_count": result["feature_count"], "failures": result["failures"]})
-        return {**result, "run_id": str(run_id), "status": "ok" if status == "succeeded" else status}
+        deferred = [item for item in result["failures"] if item["reasons"] == ["insufficient_price_history"]]
+        failures = [item for item in result["failures"] if item not in deferred]
+        status = "succeeded" if not failures else "partial" if result["complete_count"] else "failed"
+        analysis_repository.finish_run(
+            run_id,
+            status,
+            {"feature_count": result["feature_count"], "failures": failures, "deferred": deferred},
+        )
+        return {**result, "failures": failures, "deferred": deferred,
+                "run_id": str(run_id), "status": "ok" if status == "succeeded" else status}
     except Exception as exc:
         analysis_repository.finish_run(run_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
         raise

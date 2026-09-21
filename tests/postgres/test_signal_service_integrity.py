@@ -99,10 +99,11 @@ def test_real_price_feature_and_publisher_deliver_the_same_signal_to_all_readers
         assert signal.order_authorized is False
     status = WorkstationRepository(runtime).status(config)
     assert status["failed_reads"] == []
-    # Conditions are usable, but no account or Market facts were fabricated.
+    # Conditions are usable. Optional broker account facts are neither fabricated
+    # nor a Health outage when the configuration does not require them.
     assert all(item["conditions_status"] == "available" for item in status["decision_service"]["instruments"])
-    assert status["decision_service"]["status"] == "failed"
-    assert any(item["capability"] == "Capital decisions" for item in status["decision_service"]["incidents"])
+    assert status["decision_service"]["status"] == "available"
+    assert not any(item["capability"] == "Capital decisions" for item in status["decision_service"]["incidents"])
     # It is still NOT globally healthy: no scheduler/Market publication is invented.
     assert status["status"] == "partial"
     assert any(item["job"] == "refresh_market_publication" for item in status["blockers"])

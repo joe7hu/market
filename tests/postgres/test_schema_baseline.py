@@ -103,6 +103,9 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260920_0027_options_radar_orphan_candidate_repair.py',
         '20260920_0028_market_app_setting_privileges.py',
         '20260921_0029_daily_market_price_source_origin.py',
+        '20260921_0030_current_price_information_time.py',
+        '20260921_0031_agent_context_lookup_indexes.py',
+        '20260921_0032_reconcile_source_lifecycle.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27

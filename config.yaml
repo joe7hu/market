@@ -40,7 +40,9 @@ data_sources:
     enabled: true
     advisory_only: true
     ibkr:
-      enabled: true
+      # Deliberately unused. Keep this disabled unless this workstation is
+      # explicitly connected to a read-only paper IBKR account.
+      enabled: false
       host: 127.0.0.1
       port: 4002
       client_id: 77
@@ -82,6 +84,7 @@ data_sources:
       # watchlist's Opt Move/Skew reflect a near-term horizon, not a 1-year LEAP. 0 disables.
       near_term_dte: 35
     moomoo:
+      # Deliberately unused on this workstation; Health excludes standby sources.
       enabled: false
       host: 127.0.0.1
       port: 11111

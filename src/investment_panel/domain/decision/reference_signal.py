@@ -149,6 +149,13 @@ def build_reference_signal(
     expected = (now.date() - timedelta(days=1)) if continuous else latest_completed_market_day(now)
     if not feature or feature.get("data_quality_status") != "complete":
         reasons = [str(item) for item in feature.get("reason_codes") or []]
+        if reasons == ["insufficient_price_history"] and base["source_revision"] and session:
+            return ReferenceSignal(
+                **base,
+                action="HOLD" if owned else "WAIT",
+                summary="Daily trend history is still maturing; no allocation is authorized.",
+                condition="Wait for 200 completed daily bars before evaluating a directional setup.",
+            )
         source_gap = any("history" in item or "bar" in item for item in reasons)
         details = "; ".join(reasons) or "no completed feature was published"
         return fault("trend_feature_incomplete", f"Daily-trend input contract failed: {details}.",

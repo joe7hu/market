@@ -317,7 +317,11 @@ class WorkstationRepository:
         observation_counts: dict[str, int] = {}
         for row in observations:
             observation_counts[row["status"]] = observation_counts.get(row["status"], 0) + row["count"]
-        decision_service = decision_service_health(decision_rows, now=now)
+        decision_service = decision_service_health(
+            decision_rows,
+            now=now,
+            account_required=config.data_sources.brokers.policy.require_account_for_recommendations,
+        )
         if "decision_service" in failures or "monitored_universe" in failures:
             decision_service.update(status="unavailable", reason="Required decision-service reads failed; population is not known.")
         blockers = list(decision_service["incidents"])

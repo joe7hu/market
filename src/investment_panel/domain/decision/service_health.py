@@ -39,9 +39,15 @@ ALLOCATION_PRODUCERS = {
     "invalidation_missing": "refresh_decision_models",
     "profit_exit_missing": "refresh_decision_models",
 }
+ACCOUNT_FACT_CODES = frozenset(
+    code for code, owner in ALLOCATION_PRODUCERS.items()
+    if owner == "update_broker_account"
+)
 
 
-def decision_service_health(rows: Sequence[Mapping[str, Any]], *, now: datetime) -> dict[str, Any]:
+def decision_service_health(
+    rows: Sequence[Mapping[str, Any]], *, now: datetime, account_required: bool = True,
+) -> dict[str, Any]:
     incidents: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
     for row in rows:
@@ -75,6 +81,8 @@ def decision_service_health(rows: Sequence[Mapping[str, Any]], *, now: datetime)
         codes = {*plan.get("blockers", ()), *policy.get("blockers", ())}
         if plan.get("primary_blocker"):
             codes.add(plan["primary_blocker"])
+        if not account_required:
+            codes -= ACCOUNT_FACT_CODES
         allocation_faults = {code: ALLOCATION_PRODUCERS[code] for code in codes if code in ALLOCATION_PRODUCERS}
         for code, job in sorted(allocation_faults.items()):
             faults.append((code, f"Capital-decision producer failed: {code.replace('_', ' ')}.", job))
@@ -98,6 +106,7 @@ def decision_service_health(rows: Sequence[Mapping[str, Any]], *, now: datetime)
         "monitored_count": len(items), "ready_count": ready, "failed_count": len(items)-ready,
         "incidents": incidents, "instruments": items,
         "failures_by_owner": dict(Counter(item["job"] for item in incidents)),
+        "account_required": account_required,
         "basis": "Quote -> completed-session feature -> current signal -> ranking/trade-plan contract; not profitability."}
 
 

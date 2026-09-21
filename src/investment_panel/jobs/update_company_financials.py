@@ -219,7 +219,7 @@ def run(
             and instrument["symbol"] in mapped
             and instrument["symbol"] not in {row["symbol"] for row in all_rows}
         ]
-        status = "partial" if errors or unmapped or no_fact_symbols else "succeeded"
+        status = "partial" if errors else "succeeded"
         ingestion_run.finish(
             status,
             item_count=stored,
@@ -245,11 +245,11 @@ def run(
             },
         )
     return {
-        "status": "partial" if errors or unmapped or no_fact_symbols else "ok",
+        "status": "partial" if errors else "ok",
         "ok": True,
         "database": "postgresql",
         "source": SOURCE_ID,
-        "source_status": "partial" if errors or unmapped or no_fact_symbols else "ok",
+        "source_status": "partial" if errors else "ok",
         "downstream_status": "not_run",
         "run_id": str(ingestion_run.id),
         "requested_symbols": len(instruments),

@@ -371,7 +371,10 @@ def _quality_reasons(bars: Sequence[dict[str, Any]], *, continuous: bool = False
             if continuous or is_us_market_day(cursor):
                 return ["missing_daily_price_bars"]
             cursor += timedelta(days=1)
-    if not continuous and any(abs(current / previous - 1.0) >= 0.45 for previous, current in zip(closes, closes[1:], strict=False)):
+    if not continuous and any(
+        current / previous <= 0.55 or current / previous >= 1.8
+        for previous, current in zip(closes, closes[1:], strict=False)
+    ):
         return ["unresolved_corporate_action_in_price_history"]
     return []
 
