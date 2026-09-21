@@ -292,6 +292,89 @@ def test_recurring_jobs_wait_the_configured_interval_after_completion_or_skip() 
     assert scheduler._recurring_delay_seconds("update_social_sources", 1800) == 1800
 
 
+def test_market_data_pipeline_dispatches_source_feature_then_decision(monkeypatch) -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        source_started, feature_started = asyncio.Event(), asyncio.Event()
+        release_source, release_feature = asyncio.Event(), asyncio.Event()
+
+        async def fake_dispatch(job, _db_path, _config_path, **_kwargs):
+            calls.append(job)
+            if job == "update_market_data":
+                source_started.set()
+                await release_source.wait()
+            elif job == "refresh_symbol_features":
+                feature_started.set()
+                await release_feature.wait()
+            return {"status": "partial"}
+
+        monkeypatch.setattr(scheduler, "load_config", lambda _path: object())
+        monkeypatch.setattr(scheduler, "job_intervals", lambda _config: {
+            "refresh_decision_models": 60,
+            "refresh_symbol_features": 60,
+            "update_market_data": 60,
+        })
+        monkeypatch.setattr(scheduler, "_dispatch", fake_dispatch)
+        monkeypatch.setattr(scheduler, "mark_stale_running_jobs", lambda _db_path: 0)
+        monkeypatch.setattr(scheduler, "overdue_source_refresh_jobs", lambda _db_path: set())
+        monkeypatch.setattr(scheduler, "TICK_SECONDS", 0.01)
+        monkeypatch.setattr(scheduler, "STAGGER_SECONDS", 5)
+        monkeypatch.setenv("MARKET_SCHEDULER_WARMUP_SECONDS", "0")
+
+        task = asyncio.create_task(scheduler.run_scheduler("db", "config.yaml"))
+        try:
+            await asyncio.wait_for(source_started.wait(), 1)
+            await asyncio.sleep(0.03)
+            assert calls == ["update_market_data"]
+            release_source.set()
+            await asyncio.wait_for(feature_started.wait(), 1)
+            await asyncio.sleep(0.03)
+            assert calls == ["update_market_data", "refresh_symbol_features"]
+            release_feature.set()
+            for _ in range(100):
+                if len(calls) == 3:
+                    break
+                await asyncio.sleep(0.01)
+            assert calls == ["update_market_data", "refresh_symbol_features", "refresh_decision_models"]
+        finally:
+            release_source.set()
+            release_feature.set()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+    assert "update_market_data" in scheduler.PRIORITY_JOBS
+
+
+def test_market_data_waits_for_an_in_flight_downstream_stage() -> None:
+    assert scheduler._pipeline_waiting_on_descendant(
+        "update_market_data", {"refresh_symbol_features": object()},
+    )
+    assert scheduler._pipeline_waiting_on_descendant(
+        "refresh_symbol_features", {"refresh_decision_models": object()},
+    )
+
+
+def test_market_data_does_not_enqueue_a_disabled_feature_stage() -> None:
+    now = 100.0
+    next_due = {"update_market_data": now + 3600, "refresh_decision_models": now}
+    next_due_wall = {
+        job: datetime(2026, 9, 21, 16, tzinfo=ZoneInfo("America/New_York"))
+        for job in next_due
+    }
+    scheduler._schedule_pipeline_successor(
+        "update_market_data", {"status": "succeeded"}, next_due, next_due_wall,
+        now=now, wall_now=next_due_wall["update_market_data"],
+    )
+    assert "refresh_symbol_features" not in next_due
+    assert not scheduler._pipeline_waiting_on_upstream(
+        "refresh_decision_models", next_due, {}, now=now,
+    )
+
+
 def test_option_history_recurrence_uses_the_next_quarter_hour_not_the_startup_stagger() -> None:
     eastern = ZoneInfo("America/New_York")
     assert scheduler._recurring_delay_seconds(

@@ -37,7 +37,18 @@ TICK_SECONDS = 15
 CONTINUOUS_SETTINGS_REFRESH_SECONDS = 60
 SCHEDULER_CAPACITY = 2
 FAST_DATABASE_JOBS = frozenset({"process_options_paper_orders", "sync_decision_inbox"})
-PRIORITY_JOBS = FAST_DATABASE_JOBS | {"refresh_paper_quotes", "refresh_assessment_inputs", "refresh_symbol_features", "refresh_decision_models"}
+PRIORITY_JOBS = FAST_DATABASE_JOBS | {
+    "refresh_paper_quotes", "refresh_assessment_inputs", "update_market_data",
+    "refresh_symbol_features", "refresh_decision_models",
+}
+DECISION_PIPELINE_SUCCESSORS = {
+    "update_market_data": "refresh_symbol_features",
+    "refresh_symbol_features": "refresh_decision_models",
+}
+DECISION_PIPELINE_UPSTREAMS = {
+    successor: job for job, successor in DECISION_PIPELINE_SUCCESSORS.items()
+}
+DECISION_PIPELINE_STAGES = (*DECISION_PIPELINE_SUCCESSORS, "refresh_decision_models")
 _scheduler_semaphore: asyncio.Semaphore | None = None
 _slow_job_semaphore: asyncio.Semaphore | None = None
 _active_jobs: dict[str, float] = {}
@@ -148,6 +159,68 @@ def _recurring_delay_seconds(
     # A completed run five seconds into a slot must wait to the *next* slot;
     # the scheduler's broader boundary tolerance is only for dispatch jitter.
     return float(interval if remainder < 0.001 else interval - remainder)
+
+
+def _pipeline_waiting_on_upstream(
+    job: str,
+    next_due: dict[str, float],
+    in_flight: dict[str, Any],
+    *,
+    now: float,
+) -> bool:
+    """Keep the daily source -> feature -> decision chain point-in-time ordered."""
+
+    upstream = DECISION_PIPELINE_UPSTREAMS.get(job)
+    while upstream:
+        if upstream in in_flight or next_due.get(upstream, float("inf")) <= now:
+            return True
+        upstream = DECISION_PIPELINE_UPSTREAMS.get(upstream)
+    return False
+
+
+def _pipeline_waiting_on_descendant(job: str, in_flight: dict[str, Any]) -> bool:
+    """Do not replace an input while an older downstream computation is running."""
+
+    descendant = DECISION_PIPELINE_SUCCESSORS.get(job)
+    while descendant:
+        if descendant in in_flight:
+            return True
+        descendant = DECISION_PIPELINE_SUCCESSORS.get(descendant)
+    return False
+
+
+def _prime_decision_pipeline(
+    next_due: dict[str, float],
+    next_due_wall: dict[str, datetime],
+) -> None:
+    """Start a restarted scheduler with source data, never an unrefreshed decision."""
+
+    if not all(stage in next_due for stage in DECISION_PIPELINE_STAGES):
+        return
+    first_due = min(DECISION_PIPELINE_STAGES, key=next_due.__getitem__)
+    source = DECISION_PIPELINE_STAGES[0]
+    next_due[source] = next_due[first_due]
+    next_due_wall[source] = next_due_wall[first_due]
+    for downstream in DECISION_PIPELINE_STAGES[1:]:
+        next_due[downstream] = float("inf")
+
+
+def _schedule_pipeline_successor(
+    job: str,
+    result: dict[str, Any] | None,
+    next_due: dict[str, float],
+    next_due_wall: dict[str, datetime],
+    *,
+    now: float,
+    wall_now: datetime,
+) -> None:
+    """Run a newly refreshed daily bar through its dependent decision stages."""
+
+    successor = DECISION_PIPELINE_SUCCESSORS.get(job)
+    source_ready = bool(result) and result.get("status") in {"succeeded", "partial"}
+    if successor in next_due and source_ready:
+        next_due[successor] = now
+        next_due_wall[successor] = wall_now
 
 
 def _next_market_open_at(reference: datetime) -> datetime:
@@ -262,6 +335,7 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
         )
         for offset, (job, interval) in enumerate(intervals.items())
     }
+    _prime_decision_pipeline(next_due, next_due_wall)
     next_continuous_settings_refresh = time.monotonic() + CONTINUOUS_SETTINGS_REFRESH_SECONDS
     in_flight: dict[str, asyncio.Task] = {}
     global _scheduler_semaphore
@@ -292,6 +366,11 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
             for job, task in list(in_flight.items()):
                 if task.done():
                     in_flight.pop(job, None)
+                    try:
+                        result = task.result()
+                    except Exception:
+                        logger.exception("scheduled job %s could not report its result", job)
+                        result = None
                     interval = intervals.get(job)
                     if interval is None:
                         next_due.pop(job, None)
@@ -299,9 +378,23 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
                         continue
                     delay = _recurring_delay_seconds(job, interval)
                     next_due[job] = now + delay
-                    next_due_wall[job] = datetime.now(MARKET_TZ) + timedelta(seconds=delay)
+                    wall_now = datetime.now(MARKET_TZ)
+                    next_due_wall[job] = wall_now + timedelta(seconds=delay)
+                    _schedule_pipeline_successor(
+                        job,
+                        result if isinstance(result, dict) else None,
+                        next_due,
+                        next_due_wall,
+                        now=now,
+                        wall_now=wall_now,
+                    )
             for job, interval in intervals.items():
                 if now >= next_due.get(job, 0.0) and job not in in_flight:
+                    if (
+                        _pipeline_waiting_on_upstream(job, next_due, in_flight, now=now)
+                        or _pipeline_waiting_on_descendant(job, in_flight)
+                    ):
+                        continue
                     if not _is_slot_boundary(job, interval):
                         delay = _initial_delay_seconds(job, interval, 0)
                         next_due[job] = time.monotonic() + delay
@@ -336,11 +429,10 @@ async def _dispatch(
     config_path: str,
     *,
     due_at: datetime | None = None,
-) -> None:
+) -> dict[str, Any] | None:
     semaphore = _scheduler_semaphore
     if semaphore is None:
-        await _dispatch_once(job, db_path, config_path, due_at=due_at)
-        return
+        return await _dispatch_once(job, db_path, config_path, due_at=due_at)
     global _deferred_jobs
     # Acquire the slow-workload slot before total capacity. A queued collector
     # must not reserve the last slot while a paper management tick is due.
@@ -358,7 +450,7 @@ async def _dispatch(
         _deferred_jobs = max(0, _deferred_jobs - 1)
         waiting = False
         _active_jobs[job] = time.monotonic()
-        await _dispatch_once(job, db_path, config_path, due_at=due_at)
+        return await _dispatch_once(job, db_path, config_path, due_at=due_at)
     finally:
         if waiting:
             _deferred_jobs = max(0, _deferred_jobs - 1)
@@ -376,9 +468,9 @@ async def _dispatch_once(
     config_path: str,
     *,
     due_at: datetime | None = None,
-) -> None:
+) -> dict[str, Any] | None:
     if job in SESSION_JOBS and not is_market_open(datetime.now(UTC)):
-        return
+        return None
     started_job_id: str | None = None
     try:
         start_kwargs: dict[str, Any] = {}
@@ -421,7 +513,7 @@ async def _dispatch_once(
                 )
             except Exception:
                 logger.exception("scheduled job %s could not be marked failed", job)
-        return
+        return {"status": "failed"}
     status = result.get("status") if isinstance(result, dict) else None
     if status == "failed":
         logger.warning("scheduled job %s failed: %s", job, result.get("error"))
@@ -429,6 +521,7 @@ async def _dispatch_once(
         logger.debug("scheduled job %s already running; skipped", job)
     else:
         logger.info("scheduled job %s -> %s", job, status)
+    return result if isinstance(result, dict) else None
 
 
 async def _execute_started_refresh_job(
