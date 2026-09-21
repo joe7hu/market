@@ -18,7 +18,7 @@ from investment_panel.core.continuous_advisor import (
     packet_fingerprint,
     validate_continuous_response,
 )
-from investment_panel.domain.decision import MARKET_TZ, is_market_open
+from investment_panel.domain.decision import MARKET_TZ
 from investment_panel.infrastructure.postgres.agent_context import ticker_context
 from investment_panel.infrastructure.postgres.analysis import current_option_publication_answers
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
@@ -65,10 +65,9 @@ def run(
     wall_clock = reference if now is not None else datetime.now(UTC)
     if scheduled_due is not None and not _scheduled_cutoff_is_current(scheduled_due, wall_clock):
         return {"status": "skipped", "reason": "scheduled_cutoff_expired", "completed": 0, "failed": 0, "skipped": 0}
-    if not is_market_open(wall_clock):
-        return {"status": "skipped", "reason": "market_closed", "completed": 0, "failed": 0, "skipped": 0}
-
     rows = selected_rows(config, symbols, cutoff=reference)
+    # Research and news evolve outside equity execution hours. The packet
+    # builder validates each asset's quote clock instead of silencing all work.
     runtime = runtime_for_config(config)
     repository = ContinuousAdvisorRepository(runtime)
     configured_prompt = str(settings.prompt_version or "thesis_v3_20260725")
@@ -101,7 +100,7 @@ def run(
                 current_option_rows=current_option_rows,
             )
 
-    completed = failed = skipped = 0
+    completed = failed = skipped = blocked = 0
     spent = 0.0
     errors: list[str] = []
     results: list[dict[str, Any]] = []
@@ -149,6 +148,9 @@ def run(
             errors.append(f"{result.get('symbol')}: {result.get('error')}")
         else:
             skipped += 1
+            if result.get("reason") == "evidence_blocked":
+                blocked += 1
+                errors.append(f"{result.get('symbol')}: required forecast evidence blocked: {result.get('blockers')}")
         challenger_result = result.get("challenger")
         if isinstance(challenger_result, dict) and challenger_result.get("status") in {"failed", "invalid"}:
             failed += 1
@@ -158,7 +160,8 @@ def run(
         ) or (isinstance(challenger_result, dict) and challenger_result.get("budget_exceeded")):
             break
     return {
-        "status": "ok" if failed == 0 else "partial" if completed else "failed",
+        "status": "ok" if failed + blocked == 0 else "partial" if completed else "failed",
+        "blocked": blocked,
         "completed": completed,
         "failed": failed,
         "skipped": skipped,
@@ -493,7 +496,7 @@ def selected_rows(
         row for row in thesis_monitor_rows(config, as_of=cutoff)
         if row.get("owned") or row.get("watched")
     ]
-    if not symbols:
+    if symbols is None:
         return rows
     wanted = {str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()}
     return [row for row in rows if str(row.get("symbol") or "").upper() in wanted]

@@ -53,16 +53,16 @@ def populate_watchlist_symbol_data(config: AppConfig, symbol: str, asset_class: 
         result = run_for_config(config, symbols=[normalized], publish=False)
         if (
             result.get("status") == "ok"
-            and int(result.get("symbols") or 0) == 1
-            and int(result.get("price_rows") or 0) > 0
+            and int(result.get("symbols") or 0) >= 1
+            and int((result.get("price_rows_by_symbol") or {}).get(normalized) or 0) > 0
         ):
             return {
                 "status": "ok",
                 "symbol": normalized,
                 "asset_class": asset_class,
-                "quote_rows": int(result.get("price_rows") or 0),
+                "quote_rows": int(result["price_rows_by_symbol"][normalized]),
                 "market_metric_rows": int(result.get("market_metric_rows") or 0),
-                "provider_rows_received": int(result.get("price_rows") or 0),
+                "provider_rows_received": int(result["price_rows_by_symbol"][normalized]),
                 "history_policy": "full_refresh",
                 "analysis": "next_premarket_publication",
             }

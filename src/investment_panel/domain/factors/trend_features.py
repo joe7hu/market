@@ -99,12 +99,13 @@ def compute_trend_feature(
     as_of_date: date | None = None,
     expected_last_date: date | None = None,
     require_relative_strength: bool = True,
+    continuous: bool = False,
 ) -> TrendFeature:
     """Compute the latest daily feature using only the supplied point-in-time bars."""
 
     ordered = _valid_bars(bars)
-    reasons = _quality_reasons(ordered)
-    if any(not is_us_market_day(row["trading_date"]) for row in ordered):
+    reasons = _quality_reasons(ordered, continuous=continuous)
+    if not continuous and any(not is_us_market_day(row["trading_date"]) for row in ordered):
         reasons.append("non_market_daily_price_bar")
     if expected_last_date is not None and (
         not ordered or ordered[-1]["trading_date"] != expected_last_date
@@ -116,7 +117,7 @@ def compute_trend_feature(
         reasons.append("underlying_history_stale_relative_to_as_of")
     if len(ordered) < 200:
         reasons.append("insufficient_price_history")
-    benchmark = _valid_bars(benchmark_bars)
+    benchmark = _valid_bars(benchmark_bars if require_relative_strength else bars)
     benchmark_dates = {row["trading_date"] for row in benchmark}
     required_benchmark_dates = {row["trading_date"] for row in ordered[-61:]}
     if ordered and not required_benchmark_dates.issubset(benchmark_dates):
@@ -167,8 +168,8 @@ def compute_trend_feature(
         kama_fast_slope=latest_metrics["kama_fast_slope"],
         kama_slow_slope=latest_metrics["kama_slow_slope"],
         atr_pct=latest_metrics["atr_pct"],
-        realized_vol_20d=realized_volatility(closes, 20),
-        realized_vol_60d=realized_volatility(closes, 60),
+        realized_vol_20d=realized_volatility(closes, 20, periods_per_year=365 if continuous else 252),
+        realized_vol_60d=realized_volatility(closes, 60, periods_per_year=365 if continuous else 252),
         realized_vol_percentile=_realized_vol_percentile(closes),
         trend_state=trend_state,
         trend_confidence=trend_confidence,
@@ -317,14 +318,14 @@ def _realized_vol_percentile(closes: Sequence[float]) -> float | None:
     return sum(value <= series[-1] for value in series) / len(series)
 
 
-def realized_volatility(closes: Sequence[float], period: int) -> float | None:
+def realized_volatility(closes: Sequence[float], period: int, *, periods_per_year: int = 252) -> float | None:
     """Return annualized close-to-close realized volatility from log returns."""
 
     if len(closes) <= period:
         return None
     window = closes[-(period + 1) :]
     returns = [math.log(current / previous) for previous, current in zip(window, window[1:], strict=False)]
-    return pstdev(returns) * math.sqrt(252) if len(returns) > 1 else None
+    return pstdev(returns) * math.sqrt(periods_per_year) if len(returns) > 1 else None
 
 
 def _atr_pct(bars: Sequence[dict[str, Any]], period: int = 14) -> float | None:
@@ -360,17 +361,17 @@ def _relative_strength(
     return closes[-1] / closes[-(period + 1)] / benchmark_return - 1.0
 
 
-def _quality_reasons(bars: Sequence[dict[str, Any]]) -> list[str]:
+def _quality_reasons(bars: Sequence[dict[str, Any]], *, continuous: bool = False) -> list[str]:
     if not bars:
         return ["missing_canonical_price_history"]
     closes = [float(row["close"]) for row in bars]
     for previous, current in zip(bars, bars[1:], strict=False):
         cursor = previous["trading_date"] + timedelta(days=1)
         while cursor < current["trading_date"]:
-            if is_us_market_day(cursor):
+            if continuous or is_us_market_day(cursor):
                 return ["missing_daily_price_bars"]
             cursor += timedelta(days=1)
-    if any(abs(current / previous - 1.0) >= 0.45 for previous, current in zip(closes, closes[1:], strict=False)):
+    if not continuous and any(abs(current / previous - 1.0) >= 0.45 for previous, current in zip(closes, closes[1:], strict=False)):
         return ["unresolved_corporate_action_in_price_history"]
     return []
 

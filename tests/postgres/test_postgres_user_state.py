@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from investment_panel.api import dependencies
-from investment_panel.workflows import portfolio_mutations as mutations_owner
+from investment_panel.workflows import portfolio as mutations_owner
 import investment_panel.application.read_models.panel_snapshot as panel_owner
 from investment_panel.api.routers.portfolio import router
 from investment_panel.api.routers.panel import router as panel_router

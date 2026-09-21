@@ -318,6 +318,9 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
             }
         plan = None
     ticker_decision_payload = ticker_decision.model_dump(mode="json")
+    from investment_panel.domain.decision import project_reference_signal
+    projected_signal = project_reference_signal(ticker_decision.reference_signal, now=datetime.now(UTC))
+    ticker_decision_payload["reference_signal"] = projected_signal.model_dump(mode="json") if projected_signal else None
     ticker_decision_payload.update({
         "instrument_state_snapshot": snapshot_row,
         "alpha_signals": signal_rows,

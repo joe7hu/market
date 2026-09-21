@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.settings import AppConfig
 from investment_panel.core.prices import fetch_prices
+from investment_panel.infrastructure.postgres.monitored_universe import monitored_universe
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.workflows.market import refresh_market_publication
@@ -29,14 +31,18 @@ def run_for_config(
         name="Daily market prices",
         family="market_data",
         kind="daily_bars",
-        origin="Yahoo chart and CoinGecko",
+        origin="Yahoo chart and Coinbase Exchange daily candles",
         capabilities={"price_bars": True, "quotes": True, "market_metrics": True},
     )
     configured_watchlist = config.watchlist
-    universe_rows = _universe(runtime, configured_watchlist)
+    universe_rows = monitored_universe(runtime, configured_watchlist)
     requested = {str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()}
-    if requested:
+    if symbols is not None:
         universe_rows = [row for row in universe_rows if row["symbol"] in requested]
+    # The 200-session moving average needs more than 260 *calendar* days.
+    # Always collect the explicit benchmark dependency, even when it is not a watched idea.
+    if universe_rows and not any(row["symbol"] == "QQQ" for row in universe_rows):
+        universe_rows.append({"symbol": "QQQ", "asset_class": "etf"})
     run_started_at = datetime.now(UTC)
     bars: list[dict[str, Any]] = []
     errors: dict[str, str] = {}
@@ -44,9 +50,13 @@ def run_for_config(
         symbol = row["symbol"]
         try:
             market_data = config.market_data
-            lookback_days = market_data.lookback_days
+            lookback_days = max(market_data.lookback_days, 360 if row["asset_class"] == "crypto" else 500)
             mode = market_data.mode
             frame = fetch_prices(symbol, lookback_days, mode)
+            if frame.empty:
+                raise ValueError("Provider returned no price history")
+            if "symbol" not in frame or set(frame["symbol"].astype(str).str.upper()) != {symbol}:
+                raise ValueError("Provider returned history for the wrong instrument")
         except Exception as exc:  # each provider symbol is an independent boundary
             errors[symbol] = f"{type(exc).__name__}: {exc}"
             continue
@@ -68,19 +78,22 @@ def run_for_config(
                 metric_errors[symbol] = f"{type(exc).__name__}: {exc}"
     with repository.run(SOURCE_ID, "price_bars", started_at=run_started_at) as ingestion_run:
         run_id = ingestion_run.id
-        stored = repository.store_price_bars(
-            run_id,
-            SOURCE_ID,
-            bars,
-            asset_classes={row["symbol"]: row["asset_class"] for row in universe_rows},
-        )
+        bars_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for bar in bars:
+            bars_by_symbol[str(bar["symbol"]).upper()].append(bar)
+        stored_by_symbol = {
+            symbol: repository.store_price_bars(run_id, SOURCE_ID, symbol_bars,
+                asset_classes={row["symbol"]: row["asset_class"] for row in universe_rows})
+            for symbol, symbol_bars in bars_by_symbol.items()
+        }
+        stored = sum(stored_by_symbol.values())
         market_metrics_stored = repository.store_fundamental_observations(
             run_id,
             SOURCE_ID,
             "market_metrics",
             metric_rows,
         )
-        status = "partial" if errors or metric_errors else "succeeded"
+        status = ("failed" if errors and not bars else "partial" if errors or metric_errors else "succeeded")
         ingestion_run.finish(
             status,
             item_count=stored + market_metrics_stored,
@@ -98,19 +111,20 @@ def run_for_config(
         )
     try:
         market = (refresh_market_publication(runtime, configured_watchlist=config.watchlist)
-                  if publish and not requested else {"status": "deferred", "reason": "scoped_refresh" if requested else "publication_disabled"})
+                  if publish and symbols is None else {"status": "deferred", "reason": "scoped_refresh" if requested else "publication_disabled"})
     except Exception as exc:
         market = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     downstream_failed = market.get("status") in {"failed", "partial"}
     return {
-        "status": "partial" if errors or metric_errors or downstream_failed else "ok",
-        "source_status": "partial" if errors or metric_errors else "ok",
+        "status": "failed" if errors and not bars else "partial" if errors or metric_errors or downstream_failed else "ok",
+        "source_status": "failed" if errors and not bars else "partial" if errors or metric_errors else "ok",
         "downstream_status": market.get("status"),
         "database": "postgresql",
         "run_id": str(run_id),
         "symbols": len(universe_rows),
         "benchmark_symbols": [row["symbol"] for row in universe_rows],
         "price_rows": stored,
+        "price_rows_by_symbol": stored_by_symbol,
         "price_errors": errors,
         "market_metric_rows": market_metrics_stored,
         "market_metric_errors": metric_errors,
@@ -164,32 +178,6 @@ def _market_metrics_row(symbol: str, asset_class: str, info: dict[str, Any], obs
     }
 
 
-def _universe(runtime: Any, configured: list[dict[str, Any]]) -> list[dict[str, str]]:
-    with runtime.read() as connection:
-        rows = connection.execute(
-            """
-            SELECT instrument.symbol, instrument.asset_class,
-                   position.instrument_id IS NOT NULL AS is_owned, watchlist.watch_state
-            FROM catalog.instrument instrument
-            LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
-            LEFT JOIN app.watchlist_item watchlist ON watchlist.instrument_id = instrument.id
-            WHERE position.instrument_id IS NOT NULL OR watchlist.instrument_id IS NOT NULL
-            ORDER BY (position.instrument_id IS NOT NULL) DESC, instrument.symbol
-            """
-        ).fetchall()
-    output: dict[str, dict[str, str]] = {}
-    for row in rows:
-        if row["watch_state"] == "excluded" and not row["is_owned"]:
-            continue
-        output[str(row["symbol"])] = {
-            "symbol": str(row["symbol"]),
-            "asset_class": str(row["asset_class"] or "equity"),
-        }
-    for item in configured:
-        symbol = str(item.get("symbol") or "").strip().upper()
-        if symbol and symbol not in output and str(item.get("watch_state") or "") != "excluded":
-            output[symbol] = {"symbol": symbol, "asset_class": str(item.get("asset_class") or "equity")}
-    return list(output.values())
 
 
 market_metrics_row = _market_metrics_row

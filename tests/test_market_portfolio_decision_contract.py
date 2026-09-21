@@ -41,8 +41,8 @@ def _decision(ticker: str = "ACME", **context):
     return build_ticker_decision(
         ticker,
         {
-            "quotes": [{"symbol": ticker, "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-            "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "quotes": [{"symbol": ticker, "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"net_liquidation": 100_000, "account_observed_at": "2026-08-22T13:55:00Z", "available_at": "2026-08-22T13:55:00Z"}],
             "decision_queue": [{
                 "symbol": ticker, "stance": "BULLISH", "action": "BUY",
                 "entry_low": 99, "entry_high": 101, "invalidation_price": 90,

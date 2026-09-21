@@ -927,7 +927,7 @@ class ContinuousAdvisorRepository:
                     LIMIT 1
                 ) attempt ON TRUE
                 WHERE response.status = 'succeeded' AND outcome.id IS NULL
-                ORDER BY packet.cutoff ASC, claim.created_at ASC, claim.id ASC
+                ORDER BY attempt.created_at ASC NULLS FIRST, packet.cutoff ASC, claim.created_at ASC, claim.id ASC
                 LIMIT %s
                 """,
                 [max(1, min(2_000, int(limit)))],

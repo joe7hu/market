@@ -28,6 +28,8 @@ VALID_OPERATIONAL_STATES = frozenset({ACTIVE, STANDBY, ARCHIVED})
 
 
 _EXACT_CONTRACTS: dict[str, SourceHealthContract] = {
+    "assessment-equity-quotes": SourceHealthContract(ACTIVE, "refresh_assessment_inputs", 900),
+    "assessment-crypto-quotes": SourceHealthContract(ACTIVE, "refresh_assessment_inputs", 900),
     "daily-market-prices": SourceHealthContract(ACTIVE, "update_market_data", 3600),
     "robinhood": SourceHealthContract(ACTIVE, "options_radar_hard_refresh", 259200),
     "ibkr": SourceHealthContract(STANDBY, "update_ibkr_options", 3600),

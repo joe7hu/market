@@ -63,6 +63,8 @@ def test_seeded_local_api_passes_release_smoke_without_production_database(
                         lambda: SimpleNamespace(decision_inbox=lambda **_kwargs: {"items": []}))
     monkeypatch.setitem(app.dependency_overrides, dependencies.get_research_workbench,
                         lambda: SimpleNamespace(action_items=lambda **_kwargs: []))
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_workstation,
+                        lambda: SimpleNamespace(status=lambda _config: {"status": "available", "as_of": "2026-09-20T20:00:00Z", "market_session": "closed", "blockers": []}))
     monkeypatch.setattr(panel_owner, "load_config", lambda: config)
     monkeypatch.setattr(loaders_owner, "load_panel_data", lambda *_args, **_kwargs: panel)
     monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda *_args, **_kwargs: panel)
@@ -87,3 +89,22 @@ def test_seeded_local_api_passes_release_smoke_without_production_database(
     assert snapshot["tables"]["ticker_decisions"]["count"] == 1
     assert snapshot["tables"]["daily_brief"]["rows"][0]["stable_key"] == "seed-brief"
     panel_owner.invalidate_context_cache()
+
+
+@pytest.mark.parametrize("health_status", ["partial", "unavailable"])
+def test_working_transport_cannot_hide_failed_decision_service(tmp_path, monkeypatch, health_status):
+    config = typed_config(status_dir=tmp_path / "status")
+    panel = PanelData(status=DataStatus(True, "Database readable", "fixture"), tables={}, metadata={})
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_config, lambda: config)
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_options_history,
+                        lambda: SimpleNamespace(health=lambda **_: {"available": True}))
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_workstation,
+                        lambda: SimpleNamespace(status=lambda _: {"status": health_status,
+                            "as_of": "2026-09-20T20:00:00Z", "market_session": "closed",
+                            "decision_service": {"failed_count": 1, "failures_by_owner": {"refresh_assessment_inputs": 1}}}))
+    monkeypatch.setattr(loaders_owner, "load_panel_data", lambda *_args, **_kwargs: panel)
+    result = TestClient(app).get("/api/status").json()
+    assert result["transport_ready"] is True
+    assert result["ready"] is False and result["service_ready"] is False
+    assert result["workstation"]["decision_service"]["failed_count"] == 1
+    assert "degraded" in result["message"]

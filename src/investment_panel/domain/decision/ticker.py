@@ -8,6 +8,9 @@ second thesis for an option expression.
 
 from __future__ import annotations
 
+from investment_panel.domain.decision.reference_signal import ReferenceSignal, build_reference_signal, project_reference_signal
+from investment_panel.domain.decision.assessment import assessment_quote
+
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 import hashlib
@@ -2171,6 +2174,7 @@ class TickerDecision(BaseModel):
     alpha_signals: list[dict[str, Any]] = Field(default_factory=list)
     opportunity_rank: dict[str, Any] | None = None
     trade_plan: TradePlan | None = None
+    reference_signal: ReferenceSignal | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2990,8 +2994,8 @@ def _expression_identity_for(
     ticker: str,
     decision_revision: str,
 ) -> str:
-    if kind is ExpressionKind.CASH and expression.status == "not_selected":
-        return f"CASH:{ticker.strip().upper()}:{decision_revision}"
+    # Selection is presentation state, not an alternative identity scheme.
+    # CASH must bind to the same canonical expression before and after selection.
     return trade_expression_identity(expression)
 
 
@@ -4518,7 +4522,11 @@ def build_ticker_decision(
     quote = _latest(usable, "quotes")
     current_price = _number(_pick(quote, "price", "close", "last", "latest_price"))
     price_age = _age_seconds(quote, reference)
-    if price_age is not None and price_age > 900:
+    quote_assessment = assessment_quote(
+        quote, now=reference,
+        continuous=str(quote.get("asset_class") or "").lower() == "crypto" or symbol.endswith("-USD"),
+    )
+    if not quote_assessment.usable:
         current_price = None
     holding = _latest(usable, "portfolio", "broker_positions")
     portfolio = _latest(usable, "broker_accounts", "portfolio_summary", "broker_status")
@@ -4548,13 +4556,11 @@ def build_ticker_decision(
     }
     account_observed_at = _pick(portfolio, "account_observed_at", "observed_at", "updated_at")
     available_at = _pick(portfolio, "available_at")
-    if account_observed_at is None:
-        account_observed_at = available_at
     if account_observed_at is not None:
         account_facts["account_observed_at"] = account_observed_at
     if available_at is not None:
         account_facts["available_at"] = available_at
-    account_observed_at = _parse_datetime(_pick(account_facts, "account_observed_at", "available_at"))
+    account_observed_at = _parse_datetime(_pick(account_facts, "account_observed_at"))
     policy_blockers: list[str] = []
     if account_observed_at is None or nav is None:
         policy_blockers.append("fresh_postgres_account_facts_required")
@@ -4687,6 +4693,7 @@ def build_ticker_decision(
                 "alpha_signals": persisted.get("alpha_signals") or [],
                 "opportunity_rank": persisted.get("opportunity_rank") or None,
                 "trade_plan": persisted_trade_plan,
+                "reference_signal": project_reference_signal(persisted.get("reference_signal") or (persisted.get("input_manifest") or {}).get("reference_signal"), now=reference),
             })
             return _restore_persisted_thesis_context(decision)
         except Exception:
@@ -4698,17 +4705,17 @@ def build_ticker_decision(
     if current_price is None:
         price_reason = "A current confirmed price is required for an exact entry range and stock sizing."
         if price_age is not None:
-            price_reason = f"Confirmed price is {max(1, round(price_age / 60))} minutes old; run update_market_data before sizing."
+            price_reason = quote_assessment.reason
         requests.append(_request(
             field="current_price", ticker=symbol,
             why=price_reason,
             source="confirmed quote selector", max_age="15m", max_age_seconds=900,
-            owner="update_market_data", collect_now="update_market_data",
+            owner="refresh_assessment_inputs", collect_now="refresh_assessment_inputs",
             expected="A confirmed quote with price and available_at <= as_of.",
             impact="The entry range and stock quantity become executable.",
         ))
     if nav is None:
-        nav_reason = "NAV is required to calculate the configured ticker loss budget."
+        nav_reason = "Run update_broker_account; a confirmed NAV with its account observation timestamp is required to calculate the configured ticker loss budget."
         if nav_age is not None:
             nav_reason = (
                 f"Run update_broker_account; NAV is {max(1, round(nav_age / 60))} minutes old, "
@@ -4735,15 +4742,16 @@ def build_ticker_decision(
     requests.extend(_signal_requests(symbol, usable, reference))
     requests = _dedupe_requests(requests)
 
+    expression_view = fundamental if _expression_horizon(tactical, fundamental) is Horizon.FUNDAMENTAL else tactical
     expressions = _build_expressions(
         symbol=symbol,
         horizon=_expression_horizon(tactical, fundamental),
         stance=_expression_stance(tactical, fundamental),
-        entry_range=tactical.entry_range if tactical.horizon is Horizon.TACTICAL else fundamental.entry_range,
-        target_range=tactical.target_range if tactical.horizon is Horizon.TACTICAL else fundamental.target_range,
-        invalidation=tactical.invalidation if tactical.horizon is Horizon.TACTICAL else fundamental.invalidation,
-        scenarios=(fundamental if fundamental.stance is not Stance.NEUTRAL else tactical).scenarios,
-        expected_return_range=(fundamental if fundamental.stance is not Stance.NEUTRAL else tactical).expected_return_range,
+        entry_range=expression_view.entry_range,
+        target_range=expression_view.target_range,
+        invalidation=expression_view.invalidation,
+        scenarios=expression_view.scenarios,
+        expected_return_range=expression_view.expected_return_range,
         risk_policy=risk_policy,
         current_price=current_price,
         nav=nav,
@@ -4942,6 +4950,8 @@ def build_ticker_decision(
         market_state_publication_id=snapshot.publication_id if snapshot is not None else None,
         market_state_snapshot=snapshot,
         portfolio_impacts=impacts,
+        reference_signal=build_reference_signal(symbol, quote=quote, feature=_latest(usable, "stock_alpha_features"),
+            now=reference, owned=owned, continuous=str(quote.get("asset_class") or "").lower() == "crypto" or symbol.endswith("-USD")),
     ))
 
 
@@ -4956,6 +4966,9 @@ def _build_view(
     thesis_revision: str,
     as_of: datetime,
 ) -> HorizonDecision:
+    nested = decision_row.get(horizon.value.lower()) or decision_row.get(horizon.value)
+    if isinstance(nested, Mapping):
+        decision_row = {**decision_row, **nested}
     entry = _price_range(decision_row, "entry", current_price if stance is not Stance.NEUTRAL else None)
     target = _price_range(decision_row, "target")
     invalidation = _invalidation(decision_row, horizon)
@@ -6266,8 +6279,12 @@ def _portfolio_nav(row: Mapping[str, Any], as_of: datetime) -> tuple[float | Non
     value = _number(_pick(row, "net_liquidation", "nav", "portfolio_nav", "account_nav"))
     if value is None or value <= 0:
         return None, None
-    age = _age_seconds(row, as_of)
-    if age is not None and age > 1800:
+    observed = _parse_datetime(_pick(row, "account_observed_at", "observed_at", "updated_at"))
+    available = _parse_datetime(_pick(row, "available_at"))
+    if observed is None or available is None or not observed <= available <= as_of:
+        return None, None
+    age = (as_of - observed).total_seconds()
+    if age > 1800:
         return None, age
     return value, age
 

@@ -25,6 +25,7 @@ from investment_panel.infrastructure.postgres.jobs import JobRepository
 from investment_panel.infrastructure.postgres.options_history_policy import OptionHistoryPolicyRepository
 from investment_panel.jobs import (
     postgres_refresh,
+    assessment_inputs,
     market_publication,
     paper_quotes,
     refresh_options_radar,
@@ -261,6 +262,8 @@ ALLOWLIST: dict[str, JobRunner] = {
     # the requested field was collected.
     "update_broker_account": lambda config_path: update_broker_sources.run(config_path),
     "update_market_data": lambda config_path: update_market_data.run(config_path),
+    "refresh_assessment_inputs": lambda config_path: assessment_inputs.collect(config_path),
+    "refresh_symbol_features": lambda config_path: assessment_inputs.features(config_path),
     "update_market_valuations": lambda config_path: update_market_valuations.run(config_path),
     "update_company_financials": lambda config_path: update_company_financials.run(config_path),
     "update_earnings_and_estimates": lambda config_path: ticker_data_requests.update_earnings_and_estimates(config_path),

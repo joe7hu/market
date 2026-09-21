@@ -34,7 +34,7 @@ def classify_freshness(source_type: str, observed: datetime | None, status: str,
         market_age = market_session_elapsed(observed, checked_at)
         return "fresh" if market_age <= timedelta(hours=INTRADAY_STALE_HOURS) else "stale"
     if source_type == "crypto_quote":
-        return "fresh" if age <= timedelta(hours=36) else "stale"
+        return "fresh" if age <= timedelta(minutes=15) else "stale"
     if source_type == "closing_quote":
         if is_market_open(checked_at):
             return "stale"
@@ -267,3 +267,38 @@ def easter_date(year: int) -> date:
     month = (h + weekday_offset - 7 * m + 114) // 31
     day = ((h + weekday_offset - 7 * m + 114) % 31) + 1
     return date(year, month, day)
+
+
+def after_market_minutes(start: datetime, minutes: int) -> datetime:
+    """Advance regular-session time, including holidays, DST and early closes."""
+    if isinstance(minutes, bool) or not 1 <= minutes <= 390 * 10:
+        raise ValueError("market minutes must be in [1, 3900]")
+    cursor = normalized_utc(start)
+    remaining = timedelta(minutes=minutes)
+    day = cursor.astimezone(MARKET_TZ).date()
+    for _ in range(32):
+        if is_us_market_day(day):
+            opened, closed = market_session_bounds(day)
+            cursor = max(cursor, opened.astimezone(UTC))
+            available = closed.astimezone(UTC) - cursor
+            if available > timedelta():
+                if remaining <= available:
+                    return cursor + remaining
+                remaining -= available
+        day += timedelta(days=1)
+    raise ValueError("Market-minute horizon exceeds the supported calendar window")
+
+
+def forecast_observation_end(target: datetime, *, continuous: bool = False) -> datetime | None:
+    """Bound the outcome observation window using the instrument's clock."""
+    target = normalized_utc(target)
+    if continuous:
+        return target + timedelta(minutes=15)
+    day = target.astimezone(MARKET_TZ).date()
+    for _ in range(32):
+        if is_us_market_day(day):
+            _, close_at = market_session_bounds(day)
+            if close_at >= target:
+                return close_at.astimezone(UTC)
+        day += timedelta(days=1)
+    return None

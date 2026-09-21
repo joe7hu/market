@@ -3977,6 +3977,7 @@ export interface components {
              * @default ticker-opportunity-ranking.v1
              */
             ranking_version: string;
+            reference_signal?: components["schemas"]["ReferenceSignal"] | null;
             /** Research Priority Score */
             research_priority_score?: number | null;
             /** Research Rank */
@@ -6576,6 +6577,78 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** ReferenceSignal */
+        ReferenceSignal: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "BUY_SETUP" | "EXIT_SETUP" | "HOLD" | "WAIT" | "AVOID" | "SERVICE_FAILURE";
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Condition */
+            condition: string;
+            /** Entry High */
+            entry_high?: number | null;
+            /** Entry Low */
+            entry_low?: number | null;
+            /**
+             * Evidence Kind
+             * @default measured_trend_not_validated_alpha
+             * @constant
+             */
+            evidence_kind: "measured_trend_not_validated_alpha";
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Failure Code */
+            failure_code?: string | null;
+            /** Feature Session */
+            feature_session?: string | null;
+            /**
+             * Horizon
+             * @default Tactical · next 1–20 sessions
+             */
+            horizon: string;
+            /**
+             * Order Authorized
+             * @default false
+             * @constant
+             */
+            order_authorized: false;
+            /** Owner Job */
+            owner_job?: string | null;
+            /** Quote Observed At */
+            quote_observed_at?: string | null;
+            /** Quote State */
+            quote_state: string;
+            /** Reference Price */
+            reference_price?: number | null;
+            /** Risk Per Unit */
+            risk_per_unit?: number | null;
+            /** Signal Id */
+            signal_id: string;
+            /** Source Revision */
+            source_revision?: string | null;
+            /** Stop Price */
+            stop_price?: number | null;
+            /** Summary */
+            summary: string;
+            /** Target Price */
+            target_price?: number | null;
+            /** Ticker */
+            ticker: string;
+            /**
+             * Version
+             * @default daily-trend-conditions.v1
+             */
+            version: string;
+        };
         /** RefreshJobResponse */
         RefreshJobResponse: {
             /** Dispatched At */
@@ -7555,8 +7628,19 @@ export interface components {
             options_history?: components["schemas"]["OptionHistoryHealthResponse"] | null;
             /** Ready */
             ready: boolean;
+            /**
+             * Service Ready
+             * @default false
+             */
+            service_ready: boolean;
             /** Source */
             source: string;
+            /**
+             * Transport Ready
+             * @default true
+             */
+            transport_ready: boolean;
+            workstation?: components["schemas"]["WorkstationStatus"] | null;
         };
         /**
          * StorageHealthResponse
@@ -7911,6 +7995,7 @@ export interface components {
             portfolio_impacts?: {
                 [key: string]: components["schemas"]["TickerPortfolioImpactSummaryResponse"];
             };
+            reference_signal?: components["schemas"]["ReferenceSignal"] | null;
             resolution?: components["schemas"]["TickerResolutionSummaryResponse"] | null;
             selected_expression?: components["schemas"]["ExpressionDecision"] | null;
             tactical: components["schemas"]["HorizonDecision"];
@@ -7979,6 +8064,7 @@ export interface components {
             portfolio_impacts?: {
                 [key: string]: components["schemas"]["PortfolioImpact"];
             };
+            reference_signal?: components["schemas"]["ReferenceSignal"] | null;
             resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             risk_policy: components["schemas"]["RiskPolicy"];
             risk_policy_snapshot?: components["schemas"]["RiskPolicySnapshot"] | null;
@@ -8410,6 +8496,8 @@ export interface components {
             /** Portfolio Risk Items */
             portfolio_risk_items?: components["schemas"]["TodayBriefItemResponse"][];
             preopen_brief?: components["schemas"]["TodayPreopenBriefResponse"] | null;
+            /** Reference Signals */
+            reference_signals?: components["schemas"]["ReferenceSignal"][];
             status: components["schemas"]["ApiStatusResponse"];
         };
         /**
@@ -8647,12 +8735,20 @@ export interface components {
             as_of: string;
             /** Blockers */
             blockers?: components["schemas"]["WorkflowBlocker"][];
+            /** Decision Service */
+            decision_service?: {
+                [key: string]: unknown;
+            };
             /** Evaluations */
             evaluations?: {
                 [key: string]: unknown;
             }[];
             /** Failed Reads */
             failed_reads?: string[];
+            /** Forecasts */
+            forecasts?: {
+                [key: string]: unknown;
+            };
             /** Market */
             market?: {
                 [key: string]: unknown;

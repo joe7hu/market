@@ -37,7 +37,7 @@ TICK_SECONDS = 15
 CONTINUOUS_SETTINGS_REFRESH_SECONDS = 60
 SCHEDULER_CAPACITY = 2
 FAST_DATABASE_JOBS = frozenset({"process_options_paper_orders", "sync_decision_inbox"})
-PRIORITY_JOBS = FAST_DATABASE_JOBS | {"refresh_paper_quotes"}
+PRIORITY_JOBS = FAST_DATABASE_JOBS | {"refresh_paper_quotes", "refresh_assessment_inputs", "refresh_symbol_features", "refresh_decision_models"}
 _scheduler_semaphore: asyncio.Semaphore | None = None
 _slow_job_semaphore: asyncio.Semaphore | None = None
 _active_jobs: dict[str, float] = {}
@@ -47,7 +47,7 @@ _deferred_jobs = 0
 # five-minute detector into the next observation bucket.
 SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history", "detect_option_events"})
 SLOT_ALIGNMENT_TOLERANCE_SECONDS = 30.0
-SESSION_JOBS = frozenset({"run_continuous_advisor", "options_radar_hard_refresh"})
+SESSION_JOBS = frozenset({"options_radar_hard_refresh"})
 CONTINUOUS_ADVISOR_JOBS = frozenset(
     {"run_continuous_advisor", "run_continuous_advisor_replay", "run_continuous_advisor_evolution"}
 )

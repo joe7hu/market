@@ -83,6 +83,8 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("update_broker_sources", freshness_seconds=3600),
         _job("update_broker_account", freshness_seconds=3600),
         _job("update_market_data", freshness_seconds=86400),
+        _job("refresh_assessment_inputs", timeout_seconds=600, freshness_seconds=900),
+        _job("refresh_symbol_features", timeout_seconds=600, freshness_seconds=1800),
         _job("update_market_valuations", timeout_seconds=120, freshness_seconds=86400),
         _job("update_company_financials", freshness_seconds=86400),
         _job("update_earnings_and_estimates", freshness_seconds=3600),
@@ -270,7 +272,7 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
 
     # Source refreshes and deterministic publications are separate jobs. Keep
     # the user-facing decision snapshot from lagging behind normalized facts.
-    decision_seconds = _env_int("MARKET_DECISION_MODEL_REFRESH_SECONDS", 3600, allow_zero=True)
+    decision_seconds = _env_int("MARKET_DECISION_MODEL_REFRESH_SECONDS", 300, allow_zero=True)
     if decision_seconds > 0:
         intervals["refresh_decision_models"] = decision_seconds
 
@@ -279,6 +281,8 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
         ("update_research_sources", "MARKET_RESEARCH_REFRESH_SECONDS", 3600),
         ("update_arco_data", "MARKET_ARCO_REFRESH_SECONDS", 14400),
         ("update_market_data", "MARKET_MARKET_DATA_REFRESH_SECONDS", 3600),
+        ("refresh_assessment_inputs", "MARKET_ASSESSMENT_QUOTE_REFRESH_SECONDS", 300),
+        ("refresh_symbol_features", "MARKET_SYMBOL_FEATURE_REFRESH_SECONDS", 900),
         ("update_phase2_sources", "MARKET_PHASE2_REFRESH_SECONDS", 86400),
         ("update_company_financials", "MARKET_COMPANY_FINANCIALS_REFRESH_SECONDS", 86400),
         ("run_stock_alpha_walk_forward", "MARKET_STOCK_ALPHA_REFRESH_SECONDS", 86400),

@@ -17,6 +17,7 @@ import type { PanelData, ScopeSnapshotStatus } from "@/types";
 import { expressionLabel } from "@/viewModels/expression";
 import { formatMoney, formatPct, toneFromText, type Tone } from "@/shared/rowFormat";
 import { EventScoutPanel } from "./EventScoutPanel";
+import { ReferenceSignalCard } from "@/components/market/ReferenceSignalCard";
 import { statusLabel as semanticStatusLabel } from "@/presentation/labels";
 
 type TodayPageProps = {
@@ -81,10 +82,11 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
           </Button>
         }
       />
-      <WorkflowReadiness view="today" />
+      <WorkflowReadiness view="today" onDataChanged={onRefresh} />
       <div className="h-5" />
       <ScopeStatusNotice status={scopeStatus} onRetry={onRefresh} />
 
+      {(actionQueue?.reference_signals?.length ?? 0) > 0 ? <section className="my-5" aria-label="Current trading conditions"><h2 className="mb-2 text-xl font-semibold">Trading signals</h2><p className="mb-3 text-sm text-muted-foreground">Published entry, invalidation and exit conditions. A setup is not an approved allocation; position and execution gates still apply.</p><div className="grid gap-3 lg:grid-cols-2">{actionQueue!.reference_signals!.map(signal => <div key={signal.signal_id}><button className="mb-1 font-semibold text-primary hover:underline" onClick={() => onOpenTicker(signal.ticker)}>{signal.ticker} →</button><ReferenceSignalCard signal={signal} plan={actionQueue?.book_actions?.find(item => item.ticker === signal.ticker)?.trade_plan} compact /></div>)}</div></section> : null}
       {hasBrief ? <div className="grid gap-8">
         {Object.values(categoryStates).some((category) => category.coverage_status !== "complete" && category.coverage_message) ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Brief coverage is incomplete; missing items do not confirm that nothing changed.</summary><ul className="mt-2 space-y-1">{Object.values(categoryStates).filter((category) => category.coverage_status !== "complete" && category.coverage_message).map((category) => <li key={category.category}>{SECTION_BY_KEY[category.category]?.title ?? category.category}: {category.coverage_message}</li>)}</ul></details> : null}
         <section aria-labelledby="today-do-now"><h2 id="today-do-now" className="mb-3 text-xl font-semibold">Decisions and holding risks</h2><ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} /><details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-semibold">Research reading list · {decideNow.length} loaded</summary><BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns /></details></section>
@@ -124,13 +126,13 @@ function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { re
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
           <h2 id="action-queue-title" className="text-lg font-semibold">Action Queue</h2>
-          <p className="text-xs text-muted-foreground">Holding risks and stored assessments. Check each record date and open the ticker to review its evidence.</p>
+          <p className="text-xs text-muted-foreground">Portfolio-risk and allocation decisions. Concrete trading conditions are shown above; provider failures belong in System health.</p>
         </div>
         {response && !unavailable ? <StatusBadge tone="info">{items.length} shown{missingPlanCount ? ` · ${missingPlanCount} missing plans` : ""}</StatusBadge> : null}
       </div>
       {queueError ? <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900"><span>{error && response ? `Showing the last Action Queue. ${error}` : `Action Queue unavailable: ${queueError}`}</span><Button type="button" size="sm" variant="outline" onClick={onRefresh}>Retry</Button></div> : null}
       {loading && !response ? <p role="status" className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">Loading Action Queue…</p> : null}
-      {missingPlanCount ? <p role="status" className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{missingPlanCount} unranked ticker decisions remain CASH / NO TRADE because canonical trade plans are missing.</p> : null}
+      {missingPlanCount ? <p role="status" className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">Signal publication failed for {missingPlanCount} ticker decisions. New allocations are paused. <a className="underline" href="/health">Open the failing producers in System health →</a></p> : null}
       {!loading && !queueError && !items.length && !missingPlanCount ? <EmptyState title="Action Queue is clear" detail="No current action items are published. Check workflow readiness above before interpreting this as a decision to stay in cash." /> : null}
       {!unavailable && items.length ? (
         <div className="grid gap-3 lg:grid-cols-3" role="list">

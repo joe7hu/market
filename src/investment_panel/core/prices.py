@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from math import isfinite
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -11,7 +12,7 @@ import httpx
 import pandas as pd
 
 
-COINGECKO_IDS = {"BTC-USD": "bitcoin", "ETH-USD": "ethereum", "SOL-USD": "solana"}
+COINBASE_PRODUCTS = frozenset({"BTC-USD", "ETH-USD", "SOL-USD"})
 YAHOO_SYMBOL_ALIASES = {
     "000660": "000660.KS",
     "005380": "005380.KS",
@@ -65,8 +66,12 @@ YAHOO_SYMBOL_ALIASES = {
 def fetch_prices(symbol: str, lookback_days: int = 260, mode: str = "online") -> pd.DataFrame:
     if mode != "online":
         raise ValueError(f"Unsupported market_data.mode {mode!r}; use online data or inject test fixtures.")
-    if symbol in COINGECKO_IDS:
-        return fetch_coingecko_ohlc(symbol, lookback_days)
+    if symbol in COINBASE_PRODUCTS:
+        try:
+            return fetch_coinbase_candles(symbol, lookback_days)
+        except (httpx.HTTPError, ValueError):
+            # Alternate real OHLC source, never a constructed price-sample bar.
+            return fetch_yahoo_chart(symbol, lookback_days)
     return fetch_yahoo_chart(symbol, lookback_days)
 
 
@@ -106,7 +111,10 @@ def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
     rows = []
     for index, ts in enumerate(timestamps):
         close = value_at(quote.get("close"), index)
-        if close is None:
+        opened, high, low, volume = (value_at(quote.get(key), index) for key in ("open", "high", "low", "volume"))
+        if any(value is None or not isfinite(value) for value in (opened, high, low, close, volume)):
+            continue
+        if not (0 < low <= min(opened, close) <= max(opened, close) <= high) or volume < 0:
             continue
         trading_date = datetime.fromtimestamp(ts, UTC).astimezone(market_timezone).date()
         is_complete = trading_date < market_date or (
@@ -118,11 +126,11 @@ def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
             {
                 "symbol": symbol,
                 "date": trading_date,
-                "open": value_at(quote.get("open"), index) or close,
-                "high": value_at(quote.get("high"), index) or close,
-                "low": value_at(quote.get("low"), index) or close,
+                "open": opened,
+                "high": high,
+                "low": low,
                 "close": close,
-                "volume": value_at(quote.get("volume"), index) or 0.0,
+                "volume": volume,
                 "source": f"yahoo-chart:{provider_symbol}" if provider_symbol != symbol else "yahoo-chart",
                 "is_complete": is_complete,
             }
@@ -145,43 +153,51 @@ def fetch_yfinance(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
     return normalize_price_frame(symbol, frame, "yfinance").tail(lookback_days)
 
 
-def fetch_coingecko_market_chart(coin_id: str, days: int = 365) -> dict[str, Any]:
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-    with httpx.Client(timeout=20.0) as client:
-        response = client.get(url, params={"vs_currency": "usd", "days": days, "interval": "daily"})
-        response.raise_for_status()
-        return response.json()
+def fetch_coinbase_candles(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
+    """Completed UTC daily OHLCV buckets, paged within Coinbase's 300 limit.
 
-
-def fetch_coingecko_ohlc(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
-    coin_id = COINGECKO_IDS[symbol]
-    chart = fetch_coingecko_market_chart(coin_id, days=min(max(lookback_days, 30), 365))
-    prices = chart.get("prices") or []
-    volumes = {pd.to_datetime(row[0], unit="ms").date(): row[1] for row in chart.get("total_volumes", [])}
-    rows = []
-    previous = None
-    for ts_ms, close in prices:
-        day = pd.to_datetime(ts_ms, unit="ms").date()
-        open_ = previous if previous is not None else close
-        high = max(open_, close)
-        low = min(open_, close)
-        rows.append(
-            {
-                "symbol": symbol,
-                "date": day,
-                "open": float(open_),
-                "high": float(high),
-                "low": float(low),
-                "close": float(close),
-                "volume": float(volumes.get(day, 0.0)),
-                "source": "coingecko-market-chart",
-                "is_complete": day < datetime.now(UTC).date(),
-            }
-        )
-        previous = close
+    API: docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-candles
+    No interpolation: a no-trade/missing interval remains a history gap.
+    """
+    if lookback_days < 1 or lookback_days > 3650:
+        raise ValueError("lookback_days must be between 1 and 3650")
+    end = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    earliest = end - timedelta(days=lookback_days)
+    cursor = earliest
+    rows: dict[date, dict[str, Any]] = {}
+    with httpx.Client(timeout=20.0, headers={"User-Agent": "joehu-market-panel/0.1"}) as client:
+        while cursor < end:
+            boundary = min(end, cursor + timedelta(days=299))
+            response = client.get(
+                f"https://api.exchange.coinbase.com/products/{symbol}/candles",
+                params={"granularity": 86400, "start": cursor.isoformat(), "end": boundary.isoformat()},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise ValueError(f"Invalid candle payload for {symbol}")
+            for candle in payload:
+                if not isinstance(candle, list) or len(candle) != 6:
+                    raise ValueError(f"Invalid OHLCV bucket for {symbol}")
+                ts, low, high, opened, close, volume = map(float, candle)
+                if not all(isfinite(value) for value in (ts, low, high, opened, close, volume)):
+                    raise ValueError(f"Non-finite OHLCV bucket for {symbol}")
+                started = datetime.fromtimestamp(ts, UTC)
+                if not earliest <= started < end:
+                    continue  # provider may include the previous or live bucket
+                if started.hour or started.minute or started.second or not (0 < low <= min(opened, close) <= max(opened, close) <= high) or volume < 0:
+                    raise ValueError(f"Inconsistent OHLCV bucket for {symbol}")
+                row = {"symbol": symbol, "date": started.date(), "open": opened, "high": high,
+                       "low": low, "close": close, "volume": volume, "source": "coinbase-exchange-candles",
+                       "observed_at": started + timedelta(days=1), "is_complete": True}
+                previous = rows.get(started.date())
+                if previous is not None and previous != row:
+                    raise ValueError(f"Conflicting duplicate OHLCV bucket for {symbol}")
+                rows[started.date()] = row
+            cursor = boundary
     if not rows:
-        raise ValueError(f"No CoinGecko chart rows for {symbol}")
-    return pd.DataFrame(rows).tail(lookback_days)
+        raise ValueError(f"No completed Coinbase candles for {symbol}")
+    return pd.DataFrame([rows[day] for day in sorted(rows)])
 
 
 def normalize_price_frame(symbol: str, frame: pd.DataFrame, source: str) -> pd.DataFrame:

@@ -48,6 +48,7 @@ from investment_panel.domain.decision import (
     TradePlan,
     TickerDecision,
 )
+from investment_panel.domain.decision import ReferenceSignal
 from investment_panel.domain.portfolio.contracts import PortfolioHoldingDTO, PortfolioIntegratedDTO, PortfolioSummaryDTO
 
 
@@ -167,6 +168,8 @@ class WorkstationStatus(FlexibleResponse):
     market_session: str
     next_session_at: datetime | None = None
     failed_reads: list[str] = Field(default_factory=list)
+    forecasts: dict[str, Any] = Field(default_factory=dict)
+    decision_service: dict[str, Any] = Field(default_factory=dict)
     workers: list[WorkstationWorker] = Field(default_factory=list)
     blockers: list[WorkflowBlocker] = Field(default_factory=list)
     market: dict[str, Any] = Field(default_factory=dict)
@@ -570,6 +573,7 @@ class TodayPreopenBriefResponse(BaseModel):
 
 
 class TodayResponse(BaseModel):
+    reference_signals: list[ReferenceSignal] = Field(default_factory=list)
     status: ApiStatusResponse
     as_of: datetime | None = None
     actions: list[TodayCapitalAction] = Field(default_factory=list)
@@ -1226,10 +1230,13 @@ class TickerPortfolioImpactSummaryResponse(BaseModel):
     blockers: tuple[str, ...] = ()
 
 
+
+
 class TickerDecisionDetailResponse(BaseModel):
     """Decision conclusions used by the ticker page; audit bodies live on the snapshot route."""
 
     decision_contract_version: str
+    reference_signal: ReferenceSignal | None = None
     ticker: str
     as_of: datetime
     decision_revision: str
@@ -1301,6 +1308,9 @@ class ThesisAutomationResponse(FlexibleResponse):
 
 
 class StatusResponse(ApiStatusResponse):
+    transport_ready: bool = True
+    service_ready: bool = False
+    workstation: WorkstationStatus | None = None
     options_history: OptionHistoryHealthResponse | None = None
 
 

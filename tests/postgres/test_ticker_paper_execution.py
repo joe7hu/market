@@ -86,8 +86,8 @@ def _actionable_tables(
 ) -> dict[str, list[dict[str, object]]]:
     available_at = (as_of - timedelta(minutes=5)).isoformat()
     return {
-        "quotes": [{"symbol": symbol, "price": 100, "available_at": available_at, "confirmed": True}],
-        "portfolio_summary": [{"symbol": symbol, "net_liquidation": 100_000, "available_at": available_at}],
+        "quotes": [{"symbol": symbol, "price": 100, "observed_at": available_at, "available_at": available_at, "confirmed": True}],
+        "portfolio_summary": [{"symbol": symbol, "net_liquidation": 100_000, "account_observed_at": available_at, "available_at": available_at}],
         "decision_queue": [{
             "symbol": symbol, "stance": "BULLISH", "action": "BUY",
             "entry_low": 99, "entry_high": 101, "target_low": 110, "target_high": 120,
@@ -1395,8 +1395,8 @@ def test_ticker_outcome_refresh_persists_costs_and_learning_metadata(
         decision = build_ticker_decision(
             ticker,
             {
-                "quotes": [{"symbol": ticker, "price": 100, "available_at": available_at, "confirmed": True}],
-                "portfolio_summary": [{"net_liquidation": 100_000, "available_at": available_at}],
+                "quotes": [{"symbol": ticker, "price": 100, "observed_at": available_at, "available_at": available_at, "confirmed": True}],
+                "portfolio_summary": [{"net_liquidation": 100_000, "account_observed_at": available_at, "available_at": available_at}],
                 "decision_queue": [{
                     "symbol": ticker, "stance": "BULLISH", "action": "BUY",
                     "entry_low": 99, "entry_high": 101, "invalidation_price": 90,

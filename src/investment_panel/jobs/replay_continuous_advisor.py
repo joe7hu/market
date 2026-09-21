@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import json
+from math import isfinite
 from typing import Any
 
 from investment_panel.settings import load_config
 from investment_panel.core.continuous_advisor import packet_is_replay_safe, resolve_claim, claim_horizon_delta as _horizon_delta, claim_invalidation_rule as _invalidation_rule
-from investment_panel.domain.decision import MARKET_TZ, is_us_market_day, market_session_bounds
+from investment_panel.domain.decision import forecast_observation_end as _observation_window_end
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
 
@@ -23,7 +24,7 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
         raise ValueError("replay now must be timezone-aware")
     reference = reference.astimezone(UTC)
     repository = ContinuousAdvisorRepository(runtime_for_config(config))
-    resolved = quarantined = waiting = 0
+    resolved = quarantined = waiting = overdue = 0
     results: list[dict[str, Any]] = []
     for item in repository.unresolved_claims(limit=limit):
         packet = dict(item.get("packet") or {})
@@ -54,7 +55,8 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
             results.append({"claim_id": item["claim_id"], "status": "unresolvable", "reason": "unsupported_horizon"})
             continue
         measured_from = cutoff + horizon
-        observation_end = _observation_window_end(measured_from)
+        continuous = str(item.get("symbol") or "").endswith("-USD") or packet.get("asset_class") == "crypto"
+        observation_end = _observation_window_end(measured_from, continuous=continuous)
         if measured_from > reference or (observation_end is not None and observation_end > reference):
             repository.record_resolution_attempt(
                 str(item["claim_id"]),
@@ -73,6 +75,8 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
         base_price = (((packet.get("evidence") or {}).get("prices") or {}).get("price"))
         try:
             base_value = float(base_price)
+            if not isfinite(base_value):
+                base_value = 0.0
         except (TypeError, ValueError):
             base_value = 0.0
         invalidation_rule = _invalidation_rule(claim)
@@ -103,6 +107,7 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
             or quote.get("price") is None
             or (base_value <= 0 and claim.get("claim_kind") != "invalidation")
         ):
+            overdue += 1
             reason = "base_price_unavailable" if base_value <= 0 and claim.get("claim_kind") != "invalidation" else "price_outcome_unavailable"
             repository.record_resolution_attempt(
                 str(item["claim_id"]),
@@ -160,23 +165,9 @@ def run(config_path: str | None = None, *, now: datetime | None = None, limit: i
         else:
             resolved += 1
         results.append({"claim_id": item["claim_id"], "status": outcome["status"], "actual_return": outcome.get("actual_return")})
-    return {"status": "ok", "resolved": resolved, "quarantined": quarantined, "waiting": waiting, "results": results}
+    return {"status": "partial" if overdue else "ok", "overdue": overdue, "owner_job": "refresh_assessment_inputs" if overdue else None, "resolved": resolved, "quarantined": quarantined, "waiting": waiting, "results": results}
 
 
-
-def _observation_window_end(target: datetime) -> datetime | None:
-    """End at the first market-session close on or after the target horizon."""
-
-    local_target = target.astimezone(MARKET_TZ)
-    day = local_target.date()
-    for _ in range(32):
-        if is_us_market_day(day):
-            _open_at, close_at = market_session_bounds(day)
-            close_utc = close_at.astimezone(UTC)
-            if close_utc >= target:
-                return close_utc
-        day += timedelta(days=1)
-    return None
 
 
 def _price_invalidation(claim: dict[str, Any], price: float) -> bool | None:
@@ -199,7 +190,7 @@ def _excess_return(
     observation_end: datetime | None,
 ) -> float | None:
     benchmark = str(
-        (((packet.get("evidence") or {}).get("macro_regime") or {}).get("benchmark_symbol") or "SPY")
+        (((packet.get("evidence") or {}).get("macro_regime") or {}).get("benchmark_symbol") or ("BTC-USD" if str(packet.get("symbol") or "").endswith("-USD") else "SPY"))
     ).strip().upper()
     if not benchmark:
         return None

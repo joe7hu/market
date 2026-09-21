@@ -7,7 +7,8 @@ The goal is better risk-adjusted decisions—not more trades or guaranteed profi
 
 Start with the [product goals](docs/product-goals.md),
 [architecture and owner map](ARCHITECTURE.md), and
-[paper/opportunities audit and verification guide](docs/paper-opportunities-audit-20260920.md).
+[paper/opportunities audit and verification guide](docs/paper-opportunities-audit-20260920.md),
+and [decision-service root causes and acceptance](docs/decision-service-integrity.md).
 
 ## Stack
 
@@ -141,9 +142,12 @@ and DCF/relative/blended valuation rows. LLMs should only be used for
 unstructured interpretation, memo prose, or parsing a user-submitted options
 screenshot/free-form strategy into structured legs.
 
-The web app defaults to `/today`, a dense operational brief that answers what
-changed, what matters, what should be reviewed or ignored, and what is blocked
-by stale or missing evidence. Primary navigation is Today, Market, Opportunities, Real portfolio,
+The web app defaults to `/today`, with published BUY SETUP / EXIT SETUP / HOLD /
+WAIT / AVOID conditions, their original quote/feature clocks, and a separate
+qualified capital decision. A required input or publication failure is a named
+service incident in System health, not a vague review task or a healthy empty
+screen. Measured trend conditions are not calibrated forecasts or permission
+to submit an order. Primary navigation is Today, Market, Opportunities, Real portfolio,
 Paper trading, and Research. Supporting source health, settings, ticker detail,
 calendar and filing views remain drill-downs. Real portfolio data, funded paper
 orders, and research observations have distinct accounting authorities.

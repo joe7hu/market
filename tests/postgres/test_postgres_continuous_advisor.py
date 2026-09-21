@@ -23,7 +23,7 @@ def _packet(
         {"symbol": symbol},
         {
             "context_status": {"cutoff_available": True, "cutoff": cutoff.isoformat()},
-            "portfolio": {"price": 100, "quote_observed_at": cutoff, "owned": True},
+            "portfolio": {"price": 100, "quote_observed_at": cutoff, "quote_available_at": cutoff, "owned": True},
             "source_evidence": [{"reference": "fixture:1", "source_type": "fundamental", "observed_at": cutoff}],
         },
         cutoff=cutoff,

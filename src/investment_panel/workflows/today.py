@@ -12,6 +12,7 @@ from investment_panel.infrastructure.postgres.options_research import OptionsRes
 from investment_panel.application.read_models import loaders, payloads
 from investment_panel.application.read_models.types import PanelData
 from investment_panel.settings import AppConfig
+from investment_panel.domain.decision import project_reference_signal
 from investment_panel.domain.decision import (
     AvailabilityStatus,
     availability_status_for_blockers,
@@ -39,6 +40,8 @@ def today(
         config_loader=lambda: config,
     )
     capital_actions: list[dict[str, Any]] = []
+    reference_signals: list[dict[str, Any]] = []
+    presentation_at = datetime.now(UTC)
     rank_rows = panel_data.rows("opportunity_rank")
     plan_rows = panel_data.rows("trade_plan")
     # The published ticker row already contains the deterministic capital
@@ -48,6 +51,12 @@ def today(
         symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
         rank = loaders.today_rank_for_row(row, rank_rows, symbol)
         plan = loaders.today_plan_for_row(row, plan_rows, rank, symbol)
+        try:
+            signal = project_reference_signal((rank or {}).get("reference_signal"), now=presentation_at)
+        except (ValueError, TypeError):
+            signal = None
+        if signal is not None:
+            reference_signals.append(signal.model_dump(mode="json"))
         rank_ready, rank_reason = _rank_ready(row, rank)
         if plan is not None and (plan.eligibility == "BLOCKED" or rank_ready):
             try:
@@ -178,6 +187,8 @@ def today(
         "status": payloads.status_payload(panel_data),
         "as_of": as_of,
         "actions": queue_items,
+        # Same immutable signal as Opportunities and ticker detail; not a fourth engine.
+        "reference_signals": reference_signals[:20],
         "book_actions": book_action_queue(capital_actions),
         "preopen_brief": _today_preopen_brief_payload(panel_data.rows("preopen_daily_brief")),
         "brief_items": brief_items,

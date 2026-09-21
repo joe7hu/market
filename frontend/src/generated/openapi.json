@@ -5298,6 +5298,16 @@
             "title": "Ranking Version",
             "type": "string"
           },
+          "reference_signal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceSignal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "research_priority_score": {
             "anyOf": [
               {
@@ -13618,6 +13628,216 @@
         "title": "RecoveryHealthResponse",
         "type": "object"
       },
+      "ReferenceSignal": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "BUY_SETUP",
+              "EXIT_SETUP",
+              "HOLD",
+              "WAIT",
+              "AVOID",
+              "SERVICE_FAILURE"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "condition": {
+            "title": "Condition",
+            "type": "string"
+          },
+          "entry_high": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry High"
+          },
+          "entry_low": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Low"
+          },
+          "evidence_kind": {
+            "const": "measured_trend_not_validated_alpha",
+            "default": "measured_trend_not_validated_alpha",
+            "title": "Evidence Kind",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "feature_session": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Session"
+          },
+          "horizon": {
+            "default": "Tactical · next 1–20 sessions",
+            "title": "Horizon",
+            "type": "string"
+          },
+          "order_authorized": {
+            "const": false,
+            "default": false,
+            "title": "Order Authorized",
+            "type": "boolean"
+          },
+          "owner_job": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Job"
+          },
+          "quote_observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Observed At"
+          },
+          "quote_state": {
+            "title": "Quote State",
+            "type": "string"
+          },
+          "reference_price": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Price"
+          },
+          "risk_per_unit": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Per Unit"
+          },
+          "signal_id": {
+            "title": "Signal Id",
+            "type": "string"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "stop_price": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Price"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "target_price": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "version": {
+            "default": "daily-trend-conditions.v1",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signal_id",
+          "ticker",
+          "action",
+          "summary",
+          "condition",
+          "as_of",
+          "expires_at",
+          "quote_state"
+        ],
+        "title": "ReferenceSignal",
+        "type": "object"
+      },
       "RefreshJobResponse": {
         "additionalProperties": true,
         "properties": {
@@ -16218,9 +16438,29 @@
             "title": "Ready",
             "type": "boolean"
           },
+          "service_ready": {
+            "default": false,
+            "title": "Service Ready",
+            "type": "boolean"
+          },
           "source": {
             "title": "Source",
             "type": "string"
+          },
+          "transport_ready": {
+            "default": true,
+            "title": "Transport Ready",
+            "type": "boolean"
+          },
+          "workstation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkstationStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -17293,6 +17533,16 @@
             "title": "Portfolio Impacts",
             "type": "object"
           },
+          "reference_signal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceSignal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "resolution": {
             "anyOf": [
               {
@@ -17484,6 +17734,16 @@
             },
             "title": "Portfolio Impacts",
             "type": "object"
+          },
+          "reference_signal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceSignal"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "resolution": {
             "anyOf": [
@@ -18846,6 +19106,13 @@
               }
             ]
           },
+          "reference_signals": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceSignal"
+            },
+            "title": "Reference Signals",
+            "type": "array"
+          },
           "status": {
             "$ref": "#/components/schemas/ApiStatusResponse"
           }
@@ -19578,6 +19845,11 @@
             "title": "Blockers",
             "type": "array"
           },
+          "decision_service": {
+            "additionalProperties": true,
+            "title": "Decision Service",
+            "type": "object"
+          },
           "evaluations": {
             "items": {
               "additionalProperties": true,
@@ -19592,6 +19864,11 @@
             },
             "title": "Failed Reads",
             "type": "array"
+          },
+          "forecasts": {
+            "additionalProperties": true,
+            "title": "Forecasts",
+            "type": "object"
           },
           "market": {
             "additionalProperties": true,
