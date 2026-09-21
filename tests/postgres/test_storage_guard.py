@@ -8,10 +8,10 @@ from investment_panel.infrastructure.postgres.storage_guard import GIB, storage_
 def test_storage_guard_blocks_history_at_or_below_the_reserve(monkeypatch) -> None:
     monkeypatch.setattr(
         "investment_panel.infrastructure.postgres.storage_guard.shutil.disk_usage",
-        lambda _path: SimpleNamespace(free=30 * GIB),
+        lambda _path: SimpleNamespace(free=20 * GIB),
     )
 
-    capacity = storage_capacity(path="/fixture", minimum_free_gib=30)
+    capacity = storage_capacity(path="/fixture")
 
     assert capacity.history_collection_allowed is False
     assert capacity.reason == "storage_below_minimum_free_space"
@@ -24,7 +24,7 @@ def test_storage_guard_allows_history_only_above_the_reserve(monkeypatch) -> Non
         lambda _path: SimpleNamespace(free=31 * GIB),
     )
 
-    capacity = storage_capacity(path="/fixture", minimum_free_gib=30)
+    capacity = storage_capacity(path="/fixture")
 
     assert capacity.history_collection_allowed is True
     assert capacity.reason is None

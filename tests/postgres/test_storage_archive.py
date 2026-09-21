@@ -18,6 +18,7 @@ from investment_panel.infrastructure.postgres.storage_archive import (
     StorageArchiveService,
     ensure_mounted_archive_root,
 )
+from investment_panel.infrastructure.postgres.storage_guard import DEFAULT_MIN_FREE_GIB, GIB
 from investment_panel.settings import load_config, public_config_payload
 
 
@@ -67,6 +68,21 @@ def test_storage_archive_dir_round_trips_through_config(tmp_path: Path) -> None:
 
     assert config.nas.storage_archive_dir == configured_archive
     assert public_config_payload(config)["nas"]["storage_archive_dir"] == str(configured_archive)
+
+
+def test_storage_health_uses_the_collection_reserve(storage_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:
+    runtime = DatabaseRuntime(storage_postgres_dsn)
+    runtime.open()
+    try:
+        archive_root = tmp_path / "nas" / "storage-archive" / "v1"
+        monkeypatch.setattr(
+            "investment_panel.infrastructure.postgres.storage_archive.shutil.disk_usage",
+            lambda _path: SimpleNamespace(free=DEFAULT_MIN_FREE_GIB * GIB, total=100 * GIB),
+        )
+
+        assert StorageArchiveService(runtime, archive_root).health()["full_history_collection_allowed"] is False
+    finally:
+        runtime.close()
 
 
 def test_archive_is_content_addressed_verified_and_restorable(storage_postgres_dsn: str, tmp_path: Path) -> None:

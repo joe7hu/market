@@ -43,7 +43,7 @@ class MarketDataConfig:
     mode: str = "online"
     lookback_days: int = 260
     equity_provider: str = "yfinance"
-    crypto_provider: str = "coingecko"
+    crypto_provider: str = "coinbase-exchange"
     user_agent: str = "joehu-market-panel/0.1 contact:local"
 @dataclass(frozen=True)
 class OpenCliConfig:
@@ -320,7 +320,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         mode=str(market_data_raw.get("mode", "online")),
         lookback_days=int(market_data_raw.get("lookback_days", 260)),
         equity_provider=str(market_data_raw.get("equity_provider", "yfinance")),
-        crypto_provider=str(market_data_raw.get("crypto_provider", "coingecko")),
+        crypto_provider=str(market_data_raw.get("crypto_provider", "coinbase-exchange")),
         user_agent=str(market_data_raw.get("user_agent", "joehu-market-panel/0.1 contact:local")),
     )
     data_sources_raw = raw.get("data_sources", {})

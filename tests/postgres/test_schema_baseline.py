@@ -102,6 +102,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260920_0026_options_radar_binding_repair.py',
         '20260920_0027_options_radar_orphan_candidate_repair.py',
         '20260920_0028_market_app_setting_privileges.py',
+        '20260921_0029_daily_market_price_source_origin.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
@@ -130,6 +131,21 @@ def test_setting_privilege_migration_restores_runtime_write_access(postgres_dsn)
         connection.execute('SET LOCAL ROLE market_app')
         assert connection.execute("SELECT has_table_privilege(current_user, 'app.setting', 'INSERT')").fetchone()[0]
         assert connection.execute("SELECT has_table_privilege(current_user, 'app.setting', 'UPDATE')").fetchone()[0]
+
+
+def test_daily_market_source_origin_migration_is_explicit(postgres_dsn):
+    upgrade_database(postgres_dsn, '20260920_0028')
+    with psycopg.connect(postgres_dsn) as connection:
+        connection.execute(
+            """INSERT INTO ingest.source (id, name, family, kind, origin)
+               VALUES ('daily-market-prices', 'Daily market prices', 'market_data', 'daily_bars',
+                       'Yahoo chart and CoinGecko')"""
+        )
+    upgrade_database(postgres_dsn)
+    with psycopg.connect(postgres_dsn) as connection:
+        assert connection.execute(
+            "SELECT origin FROM ingest.source WHERE id = 'daily-market-prices'"
+        ).fetchone()[0] == 'Yahoo chart and Coinbase Exchange daily candles'
 
 
 def test_previous_strategy_binding_revision_upgrades_to_head(postgres_dsn):

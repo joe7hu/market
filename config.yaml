@@ -18,13 +18,13 @@ arco:
   web_captures_glob: web-captures-*.json
 
 market_data:
-  # Online uses Yahoo chart for equities/ETFs and CoinGecko for configured
+  # Online uses Yahoo chart for equities/ETFs and Coinbase Exchange for configured
   # crypto majors. Provider failures are reported instead of replaced with
   # synthetic prices.
   mode: online
   lookback_days: 260
   equity_provider: yahoo-chart
-  crypto_provider: coingecko
+  crypto_provider: coinbase-exchange
   # SEC EDGAR rejects anonymous/local-only identities. Keep a real contact in
   # the provider identity so scheduled 13F refreshes remain allowed.
   user_agent: "joehu-market-panel/0.1 gmgmgoldage@gmail.com"

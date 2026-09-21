@@ -25,6 +25,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.domain.decision import MARKET_TZ, is_us_market_day
 from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.infrastructure.postgres.storage_guard import storage_capacity
 
 
 # Only these phases have a production archive writer.  Publication and
@@ -717,7 +718,7 @@ class StorageArchiveService:
             "forecast_status": "pending_daily_accounting",
             "archive_verification_failures": int(failures["count"]),
             "active_reclamation": [dict(row) for row in active],
-            "full_history_collection_allowed": local.free >= 30 * 1024**3,
+            "full_history_collection_allowed": storage_capacity(path=Path.cwd()).history_collection_allowed,
             "archive_lag_seconds": archive_lag_seconds,
             "hot_partition_age_days": hot_age_days,
             "retention_backlog": {**dict(retention), "option_archive_candidates": len(archive_candidates)},
