@@ -30,8 +30,9 @@ jobs:
             apt-get install -y --no-install-recommends postgresql-17 >/dev/null
             pip install -q uv==0.9.26
             cd /src
-            uv export --frozen --extra test --no-emit-project -o /out/requirements.txt
-            pip install -q --target /out/site-packages -r /out/requirements.txt ruff
+            uv export --frozen --extra test --no-emit-project -o /out/requirements.txt >/dev/null
+            pip install -q --target /out/site-packages -r /out/requirements.txt
+            pip install -q --target /out/site-packages ruff
             mkdir -p /out/postgresql /out/pg-libs
             cp -a /usr/lib/postgresql/17 /out/postgresql/
             cp -a /usr/share/postgresql /out/pg-share
