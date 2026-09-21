@@ -541,10 +541,14 @@ class TickerDecisionRepository:
 
     def decision_funnel(
         self, *, now: datetime | None = None, action_queue: Iterable[Mapping[str, Any]] = (),
+        symbols: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Summarize the current backend-owned ticker decision lane."""
 
         reference = _utc(now or datetime.now(UTC))
+        scope = None if symbols is None else sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+        if scope == []:
+            return decision_funnel_payload([], [], [], [], now=reference, symbols=[])
         analysis = AnalysisRepository(self.runtime)
         try:
             alpha_rows, rank_rows, plan_rows = self._current_funnel_publication_rows(reference=reference)
@@ -557,7 +561,9 @@ class TickerDecisionRepository:
         decisions: list[dict[str, Any]] = []
         market_publications: dict[str, dict[str, Any] | None] = {}
         market_snapshots: dict[tuple[str, datetime], MarketStateSnapshot | None] = {}
-        for row in self._current_funnel_rows(reference=reference):
+        source_rows = (self._current_funnel_rows(reference=reference) if scope is None else
+                       self._current_funnel_rows(reference=reference, symbols=scope))
+        for row in source_rows:
             ticker = str(row.get("ticker") or "").strip().upper()
             compact_contract_valid = True
             fast_cash = row.get("funnel_fast_path") is True
@@ -580,7 +586,7 @@ class TickerDecisionRepository:
                 stock_impact = None
                 stock_impact_projection = {
                     "availability_status": AvailabilityStatus.MISSING.value,
-                    "blockers": ["portfolio_context_missing"],
+                    "blockers": ["stock_candidate_not_qualified"],
                 }
             else:
                 try:
@@ -848,7 +854,7 @@ class TickerDecisionRepository:
         return decision_funnel_payload(
             decisions, alpha_rows, rank_rows, plan_rows,
             action_queue_rows=supplied_action_queue or derived_action_queue,
-            now=reference,
+            now=reference, symbols=scope,
         )
 
     def _current_funnel_publication_rows(
@@ -1037,7 +1043,7 @@ class TickerDecisionRepository:
             grouped["trade_plan"],
         )
 
-    def _current_funnel_rows(self, *, reference: datetime) -> list[dict[str, Any]]:
+    def _current_funnel_rows(self, *, reference: datetime, symbols: list[str] | None = None) -> list[dict[str, Any]]:
         """Read only the compact current fields used by the decision funnel."""
 
         with self.runtime.read() as connection:
@@ -1061,6 +1067,7 @@ class TickerDecisionRepository:
                     FROM analysis.ticker_decision decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                     WHERE decision.status = 'published'
+                      AND (%s::text[] IS NULL OR instrument.symbol = ANY(%s))
                       AND decision.contract_version = 'ticker-decision.v1'
                       AND NULLIF(BTRIM(decision.decision_revision), '') IS NOT NULL
                       AND NULLIF(BTRIM(decision.code_version), '') IS NOT NULL
@@ -1299,7 +1306,7 @@ class TickerDecisionRepository:
                   AND candidate.authority_count = 1
                   AND candidate.opportunity_authority_count = 1
                 """,
-                [reference, reference],
+                [symbols, symbols, reference, reference],
             ).fetchall()
         return sorted(
             (dict(row) for row in rows),
@@ -2847,8 +2854,10 @@ def decision_funnel_payload(
     *,
     action_queue_rows: list[dict[str, Any]] | None = None,
     now: datetime,
+    symbols: list[str] | None = None,
 ) -> dict[str, Any]:
-    symbols = sorted({
+    scoped = symbols is not None
+    symbols = sorted(set(symbols)) if scoped else sorted({
         str(row.get("ticker") or row.get("symbol") or "").upper()
         for rows in (decisions, alpha_rows, rank_rows, plan_rows)
         for row in rows
@@ -2856,7 +2865,13 @@ def decision_funnel_payload(
     })
     total = len(symbols)
     decision_by_symbol = {str(row.get("ticker") or "").upper(): row for row in decisions}
-    alpha_by_symbol = {str(row.get("ticker") or "").upper(): row for row in alpha_rows}
+    # Multiple horizons may exist. A missing fundamental forecast must not
+    # overwrite an available tactical forecast for the same ticker.
+    alpha_by_symbol: dict[str, dict[str, Any]] = {}
+    for row in alpha_rows:
+        symbol = str(row.get("ticker") or "").upper()
+        if symbol not in alpha_by_symbol or row.get("availability_status") == "available":
+            alpha_by_symbol[symbol] = row
     rank_by_symbol = {str(row.get("ticker") or "").upper(): row for row in rank_rows}
     plan_by_symbol = {str(row.get("ticker") or "").upper(): row for row in plan_rows}
     queue_by_symbol: dict[str, list[dict[str, Any]]] = {}
@@ -2926,40 +2941,44 @@ def decision_funnel_payload(
         "action_queue": ("today-action-queue", "Refresh ticker decisions and /api/today."),
     }
     stages = []
+    reached = set(symbols)
+    first_blockers: list[dict[str, Any]] = []
     for stage in owners:
-        passed: list[str] = []
+        raw_passed: set[str] = set()
+        raw_failed: list[tuple[str, str]] = []
         failed: list[tuple[str, str]] = []
         for symbol in symbols:
             available, blockers = details(stage, symbol)
             if available:
-                passed.append(symbol)
+                raw_passed.add(symbol)
             else:
-                failed.extend((str(blocker), symbol) for blocker in blockers or [f"{stage}_unavailable"])
-        counts = Counter(reason for reason, _symbol in failed)
-        top_blockers = [
-            {
-                "reason": reason,
-                "count": count,
-                "affected_symbols": sorted({symbol for item, symbol in failed if item == reason})[:20],
-            }
-            for reason, count in counts.most_common(5)
-        ]
+                reasons = [str(reason) for reason in blockers or [f"{stage}_unavailable"]]
+                raw_failed.extend((reason, symbol) for reason in reasons)
+                if symbol in reached:
+                    failed.extend((reason, symbol) for reason in reasons)
+                    first_blockers.append({"symbol": symbol, "stage": stage, "reason": reasons[0]})
+        passed = reached & raw_passed
+        def summarize(items: list[tuple[str, str]]) -> list[dict[str, Any]]:
+            return [{"reason": reason, "count": count,
+                     "affected_symbols": sorted({symbol for code, symbol in items if code == reason})[:20]}
+                    for reason, count in Counter(reason for reason, _ in items).most_common(5)]
         owner, retry = owners[stage]
         stages.append({
-            "stage": stage,
-            "count": len(passed),
-            "total": total,
+            "stage": stage, "count": len(passed), "total": total,
             "percentage": len(passed) / total if total else 0.0,
-            "unavailable_count": total - len(passed),
-            "affected_symbols": sorted({symbol for _reason, symbol in failed})[:20],
-            "top_blockers": top_blockers,
-            "owner": owner,
-            "retry": retry,
+            "unavailable_count": total - len(raw_passed),
+            "available_count": len(raw_passed), "reached_count": len(reached),
+            "blocked_count": len(reached - passed), "not_reached_count": total - len(reached),
+            "affected_symbols": sorted(reached - passed)[:20],
+            "top_blockers": summarize(failed), "diagnostic_blockers": summarize(raw_failed),
+            "owner": owner, "retry": retry,
         })
+        reached = passed
     published_values = [
         parsed
         for rows in (alpha_rows, rank_rows, plan_rows, decisions)
         for row in rows
+        if str(row.get("ticker") or row.get("symbol") or "").upper() in symbols
         if (parsed := _parse_datetime(row.get("publication_published_at") or row.get("published_at"))) is not None
     ]
     published_at = max(published_values, default=None)
@@ -2974,6 +2993,8 @@ def decision_funnel_payload(
         "age_seconds": max(0.0, (now - published_at).total_seconds()) if published_at else None,
         "total": total,
         "actionable": stages[-1]["count"] if stages else 0,
+        "scope": "monitored_stock_lane" if scoped else "published_stock_lane",
+        "first_blockers": first_blockers,
         "stages": stages,
     }
 

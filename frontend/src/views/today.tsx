@@ -7,7 +7,8 @@ import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucid
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/market/workstation";
-import { DataFieldStateNotice, decisionReason, missingFieldState } from "@/components/market/dataFieldState";
+import { CapitalDecision } from "@/components/market/CapitalDecision";
+import { decisionReason } from "@/components/market/dataFieldState";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { cn } from "@/lib/utils";
 import type { TodayResponse } from "@/api/panel";
@@ -86,9 +87,9 @@ export function TodayPage({ data, model, lastRefresh, actionQueue, actionQueueLo
       <div className="h-5" />
       <ScopeStatusNotice status={scopeStatus} onRetry={onRefresh} />
 
-      {(actionQueue?.reference_signals?.length ?? 0) > 0 ? <section className="my-5" aria-label="Current trading conditions"><h2 className="mb-2 text-xl font-semibold">Trading signals</h2><p className="mb-3 text-sm text-muted-foreground">Published entry, invalidation and exit conditions. A setup is not an approved allocation; position and execution gates still apply.</p><div className="grid gap-3 lg:grid-cols-2">{actionQueue!.reference_signals!.map(signal => <div key={signal.signal_id}><button className="mb-1 font-semibold text-primary hover:underline" onClick={() => onOpenTicker(signal.ticker)}>{signal.ticker} →</button><ReferenceSignalCard signal={signal} plan={actionQueue?.book_actions?.find(item => item.ticker === signal.ticker)?.trade_plan} compact /></div>)}</div></section> : null}
+      {(actionQueue?.reference_signals?.length ?? 0) > 0 ? <section className="my-5" aria-label="Current trading conditions"><h2 className="mb-2 text-xl font-semibold">Trading signals</h2><p className="mb-3 text-sm text-muted-foreground">One capital decision per instrument, with its supporting price conditions below. Paper orders require a qualified plan and a later executable quote.</p><div className="grid gap-3 lg:grid-cols-2">{actionQueue!.reference_signals!.map(signal => <div key={signal.signal_id}><button className="mb-1 font-semibold text-primary hover:underline" onClick={() => onOpenTicker(signal.ticker)}>{signal.ticker} →</button><ReferenceSignalCard signal={signal} plan={actionQueue?.book_actions?.find(item => item.ticker === signal.ticker)?.trade_plan} resolution={actionQueue?.book_actions?.find(item => item.ticker === signal.ticker)?.resolution} missingIsFailure compact /></div>)}</div></section> : null}
       {hasBrief ? <div className="grid gap-8">
-        {Object.values(categoryStates).some((category) => category.coverage_status !== "complete" && category.coverage_message) ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Brief coverage is incomplete; missing items do not confirm that nothing changed.</summary><ul className="mt-2 space-y-1">{Object.values(categoryStates).filter((category) => category.coverage_status !== "complete" && category.coverage_message).map((category) => <li key={category.category}>{SECTION_BY_KEY[category.category]?.title ?? category.category}: {category.coverage_message}</li>)}</ul></details> : null}
+        {Object.values(categoryStates).some((category) => category.coverage_status !== "complete" && category.coverage_message) ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Brief source scope and coverage</summary><ul className="mt-2 space-y-1">{Object.values(categoryStates).filter((category) => category.coverage_status !== "complete" && category.coverage_message).map((category) => <li key={category.category}>{SECTION_BY_KEY[category.category]?.title ?? category.category}: {category.coverage_message}</li>)}</ul></details> : null}
         <section aria-labelledby="today-do-now"><h2 id="today-do-now" className="mb-3 text-xl font-semibold">Decisions and holding risks</h2><ActionQueue response={actionQueue} loading={actionQueueLoading} error={actionQueueError} onRefresh={onRefresh} onOpenTicker={onOpenTicker} /><details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-semibold">Research reading list · {decideNow.length} loaded</summary><BriefSection section={SECTION_BY_KEY.decide_now} rows={decideNow} category={categoryStates.decide_now} onOpenTicker={onOpenTicker} columns /></details></section>
         <section aria-labelledby="today-changed"><h2 id="today-changed" className="mb-3 text-xl font-semibold">What changed</h2><PreopenBrief brief={actionQueue?.preopen_brief} /><div className="grid gap-6"><BriefSection section={SECTION_BY_KEY.whats_changed} rows={whatsChanged} category={categoryStates.whats_changed} onOpenTicker={onOpenTicker} columns /><CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalysts", subtitle: "Near-term events that can change a decision." }} rows={catalysts} category={categoryStates.catalysts} onOpenTicker={onOpenTicker} /></div></section>
         <section aria-labelledby="today-system"><div className="mb-3 flex items-end justify-between gap-3"><div><h2 id="today-system" className="text-xl font-semibold">Your portfolio</h2><p className="text-sm text-muted-foreground">Position performance, concentration and holding risks.</p></div><a className="text-sm font-medium text-primary hover:underline" href="/health">Open system health →</a></div><PortfolioPerformanceSummary summary={data.portfolioSummaryDto} /><div className="grid gap-6"><BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk", subtitle: "Concentration, loss, and thesis exceptions." }} rows={riskExceptions.slice(0, 3)} onOpenTicker={onOpenTicker} columns /><BriefSection section={SECTION_BY_KEY.portfolio_pulse} rows={portfolioPulse} category={categoryStates.portfolio_pulse} onOpenTicker={onOpenTicker} columns /></div><details className="mt-4 rounded-md border border-border p-4"><summary className="cursor-pointer text-sm font-semibold">Event research</summary><EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} /></details></section>
@@ -116,7 +117,7 @@ function PortfolioPerformanceSummary({ summary }: { summary: PanelData["portfoli
 
 function ActionQueue({ response, loading, error, onRefresh, onOpenTicker }: { response: TodayResponse | null; loading: boolean; error: string | null; onRefresh: () => void; onOpenTicker: (symbol: string) => void }) {
   const [showAll, setShowAll] = useState(false);
-  const sorted = dedupeTodayActions(response?.actions ?? []).sort((a, b) => Number(b.source === "portfolio_risk") - Number(a.source === "portfolio_risk"));
+  const sorted = dedupeTodayActions(response?.actions ?? []).filter(item => !capitalDecisionAlreadyShown(item, response)).sort((a, b) => Number(b.source === "portfolio_risk") - Number(a.source === "portfolio_risk"));
   const items = showAll ? sorted : sorted.slice(0, 5);
   const missingPlanCount = response?.missing_plan_count ?? 0;
   const unavailable = Boolean(response && !response.status.ready);
@@ -194,20 +195,16 @@ export function ActionQueueCard({ item, onOpenTicker, onRefresh }: { item: Today
 type TradePlan = components["schemas"]["TodayTradePlanSummaryResponse"];
 
 function CompactPlanSummary({ plan, fieldStates, blocker, nextAction }: { plan: TradePlan | null; fieldStates: components["schemas"]["DataFieldStateV1"][]; blocker?: string | null; nextAction?: string | null }) {
-  if (!plan) {
-    const state = fieldStates.find((candidate) => candidate.field === "trade_plan") ?? missingFieldState({
-      field: "trade_plan", source: "trade_plan", reason: "trade_plan_missing",
-      nextAction: "Refresh the ticker decision and publish its canonical TradePlan.",
-    });
-    return <div className="rounded-md border border-border p-3 text-sm"><p className="font-semibold">No new trade</p><div className="mt-2"><DataFieldStateNotice state={{ ...state, reason: blocker || state.reason, next_action: nextAction || state.next_action }} /></div></div>;
-  }
-  return (
-    <div className="rounded-md border border-border p-3 text-sm">
-      {plan.selected_expression_kind?.toUpperCase() === "CASH" ? <p className="font-semibold">No new trade</p> : <p><span className="font-semibold">Action:</span> {plan.action} · <span className="font-semibold">Expression:</span> {expressionLabel(plan.selected_expression_kind)}</p>}
-      <p className="mt-2 text-muted-foreground"><span className="font-semibold text-foreground">Rationale:</span> {decisionReason(plan.rationale)}</p>
-      <p className="mt-2"><span className="font-semibold">Next:</span> {decisionReason(plan.next_action)}</p>
-    </div>
-  );
+  const state = fieldStates.find(candidate => candidate.field === "trade_plan");
+  return <CapitalDecision plan={plan} missingIsFailure resolution={{ primary_blocker: blocker || state?.reason, next_action: nextAction || state?.next_action }} />;
+}
+
+/** Suppress only the identical canonical capital decision already on a signal card.
+ * Holding-risk/inbox decisions and mismatched publications remain visible. */
+export function capitalDecisionAlreadyShown(item: TodayAction, response: TodayResponse | null): boolean {
+  if (item.source !== "capital_action" || !item.ticker || !item.projection_identity) return false;
+  if (!response?.reference_signals?.some(signal => signal.ticker === item.ticker)) return false;
+  return Boolean(response.book_actions?.some(action => action.ticker === item.ticker && action.projection_identity === item.projection_identity));
 }
 
 function PreopenBrief({ brief }: { brief: TodayPreopenBrief | null | undefined }) {
@@ -305,7 +302,7 @@ function BriefSection({ section, rows, category, onOpenTicker, columns }: { sect
           ))}
         </div>
       ) : (
-        <EmptyState title="No published items" detail={category?.coverage_status === "complete" ? `No ${section.title.toLowerCase()} items were found in complete coverage.` : `No ${section.title.toLowerCase()} items are loaded. Coverage is ${semanticStatusLabel(category?.coverage_status, "unknown")}.`} />
+        <EmptyState title="No published items" detail={category?.coverage_status === "complete" ? category.coverage_message || `No recorded ${section.title.toLowerCase()} items in this publication.` : category?.coverage_message || `No ${section.title.toLowerCase()} items are loaded. Coverage is ${semanticStatusLabel(category?.coverage_status, "unknown")}.`} />
       )}
     </div>
   );
@@ -322,7 +319,7 @@ function CatalystSection({ section, rows, category, onOpenTicker }: { section: T
           ))}
         </ul>
       ) : (
-        <EmptyState title={category?.coverage_status === "complete" ? "No catalysts found" : "Catalyst coverage is unavailable"} detail={category?.coverage_status === "complete" ? "No events were found in the next two weeks in complete coverage." : "No events are loaded. The available data cannot establish that nothing is scheduled."} />
+        <EmptyState title={category?.coverage_status === "complete" ? "No catalysts found" : category?.coverage_status === "partial" ? "No recorded catalysts in this excerpt" : "Catalyst coverage is unavailable"} detail={category?.coverage_message || (category?.coverage_status === "complete" ? "No recorded events in this publication’s calendar scope." : "No events are loaded. Without complete coverage, this does not establish that nothing is scheduled.")} />
       )}
     </div>
   );

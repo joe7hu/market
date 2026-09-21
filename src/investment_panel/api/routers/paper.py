@@ -24,10 +24,12 @@ from investment_panel.api.response_contracts import (
     PaperAccountHistory,
     PaperBookPerformance,
     PaperObservationPage,
+    PaperObservationHistory,
     PaperTradeDetail,
     PaperTradePage,
 )
 from investment_panel.settings import AppConfig
+from investment_panel.core.job_policy import scheduler_intervals, scheduler_enabled
 
 
 router = APIRouter()
@@ -56,6 +58,17 @@ def paper_observations(
     repository: dependencies.PaperWorkbenchRepository = Depends(dependencies.get_paper_workbench),
 ) -> dict[str, Any]:
     return repository.observations(status=status, offset=offset)
+
+
+@router.get("/api/paper/observations/{observation_id}/history", response_model=PaperObservationHistory)
+def paper_observation_history(
+    observation_id: UUID,
+    repository: dependencies.PaperWorkbenchRepository = Depends(dependencies.get_paper_workbench),
+) -> dict[str, Any]:
+    history = repository.observation_history(str(observation_id))
+    if history is None:
+        raise HTTPException(status_code=404, detail="Research experiment not found")
+    return history
 
 
 @router.get(
@@ -305,7 +318,9 @@ def research_overview(
         ),
         None,
     )
+    collection = repository.observation_progress()
     enabled = bool(config.agents.thesis_monitor.continuous_enabled)
+    settlement_enabled = scheduler_enabled() and "run_continuous_advisor_replay" in scheduler_intervals(config)
     prompt_health = advisor.get("strategy_health") or {}
     challenger = prompt_health.get("challenger") or {}
     prompt_quality = research_repository.forecast_claims(limit=1).get("quality") or {}
@@ -318,10 +333,14 @@ def research_overview(
             active=active_strategy,
             challenger=challenger_strategy,
             performance=performance,
+            collection=collection,
             auto_promotion=bool(config.analysis.options_decision_system.strategy_auto_promotion_enabled),
         ),
         "prediction_lane": {
             "status": "disabled" if not enabled else "advisory_only",
+            "generation_enabled": enabled,
+            "settlement_enabled": settlement_enabled,
+            "pause_reason": None if enabled else ("New model forecasts are disabled in configuration. Existing claims still settle from recorded market prices; settlement makes no model calls." if settlement_enabled else "New forecast generation and scheduled settlement are disabled in configuration. Outstanding claims cannot progress until settlement is enabled."),
             "deployed_version": prompt_health.get("active_prompt_version"),
             "challenger": challenger.get("version"),
             "permitted_automatic_action": "advisory_only",
@@ -343,6 +362,7 @@ def research_overview(
 def _strategy_lane(
     *, active: dict[str, Any] | None, challenger: dict[str, Any] | None,
     performance: dict[str, Any], auto_promotion: bool,
+    collection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     subject = challenger or active or {}
     evaluations = {str(row.get("evaluation_type")): row for row in subject.get("evaluations") or []}
@@ -350,11 +370,13 @@ def _strategy_lane(
         {"unsupported_parameters", "invalid_parameters", "implementation_version_mismatch", "parameter_lineage_mismatch"}]
     if preflight_failures:
         status = "misconfigured"
+    elif collection and collection.get("management_status") in {"overdue", "unavailable"}:
+        status = "collection_stalled"
     elif challenger:
         status = "awaiting_human_review" if challenger.get("status") == "approved" else "collecting_outcomes"
     elif active and evaluations:
         status = "monitoring"
-    elif performance["counts"].get("filled_orders", 0):
+    elif (collection and (collection.get("active", 0) or collection.get("completed", 0))) or performance["counts"].get("filled_orders", 0):
         status = "collecting_outcomes"
     else:
         status = "no_paper_fills"
@@ -385,7 +407,8 @@ def _strategy_lane(
         progress[f"{name}_required"] = floor if core else None
         progress[f"{name}_verdict"] = row.get("verdict", "not_evaluated")
     return {
-        "status": status, "deployed_version": active.get("strategy_key") if active else None,
+        "status": status, "collection": collection or {},
+        "deployed_version": active.get("strategy_key") if active else None,
         "challenger": challenger.get("strategy_key") if challenger else None,
         "subject_revision_id": subject.get("strategy_revision_id"),
         "hypothesis": subject.get("hypothesis") or subject.get("economic_mechanism"),
@@ -393,7 +416,7 @@ def _strategy_lane(
         "parameters": subject.get("parameters"), "evaluations": list(evaluations.values()), "progress": progress,
         "permitted_automatic_action": "deterministic_policy_gates_only" if auto_promotion else "human_review_required",
         "evidence_counts": performance["counts"], "blockers": sorted(set(blockers)),
-        "operational_health": "misconfigured" if preflight_failures else "database_read_available",
+        "operational_health": "misconfigured" if preflight_failures else "collection_stalled" if status == "collection_stalled" else "database_read_available",
         "investment_quality": "not_established_by_run_health",
     }
 

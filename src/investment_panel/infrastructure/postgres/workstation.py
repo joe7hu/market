@@ -14,6 +14,7 @@ from typing import Any
 from investment_panel.core.job_policy import scheduler_intervals, scheduler_enabled
 from investment_panel.domain.decision import is_market_open, is_us_market_day, market_session_bounds, completed_trading_dates, MARKET_TZ
 from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime
+from investment_panel.infrastructure.postgres.experiment_events import experiment_progress
 from investment_panel.settings import AppConfig
 from investment_panel.domain.decision import decision_service_health
 from investment_panel.domain.decision import forecast_observation_end
@@ -45,7 +46,7 @@ def configured_workflow_jobs(config: AppConfig) -> tuple[str, ...]:
     if not brokers.enabled or not (brokers.ibkr.enabled or brokers.moomoo.enabled):
         excluded.add("update_broker_account")
     if not config.agents.thesis_monitor.continuous_enabled:
-        excluded.update(("run_continuous_advisor", "run_continuous_advisor_replay"))
+        excluded.add("run_continuous_advisor")
     return tuple(job for job in WORKFLOW_JOBS if job not in excluded)
 
 
@@ -296,6 +297,12 @@ class WorkstationRepository:
                 WHERE revision.status IN ('active', 'candidate', 'testing', 'approved') AND revision.created_at <= %s
                 ORDER BY (revision.status = 'active') DESC, evaluation.evaluated_at DESC LIMIT 40
             """, [now, now, now])
+        try:
+            collection = experiment_progress(self.runtime, now=now)
+        except Exception:
+            logger.exception("Experiment management health read failed")
+            failures.append("experiment_progress")
+            collection = {"management_status": "unavailable", "incidents": []}
         forecast_summary = dict(forecast_counts[0]) if forecast_counts else {}
         upcoming, due, overdue = [], 0, 0
         for pending in pending_forecasts:
@@ -341,6 +348,18 @@ class WorkstationRepository:
             blockers.append({"capability": "Trading signals", "reason": decision_service["reason"],
                 "action": "Restore the named failed database reads.", "href": "/health", "job": "refresh_decision_models"})
         required = {"refresh_assessment_inputs", "refresh_symbol_features", "refresh_decision_models"} if universe else set()
+        if any(item.get("asset_class") != "crypto" for item in universe):
+            required.add("run_stock_alpha_walk_forward")
+        if settings.strategy_experiment_collection_enabled:
+            required.add("run_option_paper_experiments")
+        if forecast_summary.get("pending", 0):
+            required.add("run_continuous_advisor_replay")
+        if collection.get("active", 0):
+            required.add("refresh_paper_quotes")
+        for incident in collection.get("incidents", []):
+            blockers.append({"capability": "Paper experiments", "reason": f"{incident.get('symbol', 'Collection')}: {incident['reason']}",
+                "action": "Resume the named worker and verify its next quote-backed mark or terminal outcome.",
+                "href": "/portfolio/paper", "job": incident["job"]})
         if config.agents.thesis_monitor.continuous_enabled:
             required |= {"run_continuous_advisor", "run_continuous_advisor_replay"}
         for worker in workers:
@@ -385,7 +404,8 @@ class WorkstationRepository:
                       "entries_enabled": settings.options_paper_actions_enabled,
                       "collection_enabled": settings.strategy_experiment_collection_enabled,
                       "promotion_enabled": settings.strategy_auto_promotion_enabled},
-            "observations": {"status": "unavailable" if "observations" in failures else "available",
+            "observations": {"status": "unavailable" if {"observations", "experiment_progress"}.intersection(failures) else "partial" if collection.get("incidents") else "available",
+                             "collection": collection,
                              "counts": observation_counts, "reason_counts": observations,
                              "accounting_basis": "Prospective observations; not funded-account P&L."},
             "evaluations": evaluations, "preflight_rejections": preflight_rejections,

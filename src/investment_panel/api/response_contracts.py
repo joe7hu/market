@@ -186,6 +186,37 @@ class PaperObservationPage(FlexibleResponse):
     accounting_basis: str
 
 
+class PaperObservationEvent(BaseModel):
+    event_key: str
+    kind: str
+    at: datetime
+    quote_observed_at: datetime | None = None
+    price: float | None = None
+    net_pnl: float | None = None
+    net_return: float | None = None
+    fees: float | None = None
+    reason: str | None = None
+    evidence: JsonObject = Field(default_factory=dict)
+
+
+class PaperObservationHistory(BaseModel):
+    observation_id: str
+    symbol: str
+    status: str
+    as_of: datetime
+    events: list[PaperObservationEvent] = Field(default_factory=list)
+    truncated: bool = False
+    entry_at: datetime | None = None
+    entry_price: float | None = None
+    exit_at: datetime | None = None
+    exit_price: float | None = None
+    history_started_at: datetime | None = None
+    coverage: str
+    basis: str
+    quantity: int = 1
+    multiplier: int = 100
+
+
 class PaperAccount(FlexibleResponse):
     status: str
     paper_only: bool = True
@@ -631,6 +662,11 @@ class DecisionFunnelStage(BaseModel):
     total: int
     percentage: float = Field(ge=0, le=1)
     unavailable_count: int
+    available_count: int = 0
+    reached_count: int = 0
+    blocked_count: int = 0
+    not_reached_count: int = 0
+    diagnostic_blockers: list[DecisionFunnelBlocker] = Field(default_factory=list)
     affected_symbols: list[str] = Field(default_factory=list)
     top_blockers: list[DecisionFunnelBlocker] = Field(default_factory=list)
     owner: str
@@ -644,6 +680,8 @@ class DecisionFunnelResponse(BaseModel):
     age_seconds: float | None = None
     total: int
     actionable: int
+    scope: str = "monitored_stock_lane"
+    first_blockers: list[Row] = Field(default_factory=list)
     stages: list[DecisionFunnelStage] = Field(default_factory=list)
 
 

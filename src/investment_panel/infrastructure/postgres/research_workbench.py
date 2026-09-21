@@ -557,6 +557,7 @@ class ResearchWorkbenchRepository:
             "coverage": (int(count["eligible"] or 0) / int(count["total"] or 1)) if count["total"] else None,
             "resolved_coverage": ((int(count["eligible"] or 0) + int(count["invalid"] or 0)) / int(count["total"] or 1)) if count["total"] else None,
             "abstention_rate": int(count["pending"] or 0) / int(count["total"] or 1) if count["total"] else None,
+            "total_claims": int(count["total"] or 0),
             "pending_claims": int(count["pending"] or 0),
             "excluded_claims": int(count["excluded"] or 0),
             "unresolved_claims": int(count["unresolved"] or 0),

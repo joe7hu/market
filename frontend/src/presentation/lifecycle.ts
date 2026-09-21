@@ -32,6 +32,8 @@ export function laneBlockers(lane: Record<string, any>): string[] {
 export function lifecycleHeadline(lane: Record<string, any>, fallback = "Evidence collection is ready to begin"): string {
   const status = String(lane.status ?? "");
   if (status === "misconfigured") return "Configuration must be fixed before learning can progress";
+  if (status === "collection_stalled") return "Experiment collection needs repair";
+  if (status === "collecting_outcomes") return "Collecting prospective experiment outcomes";
   if (status === "disabled") return "Learning is paused";
   if (status === "monitoring") return "Monitoring the latest change";
   if (status === "awaiting_human_review") return "Ready for human review";

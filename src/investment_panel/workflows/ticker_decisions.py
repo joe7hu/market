@@ -188,7 +188,8 @@ def publish(
             strategy_revision_id=next(
                 (
                     int(artifact["strategy_revision_id"])
-                    for artifact in alpha_artifacts.values()
+                    for by_horizon in alpha_artifacts.values()
+                    for artifact in by_horizon.values()
                     if artifact.get("availability_status") == "available"
                 ),
                 None,

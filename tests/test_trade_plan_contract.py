@@ -689,3 +689,17 @@ def test_today_plan_validation_count_failure_is_fail_closed(
     assert response["status"]["ready"] is False
     assert response["actions"] == []
     assert [row["action"] for row in response["book_actions"]] == ["CASH"]
+
+
+def test_cash_identity_accepts_matching_absent_optional_ids_without_relaxing_actions():
+    from investment_panel.domain.decision.ticker import trade_plan_rank_identity_matches
+    _, _, _, plan, _ = _actionable_plan()
+    keys = ("rank_id", "selected_expression_identity", "portfolio_impact_id", "market_state_publication_id")
+    cash = plan.model_copy(update={"publication_id": "publication:test", "portfolio_impact_id": None, "market_state_publication_id": None})
+    rank = {key: getattr(cash, key) for key in keys}
+    rank["publication_id"] = cash.publication_id
+    assert trade_plan_rank_identity_matches(cash, rank)
+    assert not trade_plan_rank_identity_matches(cash, {**rank, "portfolio_impact_id": "different"})
+    assert not trade_plan_rank_identity_matches(cash, {**rank, "publication_id": "different"})
+    # Defensive identity function cannot bless an actionable record with absent authority IDs.
+    assert not trade_plan_rank_identity_matches(cash.model_copy(update={"eligibility": "ACTIONABLE"}), rank)

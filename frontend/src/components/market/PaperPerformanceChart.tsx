@@ -9,8 +9,12 @@ echarts.use([LineChart, ScatterChart, AriaComponent, DataZoomComponent, GridComp
 type Point = { at: string; value: number | null; trade_id: string };
 type EventMarker = { at: string; kind: string; trade_id?: string; symbol?: string; strategy?: string | null; label?: string; value?: number; cumulative_net_pnl?: number; drawdown?: number; pnl?: number | null; price?: number | null; quantity?: number | null; status?: string };
 
-function escapeHtml(value: unknown) {
-  return String(value ?? "").replace(/[&<>\"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '\"': "&quot;", "'": "&#39;" })[character] ?? character);
+export function paperEventTooltip(event: EventMarker): string {
+  const amount = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? "not verified" : `$${value.toFixed(2)}`;
+  return [event.label ?? event.kind, new Date(event.at).toLocaleString(),
+    `${event.symbol ?? ""}${event.strategy ? ` · ${event.strategy}` : ""}`,
+    `Price: ${amount(event.price)} · Quantity: ${event.quantity ?? "not recorded"}`,
+    `P&L: ${amount(event.pnl)}`].join("\n");
 }
 
 export function PaperPerformanceChart({ points, label, onSelect, events = [], mode = "cumulative", onRangeChange }: { points: Point[]; label: string; onSelect: (tradeId: string) => void; events?: EventMarker[]; mode?: "cumulative" | "drawdown"; onRangeChange?: (from: string, to: string) => void }) {
@@ -27,11 +31,10 @@ export function PaperPerformanceChart({ points, label, onSelect, events = [], mo
         if (params?.seriesType === "scatter") {
           const event = params.data?.[2] as EventMarker | undefined;
           if (!event) return "";
-          const pnl = event.pnl == null ? "not verified" : `${event.pnl > 0 ? "+" : event.pnl < 0 ? "-" : ""}$${Math.abs(event.pnl).toFixed(2)}`;
-          return `<strong>${escapeHtml(event.label ?? event.kind)}</strong><br/>${escapeHtml(new Date(event.at).toLocaleString())}<br/>${escapeHtml(event.symbol ?? "")}${event.strategy ? ` · ${escapeHtml(event.strategy)}` : ""}<br/>P&L: ${escapeHtml(pnl)}`;
+          return paperEventTooltip(event);
         }
         const point = points[params?.dataIndex];
-        return point ? `<strong>${escapeHtml(new Date(point.at).toLocaleString())}</strong><br/>${escapeHtml(label)}: ${point.value == null ? "—" : escapeHtml(`$${point.value.toFixed(2)}`)}` : "";
+        return point ? `${new Date(point.at).toLocaleString()}\n${label}: ${point.value == null ? "—" : `$${point.value.toFixed(2)}`}` : "";
       } },
       legend: eventKinds.length ? { bottom: 0, type: "scroll" } : undefined,
       grid: { left: 65, right: 20, top: 25, bottom: eventKinds.length ? 92 : 70 },
@@ -46,7 +49,7 @@ export function PaperPerformanceChart({ points, label, onSelect, events = [], mo
     chart.on("click", (event: any) => {
       const marker = event?.seriesType === "scatter" ? event.data?.[2] as EventMarker | undefined : undefined;
       const point = points[event?.dataIndex];
-      const tradeId = marker?.trade_id ?? point?.trade_id;
+      const tradeId = event?.seriesType === "scatter" ? marker?.trade_id : point?.trade_id;
       if (tradeId) onSelect(tradeId);
     });
     chart.on("datazoom", (event: any) => {

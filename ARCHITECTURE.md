@@ -382,3 +382,16 @@ For live checks, bind API and Vite to `0.0.0.0`, probe `/api/status` and the
 changed routes, and compare the served frontend asset between `:5173` and
 canonical `:8010`. Paper execution, strategy promotion, and Telegram remain
 fail-closed unless their independent deterministic gates pass.
+
+## Prospective experiment event journal
+
+`analysis.option_experiment_event` is an append-only, per-observation audit stream
+written transactionally by the existing options experiment worker. It is not a
+funded-account ledger and cannot authorize an order. The read-only history API
+serves bounded event series to the experiment curve; snapshot-only old positions
+are never backfilled into a synthetic path. Quote clocks, fees, gaps and
+entry/exit events retain their recorded identity.
+
+The [decision-loop repair guide](docs/decision-loop-repair.md) describes the
+sequential monitored-stock funnel, matching optional CASH-plan identities,
+canonical Today presentation and forecast generation/settlement separation.

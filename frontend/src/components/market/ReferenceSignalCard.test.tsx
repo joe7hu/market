@@ -20,10 +20,10 @@ describe("published trading conditions", () => {
   it("shows explicit conditions without requiring navigation context or inventing an allocation", () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-20T20:01:00Z"));
     const html = renderToStaticMarkup(<ReferenceSignalCard signal={signal} />);
-    expect(html).toContain("BUY SETUP");
+    expect(html).toContain("Conditional long setup");
     for (const label of ["Entry condition", "Price invalidation", "Price objective", "Planned risk / unit"]) expect(html).toContain(label);
     expect(html).toContain("US venue closed");
-    expect(html).toContain("Capital decision: WAIT");
+    expect(html).toContain("WAIT — retain cash for this decision");
     expect(html).not.toContain("Unknown");
     expect(html).not.toContain("Review the evidence");
   });

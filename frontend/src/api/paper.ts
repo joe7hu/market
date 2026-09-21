@@ -147,6 +147,9 @@ export type PaperObservation = {
   reason: string | null; exit_reason: string | null; entry_deadline: string | null;
   blockers: string[]; thesis_summary: string | null; required_next_action: string | null;
   ticket: unknown; entry_quotes: unknown; exit_quotes: unknown;
+  net_pnl?: number | null; mark_status?: string; mark_at?: string | null;
+  quote_observed_at?: string | null; last_checked_at?: string | null;
+  admission_next_action?: string | null;
 };
 export type PaperObservationPage = Omit<ApiSchema["PaperObservationPage"], "rows"> & { rows: PaperObservation[]; counts: Record<string, number>; total: number; next_offset: number | null; accounting_basis: string };
 
@@ -155,4 +158,9 @@ export function loadPaperObservations(status: string, offset: number, signal?: A
   const query = new URLSearchParams({ offset: String(offset) });
   if (status) query.set("status", status);
   return getJson<PaperObservationPage>(`/api/paper/observations?${query}`, signal);
+}
+
+export type PaperObservationHistory = ApiSchema["PaperObservationHistory"];
+export function loadPaperObservationHistory(observationId: string, signal?: AbortSignal): Promise<PaperObservationHistory> {
+  return getJson<PaperObservationHistory>(`/api/paper/observations/${encodeURIComponent(observationId)}/history`, signal);
 }

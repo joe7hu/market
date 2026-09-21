@@ -240,12 +240,15 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
     continuous_seconds = int(continuous.continuous_cadence_minutes or 120) * 60 if continuous_seconds is None else continuous_seconds
     if continuous.continuous_enabled and continuous_seconds > 0:
         intervals["run_continuous_advisor"] = continuous_seconds
-        replay_seconds = _env_int("MARKET_CONTINUOUS_ADVISOR_REPLAY_SECONDS", 900, allow_zero=True)
-        if replay_seconds > 0:
-            intervals["run_continuous_advisor_replay"] = replay_seconds
         evolution_seconds = _env_int("MARKET_CONTINUOUS_ADVISOR_EVOLUTION_SECONDS", 86_400, allow_zero=True)
         if evolution_seconds > 0:
             intervals["run_continuous_advisor_evolution"] = evolution_seconds
+
+    # Generation may be paused for provider/budget reasons. Existing claims
+    # still mature, so their deterministic, provider-free resolver must run.
+    replay_seconds = _env_int("MARKET_CONTINUOUS_ADVISOR_REPLAY_SECONDS", 900, allow_zero=True)
+    if replay_seconds > 0:
+        intervals["run_continuous_advisor_replay"] = replay_seconds
 
     decision_settings = active_config.analysis.options_decision_system
     inbox_seconds = _env_int("MARKET_DECISION_INBOX_REFRESH_SECONDS", 15, allow_zero=True)

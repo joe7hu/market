@@ -15,6 +15,9 @@ def test_paper_and_research_workbench_routes_are_read_only_and_truthful_on_empty
     )
     client = TestClient(app)
 
+    from uuid import uuid4
+    assert client.get(f"/api/paper/observations/{uuid4()}/history").status_code == 404
+    assert client.get("/api/paper/observations/not-a-uuid/history").status_code == 422
     performance = client.get("/api/paper/performance")
     trades = client.get("/api/paper/trades")
     export_csv = client.get("/api/paper/trades/export")

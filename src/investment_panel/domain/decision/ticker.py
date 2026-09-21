@@ -6463,7 +6463,16 @@ def opportunity_rank_blocker(rank: Mapping[str, Any] | None, selected: Mapping[s
 
 def trade_plan_rank_identity_matches(plan: TradePlan, rank: Mapping[str, Any]) -> bool:
     """Match the common plan/rank identity before any surface-specific checks."""
-    return bool(plan.publication_id and rank.get("publication_id")) and plan.publication_id == rank["publication_id"] and all(
-        getattr(plan, key) == str(rank.get(key) or "")
-        for key in ("rank_id", "selected_expression_identity", "portfolio_impact_id", "market_state_publication_id")
+    # A blocked CASH plan can deliberately omit unevaluated impact/Market
+    # identities. None and an absent JSON member mean the same thing; neither
+    # permits an actionable trade to omit its required authority.
+    keys = ("rank_id", "selected_expression_identity", "portfolio_impact_id", "market_state_publication_id")
+    if not plan.publication_id or plan.publication_id != rank.get("publication_id"):
+        return False
+    required = keys if plan.eligibility == "ACTIONABLE" else keys[:2]
+    if any(not getattr(plan, key) or not rank.get(key) for key in required):
+        return False
+    return all(
+        (getattr(plan, key) or None) == (rank.get(key) or None)
+        for key in keys
     )

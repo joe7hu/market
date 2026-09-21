@@ -54,6 +54,7 @@
   "/api/panel-snapshot": ["GET"],
   "/api/paper/account-history": ["GET"],
   "/api/paper/observations": ["GET"],
+  "/api/paper/observations/{observation_id}/history": ["GET"],
   "/api/paper/performance": ["GET"],
   "/api/paper/trades": ["GET"],
   "/api/paper/trades/export": ["GET"],

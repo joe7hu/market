@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import type { components } from "@/generated/apiSchema";
+import { CapitalDecision, type CapitalDecisionProps } from "./CapitalDecision";
 import { dateTime, money } from "@/presentation/labels";
 
 type Signal = components["schemas"]["ReferenceSignal"];
-type Plan = Pick<components["schemas"]["TradePlan"], "eligibility" | "authorization_mode">;
+
 const LABELS: Record<Signal["action"], string> = {
-  BUY_SETUP: "BUY SETUP · conditional", EXIT_SETUP: "EXIT SETUP", HOLD: "HOLD",
+  BUY_SETUP: "Conditional long setup", EXIT_SETUP: "EXIT SETUP", HOLD: "HOLD",
   WAIT: "WAIT · no setup", AVOID: "AVOID · no new long", SERVICE_FAILURE: "SIGNAL SERVICE FAILED",
 };
 
@@ -19,9 +20,9 @@ export function visibleReferenceSignal(signal: Signal | null | undefined, now: n
     stop_price: null, target_price: null, risk_per_unit: null };
 }
 
-export function ReferenceSignalCard({ signal, plan, compact = false }: {
-  signal?: Signal | null; plan?: Plan | null; compact?: boolean;
-}) {
+export function ReferenceSignalCard({ signal, plan, resolution, missingIsFailure = false, compact = false }: {
+  signal?: Signal | null; compact?: boolean;
+} & CapitalDecisionProps) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(timer); }, []);
   const current = visibleReferenceSignal(signal, now);
@@ -33,7 +34,8 @@ export function ReferenceSignalCard({ signal, plan, compact = false }: {
     ["Planned risk / unit", current.risk_per_unit != null ? money(current.risk_per_unit) : null],
   ].filter(([, value]) => value != null) : [];
   return <section aria-label="Published trading conditions" className={`rounded-lg border p-4 ${failed ? "border-destructive/50 bg-destructive/5" : "border-border bg-card"}`}>
-    <div className="flex flex-wrap items-center justify-between gap-2">
+    <CapitalDecision plan={plan} resolution={resolution} missingIsFailure={missingIsFailure} />
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
       <h2 className={`font-semibold ${failed ? "text-destructive" : "text-primary"}`}>{current ? LABELS[current.action] : "SIGNAL SERVICE FAILED"}</h2>
       {!failed ? <span className="text-xs text-muted-foreground">Measured trend · not a validated alpha forecast</span> : null}
     </div>
@@ -43,7 +45,7 @@ export function ReferenceSignalCard({ signal, plan, compact = false }: {
     {failed ? <p className="mt-3 text-xs"><strong>Failing producer:</strong> {current?.owner_job ?? "refresh_decision_models"} · <a className="underline" href="/health">Open service diagnostics →</a></p> : <>
       <p className="mt-3 text-xs text-muted-foreground">{current?.quote_state === "closed_reference" ? "US venue closed · last completed-session reference; no fill is implied." : "Continuous / open-session reference; execution needs a separate admissible quote."} Quote observed {dateTime(current?.quote_observed_at)}.</p>
       {!compact ? <p className="mt-1 text-xs text-muted-foreground">{current?.horizon} · feature session {current?.feature_session} · conditions expire {dateTime(current?.expires_at)}. Stops can slip or gap; planned risk is not a guaranteed maximum loss.</p> : null}
-      {plan?.eligibility === "ACTIONABLE" ? <p className="mt-3 text-sm font-medium">Capital decision: {plan.authorization_mode === "PAPER" ? "Paper-qualified terms published" : "Advisory terms published"}; fill-time risk and quote checks still apply.</p> : <p className="mt-3 text-xs font-medium">Capital decision: WAIT — this measured setup alone does not authorize allocation. Validated strategy and account risk checks remain separate.</p>}
+
     </>}
   </section>;
 }

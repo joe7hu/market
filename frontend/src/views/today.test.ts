@@ -9,6 +9,8 @@ import { buildModel } from "@/model";
 import { PortfolioImpactCard, TradePlanCard } from "./TradePlanCard";
 import { ActionQueueCard, TodayPage, tradePlanForAction } from "./today";
 
+type TodayAction = NonNullable<TodayResponse["actions"]>[number];
+
 type TradePlan = components["schemas"]["TradePlan"];
 
 const response: TodayResponse = {
@@ -126,7 +128,7 @@ describe("Today Action Queue", () => {
       onOpenTicker: () => undefined,
     }));
 
-    expect(markup).toContain("No new trade");
+    expect(markup).toContain("TRADING PAUSED — decision publication failed");
     expect(markup).not.toContain("BUY");
     expect(markup).not.toContain("queue rationale leak");
     expect(markup).toContain("Position size has not been published.");
@@ -149,7 +151,7 @@ describe("Today Action Queue", () => {
       onOpenTicker: () => undefined,
     }));
 
-    expect(markup).toContain("Action:");
+    expect(markup).toContain("PAPER — BUY");
     expect(markup).toContain("Stored rationale.");
     expect(markup).not.toContain("Canonical trade plan");
   });
@@ -481,7 +483,7 @@ it("does not call an empty catalyst list a clear calendar without complete cover
     { category: "catalysts", total_count: 0, shown_count: 0, coverage_status: "complete", coverage_message: "Source coverage is complete." },
   ] } }));
   expect(complete).toContain("No catalysts found");
-  expect(complete).toContain("complete coverage");
+  expect(complete).toContain("Source coverage is complete.");
   expect(complete).not.toContain("Brief coverage is incomplete");
 });
 
@@ -493,4 +495,16 @@ it("names the missing input and gives a ticker-specific action instead of a vagu
   expect(html).toContain("Open AAA trade assessment");
   expect(html).not.toContain("Review evidence");
   expect(html).not.toContain("complete trade plan is not available");
+});
+
+
+it("suppresses only the exact capital projection already shown with its signal", async () => {
+  const { capitalDecisionAlreadyShown } = await import("./today");
+  const item = { ticker: "META", projection_identity: "capital:meta:1", source: "capital_action" } as TodayAction;
+  const view = { ...response, reference_signals: [{ ticker: "META" }], book_actions: [item] } as unknown as TodayResponse;
+  expect(capitalDecisionAlreadyShown(item, view)).toBe(true);
+  expect(capitalDecisionAlreadyShown({ ...item, source: "portfolio_risk" }, view)).toBe(false);
+  expect(capitalDecisionAlreadyShown({ ...item, projection_identity: "different" }, view)).toBe(false);
+  expect(capitalDecisionAlreadyShown({ ...item, ticker: "OTHER" }, view)).toBe(false);
+  expect(capitalDecisionAlreadyShown({ ...item, projection_identity: "" }, view)).toBe(false);
 });
