@@ -8,7 +8,7 @@ jobs:
   publish-and-verify:
     if: github.repository == 'joe7hu/market' && github.event.pull_request.number == 38 && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/decision-loop-paper-traceability'
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 25
     env:
       PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
     steps:
@@ -16,56 +16,34 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Retrieve hash-addressed workspace edits
+      - name: Retrieve final frontend regression fixes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/market-edits
-          index=0
-          for sha in 136673e187038b9c2c19166f56b4525771c9db54 142b256bdee4b7e87030d6bdfab5b51b8506c2e7 5086d7b1bd4e3cc4c4bfef3d8f7cda55ae3d95f0 27c9073c733b34c332b3b7fa45185262c2d4239a e5cb55deaa4dcfb611af7770cf2a8dba6e7c309d 44efb00f175124eab3cb8fc69f8f0ead0f5794cf 22da19a07d98e7c41997eef62126ce94a9df8449 d757657be5ac4909c730e7a3b243db0f610febe7 bcf0c5babcb65310612d6d8cff4874fdf0ef12f3 de8d8ea3b0f70a51ac7350214342128d57f6a535 849712b0b3c9ef5cfb5dc7e830d5209e178680cc 9d3112b1a970f16b46538e27a413775848d57c5f 2da0d5edceb3af5a26838f0c8329cc677581bc02; do
-            gh api "repos/joe7hu/market/git/blobs/$sha" --jq .content | base64 --decode > "/tmp/market-edits/$index.txt"
-            test "$(git hash-object "/tmp/market-edits/$index.txt")" = "$sha"
-            index=$((index+1))
-          done
-      - name: Apply exact tested source changes
-        run: |
+          gh api repos/joe7hu/market/git/blobs/366326c1ef6d119375310a3cca6f642650214b90 --jq .content | base64 --decode > /tmp/closure-edits.json
+          test "$(git hash-object /tmp/closure-edits.json)" = 366326c1ef6d119375310a3cca6f642650214b90
           python - <<'PY'
-          import hashlib, io, json
+          import hashlib, json
           from pathlib import Path
           pending = {}
-          for index in range(13):
-              stream = io.StringIO(Path(f'/tmp/market-edits/{index}.txt').read_text())
-              while header := stream.readline():
-                  item = json.loads(header)
-                  path = Path(item['path'])
-                  assert not path.is_absolute() and '..' not in path.parts
-                  assert path.parts[0] in {'src', 'tests', 'frontend', 'migrations', 'docs', 'README.md', 'ARCHITECTURE.md'}
-                  assert str(path) not in pending
-                  before = path.read_bytes() if path.exists() else b''
-                  assert (hashlib.sha256(before).hexdigest() if path.exists() else None) == item['before'], str(path)
-                  lines = before.decode().splitlines(keepends=True)
-                  edits = []
-                  for _ in range(item['edits']):
-                      start, end, length = json.loads(stream.readline())
-                      text = stream.read(length)
-                      assert len(text) == length and stream.read(1) == '\n', str(path)
-                      assert 0 <= start <= end <= len(lines)
-                      edits.append((start, end, text))
-                  for start, end, text in reversed(edits):
-                      lines[start:end] = [text]
-                  output = ''.join(lines).encode()
-                  assert hashlib.sha256(output).hexdigest() == item['after'], str(path)
-                  pending[str(path)] = output
+          for item in json.loads(Path('/tmp/closure-edits.json').read_text()):
+              path = Path(item['path'])
+              assert not path.is_absolute() and '..' not in path.parts and path.parts[:2] == ('frontend', 'src')
+              before = path.read_text()
+              digest = hashlib.sha256(before.encode()).hexdigest()
+              if digest == item['after']:
+                  continue
+              assert digest == item['before'], str(path)
+              output = before
+              for start, end, text in reversed(item['edits']):
+                  assert 0 <= start <= end <= len(before)
+                  output = output[:start] + text + output[end:]
+              assert hashlib.sha256(output.encode()).hexdigest() == item['after'], str(path)
+              pending[str(path)] = output
           for name, output in pending.items():
-              path = Path(name)
-              path.parent.mkdir(parents=True, exist_ok=True)
-              path.write_bytes(output)
-          # Remove one extra EOF blank line detected by the final whitespace gate.
-          path = Path('tests/test_decision_loop_lifecycle.py')
-          path.write_text(path.read_text().rstrip() + '\n')
-          Path('/tmp/market-edits/paths.json').write_text(json.dumps(list(pending)))
-          print(f'Applied {len(pending)} source, test and documentation files with before/after hash verification.')
+              Path(name).write_text(output)
+          print(f'Applied {len(pending)} hash-verified frontend fixes.')
           PY
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
@@ -76,37 +54,30 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
         with:
           version: '0.9.26'
-      - name: Install locked dependencies and generate API contracts
-        run: |
-          uv sync --extra test --locked
-          npm ci --prefix frontend
-          npm --prefix frontend run generate:api
-          uvx ruff check src tests
-          git diff --check
-      - name: Publish implementation to the authorized PR branch only
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, subprocess
-          paths = json.load(open('/tmp/market-edits/paths.json'))
-          paths += ['frontend/src/generated/openapi.json', 'frontend/src/generated/apiSchema.ts']
-          subprocess.run(['git', 'add', '--', *paths], check=True)
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: complete decision-loop integrity and quote-backed experiment traceability'
-          git push origin HEAD:refs/heads/fix/decision-loop-paper-traceability
-          git rev-parse HEAD
       - uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee
         with:
           postgres-version: '18'
-      - name: Full unchanged release gate
+      - name: Verify final contracts, guards, lint, all frontend tests and build
         run: |
-          set -o pipefail
-          make release-gate 2>&1 | tee /tmp/market-release-gate.log
+          set -euo pipefail
+          uv sync --extra test --locked
+          npm ci --prefix frontend
+          make check build 2>&1 | tee /tmp/market-frontend-closure.log
+          git diff --check
+      - name: Publish verified frontend fixes only
+        run: |
+          set -euo pipefail
+          git add -- frontend/src/components/market/ReferenceSignalCard.test.tsx frontend/src/components/market/ReferenceSignalCard.tsx frontend/src/components/market/decisionLoop.test.tsx frontend/src/pages/ResearchWorkbenchRoute.tsx
+          if ! git diff --cached --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'fix: keep expired signals and paused learning states internally consistent'
+            git push origin HEAD:refs/heads/fix/decision-loop-paper-traceability
+          fi
+          git rev-parse HEAD
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: decision-loop-verification
-          path: /tmp/market-release-gate.log
+          name: decision-loop-frontend-closure
+          path: /tmp/market-frontend-closure.log
           retention-days: 7
