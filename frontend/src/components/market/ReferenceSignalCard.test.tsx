@@ -51,4 +51,14 @@ describe("published trading conditions", () => {
     expect(html).toContain("Paper-qualified terms published"); expect(html).toContain("fill-time risk and quote checks");
     expect(signal.order_authorized).toBe(false);
   });
+  it("removes cached actionable headlines when the signal service expires", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(signal.expires_at));
+    const html = renderToStaticMarkup(<ReferenceSignalCard signal={signal} plan={{ eligibility: "ACTIONABLE", authorization_mode: "PAPER", action: "BUY" }} />);
+    expect(html).toContain("SIGNAL SERVICE FAILED");
+    expect(html).toContain("New allocations paused");
+    expect(html).not.toContain("PAPER — BUY");
+    expect(html).not.toContain("Paper-qualified terms published");
+    expect(html).not.toContain("Entry condition");
+  });
+
 });

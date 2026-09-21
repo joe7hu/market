@@ -5,7 +5,7 @@ import type { PaperObservationHistory } from "@/api/paper";
 import { CapitalDecision } from "./CapitalDecision";
 import { ExperimentHistory, experimentSegments } from "./ExperimentCurve";
 import { paperEventTooltip } from "./PaperPerformanceChart";
-import { ForecastCollection, CollectionProgress } from "@/pages/ResearchWorkbenchRoute";
+import { ForecastCollection, CollectionProgress, PromptPipeline } from "@/pages/ResearchWorkbenchRoute";
 
 type Event = NonNullable<PaperObservationHistory["events"]>[number];
 const event = (kind: Event["kind"], at: string, pnl: number | null): Event => ({
@@ -58,4 +58,18 @@ describe("decision loop presentation", () => {
     const html = renderToStaticMarkup(<MemoryRouter><CollectionProgress collection={{ counts: { entered: 18, pending: 2, closed: 1 }, management_status: "collecting", basis: "Open observations are not independent evidence" }} /></MemoryRouter>);
     expect(html).toContain("18"); expect(html).toContain("Research collection"); expect(html).toContain("independent");
   });
+  it("does not claim settlement is running when both forecast controls are paused", () => {
+    const lane = { status: "disabled", generation_enabled: false, settlement_enabled: false };
+    const html = renderToStaticMarkup(<MemoryRouter><PromptPipeline lane={lane} quality={{}} /><ForecastCollection lane={lane} quality={{ total_claims: 8, pending_claims: 8 }} /></MemoryRouter>);
+    expect(html).toContain("Forecast settlement is paused");
+    expect(html).toContain("Settlement is disabled");
+    expect(html).not.toContain("existing outcomes still settle");
+  });
+  it("never presents a failed collection read as zero observations", () => {
+    const html = renderToStaticMarkup(<MemoryRouter><CollectionProgress collection={{ management_status: "unavailable" }} /></MemoryRouter>);
+    expect(html).toContain("could not be read");
+    expect(html).not.toContain("0 open");
+    expect(html).toContain('href="/health"');
+  });
+
 });

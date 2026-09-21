@@ -34,7 +34,7 @@ export function ReferenceSignalCard({ signal, plan, resolution, missingIsFailure
     ["Planned risk / unit", current.risk_per_unit != null ? money(current.risk_per_unit) : null],
   ].filter(([, value]) => value != null) : [];
   return <section aria-label="Published trading conditions" className={`rounded-lg border p-4 ${failed ? "border-destructive/50 bg-destructive/5" : "border-border bg-card"}`}>
-    <CapitalDecision plan={plan} resolution={resolution} missingIsFailure={missingIsFailure} />
+    {!failed ? <CapitalDecision plan={plan} resolution={resolution} missingIsFailure={missingIsFailure} /> : null}
     <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
       <h2 className={`font-semibold ${failed ? "text-destructive" : "text-primary"}`}>{current ? LABELS[current.action] : "SIGNAL SERVICE FAILED"}</h2>
       {!failed ? <span className="text-xs text-muted-foreground">Measured trend · not a validated alpha forecast</span> : null}
