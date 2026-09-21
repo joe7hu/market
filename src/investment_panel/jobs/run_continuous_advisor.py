@@ -23,6 +23,7 @@ from investment_panel.infrastructure.postgres.agent_context import ticker_contex
 from investment_panel.infrastructure.postgres.analysis import current_option_publication_answers
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
+from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
 from investment_panel.infrastructure.postgres.thesis import normalize_thesis_v3, thesis_monitor_rows
 from investment_panel.jobs.codex_thesis_monitor import (
     continuous_prompt_artifact,
@@ -88,7 +89,7 @@ def run(
     cadence = max(5, min(720, int(settings.continuous_cadence_minutes or 120)))
     cutoff = reference
     contexts: dict[str, dict[str, Any]] = {}
-    with runtime.snapshot() as connection:
+    with runtime.snapshot(JOB_PROFILE) as connection:
         current_option_rows = current_option_publication_answers(connection, cutoff=cutoff)
         for row in rows:
             symbol = str(row.get("symbol") or "").upper()

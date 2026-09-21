@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
+from contextlib import nullcontext
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +9,7 @@ from investment_panel.jobs import codex_thesis_monitor
 from investment_panel.jobs import evolve_continuous_advisor
 from investment_panel.jobs import replay_continuous_advisor
 from investment_panel.jobs import run_continuous_advisor
+from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
 from investment_panel.core.continuous_advisor import (
     ContinuousAdvisorValidationError,
     build_evidence_packet,
@@ -55,6 +58,49 @@ def test_packet_is_deterministic_and_replay_safe():
     assert not packet_is_replay_safe(changed)
     timestamp_changed = {**packet, "evidence": {**packet["evidence"], "source_evidence": [{"reference": "source:1", "source_type": "fundamental", "observed_at": "2026-09-08T14:59:00+00:00", "title": "Results"}]}}
     assert packet_fingerprint(timestamp_changed) != packet["fingerprint"]
+
+
+def test_advisor_context_uses_the_job_read_budget(monkeypatch):
+    config = SimpleNamespace(
+        agents=SimpleNamespace(
+            thesis_monitor=SimpleNamespace(
+                continuous_enabled=True,
+                prompt_version="continuous_v1",
+                continuous_cadence_minutes=120,
+                continuous_budget_usd=0,
+            )
+        )
+    )
+    profiles = []
+
+    class Runtime:
+        def snapshot(self, profile):
+            profiles.append(profile)
+            return nullcontext(object())
+
+    class Repository:
+        def ensure_prompt_version(self, _prompt):
+            return None
+
+        def active_prompt_version(self, configured):
+            return configured
+
+        def prompt_template(self, _version):
+            return {}
+
+        def prompt_status(self, _configured):
+            return {}
+
+    monkeypatch.setattr(run_continuous_advisor, "load_config", lambda _path: config)
+    monkeypatch.setattr(run_continuous_advisor, "selected_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_continuous_advisor, "runtime_for_config", lambda _config: Runtime())
+    monkeypatch.setattr(run_continuous_advisor, "ContinuousAdvisorRepository", lambda _runtime: Repository())
+    monkeypatch.setattr(run_continuous_advisor, "current_option_publication_answers", lambda *_args, **_kwargs: [])
+
+    result = run_continuous_advisor.run(now=datetime(2026, 9, 8, 15, tzinfo=UTC), dry_run=True)
+
+    assert result["status"] == "ok"
+    assert profiles == [JOB_PROFILE]
 
 
 def test_packet_rejects_future_and_stale_facts_without_using_them():
