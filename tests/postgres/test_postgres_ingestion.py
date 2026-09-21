@@ -322,7 +322,7 @@ def test_current_provider_bar_requires_completion_and_rejects_future_date(
     repository.register_source("current-prices", name="Current", family="market_data", kind="daily_bars")
     before = datetime.now(UTC)
     tokyo_date = before.astimezone(ZoneInfo("Asia/Tokyo")).date()
-    completed_date = tokyo_date - timedelta(days=1)
+    completed_date = min(tokyo_date - timedelta(days=1), before.date() - timedelta(days=1))
     run_id = repository.start_run("current-prices", "price_bars")
     stored = repository.store_price_bars(
         run_id,
