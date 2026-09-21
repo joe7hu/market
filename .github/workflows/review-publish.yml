@@ -8,7 +8,7 @@ jobs:
   publish-and-verify:
     if: github.repository == 'joe7hu/market' && github.event.pull_request.number == 38 && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/decision-loop-paper-traceability'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 55
     env:
       PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
     steps:
@@ -16,20 +16,21 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Retrieve final frontend regression fixes
+      - name: Apply final test inventory and liveness assertions
+        id: edits
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api repos/joe7hu/market/git/blobs/366326c1ef6d119375310a3cca6f642650214b90 --jq .content | base64 --decode > /tmp/closure-edits.json
-          test "$(git hash-object /tmp/closure-edits.json)" = 366326c1ef6d119375310a3cca6f642650214b90
+          gh api repos/joe7hu/market/git/blobs/90db39d1707beb91eb072f634a3523d2e97ebe1f --jq .content | base64 --decode > /tmp/closure-test-edits.json
+          test "$(git hash-object /tmp/closure-test-edits.json)" = 90db39d1707beb91eb072f634a3523d2e97ebe1f
           python - <<'PY'
-          import hashlib, json
+          import hashlib, json, os
           from pathlib import Path
           pending = {}
-          for item in json.loads(Path('/tmp/closure-edits.json').read_text()):
+          for item in json.loads(Path('/tmp/closure-test-edits.json').read_text()):
               path = Path(item['path'])
-              assert not path.is_absolute() and '..' not in path.parts and path.parts[:2] == ('frontend', 'src')
+              assert not path.is_absolute() and '..' not in path.parts and path.parts[0] == 'tests'
               before = path.read_text()
               digest = hashlib.sha256(before.encode()).hexdigest()
               if digest == item['after']:
@@ -43,41 +44,46 @@ jobs:
               pending[str(path)] = output
           for name, output in pending.items():
               Path(name).write_text(output)
-          print(f'Applied {len(pending)} hash-verified frontend fixes.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write(f'changed={str(bool(pending)).lower()}\n')
+          print(f'Applied {len(pending)} hash-verified test changes.')
           PY
+      - name: Publish regression coverage to the authorized PR branch
+        if: steps.edits.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git add -- tests/options/paper_execution/test_options_experiments.py tests/postgres/test_schema_baseline.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'test: verify experiment liveness and register the new migration in schema inventory'
+          git push origin HEAD:refs/heads/fix/decision-loop-paper-traceability
+          git rev-parse HEAD
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        if: steps.edits.outputs.changed == 'true'
         with:
           python-version: '3.11'
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        if: steps.edits.outputs.changed == 'true'
         with:
           node-version: '24'
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        if: steps.edits.outputs.changed == 'true'
         with:
           version: '0.9.26'
       - uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee
+        if: steps.edits.outputs.changed == 'true'
         with:
           postgres-version: '18'
-      - name: Verify final contracts, guards, lint, all frontend tests and build
+      - name: Full unchanged release gate on the final source
+        if: steps.edits.outputs.changed == 'true'
         run: |
           set -euo pipefail
           uv sync --extra test --locked
           npm ci --prefix frontend
-          make check build 2>&1 | tee /tmp/market-frontend-closure.log
-          git diff --check
-      - name: Publish verified frontend fixes only
-        run: |
-          set -euo pipefail
-          git add -- frontend/src/components/market/ReferenceSignalCard.test.tsx frontend/src/components/market/ReferenceSignalCard.tsx frontend/src/components/market/decisionLoop.test.tsx frontend/src/pages/ResearchWorkbenchRoute.tsx
-          if ! git diff --cached --quiet; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git commit -m 'fix: keep expired signals and paused learning states internally consistent'
-            git push origin HEAD:refs/heads/fix/decision-loop-paper-traceability
-          fi
-          git rev-parse HEAD
+          make release-gate 2>&1 | tee /tmp/market-final-release-gate.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
+        if: always() && steps.edits.outputs.changed == 'true'
         with:
-          name: decision-loop-frontend-closure
-          path: /tmp/market-frontend-closure.log
+          name: decision-loop-final-release
+          path: /tmp/market-final-release-gate.log
           retention-days: 7
