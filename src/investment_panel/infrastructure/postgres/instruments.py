@@ -50,6 +50,26 @@ def reconcile_instrument(
         asset_class=asset_class,
         category=category,
     )
+    existing = connection.execute(
+        """
+        SELECT id, name, asset_class, category, market_timezone
+        FROM catalog.instrument
+        WHERE symbol = %s
+        """,
+        [identity["symbol"]],
+    ).fetchone()
+    if existing is not None and not (
+        ((existing["name"] is None or existing["name"] in ("", identity["symbol"]))
+         and existing["name"] != identity["name"])
+        or (existing["asset_class"] in ("unknown", "equity")
+            and identity["asset_class"] != "unknown"
+            and existing["asset_class"] != identity["asset_class"])
+        or (existing["category"] in (None, "option-discovery", "option-history")
+            and identity["category"] is not None
+            and existing["category"] != identity["category"])
+        or existing["market_timezone"] != identity["market_timezone"]
+    ):
+        return int(existing["id"])
     row = connection.execute(
         """
         INSERT INTO catalog.instrument
