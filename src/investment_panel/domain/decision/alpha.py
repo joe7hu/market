@@ -360,6 +360,9 @@ class TradeUtility(BaseModel):
     trade_utility: float | None = None
 
 
+from investment_panel.domain.decision.reference_signal import ReferenceSignal
+
+
 class OpportunityRank(BaseModel):
     """Book-level research and trade rank for one ticker opportunity."""
 
@@ -368,6 +371,7 @@ class OpportunityRank(BaseModel):
     contract_version: str = OPPORTUNITY_RANK_CONTRACT_VERSION
     rank_id: str = Field(min_length=1)
     ranking_version: str = TICKER_OPPORTUNITY_RANKING_VERSION
+    reference_signal: ReferenceSignal | None = None
     ticker: str = Field(min_length=1)
     opportunity_episode_id: str = Field(min_length=1)
     decision_revision: str = Field(min_length=1)

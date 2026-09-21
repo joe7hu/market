@@ -485,8 +485,8 @@ def test_ticker_compiles_one_policy_snapshot_before_sizing(monkeypatch: pytest.M
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-            "portfolio_summary": [{"symbol": "ACME", "net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"symbol": "ACME", "net_liquidation": 100_000, "account_observed_at": "2026-08-22T13:55:00Z", "available_at": "2026-08-22T13:55:00Z"}],
             "decision_queue": [{
                 "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
                 "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
@@ -521,7 +521,7 @@ def test_ticker_fail_closes_account_authority_without_external_context(
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
             "portfolio_summary": account_rows,
             "decision_queue": [{
                 "symbol": "ACME",
@@ -549,7 +549,7 @@ def test_conflicting_horizons_preserve_views_but_block_missing_account_authority
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
             "portfolio": [{"symbol": "ACME", "quantity": 10, "nav": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
             "decision_queue": [{
                 "symbol": "ACME",
@@ -604,7 +604,7 @@ def test_stale_sec_financials_create_a_refresh_request() -> None:
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
             "decision_queue": [{"symbol": "ACME", "stance": "BULLISH", "available_at": "2026-08-22T13:55:00Z"}],
             "fundamentals": [{
                 "symbol": "ACME",
@@ -623,8 +623,8 @@ def test_expression_sizing_uses_loss_budget_and_option_max_loss() -> None:
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-            "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"net_liquidation": 100_000, "account_observed_at": "2026-08-22T13:55:00Z", "available_at": "2026-08-22T13:55:00Z"}],
             "decision_queue": [{
                 "symbol": "ACME",
                 "stance": "BULLISH",
@@ -659,7 +659,7 @@ def test_expression_sizing_uses_loss_budget_and_option_max_loss() -> None:
 
 def test_input_hash_changes_when_a_dependency_changes_and_future_rows_are_ignored() -> None:
     base = {
-        "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+        "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
         "decision_queue": [{"symbol": "ACME", "stance": "NEUTRAL", "available_at": "2026-08-22T13:55:00Z"}],
         "future_revision": [{"symbol": "ACME", "stance": "BEARISH", "available_at": "2026-08-23T13:55:00Z"}],
     }
@@ -802,7 +802,7 @@ def test_persisted_ticker_decision_rechecks_current_account_authority() -> None:
     source = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
             "portfolio_summary": [{
                 "symbol": "ACME",
                 "net_liquidation": 100_000,
@@ -882,7 +882,7 @@ def test_stale_account_authority_blocks_resolution() -> None:
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
             "portfolio_summary": [{"symbol": "ACME", "net_liquidation": 100_000, "available_at": "2026-08-22T12:00:00Z"}],
             "decision_queue": [{
                 "symbol": "ACME", "tactical_stance": "BEARISH", "fundamental_stance": "BULLISH",
@@ -909,7 +909,7 @@ def test_stale_account_observation_does_not_use_fresh_ingestion_time(observation
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
             "portfolio_summary": [{
                 "symbol": "ACME",
                 "net_liquidation": 100_000,
@@ -935,7 +935,7 @@ def test_account_policy_blocker_suppresses_positive_expression_terms() -> None:
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
             "portfolio_summary": [{
                 "symbol": "ACME",
                 "net_liquidation": 100_000,
@@ -972,7 +972,7 @@ def test_explicit_unsupported_account_source_blocks_ticker_sizing() -> None:
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
             "portfolio_summary": [{
                 "net_liquidation": 100_000,
                 "available_at": "2026-08-22T13:55:00Z",
@@ -1001,8 +1001,8 @@ def test_policy_blocker_rehashes_sanitized_portfolio_impacts() -> None:
     source = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-            "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"net_liquidation": 100_000, "account_observed_at": "2026-08-22T13:55:00Z", "available_at": "2026-08-22T13:55:00Z"}],
             "decision_queue": [{
                 "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
                 "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
@@ -1017,8 +1017,8 @@ def test_policy_blocker_rehashes_sanitized_portfolio_impacts() -> None:
     decision = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-            "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"net_liquidation": 100_000, "account_observed_at": "2026-08-22T13:55:00Z", "available_at": "2026-08-22T13:55:00Z"}],
             "decision_queue": [{
                 "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
                 "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
@@ -1041,7 +1041,7 @@ def test_policy_blocker_rehashes_sanitized_portfolio_impacts() -> None:
 
 def test_policy_blocked_seed_impacts_survive_publication_bound_rebuild() -> None:
     tables = {
-        "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+        "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
         "portfolio_summary": [{
             "net_liquidation": 100_000,
             "available_at": "2026-08-22T13:55:00Z",
@@ -1097,8 +1097,8 @@ def test_publisher_reuses_seed_cutoff_stock_evidence_on_bound_rebuild() -> None:
         "book_identity": "portfolio-book:publisher-evidence",
     }
     tables = {
-        "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-        "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+        "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+        "portfolio_summary": [{"net_liquidation": 100_000, "account_observed_at": "2026-08-22T13:55:00Z", "available_at": "2026-08-22T13:55:00Z"}],
         "decision_queue": [{
             "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
             "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
@@ -1139,8 +1139,8 @@ def test_policy_blocker_without_resolution_forces_blocked_no_trade() -> None:
     source = build_ticker_decision(
         "ACME",
         {
-            "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-            "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
+            "quotes": [{"symbol": "ACME", "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
+            "portfolio_summary": [{"net_liquidation": 100_000, "account_observed_at": "2026-08-22T13:55:00Z", "available_at": "2026-08-22T13:55:00Z"}],
             "decision_queue": [{
                 "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
                 "entry_low": 99, "entry_high": 101, "invalidation_price": 90,

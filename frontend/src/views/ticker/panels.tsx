@@ -30,6 +30,8 @@ import {
   targetRange,
 } from "./data";
 
+import { ReferenceSignalCard } from "@/components/market/ReferenceSignalCard";
+
 type TickerDecisionContract = components["schemas"]["TickerDecisionDetailResponse"];
 type TickerDecisionSnapshotContract = components["schemas"]["TickerDecisionSnapshotResponse"];
 type HorizonDecisionContract = components["schemas"]["HorizonDecision"];
@@ -76,7 +78,9 @@ export function TickerDecisionPanel({
 
   return (
     <>
-      <DataTableFrame title={noNewTrade ? "No new trade" : titleLabel(action.action)}>
+      <ReferenceSignalCard signal={decision.reference_signal} plan={tradePlan} />
+      <details><summary className="cursor-pointer text-sm font-medium">Allocation decision and research audit</summary>
+      <DataTableFrame title={noNewTrade ? "No new allocation" : titleLabel(action.action)}>
         <div className="space-y-4 p-5">
           <div>
             <p className="text-xs text-muted-foreground">Assessment as of <time dateTime={decision.as_of}>{new Date(decision.as_of).toLocaleString()}</time>. Newer quotes do not update this assessment.</p>
@@ -116,6 +120,7 @@ export function TickerDecisionPanel({
 
         </>
       )}
+      </details>
       <SelectedPortfolioImpact decision={decision} />
       <details><summary className="cursor-pointer text-sm font-medium">Market data checks</summary><TickerMarketEvidence decision={decision} /></details>
       {disagreement ? <DisagreementPanel learning={learningPayload} /> : null}
@@ -194,12 +199,12 @@ function HorizonCard({ view, label }: { view: HorizonDecisionContract; label: st
       </div>
       <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
         <DecisionTerm label="Review" value={view.expiry_date} field="expiry_date" />
-        <DecisionTerm label="Entry" value={priceRangeText(view.entry_range)} field="entry_range" />
-        <DecisionTerm label="Target" value={priceRangeText(view.target_range)} field="target_range" />
+        {view.entry_range ? <DecisionTerm label="Entry" value={priceRangeText(view.entry_range)} field="entry_range" /> : null}
+        {view.target_range ? <DecisionTerm label="Target" value={priceRangeText(view.target_range)} field="target_range" /> : null}
         <DecisionTerm label="Invalidation" value={invalidationText(view.invalidation)} field="invalidation" />
-        <DecisionTerm label="Confidence" value={percentText(view.confidence)} field="confidence" />
+        {view.confidence != null ? <DecisionTerm label="Source confidence (not calibrated odds)" value={percentText(view.confidence)} field="confidence" /> : null}
       </div>
-      <ScenarioRail scenarios={view.scenarios} />
+      {view.scenarios.length === 3 && view.scenarios.every(item => item.probability != null) ? <ScenarioRail scenarios={view.scenarios} /> : null}
     </article>
   );
 }
@@ -263,7 +268,7 @@ function ExpressionTable({ expressions }: { expressions: components["schemas"]["
                 <td className="px-3 py-3"><ExpressionTerm field="planned_loss" value={moneyText(expression.planned_loss)} /></td>
                 <td className="px-3 py-3"><ExpressionTerm field="net_expected_value_per_loss_dollar" value={numberTextOrNull(expression.net_expected_value_per_loss_dollar)} /></td>
                 <td className="px-3 py-3"><ExpressionTerm field="expected_transaction_costs" value={moneyText(expression.expected_transaction_costs)} /></td>
-                <td className="px-3 py-3"><ExpressionTerm field="horizon_fit" value={percentText(expression.horizon_fit)} /></td>
+                <td className="px-3 py-3"><ExpressionTerm field="horizon_fit" value={titleLabel(expression.horizon)} /></td>
               </tr>
             ))}
           </tbody>

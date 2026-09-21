@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -64,7 +64,12 @@ def store_price_bars(
                 if asset_class in {"equity", "etf"} and market_timezone_for_symbol(symbol) == "America/New_York"
                 and is_us_market_day(trading_date) else None
             )
-            observed_at = session_close or legacy_observed_at
+            observed_at = (
+                datetime.combine(trading_date + timedelta(days=1), time.min, tzinfo=UTC)
+                if asset_class == "crypto" else session_close or legacy_observed_at
+            )
+            if observed_at > stored_at:
+                continue
             open_price = number(source.get("open"))
             high = number(source.get("high"))
             low = number(source.get("low"))

@@ -54,7 +54,7 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
 def test_decision_publication_refreshes_after_source_updates(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_DECISION_MODEL_REFRESH_SECONDS", raising=False)
     intervals = scheduler.job_intervals()
-    assert intervals["refresh_decision_models"] == 3600
+    assert intervals["refresh_decision_models"] == 300
 
 
 def test_decision_publication_refresh_can_be_disabled(monkeypatch) -> None:
@@ -205,7 +205,7 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["learning_refresh_seconds"] == "21600"
     assert status["market_environment_refresh_seconds"] == "3600"
     assert status["preopen_brief_refresh_seconds"] == "0"
-    assert status["decision_model_refresh_seconds"] == "3600"
+    assert status["decision_model_refresh_seconds"] == "300"
     assert status["external_jobs"]["premarket_options_intelligence"]["owner"] == "launchd"
     assert status["external_jobs"]["premarket_options_intelligence"]["market_calendar_gated"] is True
     assert status["jobs"]["run_option_agents"] == 123
@@ -302,16 +302,16 @@ def test_option_history_recurrence_uses_the_next_quarter_hour_not_the_startup_st
     ) == 900
 
 
-def test_continuous_advisor_cadence_stays_inside_market_hours() -> None:
+def test_continuous_advisor_cadence_continues_outside_equity_hours() -> None:
     cadence = 90 * 60
     market_open = datetime(2026, 7, 20, 9, 30, tzinfo=ZoneInfo("America/New_York"))
     assert scheduler._initial_delay_seconds("run_continuous_advisor", cadence, 0, reference_time=market_open) == 0
     assert scheduler._initial_delay_seconds(
         "run_continuous_advisor", cadence, 0, reference_time=market_open - timedelta(seconds=1)
-    ) == 1
+    ) == 0
     assert scheduler._recurring_delay_seconds(
         "run_continuous_advisor", 720 * 60, reference_time=market_open
-    ) == 24 * 60 * 60
+    ) == 720 * 60
 
 
 def test_agent_pass_can_be_disabled(monkeypatch) -> None:

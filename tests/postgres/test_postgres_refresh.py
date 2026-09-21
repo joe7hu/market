@@ -8,6 +8,7 @@ from investment_panel.domain.decision import MarketStateSnapshot
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import (
+    assessment_inputs,
     postgres_refresh,
     snapshot_database,
     update_broker_sources,
@@ -68,6 +69,8 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
             "benchmark_symbols": ["CONFIG-ONLY"],
         },
     )
+    monkeypatch.setattr(assessment_inputs, "features", lambda _path: {"status": "ok"})
+    monkeypatch.setattr(assessment_inputs, "collect", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_arco_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_content_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_company_financials, "run", lambda _path: {"status": "ok"})
@@ -112,7 +115,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
 
     result = postgres_refresh.full("config.yaml")
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["status"] == "partial"
     assert result["warning_steps"] == ["robinhood_options", "ibkr_options"]
     assert result["failed_steps"] == []
@@ -120,7 +123,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     assert names.index("market") < names.index("ticker") < names.index("today")
     publication_cutoffs = [cutoff for name, cutoff in events if name in {"market", "ticker", "today"}]
     assert publication_cutoffs[0] < publication_cutoffs[1]
-    assert publication_cutoffs[1] is publication_cutoffs[2]
+    assert publication_cutoffs[1] <= publication_cutoffs[2]
 
 
 def test_routine_publication_uses_config_only_exact_market_benchmark(
@@ -140,9 +143,9 @@ def test_routine_publication_uses_config_only_exact_market_benchmark(
     monkeypatch.setattr(
         market_data,
         "fetch_prices",
-        lambda *_args: pd.DataFrame(
+        lambda symbol, *_args: pd.DataFrame(
             [{
-                "symbol": "CONFIG-ONLY", "date": "2026-08-28", "open": 10,
+                "symbol": symbol, "date": "2026-08-28", "open": 10,
                 "high": 12, "low": 10, "close": 12, "volume": 120, "source": "test",
             }]
         ),
@@ -195,7 +198,8 @@ def test_routine_publication_uses_config_only_exact_market_benchmark(
         if row.dimension == "corporate cycle"
     )
     assert publication["status"] == "ok"
-    assert result["benchmark_symbols"] == ["CONFIG-ONLY"]
+    assert result["benchmark_symbols"] == ["CONFIG-ONLY", "QQQ"]
+    assert result["source_status"] == "ok"
     assert state.eligible_members == ["CONFIG-ONLY"]
 
 
@@ -242,7 +246,7 @@ def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkey
     assert result["status"] == "ok"
     assert [name for name, _ in events] == ["market", "ticker", "today"]
     assert events[0][1] < events[1][1]
-    assert events[1][1] is events[2][1]
+    assert events[1][1] <= events[2][1]
 
 
 def test_lightweight_decision_publication_skips_expensive_options_rebuild(monkeypatch) -> None:
@@ -291,7 +295,9 @@ def test_lightweight_decision_publication_skips_expensive_options_rebuild(monkey
     assert result["options_radar"] == {"status": "skipped", "reason": "dedicated_options_radar_cadence"}
     assert result["outcomes"] == {"status": "skipped", "reason": "dedicated_outcome_cadence"}
     assert result["market"] == market_publication
-    assert calls == [f"ticker:{market_cutoff}:False"]
+    assert len(calls) == 1 and calls[0].startswith("ticker:") and calls[0].endswith(":False")
+    # A reused Market publication retains its identity, not an old consumer cutoff.
+    assert datetime.fromisoformat(calls[0][7:-6]) > market_cutoff
 
 
 def test_premarket_threads_market_publication_id_after_market_publication(monkeypatch) -> None:
@@ -346,7 +352,7 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
     assert result["status"] == "ok"
     assert [name for name, _ in events] == ["market", "ticker", "today"]
     assert events[0][1] < events[1][1]
-    assert events[1][1] is events[2][1]
+    assert events[1][1] <= events[2][1]
 
 
 def test_scheduled_preopen_skips_outside_window_and_publishes_inside(

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Iterable
 
 from investment_panel.settings import AppConfig, load_config
+from investment_panel.domain.decision import project_reference_signal
 from investment_panel.domain.decision import OpportunityRank, TradePlan, market_deadline_passed, normalized_utc, next_action_for, trade_plan_rank_identity_matches
 from investment_panel.domain.panel import DASHBOARD_UNAVAILABLE_MODELS, tables_for_scope
 from investment_panel.application.read_models.types import DataStatus, PanelData
@@ -562,6 +563,11 @@ def load_opportunities_scope_data(
         for rank in panel.tables["opportunities_ranked"]:
             symbol = str(rank.get("ticker") or "").upper()
             plan = today_plan_for_row(rank, plans.rows("trade_plan"), rank, symbol) if plans.status.ready else None
+            try:
+                signal = project_reference_signal(rank.get("reference_signal"), now=presentation_at)
+            except (ValueError, TypeError):
+                signal = None
+            rank["reference_signal"] = signal.model_dump(mode="json") if signal else None
             rank["trade_plan"] = plan.model_dump(mode="json") if plan else None
             rank["plan_read_status"] = "available" if plan else "not_published" if plans.status.ready else "read_failed"
             rank["presentation_blocker"] = plan_currentness_blocker(plan, now=presentation_at)

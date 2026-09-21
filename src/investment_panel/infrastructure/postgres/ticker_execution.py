@@ -725,6 +725,7 @@ class TickerPaperExecutionRepository:
             SELECT id AS quote_id, source_id, price, observed_at, available_at
             FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
             WHERE observed_at <= %s
+              AND source_id NOT IN ('assessment-equity-quotes', 'assessment-crypto-quotes')
             ORDER BY observed_at DESC, available_at DESC
             LIMIT 1
             """,
@@ -910,6 +911,7 @@ class TickerPaperExecutionRepository:
             SELECT id AS quote_id, source_id, price, observed_at, available_at
             FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
             WHERE observed_at <= %s
+              AND source_id NOT IN ('assessment-equity-quotes', 'assessment-crypto-quotes')
             ORDER BY observed_at DESC, available_at DESC
             LIMIT 1
             """,
@@ -962,6 +964,7 @@ class TickerPaperExecutionRepository:
             """
             SELECT price FROM raw.confirmed_quote_at(%s, ARRAY[%s::bigint])
             WHERE observed_at <= %s
+              AND source_id NOT IN ('assessment-equity-quotes', 'assessment-crypto-quotes')
             ORDER BY observed_at DESC, available_at DESC LIMIT 1
             """,
             [now, order["instrument_id"], now],

@@ -37,6 +37,7 @@ from investment_panel.domain.decision import (
     trade_expression_identity,
 )
 from investment_panel.domain.panel import TICKER_INITIAL_TABLES
+from investment_panel.infrastructure.postgres.monitored_universe import monitored_universe
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.panel_models import load_postgres_tables
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
@@ -81,7 +82,8 @@ def publish(
     runtime = runtime_for_config(config)
     reference = _utc(as_of or datetime.now(UTC))
     benchmark_symbols = _catalog_symbols(runtime, limit=10_000)
-    selected = _normalise_symbols(benchmark_symbols, symbols, limit=limit)
+    selected = _normalise_symbols(benchmark_symbols, symbols if symbols is not None else
+        [item["symbol"] for item in monitored_universe(runtime, config.watchlist)], limit=limit)
     benchmark = _freeze_benchmark(runtime, benchmark_symbols, reference)
     repository = TickerDecisionRepository(runtime)
     analysis_repository = AnalysisRepository(runtime)
@@ -245,7 +247,14 @@ def publish(
     )
     paper_staging = _stage_eligible(runtime, config, decisions_for_paper)
     paper_execution = TickerPaperExecutionRepository(runtime, config).process(now=reference)
-    status = "ok" if not failures else "partial" if published or skipped else "failed"
+    signal_failures = [
+        {"ticker": record["decision"].ticker,
+         "reason": record["decision"].reference_signal.failure_code,
+         "job": record["decision"].reference_signal.owner_job}
+        for record in records if record["decision"].reference_signal is not None
+        and record["decision"].reference_signal.action == "SERVICE_FAILURE"
+    ]
+    status = "ok" if not failures and not signal_failures else "partial" if published or skipped else "failed"
     return {
         "status": status,
         "database": "postgresql",
@@ -256,6 +265,8 @@ def publish(
         "skipped_count": skipped,
         "failed_count": len(failures),
         "failures": failures[:50],
+        "signal_failures": signal_failures,
+        "signal_ready_count": len(records) - len(signal_failures),
         "outcomes": outcome_result,
         "paper_staging": paper_staging,
         "paper_execution": paper_execution,
@@ -453,6 +464,7 @@ def _rank_records(
             )
         record["decision"] = bind_trade_plan(record["decision"], plan)
         record["plan"] = record["decision"].trade_plan
+        record["rank"] = record["rank"].model_copy(update={"reference_signal": record["decision"].reference_signal})
     models = {
         "instrument_state_snapshot": [
             {"stable_key": f"{record['decision'].ticker}:instrument:{record['snapshot'].snapshot_id}", **record["snapshot"].model_dump(mode="json")}
@@ -780,8 +792,8 @@ def _normalise_symbols(
         if str(symbol).strip()
     }
     available_set = {str(symbol).strip().upper() for symbol in available if str(symbol).strip()}
-    if requested:
-        return sorted(requested & available_set)
+    if symbols is not None:
+        return sorted(requested)[:max(1, min(int(limit), 10_000))]
     return sorted(available_set)[:max(1, min(int(limit), 10_000))]
 
 

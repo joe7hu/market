@@ -18,8 +18,10 @@ from investment_panel.jobs import (
     run_option_agents,
     run_thesis_monitor,
     update_market_data,
+    assessment_inputs,
 )
 from investment_panel.workflows import ticker_decisions
+from investment_panel.infrastructure.postgres.monitored_universe import monitored_universe
 
 
 def publish_decisions(
@@ -40,6 +42,7 @@ def publish_decisions(
         if include_options_radar
         else {"status": "skipped", "reason": "dedicated_options_radar_cadence"}
     )
+    cutoff = datetime.now(UTC)  # producers must be visible before the input cutoff
     if include_market_publication:
         market = refresh_market_publication(
             runtime,
@@ -50,7 +53,7 @@ def publish_decisions(
         decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     else:
         market = _visible_market_publication(runtime, cutoff)
-        decision_cutoff = _publication_input_cutoff(market, fallback=cutoff)
+        decision_cutoff = cutoff  # keep Market lineage, not its old consumer cutoff
     tickers = ticker_decisions.publish(
         config_path,
         symbols=_priority_ticker_symbols(config, runtime),
@@ -63,7 +66,7 @@ def publish_decisions(
         if include_option_outcomes
         else {"status": "skipped", "reason": "dedicated_outcome_cadence"}
     )
-    today = refresh_today_publication(runtime, now=decision_cutoff)
+    today = refresh_today_publication(runtime, now=datetime.now(UTC))
     allocation = _refresh_portfolio_allocation(runtime, decision_cutoff)
     status = "ok" if all(
         str(row.get("status")) == "ok"
@@ -137,7 +140,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     agents = run_option_agents.run(config_path)
     thesis_monitor = run_thesis_monitor.run(config_path, trigger="preopen")
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
-    cutoff = reference.astimezone(UTC)
+    cutoff = reference.astimezone(UTC) if now is not None else datetime.now(UTC)
     market = refresh_market_publication(
         runtime,
         now=cutoff,
@@ -153,7 +156,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     )
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(
-        runtime, now=decision_cutoff, use_agent_narrative=True,
+        runtime, now=max(decision_cutoff, datetime.now(UTC)), use_agent_narrative=True,
         agent_model=config.agents.thesis_monitor.model,
         reasoning_effort=config.agents.thesis_monitor.reasoning_effort,
     )
@@ -249,7 +252,8 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
 
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
         ("arco_sources", False, lambda: update_arco_sources.run(config_path)),
-        ("market_data", False, lambda: update_market_data.run(config_path, publish=False)),
+        ("market_data", True, lambda: update_market_data.run(config_path, publish=False)),
+        ("symbol_features", True, lambda: assessment_inputs.features(config_path)),
         ("company_financials", False, lambda: update_company_financials.run(config_path)),
         ("phase2_sources", False, lambda: update_phase2_sources.run(config_path)),
         ("content_sources", False, lambda: update_content_sources.run(config_path)),
@@ -259,6 +263,8 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("ibkr_options", False, lambda: update_ibkr_options.run(config_path)),
         ("broker_sources", False, lambda: update_broker_sources.run(config_path)),
         ("options_radar", True, lambda: refresh_options_radar.run(config_path)),
+        # Slow collectors must finish before capturing short-lived assessment quotes.
+        ("assessment_quotes", True, lambda: assessment_inputs.collect(config_path)),
         ("market_publication", True, publish_market),
         ("ticker_decisions", True, lambda: ticker_decisions.publish(
             config_path,
@@ -274,7 +280,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("option_agents", True, lambda: run_option_agents.run(config_path)),
         ("thesis_monitor", False, lambda: run_thesis_monitor.run(config_path, trigger="preopen")),
         ("today_publication", True, lambda: refresh_today_publication(
-            runtime_for_config(config), now=market_state_visible_at or bounded_cutoff()
+            runtime_for_config(config), now=datetime.now(UTC)
         )),
         ("portfolio_allocation", True, lambda: {
             "status": "ok",
@@ -295,9 +301,13 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
             status = str(result.get("status") or "ok").lower()
             if name in {"robinhood_options", "ibkr_options"}:
                 step_failed = status not in {"ok", "partial"}
+            elif name == "option_agents":
+                # No eligible options/cooldown is a legitimate abstention, not
+                # a producer outage. Explicit failures still fail this step.
+                step_failed = status not in {"ok", "skipped"}
             elif name == "broker_sources":
                 step_failed = status != "ok"
-            elif name in {"options_radar", "today_publication", "market_publication"}:
+            elif required or name in {"options_radar", "today_publication", "market_publication"}:
                 step_failed = status != "ok"
             else:
                 step_failed = status in {"error", "failed", "unsafe_config"}
@@ -325,24 +335,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
 
 
 def _priority_ticker_symbols(config: AppConfig, runtime: Any) -> list[str]:
-    """Keep scheduled ticker publication bounded to holdings and watchlist."""
-
-    symbols = {
-        str(item.get("symbol") or "").strip().upper()
-        for item in config.watchlist
-        if str(item.get("symbol") or "").strip()
-    }
-    with runtime.read() as connection:
-        rows = connection.execute(
-            """
-            SELECT instrument.symbol
-            FROM app.portfolio_position position
-            JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
-            WHERE position.quantity <> 0
-            """
-        ).fetchall()
-    symbols.update(str(row["symbol"]).strip().upper() for row in rows if str(row["symbol"]).strip())
-    return sorted(symbols)
+    return [row["symbol"] for row in monitored_universe(runtime, config.watchlist)]
 
 
 def _market_state_publication_id(result: dict[str, Any]) -> str | None:

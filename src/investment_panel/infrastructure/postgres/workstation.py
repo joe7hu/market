@@ -15,12 +15,17 @@ from investment_panel.core.job_policy import scheduler_intervals, scheduler_enab
 from investment_panel.domain.decision import is_market_open, is_us_market_day, market_session_bounds, completed_trading_dates, MARKET_TZ
 from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime
 from investment_panel.settings import AppConfig
+from investment_panel.domain.decision import decision_service_health
+from investment_panel.domain.decision import forecast_observation_end
+from investment_panel.domain.decision import assessment_timestamp as timestamp
+from investment_panel.core.continuous_advisor import claim_horizon_delta
+from investment_panel.infrastructure.postgres.monitored_universe import merge_monitored_universe
 from investment_panel.infrastructure.postgres.strategy_parameters import PARAMETER_FAILURE_VERDICTS
 
 logger = logging.getLogger(__name__)
 
 WORKFLOW_JOBS = (
-    "update_market_data",
+    "update_market_data", "update_broker_account", "refresh_assessment_inputs", "refresh_symbol_features", "run_continuous_advisor",
     "update_research_sources", "update_phase2_sources", "update_event_calendar",
     "update_market_valuations", "refresh_market_publication",
     "refresh_decision_models", "process_options_paper_orders", "refresh_paper_quotes",
@@ -54,6 +59,7 @@ def worker_projection(row: dict[str, Any] | None, *, job: str, interval: int | N
             base.update(status="disabled", reason="Not scheduled by the current configuration.")
         return base
     base.update(source_status=row.get("source_status"), downstream_status=row.get("downstream_status"),
+                error=row.get("error"), summary=row.get("summary"),
                 last_attempt_at=row.get("started_at"), heartbeat_at=row.get("heartbeat_at"),
                 last_success_at=row.get("last_success_at"), run_id=str(row.get("id") or ""))
     finished = row.get("finished_at")
@@ -139,11 +145,83 @@ class WorkstationRepository:
             jobs = read("jobs", """
                 SELECT latest.*, success.last_success_at FROM unnest(%s::text[]) name(job)
                 JOIN LATERAL (SELECT id, job_name, status, started_at, heartbeat_at, finished_at,
-                    source_status, downstream_status FROM ops.job_run WHERE job_name = name.job
+                    source_status, downstream_status, error, summary FROM ops.job_run WHERE job_name = name.job
                     AND started_at <= %s ORDER BY started_at DESC, id DESC LIMIT 1) latest ON true
                 LEFT JOIN LATERAL (SELECT max(finished_at) AS last_success_at FROM ops.job_run
                     WHERE job_name = name.job AND status = 'succeeded' AND finished_at <= %s) success ON true
             """, [list(WORKFLOW_JOBS), now, now])
+            stored_universe = read("monitored_universe", """
+                SELECT instrument.symbol, instrument.asset_class,
+                       coalesce(position.quantity, 0) <> 0 AS is_owned, watchlist.watch_state
+                FROM catalog.instrument instrument
+                LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
+                LEFT JOIN app.watchlist_item watchlist ON watchlist.instrument_id = instrument.id
+                WHERE coalesce(position.quantity, 0) <> 0 OR watchlist.instrument_id IS NOT NULL
+            """)
+            universe = merge_monitored_universe(stored_universe, config.watchlist)
+            decision_rows = read("decision_service", """
+                WITH monitored AS (
+                    SELECT requested.symbol, instrument.id, instrument.asset_class,
+                           coalesce(position.quantity, 0) <> 0 AS is_owned
+                    FROM unnest(%s::text[]) requested(symbol)
+                    LEFT JOIN catalog.instrument instrument ON instrument.symbol = requested.symbol
+                    LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
+                ), prices AS MATERIALIZED (
+                    SELECT * FROM raw.current_price_at(%s, ARRAY(SELECT id FROM monitored WHERE id IS NOT NULL))
+                )
+                SELECT monitored.*, to_jsonb(prices) AS quote, to_jsonb(feature) AS feature,
+                       to_jsonb(decision) AS decision
+                FROM monitored LEFT JOIN prices ON prices.instrument_id = monitored.id
+                LEFT JOIN LATERAL (
+                    SELECT feature.as_of, run.finished_at AS available_at, feature.id::text AS revision,
+                           feature.price, feature.atr_pct, feature.trend_state, feature.data_quality_status,
+                           feature.metrics, feature.reason_codes
+                    FROM analysis.symbol_feature feature JOIN analysis.run run ON run.id = feature.run_id
+                    WHERE feature.instrument_id = monitored.id AND feature.feature_set = 'daily_trend'
+                      AND feature.as_of <= %s AND run.finished_at <= %s
+                    ORDER BY feature.as_of DESC, feature.id DESC LIMIT 1
+                ) feature ON true
+                LEFT JOIN LATERAL (
+                    SELECT decision.as_of, decision.published_at, decision.risk_policy_snapshot,
+                           decision.input_manifest->'reference_signal' AS reference_signal,
+                           decision.input_manifest->'opportunity_rank' AS opportunity_rank,
+                           decision.input_manifest->'trade_plan' AS trade_plan
+                    FROM analysis.ticker_decision decision
+                    WHERE decision.instrument_id = monitored.id AND decision.status = 'published'
+                      AND decision.published_at <= %s AND decision.as_of <= %s
+                    ORDER BY decision.published_at DESC, decision.id DESC LIMIT 1
+                ) decision ON true
+                ORDER BY monitored.symbol
+            """, [[item["symbol"] for item in universe], now, now, now, now, now]) if universe else []
+            # Catalog registration failures retain the configured asset class.
+            asset_classes = {item["symbol"]: item["asset_class"] for item in universe}
+            for item in decision_rows:
+                item["asset_class"] = item["asset_class"] or asset_classes[item["symbol"]]
+            forecast_counts = read("forecast_counts", """
+                SELECT count(*)::int AS issued,
+                       count(*) FILTER (WHERE outcome.status = 'resolved' AND outcome.evidence_valid)::int AS resolved,
+                       count(*) FILTER (WHERE outcome.id IS NULL)::int AS pending,
+                       count(*) FILTER (WHERE outcome.id IS NOT NULL AND
+                           (outcome.status <> 'resolved' OR NOT outcome.evidence_valid))::int AS excluded
+                FROM analysis.continuous_advisor_forecast_claim claim
+                JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
+                LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
+                WHERE response.status = 'succeeded' AND claim.created_at <= %s
+            """, [now])
+            pending_forecasts = read("pending_forecasts", """
+                SELECT claim.id::text AS claim_id, claim.horizon, packet.symbol, packet.cutoff,
+                       attempt.created_at AS last_attempt_at, attempt.reason AS last_attempt_reason
+                FROM analysis.continuous_advisor_forecast_claim claim
+                JOIN analysis.continuous_advisor_response response ON response.id = claim.response_id
+                JOIN analysis.continuous_advisor_packet packet ON packet.id = claim.packet_id
+                LEFT JOIN analysis.continuous_advisor_forecast_outcome outcome ON outcome.claim_id = claim.id
+                LEFT JOIN LATERAL (
+                    SELECT created_at, reason FROM analysis.continuous_advisor_resolution_attempt
+                    WHERE claim_id = claim.id ORDER BY created_at DESC, id DESC LIMIT 1
+                ) attempt ON true
+                WHERE response.status = 'succeeded' AND outcome.id IS NULL AND packet.cutoff <= %s
+                ORDER BY packet.cutoff, claim.id LIMIT 2000
+            """, [now])
             market = read("market_publication", """
                 SELECT publication.id::text AS publication_id, publication.published_at,
                        run.input_cutoff, run.status AS run_status, run.inputs->'optional_errors' AS optional_errors
@@ -206,6 +284,23 @@ class WorkstationRepository:
                 WHERE revision.status IN ('active', 'candidate', 'testing', 'approved') AND revision.created_at <= %s
                 ORDER BY (revision.status = 'active') DESC, evaluation.evaluated_at DESC LIMIT 40
             """, [now, now, now])
+        forecast_summary = dict(forecast_counts[0]) if forecast_counts else {}
+        upcoming, due, overdue = [], 0, 0
+        for pending in pending_forecasts:
+            delta = claim_horizon_delta(str(pending["horizon"]))
+            cutoff = timestamp(pending["cutoff"])
+            end = forecast_observation_end(cutoff + delta, continuous=pending["symbol"].endswith("-USD")) if cutoff and delta else None
+            if end is not None:
+                if end > now:
+                    upcoming.append(end)
+                else:
+                    due += 1
+                    overdue += int(now - end > timedelta(seconds=max(900, 3 * intervals.get("run_continuous_advisor_replay", 300))))
+        forecast_summary.update(status="unavailable" if {"forecast_counts", "pending_forecasts"}.intersection(failures) else "available",
+            enabled=config.agents.thesis_monitor.continuous_enabled, due=due, overdue=overdue,
+            next_maturity_at=min(upcoming) if upcoming else None,
+            pending_scan_truncated=int(forecast_summary.get("pending", 0)) > len(pending_forecasts),
+            basis="Unresolved horizons are pending, not losses; only independently resolved outcomes enter calibration.")
         by_job = {row["job_name"]: row for row in jobs}
         workers = [worker_projection(by_job.get(job), job=job, interval=intervals.get(job), now=now,
                                      enabled=scheduler_enabled()) for job in WORKFLOW_JOBS]
@@ -222,7 +317,26 @@ class WorkstationRepository:
         observation_counts: dict[str, int] = {}
         for row in observations:
             observation_counts[row["status"]] = observation_counts.get(row["status"], 0) + row["count"]
-        blockers = []
+        decision_service = decision_service_health(decision_rows, now=now)
+        if "decision_service" in failures or "monitored_universe" in failures:
+            decision_service.update(status="unavailable", reason="Required decision-service reads failed; population is not known.")
+        blockers = list(decision_service["incidents"])
+        if decision_service["status"] == "unavailable":
+            blockers.append({"capability": "Trading signals", "reason": decision_service["reason"],
+                "action": "Restore the named failed database reads.", "href": "/health", "job": "refresh_decision_models"})
+        required = {"refresh_assessment_inputs", "refresh_symbol_features", "refresh_decision_models"} if universe else set()
+        if config.agents.thesis_monitor.continuous_enabled:
+            required |= {"run_continuous_advisor", "run_continuous_advisor_replay"}
+        for worker in workers:
+            if worker["job"] in required and worker["status"] in {"failed", "partial", "overdue", "not_started", "disabled", "unavailable"}:
+                blockers.append({"capability": "Forecast learning" if "advisor" in worker["job"] else "Trading signals",
+                    "reason": f"{worker['job']}: {worker.get('error') or worker['reason']}",
+                    "action": "Restore the required producer; no placeholder data will replace its output.",
+                    "href": "/health", "job": worker["job"]})
+        if overdue:
+            blockers.append({"capability": "Forecast learning", "reason": f"{overdue} scanned forecasts are past their outcome window without a resolution.",
+                "action": "Restore outcome quotes and the replay worker; missing observations must not be scored as losses.",
+                "href": "/research?section=forecast-quality", "job": "run_continuous_advisor_replay"})
         if market_projection["status"] != "available":
             blockers.append({"capability": "Market", "reason": market_projection["reason"],
                              "action": "Rebuild from stored facts; inspect ingestion only if source facts are missing.",
@@ -244,7 +358,8 @@ class WorkstationRepository:
                              "action": "Correct the recorded proposal parameters; no candidate or outcome samples were fabricated.",
                              "href": "/research?section=strategies", "job": None})
         return {
-            "as_of": now, "paper_only": True, "status": "partial" if failures else "available",
+            "as_of": now, "paper_only": True, "status": "unavailable" if failures else "partial" if blockers else "available",
+            "decision_service": decision_service, "forecasts": forecast_summary,
             "failed_reads": failures, "market_session": "regular" if is_market_open(now) else "closed",
             "next_session_at": None if is_market_open(now) else next_session_open(now),
             "workers": workers, "market": market_projection, "blockers": blockers,

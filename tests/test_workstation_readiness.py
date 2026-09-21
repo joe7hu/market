@@ -53,7 +53,9 @@ def test_read_failure_is_not_reported_as_zero_or_healthy(failed_table):
     runtime = SimpleNamespace(snapshot=lambda *args: nullcontext(Connection()))
     status = WorkstationRepository(runtime).status(AppConfig())
     WorkstationStatus.model_validate(status)
-    assert (status["status"] == "partial") is bool(failed_table)
+    assert status["status"] == ("unavailable" if failed_table else "partial")
+    # Successful empty queries do not prove that required producers/publications exist.
+    assert status["blockers"]
     assert status["market"]["status"] == "not_published"
     if failed_table == "app.paper_order":
         assert status["paper"]["status"] == "unavailable"

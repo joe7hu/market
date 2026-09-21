@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -21,46 +21,57 @@ def refresh_symbol_trend_features(
     run_id: Any,
     *,
     as_of: datetime,
+    symbols: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Persist one reconstructable feature row for each current radar symbol and QQQ."""
+    """Persist reconstructable features for an explicit population or the radar."""
 
-    with runtime.read(JOB_PROFILE) as connection:
-        instruments = [
-            dict(row)
-            for row in connection.execute(
-                """
-                WITH cutoffs AS (
-                    SELECT contract.underlying_instrument_id AS instrument_id,
-                           max(feature.quote_observed_at) AS symbol_as_of,
-                           max(coalesce(feature.liquidity_score, 0)
-                               + coalesce(feature.convexity_score, 0)) AS research_priority
-                    FROM analysis.option_feature feature
-                    JOIN catalog.option_contract contract ON contract.id = feature.contract_id
-                    JOIN catalog.instrument candidate ON candidate.id = contract.underlying_instrument_id
-                    WHERE feature.run_id = %s
-                      AND candidate.symbol <> 'QQQ'
-                    GROUP BY contract.underlying_instrument_id
-                ), ranked AS (
-                    SELECT cutoffs.*, count(*) OVER () + 1 AS universe_size,
-                           row_number() OVER (
-                             ORDER BY research_priority DESC, symbol_as_of DESC, instrument_id
-                           ) AS universe_rank
-                    FROM cutoffs
-                ), selected AS (
-                    SELECT * FROM ranked WHERE universe_rank < %s
-                )
-                SELECT instrument.id, instrument.symbol,
-                       selected.symbol_as_of, selected.universe_size
-                FROM selected JOIN catalog.instrument instrument ON instrument.id = selected.instrument_id
-                UNION ALL
-                SELECT benchmark.id, benchmark.symbol, %s AS symbol_as_of,
-                       coalesce((SELECT max(universe_size) FROM ranked), 1) AS universe_size
-                FROM catalog.instrument benchmark WHERE benchmark.symbol = 'QQQ'
-                ORDER BY symbol
-                """,
-                [run_id, MAX_TREND_INSTRUMENTS, as_of],
-            ).fetchall()
-        ]
+    if symbols is None:
+        with runtime.read(JOB_PROFILE) as connection:
+            instruments = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    WITH cutoffs AS (
+                        SELECT contract.underlying_instrument_id AS instrument_id,
+                               max(feature.quote_observed_at) AS symbol_as_of,
+                               max(coalesce(feature.liquidity_score, 0)
+                                   + coalesce(feature.convexity_score, 0)) AS research_priority
+                        FROM analysis.option_feature feature
+                        JOIN catalog.option_contract contract ON contract.id = feature.contract_id
+                        JOIN catalog.instrument candidate ON candidate.id = contract.underlying_instrument_id
+                        WHERE feature.run_id = %s
+                          AND candidate.symbol <> 'QQQ'
+                        GROUP BY contract.underlying_instrument_id
+                    ), ranked AS (
+                        SELECT cutoffs.*, count(*) OVER () + 1 AS universe_size,
+                               row_number() OVER (
+                                 ORDER BY research_priority DESC, symbol_as_of DESC, instrument_id
+                               ) AS universe_rank
+                        FROM cutoffs
+                    ), selected AS (
+                        SELECT * FROM ranked WHERE universe_rank < %s
+                    )
+                    SELECT instrument.id, instrument.symbol,
+                           selected.symbol_as_of, selected.universe_size
+                    FROM selected JOIN catalog.instrument instrument ON instrument.id = selected.instrument_id
+                    UNION ALL
+                    SELECT benchmark.id, benchmark.symbol, %s AS symbol_as_of,
+                           coalesce((SELECT max(universe_size) FROM ranked), 1) AS universe_size
+                    FROM catalog.instrument benchmark WHERE benchmark.symbol = 'QQQ'
+                    ORDER BY symbol
+                    """,
+                    [run_id, MAX_TREND_INSTRUMENTS, as_of],
+                ).fetchall()
+            ]
+    if symbols is not None:
+        with runtime.read(JOB_PROFILE) as connection:
+            instruments = [dict(row) for row in connection.execute(
+                """SELECT id, symbol, asset_class, %s::timestamptz AS symbol_as_of,
+                          count(*) OVER () AS universe_size
+                   FROM catalog.instrument WHERE symbol = ANY(%s) ORDER BY symbol""",
+                [as_of, sorted(set(symbols) | {"QQQ"})],
+            ).fetchall()]
+    absent = sorted(set(symbols or ()) - {row["symbol"] for row in instruments})
     universe_size = max((int(row.get("universe_size") or 0) for row in instruments), default=0)
     qqq = next((row for row in instruments if row["symbol"] == "QQQ"), None)
     features: list[tuple[dict[str, Any], TrendFeature, list[dict[str, Any]]]] = []
@@ -78,8 +89,10 @@ def refresh_symbol_trend_features(
                 bars = bars_by_instrument.get(int(instrument["id"]), [])[-320:]
                 feature = compute_trend_feature(
                     bars, benchmark, as_of_date=symbol_cutoff.date(),
-                    expected_last_date=completed_trading_dates(symbol_cutoff, count=1)[0],
-                    require_relative_strength=instrument["symbol"] != "QQQ",
+                    expected_last_date=(symbol_cutoff.date() - timedelta(days=1)
+                                        if instrument.get("asset_class") == "crypto" else completed_trading_dates(symbol_cutoff, count=1)[0]),
+                    require_relative_strength=instrument["symbol"] != "QQQ" and instrument.get("asset_class") != "crypto",
+                    continuous=instrument.get("asset_class") == "crypto",
                 )
                 features.append((instrument, feature, bars))
 
@@ -155,10 +168,13 @@ def refresh_symbol_trend_features(
             )
     return {
         "feature_count": len(features),
+        "complete_count": sum(feature.data_quality_status == "complete" for _, feature, _ in features),
+        "failures": [{"symbol": symbol, "reasons": ["instrument_not_registered"]} for symbol in absent] + [{"symbol": instrument["symbol"], "reasons": list(feature.reason_codes)}
+                     for instrument, feature, _ in features if feature.data_quality_status != "complete"],
         "feature_version": FEATURE_VERSION,
         "universe_size": universe_size,
-        "universe_budget": MAX_TREND_INSTRUMENTS,
-        "universe_truncated": universe_size > MAX_TREND_INSTRUMENTS,
+        "universe_budget": len(instruments) if symbols is not None else MAX_TREND_INSTRUMENTS,
+        "universe_truncated": symbols is None and universe_size > MAX_TREND_INSTRUMENTS,
         "market_regime": market_regime_from_features(
             [(qqq, market_qqq, market_qqq_bars)]
             + [row for row in features if row[0]["symbol"] != "QQQ"]

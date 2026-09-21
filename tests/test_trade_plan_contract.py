@@ -42,8 +42,8 @@ def _complete_replay(symbol: str = "ACME") -> dict[str, object]:
 def _tables(symbol: str = "ACME") -> dict[str, list[dict[str, object]]]:
     available_at = "2026-08-22T13:55:00Z"
     return {
-        "quotes": [{"symbol": symbol, "price": 100, "available_at": available_at, "confirmed": True}],
-        "portfolio_summary": [{"symbol": symbol, "net_liquidation": 100_000, "available_at": available_at}],
+        "quotes": [{"symbol": symbol, "price": 100, "observed_at": "2026-08-21T20:00:00Z", "available_at": available_at, "confirmed": True}],
+        "portfolio_summary": [{"symbol": symbol, "net_liquidation": 100_000, "account_observed_at": "2026-08-22T13:55:00Z", "available_at": available_at}],
         "decision_queue": [{
             "symbol": symbol, "stance": "BULLISH", "action": "BUY",
             "entry_low": 99, "entry_high": 101, "target_low": 110, "target_high": 120,

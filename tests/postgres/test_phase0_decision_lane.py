@@ -252,7 +252,8 @@ def _publish_market(runtime: DatabaseRuntime, cutoff: datetime) -> tuple[str, di
 
 def _tables(symbol: str, cutoff: datetime) -> dict[str, list[dict[str, object]]]:
     available_at = cutoff - timedelta(minutes=5)
-    common = {"symbol": symbol, "available_at": available_at.isoformat()}
+    common = {"symbol": symbol, "available_at": available_at.isoformat(),
+              "observed_at": available_at.isoformat()}
     return {
         "quotes": [
             {**common, "price": 100.0, "confirmed": True},

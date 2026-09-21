@@ -973,7 +973,7 @@ def test_ticker_route_dedupes_repeated_option_lineage_and_projects_impact(monkey
     assert "inputs" not in decision["input_manifest"]
     assert set(decision) == {
         "as_of", "capital_action", "decision_contract_version", "decision_revision",
-        "expressions", "fundamental", "input_manifest", "market_evidence_assessment",
+        "expressions", "fundamental", "input_manifest", "market_evidence_assessment", "reference_signal",
         "portfolio_impacts", "resolution", "selected_expression", "tactical", "ticker", "field_states",
     }
     assert "opportunity_episode" not in payload
@@ -2106,12 +2106,15 @@ def test_ticker_decision_brief_uses_specific_source_gap_language() -> None:
     assert brief["risk_plan"]["max_sizing"] == "No new exposure until evidence gates clear."
 
 
-def test_frontend_fallback_serves_spa_deep_links_after_build() -> None:
+def test_frontend_fallback_serves_spa_deep_links_after_build(monkeypatch: pytest.MonkeyPatch) -> None:
     dist_index = Path(__file__).resolve().parents[2] / "frontend" / "dist" / "index.html"
     if not dist_index.exists():
         pytest.skip("frontend build output is not present")
 
-    client = TestClient(app)
+    # Build output may be created after module-level app import (for example
+    # alongside contract generation). Exercise a newly mounted deployment.
+    monkeypatch.setenv("MARKET_FRONTEND_DIST", str(dist_index.parent))
+    client = TestClient(app_main.create_app())
     for path in [
         "/",
         "/feed",
@@ -2134,7 +2137,7 @@ def test_frontend_fallback_serves_spa_deep_links_after_build() -> None:
         "/not-a-market-route",
     ]:
         response = client.get(path)
-        assert response.status_code == 200
+        assert response.status_code == 200, path
         assert response.headers["cache-control"] == "no-cache"
         assert response.headers["content-type"].startswith("text/html")
         assert '<div id="root">' in response.text
@@ -2200,10 +2203,12 @@ def test_background_data_repair_republishes_decisions(monkeypatch: pytest.Monkey
     monkeypatch.setattr(job_control, "execute_refresh_job_subprocess", execute)
     monkeypatch.setattr(
         job_control, "start_refresh_job",
-        lambda job_name, _database_url: {"id": "republish-1", "created": True, "job_name": job_name},
+        lambda job_name, _database_url: {"id": f"next-{job_name}", "created": True, "job_name": job_name},
     )
     monkeypatch.setattr(job_control, "invalidate_context_cache", lambda: None)
 
     job_control.execute_background_refresh_job("collector-1", "update_market_data", "postgresql://market")
 
-    assert calls == [("collector-1", "update_market_data"), ("republish-1", "refresh_decision_models")]
+    assert calls == [("collector-1", "update_market_data"),
+                     ("next-refresh_symbol_features", "refresh_symbol_features"),
+                     ("next-refresh_decision_models", "refresh_decision_models")]

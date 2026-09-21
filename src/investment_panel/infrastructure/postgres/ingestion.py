@@ -369,7 +369,9 @@ class IngestionRepository:
     ) -> None:
         if status not in {"succeeded", "partial", "failed", "skipped"}:
             raise ValueError("finished ingestion status is invalid")
-        with self.runtime.transaction() as connection:
+        # Finalization refreshes confirmed-price and paper-mark projections for
+        # the entire ingestion batch. It is a bulk job, not a 3-second API read.
+        with self.runtime.transaction(JOB_PROFILE) as connection:
             result = connection.execute(
                 """
                 UPDATE ingest.run

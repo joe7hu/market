@@ -40,12 +40,24 @@ def today(
 def status(
     config: AppConfig = Depends(dependencies.get_config),
     actions: dependencies.OptionsHistoryService = Depends(dependencies.get_options_history),
+    workstation: dependencies.WorkstationRepository = Depends(dependencies.get_workstation),
 ) -> dict[str, Any]:
     panel_data = loaders.load_panel_data(
         config,
         table_names=("source_health",),
     )
     response = payloads.status_payload(panel_data)
+    response["transport_ready"] = bool(response.get("ready"))
+    try:
+        health = workstation.status(config)
+        response["workstation"] = health
+        response["service_ready"] = health["status"] == "available"
+    except Exception as exc:
+        response["service_ready"] = False
+        response["message"] = f"Decision-service health check failed: {type(exc).__name__}"
+    response["ready"] = response["transport_ready"] and response["service_ready"]
+    if not response["service_ready"] and response.get("workstation"):
+        response["message"] = "Decision service degraded. System health identifies the failed producers and affected instruments."
     try:
         response["options_history"] = actions.health(mode=config.analysis.options_decision_system.mode)
     except Exception as exc:  # status must stay available during a migration outage

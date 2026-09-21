@@ -130,6 +130,58 @@ The existing `scripts/verify_workstation.py` remains the portable read-only
 smoke check; WebMCP is not a test oracle, browser DOM verifier, provider feed,
 remote debugger, or replacement for PostgreSQL integration tests.
 
+## Decision-service delivery contract
+
+See [the root-cause audit and acceptance guide](docs/decision-service-integrity.md).
+This diagram distinguishes complete measured conditions, qualified capital plans,
+and actual fill evidence. A green transport check alone is not functional health.
+
+```mermaid
+flowchart TD
+    U["Canonical monitored universe<br/>configured watches + persisted watches + owned positions"]
+    H["Daily OHLCV collectors<br/>US completed sessions / crypto UTC buckets"]
+    Q["Assessment quotes<br/>US session-aware / crypto 24-7"]
+    N["News, events, macro<br/>independent source cadences"]
+    P[("PostgreSQL availability authority<br/>observation != availability != publication")]
+    F["Monitored daily-trend features<br/>not the options shortlist"]
+    S["ReferenceSignal<br/>complete conditions OR named service failure"]
+    A["Qualified strategy forecast + account risk<br/>rank / TradePlan"]
+    B["Immutable ticker + ranking publication<br/>new consumer cutoff after producers"]
+    V["Today / Opportunities / Ticker<br/>same signal, clock and expiry"]
+    E["Independent later execution quotes<br/>liquidity + risk + causal fill gates"]
+    O["Prospective paper observations / funded paper book<br/>separate accounting authorities"]
+    C["Forecast issue -> maturity -> measured resolution<br/>unsupported outcomes excluded"]
+    L["Research cohorts / calibration / challenger evaluation<br/>no automatic evidence fabrication"]
+    X["Functional System health<br/>per-symbol dependency failures + worker errors + overdue outcomes"]
+    U --> H & Q & F
+    H & Q & N --> P
+    P --> F --> S
+    P --> A
+    S & A --> B --> V
+    A --> E --> O --> L
+    P --> C --> L
+    L -. qualified revisions only .-> A
+    H & Q & F & B & E & C -. delivery checks .-> X
+    X --> V
+```
+
+`domain/decision/assessment.py` is the shared analysis quote-use contract, not
+an execution gate. `reference_signal.py` produces typed measured conditions from
+the existing feature authority. Signals are embedded in the immutable ticker
+manifest and opportunity ranking; no browser-side strategy is added.
+`service_health.py` evaluates delivery of the required contracts. The workstation
+repository adds persisted worker/error and forecast-lifecycle diagnostics;
+`/api/status` separates transport readiness from actual service readiness.
+
+`jobs/assessment_inputs.py` owns independent monitored quote/feature jobs.
+`infrastructure/postgres/monitored_universe.py` supplies their population and the
+publisher/health population. History collectors include explicit benchmark and
+lookback dependencies. Reference quotes cannot enter ticker execution selectors.
+The scheduler keeps capacity two and independently cadences history, references,
+features, decisions, news, research, and outcomes; US execution closure does not
+pause research or crypto. Read-time and browser expiry revoke current terms but
+never rewrite stored evidence. No migration or outcome-history backfill occurs.
+
 ## Request flow
 
 ```text

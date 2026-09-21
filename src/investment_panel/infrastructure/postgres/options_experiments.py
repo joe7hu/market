@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from investment_panel.domain.decision import after_market_minutes
+
 from datetime import datetime
 import json
 import time
@@ -174,9 +176,13 @@ def incumbent_identity(strategy_id: int, run_id: str | None = None) -> dict[str,
             **({"run_id": run_id} if run_id else {})}
 
 
+
+
 def seed_experiment_shadows(runtime: Any, rows: list[dict[str, Any]], *, publication_id: str) -> int:
     count = 0
     with runtime.transaction(JOB_PROFILE) as connection:
+        clock = connection.execute("SELECT clock_timestamp() AS now").fetchone()["now"]
+        deadline = after_market_minutes(clock, 30)
         for row in rows:
             if row.get("structure") not in {"long_call", "long_put"}:
                 continue
@@ -189,7 +195,7 @@ def seed_experiment_shadows(runtime: Any, rows: list[dict[str, Any]], *, publica
                        (decision_id, status, source_kind, pending_entry_reason, structure, metrics)
                    SELECT decision.id, CASE WHEN decision.sample_eligible AND decision.state IN ('WATCH', 'SETUP', 'READY') THEN 'pending' ELSE 'rejected' END,
                           %s, CASE WHEN decision.sample_eligible AND decision.state IN ('WATCH', 'SETUP', 'READY') THEN 'later_quote_required' ELSE 'candidate_gate_rejected' END,
-                          %s, %s || jsonb_build_object('entry_deadline', decision.as_of + interval '30 minutes')
+                          %s, %s
                    FROM analysis.decision decision
                    WHERE decision.id = %s::uuid AND decision.strategy_revision_id = %s
                      AND decision.run_id = %s::uuid
@@ -216,6 +222,8 @@ def seed_experiment_shadows(runtime: Any, rows: list[dict[str, Any]], *, publica
                 [SHADOW_SOURCE, row.get("structure"), _jsonb({
                     "experiment": experiment, "publication_id": publication_id, "ticket": ticket,
                     "source_id": row.get("data_source"), "observation_only": True,
+                    "entry_window_version": "publication-visible-session-minutes.v2",
+                    "entry_window_anchor": clock, "entry_deadline": deadline,
                 }), row["decision_id"], revision_id, experiment.get("run_id"), publication_id, SHADOW_SOURCE],
             )
             count += int(inserted.rowcount)

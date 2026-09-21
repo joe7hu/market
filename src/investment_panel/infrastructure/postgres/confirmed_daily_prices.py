@@ -65,6 +65,7 @@ def confirmed_daily_bars(
             FROM facts fact
             JOIN ingest.source source
               ON source.id = fact.source_id
+            JOIN catalog.instrument fact_instrument ON fact_instrument.id = fact.instrument_id
             LEFT JOIN LATERAL (
                 SELECT history.enabled, history.operational_state
                   FROM ingest.source_lifecycle_history history
@@ -88,6 +89,10 @@ def confirmed_daily_bars(
                 LIMIT 1
             ) confirmation_run ON true
             WHERE fact.instrument_id = ANY(%s) AND fact.interval = '1d' AND fact.close > 0
+              -- Legacy crypto sample-bars were stamped at 20:00 of the same day.
+              -- A real UTC daily candle cannot be complete before the next midnight.
+              AND (fact_instrument.asset_class <> 'crypto' OR
+                   fact.observed_at >= (fact.trading_date + 1)::timestamp AT TIME ZONE 'UTC')
               AND fact.observed_at <= %s AND fact.available_at <= %s
              AND (%s::date[] IS NULL OR fact.trading_date = ANY(%s::date[]))
               AND CASE WHEN %s::boolean

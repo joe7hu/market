@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from uuid import UUID
 
 from investment_panel.domain.portfolio.contracts import canonical_content_hash
+from investment_panel.domain.decision import assessment_quote
 from investment_panel.infrastructure.postgres.instruments import canonical_symbol
 
 
@@ -100,11 +101,17 @@ def build_evidence_packet(
     price = _first_present(portfolio, "price", row.get("latest_price"))
     quote_observed = _first_present(portfolio, "quote_observed_at", row.get("latest_quote_at"))
     quote_available = _first_present(portfolio, "quote_available_at", row.get("latest_quote_available_at"))
-    price_status = _fact_status(
-        {"price": price, "quote_observed_at": quote_observed, "available_at": quote_available},
-        cutoff,
-        max_age=timedelta(hours=4),
+    price_clock = assessment_quote(
+        {"price": price, "observed_at": quote_observed, "available_at": quote_available},
+        now=cutoff, continuous=str(row.get("asset_class") or "").lower() == "crypto" or symbol.endswith("-USD"),
     )
+    # The same quote-use contract as ticker signals: Friday close is a valid
+    # Sunday reference, not fresh execution liquidity. News retains its own age.
+    raw_price_status = _fact_status(
+        {"price": price, "quote_observed_at": quote_observed, "available_at": quote_available}, cutoff, max_age=timedelta(hours=4))
+    price_status = ("available" if price_clock.usable else
+                    "stale" if price_clock.state == "overdue" else
+                    raw_price_status if raw_price_status != "available" else "unknown")
     if price_status != "available":
         blockers.add(f"price_{price_status}")
 

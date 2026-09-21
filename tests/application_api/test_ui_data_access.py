@@ -184,6 +184,7 @@ def test_opportunities_falls_back_to_current_ticker_decision_rank(monkeypatch) -
         "rank_id": "rank-1",
         "ranking_publication_id": "publication-1",
         "publication_id": "publication-1",
+        "reference_signal": None,
         "trade_plan": None,
         "plan_read_status": "not_published",
         "presentation_blocker": None,
@@ -1738,13 +1739,13 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
     mutations_owner.save_watchlist_symbol(config, {"symbol": "XYZ"})
 
     def fetch_prices(symbol: str, lookback_days: int, mode: str) -> pd.DataFrame:
-        assert symbol == "XYZ"
-        assert lookback_days == 30
+        assert symbol in {"XYZ", "QQQ"}
+        assert lookback_days >= 500
         assert mode == "online"
         return pd.DataFrame(
             [
-                {"symbol": "XYZ", "date": "2026-01-01", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 100, "source": "test"},
-                {"symbol": "XYZ", "date": "2026-01-02", "open": 10, "high": 12, "low": 10, "close": 12, "volume": 120, "source": "test"},
+                {"symbol": symbol, "date": "2026-01-01", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 100, "source": "test"},
+                {"symbol": symbol, "date": "2026-01-02", "open": 10, "high": 12, "low": 10, "close": 12, "volume": 120, "source": "test"},
             ]
         )
 
@@ -1756,8 +1757,8 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
     assert result["provider_rows_received"] == 2
     assert result["history_policy"] == "full_refresh"
     rows = loaders_owner.load_table_panel_data(config, "quotes").rows("quotes")
-    assert rows[0]["symbol"] == "XYZ"
-    assert float(rows[0]["price"]) == 12
+    requested = next(row for row in rows if row["symbol"] == "XYZ")
+    assert float(requested["price"]) == 12
 
 
 def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
@@ -1796,9 +1797,9 @@ def test_scoped_market_data_job_does_not_publish_global_market_state(
     monkeypatch.setattr(
         market_data,
         "fetch_prices",
-        lambda *_args: pd.DataFrame(
+        lambda symbol, *_args: pd.DataFrame(
             [{
-                "symbol": "XYZ", "date": "2026-01-02", "open": 10, "high": 12,
+                "symbol": symbol, "date": "2026-01-02", "open": 10, "high": 12,
                 "low": 10, "close": 12, "volume": 120, "source": "test",
             }]
         ),
@@ -1812,7 +1813,7 @@ def test_scoped_market_data_job_does_not_publish_global_market_state(
     result = update_market_data.run_for_config(config, symbols=["xyz"])
 
     assert result["status"] == "ok"
-    assert result["symbols"] == 1
+    assert result["symbols"] == 2  # requested symbol plus explicit QQQ feature dependency
     assert result["market_publication"] == {"status": "deferred", "reason": "scoped_refresh"}
 
 

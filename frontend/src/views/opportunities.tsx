@@ -1,3 +1,4 @@
+import { ReferenceSignalCard } from "@/components/market/ReferenceSignalCard";
 import { RefreshCw, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { components } from "@/generated/apiSchema";
@@ -71,7 +72,7 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
   const loadedCount = rows(table).length;
   const total = table?.count ?? loadedCount;
   const needle = query.trim().toLowerCase();
-  const researchRows = rankedRows.filter((row) => row.rationale?.trim() || row.countercase?.trim() || (row.presentation_state && row.presentation_state !== "research") || (row.selected_expression_kind && row.selected_expression_kind.toUpperCase() !== "CASH"));
+  const researchRows = rankedRows.filter((row) => row.reference_signal || row.rationale?.trim() || row.countercase?.trim() || (row.presentation_state && row.presentation_state !== "research") || (row.selected_expression_kind && row.selected_expression_kind.toUpperCase() !== "CASH"));
   const visibleRanks = (includeEmpty || needle ? rankedRows : researchRows).filter((row) =>
     `${row.ticker} ${row.company_name ?? ""} ${row.rationale ?? ""}`.toLowerCase().includes(needle) &&
     (lane === "all" || (row.presentation_state ?? "research") === lane)).slice().sort((a, b) =>
@@ -113,6 +114,7 @@ export function OpportunitiesPage({ data, loading, scopeStatus, onOpenTicker, on
       <div className="overflow-x-auto"><table className="w-full min-w-[1000px] text-left text-sm"><thead className="bg-muted/50 text-xs text-muted-foreground"><tr>{["Company / state", "Expression / horizon", "Entry and size", "Planned loss", "Lower-confidence net P&L", "Evidence / next step"].map(label => <th key={label} className="p-3">{label}</th>)}</tr></thead><tbody>{visibleRanks.map(row => {
         const plan = row.trade_plan;
         const terms = plan?.eligibility === "ACTIONABLE" && row.presentation_state !== "blocked";
+        if (row.reference_signal) return <tr key={row.rank_id} className="border-t border-border align-top"><td className="p-3"><Button variant="link" className="h-auto p-0 font-semibold" onClick={() => onOpenTicker(row.ticker)}>{row.ticker}</Button><p className="mt-1 text-xs text-muted-foreground">{row.company_name}</p><Button variant="link" className="mt-2 h-auto p-0 text-xs" onClick={() => onOpenTicker(row.ticker)}>Open signal →</Button></td><td className="p-3" colSpan={5}><ReferenceSignalCard signal={row.reference_signal} plan={plan} compact /></td></tr>;
         return <tr key={row.opportunity_episode_id} className="border-t border-border align-top">
           <td className="p-3"><Button variant="link" className="h-auto p-0 font-semibold" onClick={() => onOpenTicker(row.ticker)}>{row.ticker}</Button><p className="mt-1 text-xs text-muted-foreground">{row.company_name}</p><span className="mt-2 inline-block rounded border px-2 py-1 text-xs">{opportunityStateLabel(row.presentation_state)}</span>{row.trade_rank ? <p className="mt-1 text-xs">Published trade rank {row.trade_rank}</p> : null}</td>
           <td className="p-3"><p>{humanize(plan?.selected_expression_kind ?? row.selected_expression_kind, "Research only")}</p><p className="mt-1 text-xs text-muted-foreground">{row.horizon || "Horizon not specified"}</p></td>

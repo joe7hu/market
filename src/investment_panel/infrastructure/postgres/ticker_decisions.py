@@ -328,7 +328,7 @@ def _validate_persisted_stock_forecast(
         or row["evaluation_dossier_id"] is None
     ):
         raise ValueError("actionable stock path forecast lacks evaluation, trial, or dossier lineage")
-    if research_required and row["evaluation_dossier_id"] != row["dossier_trial_id"]:
+    if research_required and row["evaluation_trial_id"] != row["dossier_trial_id"]:
         raise ValueError("actionable stock path dossier and evaluation trial lineage mismatch")
     if research_required and (
         row["evaluation_artifact_id"] != row["model_artifact_id"]
@@ -352,6 +352,7 @@ class TickerDecisionRepository:
             "alpha_signals": payload.get("alpha_signals") or [],
             "opportunity_rank": payload.get("opportunity_rank"),
             "trade_plan": payload.get("trade_plan"),
+            "reference_signal": payload.get("reference_signal"),
         }
         with self.runtime.transaction(JOB_PROFILE) as connection:
             instrument = connection.execute(
@@ -2665,6 +2666,7 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "opportunity_episode": (
             row.get("opportunity_episode") if hasattr(row, "get") else None
         ) or None,
+        "reference_signal": manifest.get("reference_signal"),
         "instrument_state_snapshot": manifest.get("instrument_state_snapshot"),
         "alpha_signals": manifest.get("alpha_signals") or [],
         "opportunity_rank": manifest.get("opportunity_rank"),

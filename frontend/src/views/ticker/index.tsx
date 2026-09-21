@@ -66,7 +66,6 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
       {dossier && !notFound ? (
         <>
           <p className="text-xs text-muted-foreground">The header price is a research reference at the displayed observation time. Trade entry prices and option quotes must pass the separate trade checks below.</p>
-          <ThesisPanel thesis={dossier.thesis} />
           {ticker?.ticker_decision ? (
             <TickerDecisionPanel
               decision={ticker.ticker_decision}
@@ -85,6 +84,7 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
               }}
             />
           ) : <DecisionPanel brief={dossier.decision} />}
+          <details><summary className="cursor-pointer text-sm font-medium">Investment thesis and supporting research</summary><ThesisPanel thesis={dossier.thesis} /></details>
           <EvidencePanel sources={dossier.sources} thesisEvidence={Array.isArray(dossier.thesis.state?.source_evidence) ? dossier.thesis.state.source_evidence as import("@/types").RowRecord[] : []} />
           <FundamentalsPanel fundamentals={dossier.fundamentals} />
           <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.7fr)]">
