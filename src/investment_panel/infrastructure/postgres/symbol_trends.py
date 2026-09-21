@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -71,6 +71,8 @@ def refresh_symbol_trend_features(
                    FROM catalog.instrument WHERE symbol = ANY(%s) ORDER BY symbol""",
                 [as_of, sorted(set(symbols) | {"QQQ"})],
             ).fetchall()]
+    for instrument in instruments:
+        instrument["symbol_as_of"] = instrument["symbol_as_of"].astimezone(UTC)
     absent = sorted(set(symbols or ()) - {row["symbol"] for row in instruments})
     universe_size = max((int(row.get("universe_size") or 0) for row in instruments), default=0)
     qqq = next((row for row in instruments if row["symbol"] == "QQQ"), None)
