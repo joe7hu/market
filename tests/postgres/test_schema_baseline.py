@@ -101,6 +101,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260919_0025_paper_nav.py',
         '20260920_0026_options_radar_binding_repair.py',
         '20260920_0027_options_radar_orphan_candidate_repair.py',
+        '20260920_0028_market_app_setting_privileges.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
@@ -117,6 +118,18 @@ def test_known_forward_revision_upgrades_to_head(postgres_dsn):
     upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION
+
+
+def test_setting_privilege_migration_restores_runtime_write_access(postgres_dsn):
+    upgrade_database(postgres_dsn, '20260920_0027')
+    with psycopg.connect(postgres_dsn) as connection:
+        connection.execute('REVOKE INSERT,UPDATE ON TABLE app.setting FROM market_app')
+        connection.commit()
+    upgrade_database(postgres_dsn)
+    with psycopg.connect(postgres_dsn) as connection:
+        connection.execute('SET LOCAL ROLE market_app')
+        assert connection.execute("SELECT has_table_privilege(current_user, 'app.setting', 'INSERT')").fetchone()[0]
+        assert connection.execute("SELECT has_table_privilege(current_user, 'app.setting', 'UPDATE')").fetchone()[0]
 
 
 def test_previous_strategy_binding_revision_upgrades_to_head(postgres_dsn):

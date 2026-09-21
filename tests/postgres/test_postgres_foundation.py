@@ -172,6 +172,8 @@ def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(
                        has_table_privilege('market_app', 'app.notification_outbox', 'SELECT'),
                        has_table_privilege('market_app', 'ingest.payload', 'SELECT'),
                        has_table_privilege('market_app', 'app.setting', 'SELECT'),
+                       has_table_privilege('market_app', 'app.setting', 'INSERT'),
+                       has_table_privilege('market_app', 'app.setting', 'UPDATE'),
                        has_table_privilege('market_app', 'app.publication_content_item', 'SELECT'),
                        has_table_privilege('market_app', 'analysis.option_outcome', 'SELECT')
                 """
@@ -179,7 +181,7 @@ def test_empty_ci_style_migration_bootstraps_only_a_safe_application_login(
 
         assert tuple(role) == (True, False, False, False, False, False, False)
         assert tuple(membership) == (True, False)
-        assert tuple(privileges) == (True, False, *([True] * 31))
+        assert tuple(privileges) == (True, False, *([True] * 33))
     finally:
         with closing(psycopg.connect(postgres_dsn)) as connection:
             connection.execute(

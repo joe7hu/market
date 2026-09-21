@@ -386,7 +386,7 @@ GRANT SELECT,INSERT,UPDATE ON TABLE app.publication_payload TO market_app;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE app.publication_content_item TO market_app;
 
-GRANT SELECT ON TABLE app.setting TO market_app;
+GRANT SELECT,INSERT,UPDATE ON TABLE app.setting TO market_app;
 
 GRANT SELECT ON TABLE app.thesis TO market_app;
 
