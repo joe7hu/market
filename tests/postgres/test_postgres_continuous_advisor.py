@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 import pytest
 
-from investment_panel.core.continuous_advisor import build_evidence_packet, packet_fingerprint
+from investment_panel.core.continuous_advisor import build_evidence_packet, packet_fingerprint, packet_is_replay_safe
 from investment_panel.infrastructure.postgres.authority import runtime_for_url
 from investment_panel.infrastructure.postgres.continuous_advisor import ContinuousAdvisorRepository
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
@@ -100,6 +100,25 @@ def test_continuous_records_are_idempotent_and_claims_are_immutable(postgres_dsn
     with pytest.raises(psycopg.Error):
         with psycopg.connect(postgres_dsn) as connection:
             connection.execute("UPDATE analysis.continuous_advisor_packet SET blockers = '[]' WHERE id = %s", [packet["id"]])
+
+
+def test_packet_with_integral_float_matches_postgres_fingerprint(postgres_dsn: str):
+    upgrade_database(postgres_dsn)
+    repository = ContinuousAdvisorRepository(runtime_for_url(postgres_dsn))
+    with psycopg.connect(postgres_dsn) as connection:
+        connection.execute("INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('NUMERIC', 'NUMERIC', 'equity')")
+    packet = _packet("NUMERIC")
+    packet["portfolio_exposure"] = {"quantity": 260.0}
+    packet["fingerprint"] = packet_fingerprint(packet)
+
+    stored = repository.store_packet(packet)
+
+    assert stored["fingerprint"] == packet["fingerprint"]
+    with psycopg.connect(postgres_dsn) as connection:
+        persisted = connection.execute(
+            "SELECT packet FROM analysis.continuous_advisor_packet WHERE id = %s", [stored["id"]]
+        ).fetchone()[0]
+    assert packet_is_replay_safe(persisted)
 
 
 def test_ticker_brief_keeps_failed_run_provenance_without_success(postgres_dsn: str):

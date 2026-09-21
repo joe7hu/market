@@ -669,7 +669,8 @@ class AnalysisRepository:
                        feature.momentum_20d, feature.relative_strength_20d,
                        feature.relative_strength_60d, feature.kaufman_er_20d,
                        feature.price, feature.ma_50, feature.ma_200, feature.atr_pct,
-                       feature.trend_state, feature.data_quality_status, feature.metrics,
+                       feature.trend_state, feature.data_quality_status, feature.reason_codes,
+                       feature.metrics,
                        instrument.asset_class
                 FROM analysis.symbol_feature feature
                 JOIN analysis.run analysis_run ON analysis_run.id = feature.run_id
@@ -681,7 +682,6 @@ class AnalysisRepository:
                   AND analysis_run.input_cutoff <= %s
                   AND analysis_run.finished_at IS NOT NULL
                   AND analysis_run.finished_at <= %s
-                  AND feature.data_quality_status = 'complete'
                   AND analysis_run.status IN ('succeeded', 'partial')
                 ORDER BY feature.as_of DESC, analysis_run.input_cutoff DESC, feature.id DESC
                 LIMIT 1

@@ -16,7 +16,6 @@ import re
 from typing import Any, Mapping
 from uuid import UUID
 
-from investment_panel.domain.portfolio.contracts import canonical_content_hash
 from investment_panel.domain.decision import assessment_quote
 from investment_panel.infrastructure.postgres.instruments import canonical_symbol
 
@@ -226,7 +225,10 @@ def build_evidence_packet(
 def packet_fingerprint(packet: Mapping[str, Any]) -> str:
     """Hash stable packet facts while excluding clock/ingestion bookkeeping."""
 
-    return canonical_content_hash(_stable(packet))
+    payload = _packet_canonical(_stable(packet))
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(", ", ": ")).encode()
+    ).hexdigest()
 
 
 def packet_is_replay_safe(packet: Mapping[str, Any], cutoff: datetime | None = None) -> bool:
@@ -927,6 +929,19 @@ def _stable(value: Any) -> Any:
     if isinstance(value, list):
         return [_stable(item) for item in value]
     return _jsonable(value)
+
+
+def _packet_canonical(value: Any) -> Any:
+    """Match PostgreSQL JSONB key ordering without changing numeric scale."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _packet_canonical(value[key])
+            for key in sorted(value, key=lambda key: (len(str(key)), str(key)))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_packet_canonical(item) for item in value]
+    return value
 
 
 def _jsonable(value: Any) -> Any:

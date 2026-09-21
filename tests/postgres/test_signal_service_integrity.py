@@ -129,6 +129,28 @@ def test_failed_feature_run_is_visible_as_failure_not_hidden_by_older_good_featu
     assert "update_market_data" in status["decision_service"]["instruments"][0]["owner_jobs"]
 
 
+def test_maturing_feature_is_published_as_wait_not_failure(runtime, migrated_postgres_dsn, monkeypatch):
+    seed_history(runtime, {"QQQ": False})
+    config = replace(typed_config(migrated_postgres_dsn), watchlist=[{"symbol": "QQQ", "asset_class": "etf"}])
+    repository = AnalysisRepository(runtime)
+    now = datetime.now(UTC)
+    run = repository.start_run("test-maturing-feature", input_cutoff=now, code_version="test", inputs={})
+    with runtime.transaction() as connection:
+        connection.execute("""INSERT INTO analysis.symbol_feature
+            (run_id, instrument_id, as_of, feature_set, feature_version, trend_state, data_quality_status, reason_codes, metrics)
+            SELECT %s, id, %s, 'daily_trend', 'daily-trend-v1', 'unavailable', 'unavailable', %s, %s
+            FROM catalog.instrument WHERE symbol = 'QQQ'""", [run, now, ["insufficient_price_history"], Jsonb({"bar_count": 199, "as_of_date": now.date().isoformat()})])
+    repository.finish_run(run, "succeeded", {"deferred_count": 1})
+    monkeypatch.setattr(ticker_decisions, "load_config", lambda _: config)
+    monkeypatch.setattr(ticker_decisions, "runtime_for_config", lambda _: runtime)
+
+    published = ticker_decisions.publish("fixture", symbols=["QQQ"], refresh_outcomes=False)
+
+    assert published["failed_count"] == 0, published
+    signal = TickerDecisionRepository(runtime).latest("QQQ").reference_signal
+    assert signal.action == "WAIT" and signal.failure_code is None
+
+
 def test_crypto_candle_observation_is_next_midnight_not_synthetic_same_day(runtime):
     seed_history(runtime, {"BTC-USD": True})
     now = datetime.now(UTC)
