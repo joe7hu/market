@@ -1,32 +1,23 @@
 name: review-source-snapshot
-
 on:
   pull_request:
     branches: [main]
     paths: [.github/workflows/review-snapshot.yml]
-
 permissions:
   contents: read
-
 jobs:
   snapshot:
+    if: github.repository == 'joe7hu/market' && github.event.pull_request.number == 38
     runs-on: ubuntu-24.04
     steps:
-      - name: Extract PostgreSQL 18 verification runtime
-        run: |
-          mkdir -p /tmp/review-postgres
-          docker run --rm --entrypoint bash -v /tmp/review-postgres:/out postgres:18-trixie -ec '
-            mkdir -p /out/postgresql /out/pg-libs /out/pg-share
-            cp -a /usr/lib/postgresql/18 /out/postgresql/
-            cp -a /usr/share/postgresql/18 /out/pg-share/
-            for f in /usr/lib/postgresql/18/bin/{postgres,initdb,pg_ctl,psql}; do
-              ldd "$f" | awk "/=> \\// {print \$3}" | xargs -r -I{} cp -L {} /out/pg-libs/
-            done
-          '
-          tar -C /tmp/review-postgres -czf /tmp/review-postgres18.tar.gz .
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Archive tracked source only
+        run: git archive --format=tar HEAD > /tmp/market-final-source.tar
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: market-review-postgres18
-          path: /tmp/review-postgres18.tar.gz
+          name: market-final-source
+          path: /tmp/market-final-source.tar
           retention-days: 1
-          compression-level: 0
