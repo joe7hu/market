@@ -112,9 +112,7 @@ def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
     for index, ts in enumerate(timestamps):
         close = value_at(quote.get("close"), index)
         opened, high, low, volume = (value_at(quote.get(key), index) for key in ("open", "high", "low", "volume"))
-        if any(value is None or not isfinite(value) for value in (opened, high, low, close, volume)):
-            continue
-        if not (0 < low <= min(opened, close) <= max(opened, close) <= high) or volume < 0:
+        if not valid_ohlcv(opened, high, low, close, volume):
             continue
         trading_date = datetime.fromtimestamp(ts, UTC).astimezone(market_timezone).date()
         is_complete = trading_date < market_date or (
@@ -137,15 +135,47 @@ def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
         )
     if not rows:
         raise ValueError(f"No Yahoo chart rows for {symbol}")
-    return pd.DataFrame(rows).tail(lookback_days)
+    frame = pd.DataFrame(rows).tail(lookback_days)
+    try:
+        regular_close = datetime.fromtimestamp(int(regular_session_end), UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return frame
+    if (
+        regular_close <= requested_at
+        and regular_close.astimezone(market_timezone).date() == market_date
+        and frame["date"].max() < market_date
+    ):
+        try:
+            fallback = fetch_yfinance(symbol, lookback_days, market_date=market_date)
+        except Exception:  # A secondary provider must not discard primary evidence.
+            return frame
+        terminal = fallback[fallback["date"] == market_date].copy()
+        if len(terminal) != 1:
+            return frame
+        candidate = terminal.iloc[0]
+        try:
+            opened, high, low, close, volume = (float(candidate[key]) for key in ("open", "high", "low", "close", "volume"))
+        except (TypeError, ValueError):
+            return frame
+        if not valid_ohlcv(opened, high, low, close, volume):
+            return frame
+        terminal["is_complete"] = True
+        return pd.concat([frame, terminal], ignore_index=True).tail(lookback_days)
+    return frame
 
 
-def fetch_yfinance(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
+def fetch_yfinance(
+    symbol: str,
+    lookback_days: int = 260,
+    *,
+    market_date: date | None = None,
+) -> pd.DataFrame:
     import yfinance as yf
 
-    end = date.today() + timedelta(days=1)
+    end = (market_date or date.today()) + timedelta(days=1)
     start = end - timedelta(days=lookback_days * 2)
-    frame = yf.download(symbol, start=start.isoformat(), end=end.isoformat(), progress=False, auto_adjust=False)
+    provider_symbol = YAHOO_SYMBOL_ALIASES.get(symbol, symbol)
+    frame = yf.download(provider_symbol, start=start.isoformat(), end=end.isoformat(), progress=False, auto_adjust=False)
     if frame.empty:
         raise ValueError(f"No yfinance rows for {symbol}")
     frame = frame.reset_index()
@@ -208,9 +238,10 @@ def normalize_price_frame(symbol: str, frame: pd.DataFrame, source: str) -> pd.D
         "high": "high",
         "low": "low",
         "close": "close",
-        "adj_close": "close",
         "volume": "volume",
     }
+    if "close" not in frame.columns and "adj_close" in frame.columns:
+        column_map["adj_close"] = "close"
     normalized = frame.rename(columns={key: value for key, value in column_map.items() if key in frame.columns})
     required = ["date", "open", "high", "low", "close", "volume"]
     missing = [column for column in required if column not in normalized.columns]
@@ -242,3 +273,15 @@ def value_at(values: list[Any] | None, index: int) -> float | None:
     if not values or index >= len(values) or values[index] is None:
         return None
     return float(values[index])
+
+
+def valid_ohlcv(
+    opened: float | None,
+    high: float | None,
+    low: float | None,
+    close: float | None,
+    volume: float | None,
+) -> bool:
+    if any(value is None or not isfinite(value) for value in (opened, high, low, close, volume)):
+        return False
+    return bool(0 < low <= min(opened, close) <= max(opened, close) <= high and volume >= 0)
