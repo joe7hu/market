@@ -44,3 +44,8 @@ def test_outcome_refresh_timeout_matches_job_database_profile() -> None:
 def test_outcome_refresh_uses_a_five_minute_default(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_SYMBOL_OUTCOME_REFRESH_SECONDS", raising=False)
     assert job_policy.scheduler_intervals()["refresh_symbol_decision_outcomes"] == 300
+
+
+def test_stock_alpha_refresh_policy_matches_its_scheduler_cadence() -> None:
+    definition = job_policy.job_definition("run_stock_alpha_walk_forward")
+    assert definition.freshness_seconds == 900

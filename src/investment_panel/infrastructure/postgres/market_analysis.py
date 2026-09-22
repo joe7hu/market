@@ -233,8 +233,29 @@ def load_market_inputs(
             optional_errors["crypto_volume_evidence"] = "read_failed"
         try:
             with connection.transaction():
-                phase2_rows = [dict(row) for row in connection.execute(
-                    """SELECT * FROM (SELECT observation.observation_id, observation.field_name, observation.dimension,
+                phase2_source_rows = [dict(row) for row in connection.execute(
+                    """SELECT source.id AS source_id, lifecycle.enabled AS source_enabled,
+                              lifecycle.operational_state AS source_operational_state,
+                              source.capabilities->>'phase2_status' AS phase2_status
+                       FROM ingest.source source
+                       JOIN LATERAL (
+                           SELECT history.enabled, history.operational_state
+                           FROM ingest.source_lifecycle_history history
+                           WHERE history.source_id = source.id AND history.effective_at <= %s
+                           ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
+                       ) lifecycle ON true
+                       WHERE source.family = 'phase2' AND source.created_at <= %s""",
+                    [as_of, as_of],
+                ).fetchall()]
+                active_phase2_sources = sorted(
+                    str(row["source_id"])
+                    for row in phase2_source_rows
+                    if row.get("source_enabled") and row.get("source_operational_state") == "active"
+                )
+                phase2_rows = []
+                if active_phase2_sources:
+                    phase2_rows = [dict(row) for row in connection.execute(
+                        """SELECT * FROM (SELECT observation.observation_id, observation.field_name, observation.dimension,
                               observation.asset_class, observation.source_id, observation.source_version,
                               observation.value, observation.unit, observation.ingest_run_id::text AS ingest_run_id,
                               observation.payload_id, observation.content_hash, observation.parent_snapshot_id,
@@ -257,27 +278,14 @@ def load_market_inputs(
                            ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
                        ) lifecycle ON lifecycle.enabled = true AND lifecycle.operational_state = 'active'
                        JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
-                       WHERE observation.observed_at <= %s AND observation.available_at <= %s
+                       WHERE observation.source_id = ANY(%s)
+                         AND observation.observed_at <= %s AND observation.available_at <= %s
                          AND ingest_run.status IN ('succeeded', 'partial')
                          AND ingest_run.finished_at IS NOT NULL AND ingest_run.finished_at <= %s
                        ) recent WHERE recent_rank <= 128
                        ORDER BY dimension, field_name, asset_class, source_id, observed_at, observation_id""",
-                    [as_of, as_of, as_of, as_of],
-                ).fetchall()]
-                phase2_source_rows = [dict(row) for row in connection.execute(
-                    """SELECT source.id AS source_id, lifecycle.enabled AS source_enabled,
-                              lifecycle.operational_state AS source_operational_state,
-                              source.capabilities->>'phase2_status' AS phase2_status
-                       FROM ingest.source source
-                       JOIN LATERAL (
-                           SELECT history.enabled, history.operational_state
-                           FROM ingest.source_lifecycle_history history
-                           WHERE history.source_id = source.id AND history.effective_at <= %s
-                           ORDER BY history.effective_at DESC, history.id DESC LIMIT 1
-                       ) lifecycle ON true
-                       WHERE source.family = 'phase2' AND source.created_at <= %s""",
-                    [as_of, as_of],
-                ).fetchall()]
+                        [as_of, active_phase2_sources, as_of, as_of, as_of],
+                    ).fetchall()]
         except Exception:
             logger.exception("Optional advanced Market observations unavailable")
             phase2_rows, phase2_source_rows = [], []

@@ -127,6 +127,46 @@ def test_advanced_observations_keep_recent_each_series_beyond_global_500(runtime
     assert all(row["source_id"] == "treasury" for row in rows)
 
 
+def test_standby_phase2_sources_skip_the_observation_scan(runtime):
+    """Standby integrations describe absence without spending the API read budget."""
+
+    class ConnectionSpy:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, query, *args, **kwargs):
+            assert "FROM raw.market_observation observation" not in str(query)
+            return self.connection.execute(query, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    class RuntimeSpy:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def read(self):
+            wrapped = self.wrapped
+
+            class ReadContext:
+                def __enter__(self):
+                    self.context = wrapped.read()
+                    return ConnectionSpy(self.context.__enter__())
+
+                def __exit__(self, *args):
+                    return self.context.__exit__(*args)
+
+            return ReadContext()
+
+    ingestion = IngestionRepository(runtime)
+    ingestion.register_source("standby-phase2", name="Standby phase 2", family="phase2", kind="test", operational_state="standby")
+
+    data = load_market_inputs(RuntimeSpy(runtime), as_of=datetime.now(UTC), benchmark_symbols=[])
+
+    assert data["phase2_rows"] == []
+    assert "advanced_observations" not in data["optional_errors"]
+
+
 def test_budget_limited_manager_reaches_unchecked_tail_of_the_same_batch(runtime, monkeypatch):
     """Batch claims are not evidence of checks, even if every row fits the batch."""
     from investment_panel.infrastructure.postgres import options_paper_execution as owner

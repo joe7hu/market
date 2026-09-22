@@ -37,6 +37,7 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
         "MARKET_ARCO_REFRESH_SECONDS",
         "MARKET_MARKET_DATA_REFRESH_SECONDS",
         "MARKET_MUNGERMODE_REFRESH_SECONDS",
+        "MARKET_STOCK_ALPHA_REFRESH_SECONDS",
     ):
         monkeypatch.delenv(variable, raising=False)
 
@@ -47,7 +48,7 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
     assert intervals["update_arco_data"] == 14400
     assert intervals["update_market_data"] == 3600
     assert intervals["update_phase2_sources"] == 86400
-    assert intervals["run_stock_alpha_walk_forward"] == 86400
+    assert intervals["run_stock_alpha_walk_forward"] == 900
     assert intervals["update_market_valuations"] == 86400
 
 
@@ -370,6 +371,26 @@ def test_market_data_does_not_enqueue_a_disabled_feature_stage() -> None:
         now=now, wall_now=next_due_wall["update_market_data"],
     )
     assert "refresh_symbol_features" not in next_due
+    assert not scheduler._pipeline_waiting_on_upstream(
+        "refresh_decision_models", next_due, {}, now=now,
+    )
+
+
+def test_assessment_quote_refresh_enqueues_decision_publication() -> None:
+    now = 100.0
+    wall_now = datetime(2026, 9, 21, 16, tzinfo=ZoneInfo("America/New_York"))
+    next_due = {
+        "refresh_assessment_inputs": now + 300,
+        "refresh_decision_models": now + 3600,
+    }
+    next_due_wall = {job: wall_now for job in next_due}
+
+    scheduler._schedule_pipeline_successor(
+        "refresh_assessment_inputs", {"status": "succeeded"}, next_due, next_due_wall,
+        now=now, wall_now=wall_now,
+    )
+
+    assert next_due["refresh_decision_models"] == now
     assert not scheduler._pipeline_waiting_on_upstream(
         "refresh_decision_models", next_due, {}, now=now,
     )

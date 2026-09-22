@@ -44,11 +44,16 @@ PRIORITY_JOBS = FAST_DATABASE_JOBS | {
 DECISION_PIPELINE_SUCCESSORS = {
     "update_market_data": "refresh_symbol_features",
     "refresh_symbol_features": "refresh_decision_models",
+    "refresh_assessment_inputs": "refresh_decision_models",
 }
-DECISION_PIPELINE_UPSTREAMS = {
-    successor: job for job, successor in DECISION_PIPELINE_SUCCESSORS.items()
-}
-DECISION_PIPELINE_STAGES = (*DECISION_PIPELINE_SUCCESSORS, "refresh_decision_models")
+DECISION_PIPELINE_UPSTREAMS: dict[str, tuple[str, ...]] = {}
+for _upstream, _successor in DECISION_PIPELINE_SUCCESSORS.items():
+    DECISION_PIPELINE_UPSTREAMS[_successor] = (
+        *DECISION_PIPELINE_UPSTREAMS.get(_successor, ()), _upstream,
+    )
+# The startup chain is linear. Assessment quotes retain their regular cadence
+# and independently republish decisions after each successful refresh.
+DECISION_PIPELINE_STAGES = ("update_market_data", "refresh_symbol_features", "refresh_decision_models")
 _scheduler_semaphore: asyncio.Semaphore | None = None
 _slow_job_semaphore: asyncio.Semaphore | None = None
 _active_jobs: dict[str, float] = {}
@@ -168,13 +173,14 @@ def _pipeline_waiting_on_upstream(
     *,
     now: float,
 ) -> bool:
-    """Keep the daily source -> feature -> decision chain point-in-time ordered."""
+    """Keep refreshed decision inputs point-in-time ordered."""
 
-    upstream = DECISION_PIPELINE_UPSTREAMS.get(job)
-    while upstream:
+    upstreams = list(DECISION_PIPELINE_UPSTREAMS.get(job, ()))
+    while upstreams:
+        upstream = upstreams.pop()
         if upstream in in_flight or next_due.get(upstream, float("inf")) <= now:
             return True
-        upstream = DECISION_PIPELINE_UPSTREAMS.get(upstream)
+        upstreams.extend(DECISION_PIPELINE_UPSTREAMS.get(upstream, ()))
     return False
 
 
@@ -214,7 +220,7 @@ def _schedule_pipeline_successor(
     now: float,
     wall_now: datetime,
 ) -> None:
-    """Run a newly refreshed daily bar through its dependent decision stages."""
+    """Run a refreshed decision input through its dependent decision stages."""
 
     successor = DECISION_PIPELINE_SUCCESSORS.get(job)
     source_ready = bool(result) and result.get("status") in {"succeeded", "partial"}
