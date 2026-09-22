@@ -40,6 +40,11 @@ BASELINE_MODELS = (
 )
 
 
+def service_blocking_experiment_incidents(incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep an unpriceable research mark visible without calling its worker down."""
+    return [incident for incident in incidents if incident.get("reason") != "experiment_quote_overdue"]
+
+
 def configured_workflow_jobs(config: AppConfig) -> tuple[str, ...]:
     """Report only workflow stages enabled for this workstation."""
     excluded: set[str] = set()
@@ -357,7 +362,7 @@ class WorkstationRepository:
             required.add("run_continuous_advisor_replay")
         if collection.get("active", 0):
             required.add("refresh_paper_quotes")
-        for incident in collection.get("incidents", []):
+        for incident in service_blocking_experiment_incidents(collection.get("incidents", [])):
             blockers.append({"capability": "Paper experiments", "reason": f"{incident.get('symbol', 'Collection')}: {incident['reason']}",
                 "action": "Resume the named worker and verify its next quote-backed mark or terminal outcome.",
                 "href": "/portfolio/paper", "job": incident["job"]})

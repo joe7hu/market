@@ -14,7 +14,10 @@ from investment_panel.infrastructure.postgres.panel_publications import publishe
 from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
 from investment_panel.infrastructure.postgres.phase2 import Phase2Repository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
-from investment_panel.infrastructure.postgres.workstation import WorkstationRepository
+from investment_panel.infrastructure.postgres.workstation import (
+    WorkstationRepository,
+    service_blocking_experiment_incidents,
+)
 from investment_panel.domain.market.phase2 import PITObservation
 
 
@@ -47,6 +50,15 @@ def test_status_uses_real_queries_and_distinguishes_no_data_from_failed_read(run
     assert result["failed_reads"] == []
     assert result["market"]["status"] == "not_published"
     assert result["paper"]["status"] == "available" and result["paper"]["counts"] == {}
+
+
+def test_unpriceable_experiment_mark_does_not_call_a_healthy_worker_down():
+    incidents = [
+        {"reason": "experiment_quote_overdue", "job": "refresh_paper_quotes"},
+        {"reason": "experiment_management_overdue", "job": "process_options_paper_orders"},
+    ]
+
+    assert service_blocking_experiment_incidents(incidents) == [incidents[1]]
 
 
 def test_funded_nav_is_observed_once_not_synthesized_from_research(runtime):
