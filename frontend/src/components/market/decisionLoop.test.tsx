@@ -34,6 +34,10 @@ describe("decision loop presentation", () => {
     const html = renderToStaticMarkup(<CapitalDecision missingIsFailure resolution={{ primary_blocker: "account_snapshot_missing" }} />);
     expect(html).toContain("TRADING PAUSED"); expect(html).toContain("refresh_decision_models"); expect(html).toContain('href="/health"');
   });
+  it("keeps a published no-trade decision out of the publication-failure state", () => {
+    const html = renderToStaticMarkup(<CapitalDecision resolution={{ lifecycle: "PUBLISHED", primary_blocker: "trade_plan_missing" }} />);
+    expect(html).toContain("WAIT — retain cash"); expect(html).not.toContain("publication failed");
+  });
   it("plots zero honestly and breaks history across quote gaps and invalid clocks", () => {
     const segments = experimentSegments([...events, event("mark", "bad", 99)]);
     expect(segments.map(segment => segment.map(point => point.net_pnl))).toEqual([[-3.3, 0], [58.7]]);
