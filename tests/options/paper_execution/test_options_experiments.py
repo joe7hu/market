@@ -1488,3 +1488,126 @@ def test_funded_paper_account_stages_without_broker_cash(experiment_context, app
         assert account['nav'] <= 100000
     finally:
         application.close()
+
+
+def test_experiment_event_journal_follows_real_worker_entry_marks_exit_and_not_account_nav(experiment_context, application_postgres_dsn):
+    from investment_panel.infrastructure.postgres.experiment_events import experiment_history, record_experiment_event, experiment_progress
+    from investment_panel.infrastructure.postgres.paper_workbench import PaperWorkbenchRepository
+    import psycopg
+    runtime, ingestion, now, _parent, _candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    refresh_options_radar(runtime, source_id="test-experiment", code_version="event-journal-test")
+    with runtime.read() as connection:
+        shadow_id = connection.execute("SELECT id FROM analysis.shadow_trade").fetchone()["id"]
+    application = DatabaseRuntime(application_postgres_dsn)
+    application.open()
+    try:
+        _capture(runtime, ingestion, now + timedelta(seconds=20))
+        assert advance_experiment_shadows(application, now=now + timedelta(seconds=21))["entered"] == 1
+        # The entry quote remains a recorded valuation, but cannot close the position.
+        assert advance_experiment_shadows(application, now=now + timedelta(seconds=22))["closed"] == 0
+        history = experiment_history(application, observation_id=str(shadow_id), now=now + timedelta(seconds=23))
+        assert [row["kind"] for row in history["events"]] == ["entry"]
+        entry = history["events"][0]
+        assert float(entry["price"]) == .5
+        assert float(entry["net_pnl"]) == pytest.approx(-3.3)  # Spread $2 + round-trip fees $1.30.
+        assert float(entry["fees"]) == pytest.approx(1.3)
+        assert entry["quote_observed_at"] == now + timedelta(seconds=20)
+        progress = experiment_progress(application, now=now + timedelta(seconds=23))
+        assert progress["counts"] == {"entered": 1}
+        assert progress["active"] == 1 and progress["incidents"] == []
+        assert progress["management_status"] in {"collecting", "market_closed"}
+        stalled = experiment_progress(application, now=now + timedelta(days=4))
+        assert stalled["management_status"] == "overdue"
+        assert {item["reason"] for item in stalled["incidents"]} == {"experiment_management_overdue", "experiment_quote_overdue"}
+        assert {item["job"] for item in stalled["incidents"]} == {"process_options_paper_orders", "refresh_paper_quotes"}
+        with application.read() as connection:
+            assert connection.execute("SELECT pending_entry_reason FROM analysis.shadow_trade WHERE id=%s", [shadow_id]).fetchone()["pending_entry_reason"] is None
+            assert connection.execute("SELECT count(*) AS n FROM app.paper_order").fetchone()["n"] == 0
+        # Storage enforces append-only application access, not merely a UI convention.
+        for verb in ("UPDATE analysis.option_experiment_event SET reason='rewrite'", "DELETE FROM analysis.option_experiment_event"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                with application.transaction() as connection:
+                    connection.execute(verb)
+        _capture(runtime, ingestion, now + timedelta(seconds=40), bid=.60, ask=.62)
+        advance_experiment_shadows(application, now=now + timedelta(seconds=41))
+        advance_experiment_shadows(application, now=now + timedelta(seconds=42))
+        history = experiment_history(application, observation_id=str(shadow_id), now=now + timedelta(seconds=43))
+        assert [row["kind"] for row in history["events"]] == ["entry", "mark"]
+        assert float(history["events"][-1]["net_pnl"]) == pytest.approx(8.7)
+        # A newly ingested copy of the same tick cannot manufacture another mark.
+        with application.transaction() as connection:
+            mark = history["events"][-1]
+            quotes = [{**quote, "quote_id": "recaptured", "available_at": now + timedelta(seconds=43)} for quote in mark["evidence"]["quotes"]]
+            record_experiment_event(connection, shadow_id=shadow_id, kind="mark", observed_at=now + timedelta(seconds=44),
+                quotes=quotes, price=.60, net_pnl=8.7, net_return=8.7/50, fees=1.3)
+        _capture(runtime, ingestion, now + timedelta(seconds=60), bid=1.1, ask=1.12)
+        assert advance_experiment_shadows(application, now=now + timedelta(seconds=61))["closed"] == 1
+        history = experiment_history(application, observation_id=str(shadow_id), now=now + timedelta(seconds=62))
+        assert [row["kind"] for row in history["events"]] == ["entry", "mark", "exit"]
+        assert float(history["events"][-1]["net_pnl"]) == pytest.approx(58.7)
+        from investment_panel.api.response_contracts import PaperObservationHistory
+        transport = PaperObservationHistory.model_validate(history).model_dump(mode="json")
+        assert transport["events"][-1]["net_pnl"] == pytest.approx(58.7)
+        assert transport["events"][-1]["quote_observed_at"]
+        row = PaperWorkbenchRepository(application).observations(status="closed")["rows"][0]
+        assert row["mark_status"] == "realized" and row["net_pnl"] == pytest.approx(58.7)
+        assert "outcome evaluator" in row["required_next_action"]
+    finally:
+        application.close()
+
+
+def test_experiment_journal_gaps_and_atomic_rollback_never_create_fake_pnl(experiment_context):
+    from investment_panel.infrastructure.postgres.experiment_events import experiment_history, record_experiment_event
+    runtime, ingestion, now, _parent, _candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    refresh_options_radar(runtime, source_id="test-experiment", code_version="event-gap-test")
+    _capture(runtime, ingestion, now + timedelta(seconds=20))
+    advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))
+    with runtime.read() as connection:
+        shadow_id = connection.execute("SELECT id FROM analysis.shadow_trade").fetchone()["id"]
+    advance_experiment_shadows(runtime, now=now + timedelta(seconds=300))
+    history = experiment_history(runtime, observation_id=str(shadow_id), now=now + timedelta(seconds=301))
+    assert history["events"][-1]["kind"] == "mark_gap"
+    assert history["events"][-1]["net_pnl"] is None
+    with pytest.raises(RuntimeError, match="rollback"):
+        with runtime.transaction() as connection:
+            record_experiment_event(connection, shadow_id=shadow_id, kind="mark_gap", observed_at=now + timedelta(seconds=305), quotes=[], reason="transaction_test")
+            raise RuntimeError("rollback")
+    history = experiment_history(runtime, observation_id=str(shadow_id), now=now + timedelta(seconds=306))
+    assert not any(row["reason"] == "transaction_test" for row in history["events"])
+    bounded = experiment_history(runtime, observation_id=str(shadow_id), now=now + timedelta(seconds=306), limit=1)
+    assert bounded["truncated"] and len(bounded["events"]) == 1
+    # Unknown observation and future/noncausal quote data remain rejected.
+    assert experiment_history(runtime, observation_id="00000000-0000-0000-0000-000000000000") is None
+    with runtime.transaction() as connection:
+        with pytest.raises(ValueError, match="causal"):
+            record_experiment_event(connection, shadow_id=shadow_id, kind="mark", observed_at=now,
+                quotes=[{"observed_at": now + timedelta(seconds=1)}], price=1, net_pnl=1, net_return=.1, fees=1.3)
+
+
+def test_gap_deduplication_keeps_recovered_then_failed_transitions(experiment_context):
+    from investment_panel.infrastructure.postgres.experiment_events import experiment_history, record_experiment_event
+    runtime, ingestion, now, _parent, _candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    refresh_options_radar(runtime, source_id="test-experiment", code_version="gap-transition-test")
+    _capture(runtime, ingestion, now + timedelta(seconds=20))
+    advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))
+    with runtime.read() as connection:
+        shadow_id = connection.execute("SELECT id FROM analysis.shadow_trade").fetchone()["id"]
+    history = experiment_history(runtime, observation_id=str(shadow_id), now=now + timedelta(seconds=22))
+    # All following checks occur in one bucket. Repeated failed checks are
+    # idempotent, but a recovery makes the subsequent outage a different gap.
+    base = (now + timedelta(minutes=10)).replace(second=0, microsecond=0)
+    base = base.replace(minute=base.minute // 5 * 5)
+    with runtime.transaction() as connection:
+        for offset in (0, 1):
+            record_experiment_event(connection, shadow_id=shadow_id, kind="mark_gap", observed_at=base + timedelta(seconds=offset), quotes=[], reason="quote_missing")
+        quotes = [{**quote, "observed_at": base + timedelta(seconds=10)} for quote in history["events"][0]["evidence"]["quotes"]]
+        record_experiment_event(connection, shadow_id=shadow_id, kind="mark", observed_at=base + timedelta(seconds=10),
+            quotes=quotes, price=.6, net_pnl=8.7, net_return=8.7 / 50, fees=1.3)
+        for offset in (20, 21):
+            record_experiment_event(connection, shadow_id=shadow_id, kind="mark_gap", observed_at=base + timedelta(seconds=offset), quotes=[], reason="quote_missing")
+    history = experiment_history(runtime, observation_id=str(shadow_id), now=base + timedelta(seconds=30))
+    assert [event["kind"] for event in history["events"]] == ["entry", "mark_gap", "mark", "mark_gap"]
+    assert all(event["net_pnl"] is None for event in history["events"] if event["kind"] == "mark_gap")

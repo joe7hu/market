@@ -153,7 +153,9 @@ def test_decision_funnel_derives_action_queue_from_compact_authority(monkeypatch
 
     payload = repository.decision_funnel(now=NOW)
 
-    assert next(stage for stage in payload["stages"] if stage["stage"] == "action_queue")["count"] == 1
+    queue = next(stage for stage in payload["stages"] if stage["stage"] == "action_queue")
+    assert queue["available_count"] == 1
+    assert queue["count"] == 0  # The published stock candidate never qualified upstream.
 
 
 def test_decision_funnel_rejects_noncanonical_facts_and_does_not_alias_trade_plan() -> None:
@@ -177,14 +179,17 @@ def test_decision_funnel_rejects_noncanonical_facts_and_does_not_alias_trade_pla
     plan = next(stage for stage in payload["stages"] if stage["stage"] == "trade_plan")
     queue = next(stage for stage in payload["stages"] if stage["stage"] == "action_queue")
     assert facts["count"] == 0
-    assert plan["count"] == 1
+    assert plan["available_count"] == 1
+    assert plan["count"] == 0
     assert queue["count"] == 0
-    assert queue["top_blockers"][0]["reason"] == "action_queue_unavailable"
+    assert queue["top_blockers"] == []
+    assert queue["diagnostic_blockers"][0]["reason"] == "action_queue_unavailable"
 
 
 def test_decision_funnel_api_returns_the_repository_contract(monkeypatch) -> None:
     expected = decision_funnel_payload([], [], [], [], now=NOW)
     monkeypatch.setattr(TickerDecisionRepository, "decision_funnel", lambda self, **_kwargs: expected)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.monitored_universe.monitored_universe", lambda *_args: [])
     app.dependency_overrides[dependencies.get_runtime] = lambda: object()
     try:
         response = TestClient(app).get("/api/decision-funnel")
@@ -239,7 +244,7 @@ def test_decision_funnel_uses_compact_current_rows(monkeypatch) -> None:
     assert expression["count"] == 1
     assert payload["policy_version"] == "ranking:test"
     assert all(
-        next(stage for stage in payload["stages"] if stage["stage"] == name)["count"] == 1
+        next(stage for stage in payload["stages"] if stage["stage"] == name)["available_count"] == 1
         for name in ("qualified_stock_alpha", "trade_rank", "trade_plan")
     )
 
@@ -261,12 +266,14 @@ def test_decision_funnel_fails_closed_for_malformed_compact_artifacts(monkeypatc
     resolution = next(stage for stage in payload["stages"] if stage["stage"] == "decision_resolution")
     assert facts["count"] == 0
     assert facts["top_blockers"][0]["reason"] == "ticker_decision_contract_invalid"
-    assert expression["count"] == 2
-    assert expression["top_blockers"][0]["reason"] == "stock_expression_invalid"
+    assert expression["count"] == 0
+    assert expression["available_count"] == 2
+    assert expression["top_blockers"] == []
+    assert expression["diagnostic_blockers"][0]["reason"] == "stock_expression_invalid"
     assert impact["count"] == 0
-    assert any(item["reason"] == "stock_portfolio_impact_invalid" for item in impact["top_blockers"])
+    assert any(item["reason"] == "stock_portfolio_impact_invalid" for item in impact["diagnostic_blockers"])
     assert resolution["count"] == 0
-    assert any(item["reason"] == "decision_resolution_invalid" for item in resolution["top_blockers"])
+    assert any(item["reason"] == "decision_resolution_invalid" for item in resolution["diagnostic_blockers"])
 
 
 def test_decision_funnel_fails_closed_for_corrupt_opportunity_episodes(monkeypatch) -> None:
@@ -330,7 +337,8 @@ def test_decision_funnel_requires_exact_nonempty_impact_lineage(monkeypatch) -> 
         "affected_symbols": ["DRIFT", "EMPTY", "MISSING"],
     }
     assert impact["count"] == 0
-    assert impact["top_blockers"][0] == {
+    assert impact["top_blockers"] == []
+    assert impact["diagnostic_blockers"][0] == {
         "reason": "stock_portfolio_impact_invalid",
         "count": 3,
         "affected_symbols": ["DRIFT", "EMPTY", "MISSING"],
@@ -417,7 +425,7 @@ def test_decision_funnel_loads_each_exact_market_publication_once(monkeypatch) -
     facts = next(stage for stage in payload["stages"] if stage["stage"] == "point_in_time_facts")
     impact = next(stage for stage in payload["stages"] if stage["stage"] == "portfolio_impact")
     assert facts["count"] == 1
-    assert any(item["reason"] == "stock_portfolio_impact_invalid" for item in impact["top_blockers"])
+    assert any(item["reason"] == "stock_portfolio_impact_invalid" for item in impact["diagnostic_blockers"])
 
 
 def test_current_funnel_query_does_not_select_full_market_snapshot() -> None:
@@ -541,3 +549,43 @@ def test_current_funnel_publication_query_projects_only_required_fields() -> Non
         "ticker", "availability_status", "blockers", "eligibility",
         "publication_id", "publication_published_at",
     }
+
+
+def test_funnel_scope_excludes_historical_names_and_preserves_available_horizon():
+    payload = decision_funnel_payload(
+        [{"ticker": symbol, "point_in_time_facts_available": True} for symbol in ("LIVE", "OLD")],
+        [{"ticker": "LIVE", "availability_status": "available", "horizon": "TACTICAL"},
+         {"ticker": "LIVE", "availability_status": "missing", "horizon": "FUNDAMENTAL"}],
+        [{"ticker": "OLD", "published_at": NOW}], [], now=NOW, symbols=["LIVE"],
+    )
+    assert payload["total"] == 1 and payload["scope"] == "monitored_stock_lane"
+    stages = {row["stage"]: row for row in payload["stages"]}
+    assert stages["qualified_stock_alpha"]["count"] == 1
+    assert stages["stock_expression"]["blocked_count"] == 1
+    assert stages["portfolio_impact"]["not_reached_count"] == 1
+    assert stages["portfolio_impact"]["top_blockers"] == []
+    assert payload["first_blockers"] == [{"symbol": "LIVE", "stage": "stock_expression", "reason": "stock_expression_unavailable"}]
+    assert payload["published_at"] is None  # OLD cannot refresh the scoped timestamp.
+    assert all(a["count"] >= b["count"] for a, b in zip(payload["stages"], payload["stages"][1:]))
+
+
+def test_explicit_empty_funnel_scope_never_falls_back_to_all_symbols():
+    payload = decision_funnel_payload([{"ticker": "OLD"}], [], [], [], now=NOW, symbols=[])
+    assert payload["total"] == payload["actionable"] == 0
+    assert payload["first_blockers"] == []
+    repository = TickerDecisionRepository(object())
+    assert repository.decision_funnel(now=NOW, symbols=[])["total"] == 0
+
+
+def test_funnel_loader_uses_canonical_watch_and_owned_stock_scope(monkeypatch):
+    from investment_panel.application.read_models.loaders import load_decision_funnel
+    from conftest import typed_config
+    captured = {}
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.monitored_universe.monitored_universe",
+        lambda *_args: [{"symbol": "WATCH", "asset_class": "equity"}, {"symbol": "HELD", "asset_class": "equity"}, {"symbol": "BTC-USD", "asset_class": "crypto"}])
+    def funnel(self, **kwargs):
+        captured.update(kwargs)
+        return {}
+    monkeypatch.setattr(TickerDecisionRepository, "decision_funnel", funnel)
+    load_decision_funnel(object(), config=typed_config())
+    assert captured["symbols"] == ["WATCH", "HELD"]

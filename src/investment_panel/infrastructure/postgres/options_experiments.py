@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from investment_panel.infrastructure.postgres.experiment_events import record_experiment_event
+
 from investment_panel.domain.decision import after_market_minutes
 
 from datetime import datetime
@@ -308,10 +310,23 @@ def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50, 
                     if liquidation is not None:
                         initial_return = ((liquidation - price) * 100 - 2 * metrics["entry_fees"]) / (price * 100)
                         _mark_shadow_return(metrics, net_return=initial_return, quotes=legs, observed_at=now)
-                    connection.execute("UPDATE analysis.shadow_trade SET status = 'entered', entry_at = %s, entry_price = %s, fill_basis = 'later_complete_quote_worst_side', metrics = %s WHERE id = %s", [now, price, _jsonb(metrics), row["id"]])
+                        record_experiment_event(connection, shadow_id=row["id"], kind="entry", observed_at=now,
+                            quotes=legs, price=price, net_pnl=initial_return * price * 100,
+                            net_return=initial_return, fees=2 * metrics["entry_fees"], reason="entry_filled")
+                    connection.execute("UPDATE analysis.shadow_trade SET status = 'entered', pending_entry_reason = NULL, entry_at = %s, entry_price = %s, fill_basis = 'later_complete_quote_worst_side', metrics = %s WHERE id = %s", [now, price, _jsonb(metrics), row["id"]])
                     counts["entered"] += 1
                 continue
             if not ordered or policy["blockers"]:
+                # The quote which filled the entry is still a valid initial
+                # valuation. Waiting for its next provider tick is not a gap,
+                # but it cannot fill an exit (ordered remains mandatory).
+                waiting_for_next_tick = bool(legs) and not policy["blockers"] and all(
+                    leg.get("observed_at") is not None and leg["observed_at"] <= later_than
+                    for leg in legs
+                )
+                if is_market_open(now) and not waiting_for_next_tick:
+                    record_experiment_event(connection, shadow_id=row["id"], kind="mark_gap", observed_at=now,
+                        quotes=[], reason=policy["blockers"][0] if policy["blockers"] else "later_complete_quote_required")
                 expiration = ticket.get("expiration")
                 if expiration and now.date().isoformat() > str(expiration)[:10]:
                     connection.execute("UPDATE analysis.shadow_trade SET status = 'unmeasurable', pending_entry_reason = 'no_executable_exit_before_expiry' WHERE id = %s", [row["id"]])
@@ -319,11 +334,16 @@ def advance_experiment_shadows(runtime: Any, *, now: datetime, limit: int = 50, 
                 continue
             price = package_price(legs, phase="exit")
             if price is None:
+                record_experiment_event(connection, shadow_id=row["id"], kind="mark_gap", observed_at=now,
+                    quotes=[], reason="liquidation_price_unavailable")
                 continue
             fees = float(metrics["entry_fees"]) + FEE_PER_CONTRACT_LEG * len(legs)
             net_return = ((price - float(row["entry_price"])) * 100 - fees) / (float(row["entry_price"]) * 100)
             _mark_shadow_return(metrics, net_return=net_return, quotes=legs, observed_at=now)
             reason = exit_reason(ticket=ticket, exits=dict(ticket.get("exits") or {}), credit=False, entry_price=float(row["entry_price"]), exit_price=price, execution_blockers=[], now=now)
+            record_experiment_event(connection, shadow_id=row["id"], kind="exit" if reason else "mark", observed_at=now,
+                quotes=legs, price=price, net_pnl=net_return * float(row["entry_price"]) * 100,
+                net_return=net_return, fees=fees, reason=reason)
             if not reason:
                 connection.execute("UPDATE analysis.shadow_trade SET metrics = %s WHERE id = %s", [_jsonb(metrics), row["id"]])
                 continue
@@ -359,7 +379,8 @@ def _mark_shadow_return(metrics: dict[str, Any], *, net_return: float, quotes: l
     metrics.update({"initial_wealth": 1.0, "current_return": net_return, "peak_return": peak,
                     "max_drawdown": min(previous_drawdown, drawdown),
                     "drawdown_basis": "observed_peak_wealth_v1", "observed_at": observed_at.isoformat(),
-                    "observed_quotes": quotes})
+                    "observed_quotes": quotes,
+                    "quote_observed_at": min(quote["observed_at"] for quote in quotes).isoformat()})
     if drawdown <= previous_drawdown:
         metrics.update({"drawdown_peak_at": metrics["peak_at"], "drawdown_peak_quotes": metrics["peak_quotes"],
                         "drawdown_trough_at": observed_at.isoformat(), "drawdown_trough_quotes": quotes})

@@ -164,9 +164,9 @@ export function PaperBookRoute() {
         <PerformanceVisual performance={visiblePerformance} chart={chart} points={points} drawdownPoints={drawdownPoints} locationSearch={location.search} onChart={(value) => updateFilters({ chart: value })} onSelect={(tradeId) => navigate(`/portfolio/paper/trades/${encodeURIComponent(tradeId)}${location.search}`)} onRangeChange={onRangeChange} />
         <Attribution performance={visiblePerformance} />
       </> : null}
-      <PaperObservations />
       <TradeBlotter trades={trades} performance={visiblePerformance} locationSearch={location.search} onLoadOlder={loadOlder} paging={paging} />
     </> : null}
+    <PaperObservations />
   </div>;
 }
 

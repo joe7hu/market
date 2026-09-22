@@ -22,9 +22,10 @@ from psycopg_pool import ConnectionPool
 class RuntimeProfile:
     statement_timeout_ms: int
     lock_timeout_ms: int = 2_000
+    jit: bool | None = None
 
 
-API_PROFILE = RuntimeProfile(statement_timeout_ms=3_000)
+API_PROFILE = RuntimeProfile(statement_timeout_ms=3_000, jit=False)
 JOB_PROFILE = RuntimeProfile(statement_timeout_ms=900_000)
 APPLICATION_ROLE = "market_app"
 EVALUATOR_WRITER_SIGNATURE = (
@@ -132,6 +133,11 @@ class DatabaseRuntime:
 def _set_local_timeouts(connection: Connection[dict[str, Any]], profile: RuntimeProfile) -> None:
     connection.execute("SELECT set_config('statement_timeout', %s, true)", [f"{profile.statement_timeout_ms}ms"])
     connection.execute("SELECT set_config('lock_timeout', %s, true)", [f"{profile.lock_timeout_ms}ms"])
+    # Bounded API reads must not spend their latency budget compiling a large
+    # expression tree. Jobs retain the server setting; SET LOCAL cannot leak
+    # into the next request on the shared pool. Timeouts are not increased.
+    if profile.jit is not None:
+        connection.execute("SELECT set_config('jit', %s, true)", ["on" if profile.jit else "off"])
 
 
 def _activate_configured_application_role(connection: Connection[dict[str, Any]]) -> None:

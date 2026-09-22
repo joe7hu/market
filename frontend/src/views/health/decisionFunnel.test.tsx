@@ -7,6 +7,7 @@ import { DecisionFunnelPanel } from "@/views/health/decisionFunnel";
 describe("DecisionFunnelPanel", () => {
   it("renders the backend policy, counts, blocker, owner, and retry", () => {
     const funnel = {
+      scope: "monitored_stock_lane",
       policy_version: "ticker-opportunity-ranking.v1",
       generated_at: "2026-08-29T14:00:00Z",
       published_at: "2026-08-29T13:59:00Z",
@@ -16,6 +17,7 @@ describe("DecisionFunnelPanel", () => {
       stages: [{
         stage: "qualified_stock_alpha",
         count: 1,
+        reached_count: 2, available_count: 1, blocked_count: 1, not_reached_count: 0,
         total: 2,
         percentage: 0.5,
         unavailable_count: 1,

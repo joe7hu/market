@@ -249,3 +249,10 @@ public service. No tool can place orders, fund accounts, run jobs or change
 settings. Unsupported browsers keep the normal app. See the
 [verification guide](docs/paper-opportunities-audit-20260920.md#webmcp) for browser
 requirements, limitations and acceptance checks.
+
+### Decision loop and paper experiment traceability
+
+See [the September 21 repair and deployment guide](docs/decision-loop-repair.md)
+for canonical capital decisions, monitored-scope diagnostics, quote-backed research
+experiment P&L, and independent forecast settlement. Apply migration
+`20260921_0033` before starting this revision.

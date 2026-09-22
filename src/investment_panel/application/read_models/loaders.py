@@ -54,10 +54,14 @@ DASHBOARD_DEFAULT_TABLES = frozenset({
 
 def load_decision_funnel(
     runtime: DatabaseRuntime, *, action_queue: Iterable[dict[str, Any]] = (),
+    config: AppConfig | None = None,
 ) -> dict[str, Any]:
-    """Load the backend-owned decision-lane diagnostic."""
+    """The stock funnel follows the current monitored stock lane, not history."""
+    from investment_panel.infrastructure.postgres.monitored_universe import monitored_universe
 
-    return TickerDecisionRepository(runtime).decision_funnel(action_queue=action_queue)
+    members = monitored_universe(runtime, (config or load_config()).watchlist)
+    symbols = [row["symbol"] for row in members if row["asset_class"] != "crypto"]
+    return TickerDecisionRepository(runtime).decision_funnel(action_queue=action_queue, symbols=symbols)
 
 
 def today_rank_for_row(

@@ -11,7 +11,7 @@ export function strategyStatus(value: unknown): string {
 
 export function strategyTone(value: unknown): "good" | "warn" | "bad" | "info" | "muted" {
   const raw = String(value ?? "");
-  return raw === "active" || raw === "promoted" ? "good" : raw === "candidate" || raw === "collecting_outcomes" ? "warn" : ["rejected", "misconfigured", "invalid_parameters", "unsupported_parameters", "implementation_version_mismatch", "parameter_lineage_mismatch"].includes(raw) ? "bad" : "info";
+  return raw === "active" || raw === "promoted" ? "good" : raw === "candidate" || raw === "collecting_outcomes" ? "warn" : ["collection_stalled", "rejected", "misconfigured", "invalid_parameters", "unsupported_parameters", "implementation_version_mismatch", "parameter_lineage_mismatch"].includes(raw) ? "bad" : "info";
 }
 
 export function strategyProgress(lane: Record<string, any>): { historical: ReturnType<typeof learningProgress>; forward: ReturnType<typeof learningProgress>; paper: ReturnType<typeof learningProgress> } {

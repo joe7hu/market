@@ -313,6 +313,10 @@ def refresh_today_publication(
         "stable_key": brief_date.isoformat(),
         "brief_date": brief_date.isoformat(),
         "generated_at": as_of,
+        "brief_coverage": brief_coverage(
+            as_of=as_of, holdings=holdings, source_changes=source_changes,
+            catalysts=catalysts, reviews=reviews,
+        ),
         "session": "premarket",
         "status": narrative_status,
         "model_name": narrative_model if narrative else "deterministic",
@@ -540,3 +544,28 @@ def _number(value: Any) -> float | None:
 
 
 option_item = _option_item
+
+
+def brief_coverage(*, as_of: datetime, holdings: list[dict[str, Any]],
+                   source_changes: list[dict[str, Any]], catalysts: list[dict[str, Any]],
+                   reviews: list[dict[str, Any]]) -> dict[str, Any]:
+    """Coverage of this immutable publication's queries, not the whole market.
+
+    The reader previously required this manifest, but no producer wrote it.
+    Successful bounded queries can establish their scope, not certify an empty
+    external news stream/calendar. Quote gaps remain explicit even after SQL succeeds.
+    """
+    unpriced = [row.get("symbol") for row in holdings if _number(row.get("price")) is None]
+    stamp = as_of.isoformat()
+    return {
+        "decide_now": {"status": "complete", "as_of": stamp, "scope": "stored_current_theses",
+            "count": len(reviews), "message": f"{len(reviews)} stored thesis reviews due at {stamp}. This is a research reading list, not a trade queue."},
+        "portfolio_pulse": {"status": "partial" if unpriced else "complete", "as_of": stamp,
+            "scope": "recorded_portfolio", "count": len(holdings),
+            "message": f"{len(holdings)} recorded holdings evaluated at {stamp}." +
+                (f" Quote valuation missing for: {', '.join(str(symbol) for symbol in unpriced)}; see System health." if unpriced else "")},
+        "whats_changed": {"status": "partial", "as_of": stamp, "scope": "bounded_recorded_source_signals",
+            "count": len(source_changes), "message": f"{len(source_changes)} recorded source updates; at most two per source and twelve overall. This excerpt does not certify external feed completeness."},
+        "catalysts": {"status": "partial", "as_of": stamp, "scope": "recorded_calendar_next_14_days",
+            "count": len(catalysts), "message": f"{len(catalysts)} recorded events in the next fourteen days (limit twenty). Calendar-collector health is separate; an empty excerpt does not establish an empty market calendar."},
+    }

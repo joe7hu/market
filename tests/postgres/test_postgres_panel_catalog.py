@@ -617,6 +617,29 @@ def test_today_authority_validates_plan_authority_without_returning_full_plan(
         ).metadata["today_missing_plan_count"]
         assert null_identity_missing_count == valid_missing_count + 1
 
+        # A CASH decision can omit an impact that was not evaluated, but must
+        # not retain a conflicting nested impact. Both SQL projections and
+        # the typed Python contract must accept this same complete no-trade.
+        from investment_panel.domain.decision import TradePlan
+        cash_plan = build_trade_plan(
+            decision=decision.model_copy(update={"portfolio_impacts": {}, "market_state_publication_id": None, "market_state_snapshot": None}),
+            rank=null_identity_manifest["opportunity_rank"], publication_id=base_plan["publication_id"],
+        )
+        valid_cash_manifest = {**null_identity_manifest, "trade_plan": cash_plan.model_dump(mode="json")}
+        assert TradePlan.model_validate(valid_cash_manifest["trade_plan"]).eligibility == "BLOCKED"
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.ticker_decision SET input_manifest = %s, resolution = resolution || %s WHERE id = %s::uuid",
+                [Jsonb(valid_cash_manifest), Jsonb({"trade_plan_id": cash_plan.trade_plan_id}), published["ticker_decision_id"]])
+        assert authority_row()["validation_plan_valid"] is True
+        assert load_panel_scope_data(typed_config(migrated_postgres_dsn), "today").metadata["today_missing_plan_count"] == valid_missing_count
+        # One-sided identity loss is still a conflict, not absent optional data.
+        conflicting = {**valid_cash_manifest, "opportunity_rank": {**valid_cash_manifest["opportunity_rank"], "portfolio_impact_id": "different-impact"}}
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.ticker_decision SET input_manifest = %s WHERE id = %s::uuid",
+                [Jsonb(conflicting), published["ticker_decision_id"]])
+        assert authority_row()["validation_plan_valid"] is False
+        assert load_panel_scope_data(typed_config(migrated_postgres_dsn), "today").metadata["today_missing_plan_count"] == valid_missing_count + 1
+
         with runtime.transaction() as connection:
             malformed_rank_manifest = {
                 **manifest,

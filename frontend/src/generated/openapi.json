@@ -2038,6 +2038,14 @@
             ],
             "title": "Age Seconds"
           },
+          "first_blockers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "First Blockers",
+            "type": "array"
+          },
           "generated_at": {
             "format": "date-time",
             "title": "Generated At",
@@ -2058,6 +2066,11 @@
               }
             ],
             "title": "Published At"
+          },
+          "scope": {
+            "default": "monitored_stock_lane",
+            "title": "Scope",
+            "type": "string"
           },
           "stages": {
             "items": {
@@ -2089,8 +2102,30 @@
             "title": "Affected Symbols",
             "type": "array"
           },
+          "available_count": {
+            "default": 0,
+            "title": "Available Count",
+            "type": "integer"
+          },
+          "blocked_count": {
+            "default": 0,
+            "title": "Blocked Count",
+            "type": "integer"
+          },
           "count": {
             "title": "Count",
+            "type": "integer"
+          },
+          "diagnostic_blockers": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionFunnelBlocker"
+            },
+            "title": "Diagnostic Blockers",
+            "type": "array"
+          },
+          "not_reached_count": {
+            "default": 0,
+            "title": "Not Reached Count",
             "type": "integer"
           },
           "owner": {
@@ -2102,6 +2137,11 @@
             "minimum": 0.0,
             "title": "Percentage",
             "type": "number"
+          },
+          "reached_count": {
+            "default": 0,
+            "title": "Reached Count",
+            "type": "integer"
           },
           "retry": {
             "title": "Retry",
@@ -10945,6 +10985,221 @@
           "status"
         ],
         "title": "PaperNavPoint",
+        "type": "object"
+      },
+      "PaperObservationEvent": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "event_key": {
+            "title": "Event Key",
+            "type": "string"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "title": "Evidence",
+            "type": "object"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fees"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "net_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Pnl"
+          },
+          "net_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Return"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "quote_observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Observed At"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "event_key",
+          "kind",
+          "at"
+        ],
+        "title": "PaperObservationEvent",
+        "type": "object"
+      },
+      "PaperObservationHistory": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "basis": {
+            "title": "Basis",
+            "type": "string"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "string"
+          },
+          "entry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry At"
+          },
+          "entry_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Price"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/PaperObservationEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "exit_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit At"
+          },
+          "exit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Price"
+          },
+          "history_started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "History Started At"
+          },
+          "multiplier": {
+            "default": 100,
+            "title": "Multiplier",
+            "type": "integer"
+          },
+          "observation_id": {
+            "title": "Observation Id",
+            "type": "string"
+          },
+          "quantity": {
+            "default": 1,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "observation_id",
+          "symbol",
+          "status",
+          "as_of",
+          "coverage",
+          "basis"
+        ],
+        "title": "PaperObservationHistory",
         "type": "object"
       },
       "PaperObservationPage": {
@@ -22982,6 +23237,46 @@
           }
         },
         "summary": "Paper Observations"
+      }
+    },
+    "/api/paper/observations/{observation_id}/history": {
+      "get": {
+        "operationId": "paper_observation_history_api_paper_observations__observation_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "observation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Observation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperObservationHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Paper Observation History"
       }
     },
     "/api/paper/performance": {

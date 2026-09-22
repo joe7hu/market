@@ -10,8 +10,11 @@ import json
 from math import isfinite
 from typing import Any
 
+from investment_panel.infrastructure.postgres.experiment_events import experiment_history, experiment_progress, observation_lifecycle
+
 from investment_panel.domain.decision import is_market_open, market_session_bounds, valuation_mark_is_stale
 from investment_panel.infrastructure.postgres.runtime import (
+    API_PROFILE,
     DatabaseRuntime,
     JOB_PROFILE,
     RuntimeProfile,
@@ -209,9 +212,16 @@ class PaperWorkbenchRepository:
                 "basis": "Prospectively recorded whole-book NAV after journal cash flows and admissible marks; hourly samples. Trade filters do not apply.",
                 "sampling": "five_minute_observations_hourly_display"}
 
+    def observation_history(self, observation_id: str) -> dict[str, Any] | None:
+        return experiment_history(self.runtime, observation_id=observation_id)
+
+    def observation_progress(self) -> dict[str, Any]:
+        return experiment_progress(self.runtime)
+
     def observations(self, *, status: str | None = None, offset: int = 0, limit: int = 20) -> dict[str, Any]:
         """Prospective experiments remain separate from the funded order ledger."""
-        with self.runtime.snapshot(JOB_PROFILE) as connection:
+        reference = datetime.now(UTC)
+        with self.runtime.snapshot(API_PROFILE) as connection:
             counts = connection.execute(
                 """SELECT status, count(*) AS count FROM analysis.shadow_trade
                    WHERE source_kind = 'options_paper_experiment' GROUP BY status"""
@@ -229,6 +239,10 @@ class PaperWorkbenchRepository:
                           shadow.metrics->'entry_quotes' AS entry_quotes,
                           shadow.metrics->'exit_quotes' AS exit_quotes,
                           shadow.metrics->'current_return' AS net_return,
+                          shadow.metrics->>'observed_at' AS mark_at,
+                          shadow.metrics->>'quote_observed_at' AS quote_observed_at,
+                          shadow.metrics->'observed_quotes' AS observed_quotes,
+                          shadow.metrics->>'last_checked_at' AS last_checked_at,
                           shadow.metrics->'fees' AS fees,
                           shadow.metrics->>'exit_reason' AS exit_reason,
                           shadow.metrics->>'entry_deadline' AS entry_deadline
@@ -238,12 +252,13 @@ class PaperWorkbenchRepository:
                    JOIN analysis.strategy_revision revision ON revision.id = decision.strategy_revision_id
                    WHERE shadow.source_kind = 'options_paper_experiment'
                      AND (%s::text IS NULL OR shadow.status = %s)
-                   ORDER BY shadow.created_at DESC, shadow.id DESC LIMIT %s OFFSET %s""",
+                   ORDER BY CASE shadow.status WHEN 'entered' THEN 0 WHEN 'pending' THEN 1 WHEN 'closed' THEN 2 ELSE 3 END,
+                            shadow.created_at DESC, shadow.id DESC LIMIT %s OFFSET %s""",
                 [status, status, limit, offset],
             ).fetchall()
         totals = {row["status"]: row["count"] for row in counts}
         total = totals.get(status, 0) if status else sum(totals.values())
-        return {"rows": [dict(row) for row in rows], "counts": totals, "total": total,
+        return {"rows": [observation_lifecycle(dict(row), now=reference) for row in rows], "counts": totals, "total": total,
                 "next_offset": offset + len(rows) if offset + len(rows) < total else None,
                 "accounting_basis": "One-contract prospective quote observations; excluded from paper account P&L."}
 

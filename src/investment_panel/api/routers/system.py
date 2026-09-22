@@ -21,8 +21,9 @@ router = APIRouter()
 @router.get("/api/decision-funnel", response_model=DecisionFunnelResponse)
 def decision_funnel(
     runtime=Depends(dependencies.get_runtime),
+    config: AppConfig = Depends(dependencies.get_config),
 ) -> dict[str, Any]:
-    return loaders.load_decision_funnel(runtime)
+    return loaders.load_decision_funnel(runtime, config=config)
 
 
 @router.get("/api/refresh-jobs", response_model=RefreshJobsResponse, response_model_exclude_unset=True)

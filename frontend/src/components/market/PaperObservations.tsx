@@ -4,6 +4,7 @@ import { loadPaperObservations, type PaperObservation, type PaperObservationPage
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { evidenceReason } from "@/presentation/evidence";
 import { dateTime, humanize, money, percent } from "@/presentation/labels";
+import { ExperimentCurve } from "./ExperimentCurve";
 import { paperObservationProgress } from "@/presentation/paperProgress";
 
 export function PaperObservations() {
@@ -16,10 +17,20 @@ export function PaperObservations() {
     const controller = new AbortController();
     setPage(null);
     setError(null);
-    void loadPaperObservations(status, offset, controller.signal)
-      .then((value) => { if (!controller.signal.aborted) setPage(value); })
-      .catch((reason) => { if (!controller.signal.aborted) setError(String(reason)); });
-    return () => controller.abort();
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
+      try {
+        const value = await loadPaperObservations(status, offset, controller.signal);
+        if (!controller.signal.aborted) { setPage(value); setError(null); }
+      } catch (reason) {
+        if (!controller.signal.aborted) setError(String(reason));
+      } finally { inFlight = false; }
+    };
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 30000);
+    return () => { controller.abort(); clearInterval(timer); };
   }, [offset, status, reload]);
   const progress = page ? paperObservationProgress(page.counts) : null;
   return <Card>
@@ -40,7 +51,8 @@ export function PaperObservations() {
       {page ? <p className="text-sm">All observations: {page.counts.pending ?? 0} awaiting entry · {page.counts.entered ?? 0} open · {page.counts.closed ?? 0} closed · {page.counts.unfilled ?? 0} unfilled · {page.counts.rejected ?? 0} rejected · {page.counts.unmeasurable ?? 0} unmeasurable</p> : null}
     </CardHeader>
     <CardContent>
-      {error ? <div role="alert" className="text-sm text-destructive"><p>{error}</p><button type="button" className="mt-2 rounded border px-3 py-2" onClick={() => setReload((value) => value + 1)}>Retry observations</button></div> : !page ? <p role="status">Loading experiments…</p> : <>
+      {error ? <div role="alert" className="text-sm text-destructive"><p>Observation refresh failed. Retained rows are the last successful snapshot, not current marks. {error}</p><button type="button" className="mt-2 rounded border px-3 py-2" onClick={() => setReload((value) => value + 1)}>Retry observations</button></div> : null}
+      {!page ? !error ? <p role="status">Loading experiments…</p> : null : <>
         {page.rows.length === 0 ? <p className="text-sm text-muted-foreground">No experiments match this status.</p> : <div className="divide-y divide-border">{page.rows.map((row) => <PaperObservationRow key={row.id} row={row} />)}</div>}
         <div className="mt-4 flex items-center gap-3 text-sm"><button type="button" className="rounded border px-3 py-2 disabled:opacity-50" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>Previous</button><span>{page.total ? offset + 1 : 0}–{offset + page.rows.length} of {page.total}</span><button type="button" className="rounded border px-3 py-2 disabled:opacity-50" disabled={page.next_offset === null} onClick={() => setOffset(page.next_offset ?? offset)}>Next</button></div>
       </>}
@@ -50,11 +62,13 @@ export function PaperObservations() {
 
 export function PaperObservationRow({ row }: { row: PaperObservation }) {
   const reason = row.exit_reason || row.reason;
-  const hasEntry = row.entry_at !== null || row.entry_price !== null || ["entered", "closed"].includes(row.status);
-  const hasExit = row.exit_at !== null || row.exit_price !== null || row.status === "closed";
-  return <details className="py-3">
+  const hasEntry = row.entry_at != null || row.entry_price != null || ["entered", "closed"].includes(row.status);
+  const hasExit = row.exit_at != null || row.exit_price != null || row.status === "closed";
+  const [expanded, setExpanded] = useState(row.status === "entered");
+  return <details className="py-3" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary className="cursor-pointer text-sm">
       <span><strong>{row.symbol}</strong> · {humanize(row.structure)} · {humanize(row.status)} · {row.status === "closed" ? `Net return ${percent(row.net_return)}` : dateTime(row.created_at)}</span>
+      {hasEntry && row.net_pnl != null ? <span className="mt-1 block font-medium">{row.status === "closed" ? "Realized" : "Marked"} P&amp;L {money(row.net_pnl)} · {percent(row.net_return)} · {row.mark_status ? humanize(row.mark_status) : "Recorded valuation"}{row.quote_observed_at ? ` · Quote ${dateTime(row.quote_observed_at)}` : ""}</span> : null}
       <span className="mt-1 block text-muted-foreground">{reason ? evidenceReason(reason) : "No lifecycle reason recorded"}{row.status === "pending" && row.entry_deadline ? ` · Entry deadline ${dateTime(row.entry_deadline)}` : ""}</span>
       {row.status !== "closed" && row.required_next_action ? <span className="mt-1 block"><strong>Next action:</strong> {row.required_next_action}</span> : null}
     </summary>
@@ -66,7 +80,8 @@ export function PaperObservationRow({ row }: { row: PaperObservation }) {
         {hasEntry ? <div><dt className="text-muted-foreground">Entry quote per share</dt><dd>{row.entry_price === null ? "Entry price evidence missing" : money(row.entry_price)} · {row.entry_at === null ? "Entry time evidence missing" : dateTime(row.entry_at)}</dd></div> : null}
         {hasExit ? <div><dt className="text-muted-foreground">Exit quote per share</dt><dd>{row.exit_price === null ? "Exit price evidence missing" : money(row.exit_price)} · {row.exit_at === null ? "Exit time evidence missing" : dateTime(row.exit_at)}</dd></div> : null}
       </dl> : null}
-      <details><summary className="cursor-pointer">Frozen decision and quote evidence</summary><pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs">{JSON.stringify({ decision_id: row.decision_id, ticket: row.ticket, entry_quotes: row.entry_quotes, exit_quotes: row.exit_quotes }, null, 2)}</pre></details>
+      {hasEntry && expanded ? <ExperimentCurve observationId={row.id} /> : null}
+      <details><summary className="cursor-pointer">Frozen decision and quote evidence</summary><pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs">{JSON.stringify({ decision_id: row.decision_id, admission_next_action: row.admission_next_action, ticket: row.ticket, entry_quotes: row.entry_quotes, exit_quotes: row.exit_quotes }, null, 2)}</pre></details>
     </div>
   </details>;
 }

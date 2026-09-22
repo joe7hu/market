@@ -20,10 +20,10 @@ describe("published trading conditions", () => {
   it("shows explicit conditions without requiring navigation context or inventing an allocation", () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-20T20:01:00Z"));
     const html = renderToStaticMarkup(<ReferenceSignalCard signal={signal} />);
-    expect(html).toContain("BUY SETUP");
+    expect(html).toContain("Conditional long setup");
     for (const label of ["Entry condition", "Price invalidation", "Price objective", "Planned risk / unit"]) expect(html).toContain(label);
     expect(html).toContain("US venue closed");
-    expect(html).toContain("Capital decision: WAIT");
+    expect(html).toContain("WAIT — retain cash for this decision");
     expect(html).not.toContain("Unknown");
     expect(html).not.toContain("Review the evidence");
   });
@@ -51,4 +51,14 @@ describe("published trading conditions", () => {
     expect(html).toContain("Paper-qualified terms published"); expect(html).toContain("fill-time risk and quote checks");
     expect(signal.order_authorized).toBe(false);
   });
+  it("removes cached actionable headlines when the signal service expires", () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(signal.expires_at));
+    const html = renderToStaticMarkup(<ReferenceSignalCard signal={signal} plan={{ eligibility: "ACTIONABLE", authorization_mode: "PAPER", action: "BUY" }} />);
+    expect(html).toContain("SIGNAL SERVICE FAILED");
+    expect(html).toContain("New allocations paused");
+    expect(html).not.toContain("PAPER — BUY");
+    expect(html).not.toContain("Paper-qualified terms published");
+    expect(html).not.toContain("Entry condition");
+  });
+
 });

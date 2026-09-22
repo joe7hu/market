@@ -27,7 +27,7 @@ from investment_panel.infrastructure.postgres.runtime import API_PROFILE, Runtim
 
 __all__ = ["load_postgres_tables", "today_authority_pages"]
 
-TODAY_AUTHORITY_PROFILE = RuntimeProfile(statement_timeout_ms=10_000)
+TODAY_AUTHORITY_PROFILE = RuntimeProfile(statement_timeout_ms=10_000, jit=False)
 
 
 class SchemaRevisionMismatch(RuntimeError):
@@ -1300,36 +1300,30 @@ def today_authority_pages(
                             positioned_actions.opportunity_rank
                                 ->>'selected_expression_identity'
                         ), '')
-                        AND NULLIF(BTRIM(
-                            validation_payload.trade_plan
-                                ->>'portfolio_impact_id'
-                        ), '') IS NOT NULL
-                        AND NULLIF(BTRIM(
-                            positioned_actions.opportunity_rank
-                                ->>'portfolio_impact_id'
-                        ), '') IS NOT NULL
-                        AND NULLIF(BTRIM(
-                            validation_payload.trade_plan
-                                ->>'portfolio_impact_id'
-                        ), '') = NULLIF(BTRIM(
-                            positioned_actions.opportunity_rank
-                                ->>'portfolio_impact_id'
-                        ), '')
-                        AND NULLIF(BTRIM(
-                            validation_payload.trade_plan
-                                ->>'market_state_publication_id'
-                        ), '') IS NOT NULL
-                        AND NULLIF(BTRIM(
-                            positioned_actions.opportunity_rank
-                                ->>'market_state_publication_id'
-                        ), '') IS NOT NULL
-                        AND NULLIF(BTRIM(
-                            validation_payload.trade_plan
-                                ->>'market_state_publication_id'
-                        ), '') = NULLIF(BTRIM(
-                            positioned_actions.opportunity_rank
-                                ->>'market_state_publication_id'
-                        ), '')
+                        AND (
+                            COALESCE(validation_payload.trade_plan->'portfolio_impact', 'null'::jsonb) = 'null'::jsonb
+                            OR (
+                                jsonb_typeof(validation_payload.trade_plan->'portfolio_impact') = 'object'
+                                AND NULLIF(BTRIM(validation_payload.trade_plan->>'portfolio_impact_id'), '')
+                                    = NULLIF(BTRIM(validation_payload.trade_plan->'portfolio_impact'->>'impact_id'), '')
+                            )
+                        )
+                        AND (
+                            (validation_payload.trade_plan->>'eligibility' = 'BLOCKED'
+                             AND validation_payload.trade_plan->>'selected_expression_kind' = 'CASH')
+                            OR NULLIF(BTRIM(validation_payload.trade_plan->>'portfolio_impact_id'), '') IS NOT NULL
+                        )
+                        AND NULLIF(BTRIM(validation_payload.trade_plan->>'portfolio_impact_id'), '')
+                            IS NOT DISTINCT FROM
+                            NULLIF(BTRIM(positioned_actions.opportunity_rank->>'portfolio_impact_id'), '')
+                        AND (
+                            (validation_payload.trade_plan->>'eligibility' = 'BLOCKED'
+                             AND validation_payload.trade_plan->>'selected_expression_kind' = 'CASH')
+                            OR NULLIF(BTRIM(validation_payload.trade_plan->>'market_state_publication_id'), '') IS NOT NULL
+                        )
+                        AND NULLIF(BTRIM(validation_payload.trade_plan->>'market_state_publication_id'), '')
+                            IS NOT DISTINCT FROM
+                            NULLIF(BTRIM(positioned_actions.opportunity_rank->>'market_state_publication_id'), '')
                         AND (
                             (
                                 validation_payload.trade_plan->>'eligibility'
@@ -1645,36 +1639,30 @@ def today_authority_pages(
                             positioned_actions.opportunity_rank
                                 ->>'selected_expression_identity'
                         ), '')
-                        AND NULLIF(BTRIM(
-                            validation_payload.trade_plan
-                                ->>'portfolio_impact_id'
-                        ), '') IS NOT NULL
-                        AND NULLIF(BTRIM(
-                            positioned_actions.opportunity_rank
-                                ->>'portfolio_impact_id'
-                        ), '') IS NOT NULL
-                        AND NULLIF(BTRIM(
-                            validation_payload.trade_plan
-                                ->>'portfolio_impact_id'
-                        ), '') = NULLIF(BTRIM(
-                            positioned_actions.opportunity_rank
-                                ->>'portfolio_impact_id'
-                        ), '')
-                        AND NULLIF(BTRIM(
-                            validation_payload.trade_plan
-                                ->>'market_state_publication_id'
-                        ), '') IS NOT NULL
-                        AND NULLIF(BTRIM(
-                            positioned_actions.opportunity_rank
-                                ->>'market_state_publication_id'
-                        ), '') IS NOT NULL
-                        AND NULLIF(BTRIM(
-                            validation_payload.trade_plan
-                                ->>'market_state_publication_id'
-                        ), '') = NULLIF(BTRIM(
-                            positioned_actions.opportunity_rank
-                                ->>'market_state_publication_id'
-                        ), '')
+                        AND (
+                            COALESCE(validation_payload.trade_plan->'portfolio_impact', 'null'::jsonb) = 'null'::jsonb
+                            OR (
+                                jsonb_typeof(validation_payload.trade_plan->'portfolio_impact') = 'object'
+                                AND NULLIF(BTRIM(validation_payload.trade_plan->>'portfolio_impact_id'), '')
+                                    = NULLIF(BTRIM(validation_payload.trade_plan->'portfolio_impact'->>'impact_id'), '')
+                            )
+                        )
+                        AND (
+                            (validation_payload.trade_plan->>'eligibility' = 'BLOCKED'
+                             AND validation_payload.trade_plan->>'selected_expression_kind' = 'CASH')
+                            OR NULLIF(BTRIM(validation_payload.trade_plan->>'portfolio_impact_id'), '') IS NOT NULL
+                        )
+                        AND NULLIF(BTRIM(validation_payload.trade_plan->>'portfolio_impact_id'), '')
+                            IS NOT DISTINCT FROM
+                            NULLIF(BTRIM(positioned_actions.opportunity_rank->>'portfolio_impact_id'), '')
+                        AND (
+                            (validation_payload.trade_plan->>'eligibility' = 'BLOCKED'
+                             AND validation_payload.trade_plan->>'selected_expression_kind' = 'CASH')
+                            OR NULLIF(BTRIM(validation_payload.trade_plan->>'market_state_publication_id'), '') IS NOT NULL
+                        )
+                        AND NULLIF(BTRIM(validation_payload.trade_plan->>'market_state_publication_id'), '')
+                            IS NOT DISTINCT FROM
+                            NULLIF(BTRIM(positioned_actions.opportunity_rank->>'market_state_publication_id'), '')
                         AND (
                             (
                                 validation_payload.trade_plan->>'eligibility'

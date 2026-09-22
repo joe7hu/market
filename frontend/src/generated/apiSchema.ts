@@ -955,6 +955,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/paper/observations/{observation_id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Paper Observation History */
+        get: operations["paper_observation_history_api_paper_observations__observation_id__history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/paper/performance": {
         parameters: {
             query?: never;
@@ -2702,6 +2719,10 @@ export interface components {
             actionable: number;
             /** Age Seconds */
             age_seconds?: number | null;
+            /** First Blockers */
+            first_blockers?: {
+                [key: string]: unknown;
+            }[];
             /**
              * Generated At
              * Format: date-time
@@ -2711,6 +2732,11 @@ export interface components {
             policy_version: string;
             /** Published At */
             published_at?: string | null;
+            /**
+             * Scope
+             * @default monitored_stock_lane
+             */
+            scope: string;
             /** Stages */
             stages?: components["schemas"]["DecisionFunnelStage"][];
             /** Total */
@@ -2720,12 +2746,34 @@ export interface components {
         DecisionFunnelStage: {
             /** Affected Symbols */
             affected_symbols?: string[];
+            /**
+             * Available Count
+             * @default 0
+             */
+            available_count: number;
+            /**
+             * Blocked Count
+             * @default 0
+             */
+            blocked_count: number;
             /** Count */
             count: number;
+            /** Diagnostic Blockers */
+            diagnostic_blockers?: components["schemas"]["DecisionFunnelBlocker"][];
+            /**
+             * Not Reached Count
+             * @default 0
+             */
+            not_reached_count: number;
             /** Owner */
             owner: string;
             /** Percentage */
             percentage: number;
+            /**
+             * Reached Count
+             * @default 0
+             */
+            reached_count: number;
             /** Retry */
             retry: string;
             /** Stage */
@@ -5747,6 +5795,79 @@ export interface components {
             status: string;
         } & {
             [key: string]: unknown;
+        };
+        /** PaperObservationEvent */
+        PaperObservationEvent: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Event Key */
+            event_key: string;
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            };
+            /** Fees */
+            fees?: number | null;
+            /** Kind */
+            kind: string;
+            /** Net Pnl */
+            net_pnl?: number | null;
+            /** Net Return */
+            net_return?: number | null;
+            /** Price */
+            price?: number | null;
+            /** Quote Observed At */
+            quote_observed_at?: string | null;
+            /** Reason */
+            reason?: string | null;
+        };
+        /** PaperObservationHistory */
+        PaperObservationHistory: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Basis */
+            basis: string;
+            /** Coverage */
+            coverage: string;
+            /** Entry At */
+            entry_at?: string | null;
+            /** Entry Price */
+            entry_price?: number | null;
+            /** Events */
+            events?: components["schemas"]["PaperObservationEvent"][];
+            /** Exit At */
+            exit_at?: string | null;
+            /** Exit Price */
+            exit_price?: number | null;
+            /** History Started At */
+            history_started_at?: string | null;
+            /**
+             * Multiplier
+             * @default 100
+             */
+            multiplier: number;
+            /** Observation Id */
+            observation_id: string;
+            /**
+             * Quantity
+             * @default 1
+             */
+            quantity: number;
+            /** Status */
+            status: string;
+            /** Symbol */
+            symbol: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** PaperObservationPage */
         PaperObservationPage: {
@@ -10491,6 +10612,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaperObservationPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    paper_observation_history_api_paper_observations__observation_id__history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                observation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaperObservationHistory"];
                 };
             };
             /** @description Validation Error */

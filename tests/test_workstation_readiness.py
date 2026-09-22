@@ -73,9 +73,10 @@ def test_disabled_worker_has_no_expected_dispatch():
     assert result["status"] == "disabled" and result["next_expected_at"] is None
 
 
-def test_health_excludes_intentionally_disabled_broker_and_advisor_stages():
+def test_health_excludes_disabled_generation_but_keeps_claim_settlement():
     config = AppConfig()
-    assert {"update_broker_account", "run_continuous_advisor", "run_continuous_advisor_replay"}.isdisjoint(configured_workflow_jobs(config))
+    assert {"update_broker_account", "run_continuous_advisor"}.isdisjoint(configured_workflow_jobs(config))
+    assert "run_continuous_advisor_replay" in configured_workflow_jobs(config)
     enabled = replace(config, data_sources=replace(config.data_sources, brokers=replace(
         config.data_sources.brokers, ibkr=replace(config.data_sources.brokers.ibkr, enabled=True),
     )), agents=replace(config.agents, thesis_monitor=replace(config.agents.thesis_monitor, continuous_enabled=True)))
@@ -124,3 +125,14 @@ def test_news_macro_and_calendar_are_visible_and_do_not_wait_for_market_open():
         projection = worker_projection({'status': 'succeeded', 'finished_at': sunday},
             job=job, interval=3600, now=sunday, enabled=True)
         assert projection['next_expected_at'] == sunday + timedelta(hours=1)
+
+
+def test_explicitly_disabled_settlement_stays_visible_as_disabled(monkeypatch):
+    from investment_panel.core.job_policy import scheduler_intervals
+    config = AppConfig()
+    monkeypatch.setenv("MARKET_CONTINUOUS_ADVISOR_REPLAY_SECONDS", "0")
+    assert "run_continuous_advisor_replay" in configured_workflow_jobs(config)
+    assert "run_continuous_advisor_replay" not in scheduler_intervals(config)
+    projection = worker_projection(None, job="run_continuous_advisor_replay", interval=None, now=NOW, enabled=True)
+    assert projection["status"] == "disabled"
+    assert projection["next_expected_at"] is None

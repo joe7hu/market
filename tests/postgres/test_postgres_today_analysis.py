@@ -123,6 +123,12 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
         assert pulse["market_value"] == 300
         assert pulse["unrealized_pnl"] == 100
         assert "provider_payload" not in pulse
+        coverage = publication.publication_rows("today", "preopen_daily_brief")[0]["brief_coverage"]
+        assert coverage["portfolio_pulse"]["scope"] == "recorded_portfolio"
+        assert coverage["portfolio_pulse"]["status"] == "complete"
+        assert coverage["whats_changed"]["count"] == 1
+        assert coverage["whats_changed"]["status"] == "partial"
+        assert coverage["catalysts"]["status"] == "partial"  # No claim of complete external feeds.
 
         correction_run = ingestion.start_run("test-quotes", "quotes")
         ingestion.store_quotes(
