@@ -325,9 +325,10 @@ def test_premarket_threads_market_publication_id_after_market_publication(monkey
         events.append(("market", now))
         return {**market_publication, "published_at": now + timedelta(microseconds=1)}
 
-    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None, **_kwargs):
+    def publish_tickers(_path, *, symbols, as_of=None, market_state_publication_id=None, **kwargs):
         assert symbols == ["HELD"]
         assert market_state_publication_id == market_publication["publication_id"]
+        assert kwargs["refresh_outcomes"] is False
         events.append(("ticker", as_of))
         return {"status": "ok"}
 

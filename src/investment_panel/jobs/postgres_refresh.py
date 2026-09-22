@@ -153,6 +153,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         symbols=_priority_ticker_symbols(config, runtime),
         as_of=decision_cutoff,
         market_state_publication_id=_market_state_publication_id(market),
+        refresh_outcomes=False,
     )
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(
