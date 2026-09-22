@@ -51,13 +51,16 @@ def test_read_failure_is_not_reported_as_zero_or_healthy(failed_table):
             if failed_table and failed_table in sql:
                 raise RuntimeError("unavailable test relation")
             return SimpleNamespace(fetchall=lambda: [])
-    runtime = SimpleNamespace(snapshot=lambda *args: nullcontext(Connection()))
+    profiles = []
+    runtime = SimpleNamespace(snapshot=lambda profile: (profiles.append(profile), nullcontext(Connection()))[1])
     status = WorkstationRepository(runtime).status(AppConfig())
     WorkstationStatus.model_validate(status)
     assert status["status"] == ("unavailable" if failed_table else "partial")
     # Successful empty queries do not prove that required producers/publications exist.
     assert status["blockers"]
     assert status["market"]["status"] == "not_published"
+    assert profiles[0].statement_timeout_ms == 10_000
+    assert profiles[0].jit is False
     if failed_table == "app.paper_order":
         assert status["paper"]["status"] == "unavailable"
         assert status["paper"]["waiting_status"] == "unavailable"

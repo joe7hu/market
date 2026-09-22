@@ -292,8 +292,9 @@ def test_collect_robinhood_option_chains_with_fake_client() -> None:
     assert {row["market_data"] for row in rows} == {"robinhood"}
     assert all(row["open_interest"] == 3652 for row in rows)
     assert all(row["underlying_price"] == 205.14 for row in rows)
-    assert result["observed_at"] == "2026-06-12T19:59:59+00:00"
-    assert result["collected_at"] != result["observed_at"]
+    assert result["observed_at"] == result["received_at"]
+    assert result["observed_at"] != "2026-06-12T19:59:59+00:00"
+    assert all(row["available_at"] == result["received_at"] for row in rows)
 
 
 def test_equity_quote_collector_excludes_invalid_provider_rows_from_received_coverage() -> None:

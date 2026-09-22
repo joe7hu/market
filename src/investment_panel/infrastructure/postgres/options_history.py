@@ -102,7 +102,7 @@ class OptionHistoryRepository:
         run_id: UUID,
         collection_profile: str = HISTORY_PROFILE,
         universe: str | None = None,
-    ) -> int | None:
+    ) -> tuple[int, int] | None:
         """Claim one symbol/slot without allowing overlapping collection work."""
         snapshot_universe = universe or _universe_for_profile(collection_profile, symbol)
         with self.runtime.transaction(JOB_PROFILE) as connection:
@@ -240,11 +240,11 @@ class OptionHistoryRepository:
         run_id: UUID,
         collection_profile: str = HISTORY_PROFILE,
         universe: str | None = None,
-    ) -> int | None:
+    ) -> tuple[int, int] | None:
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute(
                 """
-                SELECT generation.id
+                SELECT generation.id, generation.generation
                 FROM raw.option_capture_generation generation
                 JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
                 WHERE snapshot.source_id = %s AND snapshot.history_symbol = %s AND snapshot.slot_at = %s
@@ -256,7 +256,7 @@ class OptionHistoryRepository:
                     universe or _universe_for_profile(collection_profile, symbol), run_id,
                 ],
             ).fetchone()
-        return int(row["id"]) if row else None
+        return (int(row["id"]), int(row["generation"])) if row else None
     def materialize_snapshot(self, snapshot_id: int, *, mode: str = "historical_evidence") -> dict[str, Any]:
         """Write only immutable v3 evidence; v2 rows are rollback-only diagnostics."""
         with self.runtime.read(JOB_PROFILE) as connection:

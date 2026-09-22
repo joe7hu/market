@@ -107,4 +107,4 @@ def test_working_transport_cannot_hide_failed_decision_service(tmp_path, monkeyp
     assert result["transport_ready"] is True
     assert result["ready"] is False and result["service_ready"] is False
     assert result["workstation"]["decision_service"]["failed_count"] == 1
-    assert "degraded" in result["message"]
+    assert result["message"] == "Workflow health degraded. System health identifies the affected workflows and blockers."

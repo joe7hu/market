@@ -535,6 +535,90 @@ def test_option_snapshot_is_narrow_deduplicated_partitioned_and_idempotent(
     assert partition == "raw.option_quote_202607"
 
 
+def test_option_snapshot_keeps_each_contract_clock_causal(
+    repository: IngestionRepository, postgres_dsn: str,
+) -> None:
+    quote_at = datetime(2026, 7, 11, 14, 30, tzinfo=UTC)
+    run_id = repository.start_run("robinhood", "option_quotes")
+    repository.store_option_snapshot(
+        run_id,
+        source_id="robinhood",
+        observed_at=quote_at + timedelta(seconds=15),
+        market_session="regular",
+        universe="paper-tickets",
+        rows=[{
+            "symbol": "NVDA", "expiry": "2026-08-21", "strike": 180, "type": "call",
+            "contract_symbol": "rh-nvda-180c", "bid": 4.8, "ask": 5.2,
+            "provider_updated_at": quote_at, "captured_at": quote_at,
+        }],
+    )
+    repository.finish_run(run_id, "succeeded")
+
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        quote = connection.execute(
+            "SELECT observed_at, available_at FROM raw.option_quote"
+        ).fetchone()
+    assert quote == (quote_at, quote_at + timedelta(seconds=15))
+
+
+def test_option_snapshot_does_not_backdate_delayed_quote_availability(
+    repository: IngestionRepository, postgres_dsn: str,
+) -> None:
+    provider_at = datetime(2026, 7, 11, 14, 30, tzinfo=UTC)
+    receipt_at = provider_at + timedelta(minutes=15)
+    run_id = repository.start_run("robinhood", "option_quotes")
+    repository.store_option_snapshot(
+        run_id,
+        source_id="robinhood",
+        observed_at=receipt_at,
+        market_session="regular",
+        universe="paper-tickets",
+        rows=[{
+            "symbol": "NVDA", "expiry": "2026-08-21", "strike": 180, "type": "call",
+            "contract_symbol": "rh-nvda-180c", "bid": 4.8, "ask": 5.2,
+            "provider_updated_at": provider_at,
+        }],
+    )
+    repository.finish_run(run_id, "succeeded")
+
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        quote = connection.execute(
+            "SELECT observed_at, available_at FROM raw.option_quote"
+        ).fetchone()
+    assert quote == (provider_at, receipt_at)
+
+
+def test_option_snapshot_preserves_retry_clock_and_partition(
+    repository: IngestionRepository, postgres_dsn: str,
+) -> None:
+    snapshot_at = datetime(2026, 7, 31, 20, tzinfo=UTC)
+    provider_at = snapshot_at - timedelta(minutes=1)
+    retries = (snapshot_at + timedelta(days=1, minutes=2), snapshot_at + timedelta(days=1, minutes=3))
+    run_id = repository.start_run("robinhood", "option_history_full")
+    for quote_at in retries:
+        repository.store_option_snapshot(
+            run_id,
+            source_id="robinhood",
+            observed_at=snapshot_at,
+            market_session="regular",
+            universe="history-retry",
+            rows=[{
+                "symbol": "NVDA", "expiry": "2026-08-21", "strike": 180, "type": "call",
+                "contract_symbol": "rh-nvda-180c", "bid": 4.8, "ask": 5.2,
+                "provider_updated_at": provider_at, "captured_at": provider_at,
+            }],
+            quote_observed_at=quote_at,
+        )
+    repository.finish_run(run_id, "succeeded")
+
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        quotes = connection.execute(
+            "SELECT observed_at, available_at, tableoid::regclass::text FROM raw.option_quote ORDER BY observed_at"
+        ).fetchall()
+    assert quotes == [(retries[0], retries[0], "raw.option_quote_202608"),
+                      (retries[1], retries[1], "raw.option_quote_202608")]
+
+
 def test_provider_symbol_never_reuses_a_different_deliverable_identity(
     repository: IngestionRepository, postgres_dsn: str,
 ) -> None:
@@ -654,6 +738,9 @@ data_sources:
                         "open_interest": 1500,
                         "volume": 120,
                         "iv": 0.41,
+                        "provider_updated_at": "2026-07-11T12:00:00Z",
+                        "captured_at": "2026-07-11T12:00:00Z",
+                        "available_at": "2026-07-11T12:15:00Z",
                     }
                 ]
             },
@@ -679,6 +766,12 @@ data_sources:
     assert result["database"] == "postgresql"
     with closing(psycopg.connect(postgres_dsn)) as connection:
         assert connection.execute("SELECT count(*) FROM raw.option_quote").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT observed_at, available_at FROM raw.option_quote"
+        ).fetchone() == (
+            datetime(2026, 7, 11, 12, tzinfo=UTC),
+            datetime(2026, 7, 11, 12, 15, tzinfo=UTC),
+        )
         assert connection.execute("SELECT price FROM raw.quote").fetchone()[0] == 175
         assert connection.execute("SELECT status FROM ingest.run").fetchone()[0] == "succeeded"
 

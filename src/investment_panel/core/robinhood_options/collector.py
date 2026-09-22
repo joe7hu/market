@@ -328,9 +328,12 @@ def collect_robinhood_option_chains(
             result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s after {symbol}")
             result["timed_out"] = True
             break
-    effective_observed_at = _latest_option_quote_time(result["rows"])
-    if effective_observed_at is not None:
-        result["observed_at"] = effective_observed_at.isoformat()
+    received_at = datetime.now(UTC).isoformat()
+    result["observed_at"] = received_at
+    result["received_at"] = received_at
+    for rows in result["rows"].values():
+        for row in rows:
+            row["available_at"] = received_at
     return result
 
 
@@ -507,21 +510,6 @@ def _collect_symbol(
                     row["underlying_price"] = spot
                 rows.extend(quoted)
     return rows
-
-
-def _latest_option_quote_time(rows_by_symbol: dict[str, list[dict[str, Any]]]) -> datetime | None:
-    observed: list[datetime] = []
-    for rows in rows_by_symbol.values():
-        for row in rows:
-            value = row.get("updated_at")
-            if not value:
-                continue
-            try:
-                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            observed.append(parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC))
-    return max(observed, default=None)
 
 
 def collect_robinhood_equity_quotes(

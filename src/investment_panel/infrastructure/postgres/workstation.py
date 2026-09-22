@@ -13,7 +13,7 @@ from typing import Any
 
 from investment_panel.core.job_policy import scheduler_intervals, scheduler_enabled
 from investment_panel.domain.decision import is_market_open, is_us_market_day, market_session_bounds, completed_trading_dates, MARKET_TZ
-from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime
+from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, RuntimeProfile
 from investment_panel.infrastructure.postgres.experiment_events import experiment_progress
 from investment_panel.settings import AppConfig
 from investment_panel.domain.decision import decision_service_health
@@ -33,6 +33,7 @@ WORKFLOW_JOBS = (
     "run_option_paper_experiments", "run_stock_alpha_walk_forward",
     "refresh_symbol_decision_outcomes", "run_continuous_advisor_replay",
 )
+WORKSTATION_PROFILE = RuntimeProfile(statement_timeout_ms=10_000, jit=False)
 BASELINE_MODELS = (
     "market_environment_assets", "market_environment_model",
     "market_valuation_reference_charts", "market_state_snapshot", "coverage_matrix",
@@ -145,7 +146,7 @@ class WorkstationRepository:
         intervals = scheduler_intervals(config)
         settings = config.analysis.options_decision_system
         workflow_jobs = configured_workflow_jobs(config)
-        with self.runtime.snapshot(API_PROFILE) as connection:
+        with self.runtime.snapshot(WORKSTATION_PROFILE) as connection:
             def read(name: str, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
                 try:
                     with connection.transaction():

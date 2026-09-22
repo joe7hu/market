@@ -484,6 +484,8 @@ class IngestionRepository:
     ) -> dict[str, int]:
         if observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
+        if quote_observed_at is not None and quote_observed_at.tzinfo is None:
+            raise ValueError("quote_observed_at must be timezone-aware")
         if market_session not in {"premarket", "regular", "afterhours", "closed", "unknown"}:
             raise ValueError("market_session is invalid")
         if collection_profile not in {"radar", "history_full", "event_strip"}:
@@ -501,11 +503,6 @@ class IngestionRepository:
                     "SELECT daily_start FROM ops.option_quote_partition_policy WHERE policy_key = 'default'"
                 ).fetchone()
                 daily_start = policy["daily_start"] if policy else None
-            partition, partition_start, partition_end = _partition_bounds(observed_at.date(), daily_start)
-            connection.execute(
-                "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
-                [partition, partition_start, partition_end],
-            )
             snapshot = connection.execute(
                 """
                 INSERT INTO raw.option_snapshot
@@ -540,6 +537,25 @@ class IngestionRepository:
             snapshot_id = int(snapshot["id"])
             if normalized:
                 _stage_option_rows(connection, normalized)
+                quote_dates = connection.execute(
+                    """
+                    SELECT DISTINCT (
+                        CASE WHEN %s::timestamptz IS NULL
+                             THEN coalesce(provider_observed_at, %s)
+                             ELSE greatest(coalesce(provider_observed_at, %s), %s)
+                        END AT TIME ZONE current_setting('TimeZone')
+                    )::date AS quote_date
+                    FROM option_quote_stage
+                    """,
+                    [quote_observed_at, observed_at, quote_observed_at, quote_observed_at],
+                ).fetchall()
+                for row in quote_dates:
+                    quote_date = row["quote_date"]
+                    partition, partition_start, partition_end = _partition_bounds(quote_date, daily_start)
+                    connection.execute(
+                        "SELECT raw.ensure_option_quote_partition(%s, %s, %s)",
+                        [partition, partition_start, partition_end],
+                    )
                 for symbol in sorted({str(row["underlying_symbol"]) for row in normalized}):
                     reconcile_instrument(
                         connection, symbol, name=symbol, category="option-underlying"
@@ -685,6 +701,14 @@ class IngestionRepository:
                 )
                 connection.execute(
                     """
+                    WITH staged AS (
+                        SELECT s.*,
+                               CASE WHEN %s::timestamptz IS NULL
+                                    THEN coalesce(s.provider_observed_at, %s)
+                                    ELSE greatest(coalesce(s.provider_observed_at, %s), %s)
+                               END AS effective_observed_at
+                        FROM option_quote_stage s
+                    )
                     INSERT INTO raw.option_quote
                         (observed_at, snapshot_id, capture_generation_id, contract_id,
                          contract_style, contract_settlement, contract_deliverable_key,
@@ -694,7 +718,7 @@ class IngestionRepository:
                          chance_of_profit_long, chance_of_profit_short, provider_updated_at, provider_payload,
                          capture_group_key, group_started_at, group_finished_at, provider_observed_at,
                          available_at, underlying_observed_at, underlying_available_at)
-                    SELECT %s, %s, %s, c.id,
+                    SELECT s.effective_observed_at, %s, %s, c.id,
                            s.style, s.settlement, s.resolved_deliverable_key,
                            s.standard_contract_verified, s.underlying_price, s.bid, s.ask, s.mid, s.last,
                            s.bid_size, s.ask_size, s.last_trade_at, s.captured_at, s.market_data_status, s.volume, s.open_interest, s.provider_iv, s.provider_delta,
@@ -702,8 +726,9 @@ class IngestionRepository:
                            s.provider_rho, s.chance_of_profit_long, s.chance_of_profit_short,
                            s.provider_updated_at, s.provider_payload, s.capture_group_key,
                            s.group_started_at, s.group_finished_at, s.provider_observed_at,
-                           coalesce(s.available_at, %s), s.underlying_observed_at, s.underlying_available_at
-                    FROM option_quote_stage s
+                           greatest(coalesce(s.available_at, %s), %s, s.effective_observed_at),
+                           s.underlying_observed_at, s.underlying_available_at
+                    FROM staged s
                     JOIN catalog.instrument i ON i.symbol = s.underlying_symbol
                     JOIN catalog.option_contract c
                       ON c.underlying_instrument_id = i.id
@@ -738,8 +763,8 @@ class IngestionRepository:
                         underlying_observed_at = EXCLUDED.underlying_observed_at,
                         underlying_available_at = EXCLUDED.underlying_available_at
                     """,
-                    [quote_observed_at or observed_at, snapshot_id, capture_generation_id,
-                     observed_at],
+                    [quote_observed_at, observed_at, quote_observed_at, quote_observed_at,
+                     snapshot_id, capture_generation_id, observed_at, observed_at],
                 )
             connection.execute(
                 "UPDATE ingest.run SET item_count = %s, instrument_count = %s WHERE id = %s",

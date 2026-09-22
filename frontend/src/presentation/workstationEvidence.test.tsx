@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { calibrationPoints } from "./prediction";
 import { strategyProgress, strategySteps } from "./strategy";
 import { learningProgress } from "./lifecycle";
-import { operationCount } from "@/components/market/WorkflowReadiness";
+import { observationScope, operationCount } from "@/components/market/WorkflowReadiness";
 import { navSegments } from "@/components/market/PaperAccountCurve";
 import { ComparisonVisual } from "@/pages/ResearchWorkbenchRoute";
 import { numberField } from "@/shared/rowFormat";
@@ -32,6 +32,10 @@ describe("evidence cannot be fabricated by presentation", () => {
   it("failed count reads are not zero", () => {
     expect(operationCount({ status: "unavailable", counts: {} }, ["entered"])).toBe("Not available");
     expect(operationCount({ status: "available", counts: {} }, ["entered"])).toBe("0");
+    expect(operationCount({ status: "partial", counts: { entered: 18 } }, ["entered"])).toBe("18");
+    expect(observationScope({ status: "partial" })).toBe("partial population");
+    expect(observationScope({ status: "available" })).toBe("full population");
+    expect(operationCount({ counts: { entered: 18 } }, ["entered"])).toBe("Not available");
   });
   it("does not interpolate NAV through a missing or malformed mark", () => {
     const point = (at: string, nav: number | null, status = "complete") => ({ at, nav, status, net_pnl: null });

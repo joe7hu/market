@@ -8,6 +8,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.infrastructure.postgres.ingestion_coerce import aware_datetime
 from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
 
 
@@ -40,7 +41,7 @@ def store_capture(
     if captured.get("event_strip_diagnostics") is not None:
         quote_diagnostics["event_strip"] = _jsonable(dict(captured["event_strip_diagnostics"]))
     snapshot_universe = universe or _universe_for_profile(collection_profile, symbol)
-    generation = repository._generation_for_run(
+    capture_generation = repository._generation_for_run(
         source_id=source_id,
         symbol=symbol,
         slot_at=slot_at,
@@ -48,17 +49,26 @@ def store_capture(
         collection_profile=collection_profile,
         universe=snapshot_universe,
     )
-    if generation is None:
+    if capture_generation is None:
         raise ValueError("capture generation was not claimed")
+    generation, retry_ordinal = capture_generation
     started_at = _as_utc(captured.get("capture_started_at")) or slot_at
     finished_at = _as_utc(captured.get("capture_finished_at")) or datetime.now(UTC)
+    source_clock = max([
+        finished_at,
+        *(clock for row in rows if (clock := aware_datetime(
+            row.get("provider_observed_at") or row.get("provider_updated_at")
+        )) is not None),
+    ])
+    quote_observed_at = _retry_quote_clock(source_clock, retry_ordinal)
+    capture_finished_at = max(source_clock, quote_observed_at or source_clock)
     for row in rows:
         option_type = str(row.get("option_type") or row.get("type") or "").lower()
         expiration = str(row.get("expiration") or row.get("expiry") or "")[:10]
         row.setdefault("capture_group_key", f"{expiration}:{option_type}")
         row.setdefault("group_started_at", started_at)
-        row.setdefault("group_finished_at", finished_at)
-        row.setdefault("available_at", finished_at)
+        row.setdefault("group_finished_at", capture_finished_at)
+        row.setdefault("available_at", capture_finished_at)
         row.setdefault("provider_observed_at", row.get("provider_updated_at") or finished_at)
         row.setdefault("underlying_observed_at", finished_at)
         row.setdefault("underlying_available_at", finished_at)
@@ -74,12 +84,12 @@ def store_capture(
         history_symbol=symbol,
         slot_at=slot_at,
         capture_started_at=started_at,
-        capture_finished_at=finished_at,
+        capture_finished_at=capture_finished_at,
         expected_contract_count=expected,
         received_contract_count=received,
         capture_state=state,
         capture_generation_id=generation,
-        quote_observed_at=finished_at + timedelta(microseconds=generation),
+        quote_observed_at=quote_observed_at,
     )
     with repository.runtime.transaction(JOB_PROFILE) as connection:
         connection.execute(
@@ -96,7 +106,7 @@ def store_capture(
                 received,
                 completeness,
                 started_at,
-                finished_at,
+                capture_finished_at,
                 "; ".join(errors) or None,
                 Jsonb({"quote_diagnostics": quote_diagnostics}),
                 generation,
@@ -112,7 +122,7 @@ def store_capture(
             """,
             [
                 state,
-                finished_at,
+                capture_finished_at,
                 completeness,
                 expected,
                 received,
@@ -132,7 +142,7 @@ def store_capture(
         "capture_state": state,
         "capture_generation_id": generation,
         "capture_started_at": started_at.isoformat(),
-        "capture_finished_at": finished_at.isoformat(),
+        "capture_finished_at": capture_finished_at.isoformat(),
         "collection_profile": collection_profile,
         "universe": snapshot_universe,
         "errors": errors,
@@ -147,6 +157,12 @@ def _as_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _retry_quote_clock(finished_at: datetime, retry_ordinal: int) -> datetime | None:
+    if retry_ordinal == 1:
+        return None
+    return finished_at + timedelta(microseconds=retry_ordinal)
 
 
 def _jsonable(value: Any) -> Any:

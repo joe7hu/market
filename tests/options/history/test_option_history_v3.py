@@ -285,6 +285,68 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
     runtime.close()
 
 
+def test_history_retry_uses_local_generation_clock_at_calendar_boundary(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        history = OptionHistoryRepository(runtime)
+        ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
+        slot = datetime(2026, 8, 31, 23, 59, 59, 999_999, tzinfo=UTC)
+
+        def capture_rows() -> list[dict[str, object]]:
+            return [
+                {
+                    "underlying_symbol": "QQQ", "expiry": "2026-09-18", "strike": 480 + index * 5,
+                    "type": "call", "underlying_price": 500, "bid": 5 - index * 0.1,
+                    "ask": 5.2 - index * 0.1, "mid": 5.1 - index * 0.1, "open_interest": 200,
+                    "style": "american", "settlement": "physical", "deliverable_key": "qqq-standard",
+                    "standard_contract_verified": True,
+                }
+                for index in range(12)
+            ]
+
+        with runtime.transaction() as connection:
+            connection.execute("SELECT setval('raw.option_capture_generation_id_seq', 1000000, false)")
+        first_run = ingestion.start_run("robinhood", "option_history_full")
+        assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=first_run)
+        first = history.store_capture(
+            run_id=first_run, source_id="robinhood", symbol="QQQ", slot_at=slot,
+            captured={"rows": capture_rows()[:2], "expected_contract_count": 12, "received_contract_count": 2,
+                      "capture_started_at": slot, "capture_finished_at": slot},
+        )
+        ingestion.finish_run(first_run, "partial", summary=first)
+        second_run = ingestion.start_run("robinhood", "option_history_full")
+        assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=second_run)
+        second = history.store_capture(
+            run_id=second_run, source_id="robinhood", symbol="QQQ", slot_at=slot,
+            captured={"rows": capture_rows(), "expected_contract_count": 12, "received_contract_count": 12,
+                      "capture_started_at": slot, "capture_finished_at": slot},
+        )
+        ingestion.finish_run(second_run, "succeeded", summary=second)
+        with runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT generation.generation, quote.observed_at, quote.available_at,
+                       quote.tableoid::regclass::text AS partition_name
+                FROM raw.option_quote quote
+                JOIN raw.option_capture_generation generation ON generation.id = quote.capture_generation_id
+                WHERE quote.snapshot_id = %s AND quote.contract_id = (
+                    SELECT min(contract_id) FROM raw.option_quote WHERE snapshot_id = %s
+                )
+                ORDER BY generation.generation
+                """,
+                [second["snapshot_id"], second["snapshot_id"]],
+            ).fetchall()
+        assert [(row["generation"], row["observed_at"], row["available_at"]) for row in rows] == [
+            (1, slot, slot),
+            (2, slot + timedelta(microseconds=2), slot + timedelta(microseconds=2)),
+        ]
+        assert all(row["partition_name"].startswith("raw.option_quote_") for row in rows)
+    finally:
+        runtime.close()
+
+
 def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_postgres_dsn: str) -> None:
     """A candidate-producing live capture must not fail while writing its evidence legs."""
 
