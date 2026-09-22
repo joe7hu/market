@@ -431,6 +431,7 @@ def test_outcome_attribution_publication_is_full_and_replayable(
                     )
 
         repository = TickerDecisionRepository(runtime)
+        assert not repository.has_pending_outcome_attributions(now=observed + timedelta(days=2))
         first = repository.publish_outcome_attributions(now=observed + timedelta(days=2))
         replay = repository.publish_outcome_attributions(now=observed + timedelta(days=2))
         if plan.eligibility == "BLOCKED":
@@ -1330,11 +1331,16 @@ def test_bounded_ticker_outcome_refresh_rotates_unchecked_then_least_recent_deci
         assert set(second_checks) == set(decisions)
         assert second_checks[decisions[0]] == first_checks[decisions[0]]
         assert all(row["horizons"] == 6 for row in second_checks.values())
+        late = repository.publish(build_ticker_decision(
+            "ROTNEW", {}, as_of=reference,
+        ))["ticker_decision_id"]
+        decisions.append(late)
         third = repository.refresh_outcomes(now=reference, limit=1, symbols={"ROTOLD", "ROTNEW"})
         third_checks = checked()
         assert third == first
         assert third_checks[decisions[0]]["last_checked_at"] > second_checks[decisions[0]]["last_checked_at"]
         assert third_checks[decisions[1]] == second_checks[decisions[1]]
+        assert late not in third_checks
     finally:
         runtime.close()
 

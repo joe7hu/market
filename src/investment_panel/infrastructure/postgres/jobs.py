@@ -13,6 +13,27 @@ from psycopg.types.json import Jsonb
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 
 
+def terminal_stage_statuses(
+    status: str,
+    *,
+    source_status: str | None = None,
+    downstream_status: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Give every finished job an explicit source and publication state."""
+
+    defaults = {
+        "succeeded": ("ok", "ok"),
+        "partial": ("partial", "not_run"),
+        "failed": ("failed", "not_run"),
+        "skipped": ("skipped", "not_run"),
+    }
+    source_default, downstream_default = defaults.get(status, (None, None))
+    return (
+        str(source_status).strip() if source_status else source_default,
+        str(downstream_status).strip() if downstream_status else downstream_default,
+    )
+
+
 class JobRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
@@ -68,6 +89,11 @@ class JobRepository:
         if status not in {"succeeded", "partial", "failed", "skipped"}:
             raise ValueError("job status is invalid")
         stored_summary = summary if summary is not None else ({} if error is None else {"error": error})
+        source_status, downstream_status = terminal_stage_statuses(
+            status,
+            source_status=source_status,
+            downstream_status=downstream_status,
+        )
         with self.runtime.transaction() as connection:
             row = connection.execute(
                 """

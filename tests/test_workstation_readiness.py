@@ -30,6 +30,16 @@ def test_source_success_with_downstream_failure_stays_partial():
     assert result["source_status"] == "ok" and result["downstream_status"] == "failed"
 
 
+def test_skipped_worker_keeps_its_recorded_reason_and_stage_states():
+    result = worker_projection({
+        "status": "skipped", "started_at": NOW, "finished_at": NOW,
+        "summary": {"reason": "repeated_control_observations_unavailable"},
+    }, job="run_stock_alpha_walk_forward", interval=3600, now=NOW, enabled=True)
+    assert result["source_status"] == "skipped"
+    assert result["downstream_status"] == "not_run"
+    assert result["reason"] == "Skipped: repeated control observations unavailable."
+
+
 @pytest.mark.parametrize("enabled,interval,expected", [(False, 15, "disabled"), (True, None, "disabled"), (True, 15, "not_started")])
 def test_never_run_is_not_success(enabled, interval, expected):
     assert worker_projection(None, job="j", interval=interval, now=NOW, enabled=enabled)["status"] == expected

@@ -269,7 +269,7 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
     market_seconds = _env_int("MARKET_MARKET_PUBLICATION_REFRESH_SECONDS", 3600, allow_zero=True)
     if market_seconds > 0:
         intervals["refresh_market_publication"] = market_seconds
-    stock_outcome_seconds = _env_int("MARKET_SYMBOL_OUTCOME_REFRESH_SECONDS", 3600, allow_zero=True)
+    stock_outcome_seconds = _env_int("MARKET_SYMBOL_OUTCOME_REFRESH_SECONDS", 300, allow_zero=True)
     if stock_outcome_seconds > 0:
         intervals["refresh_symbol_decision_outcomes"] = stock_outcome_seconds
 

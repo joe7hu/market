@@ -11,21 +11,37 @@ from investment_panel.infrastructure.postgres.authority import runtime_for_confi
 from investment_panel.infrastructure.postgres.symbol_decision_outcomes import SymbolDecisionOutcomeRepository
 from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 
+OUTCOME_BATCH_SIZE = 50
+
 
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     config = load_config(config_path)
     runtime = runtime_for_config(config)
     symbol_outcomes = SymbolDecisionOutcomeRepository(runtime).refresh()
     ticker_repository = TickerDecisionRepository(runtime)
-    # Keep the scheduled batch bounded: each ticker has six horizon writes and
-    # the job must finish before its existing 300-second subprocess deadline.
-    ticker_outcomes = ticker_repository.refresh_outcomes(limit=25)
+    # A 50-decision batch every five minutes clears the current publication
+    # rate while keeping each outcome pass below its scheduler timeout.
+    ticker_outcomes = ticker_repository.refresh_outcomes(limit=OUTCOME_BATCH_SIZE)
     publish_attributions = getattr(ticker_repository, "publish_outcome_attributions", None)
-    attribution_result = (
-        publish_attributions()
-        if callable(publish_attributions)
-        else {"status": "blocked", "blockers": ["canonical_attribution_publisher_missing"]}
+    pending_attributions = ticker_repository.has_pending_outcome_attributions()
+    if not callable(publish_attributions):
+        attribution_result = {"status": "failed", "reason": "canonical_attribution_publisher_missing"}
+    elif pending_attributions:
+        attribution_result = {
+            "status": "skipped",
+            "reason": "outcome_attribution_pending",
+        }
+    else:
+        attribution_result = publish_attributions()
+    attribution_status = str(attribution_result.get("status") or "skipped")
+    downstream_status = (
+        "ok" if attribution_status == "ok" else
+        "failed" if attribution_status == "failed" else
+        "blocked" if attribution_status == "blocked" else "not_run"
     )
+    status = str(symbol_outcomes.get("status") or "ok")
+    if status == "ok" and attribution_status in {"blocked", "failed"}:
+        status = "partial"
     return {
         **symbol_outcomes,
         "symbol_outcomes": symbol_outcomes,
@@ -34,6 +50,9 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
         "attribution_publication_id": attribution_result.get("attribution_publication_id"),
         "database": "postgresql",
         "paper_orders": 0,
+        "status": status,
+        "source_status": str(symbol_outcomes.get("status") or "ok"),
+        "downstream_status": downstream_status,
     }
 
 

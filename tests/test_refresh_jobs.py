@@ -80,8 +80,14 @@ def test_outcome_refresh_includes_ticker_learning_without_staging_orders(monkeyp
             assert received_runtime is runtime
 
         def refresh_outcomes(self, *, limit):
-            assert limit == 25
+            assert limit == 50
             return {"evaluated": 3, "updated": 18, "resolved": 2}
+
+        def has_pending_outcome_attributions(self):
+            return False
+
+        def publish_outcome_attributions(self):
+            return {"status": "ok", "attribution_publication_id": "publication:test"}
 
     monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "load_config", lambda _path: config)
     monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "runtime_for_config", lambda _config: runtime)
@@ -103,6 +109,76 @@ def test_outcome_refresh_includes_ticker_learning_without_staging_orders(monkeyp
     assert result["evaluated"] == 2
     assert result["symbol_outcomes"] == {"evaluated": 2, "resolved": 1}
     assert result["ticker_outcomes"] == {"evaluated": 3, "updated": 18, "resolved": 2}
+    assert result["status"] == "ok"
+    assert result["source_status"] == "ok"
+    assert result["downstream_status"] == "ok"
+
+
+def test_outcome_refresh_skips_global_attribution_without_new_resolutions(monkeypatch) -> None:
+    runtime = object()
+    config = object()
+
+    class FakeSymbolRepository:
+        def __init__(self, received_runtime):
+            assert received_runtime is runtime
+
+        def refresh(self):
+            return {"status": "ok", "evaluated": 0, "resolved": 0}
+
+    class FakeTickerRepository:
+        def __init__(self, received_runtime):
+            assert received_runtime is runtime
+
+        def refresh_outcomes(self, *, limit):
+            assert limit == 50
+            return {"evaluated": 50, "updated": 300, "resolved": 0}
+
+        def has_pending_outcome_attributions(self):
+            return True
+
+        def publish_outcome_attributions(self):
+            raise AssertionError("incomplete outcomes must not trigger a global attribution scan")
+
+    monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "load_config", lambda _path: config)
+    monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "runtime_for_config", lambda _config: runtime)
+    monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "SymbolDecisionOutcomeRepository", FakeSymbolRepository)
+    monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "TickerDecisionRepository", FakeTickerRepository)
+
+    result = refresh_jobs.refresh_symbol_decision_outcomes.run("config.yaml")
+
+    assert result["ticker_outcome_attribution"] == {
+        "status": "skipped", "reason": "outcome_attribution_pending",
+    }
+    assert result["status"] == "ok"
+    assert result["source_status"] == "ok"
+    assert result["downstream_status"] == "not_run"
+
+
+def test_outcome_refresh_keeps_a_blocked_attribution_visible(monkeypatch) -> None:
+    runtime = object()
+    config = object()
+    monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "load_config", lambda _path: config)
+    monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "runtime_for_config", lambda _config: runtime)
+    monkeypatch.setattr(
+        refresh_jobs.refresh_symbol_decision_outcomes,
+        "SymbolDecisionOutcomeRepository",
+        lambda _runtime: SimpleNamespace(refresh=lambda: {"status": "ok"}),
+    )
+    monkeypatch.setattr(
+        refresh_jobs.refresh_symbol_decision_outcomes,
+        "TickerDecisionRepository",
+        lambda _runtime: SimpleNamespace(
+            refresh_outcomes=lambda **_kwargs: {"evaluated": 1, "updated": 6, "resolved": 6},
+            has_pending_outcome_attributions=lambda: False,
+            publish_outcome_attributions=lambda: {"status": "blocked"},
+        ),
+    )
+
+    result = refresh_jobs.refresh_symbol_decision_outcomes.run("config.yaml")
+
+    assert result["status"] == "partial"
+    assert result["source_status"] == "ok"
+    assert result["downstream_status"] == "blocked"
 
 
 def test_benchmark_refresh_only_freezes_the_equity_denominator(monkeypatch) -> None:
@@ -143,6 +219,22 @@ def test_refresh_job_can_be_started_and_completed(tmp_path, monkeypatch) -> None
     assert rows[0]["id"] == job["id"]
     assert rows[0]["status"] == "succeeded"
     assert rows[0]["summary"] == {"ok": True, "rows": 3}
+
+
+def test_refresh_job_records_terminal_stage_defaults(tmp_path, monkeypatch) -> None:
+    db_path = os.environ["MARKET_DATABASE_URL"]
+    monkeypatch.setitem(
+        refresh_jobs.ALLOWLIST,
+        "unit_refresh",
+        lambda _config_path: {"status": "skipped", "reason": "nothing_due"},
+    )
+
+    job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
+    refresh_jobs.execute_refresh_job(job["id"], "unit_refresh", db_path, "config.yaml")
+    row = refresh_jobs.refresh_job_rows(db_path)[0]
+
+    assert row["source_status"] == "skipped"
+    assert row["downstream_status"] == "not_run"
 
 
 def test_refresh_job_records_due_dispatch_source_and_downstream_status(tmp_path, monkeypatch) -> None:

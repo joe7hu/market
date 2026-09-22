@@ -1349,7 +1349,7 @@ class TickerDecisionRepository:
                         WHERE outcome.ticker_decision_id = decision.id
                     ) outcome_check ON true
                     WHERE {" AND ".join(filters)}
-                    ORDER BY outcome_check.last_checked_at ASC NULLS FIRST, decision.as_of, decision.id
+                    ORDER BY COALESCE(outcome_check.last_checked_at, decision.as_of), decision.as_of, decision.id
                     LIMIT %s
                 )
                 SELECT decision.id::text AS decision_id, instrument.id AS instrument_id,
@@ -1423,6 +1423,35 @@ class TickerDecisionRepository:
                     updated += 1
                     resolved += int(outcome["state"] == "resolved")
         return {"evaluated": len(decisions), "updated": updated, "resolved": resolved}
+
+    def has_pending_outcome_attributions(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        """Return whether any plan-bound decision lacks its full resolved outcome set."""
+
+        reference = _utc(now or datetime.now(UTC))
+        with self.runtime.read(JOB_PROFILE) as connection:
+            row = connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM analysis.ticker_decision decision
+                    WHERE decision.status IN ('published', 'superseded')
+                      AND decision.as_of <= %s
+                      AND jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
+                      AND (
+                          SELECT count(*)
+                          FROM analysis.ticker_outcome outcome
+                          WHERE outcome.ticker_decision_id = decision.id
+                            AND outcome.state = 'resolved'
+                      ) <> 6
+                ) AS pending
+                """,
+                [reference],
+            ).fetchone()
+        return bool(row["pending"])
 
     def publish_outcome_attributions(
         self,

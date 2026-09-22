@@ -13,6 +13,7 @@ from typing import Any
 
 from investment_panel.core.job_policy import scheduler_intervals, scheduler_enabled
 from investment_panel.domain.decision import is_market_open, is_us_market_day, market_session_bounds, completed_trading_dates, MARKET_TZ
+from investment_panel.infrastructure.postgres.jobs import terminal_stage_statuses
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, RuntimeProfile
 from investment_panel.infrastructure.postgres.experiment_events import experiment_progress
 from investment_panel.settings import AppConfig
@@ -76,21 +77,29 @@ def worker_projection(row: dict[str, Any] | None, *, job: str, interval: int | N
         if not enabled or not interval:
             base.update(status="disabled", reason="Not scheduled by the current configuration.")
         return base
-    base.update(source_status=row.get("source_status"), downstream_status=row.get("downstream_status"),
+    status = str(row.get("status") or "unknown")
+    source_status, downstream_status = terminal_stage_statuses(
+        status,
+        source_status=row.get("source_status"),
+        downstream_status=row.get("downstream_status"),
+    )
+    base.update(source_status=source_status, downstream_status=downstream_status,
                 error=row.get("error"), summary=row.get("summary"),
                 last_attempt_at=row.get("started_at"), heartbeat_at=row.get("heartbeat_at"),
                 last_success_at=row.get("last_success_at"), run_id=str(row.get("id") or ""))
     finished = row.get("finished_at")
     if enabled and interval and finished and row.get("status") != "running":
         base["next_expected_at"] = finished + timedelta(seconds=interval)
-    status = str(row.get("status") or "unknown")
     last_activity = row.get("heartbeat_at") if status == "running" else finished or row.get("started_at")
     tolerance = max(90, 3 * (interval or 0))
     overdue = bool(enabled and interval and last_activity and (now - last_activity).total_seconds() > tolerance)
+    summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+    summary_reason = str(summary.get("reason") or "").strip().replace("_", " ")
     base.update(status="overdue" if overdue else status,
                 reason="Worker heartbeat or next run is overdue." if overdue else
                        "Last run failed; inspect its error in System health." if status == "failed" else
                        "Last run was partial; inspect its unresolved stages." if status == "partial" else
+                       f"Skipped: {summary_reason}." if status == "skipped" and summary_reason else
                        "Recorded worker state; this does not establish strategy quality.")
     if not enabled or not interval:
         base.update(status="disabled", reason="Not scheduled; last recorded run is shown for context.")
