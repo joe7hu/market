@@ -47,6 +47,17 @@ def test_unread_workflow_populations_are_not_zero():
     assert result["status"] == "needs_attention"
 
 
+def test_partial_workflow_population_retains_its_observed_count():
+    payload = {"paper_only": True, "failed_reads": [], "market": {"status": "available"},
+        "workers": [{"job": "process_options_paper_orders", "status": "succeeded"}],
+        "paper": {"status": "available", "counts": {}},
+        "observations": {"status": "partial", "counts": {"entered": 18}}}
+    result = check.assess("workflow", payload)
+    assert result["evidence"]["observations_record_count"] == 18
+    assert "observations population could not be read; no zero is assumed" not in result["warnings"]
+    assert "observations population is partial; inspect recorded blockers" in result["warnings"]
+
+
 def test_transport_errors_do_not_echo_sensitive_exception_text(monkeypatch):
     seen = []
     def fail(base, path, timeout):

@@ -11,7 +11,7 @@
 #   make test-migrations - raw-database migration/recovery checks
 #   make release-gate - full release gate
 #   make release-smoke - post-restart runtime identity and Today stability gate
-#   make release-fixture-smoke - seeded local API smoke; no production database
+#   make release-fixture-smoke - seeded local API and production-shaped PostgreSQL smoke
 #   make fast-gate - focused iteration gate for release-smoke changes
 #
 # `check` is intentionally green-or-bust and quick so it can run on every commit.
@@ -91,7 +91,7 @@ release-fixture-smoke:
 
 fast-gate: release-fixture-smoke
 	@$(PY) -m pytest -q tests/test_workstation_verification.py tests/test_premarket_options_intelligence.py
-	@npm --prefix frontend run test:frontend -- src/pages/HealthRoute.availability.test.tsx
+	@npm --prefix frontend run test:frontend -- src/pages/HealthRoute.availability.test.tsx src/presentation/workstationEvidence.test.tsx
 	@npm --prefix frontend run build
 	@$(RUFF) check scripts/verify_workstation.py src/investment_panel/application/read_models/payloads.py src/investment_panel/workflows/agents.py tests/test_workstation_verification.py tests/test_premarket_options_intelligence.py tests/application_api/test_release_smoke.py
 	@git diff --check

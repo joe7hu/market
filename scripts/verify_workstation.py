@@ -142,11 +142,13 @@ def assess(name: str, payload: dict[str, Any], *, expected_commit: str | None = 
             warnings.append("Paper manager is not confirmed active/healthy")
         for population in ("paper", "observations"):
             row = object_value(payload.get(population), population)
-            if row.get("status") != "available":
+            if row.get("status") not in {"available", "partial"}:
                 warnings.append(f"{population} population could not be read; no zero is assumed")
             else:
                 counts = object_value(row.get("counts"), population + ".counts")
                 evidence[population + "_record_count"] = sum(count_value(value, "population count") for value in counts.values())
+                if row.get("status") == "partial":
+                    warnings.append(f"{population} population is partial; inspect recorded blockers")
     elif name == "market":
         if payload.get("scope") != "market":
             raise ContractError("Market response has the wrong scope")
