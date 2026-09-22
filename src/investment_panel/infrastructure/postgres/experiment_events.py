@@ -10,7 +10,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from investment_panel.domain.decision import is_market_open, market_session_elapsed
-from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
+from investment_panel.infrastructure.postgres.runtime import API_PROFILE
 
 
 def record_experiment_event(
@@ -53,6 +53,16 @@ def record_experiment_event(
     identity = {"kind": kind, "quotes": sorted(witnesses, key=lambda item: json.dumps(item, default=str, sort_keys=True)), "reason": reason}
     if kind == "mark_gap":
         identity["bucket"] = int(observed_at.timestamp()) // 300
+        # A recovery followed by another outage in the same five-minute
+        # bucket is a new gap. Deduplicate repeated checks, not transitions.
+        previous = connection.execute(
+            """SELECT event_key FROM analysis.option_experiment_event
+               WHERE shadow_trade_id = %s AND kind <> 'mark_gap'
+                 AND observed_at <= %s
+               ORDER BY observed_at DESC, event_key DESC LIMIT 1""",
+            [shadow_id, observed_at],
+        ).fetchone()
+        identity["since_mark"] = previous["event_key"] if previous else None
     key = hashlib.sha256(json.dumps(identity, default=str, sort_keys=True).encode()).hexdigest()
     connection.execute(
         """INSERT INTO analysis.option_experiment_event
@@ -114,7 +124,7 @@ def experiment_history(runtime: Any, *, observation_id: str, limit: int = 2000, 
     if _time(now) is None:
         raise ValueError("experiment history requires a timezone-aware cutoff")
     limit = max(1, min(int(limit), 2000))
-    with runtime.snapshot(JOB_PROFILE) as connection:
+    with runtime.snapshot(API_PROFILE) as connection:
         shadow = connection.execute(
             """SELECT shadow.id::text, instrument.symbol, shadow.status, shadow.entry_at,
                       shadow.entry_price, shadow.exit_at, shadow.exit_price,
@@ -156,7 +166,7 @@ def experiment_progress(runtime: Any, *, now: datetime | None = None) -> dict[st
     Exchange closures consume no management/freshness budget.
     """
     reference = now or datetime.now(UTC)
-    with runtime.snapshot(JOB_PROFILE) as connection:
+    with runtime.snapshot(API_PROFILE) as connection:
         rows = connection.execute(
             """SELECT status, count(*) AS count
                FROM analysis.shadow_trade

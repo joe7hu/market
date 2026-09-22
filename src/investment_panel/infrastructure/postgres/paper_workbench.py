@@ -14,6 +14,7 @@ from investment_panel.infrastructure.postgres.experiment_events import experimen
 
 from investment_panel.domain.decision import is_market_open, market_session_bounds, valuation_mark_is_stale
 from investment_panel.infrastructure.postgres.runtime import (
+    API_PROFILE,
     DatabaseRuntime,
     JOB_PROFILE,
     RuntimeProfile,
@@ -220,7 +221,7 @@ class PaperWorkbenchRepository:
     def observations(self, *, status: str | None = None, offset: int = 0, limit: int = 20) -> dict[str, Any]:
         """Prospective experiments remain separate from the funded order ledger."""
         reference = datetime.now(UTC)
-        with self.runtime.snapshot(JOB_PROFILE) as connection:
+        with self.runtime.snapshot(API_PROFILE) as connection:
             counts = connection.execute(
                 """SELECT status, count(*) AS count FROM analysis.shadow_trade
                    WHERE source_kind = 'options_paper_experiment' GROUP BY status"""

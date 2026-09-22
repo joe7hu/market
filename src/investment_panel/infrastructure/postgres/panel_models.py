@@ -27,7 +27,7 @@ from investment_panel.infrastructure.postgres.runtime import API_PROFILE, Runtim
 
 __all__ = ["load_postgres_tables", "today_authority_pages"]
 
-TODAY_AUTHORITY_PROFILE = RuntimeProfile(statement_timeout_ms=10_000)
+TODAY_AUTHORITY_PROFILE = RuntimeProfile(statement_timeout_ms=10_000, jit=False)
 
 
 class SchemaRevisionMismatch(RuntimeError):

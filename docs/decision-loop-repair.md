@@ -138,3 +138,29 @@ checks. Use its `--help` for the deployed API URL, commit and schema options.
 There is no requirement to force a trade on a rising market day: the required
 behavior is autonomous, auditable decision and position management with visible
 producer failures and real execution evidence.
+
+## Final release closure
+
+The release suite exposed two obsolete expectations: its route ceiling did not
+include the new history endpoint, and workstation tests still expected a
+generation pause to hide settlement. The route budget increases by exactly one
+with an explicit read-only UUID/schema assertion; the scheduler test now checks
+that settlement remains visible, including when explicitly disabled. The
+migration remains registered in the exact schema inventory. No test is skipped
+and the 80 percent coverage threshold is unchanged.
+
+The full-panel probe also exposed API compilation overhead: a local PostgreSQL
+18 plan compiled 78 JIT functions despite the empty source population. API
+transactions and the existing bounded Today profile now disable JIT locally;
+worker transactions retain the server default. Tests verify settings after
+commit and rollback on a reused connection. The three-second API statement
+timeout and two-second lock timeout are unchanged. See PostgreSQL's
+[JIT tradeoff documentation](https://www.postgresql.org/docs/18/jit-decision.html).
+
+Experiment history, collection health and observation-page reads use the API
+budget, not a fifteen-minute worker budget. An index supports the experiment
+status/creation-time population. A recovery followed by another quote outage
+within one five-minute bucket now creates a second chart gap: only repeated
+checks in the same uninterrupted outage are deduplicated. The integration
+tests cover both transitions and response-contract serialization of actual
+journal prices, source clocks, fees and P&L.

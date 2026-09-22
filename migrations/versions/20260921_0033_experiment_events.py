@@ -33,6 +33,9 @@ def upgrade() -> None:
         );
         CREATE INDEX ix_option_experiment_event_clock ON analysis.option_experiment_event
             (shadow_trade_id, observed_at, event_key);
+        CREATE INDEX ix_option_experiment_status ON analysis.shadow_trade
+            (status, created_at DESC, id)
+            WHERE source_kind = 'options_paper_experiment';
         REVOKE ALL ON analysis.option_experiment_event FROM PUBLIC;
         REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON analysis.option_experiment_event FROM market_app;
         GRANT SELECT, INSERT ON analysis.option_experiment_event TO market_app;
@@ -41,4 +44,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DROP INDEX analysis.ix_option_experiment_status")
     op.execute("DROP TABLE analysis.option_experiment_event")

@@ -34,7 +34,7 @@ def test_openapi_baseline_and_json_success_schemas() -> None:
         if method in {"get", "post", "put", "patch", "delete"}
     ]
     # Includes bounded paper observations, history, and workstation readiness.
-    assert len(paths) <= 106
+    assert len(paths) <= 107
     assert operations
     assert contract["components"]["schemas"]
 
@@ -66,3 +66,15 @@ def test_json_success_responses_use_named_backend_models() -> None:
                 if schema and "$ref" not in schema:
                     unnamed.append(f"{method.upper()} {path} {status}")
     assert not unnamed, "JSON success responses must reference named schemas:\n  " + "\n  ".join(unnamed)
+
+
+def test_experiment_history_is_a_uuid_scoped_read_only_named_contract() -> None:
+    endpoint = _contract()["paths"]["/api/paper/observations/{observation_id}/history"]
+    assert set(endpoint) == {"get"}
+    operation = endpoint["get"]
+    identifier = next(item for item in operation["parameters"] if item["name"] == "observation_id")
+    assert identifier["in"] == "path" and identifier["required"] is True
+    assert identifier["schema"]["format"] == "uuid"
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/PaperObservationHistory"
+    }

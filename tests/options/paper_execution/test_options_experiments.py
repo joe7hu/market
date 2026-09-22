@@ -1546,6 +1546,10 @@ def test_experiment_event_journal_follows_real_worker_entry_marks_exit_and_not_a
         history = experiment_history(application, observation_id=str(shadow_id), now=now + timedelta(seconds=62))
         assert [row["kind"] for row in history["events"]] == ["entry", "mark", "exit"]
         assert float(history["events"][-1]["net_pnl"]) == pytest.approx(58.7)
+        from investment_panel.api.response_contracts import PaperObservationHistory
+        transport = PaperObservationHistory.model_validate(history).model_dump(mode="json")
+        assert transport["events"][-1]["net_pnl"] == pytest.approx(58.7)
+        assert transport["events"][-1]["quote_observed_at"]
         row = PaperWorkbenchRepository(application).observations(status="closed")["rows"][0]
         assert row["mark_status"] == "realized" and row["net_pnl"] == pytest.approx(58.7)
         assert "outcome evaluator" in row["required_next_action"]
@@ -1580,3 +1584,30 @@ def test_experiment_journal_gaps_and_atomic_rollback_never_create_fake_pnl(exper
         with pytest.raises(ValueError, match="causal"):
             record_experiment_event(connection, shadow_id=shadow_id, kind="mark", observed_at=now,
                 quotes=[{"observed_at": now + timedelta(seconds=1)}], price=1, net_pnl=1, net_return=.1, fees=1.3)
+
+
+def test_gap_deduplication_keeps_recovered_then_failed_transitions(experiment_context):
+    from investment_panel.infrastructure.postgres.experiment_events import experiment_history, record_experiment_event
+    runtime, ingestion, now, _parent, _candidate = experiment_context
+    _capture(runtime, ingestion, now)
+    refresh_options_radar(runtime, source_id="test-experiment", code_version="gap-transition-test")
+    _capture(runtime, ingestion, now + timedelta(seconds=20))
+    advance_experiment_shadows(runtime, now=now + timedelta(seconds=21))
+    with runtime.read() as connection:
+        shadow_id = connection.execute("SELECT id FROM analysis.shadow_trade").fetchone()["id"]
+    history = experiment_history(runtime, observation_id=str(shadow_id), now=now + timedelta(seconds=22))
+    # All following checks occur in one bucket. Repeated failed checks are
+    # idempotent, but a recovery makes the subsequent outage a different gap.
+    base = (now + timedelta(minutes=10)).replace(second=0, microsecond=0)
+    base = base.replace(minute=base.minute // 5 * 5)
+    with runtime.transaction() as connection:
+        for offset in (0, 1):
+            record_experiment_event(connection, shadow_id=shadow_id, kind="mark_gap", observed_at=base + timedelta(seconds=offset), quotes=[], reason="quote_missing")
+        quotes = [{**quote, "observed_at": base + timedelta(seconds=10)} for quote in history["events"][0]["evidence"]["quotes"]]
+        record_experiment_event(connection, shadow_id=shadow_id, kind="mark", observed_at=base + timedelta(seconds=10),
+            quotes=quotes, price=.6, net_pnl=8.7, net_return=8.7 / 50, fees=1.3)
+        for offset in (20, 21):
+            record_experiment_event(connection, shadow_id=shadow_id, kind="mark_gap", observed_at=base + timedelta(seconds=offset), quotes=[], reason="quote_missing")
+    history = experiment_history(runtime, observation_id=str(shadow_id), now=base + timedelta(seconds=30))
+    assert [event["kind"] for event in history["events"]] == ["entry", "mark_gap", "mark", "mark_gap"]
+    assert all(event["net_pnl"] is None for event in history["events"] if event["kind"] == "mark_gap")
