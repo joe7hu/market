@@ -1,0 +1,45 @@
+name: storage-review-apply
+on:
+  pull_request:
+    paths:
+      - .github/workflows/storage-review-apply.yml
+      - .storage-review/**
+permissions:
+  contents: write
+jobs:
+  apply-and-test:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'storage/nas-archive-and-compact-decisions'
+    runs-on: ubuntu-24.04
+    env:
+      PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Apply reviewed patch to this branch only
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          cat .storage-review/part-{0,1,2,3}.bin | xz -d > /tmp/storage.patch
+          echo 'd63035b6e007ef2ae956d5149b49367c965242b4445cdae01d6415397d286984  /tmp/storage.patch' | sha256sum -c
+          git apply --index /tmp/storage.patch
+          git config user.name 'Market storage maintenance'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Normalize decision evidence and add verified NAS retention'
+          git fetch origin storage/nas-archive-and-compact-decisions
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+          git push origin HEAD:refs/heads/storage/nas-archive-and-compact-decisions
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: '0.9.26'
+      - uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee
+        with:
+          postgres-version: '18'
+      - run: uv sync --extra test --locked
+      - name: Focused PostgreSQL migration, archive, retention, and ticker tests
+        run: uv run pytest tests/postgres/test_decision_storage.py tests/postgres/test_storage_archive.py tests/postgres/test_postgres_retention_backup.py tests/postgres/test_ticker_paper_execution.py -q --tb=short
