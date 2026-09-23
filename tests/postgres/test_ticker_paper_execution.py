@@ -1100,10 +1100,14 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         assert rank_publication["published_at"] > observed
         assert rank_publication["input_cutoff"] == observed
         assert len(decision.input_manifest.input_hash) == 64
+        replay_repository = TickerDecisionRepository(runtime)
+        assert replay_repository.publish(decision)["ticker_decision_id"] == replay_repository.publish(decision)["ticker_decision_id"]
+        with runtime.read() as connection:
+            assert connection.execute("SELECT count(*) FROM analysis.ticker_input_manifest_legacy").fetchone()["count"] == 0
         with runtime.read() as connection:
             manifest = connection.execute(
-                "SELECT count(*) FROM analysis.ticker_input_manifest manifest "
-                "JOIN analysis.ticker_decision decision ON decision.id = manifest.ticker_decision_id"
+                "SELECT count(*) FROM analysis.ticker_decision "
+                "WHERE jsonb_typeof(input_manifest->'inputs') = 'object'"
             ).fetchone()["count"]
             outcomes = connection.execute(
                 "SELECT count(*) FROM analysis.ticker_outcome outcome "

@@ -346,7 +346,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
                 runtime_for_config(config), market_state_visible_at or bounded_cutoff(),
             ),
         }),
-        ("retention", True, lambda: RetentionRepository(runtime_for_config(config)).prune()),
+        ("retention", True, lambda: RetentionRepository(runtime_for_config(config), archive_root=config.nas.storage_archive_dir).prune()),
         ("database_snapshot", False, lambda: snapshot_database.run(config_path)),
     ]
     results: list[dict[str, Any]] = []

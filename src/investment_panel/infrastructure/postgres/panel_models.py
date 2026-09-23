@@ -137,7 +137,7 @@ COMPACT_TICKER_DECISIONS_QUERY = """
                    ORDER BY decision.as_of DESC, decision.published_at DESC,
                             decision.created_at DESC, decision.id DESC
                ) AS current_row
-        FROM analysis.ticker_decision decision
+        FROM analysis.ticker_decision_read decision
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE decision.status = 'published'
           AND decision.contract_version = 'ticker-decision.v1'
@@ -545,7 +545,7 @@ DIRECT_QUERIES: dict[str, str] = {
                        ORDER BY decision.as_of DESC, decision.published_at DESC,
                                 decision.created_at DESC, decision.id DESC
                    ) AS current_row
-            FROM analysis.ticker_decision decision
+            FROM analysis.ticker_decision_read decision
             JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
             WHERE decision.status = 'published'
               AND decision.contract_version = 'ticker-decision.v1'
@@ -580,7 +580,7 @@ DIRECT_QUERIES: dict[str, str] = {
                decision.risk_policy_snapshot,
                decision.status
         FROM current_candidates candidate
-        JOIN analysis.ticker_decision decision ON decision.id = candidate.id
+        JOIN analysis.ticker_decision_read decision ON decision.id = candidate.id
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE current_row = 1
           AND authority_count = 1
@@ -617,7 +617,7 @@ DIRECT_QUERIES: dict[str, str] = {
                        ORDER BY decision.as_of DESC, decision.published_at DESC,
                                 decision.created_at DESC, decision.id DESC
                    ) AS current_row
-            FROM analysis.ticker_decision decision
+            FROM analysis.ticker_decision_read decision
             JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
             WHERE decision.status = 'published'
               AND decision.contract_version = 'ticker-decision.v1'
@@ -673,7 +673,7 @@ DIRECT_QUERIES: dict[str, str] = {
                decision.fundamental->'scenarios' AS scenarios,
                outcome.updated_at
         FROM analysis.ticker_outcome outcome
-        JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+        JOIN analysis.ticker_decision_read decision ON decision.id = outcome.ticker_decision_id
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         ORDER BY outcome.measured_through DESC NULLS LAST, outcome.updated_at DESC
     """,
@@ -690,7 +690,7 @@ DIRECT_QUERIES: dict[str, str] = {
             SELECT outcome.*, decision.id AS decision_id, decision.as_of,
                    instrument.symbol AS ticker, decision.fundamental->'scenarios' AS scenarios
             FROM ranked_outcomes outcome
-            JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+            JOIN analysis.ticker_decision_read decision ON decision.id = outcome.ticker_decision_id
             JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
             WHERE outcome.horizon_rank = 1
             ORDER BY decision.as_of DESC, decision.id DESC, outcome.horizon
@@ -1145,7 +1145,7 @@ def today_authority_pages(
                        ORDER BY decision.as_of DESC, decision.published_at DESC,
                                 decision.created_at DESC, decision.id DESC
                    ) AS current_row
-            FROM analysis.ticker_decision decision
+            FROM analysis.ticker_decision_read decision
             JOIN catalog.instrument instrument
               ON instrument.id = decision.instrument_id
             WHERE decision.status = 'published'
@@ -1386,7 +1386,7 @@ def today_authority_pages(
                        )
                    ) AS needs_missing_plan_validation
             FROM positioned_actions
-            LEFT JOIN analysis.ticker_decision stored_decision
+            LEFT JOIN analysis.ticker_decision_read stored_decision
               ON stored_decision.id = positioned_actions.decision_id
             CROSS JOIN LATERAL (
                 SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan
@@ -1738,7 +1738,7 @@ def today_authority_pages(
               positioned_actions.trade_plan_position > {safe_plan_offset}
               AND positioned_actions.trade_plan_position <= {safe_plan_end}
              )
-        LEFT JOIN analysis.ticker_decision stored_decision
+        LEFT JOIN analysis.ticker_decision_read stored_decision
           ON stored_decision.id = positioned_actions.decision_id
         CROSS JOIN LATERAL (
             SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan

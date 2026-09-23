@@ -159,7 +159,7 @@ class TickerPaperExecutionRepository:
                        opportunity_episode_id, opportunity_cutoff, opportunity_episode,
                        market_state_publication_id::text, market_state_snapshot,
                        portfolio_impacts, risk_policy_snapshot
-                FROM analysis.ticker_decision
+                FROM analysis.ticker_decision_read
                 WHERE instrument_id = %s AND decision_revision = %s
                 LIMIT 1
                 """,

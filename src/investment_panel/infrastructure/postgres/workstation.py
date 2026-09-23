@@ -214,7 +214,7 @@ class WorkstationRepository:
                            decision.input_manifest->'reference_signal' AS reference_signal,
                            decision.input_manifest->'opportunity_rank' AS opportunity_rank,
                            decision.input_manifest->'trade_plan' AS trade_plan
-                    FROM analysis.ticker_decision decision
+                    FROM analysis.ticker_decision_read decision
                     WHERE decision.instrument_id = monitored.id AND decision.status = 'published'
                       AND decision.published_at <= %s AND decision.as_of <= %s
                     ORDER BY decision.published_at DESC, decision.id DESC LIMIT 1

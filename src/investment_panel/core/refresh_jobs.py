@@ -293,7 +293,8 @@ ALLOWLIST: dict[str, JobRunner] = {
     "update_disclosures": lambda config_path: run_source_with_material_thesis(config_path, update_disclosure_sources.run),
     "update_arco_data": lambda config_path: run_source_with_material_thesis(config_path, update_arco_sources.run),
     "postgres_retention": lambda config_path: RetentionRepository(
-        runtime_for_url(database_url(load_config(config_path)))
+        runtime_for_url(database_url(load_config(config_path))),
+        archive_root=load_config(config_path).nas.storage_archive_dir,
     ).prune(),
     "snapshot_database": lambda config_path: snapshot_database.run(config_path),
 }

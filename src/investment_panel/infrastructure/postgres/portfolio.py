@@ -142,7 +142,7 @@ class PortfolioLoopRepository:
                           snapshot.input_cutoff
                    FROM analysis.portfolio_allocation_item item
                    JOIN analysis.portfolio_allocation_snapshot snapshot USING (allocation_id)
-                   LEFT JOIN analysis.ticker_decision decision
+                   LEFT JOIN analysis.ticker_decision_read decision
                      ON decision.input_manifest->'trade_plan'->>'trade_plan_id' = item.action_id
                     AND decision.input_manifest->'trade_plan'->>'rank_id' = item.rank_id
                     AND decision.input_manifest->'trade_plan'->>'strategy_forecast_id' = item.strategy_forecast_id
@@ -328,7 +328,7 @@ class PortfolioLoopRepository:
                 decision_hash = item.trace.get("source_decision_input_hash")
                 decision_id = item.trace.get("source_decision_id")
                 if not isinstance(decision_hash, str) or not connection.execute(
-                    """SELECT 1 FROM analysis.ticker_decision
+                    """SELECT 1 FROM analysis.ticker_decision_read
                        WHERE id::text = %s AND input_hash = %s AND status = 'published'
                          AND input_manifest->'trade_plan'->>'trade_plan_id' = %s
                          AND input_manifest->'trade_plan'->>'rank_id' = %s
@@ -480,7 +480,7 @@ class PortfolioLoopRepository:
                 }
                 decision = connection.execute(
                     """SELECT portfolio_impacts
-                       FROM analysis.ticker_decision
+                       FROM analysis.ticker_decision_read
                        WHERE instrument_id = %s AND status = 'published'
                          AND published_at IS NOT NULL AND as_of <= %s
                        ORDER BY as_of DESC, published_at DESC, id DESC LIMIT 1""",
@@ -536,7 +536,7 @@ class PortfolioLoopRepository:
                               decision.id, decision.input_hash, decision.experiment_id,
                               decision.data_requests, decision.as_of,
                               decision.risk_policy_snapshot
-                       FROM analysis.ticker_decision decision
+                       FROM analysis.ticker_decision_read decision
                        WHERE decision.instrument_id = forecast.instrument_id
                          AND decision.status = 'published'
                          AND decision.as_of <= %s
@@ -1468,7 +1468,7 @@ class PortfolioLoopRepository:
                               decision.id AS published_decision_id, decision.experiment_id
                        FROM analysis.portfolio_allocation_item item
                        JOIN analysis.strategy_forecast forecast ON forecast.id = item.strategy_forecast_id
-                       JOIN analysis.ticker_decision decision
+                       JOIN analysis.ticker_decision_read decision
                          ON decision.input_manifest->'trade_plan'->>'trade_plan_id' = item.action_id
                         AND decision.input_manifest->'trade_plan'->>'rank_id' = item.rank_id
                         AND decision.input_manifest->'trade_plan'->>'strategy_forecast_id' = item.strategy_forecast_id

@@ -1,9 +1,11 @@
 # Database maintenance
 
-Market uses one PostgreSQL baseline (`20260907_0006`). It is a current-state,
-data-free schema snapshot split into ordered SQL modules under
-`migrations/baseline/`. It does not replay historical migrations and it does not
-delete data. Older migration files remain in Git history for audit only.
+Market uses a data-free PostgreSQL baseline (`20260907_0006`) under
+`migrations/baseline/`, followed by the explicit data-preserving revisions in
+`migrations/versions/`. The current head is `20260923_0035`. Existing databases
+must run the migration runner; updating a baseline snapshot cannot upgrade a
+nonempty database. See [storage-efficiency migration](storage-efficiency-migration.md)
+for decision/context normalization and verified NAS reclamation.
 
 ## Apply a schema change
 
@@ -18,8 +20,8 @@ The runner takes one database-wide migration lock and sets bounded lock and
 statement timeouts. Do not run Alembic directly. A failed transaction leaves the
 previous schema intact and can be retried after its cause is fixed.
 
-An existing database already at `20260907_0006` is left unchanged when the
-runner is repeated. Its rows, secrets, roles, and grants are not rewritten.
+An existing database already at the current head is left unchanged when the
+runner is repeated. Supported earlier revisions are upgraded in sequence. Its rows, secrets, roles, and grants are not rewritten.
 Databases that still record an archived revision fail closed; use the matching
 old checkout to reach `20260907_0006` first. Never stamp an unknown schema or
 reset a database that contains needed records.

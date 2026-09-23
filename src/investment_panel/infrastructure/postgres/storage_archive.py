@@ -20,6 +20,7 @@ import tempfile
 from typing import Any
 from uuid import uuid4
 
+from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 
 from investment_panel.domain.decision import MARKET_TZ, is_us_market_day
@@ -31,7 +32,7 @@ from investment_panel.infrastructure.postgres.storage_guard import storage_capac
 # Only these phases have a production archive writer.  Publication and
 # derived detail is retained or recomputed locally; keeping them out of this
 # set prevents the CLI from advertising a writer that does not exist.
-ARCHIVE_KINDS = frozenset({"fundamental-history", "options"})
+ARCHIVE_KINDS = frozenset({"fundamental-history", "options", "decision-manifests", "publications"})
 _JSON_ARCHIVE_KINDS = frozenset({"fundamental-history", "publications", "derived"})
 ARCHIVE_FREE_RESERVE_BYTES = 10 * 1024**3
 _ARCHIVE_DIRS = {
@@ -42,6 +43,39 @@ _ARCHIVE_DIRS = {
 }
 _OPTION_PARTITION_RE = re.compile(r"^option_quote_(\d{4})(\d{2})(\d{2})?$")
 _BACKUP_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+# pg_total_relation_size(partitioned_parent) does not include its children.
+# Keep this catalog-only inventory shared by the CLI and Health; do not detoast
+# or aggregate millions of fact rows just to diagnose a full disk.
+STORAGE_SIZE_QUERY = """
+    WITH targets AS (
+        SELECT relation, to_regclass(relation) AS oid
+        FROM unnest(ARRAY[
+            'analysis.ticker_input_manifest', 'analysis.ticker_input_manifest_legacy',
+            'analysis.ticker_decision', 'analysis.decision_context',
+            'app.publication_payload', 'app.publication_item',
+            'raw.option_quote', 'raw.fundamental_observation',
+            'raw.quote_confirmation', 'raw.price_bar_confirmation',
+            'analysis.option_relative_value'
+        ]) AS relation
+    ), leaves AS (
+        SELECT target.relation, tree.relid AS oid
+        FROM targets target JOIN pg_class parent ON parent.oid = target.oid
+        CROSS JOIN LATERAL pg_partition_tree(target.oid) tree
+        WHERE parent.relkind = 'p' AND tree.isleaf
+        UNION ALL
+        SELECT target.relation, target.oid
+        FROM targets target JOIN pg_class parent ON parent.oid = target.oid
+        WHERE parent.relkind <> 'p'
+    )
+    SELECT leaf.relation, sum(pg_total_relation_size(leaf.oid))::bigint AS bytes,
+           sum(pg_indexes_size(leaf.oid))::bigint AS index_bytes,
+           sum(CASE WHEN relation.reltoastrelid = 0 THEN 0
+                    ELSE pg_total_relation_size(relation.reltoastrelid) END)::bigint AS toast_bytes
+    FROM leaves leaf JOIN pg_class relation ON relation.oid = leaf.oid
+    GROUP BY leaf.relation ORDER BY bytes DESC
+"""
 
 
 class StorageArchiveService:
@@ -55,23 +89,10 @@ class StorageArchiveService:
         """Return read-only capacity and candidate measurements."""
 
         with self.runtime.read(JOB_PROFILE) as connection:
-            sizes = connection.execute(
-                """
-                SELECT relation, pg_total_relation_size(relation::regclass) AS bytes
-                FROM unnest(ARRAY[
-                    'raw.fundamental_observation', 'raw.quote_confirmation',
-                    'raw.price_bar_confirmation', 'app.publication_item',
-                    'raw.option_quote', 'analysis.option_relative_value'
-                ]) AS relation
-                WHERE to_regclass(relation) IS NOT NULL
-                ORDER BY bytes DESC
-                """
-            ).fetchall()
+            sizes = connection.execute(STORAGE_SIZE_QUERY).fetchall()
             fundamental = connection.execute(
-                """
-                SELECT count(*) AS rows, coalesce(sum(pg_column_size(values)), 0) AS value_bytes
-                FROM raw.fundamental_observation WHERE values ? 'history'
-                """
+                "SELECT reltuples::bigint AS estimated_rows FROM pg_class "
+                "WHERE oid = 'raw.fundamental_observation'::regclass"
             ).fetchone()
             manifests = connection.execute(
                 """
@@ -87,19 +108,21 @@ class StorageArchiveService:
             ).fetchall()
         local = shutil.disk_usage(Path.cwd())
         nas = _disk_usage(self.archive_root)
-        history_bytes = int(fundamental["value_bytes"] or 0)
-        wal_allowance = max(1024**3, int(history_bytes * 0.20))
-        retained_copy_estimate = max(1024**3, int(history_bytes * 0.15))
         return {
             "write": False,
             "archive_root": str(self.archive_root),
             "local_free_bytes": local.free,
+            "local_capacity_scope": "CLI working-directory filesystem, not necessarily PostgreSQL storage",
             "nas_free_bytes": nas.free if nas else None,
-            "required_staging_reserve_bytes": 10 * 1024**3,
-            "wal_allowance_bytes": wal_allowance,
-            "retained_copy_estimate_bytes": retained_copy_estimate,
-            "required_local_staging_bytes": retained_copy_estimate + wal_allowance + 10 * 1024**3,
-            "reclaim_estimate_bytes": {"fundamental_history_values_upper_bound": history_bytes},
+            "nas_free_reserve_bytes": ARCHIVE_FREE_RESERVE_BYTES,
+            "decision_manifest_chunk_limit_bytes": 64 * 1024**2,
+            "decision_manifest_minimum_data_volume_free_bytes": 256 * 1024**2,
+            "decision_context_minimum_data_volume_free_bytes": 2 * 1024**3,
+            "reclaim_estimate_bytes": {"retired_manifests_after_verified_drop": sum(
+                int(row["bytes"]) for row in sizes
+                if row["relation"] == "analysis.ticker_input_manifest_legacy"
+            )},
+            "option_restore_target": "external" if os.environ.get("MARKET_ARCHIVE_VERIFY_DATABASE_URL") else "source_cluster",
             "tables": [dict(row) for row in sizes],
             "fundamental_history_candidates": dict(fundamental),
             "manifests": {str(row["verification_status"]): int(row["count"]) for row in manifests},
@@ -255,10 +278,11 @@ class StorageArchiveService:
         now: datetime | None = None,
         execute: bool = False,
         backup_token: str | None = None,
+        export: bool = False,
     ) -> dict[str, Any]:
         """Archive immutable option partitions and detach empty partitions.
 
-        The default is a read-only plan plus archive verification.  A
+        The default is a read-only plan. ``export=True`` writes verified archives.  A
         partition is detached only after a custom dump, checksum, listing,
         row-count check, and scratch-database restore all pass.  Non-empty
         partitions remain attached for privileged maintenance.
@@ -305,6 +329,10 @@ class StorageArchiveService:
                 "candidates": [],
                 "detached": 0,
             }
+        if not execute and not export:
+            return {"phase": "options", "status": "dry_run", "dry_run": True,
+                    "cutoff": cutoff, "candidates": candidates, "detached": 0,
+                    "non_empty_detach": "requires_separate_owner_maintenance"}
         if execute:
             self._require_verified_backup(backup_token)
             self._assert_no_conflicting_activity()
@@ -442,7 +470,10 @@ class StorageArchiveService:
     def expire_option_archives(
         self, *, now: datetime | None = None, execute: bool = False
     ) -> dict[str, Any]:
-        """Report, then explicitly remove option objects beyond 730 days."""
+        """Inventory aged archives; age alone cannot authorize evidence loss."""
+
+        if execute:
+            raise ValueError("option archive expiry is disabled until evidence reachability and backup retention are verified")
 
         reference = now or datetime.now(UTC)
         cutoff = reference - timedelta(days=730)
@@ -462,20 +493,9 @@ class StorageArchiveService:
             {"manifest_id": int(row["id"]), "path": str(row["nas_uri"]), "range_end": row["range_end"]}
             for row in rows
         ]
-        if not execute:
-            return {"phase": "options", "status": "dry_run", "eligible": candidates, "cutoff": cutoff}
-        removed = 0
-        for candidate in candidates:
-            path = Path(candidate["path"])
-            if path.exists():
-                path.unlink()
-            with self.runtime.transaction(JOB_PROFILE) as connection:
-                connection.execute(
-                    "UPDATE ops.storage_archive_manifest SET verification_status = 'expired', metadata = metadata || %s, updated_at = now() WHERE id = %s",
-                    [Jsonb({"expired_at": reference.isoformat(), "retention_cutoff": cutoff.isoformat()}), candidate["manifest_id"]],
-                )
-            removed += 1
-        return {"phase": "options", "status": "succeeded", "removed": removed, "cutoff": cutoff}
+        return {"phase": "options", "status": "dry_run", "eligible": candidates,
+                "cutoff": cutoff, "deletion_allowed": False,
+                "blocker": "evidence_reachability_and_backup_retention_required"}
 
     def _archive_option_partition(self, candidate: dict[str, Any]) -> dict[str, Any]:
         name = str(candidate["partition"])
@@ -490,33 +510,54 @@ class StorageArchiveService:
             ).fetchone()
             existing = connection.execute(
                 """
-                SELECT id, nas_uri, sha256, verification_status, metadata
+                SELECT id, nas_uri, sha256, row_count, verification_status, metadata
                 FROM ops.storage_archive_manifest
                 WHERE archive_kind = 'options' AND source_relation = %s
                 ORDER BY id DESC LIMIT 1
                 """,
                 [f"raw.{name}"],
             ).fetchone()
-        if existing and str(existing["verification_status"]) == "verified" and Path(str(existing["nas_uri"])).is_file():
-            return {
-                "partition": name,
-                "manifest_id": int(existing["id"]),
-                "path": str(existing["nas_uri"]),
-                "verification_status": "verified",
-                "row_count": int(row["row_count"] or 0),
-                "reused": True,
-            }
+        if existing and str(existing["verification_status"]) == "verified":
+            ok, detail = self._verify_native_dump(
+                Path(str(existing["nas_uri"])), str(existing["sha256"]), int(existing["row_count"]),
+                str((existing["metadata"] or {}).get("dump_listing_sha256") or ""),
+                scratch=True, relation_name=name,
+            )
+            if not ok:
+                with self.runtime.transaction(JOB_PROFILE) as connection:
+                    connection.execute(
+                        "UPDATE ops.storage_archive_manifest SET verification_status = 'failed', "
+                        "metadata = metadata || %s WHERE id = %s",
+                        [Jsonb({"verification_detail": detail}), existing["id"]],
+                    )
+                return {"partition": name, "manifest_id": int(existing["id"]),
+                        "verification_status": "failed", "verification_detail": detail, "reused": False}
+            return {"partition": name, "manifest_id": int(existing["id"]),
+                    "path": str(existing["nas_uri"]), "verification_status": "verified",
+                    "row_count": int(existing["row_count"]), "reused": True}
         root = self.archive_root / "options"
         _ensure_mounted_archive_root(self.archive_root)
         root.mkdir(parents=True, exist_ok=True)
-        path = root / f"{name}-{HEAD_REVISION}.dump"
         self._require_archive_capacity(max(int(candidate["bytes"]), 1))
-        if not path.exists():
+        fd, temporary = tempfile.mkstemp(prefix=f".{name}-", suffix=".part", dir=root)
+        os.close(fd)
+        try:
             subprocess.run(
                 [_binary("pg_dump"), "--format=custom", "--compress=9", "--no-owner", "--no-acl",
-                 "--file", str(path), "--dbname", self.runtime.dsn, "--table", f"raw.{name}"],
+                 "--file", temporary, "--dbname", self.runtime.dsn, "--table", f"raw.{name}"],
                 check=True, capture_output=True, text=True,
             )
+            with open(temporary, "rb") as handle:
+                os.fsync(handle.fileno())
+            artifact_hash = _sha256_file(Path(temporary))
+            path = root / f"{name}-{artifact_hash}.dump"
+            if path.exists() and _sha256_file(path) != artifact_hash:
+                raise ValueError("existing content-addressed option dump is corrupt")
+            os.replace(temporary, path)
+            from investment_panel.infrastructure.postgres.archive_io import sync_archive_directory
+            sync_archive_directory(root)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
         listing = subprocess.run(
             [_binary("pg_restore"), "--list", str(path)], check=True, capture_output=True, text=True
         ).stdout
@@ -574,7 +615,11 @@ class StorageArchiveService:
             checked += 1
             path = Path(str(row["nas_uri"]))
             metadata = dict(row["metadata"] or {})
-            if str(row["format"]) == "custom" and str(row["archive_kind"]) == "options":
+            if str(row["format"]) == "postgres-copy-text-gzip.v1":
+                from investment_panel.infrastructure.postgres.archive_io import verify_copy_file
+                ok, detail = verify_copy_file(path, str(row["sha256"]),
+                                              row_count=int(row["row_count"]), metadata=metadata)
+            elif str(row["format"]) == "custom" and str(row["archive_kind"]) == "options":
                 listing_hash = str(metadata.get("dump_listing_sha256") or "")
                 ok, detail = self._verify_native_dump(
                     path, str(row["sha256"]), int(row["row_count"]), listing_hash, scratch=True,
@@ -615,7 +660,11 @@ class StorageArchiveService:
             raise ValueError("archive must verify before restore")
         source = Path(str(row["nas_uri"]))
         metadata = dict(row["metadata"] or {})
-        if str(row["format"]) == "custom":
+        if str(row["format"]) == "postgres-copy-text-gzip.v1":
+            from investment_panel.infrastructure.postgres.archive_io import verify_copy_file
+            ok, detail = verify_copy_file(source, str(row["sha256"]),
+                                          row_count=int(row["row_count"]), metadata=metadata)
+        elif str(row["format"]) == "custom":
             ok, detail = self._verify_native_dump(
                 source, str(row["sha256"]), int(row["row_count"]),
                 str(metadata.get("dump_listing_sha256") or ""), scratch=False,
@@ -646,16 +695,7 @@ class StorageArchiveService:
 
     def health(self) -> dict[str, Any]:
         with self.runtime.read() as connection:
-            table_rows = connection.execute(
-                """
-                SELECT relation, pg_total_relation_size(relation::regclass) AS bytes
-                FROM unnest(ARRAY[
-                    'raw.fundamental_observation', 'app.publication_item', 'raw.option_quote',
-                    'analysis.option_relative_value'
-                ]) AS relation
-                WHERE to_regclass(relation) IS NOT NULL ORDER BY bytes DESC
-                """
-            ).fetchall()
+            table_rows = connection.execute(STORAGE_SIZE_QUERY).fetchall()
             failures = connection.execute(
                 "SELECT count(*) AS count FROM ops.storage_archive_manifest WHERE verification_status = 'failed'"
             ).fetchone()
@@ -711,7 +751,8 @@ class StorageArchiveService:
         # A seven-day linear estimate is intentionally withheld until daily
         # accounting samples exist; reporting null is safer than a fiction.
         return {
-            "local": {"path": str(Path.cwd()), "free_bytes": local.free, "total_bytes": local.total},
+            "local": {"path": str(Path.cwd()), "free_bytes": local.free, "total_bytes": local.total,
+                      "scope": "application_working_directory_not_database_measurement"},
             "nas": None if nas is None else {"path": str(self.archive_root), "free_bytes": nas.free, "total_bytes": nas.total},
             "table_sizes": [dict(row) for row in table_rows],
             "forecast_30d_bytes": None,
@@ -755,7 +796,8 @@ class StorageArchiveService:
                 and str(manifest.get("sha256", "")).lower() == token.lower()
                 and Path(str(manifest.get("dump_path", ""))).is_file()
             ):
-                return manifest
+                if _sha256_file(Path(str(manifest["dump_path"]))) == token.lower():
+                    return manifest
         raise ValueError("backup token does not identify a verified NAS PostgreSQL backup")
 
     def _assert_no_conflicting_activity(self) -> None:
@@ -850,14 +892,18 @@ class StorageArchiveService:
         if not scratch:
             return True, "ok"
         database_name = f"market_archive_verify_{uuid4().hex[:16]}"
+        verification_dsn = os.environ.get("MARKET_ARCHIVE_VERIFY_DATABASE_URL") or self.runtime.dsn
+        scratch_dsn = make_conninfo(verification_dsn, dbname=database_name)
+        created = False
         try:
             subprocess.run(
-                [_binary("createdb"), "--maintenance-db", self.runtime.dsn, database_name],
+                [_binary("createdb"), "--maintenance-db", verification_dsn, database_name],
                 check=True, capture_output=True, text=True,
             )
+            created = True
             if relation_name and relation_name.startswith("option_quote_"):
                 subprocess.run(
-                    [_binary("psql"), "--dbname", database_name, "-v", "ON_ERROR_STOP=1",
+                    [_binary("psql"), "--dbname", scratch_dsn, "-v", "ON_ERROR_STOP=1",
                      "-c", "CREATE SCHEMA IF NOT EXISTS raw"],
                     check=True, capture_output=True, text=True,
                 )
@@ -868,18 +914,18 @@ class StorageArchiveService:
                     check=True, capture_output=True, text=True,
                 )
                 subprocess.run(
-                    [_binary("psql"), "--dbname", database_name, "-v", "ON_ERROR_STOP=1"],
+                    [_binary("psql"), "--dbname", scratch_dsn, "-v", "ON_ERROR_STOP=1"],
                     input=parent_schema.stdout, check=True, capture_output=True, text=True,
                 )
             subprocess.run(
-                [_binary("pg_restore"), "--dbname", database_name, "--section=pre-data",
+                [_binary("pg_restore"), "--dbname", scratch_dsn, "--section=pre-data",
                  "--section=data", "--no-owner", "--no-acl",
                  "--exit-on-error", str(path)],
                 check=True, capture_output=True, text=True,
             )
             if relation_name:
                 counted = subprocess.run(
-                    [_binary("psql"), "--dbname", database_name, "-Atc",
+                    [_binary("psql"), "--dbname", scratch_dsn, "-Atc",
                      f"SELECT count(*) FROM raw.{_quote_ident(relation_name)}"],
                     check=True, capture_output=True, text=True,
                 )
@@ -887,15 +933,16 @@ class StorageArchiveService:
                     return False, "scratch_row_count_mismatch"
             return True, f"scratch_restore_ok:{expected_row_count}"
         except (OSError, subprocess.CalledProcessError) as exc:
-            detail = str(exc)
+            detail = type(exc).__name__
             if isinstance(exc, subprocess.CalledProcessError):
                 detail = (exc.stderr or exc.stdout or detail).strip().splitlines()[-1]
             return False, f"scratch_restore_failed:{detail[:240]}"
         finally:
-            subprocess.run(
-                [_binary("dropdb"), "--if-exists", "--maintenance-db", self.runtime.dsn, database_name],
-                check=False, capture_output=True, text=True,
-            )
+            if created:
+                subprocess.run(
+                    [_binary("dropdb"), "--if-exists", "--maintenance-db", verification_dsn, database_name],
+                    check=False, capture_output=True, text=True,
+                )
 
     def _write_json_gzip(
         self,
@@ -921,7 +968,7 @@ class StorageArchiveService:
             fd, temp_name = tempfile.mkstemp(prefix=".archive-", suffix=".tmp", dir=root)
             try:
                 with os.fdopen(fd, "wb") as file_handle:
-                    with gzip.GzipFile(fileobj=file_handle, mode="wb", mtime=0) as compressed:
+                    with gzip.GzipFile(filename="", fileobj=file_handle, mode="wb", mtime=0) as compressed:
                         compressed.write(raw)
                     file_handle.flush()
                     os.fsync(file_handle.fileno())
@@ -930,6 +977,14 @@ class StorageArchiveService:
                 Path(temp_name).unlink(missing_ok=True)
                 raise
         artifact_hash = _sha256_file(target)
+        checked, detail = self._verify_file(
+            target, artifact_hash, expected_row_count=row_count, schema_revision=HEAD_REVISION,
+            metadata={"content_sha256": content_hash},
+        )
+        if not checked:
+            raise ValueError(f"content-addressed archive read-back failed: {detail}")
+        from investment_panel.infrastructure.postgres.archive_io import sync_archive_directory
+        sync_archive_directory(root)
         manifest_id, created = self._record_manifest(
             archive_kind=archive_kind,
             source_relation=source_relation,
@@ -1097,7 +1152,7 @@ class StorageArchiveService:
             with gzip.open(path, "rb") as handle:
                 raw = handle.read()
             payload = json.loads(raw)
-        except OSError as exc:
+        except (OSError, EOFError) as exc:
             return False, f"gzip_corrupt:{type(exc).__name__}"
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             return False, f"json_corrupt:{type(exc).__name__}"

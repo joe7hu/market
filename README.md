@@ -212,6 +212,7 @@ them as normal navigation material; inspect the owning interface and run the
 focused check instead.
 
 Database schema changes: [maintenance guide](docs/database-maintenance.md).
+Large PostgreSQL histories: [verified NAS migration and storage model](docs/storage-efficiency-migration.md).
 
 ## Closed markets, paper trading, and diagnostics
 
