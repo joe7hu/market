@@ -269,6 +269,11 @@ def build_decision_resolution(
         action = ResolutionAction.NO_TRADE.value
         authorization_mode = AuthorizationMode.NONE.value
         size = None
+        # A failed prerequisite is not evidence that cash beat the trade.
+        # Preserve specific risk explanations; replace only the misleading
+        # legacy fallback (and empty explanations) at the publication boundary.
+        if not rationale.strip() or rationale.startswith("Cash is selected because"):
+            rationale = _blocked_rationale(primary)
     return DecisionResolutionV2(
         lifecycle=lifecycle,
         eligibility=eligibility,
@@ -278,7 +283,8 @@ def build_decision_resolution(
         trade_plan_id=trade_plan_id,
         primary_blocker=primary,
         blockers=clean_blockers,
-        next_action=next_action_for(primary),
+        next_action=(next_action_for(primary) if primary or eligibility is ResolutionEligibility.ACTIONABLE
+                     else "No order is authorized by this decision."),
         entry=entry,
         size=size,
         invalidation=invalidation,
@@ -363,7 +369,23 @@ def resolution_from_historical(payload: Mapping[str, Any]) -> DecisionResolution
     return resolution_from_legacy(payload)
 
 
+def _blocked_rationale(blocker: str | None) -> str:
+    labels = {
+        "alpha_strategy_revision_missing": "No qualified stock signal yet.",
+        "forecast_missing": "No validated return forecast.",
+        "trade_plan_missing": "No executable trade plan.",
+        "trade_plan_expired": "The trade plan has expired.",
+        "current_price": "Confirmed price unavailable.",
+        "portfolio_nav": "Account value must be reconciled before sizing.",
+        "cash_comparator": "The trade has not cleared the cash hurdle.",
+        "stock_cash_comparator_missing": "The trade has not been compared with cash.",
+    }
+    return labels.get(str(blocker), f"Decision blocked: {str(blocker or 'required evidence').replace('_', ' ')}.")
+
+
 def next_action_for(blocker: str | None) -> str:
+    if not blocker:
+        return "Follow the published entry, size, invalidation and exit limits."
     actions = {
         "current_price": "Refresh the confirmed current price.",
         "portfolio_nav": "Reconcile cash and holdings with the account statement and its effective date before sizing.",
@@ -373,12 +395,12 @@ def next_action_for(blocker: str | None) -> str:
         "paper_assignment_permission_required": "Keep CSP assignment disabled until paper permission is explicit.",
         "fresh_postgres_account_facts_required": "Refresh PostgreSQL cash and buying-power facts.",
         "cash_comparator": "Keep cash until a supported trade has a better return after costs and meets the risk limits.",
-        "forecast_missing": "Collect the required price history and matured stock outcomes, then rerun the forecast evaluation.",
-        "alpha_strategy_revision_missing": "Review the failed strategy gates in Research; validate a candidate before using its signal for a trade.",
+        "forecast_missing": "Publish a validated strategy forecast before comparing the trade with cash.",
+        "alpha_strategy_revision_missing": "Accumulate independent matured outcomes and pass repeated-control validation before activating this stock strategy.",
         "insufficient_history": "Collect the missing market sessions; imported history cannot replace required forward observations.",
         "scenario_evidence_missing": "Collect portfolio stress observations and recalculate the loss scenarios before sizing.",
         "stock_cash_comparator_missing": "Recalculate the stock return after costs against cash from the same decision date.",
-        "trade_plan_missing": "Open the ticker assessment; refresh decision models to publish entry, position size, invalidation and maximum loss before staging paper orders.",
+        "trade_plan_missing": "Rebuild entry, size, invalidation and exit terms. Do not stage an incomplete order.",
         "trade_plan_expired": "The entry window ended. Refresh the ticker decision and wait for a newly qualified plan; do not reuse the expired terms.",
         "trade_plan_cutoff_in_future": "Check the source and server clocks in Health; recalculate the ticker decision with an available input cutoff.",
         "trade_plan_identity_mismatch": "Refresh decision models so the ticker decision, opportunity rank and trade plan share one publication; do not stage the mismatched plan.",

@@ -23,7 +23,7 @@ describe("published trading conditions", () => {
     expect(html).toContain("Conditional long setup");
     for (const label of ["Entry condition", "Price invalidation", "Price objective", "Planned risk / unit"]) expect(html).toContain(label);
     expect(html).toContain("US venue closed");
-    expect(html).toContain("WAIT — retain cash for this decision");
+    expect(html).toContain("WAIT — no executable plan");
     expect(html).not.toContain("Unknown");
     expect(html).not.toContain("Review the evidence");
   });
@@ -47,8 +47,8 @@ describe("published trading conditions", () => {
   });
   it("only displays paper qualification from the authoritative trade plan", () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-20T20:01:00Z"));
-    const html = renderToStaticMarkup(<ReferenceSignalCard signal={signal} plan={{ eligibility: "ACTIONABLE", authorization_mode: "PAPER" }} />);
-    expect(html).toContain("Paper-qualified terms published"); expect(html).toContain("fill-time risk and quote checks");
+    const html = renderToStaticMarkup(<ReferenceSignalCard signal={signal} plan={{ eligibility: "ACTIONABLE", authorization_mode: "PAPER", action: "BUY" }} />);
+    expect(html).toContain("PAPER — BUY"); expect(html).toContain("Fill-time quote and risk checks still apply.");
     expect(signal.order_authorized).toBe(false);
   });
   it("removes cached actionable headlines when the signal service expires", () => {
