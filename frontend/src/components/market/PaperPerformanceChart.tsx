@@ -42,7 +42,9 @@ export function PaperPerformanceChart({ points, label, onSelect, events = EMPTY_
   const extent = useMemo(() => timeExtent([...ordered, ...markers]), [ordered, markers]);
   const currentExtent = useRef(extent);
   currentExtent.current = extent;
-  const hasEvidence = ordered.some(point => point.value !== null) || markers.length > 0;
+  const hasValues = ordered.some(point => point.value !== null);
+  const activityOnly = !hasValues && markers.length > 0;
+  const hasEvidence = hasValues || markers.length > 0;
 
   useEffect(() => {
     if (!container.current) return;
@@ -77,7 +79,8 @@ export function PaperPerformanceChart({ points, label, onSelect, events = EMPTY_
       axisLine: { lineStyle: { color: gridColor } }, axisTick: { show: false }, splitLine: { show: false },
       axisLabel: { color: foreground, hideOverlap: true, fontSize: 11 },
     };
-    const series: SeriesOption[] = [{
+    const showRail = markers.length > 0 && !activityOnly;
+    const series: SeriesOption[] = activityOnly ? [] : [{
       id: "verified-values", name: label, type: "line", step: metric === "nav" ? false : "end",
       connectNulls: false, showSymbol: ordered.filter(point => point.value !== null).length < 3,
       symbol: "circle", symbolSize: 7, data: financialLineData(ordered),
@@ -89,29 +92,29 @@ export function PaperPerformanceChart({ points, label, onSelect, events = EMPTY_
       const style = EVENT_STYLE[kind] ?? { color: "#64748b", symbol: "circle" };
       const selected = markers.filter(event => event.kind === kind);
       const shared = { name: kind.replaceAll("_", " "), type: "scatter" as const, symbol: style.symbol, symbolSize: 11, itemStyle: { color: style.color, borderColor: dark ? "#0f172a" : "#ffffff", borderWidth: 1.5 } };
-      series.push({ ...shared, id: `curve-${kind}`, data: selected.flatMap(event => {
+      if (!activityOnly) series.push({ ...shared, id: `curve-${kind}`, data: selected.flatMap(event => {
         const value = metric === "nav" ? null : eventCurveValue(event, mode);
         return value === null ? [] : [{ value: [Date.parse(event.at), value], event }];
       }) });
       // Every event has a separate activity rail. An unknown P&L never becomes $0.
-      series.push({ ...shared, id: `events-${kind}`, xAxisIndex: 1, yAxisIndex: 1,
-        data: selected.map(event => ({ value: [Date.parse(event.at), kinds.length > 1 ? index / (kinds.length - 1) : 0.5], event })) });
+      series.push({ ...shared, id: `events-${kind}`, xAxisIndex: activityOnly ? 0 : 1, yAxisIndex: activityOnly ? 0 : 1,
+        data: selected.map(event => ({ value: [Date.parse(event.at), activityOnly ? kind.replaceAll("_", " ") : kinds.length > 1 ? index / (kinds.length - 1) : 0.5], event })) });
     });
     const option: EChartsOption = {
       animation: false, aria: { enabled: true, description: `${label}. Gaps mean missing evidence. Trade events are also available in the table below.` },
       textStyle: { fontFamily: "inherit", color: foreground },
       tooltip: { trigger: "axis", renderMode: "richText", confine: true, backgroundColor: dark ? "#0f172a" : "#ffffff", borderColor: gridColor, textStyle: { color: foreground, fontSize: 12 }, axisPointer: { type: "cross", label: { show: false } }, formatter: (input: unknown) => tooltip(input, label) },
-      legend: { top: 0, right: 12, type: "scroll", textStyle: { color: foreground, fontSize: 11 }, data: [label, ...kinds.map(kind => kind.replaceAll("_", " "))] },
-      grid: [{ left: 76, right: 24, top: 42, bottom: markers.length ? 140 : 70 }, ...(markers.length ? [{ left: 76, right: 24, height: 28, bottom: 78 }] : [])],
-      xAxis: [{ ...axes, gridIndex: 0 }, ...(markers.length ? [{ ...axes, gridIndex: 1, show: false }] : [])],
-      yAxis: [{ type: "value", scale: metric === "nav", axisLabel: { color: foreground, fontSize: 11, formatter: (value: number) => chartMoney(value, true) }, splitLine: { lineStyle: { color: gridColor, type: "dashed" } } }, ...(markers.length ? [{ type: "value" as const, gridIndex: 1, min: -0.25, max: 1.25, show: false }] : [])],
-      dataZoom: [{ id: "inside", type: "inside", xAxisIndex: markers.length ? [0, 1] : [0], filterMode: "none" }, { id: "slider", type: "slider", xAxisIndex: markers.length ? [0, 1] : [0], filterMode: "none", bottom: 8, height: 24, showDetail: false, borderColor: gridColor, textStyle: { color: foreground } }],
+      legend: { top: 0, right: 12, type: "scroll", textStyle: { color: foreground, fontSize: 11 }, data: [...(activityOnly ? [] : [label]), ...kinds.map(kind => kind.replaceAll("_", " "))] },
+      grid: [{ left: activityOnly ? 125 : 76, right: 24, top: 42, bottom: showRail ? 140 : 70 }, ...(showRail ? [{ left: 76, right: 24, height: 28, bottom: 78 }] : [])],
+      xAxis: [{ ...axes, gridIndex: 0 }, ...(showRail ? [{ ...axes, gridIndex: 1, show: false }] : [])],
+      yAxis: activityOnly ? [{ type: "category", data: kinds.map(kind => kind.replaceAll("_", " ")), axisLabel: { color: foreground, fontSize: 11 }, axisTick: { show: false }, axisLine: { show: false }, splitLine: { show: true, lineStyle: { color: gridColor, type: "dashed" } } }] : [{ type: "value", scale: metric === "nav", axisLabel: { color: foreground, fontSize: 11, formatter: (value: number) => chartMoney(value, true) }, splitLine: { lineStyle: { color: gridColor, type: "dashed" } } }, ...(showRail ? [{ type: "value" as const, gridIndex: 1, min: -0.25, max: 1.25, show: false }] : [])],
+      dataZoom: [{ id: "inside", type: "inside", xAxisIndex: showRail ? [0, 1] : [0], filterMode: "none" }, { id: "slider", type: "slider", xAxisIndex: showRail ? [0, 1] : [0], filterMode: "none", bottom: 8, height: 24, showDetail: false, borderColor: gridColor, textStyle: { color: foreground } }],
       series,
     };
     // Keep the instance and its zoom across ordinary React callback/data updates.
     chart.current?.setOption(option, { replaceMerge: ["series", "xAxis", "yAxis", "grid"] });
     chart.current?.resize();
-  }, [dark, extent, label, markers, metric, mode, ordered]);
+  }, [activityOnly, dark, extent, label, markers, metric, mode, ordered]);
 
   const zoomDays = (days: number | null) => {
     if (!extent) return;
@@ -125,7 +128,8 @@ export function PaperPerformanceChart({ points, label, onSelect, events = EMPTY_
     </div>
     {ordered.length < points.length || markers.length < events.length ? <p role="alert" className="rounded border border-amber-500/40 p-3 text-sm">Some records have invalid timestamps. The timeline is incomplete.</p> : null}
     {!hasEvidence ? <p className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">No verified chart observations in this range.</p> : null}
-    <div ref={container} className={hasEvidence ? "h-[25rem] w-full sm:h-[28rem]" : "hidden"} role="img" aria-label={label} />
+    {activityOnly ? <p className="text-xs text-muted-foreground">Trade activity is available; no verified P&L observations exist in this range.</p> : null}
+    <div ref={container} className={!hasEvidence ? "hidden" : activityOnly ? "h-[18rem] w-full" : "h-[25rem] w-full sm:h-[28rem]"} role="img" aria-label={label} />
     {markers.length > 0 ? <><p className="text-xs text-muted-foreground">Trade activity is shown beneath the curve; missing valuations are not plotted as profit or loss.</p><details className="rounded-lg border border-border"><summary className="cursor-pointer px-3 py-2 text-sm">Trade events · {markers.length}</summary><div className="max-h-72 overflow-auto"><table className="w-full text-left text-xs"><thead><tr className="border-t border-border text-muted-foreground"><th className="p-3">Time</th><th className="p-3">Trade</th><th className="p-3">Price</th><th className="p-3">Quantity</th><th className="p-3">P&L</th></tr></thead><tbody>{[...markers].reverse().map((event, index) => <tr className="border-t border-border" key={`${event.at}:${event.trade_id}:${event.kind}:${index}`}><td className="whitespace-nowrap p-3">{new Date(event.at).toLocaleString()}</td><td className="p-3">{event.trade_id ? <button type="button" className="text-left font-medium text-primary hover:underline" onClick={() => onSelect(event.trade_id!)}>{event.symbol} · {eventName(event)}</button> : <span>{event.symbol} · {eventName(event)}</span>}{event.strategy ? <div className="text-muted-foreground">{event.strategy}</div> : null}</td><td className="p-3 tabular-nums">{chartMoney(event.price)}</td><td className="p-3 tabular-nums">{event.quantity ?? "—"}</td><td className="p-3 tabular-nums">{chartMoney(event.pnl)}</td></tr>)}</tbody></table></div></details></> : null}
   </div>;
 }

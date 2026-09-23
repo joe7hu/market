@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { loadPaperAccountHistory, type PaperAccountHistory } from "@/api/workstation";
 import { money, dateTime } from "@/presentation/labels";
 import { PaperPerformanceChart } from "./PaperPerformanceChart";
-import type { FinancialPoint } from "./financialChartModel";
+import { finite, type FinancialPoint } from "./financialChartModel";
 
 type NavPoints = NonNullable<PaperAccountHistory["points"]>;
 const noTradeSelection = () => undefined;
@@ -41,9 +41,10 @@ export function PaperAccountCurve() {
     return () => { controller.abort(); clearInterval(timer); };
   }, [reload]);
   const points = useMemo(() => navChartPoints(history?.points ?? []), [history]);
-  const verified = points.filter(point => point.value !== null && Number.isFinite(Date.parse(point.at)));
+  const verified = points.filter(point => point.value !== null && Number.isFinite(Date.parse(point.at))).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const latest = verified.at(-1);
-  const latestIncomplete = history?.points?.length && history.points.at(-1)?.status !== "complete";
+  const lastRecord = history?.points?.at(-1);
+  const latestIncomplete = Boolean(lastRecord && (lastRecord.status !== "complete" || !finite(lastRecord.nav) || !Number.isFinite(Date.parse(lastRecord.at))));
   return <section className="rounded-xl border border-border bg-card p-4 sm:p-6" aria-label="Whole paper account NAV history">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-sm font-medium text-muted-foreground">Whole-account equity curve</h2><p className="mt-2 text-3xl font-semibold tracking-tight tabular-nums">{latest ? money(latest.value) : "—"}<span className="ml-2 text-xs font-normal text-muted-foreground">verified NAV · USD</span></p><p className="mt-1 text-xs text-muted-foreground">{latest ? `As of ${dateTime(latest.at)}` : loading ? "Loading recorded account history…" : "No verified NAV observations yet."}</p></div><button type="button" className="rounded border px-3 py-1.5 text-xs disabled:opacity-50" disabled={loading} onClick={() => setReload(value => value + 1)}>{loading ? "Refreshing…" : "Reload history"}</button></div>
     {error ? <p role="alert" className="mt-3 rounded border border-destructive/40 p-3 text-sm text-destructive">{history ? "Retained history may be stale. " : ""}{error}</p> : null}
