@@ -22,6 +22,11 @@ from investment_panel.domain.strategies.catalog import resolve_builtin_strategy
 from investment_panel.infrastructure.postgres.strategy_factory import StrategyFactoryRepository
 
 
+@pytest.fixture(autouse=True)
+def _retention_archive_root(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MARKET_STORAGE_ARCHIVE_DIR", str(tmp_path / "publication-archive"))
+
+
 def _insert_publication(
     connection: psycopg.Connection,
     *,

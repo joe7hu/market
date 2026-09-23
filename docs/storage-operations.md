@@ -1,6 +1,9 @@
 # Storage operations
 
-Storage commands are PostgreSQL-native and fail closed.
+Storage commands are PostgreSQL-native and fail closed. For the large decision/JSON
+histories and the 1 GB free-space incident, follow the
+[storage-efficiency migration](storage-efficiency-migration.md).
+No command in that plan silently deletes linked decisions or their evidence.
 
 ```sh
 market-storage plan
@@ -10,7 +13,8 @@ market-storage compact --phase price-confirmations --state verify
 market-storage compact --phase price-confirmations --state cutover \
   --execute --backup-token <verified-backup-sha256>
 market-storage archive --phase options
-market-storage archive --phase options --execute \
+market-storage archive --phase options --state backfill --execute
+market-storage archive --phase options --state cutover --execute \
   --backup-token <verified-backup-sha256>
 market-storage archive --phase options --expire
 market-storage verify --manifest-id <id>
@@ -37,3 +41,8 @@ The `/api/health/storage` payload reports storage size, archive lag, hot
 partition age, retention backlog, and projected free space. Scheduler health
 reports active work, fixed capacity two, job names, oldest runtime, and
 deferred due work.
+
+Publication retention now archives original rows on the configured NAS before
+deletion. Missing/unconfigured storage retains source rows. Ticker ranking and
+outcome-attribution publication scopes remain online. The retired duplicate
+manifest table has its own bounded COPY export and separately verified cutover.

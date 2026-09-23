@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import logging
+import os
+from pathlib import Path
 import re
 from typing import Any
 
@@ -11,6 +13,7 @@ import psycopg
 
 from investment_panel.domain.decision import is_us_market_day
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.infrastructure.postgres.publication_archive import PublicationArchive
 
 
 logger = logging.getLogger(__name__)
@@ -24,8 +27,24 @@ PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE = 10_000
 
 
 class RetentionRepository:
-    def __init__(self, runtime: DatabaseRuntime) -> None:
+    def __init__(self, runtime: DatabaseRuntime, *, archive_root: Path | None = None) -> None:
         self.runtime = runtime
+        configured = archive_root or os.environ.get("MARKET_STORAGE_ARCHIVE_DIR")
+        self.archive = PublicationArchive(runtime, Path(configured)) if configured else None
+
+    def archive_publications(self, *, batch_size: int = 10, execute: bool = False) -> dict[str, Any]:
+        """Plan or export eligible publications without deleting their rows."""
+        if not 1 <= batch_size <= 1000:
+            raise ValueError("publication archive batch_size must be between 1 and 1000")
+        reference = datetime.now(UTC)
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            ids = _publication_candidates(connection, standard_cutoff=reference - timedelta(days=90),
+                rolling_cutoff=_trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS), limit=batch_size)
+            if execute and ids:
+                if self.archive is None:
+                    raise ValueError("publication archival requires a configured NAS archive root")
+                ids = self.archive.publications(connection, ids)
+            return {"phase": "publications", "candidates": len(ids), "deleted": 0, "dry_run": not execute}
 
     def prune(
         self,
@@ -35,7 +54,7 @@ class RetentionRepository:
         analysis_days: int = 30,
         publication_days: int = 90,
         job_days: int = 30,
-        publication_batch_size: int = 1_000,
+        publication_batch_size: int = 25,
         dry_run: bool = False,
         vacuum_analyze: bool = False,
     ) -> dict[str, int]:
@@ -66,11 +85,17 @@ class RetentionRepository:
             )
             counts["publications"] = len(publication_candidates)
             if not dry_run and publication_candidates:
-                counts.update(_delete_publications_and_orphaned_content(connection, publication_candidates))
+                if self.archive is None:
+                    counts["publication_archive_required"] = len(publication_candidates)
+                    counts["publications"] = 0
+                else:
+                    publication_candidates = self.archive.publications(connection, publication_candidates)
+                    counts["publications"] = len(publication_candidates)
+                    counts.update(_delete_publications_and_orphaned_content(connection, publication_candidates))
             if dry_run:
                 counts["publication_dry_run"] = len(publication_candidates)
                 return counts
-            orphan_payloads = _delete_orphaned_payload_batch(connection)
+            orphan_payloads = _delete_orphaned_payload_batch(connection, self.archive)
             if orphan_payloads:
                 counts["publication_payloads"] = counts.get("publication_payloads", 0) + orphan_payloads
             protection = connection.execute(
@@ -291,7 +316,7 @@ class RetentionRepository:
         self,
         *,
         now: datetime | None = None,
-        batch_size: int = 1_000,
+        batch_size: int = 25,
         dry_run: bool = False,
         vacuum_analyze: bool = False,
     ) -> dict[str, int]:
@@ -316,12 +341,17 @@ class RetentionRepository:
                 limit=None if dry_run else batch_size,
             )
             count = len(candidates)
+            compact_counts = {}
             if not dry_run and candidates:
-                compact_counts = _delete_publications_and_orphaned_content(connection, candidates)
-            else:
-                compact_counts = {}
+                if self.archive is None:
+                    compact_counts["publication_archive_required"] = count
+                    count = 0
+                else:
+                    candidates = self.archive.publications(connection, candidates)
+                    count = len(candidates)
+                    compact_counts = _delete_publications_and_orphaned_content(connection, candidates)
             if not dry_run:
-                orphan_payloads = _delete_orphaned_payload_batch(connection)
+                orphan_payloads = _delete_orphaned_payload_batch(connection, self.archive)
                 if orphan_payloads:
                     compact_counts["publication_payloads"] = compact_counts.get("publication_payloads", 0) + orphan_payloads
         result = {"publications": count, **compact_counts}
@@ -410,6 +440,7 @@ def _publication_candidates(
                    ) AS superseded_rank
             FROM app.publication
             WHERE status = 'superseded'
+              AND scope NOT IN ('ticker-opportunity-ranking', 'ticker-outcome-attribution')
         )
         SELECT id
         FROM ranked
@@ -489,9 +520,11 @@ def _delete_payload_hashes(connection: Any, content_hashes: list[Any]) -> int:
     return deleted
 
 
-def _delete_orphaned_payload_batch(connection: Any) -> int:
+def _delete_orphaned_payload_batch(connection: Any, archive: PublicationArchive | None = None) -> int:
     """Delete one ordered orphan batch so repeated retention calls make progress."""
 
+    if archive is None:
+        return 0
     rows = connection.execute(
         """
         SELECT payload.content_hash
@@ -511,7 +544,9 @@ def _delete_orphaned_payload_batch(connection: Any) -> int:
     ).fetchall()
     if not rows:
         return 0
-    return _delete_payload_hashes(connection, [row["content_hash"] for row in rows])
+    hashes = [row["content_hash"] for row in rows]
+    archive.rows(connection, "app.publication_payload", "source.content_hash = ANY(%s)", [hashes])
+    return _delete_payload_hashes(connection, hashes)
 
 
 def _prune_failed_confirmation_staging(connection: Any, before: datetime) -> int:

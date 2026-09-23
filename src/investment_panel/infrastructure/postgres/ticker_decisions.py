@@ -48,6 +48,7 @@ from investment_panel.domain.decision import (
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.infrastructure.postgres.options_paper_quotes import is_credit_structure, package_price
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+from investment_panel.infrastructure.postgres.decision_storage import store_context
 from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
 from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime, JOB_PROFILE
 
@@ -120,7 +121,7 @@ OUTCOME_ATTRIBUTION_DECISION_QUERY = """
                '{}'::jsonb AS portfolio_impacts,
                NULL::jsonb AS risk_policy_snapshot,
                decision.opportunity_episode
-        FROM analysis.ticker_decision decision
+        FROM analysis.ticker_decision_read decision
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE decision.status IN ('published', 'superseded')
           AND decision.as_of <= %s
@@ -396,6 +397,8 @@ class TickerDecisionRepository:
                     signal=selected_signals[0],
                     forecast_id=next(iter(forecast_ids)),
                 )
+            market_context_hash = store_context(connection, payload.get("market_state_snapshot"))
+            policy_context_hash = store_context(connection, payload.get("risk_policy_snapshot"))
             row = connection.execute(
                 """
                 INSERT INTO analysis.ticker_decision (
@@ -405,11 +408,12 @@ class TickerDecisionRepository:
                     opportunity_episode_id, opportunity_cutoff, opportunity_episode, risk_policy,
                     expressions, selected_expression, data_requests,
                     learning_history, input_manifest, market_state_publication_id,
-                    market_state_snapshot, portfolio_impacts, risk_policy_snapshot, status
+                    market_state_snapshot, portfolio_impacts, risk_policy_snapshot,
+                    market_state_context_hash, risk_policy_context_hash, status
                 ) VALUES (
                     %s, %s, %s, %s, now(), %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, 'published'
+                    %s, %s, %s, %s, %s, %s, 'published'
                 )
                 ON CONFLICT (instrument_id, decision_revision) DO NOTHING
                 RETURNING id::text
@@ -429,14 +433,15 @@ class TickerDecisionRepository:
                     Jsonb(payload["data_requests"]), Jsonb(payload["learning_history"]),
                     Jsonb(payload["input_manifest"]),
                     _uuid_or_none(decision.market_state_publication_id),
-                    Jsonb(payload.get("market_state_snapshot") or {}),
+                    Jsonb({}),
                     Jsonb(payload.get("portfolio_impacts") or {}),
-                    Jsonb(payload.get("risk_policy_snapshot") or {}),
+                    Jsonb({}),
+                    market_context_hash, policy_context_hash,
                 ],
             ).fetchone()
             if row is None:
                 row = connection.execute(
-                    "SELECT id::text FROM analysis.ticker_decision WHERE instrument_id = %s AND decision_revision = %s",
+                    "SELECT id::text FROM analysis.ticker_decision_read WHERE instrument_id = %s AND decision_revision = %s",
                     [instrument["id"], decision.decision_revision],
                 ).fetchone()
             decision_id = str(row["id"])
@@ -448,7 +453,6 @@ class TickerDecisionRepository:
                 """,
                 [instrument["id"], decision_id, decision.as_of],
             )
-            self._store_manifest(connection, decision_id, decision)
             for request in decision.data_requests:
                 connection.execute(
                     """
@@ -500,7 +504,7 @@ class TickerDecisionRepository:
                            count(*) OVER (
                                PARTITION BY decision.opportunity_episode_id
                            ) AS opportunity_authority_count
-                    FROM analysis.ticker_decision decision
+                    FROM analysis.ticker_decision_read decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                     WHERE decision.status = 'published'
                       AND decision.contract_version = 'ticker-decision.v1'
@@ -1064,7 +1068,7 @@ class TickerDecisionRepository:
                                ORDER BY decision.as_of DESC, decision.published_at DESC,
                                         decision.created_at DESC, decision.id DESC
                            ) AS current_row
-                    FROM analysis.ticker_decision decision
+                    FROM analysis.ticker_decision_read decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                     WHERE decision.status = 'published'
                       AND (%s::text[] IS NULL OR instrument.symbol = ANY(%s))
@@ -1239,7 +1243,7 @@ class TickerDecisionRepository:
                        END AS resolution,
                        decision.market_state_publication_id::text
                 FROM candidate_keys candidate
-                JOIN analysis.ticker_decision decision ON decision.id = candidate.id
+                JOIN analysis.ticker_decision_read decision ON decision.id = candidate.id
                 CROSS JOIN LATERAL (
                     SELECT lower(coalesce(decision.capital_action->>'action', ''))
                                IN ('avoid', 'no_trade', 'cash')
@@ -1341,7 +1345,7 @@ class TickerDecisionRepository:
                 f"""
                 WITH selected_decisions AS MATERIALIZED (
                     SELECT decision.id, outcome_check.last_checked_at, decision.as_of
-                    FROM analysis.ticker_decision decision
+                    FROM analysis.ticker_decision_read decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                     LEFT JOIN LATERAL (
                         SELECT max(outcome.updated_at) AS last_checked_at
@@ -1396,7 +1400,7 @@ class TickerDecisionRepository:
                        '{{}}'::jsonb AS portfolio_impacts,
                        NULL::jsonb AS risk_policy_snapshot
                 FROM selected_decisions selected
-                JOIN analysis.ticker_decision decision ON decision.id = selected.id
+                JOIN analysis.ticker_decision_read decision ON decision.id = selected.id
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 ORDER BY selected.last_checked_at ASC NULLS FIRST, selected.as_of, selected.id
                 """,
@@ -1437,7 +1441,7 @@ class TickerDecisionRepository:
                 """
                 SELECT EXISTS (
                     SELECT 1
-                    FROM analysis.ticker_decision decision
+                    FROM analysis.ticker_decision_read decision
                     WHERE decision.status IN ('published', 'superseded')
                       AND decision.as_of <= %s
                       AND jsonb_typeof(decision.input_manifest->'trade_plan') = 'object'
@@ -1521,7 +1525,7 @@ class TickerDecisionRepository:
             legacy_count = connection.execute(
                 """
                 SELECT count(*) AS count
-                FROM analysis.ticker_decision decision
+                FROM analysis.ticker_decision_read decision
                 WHERE decision.status IN ('published', 'superseded')
                   AND decision.as_of <= %s
                   AND jsonb_typeof(decision.input_manifest->'trade_plan') IS DISTINCT FROM 'object'
@@ -1710,45 +1714,6 @@ class TickerDecisionRepository:
             "outcome_attributions": outcomes,
             "outcome_authority": "outcome-attribution.v1",
         }
-
-    def _store_manifest(self, connection: Any, decision_id: str, decision: TickerDecision) -> None:
-        inputs = decision.input_manifest.inputs or {
-            "decision_composer": [{
-                "source": "deterministic-composer",
-                "source_version": decision.input_manifest.code_version,
-                "available_at": decision.as_of,
-                "input_hash": decision.input_manifest.input_hash,
-            }],
-        }
-        for field, values in inputs.items():
-            for value in values if isinstance(values, list) else [values]:
-                row = dict(value) if isinstance(value, dict) else {}
-                available = _parse_datetime(row.get("available_at") or row.get("as_of"))
-                if available is None or available > decision.as_of:
-                    continue
-                source = str(row.get("source") or row.get("source_id") or "unknown")
-                connection.execute(
-                    """
-                    INSERT INTO analysis.ticker_input_manifest (
-                        ticker_decision_id, field, source_id, source_version,
-                        event_at, published_at, available_at, received_at, revision,
-                        license, original_value, revised_value
-                    ) VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    [
-                        decision_id, field, source,
-                        str(row.get("source_version") or row.get("version") or "") or None,
-                        _parse_datetime(row.get("event_at") or row.get("event_time")),
-                        _parse_datetime(row.get("published_at") or row.get("publication_time")),
-                        available,
-                        _parse_datetime(row.get("received_at") or row.get("receipt_time")),
-                        str(row.get("revision") or "") or None,
-                        str(row.get("license") or "") or None,
-                        Jsonb(_jsonable(row.get("original_value") if row.get("original_value") is not None else row)),
-                        Jsonb(_jsonable(row.get("revised_value") if row.get("revised_value") is not None else row)),
-                    ],
-                )
 
     def _evaluate(self, decision: dict[str, Any], horizon: Horizon, sessions: int, reference: datetime) -> dict[str, Any]:
         horizon_end = market_session_bounds(forward_trading_dates(

@@ -395,3 +395,20 @@ entry/exit events retain their recorded identity.
 The [decision-loop repair guide](docs/decision-loop-repair.md) describes the
 sequential monitored-stock funnel, matching optional CASH-plan identities,
 canonical Today presentation and forecast generation/settlement separation.
+
+
+## Decision storage and cold history
+
+`analysis.ticker_decision` retains the canonical point-in-time input manifest,
+plan and outcome identity. Identical immutable market/risk context is interned
+in `analysis.decision_context`; `analysis.ticker_decision_read` expands both
+legacy inline rows and normalized rows without depending on the NAS. The old
+per-input manifest table is retired, not a second authority. Its only supported
+removal is the bounded, exact COPY archive/restore-verified owner cutover.
+
+Publication retention writes and verifies original row archives before deleting
+eligible superseded generations or orphaned payloads. Decision-linked market
+publications and ranking/attribution scopes remain online. A NAS outage blocks
+reclamation, not existing evidence reads or current decision access. See
+[the migration runbook](docs/storage-efficiency-migration.md) for space budgets,
+restore contracts, concurrency boundaries and physical reclamation.
