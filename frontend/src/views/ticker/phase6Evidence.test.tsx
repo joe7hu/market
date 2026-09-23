@@ -25,7 +25,7 @@ describe("ExecutionEvidencePanel Phase 6 evidence", () => {
   it("renders a structured blocking state when execution evidence is absent", () => {
     const html = renderToStaticMarkup(<ExecutionEvidencePanel executionEvidence={null} />);
 
-    expect(html).toContain("A new trade cannot be assessed");
+    expect(html).toContain("Trading blocked");
     expect(html).not.toContain("execution-grade.v1");
     expect(html).toContain("Refresh execution evidence before placing an order.");
   });

@@ -30,9 +30,11 @@ describe("DecisionFunnelPanel", () => {
 
     const html = renderToStaticMarkup(<DecisionFunnelPanel funnel={funnel} />);
 
-    expect(html).toContain("Backend policy ticker-opportunity-ranking.v1");
-    expect(html).toContain("1/2 actionable");
-    expect(html).toContain("alpha_oos_evaluation_missing (1)");
+    expect(html).toContain("Policy ticker-opportunity-ranking.v1.");
+    expect(html).toContain("1/2");
+    expect(html).toContain("actionable stocks");
+    expect(html).toContain("alpha_oos_evaluation_missing");
+    expect(html).toContain("· 1");
     expect(html).toContain("strategy-governance");
     expect(html).toContain("Publish a passed OOS ticker-stock-alpha revision.");
   });

@@ -7,7 +7,7 @@ describe("decision evidence notice", () => {
     const state = missingFieldState({ field: "trade_plan", source: "trade_plan", reason: "trade_plan_identity_mismatch", availabilityStatus: "conflicted", nextAction: "Refresh the ticker decision." });
     const markup = renderToStaticMarkup(<DataFieldStateNotice state={state} />);
     expect(markup).toContain("refer to different evidence");
-    expect(markup).toContain("A new trade cannot be assessed");
+    expect(markup).toContain("Trading blocked");
     expect(markup).toContain("Refresh the ticker decision.");
     expect(markup).not.toMatch(/Field unavailable|Status:|Source:|trade_plan/);
     for (const availability_status of ["available", "not_applicable"] as const) {

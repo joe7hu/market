@@ -28,7 +28,7 @@ describe("decision loop presentation", () => {
   });
   it("explains a blocked CASH plan without pretending price conditions authorize it", () => {
     const html = renderToStaticMarkup(<CapitalDecision plan={{ eligibility: "BLOCKED", authorization_mode: "PAPER", primary_blocker: "Insufficient independent outcomes", rationale: "No qualified stock model passed validation", next_action: "Collect the pending outcomes" }} />);
-    expect(html).toContain("WAIT — retain cash"); expect(html).toContain("No qualified stock model"); expect(html).not.toContain("publication failed");
+    expect(html).toContain("NO TRADE — requirements not met"); expect(html).toContain("No qualified stock model"); expect(html).not.toContain("publication failed");
   });
   it("names absent decision publication as an operational failure, not a market verdict", () => {
     const html = renderToStaticMarkup(<CapitalDecision missingIsFailure resolution={{ primary_blocker: "account_snapshot_missing" }} />);
@@ -36,7 +36,7 @@ describe("decision loop presentation", () => {
   });
   it("keeps a published no-trade decision out of the publication-failure state", () => {
     const html = renderToStaticMarkup(<CapitalDecision resolution={{ lifecycle: "PUBLISHED", primary_blocker: "trade_plan_missing" }} />);
-    expect(html).toContain("WAIT — retain cash"); expect(html).not.toContain("publication failed");
+    expect(html).toContain("WAIT — no executable plan"); expect(html).not.toContain("publication failed");
   });
   it("plots zero honestly and breaks history across quote gaps and invalid clocks", () => {
     const segments = experimentSegments([...events, event("mark", "bad", 99)]);

@@ -69,7 +69,7 @@ it("shows evidence and a direct ticker review without diagnostics; formats actua
   expect(html).toContain("1 of 806 loaded");
   expect(html).toContain("Load more");
   expect(html).not.toMatch(/ep-1|rank-1|ticker-decision|cash_comparator|Not Applicable|Full detail follows/);
-  expect(opportunityReason(row as unknown as OpportunityDecisionRow)).toBe("A supported return forecast is not available.");
+  expect(opportunityReason(row as unknown as OpportunityDecisionRow)).toBe("No validated return forecast.");
   expect(screenerMetric(0.177, 100, "%")).toBe("17.7%");
   expect(screenerMetric(28.78, 1, "%")).toBe("28.78%");
   expect(screenerMetric(0, 100, "%")).toBe("0%");

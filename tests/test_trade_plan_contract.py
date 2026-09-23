@@ -544,7 +544,7 @@ def test_today_queue_input_bound_is_independent_from_snapshot_limit(
     assert "'opportunity_rank', opportunity_rank" not in authority_source
     assert "'trade_plan', trade_plan" not in authority_source
     assert "AS trade_plan_present" in authority_source
-    assert "JOIN analysis.ticker_decision stored_decision" in authority_source
+    assert "LEFT JOIN analysis.ticker_decision_read stored_decision" in authority_source
     assert authority_source.count(
         "THEN stored_decision.input_manifest->'trade_plan'"
     ) == 2

@@ -11,7 +11,11 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
-from investment_panel.infrastructure.postgres.backup import credential_safe_connection, create_verified_backup
+from investment_panel.infrastructure.postgres.backup import (
+    credential_safe_connection,
+    create_verified_backup,
+    verify_existing_backup,
+)
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.jobs import JobRepository
 from investment_panel.infrastructure.postgres.migrations import upgrade_database
@@ -358,6 +362,33 @@ def test_backup_is_custom_format_sha_verified_and_contains_all_schemas(
     assert dump_path.read_bytes()[:5] == b"PGDMP"
     assert manifest["sha256"] == hashlib.sha256(dump_path.read_bytes()).hexdigest()
     assert manifest["schemas"] == ["analysis", "app", "catalog", "ingest", "ops", "raw"]
+
+
+def test_existing_custom_backup_can_be_verified_without_a_second_dump(
+    migrated_postgres_dsn: str,
+    migrated_postgresql_proc,
+    tmp_path: Path,
+) -> None:
+    reference = datetime(2026, 7, 11, 12, tzinfo=UTC)
+    backup = create_verified_backup(
+        migrated_postgres_dsn,
+        tmp_path,
+        now=reference,
+        postgres_bin_dir=Path(migrated_postgresql_proc.executable).parent,
+    )
+    dump_path = Path(backup["dump_path"])
+    dump_mtime = dump_path.stat().st_mtime_ns
+    Path(backup["manifest_path"]).unlink()
+
+    result = verify_existing_backup(
+        dump_path,
+        created_at=reference,
+        postgres_bin_dir=Path(migrated_postgresql_proc.executable).parent,
+    )
+
+    assert dump_path.stat().st_mtime_ns == dump_mtime
+    assert result["sha256"] == backup["sha256"]
+    assert json.loads(Path(result["manifest_path"]).read_text())["status"] == "verified"
 
 
 def test_backup_removes_password_from_pg_dump_arguments() -> None:

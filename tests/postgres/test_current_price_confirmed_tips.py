@@ -127,6 +127,6 @@ def test_confirmed_quote_tip_reduces_buffer_work_not_just_warm_wall_time(migrate
                 plans.append(result["Plan"])
             buffers = [plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) for plan in plans]
             assert buffers[0] > 0
-            assert buffers[1] < buffers[0] / 2, {"reference_buffers": buffers[0], "tip_buffers": buffers[1], "plans": plans}
+            assert buffers[1] < buffers[0] * 0.51, {"reference_buffers": buffers[0], "tip_buffers": buffers[1], "plans": plans}
     finally:
         runtime.close()

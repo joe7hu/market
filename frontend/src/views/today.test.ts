@@ -108,8 +108,8 @@ describe("Today Action Queue", () => {
     expect(blocked).not.toContain("contract-1");
     expect(missing).toContain("NO TRADE");
     expect(missing).toContain("No new trade");
-    expect(missing).toContain("No published entry, position size, invalidation and maximum loss are linked to this decision.");
-    expect(missing).toContain("Open the ticker assessment; refresh decision models");
+    expect(missing).toContain("No executable trade plan.");
+    expect(missing).toContain("Rebuild entry, size, invalidation and exit terms before staging an order.");
     expect(missing).not.toContain("BUY");
   });
 

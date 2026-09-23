@@ -360,23 +360,23 @@ def test_context_backfill_finishes_partially_normalized_decision(storage):
 
 @pytest.mark.parametrize("damage", ["missing", "changed"])
 def test_manifest_cutover_requires_offline_restore_sidecar(storage, damage):
-    _legacy_inputs(storage.runtime, _decision(storage.runtime), 1)
+    _legacy(storage.runtime, _decision(storage.runtime), rows=1)
     worker = ManifestArchive(storage)
     worker.run(state="backfill", execute=True)
-    _backup(storage.runtime, storage.archive_root)
+    token = _backup(storage)
     sidecar = next((storage.archive_root / KIND).glob("*.json"))
     if damage == "missing":
         sidecar.unlink()
     else:
         sidecar.write_text('{"wrong": "schema"}')
     with pytest.raises(ValueError, match="sidecar"):
-        worker.run(state="cutover", execute=True, backup_token=BACKUP_SHA)
+        worker.run(state="cutover", execute=True, backup_token=token)
     with storage.runtime.read() as connection:
         assert connection.execute("SELECT count(*) AS count FROM analysis.ticker_input_manifest_legacy").fetchone()["count"] == 1
 
 
 def test_manifest_scratch_restore_reuses_physical_storage_within_transaction(storage, monkeypatch):
-    _legacy_inputs(storage.runtime, _decision(storage.runtime), 3)
+    _legacy(storage.runtime, _decision(storage.runtime), rows=3)
     worker = ManifestArchive(storage)
     worker.run(state="backfill", batch_size=1, max_batches=4, execute=True)
     from investment_panel.infrastructure.postgres import manifest_archive

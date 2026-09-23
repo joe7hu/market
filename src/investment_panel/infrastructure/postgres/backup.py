@@ -9,9 +9,13 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 from typing import Any
 
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+
+_REQUIRED_SCHEMAS = {"catalog", "ingest", "raw", "analysis", "app", "ops"}
 
 
 def create_verified_backup(
@@ -26,7 +30,6 @@ def create_verified_backup(
     destination.mkdir(parents=True, exist_ok=True)
     stamp = reference.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     dump_path = destination / f"market-{stamp}.dump"
-    manifest_path = destination / f"market-{stamp}.json"
     binary_dir = Path(postgres_bin_dir) if postgres_bin_dir else None
     pg_dump = str(binary_dir / "pg_dump") if binary_dir else shutil.which("pg_dump")
     pg_restore = str(binary_dir / "pg_restore") if binary_dir else shutil.which("pg_restore")
@@ -40,16 +43,49 @@ def create_verified_backup(
         text=True,
         env=dump_environment,
     )
+    return _verify_backup(dump_path, created_at=reference, pg_restore=pg_restore, remove_invalid=True)
+
+
+def verify_existing_backup(
+    dump_path: str | Path,
+    *,
+    created_at: datetime | None = None,
+    postgres_bin_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Create a receipt for an existing custom dump without re-dumping PostgreSQL."""
+    path = Path(dump_path)
+    binary_dir = Path(postgres_bin_dir) if postgres_bin_dir else None
+    pg_restore = str(binary_dir / "pg_restore") if binary_dir else shutil.which("pg_restore")
+    if not pg_restore:
+        raise FileNotFoundError("pg_restore must be installed or postgres_bin_dir must be set")
+    return _verify_backup(
+        path,
+        created_at=created_at or datetime.fromtimestamp(path.stat().st_mtime, UTC),
+        pg_restore=pg_restore,
+        remove_invalid=False,
+    )
+
+
+def _verify_backup(
+    dump_path: Path,
+    *,
+    created_at: datetime,
+    pg_restore: str,
+    remove_invalid: bool,
+) -> dict[str, Any]:
+    manifest_path = dump_path.with_suffix(".json")
+    if manifest_path.exists():
+        raise FileExistsError(f"refusing to replace existing backup receipt: {manifest_path}")
     listing = subprocess.run(
         [pg_restore, "--list", str(dump_path)],
         check=True,
         capture_output=True,
         text=True,
     ).stdout
-    required_schemas = {"catalog", "ingest", "raw", "analysis", "app", "ops"}
-    missing = sorted(schema for schema in required_schemas if f"SCHEMA - {schema}" not in listing)
+    missing = sorted(schema for schema in _REQUIRED_SCHEMAS if f"SCHEMA - {schema}" not in listing)
     if missing:
-        dump_path.unlink(missing_ok=True)
+        if remove_invalid:
+            dump_path.unlink(missing_ok=True)
         raise RuntimeError(f"backup verification missing schemas: {', '.join(missing)}")
     digest = hashlib.sha256()
     with dump_path.open("rb") as handle:
@@ -57,14 +93,22 @@ def create_verified_backup(
             digest.update(chunk)
     manifest = {
         "status": "verified",
-        "created_at": reference.isoformat(),
+        "created_at": created_at.isoformat(),
         "dump_path": str(dump_path),
         "byte_count": dump_path.stat().st_size,
         "sha256": digest.hexdigest(),
         "format": "postgresql-custom",
-        "schemas": sorted(required_schemas),
+        "schemas": sorted(_REQUIRED_SCHEMAS),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{manifest_path.name}.", suffix=".tmp", dir=manifest_path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, manifest_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     return {**manifest, "manifest_path": str(manifest_path)}
 
 

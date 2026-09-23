@@ -185,7 +185,7 @@ def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
         "source": "trade_plan",
         "reason": "trade_plan_missing",
         "blocking": True,
-        "next_action": "Open the ticker assessment; refresh decision models to publish entry, position size, invalidation and maximum loss before staging paper orders.",
+        "next_action": "Rebuild entry, size, invalidation and exit terms. Do not stage an incomplete order.",
     }]
 
 
@@ -399,9 +399,9 @@ def test_today_replaces_a_legacy_refresh_hint_with_the_actual_blocker(
 
     assert response.status_code == 200
     action = response.json()["actions"][0]
-    assert "matured stock outcomes" in action["next_action"]
-    assert "matured stock outcomes" in action["resolution"]["next_action"]
-    assert "matured stock outcomes" in action["trade_plan"]["next_action"]
+    assert "validated strategy forecast" in action["next_action"]
+    assert "validated strategy forecast" in action["resolution"]["next_action"]
+    assert "validated strategy forecast" in action["trade_plan"]["next_action"]
     assert action["action"] == "NO_TRADE"
     assert action["resolution"]["authorization_mode"] == "NONE"
 

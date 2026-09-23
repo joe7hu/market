@@ -105,7 +105,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     monkeypatch.setattr(snapshot_database, "run", lambda _path: {"status": "verified"})
 
     class _Retention:
-        def __init__(self, _runtime) -> None:
+        def __init__(self, _runtime, **_kwargs) -> None:
             pass
 
         def prune(self):

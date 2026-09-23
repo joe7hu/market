@@ -638,7 +638,9 @@ class StorageArchiveService:
                     """
                     UPDATE ops.storage_archive_manifest
                     SET verification_status = %s, verified_at = CASE WHEN %s THEN now() ELSE NULL END,
-                        metadata = metadata || %s, updated_at = now()
+                        metadata = CASE WHEN format = 'postgres-copy-text-gzip.v1' THEN metadata
+                                        ELSE metadata || %s END,
+                        updated_at = now()
                     WHERE id = %s
                     """,
                     ["verified" if ok else "failed", ok, Jsonb({"verification_detail": detail}), row["id"]],

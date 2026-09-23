@@ -28,6 +28,8 @@ def catalog_hash(connection):
 def test_baseline_matches_verified_schema_and_application_queries(baseline_postgres_dsn):
     with psycopg.connect(baseline_postgres_dsn) as connection:
         assert catalog_hash(connection) in BASELINE_SCHEMA_HASHES
+    upgrade_database(baseline_postgres_dsn, HEAD_REVISION)
+    with psycopg.connect(baseline_postgres_dsn) as connection:
         connection.execute("SET LOCAL ROLE market_app")
         connection.execute("SELECT version_num FROM public.alembic_version").fetchone()
         for policy in QUERY_POLICIES.values():
@@ -108,6 +110,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260921_0032_reconcile_source_lifecycle.py',
         '20260921_0033_experiment_events.py',
         '20260922_0034_current_price_confirmed_tips.py',
+        '20260923_0035_decision_storage.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27

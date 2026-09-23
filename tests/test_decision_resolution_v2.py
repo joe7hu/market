@@ -55,8 +55,8 @@ def test_blocked_resolution_has_one_safe_primary_blocker() -> None:
 
 @pytest.mark.parametrize(("blocker", "next_step"), [
     ("portfolio_nav", "Reconcile cash and holdings"),
-    ("forecast_missing", "matured stock outcomes"),
-    ("alpha_strategy_revision_missing", "failed strategy gates"),
+    ("forecast_missing", "validated strategy forecast"),
+    ("alpha_strategy_revision_missing", "independent matured outcomes"),
     ("insufficient_history", "missing market sessions"),
 ])
 def test_blocked_resolution_names_the_actual_next_step(blocker: str, next_step: str) -> None:
