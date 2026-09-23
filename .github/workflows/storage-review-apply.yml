@@ -10,6 +10,7 @@ jobs:
   apply-and-test:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'storage/nas-archive-and-compact-decisions'
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     env:
       PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
     steps:
@@ -17,23 +18,28 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Apply reviewed patch to this branch only
+      - name: Apply reviewed safety patch to this branch only
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          cat .storage-review/part-{0,1,2,3}.bin | xz -d > /tmp/storage.patch
-          echo 'd63035b6e007ef2ae956d5149b49367c965242b4445cdae01d6415397d286984  /tmp/storage.patch' | sha256sum -c
+          xz -d -c .storage-review/followup.patch.xz > /tmp/storage.patch
+          echo '57785a69e11bc8c2c08d7006e496cbb14fe642792c9d0986ede2c8b7fada3b3e  /tmp/storage.patch' | sha256sum -c
           git apply --index /tmp/storage.patch
           git config user.name 'Market storage maintenance'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Normalize decision evidence and add verified NAS retention'
+          git commit -m 'Bound storage maintenance and preserve exact archive values'
           git fetch origin storage/nas-archive-and-compact-decisions
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
           git push origin HEAD:refs/heads/storage/nas-archive-and-compact-decisions
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
         with:
           version: '0.9.26'
@@ -41,5 +47,18 @@ jobs:
         with:
           postgres-version: '18'
       - run: uv sync --extra test --locked
-      - name: Focused PostgreSQL migration, archive, retention, and ticker tests
-        run: uv run pytest tests/postgres/test_decision_storage.py tests/postgres/test_storage_archive.py tests/postgres/test_postgres_retention_backup.py tests/postgres/test_ticker_paper_execution.py -q --tb=short
+      - name: Bootstrap and migrate isolated PostgreSQL
+        env:
+          MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          ci_password="$(openssl rand -hex 32)"
+          PGPASSWORD=postgres psql "$MARKET_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE market_ci_login LOGIN PASSWORD '$ci_password' NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION"
+          export MARKET_APP_LOGIN_ROLE=market_ci_login
+          export MARKET_APP_DATABASE_PASSWORD="$ci_password"
+          uv run market-db-migrate
+      - name: Focused storage and trading regression tests
+        run: uv run pytest tests/postgres/test_decision_storage.py tests/postgres/test_storage_safety_limits.py tests/postgres/test_storage_archive.py tests/postgres/test_postgres_retention_backup.py tests/postgres/test_ticker_paper_execution.py -q --tb=short
+      - run: npm ci --prefix frontend
+      - name: Full release gate
+        run: make release-gate
