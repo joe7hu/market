@@ -12,13 +12,13 @@ import { collectSourceErrors, parseSourceCatalog, sourceFamilyHealth, summarizeS
 import { Link } from "react-router-dom";
 
 import { useRefreshJobs } from "@/views/health/useRefreshJobs";
+import { useDecisionFunnel } from "@/views/health/useDecisionFunnel";
 import { TriggerPanel } from "@/views/health/triggerPanels";
 import { SourceHealthControlPlane } from "@/views/health/catalogPanels";
 import { TopErrorsPanel } from "@/views/health/categoryPanels";
 import { RefreshHistoryTable } from "@/views/health/tables";
 import { formatDateTime } from "@/views/health/format";
 import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api/options";
-import { loadDecisionFunnel, type DecisionFunnel } from "@/api/panel";
 import { numberFromRecord, recordField } from "@/views/optionsRadarData";
 import { DecisionFunnelPanel } from "@/views/health/decisionFunnel";
 import { displayField } from "@/shared/rowFormat";
@@ -30,14 +30,11 @@ export function HealthRoute() {
   usePanelScope("health", { retries: 3 });
 
   const jobs = useRefreshJobs();
+  const decisionFunnel = useDecisionFunnel(jobs.rows);
   const [reloading, setReloading] = useState(false);
   const [optionHistory, setOptionHistory] = useState<OptionHistoryHealth | null>(null);
-  const [decisionFunnel, setDecisionFunnel] = useState<DecisionFunnel | null>(null);
 
   useEffect(() => { void loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null)); }, []);
-  useEffect(() => {
-    void loadDecisionFunnel().then(setDecisionFunnel).catch(() => setDecisionFunnel(null));
-  }, []);
 
   const sourceRows = useMemo(() => parseSourceCatalog(data), [data]);
   const summary = useMemo(() => summarizeSourceHealth(sourceRows), [sourceRows]);
@@ -87,18 +84,18 @@ export function HealthRoute() {
         loadScope("health").catch(() => undefined),
         jobs.refresh(),
         loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null)),
-        loadDecisionFunnel().then(setDecisionFunnel).catch(() => setDecisionFunnel(null)),
+        decisionFunnel.refresh(),
       ]);
     } finally {
       setReloading(false);
     }
-  }, [jobs, loadScope]);
+  }, [decisionFunnel.refresh, jobs, loadScope]);
 
   return (
     <WorkspacePage
       eyebrow="Control plane"
       title="System"
-      subtitle="Decision funnel, coverage, source and job health, broker status, settings, and provider activity."
+      subtitle="Source health, decision readiness, and the next blocker."
       metrics={[]}
       actions={
         <Button type="button" variant="outline" size="sm" onClick={() => void reload()} disabled={reloading}>
@@ -119,7 +116,7 @@ export function HealthRoute() {
       <details className="rounded-md border border-border p-4" onToggle={(event) => { if (event.currentTarget.open) void loadScope("research").catch(() => undefined); }}><summary className="cursor-pointer font-semibold">Research diagnostics</summary><ResearchAuthorityTable data={data} /></details>
       <DataFlowDiagram stages={flowStages} />
 
-      <DecisionFunnelPanel funnel={decisionFunnel} />
+      <DecisionFunnelPanel funnel={decisionFunnel.funnel} jobs={jobs.rows} loading={decisionFunnel.loading} error={decisionFunnel.error} />
 
       <SystemPosture data={data} />
 
