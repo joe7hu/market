@@ -92,7 +92,7 @@ def main() -> None:
     parser.add_argument("--destination")
     parser.add_argument("--backup-token", help="SHA-256 of a verified NAS PostgreSQL backup")
     parser.add_argument("--execute", action="store_true", help="enable writes for backfill or explicitly selected cutover; otherwise plan only")
-    parser.add_argument("--expire", action="store_true", help="report or remove option archive objects past 730 days")
+    parser.add_argument("--expire", action="store_true", help="inventory option archives past 730 days; age-only deletion is disabled")
     args = parser.parse_args()
     print(json.dumps(run(
         args.command, config_path=args.config, phase=args.phase, batch_size=args.batch_size,

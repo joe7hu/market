@@ -208,7 +208,7 @@ def test_copy_verifier_rejects_row_count_hash_and_budget_mismatches(tmp_path, mo
     assert not verify_copy_file(path, digest, row_count=2, metadata=metadata)[0]
     assert not verify_copy_file(path, digest, row_count=1, metadata={**metadata, "content_sha256": "bad"})[0]
     assert not verify_copy_file(path, digest, row_count=1, metadata={**metadata, "columns": []})[0]
-    monkeypatch.setattr("investment_panel.infrastructure.postgres.manifest_archive.MAX_CHUNK_BYTES", 1)
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.archive_io.MAX_CHUNK_BYTES", 1)
     assert verify_copy_file(path, digest, row_count=1, metadata=metadata)[1] == "chunk_exceeds_restore_budget"
     assert MAX_CHUNK_BYTES == 64 * 1024**2
 
@@ -356,3 +356,40 @@ def test_context_backfill_finishes_partially_normalized_decision(storage):
         result = connection.execute("SELECT market_state_snapshot, risk_policy_snapshot FROM analysis.ticker_decision_read WHERE id = %s", [decision_id]).fetchone()
         assert result == {"market_state_snapshot": context, "risk_policy_snapshot": policy}
     assert compact_context_batch(storage.runtime, execute=True)["compacted"] == 0
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed"])
+def test_manifest_cutover_requires_offline_restore_sidecar(storage, damage):
+    _legacy_inputs(storage.runtime, _decision(storage.runtime), 1)
+    worker = ManifestArchive(storage)
+    worker.run(state="backfill", execute=True)
+    _backup(storage.runtime, storage.archive_root)
+    sidecar = next((storage.archive_root / KIND).glob("*.json"))
+    if damage == "missing":
+        sidecar.unlink()
+    else:
+        sidecar.write_text('{"wrong": "schema"}')
+    with pytest.raises(ValueError, match="sidecar"):
+        worker.run(state="cutover", execute=True, backup_token=BACKUP_SHA)
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT count(*) AS count FROM analysis.ticker_input_manifest_legacy").fetchone()["count"] == 1
+
+
+def test_manifest_scratch_restore_reuses_physical_storage_within_transaction(storage, monkeypatch):
+    _legacy_inputs(storage.runtime, _decision(storage.runtime), 3)
+    worker = ManifestArchive(storage)
+    worker.run(state="backfill", batch_size=1, max_batches=4, execute=True)
+    from investment_panel.infrastructure.postgres import manifest_archive
+    original = manifest_archive._restore_chunk
+    checked = []
+
+    def checked_restore(connection, *args):
+        before = connection.execute("SELECT pg_relation_filenode('pg_temp.market_manifest_verify') AS node").fetchone()["node"]
+        original(connection, *args)
+        after = connection.execute("SELECT pg_relation_filenode('pg_temp.market_manifest_verify') AS node").fetchone()["node"]
+        assert before == after  # No deferred per-chunk replacement files accumulating until commit.
+        checked.append(after)
+
+    monkeypatch.setattr(manifest_archive, "_restore_chunk", checked_restore)
+    assert worker.run(state="verify")["rows"] == 3
+    assert len(checked) == 3 and len(set(checked)) == 1

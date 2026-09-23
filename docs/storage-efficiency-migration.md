@@ -117,7 +117,8 @@ when restoring without access to the original manifest database.
 
 Cutover locks only the retired table and independently repeats all checks:
 contiguous coverage, source identity/schema, full source COPY hashes, actual
-archive checksums, row counts, a typed PostgreSQL restore per chunk, and exact
+archive checksums, matching offline-restore sidecars, row counts, a typed
+PostgreSQL restore per chunk, and exact
 restore round-trip hashes. It checks for an unexported tail. Corruption,
 changed rows, missing chunks, missing mounts and new dependencies abort the
 transaction. Only then does it issue `DROP TABLE ... RESTRICT`, never CASCADE.
@@ -207,8 +208,9 @@ The provided 10 GB August estimate is therefore not an automatic first win.
 restores a verified object to a new file, not into live tables. COPY chunks use
 PostgreSQL text COPY, not CSV. Use their sidecar column order/types in a scratch
 table with `COPY ... FROM STDIN WITH (FORMAT text)`. Publication JSON objects
-contain `relation` and the full original `row`; restore in dependency order
-using matching schemas and original IDs/hashes, first on a scratch database.
+contain `relation` and the original PostgreSQL row text as `row_json`; restore
+in dependency order using matching schemas and original IDs/hashes, first on a
+scratch database. Preserve numeric precision as described below.
 Never substitute a newly computed decision for an archived original.
 
 Record before/after decision, outcome and execution counts; compare sampled

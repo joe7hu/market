@@ -554,7 +554,7 @@ class StorageArchiveService:
             if path.exists() and _sha256_file(path) != artifact_hash:
                 raise ValueError("existing content-addressed option dump is corrupt")
             os.replace(temporary, path)
-            from investment_panel.infrastructure.postgres.manifest_archive import sync_archive_directory
+            from investment_panel.infrastructure.postgres.archive_io import sync_archive_directory
             sync_archive_directory(root)
         finally:
             Path(temporary).unlink(missing_ok=True)
@@ -616,7 +616,7 @@ class StorageArchiveService:
             path = Path(str(row["nas_uri"]))
             metadata = dict(row["metadata"] or {})
             if str(row["format"]) == "postgres-copy-text-gzip.v1":
-                from investment_panel.infrastructure.postgres.manifest_archive import verify_copy_file
+                from investment_panel.infrastructure.postgres.archive_io import verify_copy_file
                 ok, detail = verify_copy_file(path, str(row["sha256"]),
                                               row_count=int(row["row_count"]), metadata=metadata)
             elif str(row["format"]) == "custom" and str(row["archive_kind"]) == "options":
@@ -661,7 +661,7 @@ class StorageArchiveService:
         source = Path(str(row["nas_uri"]))
         metadata = dict(row["metadata"] or {})
         if str(row["format"]) == "postgres-copy-text-gzip.v1":
-            from investment_panel.infrastructure.postgres.manifest_archive import verify_copy_file
+            from investment_panel.infrastructure.postgres.archive_io import verify_copy_file
             ok, detail = verify_copy_file(source, str(row["sha256"]),
                                           row_count=int(row["row_count"]), metadata=metadata)
         elif str(row["format"]) == "custom":
@@ -983,7 +983,7 @@ class StorageArchiveService:
         )
         if not checked:
             raise ValueError(f"content-addressed archive read-back failed: {detail}")
-        from investment_panel.infrastructure.postgres.manifest_archive import sync_archive_directory
+        from investment_panel.infrastructure.postgres.archive_io import sync_archive_directory
         sync_archive_directory(root)
         manifest_id, created = self._record_manifest(
             archive_kind=archive_kind,

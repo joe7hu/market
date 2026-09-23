@@ -76,7 +76,7 @@ COMPATIBILITY_MARKERS = (
 )
 FINAL_ARCHITECTURE_INVARIANTS = {
     "availability_authority": "raw.price_bar_fact_availability + raw.quote_fact_availability",
-    "implemented_storage_phases": "plan,archive fundamental-history|options,verify,restore,compact price-confirmations",
+    "implemented_storage_phases": "plan,archive fundamental-history|options|decision-manifests|publications,verify,restore,compact price-confirmations|decision-context|decision-manifests|publications",
     "scheduler_concurrency": "2",
     "option_hot_retention_days": "7",
     "option_archive_retention_days": "730",

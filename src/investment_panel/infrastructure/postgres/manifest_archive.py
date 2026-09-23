@@ -20,6 +20,9 @@ from typing import Any, TYPE_CHECKING
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from investment_panel.infrastructure.postgres.archive_io import (
+    MAX_CHUNK_BYTES, archive_file_hash, sync_archive_directory, verify_copy_file,
+)
 from investment_panel.infrastructure.postgres.migrations import HEAD_REVISION
 from investment_panel.infrastructure.postgres.decision_storage import require_maintenance_headroom
 from investment_panel.infrastructure.postgres.runtime import JOB_PROFILE
@@ -31,52 +34,9 @@ RELATION = "analysis.ticker_input_manifest_legacy"
 KIND = "decision-manifests"
 FORMAT = "postgres-copy-text-gzip.v1"
 CHECKPOINT = "decision-manifests-copy-v1"
-MAX_CHUNK_BYTES = 64 * 1024**2
 COPY_SETTINGS = """SET LOCAL TIME ZONE 'UTC'; SET LOCAL DateStyle = 'ISO, YMD';
 SET LOCAL IntervalStyle = 'postgres'; SET LOCAL extra_float_digits = 3;
 SET LOCAL bytea_output = 'hex'; SET LOCAL client_encoding = 'UTF8'"""
-
-
-def _file_hash(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def sync_archive_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def verify_copy_file(path: Path, expected_sha256: str, *, row_count: int, metadata: dict[str, Any]) -> tuple[bool, str]:
-    """Verify with bounded memory; no JSON materialization or local temp file."""
-    try:
-        if _file_hash(path) != expected_sha256:
-            return False, "sha256_mismatch"
-        digest = sha256()
-        rows = size = 0
-        with gzip.open(path, "rb") as handle:
-            for block in iter(lambda: handle.read(1024 * 1024), b""):
-                size += len(block)
-                if size > MAX_CHUNK_BYTES:
-                    return False, "chunk_exceeds_restore_budget"
-                digest.update(block)
-                # COPY text escapes embedded newlines, unlike CSV.
-                rows += block.count(b"\n")
-        if digest.hexdigest() != metadata.get("content_sha256"):
-            return False, "content_sha256_mismatch"
-        if rows != row_count or size != metadata.get("uncompressed_bytes"):
-            return False, "copy_size_or_row_count_mismatch"
-        if not metadata.get("columns"):
-            return False, "copy_schema_missing"
-        return True, "copy_bytes_verified"
-    except (OSError, EOFError) as exc:
-        return False, f"copy_archive_unreadable:{type(exc).__name__}"
 
 
 def _schema(connection: Any) -> tuple[int | None, list[dict[str, Any]]]:
@@ -208,7 +168,7 @@ class ManifestArchive:
                         measured = _stream_source(connection, columns, lower, upper, compressed)
                     handle.flush()
                     os.fsync(handle.fileno())
-                artifact_hash = _file_hash(Path(temporary))
+                artifact_hash = archive_file_hash(Path(temporary))
                 target = root / f"{artifact_hash}.copy.gz"
                 metadata = {**measured, "columns": columns, "source_oid": oid,
                             "lower_id_exclusive": lower, "upper_id_inclusive": upper}
@@ -216,7 +176,7 @@ class ManifestArchive:
                 if not ok:
                     raise ValueError(f"manifest export read-back failed: {detail}")
                 if target.exists():
-                    if _file_hash(target) != artifact_hash:
+                    if archive_file_hash(target) != artifact_hash:
                         raise ValueError("existing content-addressed manifest archive is corrupt")
                     Path(temporary).unlink()
                 else:
@@ -291,6 +251,21 @@ class ManifestArchive:
                 ok, detail = verify_copy_file(path, str(manifest["sha256"]), row_count=int(manifest["row_count"]), metadata=metadata)
                 if not ok:
                     raise ValueError(f"manifest {manifest['id']} verification failed: {detail}")
+                try:
+                    with path.with_suffix(".json").open("rb") as handle:
+                        sidecar_bytes = handle.read(64 * 1024 + 1)
+                    if len(sidecar_bytes) > 64 * 1024:
+                        raise ValueError("sidecar exceeds schema receipt budget")
+                    sidecar = json.loads(sidecar_bytes)
+                except (OSError, ValueError) as exc:
+                    raise ValueError("manifest sidecar is missing or unreadable; source retained") from exc
+                expected_sidecar = {
+                    "archive_kind": KIND, "format": FORMAT, "source_relation": RELATION,
+                    "sha256": str(manifest["sha256"]), "row_count": int(manifest["row_count"]),
+                    "schema_revision": str(manifest["schema_revision"]), "metadata": metadata,
+                }
+                if sidecar != expected_sidecar:
+                    raise ValueError("manifest sidecar differs from verified database receipt; source retained")
                 measured = _stream_source(connection, columns, previous, upper)
                 if any(measured[key] != metadata[key] for key in ("content_sha256", "uncompressed_bytes", "row_count")):
                     raise ValueError("legacy rows changed or were omitted after export; no data was removed")
