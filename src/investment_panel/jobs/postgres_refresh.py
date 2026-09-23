@@ -10,7 +10,7 @@ from investment_panel.infrastructure.postgres.authority import runtime_for_confi
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
 from investment_panel.infrastructure.postgres.today_analysis import refresh_today_publication
-from investment_panel.workflows.market import refresh_market_publication
+from investment_panel.workflows.market import refresh_market_publication, terminal_bar_retry
 from investment_panel.infrastructure.postgres.outcomes import OutcomeRepository
 from investment_panel.infrastructure.postgres.portfolio import PortfolioLoopRepository
 from investment_panel.jobs import (
@@ -49,9 +49,42 @@ def publish_decisions(
             now=cutoff,
             configured_watchlist=config.watchlist,
             configured_watchlist_as_of=cutoff,
+            require_current_terminal_bars=True,
+            recheck_current_terminal_bars=True,
         )
+        if _terminal_bar_retry_pending(market):
+            skipped = {"status": "skipped", "reason": str(market.get("reason") or "market_publication_unavailable")}
+            return {
+                "status": "partial",
+                "database": "postgresql",
+                "options_radar": options,
+                "ticker_decisions": skipped,
+                "outcomes": skipped,
+                "today": skipped,
+                "portfolio_allocation": skipped,
+                "market": market,
+                **({key: market[key] for key in (
+                    "retry_after_seconds", "expected_terminal_bar", "missing_terminal_bars",
+                ) if key in market}),
+            }
         decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     else:
+        retry = terminal_bar_retry(runtime, config.watchlist, cutoff)
+        if retry is not None:
+            skipped = {"status": "skipped", "reason": retry["reason"]}
+            return {
+                "status": "partial",
+                "database": "postgresql",
+                "options_radar": options,
+                "ticker_decisions": skipped,
+                "outcomes": skipped,
+                "today": skipped,
+                "portfolio_allocation": skipped,
+                "market": retry,
+                **{key: retry[key] for key in (
+                    "retry_after_seconds", "expected_terminal_bar", "missing_terminal_bars",
+                )},
+            }
         market = _visible_market_publication(runtime, cutoff)
         decision_cutoff = cutoff  # keep Market lineage, not its old consumer cutoff
     tickers = ticker_decisions.publish(
@@ -146,7 +179,29 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         now=cutoff,
         configured_watchlist=config.watchlist,
         configured_watchlist_as_of=cutoff,
+        require_current_terminal_bars=True,
+        recheck_current_terminal_bars=now is None,
     )
+    if _terminal_bar_retry_pending(market):
+        skipped = {"status": "skipped", "reason": str(market.get("reason") or "market_publication_unavailable")}
+        return {
+            "ok": False,
+            "status": "partial",
+            "database": "postgresql",
+            "cadence": "daily_premarket",
+            "before_agents": before_agents,
+            "agents": agents,
+            "thesis_monitor": thesis_monitor,
+            "after_agents": after_agents,
+            "ticker_decisions": skipped,
+            "outcomes": skipped,
+            "today": skipped,
+            "portfolio_allocation": skipped,
+            "market": market,
+            **({key: market[key] for key in (
+                "retry_after_seconds", "expected_terminal_bar", "missing_terminal_bars",
+            ) if key in market}),
+        }
     decision_cutoff = _market_publication_cutoff(market, fallback=cutoff)
     tickers = ticker_decisions.publish(
         config_path,
@@ -246,6 +301,8 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
             now=cutoff,
             configured_watchlist=config.watchlist,
             configured_watchlist_as_of=cutoff,
+            require_current_terminal_bars=True,
+            recheck_current_terminal_bars=True,
         )
         market_state_publication_id = _market_state_publication_id(result)
         market_state_visible_at = _market_publication_cutoff(result, fallback=bounded_cutoff())
@@ -300,6 +357,31 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         try:
             result = runner()
             status = str(result.get("status") or "ok").lower()
+            retry_after = result.get("retry_after_seconds")
+            if (
+                name in {"market_data", "market_publication"}
+                and not isinstance(retry_after, bool)
+                and isinstance(retry_after, (int, float))
+                and retry_after > 0
+            ):
+                # A completed-session bar is a shared input to every later
+                # publication here. Do not turn its prior-day fallback into a
+                # new decision snapshot.
+                results.append({"name": name, "ok": False, "started_at": started, "result": result})
+                return {
+                    "ok": False,
+                    "status": "partial",
+                    "database": "postgresql",
+                    "started_at": results[0]["started_at"],
+                    "finished_at": datetime.now(UTC),
+                    "failed_steps": [*failed, name],
+                    "warning_steps": warnings,
+                    "steps": results,
+                    "retry_after_seconds": retry_after,
+                    "terminal_bar_checked": result.get("terminal_bar_checked") is True,
+                    "expected_terminal_bar": result.get("expected_terminal_bar"),
+                    "missing_terminal_bars": result.get("missing_terminal_bars") or [],
+                }
             if name in {"robinhood_options", "ibkr_options"}:
                 step_failed = status not in {"ok", "partial"}
             elif name == "option_agents":
@@ -340,9 +422,16 @@ def _priority_ticker_symbols(config: AppConfig, runtime: Any) -> list[str]:
 
 
 def _market_state_publication_id(result: dict[str, Any]) -> str | None:
-    if str(result.get("status") or "").lower() != "ok":
+    if (
+        str(result.get("status") or "").lower() != "ok"
+        and result.get("baseline_status") != "published"
+    ):
         return None
     return str(result.get("publication_id") or "") or None
+
+
+def _terminal_bar_retry_pending(result: dict[str, Any]) -> bool:
+    return str(result.get("reason") or "") in {"terminal_bar_retry", "terminal_bar_cutoff_changed"}
 
 
 def _visible_market_publication(runtime: Any, cutoff: datetime) -> dict[str, Any]:

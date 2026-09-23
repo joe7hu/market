@@ -275,7 +275,13 @@ ALLOWLIST: dict[str, JobRunner] = {
     "update_decision_models": lambda config_path: postgres_refresh.publish_decisions(config_path),
     "market-refresh-decision-models": lambda config_path: postgres_refresh.publish_decisions(config_path),
     "market-update-event-calendar": lambda config_path: update_market_events.run(config_path),
-    "market-publish-ticker-decisions": lambda config_path: ticker_decisions.publish(config_path),
+    "market-publish-ticker-decisions": lambda config_path: postgres_refresh.publish_decisions(
+        config_path,
+        include_options_radar=False,
+        include_market_publication=False,
+        include_ticker_outcomes=True,
+        include_option_outcomes=False,
+    ),
     "market-update-disclosures": lambda config_path: run_source_with_material_thesis(config_path, update_disclosure_sources.run),
     # Preserve the established UI/automation job names while routing them to
     # PostgreSQL-native implementations.
@@ -293,10 +299,14 @@ ALLOWLIST: dict[str, JobRunner] = {
 }
 
 
-def refresh_job_rows(db_path: Any) -> list[dict[str, Any]]:
+def refresh_job_rows(
+    db_path: Any,
+    *,
+    job_names: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
     mark_stale_running_jobs(db_path)
     repository = _job_repository(db_path)
-    return repository.rows()
+    return repository.latest_rows(job_names) if job_names is not None else repository.rows()
 
 
 def fail_running_jobs(db_path: Any, reason: str) -> int:

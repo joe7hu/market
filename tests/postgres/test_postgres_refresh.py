@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.domain.decision import MarketStateSnapshot
+from investment_panel.domain.decision import MarketStateSnapshot, latest_completed_market_day
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.jobs import (
@@ -126,6 +126,38 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     assert publication_cutoffs[1] <= publication_cutoffs[2]
 
 
+def test_full_refresh_stops_at_a_terminal_bar_retry(monkeypatch) -> None:
+    config = typed_config()
+    calls: list[str] = []
+    monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
+    monkeypatch.setattr(update_arco_sources, "run", lambda _path: {"status": "ok"})
+    monkeypatch.setattr(
+        update_market_data,
+        "run",
+        lambda _path, publish=False: {
+            "status": "partial",
+            "retry_after_seconds": 300,
+            "terminal_bar_checked": True,
+            "expected_terminal_bar": "2026-09-22",
+            "missing_terminal_bars": ["UNH"],
+        },
+    )
+    monkeypatch.setattr(
+        assessment_inputs,
+        "features",
+        lambda _path: calls.append("features") or {"status": "ok"},
+    )
+
+    result = postgres_refresh.full("config.yaml")
+
+    assert result["status"] == "partial"
+    assert result["retry_after_seconds"] == 300
+    assert result["missing_terminal_bars"] == ["UNH"]
+    assert result["failed_steps"] == ["market_data"]
+    assert [step["name"] for step in result["steps"]] == ["arco_sources", "market_data"]
+    assert calls == []
+
+
 def test_routine_publication_uses_config_only_exact_market_benchmark(
     migrated_postgres_dsn: str,
     monkeypatch,
@@ -140,13 +172,14 @@ def test_routine_publication_uses_config_only_exact_market_benchmark(
             "watchlist": [{"symbol": "CONFIG-ONLY", "asset_class": "equity"}],
         },
     )
+    terminal_date = latest_completed_market_day(datetime.now(UTC)).isoformat()
     monkeypatch.setattr(
         market_data,
         "fetch_prices",
         lambda symbol, *_args: pd.DataFrame(
             [{
-                "symbol": symbol, "date": "2026-08-28", "open": 10,
-                "high": 12, "low": 10, "close": 12, "volume": 120, "source": "test",
+                "symbol": symbol, "date": terminal_date, "open": 10,
+                "high": 12, "low": 10, "close": 12, "volume": 120, "source": "test", "is_complete": True,
             }]
         ),
     )
@@ -201,6 +234,149 @@ def test_routine_publication_uses_config_only_exact_market_benchmark(
     assert result["benchmark_symbols"] == ["CONFIG-ONLY", "QQQ"]
     assert result["source_status"] == "ok"
     assert state.eligible_members == ["CONFIG-ONLY"]
+
+
+def test_market_data_retries_missing_completed_terminal_bars(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    import pandas as pd
+    from investment_panel.workflows import market_data
+
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={
+            "data_sources": {"yfinance": {"enabled": False}},
+            "watchlist": [
+                {"symbol": "CONFIG-ONLY", "asset_class": "equity"},
+                {"symbol": "8035", "asset_class": "equity"},
+            ],
+        },
+    )
+    stale_date = (latest_completed_market_day(datetime.now(UTC)) - timedelta(days=1)).isoformat()
+    monkeypatch.setattr(
+        market_data,
+        "fetch_prices",
+        lambda symbol, *_args: pd.DataFrame([{
+            "symbol": symbol, "date": stale_date, "open": 10, "high": 12, "low": 10,
+            "close": 12, "volume": 120, "source": "test", "is_complete": True,
+        }]),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "refresh_market_publication",
+        lambda *_args, **_kwargs: pytest.fail("terminal-bar retry published a stale Market state"),
+    )
+
+    result = update_market_data.run_for_config(config)
+
+    assert result["status"] == result["source_status"] == "partial"
+    assert result["missing_terminal_bars"] == ["CONFIG-ONLY", "QQQ"]
+    assert result["retry_after_seconds"] == market_data.TERMINAL_BAR_RETRY_SECONDS
+    assert result["market_publication"] == {"status": "deferred", "reason": "terminal_bar_retry"}
+
+
+def test_market_data_checks_the_terminal_bar_after_a_close_crossing_collection(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    import pandas as pd
+    from investment_panel.workflows import market_data
+
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={
+            "data_sources": {"yfinance": {"enabled": False}},
+            "watchlist": [{"symbol": "CONFIG-ONLY", "asset_class": "equity"}],
+        },
+    )
+    clock = iter((
+        datetime(2026, 9, 22, 19, 59, tzinfo=UTC),
+        datetime(2026, 9, 22, 19, 59, tzinfo=UTC),
+        datetime(2026, 9, 22, 20, 1, tzinfo=UTC),
+    ))
+
+    class Clock:
+        @staticmethod
+        def now(_timezone):
+            return next(clock)
+
+    monkeypatch.setattr(market_data, "datetime", Clock)
+    monkeypatch.setattr(
+        market_data,
+        "fetch_prices",
+        lambda symbol, *_args: pd.DataFrame([{
+            "symbol": symbol, "date": "2026-09-21", "open": 10, "high": 12, "low": 10,
+            "close": 12, "volume": 120, "source": "test", "is_complete": True,
+        }]),
+    )
+
+    result = update_market_data.run_for_config(config, publish=False)
+
+    assert result["missing_terminal_bars"] == ["CONFIG-ONLY", "QQQ"]
+    assert result["expected_terminal_bar"] == "2026-09-22"
+
+
+def test_decision_refresh_does_not_reuse_market_during_a_terminal_bar_retry(monkeypatch) -> None:
+    config = typed_config()
+    retry = {
+        "status": "partial",
+        "reason": "terminal_bar_retry",
+        "expected_terminal_bar": "2026-09-22",
+        "missing_terminal_bars": ["UNH"],
+        "retry_after_seconds": 300,
+    }
+    monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
+    monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(
+        postgres_refresh.refresh_options_radar,
+        "run_deterministic_only",
+        lambda _path: {"status": "ok"},
+    )
+    monkeypatch.setattr(postgres_refresh, "terminal_bar_retry", lambda *_args: retry)
+    monkeypatch.setattr(
+        postgres_refresh,
+        "_visible_market_publication",
+        lambda *_args: pytest.fail("decision refresh reused a stale Market publication"),
+    )
+
+    result = postgres_refresh.publish_decisions("config.yaml", include_market_publication=False)
+
+    assert result["status"] == "partial"
+    assert result["retry_after_seconds"] == 300
+    assert result["ticker_decisions"] == {"status": "skipped", "reason": "terminal_bar_retry"}
+
+
+def test_decision_refresh_uses_a_published_baseline_when_advanced_market_is_partial(monkeypatch) -> None:
+    config = typed_config()
+    market = {
+        "status": "partial",
+        "baseline_status": "published",
+        "publication_id": "market-publication-test",
+        "published_at": datetime.now(UTC),
+    }
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
+    monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(postgres_refresh, "_priority_ticker_symbols", lambda *_args: ["UNH"])
+    monkeypatch.setattr(
+        postgres_refresh.refresh_options_radar,
+        "run_deterministic_only",
+        lambda _path: {"status": "ok"},
+    )
+    monkeypatch.setattr(postgres_refresh, "refresh_market_publication", lambda *_args, **_kwargs: market)
+    monkeypatch.setattr(
+        postgres_refresh.ticker_decisions,
+        "publish",
+        lambda _path, **kwargs: seen.update(kwargs) or {"status": "ok"},
+    )
+    monkeypatch.setattr(postgres_refresh, "refresh_today_publication", lambda *_args, **_kwargs: {"status": "ok"})
+    monkeypatch.setattr(postgres_refresh, "_refresh_portfolio_allocation", lambda *_args, **_kwargs: {"status": "ok"})
+
+    result = postgres_refresh.publish_decisions("config.yaml", include_option_outcomes=False)
+
+    assert result["status"] == "partial"
+    assert seen["market_state_publication_id"] == "market-publication-test"
 
 
 def test_publish_decisions_consumes_visible_same_cycle_market_publication(monkeypatch) -> None:
@@ -261,6 +437,7 @@ def test_lightweight_decision_publication_skips_expensive_options_rebuild(monkey
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
     monkeypatch.setattr(postgres_refresh, "_priority_ticker_symbols", lambda *_args: [])
+    monkeypatch.setattr(postgres_refresh, "terminal_bar_retry", lambda *_args: None)
     monkeypatch.setattr(postgres_refresh, "_visible_market_publication", lambda *_args: market_publication)
     monkeypatch.setattr(
         postgres_refresh.refresh_options_radar,

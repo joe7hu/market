@@ -131,6 +131,27 @@ class JobRepository:
             ).fetchall()
         return [{**dict(row), "id": str(row["id"])} for row in rows]
 
+    def latest_rows(self, job_names: tuple[str, ...]) -> list[dict[str, Any]]:
+        if not job_names:
+            return []
+        with self.runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM (
+                    SELECT DISTINCT ON (job_name)
+                           id, job_name, status, started_at, heartbeat_at, finished_at,
+                           scheduled_due_at, dispatched_at, source_status, downstream_status,
+                           error, summary
+                    FROM ops.job_run
+                    WHERE job_name = ANY(%s)
+                    ORDER BY job_name, started_at DESC
+                ) latest
+                ORDER BY COALESCE(finished_at, started_at) DESC, started_at DESC
+                """,
+                [list(job_names)],
+            ).fetchall()
+        return [{**dict(row), "id": str(row["id"])} for row in rows]
+
     def mark_stale(
         self,
         *,

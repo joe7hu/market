@@ -7,15 +7,40 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.settings import AppConfig
+from investment_panel.core.market_time import market_timezone_for_symbol
 from investment_panel.core.prices import fetch_prices
+from investment_panel.domain.decision import latest_completed_market_day
 from investment_panel.infrastructure.postgres.monitored_universe import monitored_universe
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
-from investment_panel.workflows.market import refresh_market_publication
+from investment_panel.workflows.market import TERMINAL_BAR_RETRY_SECONDS, refresh_market_publication
 from investment_panel.infrastructure.providers.yfinance_provider import YFinanceProvider
 
 
 SOURCE_ID = "daily-market-prices"
+
+
+def _missing_terminal_bars(
+    universe_rows: list[dict[str, Any]],
+    bars_by_symbol: dict[str, list[dict[str, Any]]],
+    as_of: datetime,
+) -> tuple[str, list[str]]:
+    expected = latest_completed_market_day(as_of).isoformat()
+    missing = []
+    for row in universe_rows:
+        if (
+            row["asset_class"] not in {"equity", "etf"}
+            or market_timezone_for_symbol(str(row["symbol"])) != "America/New_York"
+        ):
+            continue
+        symbol = str(row["symbol"])
+        if not any(
+            str(bar.get("date") or bar.get("trading_date"))[:10] == expected
+            and bar.get("is_complete") is True
+            for bar in bars_by_symbol.get(symbol, [])
+        ):
+            missing.append(symbol)
+    return expected, sorted(missing)
 
 
 def run_for_config(
@@ -61,6 +86,12 @@ def run_for_config(
             errors[symbol] = f"{type(exc).__name__}: {exc}"
             continue
         bars.extend(frame.to_dict("records"))
+    bars_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for bar in bars:
+        bars_by_symbol[str(bar["symbol"]).upper()].append(bar)
+    expected_terminal_bar: str | None = None
+    missing_terminal_bars: list[str] = []
+    terminal_errors: dict[str, str] = {}
     metric_rows: list[dict[str, Any]] = []
     metric_errors: dict[str, str] = {}
     yfinance = config.data_sources.yfinance
@@ -78,9 +109,6 @@ def run_for_config(
                 metric_errors[symbol] = f"{type(exc).__name__}: {exc}"
     with repository.run(SOURCE_ID, "price_bars", started_at=run_started_at) as ingestion_run:
         run_id = ingestion_run.id
-        bars_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for bar in bars:
-            bars_by_symbol[str(bar["symbol"]).upper()].append(bar)
         stored_by_symbol = {
             symbol: repository.store_price_bars(run_id, SOURCE_ID, symbol_bars,
                 asset_classes={row["symbol"]: row["asset_class"] for row in universe_rows})
@@ -93,31 +121,72 @@ def run_for_config(
             "market_metrics",
             metric_rows,
         )
-        status = ("failed" if errors and not bars else "partial" if errors or metric_errors else "succeeded")
+        if symbols is None:
+            expected_terminal_bar, missing_terminal_bars = _missing_terminal_bars(
+                universe_rows, bars_by_symbol, datetime.now(UTC),
+            )
+            terminal_errors = {
+                symbol: f"Missing completed {expected_terminal_bar} daily bar"
+                for symbol in missing_terminal_bars if symbol not in errors
+            }
+        status = (
+            "failed" if errors and not bars
+            else "partial" if errors or terminal_errors or metric_errors
+            else "succeeded"
+        )
         ingestion_run.finish(
             status,
             item_count=stored + market_metrics_stored,
-            instrument_count=len(universe_rows) - len(errors),
+            instrument_count=len(universe_rows) - len({*errors, *terminal_errors}),
             failure_detail="; ".join(
                 f"{symbol}: {error}"
-                for symbol, error in list({**errors, **metric_errors}.items())[:25]
+                for symbol, error in list({**errors, **terminal_errors, **metric_errors}.items())[:25]
             ) or None,
             summary={
                 "requested_symbols": len(universe_rows),
-                "failed_symbols": len(errors),
+                "failed_symbols": len({*errors, *terminal_errors}),
                 "market_metrics_stored": market_metrics_stored,
                 "market_metric_failures": len(metric_errors),
+                "expected_terminal_bar": expected_terminal_bar,
+                "missing_terminal_bars": missing_terminal_bars,
+                "terminal_bar_checked": symbols is None,
             },
         )
+    # A source run can cross the close while its facts are being finalized.
+    # Recheck immediately before the first publication that could use them.
+    if symbols is None:
+        expected_terminal_bar, missing_terminal_bars = _missing_terminal_bars(
+            universe_rows, bars_by_symbol, datetime.now(UTC),
+        )
+        terminal_errors = {
+            symbol: f"Missing completed {expected_terminal_bar} daily bar"
+            for symbol in missing_terminal_bars if symbol not in errors
+        }
     try:
-        market = (refresh_market_publication(runtime, configured_watchlist=config.watchlist)
-                  if publish and symbols is None else {"status": "deferred", "reason": "scoped_refresh" if requested else "publication_disabled"})
+        if publish and symbols is None and missing_terminal_bars:
+            market = {"status": "deferred", "reason": "terminal_bar_retry"}
+        elif publish and symbols is None:
+            market = refresh_market_publication(
+                runtime,
+                configured_watchlist=config.watchlist,
+                require_current_terminal_bars=True,
+                recheck_current_terminal_bars=True,
+            )
+        else:
+            market = {"status": "deferred", "reason": "scoped_refresh" if requested else "publication_disabled"}
     except Exception as exc:
         market = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+    if market.get("reason") == "terminal_bar_retry" and isinstance(market.get("missing_terminal_bars"), list):
+        expected_terminal_bar = str(market.get("expected_terminal_bar") or expected_terminal_bar)
+        missing_terminal_bars = sorted({str(symbol) for symbol in market.get("missing_terminal_bars") or []})
+        terminal_errors = {
+            symbol: f"Missing completed {expected_terminal_bar} daily bar"
+            for symbol in missing_terminal_bars if symbol not in errors
+        }
     downstream_failed = market.get("status") in {"failed", "partial"}
     return {
-        "status": "failed" if errors and not bars else "partial" if errors or metric_errors or downstream_failed else "ok",
-        "source_status": "failed" if errors and not bars else "partial" if errors or metric_errors else "ok",
+        "status": "failed" if errors and not bars else "partial" if errors or terminal_errors or metric_errors or downstream_failed else "ok",
+        "source_status": "failed" if errors and not bars else "partial" if errors or terminal_errors or metric_errors else "ok",
         "downstream_status": market.get("status"),
         "database": "postgresql",
         "run_id": str(run_id),
@@ -125,10 +194,14 @@ def run_for_config(
         "benchmark_symbols": [row["symbol"] for row in universe_rows],
         "price_rows": stored,
         "price_rows_by_symbol": stored_by_symbol,
-        "price_errors": errors,
+        "price_errors": {**errors, **terminal_errors},
+        "expected_terminal_bar": expected_terminal_bar,
+        "missing_terminal_bars": missing_terminal_bars,
+        "terminal_bar_checked": symbols is None,
         "market_metric_rows": market_metrics_stored,
         "market_metric_errors": metric_errors,
         "market_publication": market,
+        **({"retry_after_seconds": TERMINAL_BAR_RETRY_SECONDS} if missing_terminal_bars else {}),
     }
 
 

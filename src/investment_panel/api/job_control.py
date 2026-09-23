@@ -39,7 +39,18 @@ def schedule_created_job(tasks: BackgroundTasks, job: dict[str, Any], job_name: 
 def execute_background_refresh_job(job_id: str, job_name: str, database_url: str) -> None:
     try:
         result = execute_refresh_job_subprocess(job_id, job_name, database_url, "config.yaml")
-        if job_name in DECISION_REPAIR_JOBS and result.get("status") in {"succeeded", "partial"}:
+        summary = result.get("summary") if isinstance(result, dict) else None
+        retry_after = summary.get("retry_after_seconds") if isinstance(summary, dict) else None
+        retry_pending = (
+            not isinstance(retry_after, bool)
+            and isinstance(retry_after, (int, float))
+            and retry_after > 0
+        )
+        if (
+            job_name in DECISION_REPAIR_JOBS
+            and result.get("status") in {"succeeded", "partial"}
+            and not retry_pending
+        ):
             dependencies = (["refresh_symbol_features"] if job_name == "update_market_data" else [])
             for dependency in dependencies:
                 next_job = start_refresh_job(dependency, database_url)

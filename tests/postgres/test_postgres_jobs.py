@@ -32,6 +32,20 @@ def test_job_repository_start_finish_and_rows(job_repository: JobRepository) -> 
     assert job_repository.rows()[0]["summary"] == {"rows": 3}
 
 
+def test_job_repository_latest_rows_returns_the_latest_requested_job(job_repository: JobRepository) -> None:
+    first = job_repository.start("update_market_data")
+    job_repository.finish(first["id"], "partial", summary={"retry_after_seconds": 300})
+    job_repository.finish(job_repository.start("other-job")["id"], "succeeded")
+    latest = job_repository.start("update_market_data")
+    job_repository.finish(latest["id"], "succeeded", summary={"terminal_bar_checked": True})
+
+    rows = job_repository.latest_rows(("update_market_data",))
+
+    assert [(row["id"], row["status"], row["summary"]) for row in rows] == [
+        (latest["id"], "succeeded", {"terminal_bar_checked": True}),
+    ]
+
+
 def test_job_repository_serializes_nested_datetime_summary(job_repository: JobRepository) -> None:
     job = job_repository.start("timed-refresh")
     started_at = datetime(2026, 7, 12, 18, 53, tzinfo=UTC)

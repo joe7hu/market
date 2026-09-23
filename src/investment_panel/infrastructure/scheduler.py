@@ -26,6 +26,7 @@ from investment_panel.core.refresh_jobs import (
     execute_refresh_job,
     finish_refresh_job_failed,
     mark_stale_running_jobs,
+    refresh_job_rows,
     start_refresh_job,
 )
 from investment_panel.domain.decision import MARKET_TZ, is_market_open, is_us_market_day, market_session_bounds
@@ -35,6 +36,7 @@ logger = logging.getLogger("market.scheduler")
 
 TICK_SECONDS = 15
 CONTINUOUS_SETTINGS_REFRESH_SECONDS = 60
+RETRY_FENCE_REFRESH_SECONDS = 60
 SCHEDULER_CAPACITY = 2
 FAST_DATABASE_JOBS = frozenset({"process_options_paper_orders", "sync_decision_inbox"})
 PRIORITY_JOBS = FAST_DATABASE_JOBS | {
@@ -51,9 +53,26 @@ for _upstream, _successor in DECISION_PIPELINE_SUCCESSORS.items():
     DECISION_PIPELINE_UPSTREAMS[_successor] = (
         *DECISION_PIPELINE_UPSTREAMS.get(_successor, ()), _upstream,
     )
+# Market publication is normally independent, but it must never turn a
+# terminal-bar retry into a new snapshot from yesterday's facts.
+DECISION_PIPELINE_UPSTREAMS["refresh_market_publication"] = ("update_market_data",)
 # The startup chain is linear. Assessment quotes retain their regular cadence
 # and independently republish decisions after each successful refresh.
 DECISION_PIPELINE_STAGES = ("update_market_data", "refresh_symbol_features", "refresh_decision_models")
+TERMINAL_BAR_RETRY_JOBS = {
+    "update_market_data": "update_market_data",
+    "full_market_refresh": "update_market_data",
+    "daily_screen": "update_market_data",
+    "update_free_sources": "update_market_data",
+    "update_free_sources_radar": "update_market_data",
+    "refresh_market_publication": "update_market_data",
+    "refresh_decision_models": "update_market_data",
+    "update_market_valuations": "update_market_data",
+    "update_decision_models": "update_market_data",
+    "market-refresh-decision-models": "update_market_data",
+    "market-publish-ticker-decisions": "update_market_data",
+    "premarket_options_intelligence": "update_market_data",
+}
 _scheduler_semaphore: asyncio.Semaphore | None = None
 _slow_job_semaphore: asyncio.Semaphore | None = None
 _active_jobs: dict[str, float] = {}
@@ -166,19 +185,73 @@ def _recurring_delay_seconds(
     return float(interval if remainder < 0.001 else interval - remainder)
 
 
+def _retry_after_seconds(result: dict[str, Any] | None) -> float | None:
+    summary = result.get("summary") if isinstance(result, dict) else None
+    retry_after = summary.get("retry_after_seconds") if isinstance(summary, dict) else None
+    if isinstance(retry_after, bool) or not isinstance(retry_after, (int, float)) or retry_after <= 0:
+        return None
+    return float(retry_after)
+
+
+def _retry_delay_seconds(result: dict[str, Any] | None, normal_delay: float) -> float:
+    retry_after = _retry_after_seconds(result)
+    return min(normal_delay, retry_after) if retry_after is not None else normal_delay
+
+
+def _apply_retry_fences(
+    rows: list[dict[str, Any]],
+    next_due: dict[str, float],
+    next_due_wall: dict[str, datetime],
+    retry_fences: set[str],
+    *,
+    now: float,
+    wall_now: datetime,
+) -> None:
+    seen: set[str] = set()
+    for row in rows:
+        job = TERMINAL_BAR_RETRY_JOBS.get(str(row.get("job_name") or ""))
+        if not job or job in seen or job not in next_due:
+            continue
+        seen.add(job)
+        retry_after = _retry_after_seconds(row)
+        summary = row.get("summary") if isinstance(row, dict) else None
+        if row.get("status") in {"partial", "failed"} and retry_after is not None:
+            finished_at = row.get("finished_at")
+            due_at = (
+                finished_at + timedelta(seconds=retry_after)
+                if isinstance(finished_at, datetime)
+                else wall_now + timedelta(seconds=retry_after)
+            )
+            retry_fences.add(job)
+            remaining = max(0.0, (due_at - wall_now).total_seconds())
+            next_due[job] = now + remaining
+            next_due_wall[job] = due_at
+        elif (
+            isinstance(summary, dict)
+            and summary.get("terminal_bar_checked") is True
+            and row.get("status") in {"succeeded", "partial"}
+        ):
+            retry_fences.discard(job)
+
+
 def _pipeline_waiting_on_upstream(
     job: str,
     next_due: dict[str, float],
     in_flight: dict[str, Any],
     *,
     now: float,
+    retry_fences: set[str] | None = None,
 ) -> bool:
     """Keep refreshed decision inputs point-in-time ordered."""
 
     upstreams = list(DECISION_PIPELINE_UPSTREAMS.get(job, ()))
     while upstreams:
         upstream = upstreams.pop()
-        if upstream in in_flight or next_due.get(upstream, float("inf")) <= now:
+        if (
+            upstream in (retry_fences or set())
+            or upstream in in_flight
+            or next_due.get(upstream, float("inf")) <= now
+        ):
             return True
         upstreams.extend(DECISION_PIPELINE_UPSTREAMS.get(upstream, ()))
     return False
@@ -223,7 +296,11 @@ def _schedule_pipeline_successor(
     """Run a refreshed decision input through its dependent decision stages."""
 
     successor = DECISION_PIPELINE_SUCCESSORS.get(job)
-    source_ready = bool(result) and result.get("status") in {"succeeded", "partial"}
+    source_ready = (
+        bool(result)
+        and result.get("status") in {"succeeded", "partial"}
+        and _retry_after_seconds(result) is None
+    )
     if successor in next_due and source_ready:
         next_due[successor] = now
         next_due_wall[successor] = wall_now
@@ -317,6 +394,13 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     except Exception:
         overdue_jobs = set()
         logger.exception("could not determine overdue source refresh jobs")
+    try:
+        retry_rows = await asyncio.to_thread(
+            refresh_job_rows, db_path, job_names=tuple(TERMINAL_BAR_RETRY_JOBS),
+        )
+    except Exception:
+        retry_rows = []
+        logger.exception("could not restore retryable refresh jobs")
     start = time.monotonic() + warmup
     start_wall_time = datetime.now(MARKET_TZ) + timedelta(seconds=warmup)
     next_due: dict[str, float] = {
@@ -343,7 +427,13 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     }
     _prime_decision_pipeline(next_due, next_due_wall)
     next_continuous_settings_refresh = time.monotonic() + CONTINUOUS_SETTINGS_REFRESH_SECONDS
+    next_retry_fence_refresh = time.monotonic() + RETRY_FENCE_REFRESH_SECONDS
     in_flight: dict[str, asyncio.Task] = {}
+    retry_fences: set[str] = set()
+    _apply_retry_fences(
+        retry_rows, next_due, next_due_wall, retry_fences,
+        now=time.monotonic(), wall_now=datetime.now(MARKET_TZ),
+    )
     global _scheduler_semaphore
     global _slow_job_semaphore
     global _deferred_jobs
@@ -356,6 +446,19 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     try:
         while True:
             now = time.monotonic()
+            if now >= next_retry_fence_refresh:
+                try:
+                    retry_rows = await asyncio.to_thread(
+                        refresh_job_rows, db_path, job_names=tuple(TERMINAL_BAR_RETRY_JOBS),
+                    )
+                    _apply_retry_fences(
+                        retry_rows, next_due, next_due_wall, retry_fences,
+                        now=time.monotonic(), wall_now=datetime.now(MARKET_TZ),
+                    )
+                except Exception:
+                    logger.exception("could not refresh retryable refresh jobs")
+                next_retry_fence_refresh = time.monotonic() + RETRY_FENCE_REFRESH_SECONDS
+                now = time.monotonic()
             if now >= next_continuous_settings_refresh:
                 await asyncio.to_thread(
                     _refresh_continuous_advisor_intervals,
@@ -382,10 +485,36 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
                         next_due.pop(job, None)
                         next_due_wall.pop(job, None)
                         continue
-                    delay = _recurring_delay_seconds(job, interval)
-                    next_due[job] = now + delay
+                    retry_after = _retry_after_seconds(result if isinstance(result, dict) else None)
+                    retry_job = TERMINAL_BAR_RETRY_JOBS.get(job, job)
+                    if retry_after is not None:
+                        retry_fences.add(retry_job)
+                    elif (
+                        isinstance(result, dict)
+                        and isinstance(result.get("summary"), dict)
+                        and result["summary"].get("terminal_bar_checked") is True
+                        and result.get("status") in {"succeeded", "partial"}
+                    ):
+                        retry_fences.discard(retry_job)
+                    normal_delay = _recurring_delay_seconds(job, interval)
+                    delay = _retry_delay_seconds(
+                        result if isinstance(result, dict) else None,
+                        normal_delay,
+                    )
+                    next_due[job] = now + (normal_delay if retry_after is not None and retry_job != job else delay)
                     wall_now = datetime.now(MARKET_TZ)
-                    next_due_wall[job] = wall_now + timedelta(seconds=delay)
+                    next_due_wall[job] = wall_now + timedelta(
+                        seconds=normal_delay if retry_after is not None and retry_job != job else delay
+                    )
+                    if retry_after is not None and retry_job != job and retry_job in next_due:
+                        retry_interval = intervals.get(retry_job)
+                        if retry_interval is not None:
+                            retry_delay = _retry_delay_seconds(
+                                result if isinstance(result, dict) else None,
+                                _recurring_delay_seconds(retry_job, retry_interval),
+                            )
+                            next_due[retry_job] = now + retry_delay
+                            next_due_wall[retry_job] = wall_now + timedelta(seconds=retry_delay)
                     _schedule_pipeline_successor(
                         job,
                         result if isinstance(result, dict) else None,
@@ -397,7 +526,9 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
             for job, interval in intervals.items():
                 if now >= next_due.get(job, 0.0) and job not in in_flight:
                     if (
-                        _pipeline_waiting_on_upstream(job, next_due, in_flight, now=now)
+                        _pipeline_waiting_on_upstream(
+                            job, next_due, in_flight, now=now, retry_fences=retry_fences,
+                        )
                         or _pipeline_waiting_on_descendant(job, in_flight)
                     ):
                         continue

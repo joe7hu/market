@@ -1269,6 +1269,9 @@ def test_ticker_cli_aliases_share_the_symbols_contract(monkeypatch: pytest.Monke
         return {"status": "ok"}
 
     monkeypatch.setattr(ticker_decisions, "publish", fake_publish)
+    monkeypatch.setattr(ticker_decisions, "load_config", lambda _path: SimpleNamespace(watchlist=[]))
+    monkeypatch.setattr(ticker_decisions, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(ticker_decisions, "terminal_bar_retry", lambda *_args: None)
 
     for option in ("--ticker", "--tickers"):
         ticker_decisions.main([option, "QQQ"])

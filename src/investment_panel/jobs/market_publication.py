@@ -8,4 +8,9 @@ from investment_panel.workflows.market import refresh_market_publication
 
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     config = load_config(config_path)
-    return refresh_market_publication(runtime_for_config(config), configured_watchlist=config.watchlist)
+    return refresh_market_publication(
+        runtime_for_config(config),
+        configured_watchlist=config.watchlist,
+        require_current_terminal_bars=True,
+        recheck_current_terminal_bars=True,
+    )

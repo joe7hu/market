@@ -2241,3 +2241,18 @@ def test_background_data_repair_republishes_decisions(monkeypatch: pytest.Monkey
     assert calls == [("collector-1", "update_market_data"),
                      ("next-refresh_symbol_features", "refresh_symbol_features"),
                      ("next-refresh_decision_models", "refresh_decision_models")]
+
+
+def test_background_retryable_data_repair_waits_for_the_collector(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def execute(job_id: str, job_name: str, _database_url: str, _config_path: str) -> dict[str, Any]:
+        calls.append((job_id, job_name))
+        return {"status": "partial", "summary": {"retry_after_seconds": 300}}
+
+    monkeypatch.setattr(job_control, "execute_refresh_job_subprocess", execute)
+    monkeypatch.setattr(job_control, "invalidate_context_cache", lambda: None)
+
+    job_control.execute_background_refresh_job("collector-1", "update_market_data", "postgresql://market")
+
+    assert calls == [("collector-1", "update_market_data")]

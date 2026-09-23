@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from investment_panel.infrastructure import scheduler
 from investment_panel.core import job_policy
 from investment_panel.core.refresh_jobs import ALLOWLIST
@@ -293,6 +295,145 @@ def test_recurring_jobs_wait_the_configured_interval_after_completion_or_skip() 
     assert scheduler._recurring_delay_seconds("update_social_sources", 1800) == 1800
 
 
+def test_result_retry_delay_can_bring_a_partial_collector_forward() -> None:
+    assert scheduler._retry_delay_seconds({"summary": {"retry_after_seconds": 300}}, 3600) == 300
+    assert scheduler._retry_delay_seconds({"summary": {"retry_after_seconds": "bad"}}, 3600) == 3600
+
+
+def test_retryable_partial_collector_blocks_an_already_due_successor() -> None:
+    now = 100.0
+    next_due = {"update_market_data": now + 300, "refresh_symbol_features": now}
+    next_due_wall = {job: datetime(2026, 9, 22, 17, tzinfo=ZoneInfo("America/New_York")) for job in next_due}
+
+    scheduler._schedule_pipeline_successor(
+        "update_market_data", {"status": "partial", "summary": {"retry_after_seconds": 300}},
+        next_due, next_due_wall, now=now, wall_now=next_due_wall["update_market_data"],
+    )
+
+    assert next_due["refresh_symbol_features"] == now
+    assert scheduler._pipeline_waiting_on_upstream(
+        "refresh_symbol_features", next_due, {}, now=now, retry_fences={"update_market_data"},
+    )
+
+
+def test_terminal_bar_retry_blocks_independent_market_publication() -> None:
+    now = 100.0
+    next_due = {"update_market_data": now + 300, "refresh_market_publication": now}
+
+    assert scheduler._pipeline_waiting_on_upstream(
+        "refresh_market_publication", next_due, {}, now=now, retry_fences={"update_market_data"},
+    )
+
+
+@pytest.mark.parametrize("status", ["partial", "failed"])
+def test_persisted_terminal_bar_retry_fence_is_restored_and_cleared(status: str) -> None:
+    now = 100.0
+    wall_now = datetime(2026, 9, 22, 17, tzinfo=ZoneInfo("America/New_York"))
+    next_due = {"update_market_data": now + 3600, "refresh_symbol_features": now}
+    next_due_wall = {job: wall_now for job in next_due}
+    retry_fences: set[str] = set()
+    scheduler._apply_retry_fences(
+        [{
+            "job_name": "update_market_data", "status": status, "finished_at": wall_now - timedelta(seconds=60),
+            "summary": {"retry_after_seconds": 300, "terminal_bar_checked": True},
+        }],
+        next_due, next_due_wall, retry_fences, now=now, wall_now=wall_now,
+    )
+
+    assert retry_fences == {"update_market_data"}
+    assert next_due["update_market_data"] == now + 240
+    assert scheduler._pipeline_waiting_on_upstream(
+        "refresh_symbol_features", next_due, {}, now=now, retry_fences=retry_fences,
+    )
+
+    scheduler._apply_retry_fences(
+        [{
+            "job_name": "update_market_data", "status": "succeeded", "finished_at": wall_now,
+            "summary": {"terminal_bar_checked": True},
+        }],
+        next_due, next_due_wall, retry_fences, now=now, wall_now=wall_now,
+    )
+
+    assert retry_fences == set()
+
+
+@pytest.mark.parametrize(
+    "job_name",
+    [
+        "full_market_refresh", "daily_screen", "update_free_sources", "update_free_sources_radar",
+        "refresh_market_publication", "refresh_decision_models", "update_market_valuations", "update_decision_models",
+        "market-refresh-decision-models", "market-publish-ticker-decisions", "premarket_options_intelligence",
+    ],
+)
+def test_terminal_bar_retry_alias_reschedules_the_canonical_collector(job_name: str) -> None:
+    now = 100.0
+    wall_now = datetime(2026, 9, 22, 17, tzinfo=ZoneInfo("America/New_York"))
+    next_due = {"update_market_data": now + 3600, "refresh_symbol_features": now}
+    next_due_wall = {job: wall_now for job in next_due}
+    retry_fences: set[str] = set()
+
+    scheduler._apply_retry_fences(
+        [{
+            "job_name": job_name, "status": "partial", "finished_at": wall_now,
+            "summary": {"retry_after_seconds": 300, "terminal_bar_checked": True},
+        }],
+        next_due, next_due_wall, retry_fences, now=now, wall_now=wall_now,
+    )
+
+    assert retry_fences == {"update_market_data"}
+    assert next_due["update_market_data"] == now + 300
+    assert scheduler._pipeline_waiting_on_upstream(
+        "refresh_symbol_features", next_due, {}, now=now, retry_fences=retry_fences,
+    )
+
+
+def test_retrying_alias_waits_for_the_canonical_collector(monkeypatch) -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        collector_started = asyncio.Event()
+
+        async def fake_dispatch(job, _db_path, _config_path, **_kwargs):
+            calls.append(job)
+            if job == "update_market_valuations":
+                return {"status": "partial", "summary": {"retry_after_seconds": 0.05}}
+            if job == "update_market_data":
+                collector_started.set()
+                return {"status": "succeeded", "summary": {"terminal_bar_checked": True}}
+            return {"status": "succeeded"}
+
+        monkeypatch.setattr(scheduler, "load_config", lambda _path: object())
+        monkeypatch.setattr(
+            scheduler,
+            "job_intervals",
+            lambda _config: {"update_market_valuations": 1, "update_market_data": 1},
+        )
+        monkeypatch.setattr(
+            scheduler,
+            "_startup_delay_seconds",
+            lambda job, *_args, **_kwargs: 0 if job == "update_market_valuations" else 3_600,
+        )
+        monkeypatch.setattr(scheduler, "_dispatch", fake_dispatch)
+        monkeypatch.setattr(scheduler, "mark_stale_running_jobs", lambda _db_path: 0)
+        monkeypatch.setattr(scheduler, "overdue_source_refresh_jobs", lambda _db_path: set())
+        monkeypatch.setattr(scheduler, "refresh_job_rows", lambda _db_path, **_kwargs: [])
+        monkeypatch.setattr(scheduler, "TICK_SECONDS", 0.01)
+        monkeypatch.setenv("MARKET_SCHEDULER_WARMUP_SECONDS", "0")
+
+        task = asyncio.create_task(scheduler.run_scheduler("db", "config.yaml"))
+        try:
+            await asyncio.wait_for(collector_started.wait(), 1)
+            await asyncio.sleep(0.1)
+            assert calls == ["update_market_valuations", "update_market_data"]
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(scenario())
+
+
 def test_market_data_pipeline_dispatches_source_feature_then_decision(monkeypatch) -> None:
     async def scenario() -> None:
         calls: list[str] = []
@@ -318,6 +459,7 @@ def test_market_data_pipeline_dispatches_source_feature_then_decision(monkeypatc
         monkeypatch.setattr(scheduler, "_dispatch", fake_dispatch)
         monkeypatch.setattr(scheduler, "mark_stale_running_jobs", lambda _db_path: 0)
         monkeypatch.setattr(scheduler, "overdue_source_refresh_jobs", lambda _db_path: set())
+        monkeypatch.setattr(scheduler, "refresh_job_rows", lambda _db_path, **_kwargs: [])
         monkeypatch.setattr(scheduler, "TICK_SECONDS", 0.01)
         monkeypatch.setattr(scheduler, "STAGGER_SECONDS", 5)
         monkeypatch.setenv("MARKET_SCHEDULER_WARMUP_SECONDS", "0")
@@ -575,6 +717,7 @@ def test_scheduler_does_not_let_slow_job_starve_market_environment(monkeypatch) 
     monkeypatch.setattr(scheduler, "_dispatch", fake_dispatch)
     monkeypatch.setattr(scheduler, "mark_stale_running_jobs", lambda _db_path: 0)
     monkeypatch.setattr(scheduler, "overdue_source_refresh_jobs", lambda _db_path: set())
+    monkeypatch.setattr(scheduler, "refresh_job_rows", lambda _db_path, **_kwargs: [])
     monkeypatch.setattr(scheduler, "TICK_SECONDS", 0.01)
     monkeypatch.setattr(scheduler, "STAGGER_SECONDS", 0)
     monkeypatch.setenv("MARKET_SCHEDULER_WARMUP_SECONDS", "0")

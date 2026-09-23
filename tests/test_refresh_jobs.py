@@ -12,6 +12,7 @@ import pytest
 from psycopg.errors import LockNotAvailable
 
 from investment_panel.jobs import refresh_options_radar as radar_refresh_job
+from investment_panel.jobs import ticker_decisions as ticker_decisions_job
 
 
 def test_material_thesis_monitor_receives_only_changed_symbols(monkeypatch) -> None:
@@ -198,6 +199,49 @@ def test_benchmark_refresh_only_freezes_the_equity_denominator(monkeypatch) -> N
     assert result["published_count"] == 0
     assert result["paper_orders"] == 0
     assert observed == {"path": "config.yaml"}
+
+
+def test_legacy_ticker_publisher_uses_the_guarded_decision_path(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        refresh_jobs.postgres_refresh,
+        "publish_decisions",
+        lambda path, **kwargs: observed.update({"path": path, **kwargs}) or {"status": "partial"},
+    )
+
+    result = refresh_jobs.ALLOWLIST["market-publish-ticker-decisions"]("config.yaml")
+
+    assert result == {"status": "partial"}
+    assert observed == {
+        "path": "config.yaml",
+        "include_options_radar": False,
+        "include_market_publication": False,
+        "include_ticker_outcomes": True,
+        "include_option_outcomes": False,
+    }
+
+
+def test_legacy_ticker_cli_defers_when_terminal_bar_retry_is_pending(monkeypatch) -> None:
+    config = SimpleNamespace(watchlist=[])
+    retry = {
+        "status": "partial",
+        "reason": "terminal_bar_retry",
+        "expected_terminal_bar": "2026-09-22",
+        "missing_terminal_bars": ["UNH"],
+        "retry_after_seconds": 300,
+    }
+    monkeypatch.setattr(ticker_decisions_job, "load_config", lambda _path: config)
+    monkeypatch.setattr(ticker_decisions_job, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(ticker_decisions_job, "terminal_bar_retry", lambda *_args: retry)
+    monkeypatch.setattr(
+        ticker_decisions_job,
+        "publish",
+        lambda *_args, **_kwargs: pytest.fail("terminal-bar retry published ticker decisions"),
+    )
+
+    result = ticker_decisions_job.run("config.yaml", tickers=["UNH"])
+
+    assert result["ticker_decisions"] == {"status": "skipped", "reason": "terminal_bar_retry"}
 
 
 @pytest.fixture(autouse=True)

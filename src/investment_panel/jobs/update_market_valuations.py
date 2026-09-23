@@ -75,6 +75,8 @@ def run(config_path: str | None = None, *, url: str = MUNGER_MARKET_METRICS_URL)
         publication = refresh_market_publication(
             runtime,
             configured_watchlist=config.watchlist,
+            require_current_terminal_bars=True,
+            recheck_current_terminal_bars=True,
         )
     except Exception as exc:
         return {
@@ -89,6 +91,19 @@ def run(config_path: str | None = None, *, url: str = MUNGER_MARKET_METRICS_URL)
                 "error": f"{type(exc).__name__}: {exc}",
             },
             "error": f"market publication failed after source success: {type(exc).__name__}: {exc}",
+        }
+    if publication.get("status") != "ok":
+        return {
+            "status": "partial",
+            "ok": False,
+            "database": "postgresql",
+            "source": SOURCE_ID,
+            "source_status": "ok",
+            "downstream_status": "deferred",
+            "market_publication": publication,
+            **({key: publication[key] for key in (
+                "retry_after_seconds", "expected_terminal_bar", "missing_terminal_bars",
+            ) if key in publication}),
         }
     return {
         "status": "ok",
