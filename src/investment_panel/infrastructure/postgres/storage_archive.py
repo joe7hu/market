@@ -470,7 +470,10 @@ class StorageArchiveService:
     def expire_option_archives(
         self, *, now: datetime | None = None, execute: bool = False
     ) -> dict[str, Any]:
-        """Report, then explicitly remove option objects beyond 730 days."""
+        """Inventory aged archives; age alone cannot authorize evidence loss."""
+
+        if execute:
+            raise ValueError("option archive expiry is disabled until evidence reachability and backup retention are verified")
 
         reference = now or datetime.now(UTC)
         cutoff = reference - timedelta(days=730)
@@ -490,20 +493,9 @@ class StorageArchiveService:
             {"manifest_id": int(row["id"]), "path": str(row["nas_uri"]), "range_end": row["range_end"]}
             for row in rows
         ]
-        if not execute:
-            return {"phase": "options", "status": "dry_run", "eligible": candidates, "cutoff": cutoff}
-        removed = 0
-        for candidate in candidates:
-            path = Path(candidate["path"])
-            if path.exists():
-                path.unlink()
-            with self.runtime.transaction(JOB_PROFILE) as connection:
-                connection.execute(
-                    "UPDATE ops.storage_archive_manifest SET verification_status = 'expired', metadata = metadata || %s, updated_at = now() WHERE id = %s",
-                    [Jsonb({"expired_at": reference.isoformat(), "retention_cutoff": cutoff.isoformat()}), candidate["manifest_id"]],
-                )
-            removed += 1
-        return {"phase": "options", "status": "succeeded", "removed": removed, "cutoff": cutoff}
+        return {"phase": "options", "status": "dry_run", "eligible": candidates,
+                "cutoff": cutoff, "deletion_allowed": False,
+                "blocker": "evidence_reachability_and_backup_retention_required"}
 
     def _archive_option_partition(self, candidate: dict[str, Any]) -> dict[str, Any]:
         name = str(candidate["partition"])

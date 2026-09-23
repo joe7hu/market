@@ -19,6 +19,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
 
 CONTEXT_COLUMNS = ("market_state_snapshot", "risk_policy_snapshot")
+MAX_CONTEXT_BATCH_BYTES = 64 * 1024**2
 
 
 def require_maintenance_headroom(*, minimum_bytes: int) -> None:
@@ -78,23 +79,48 @@ def compact_context_batch(runtime: DatabaseRuntime, *, batch_size: int = 25, exe
             ).fetchone()
             return {"phase": "decision-context", "dry_run": True, "remaining": int(row["remaining"]),
                     "filesystem_reclaim": "not_until_separate_compaction"}
-        rows = connection.execute(
-            f"""SELECT id, market_state_snapshot, risk_policy_snapshot,
-                       market_state_context_hash, risk_policy_context_hash
+        candidates = connection.execute(
+            f"""SELECT id,
+                       COALESCE(octet_length(market_state_snapshot::text), 0)
+                         + COALESCE(octet_length(risk_policy_snapshot::text), 0) AS bytes
                 FROM analysis.ticker_decision WHERE {predicate}
                 ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED""", [batch_size],
         ).fetchall()
+        selected, total_bytes = [], 0
+        for candidate in candidates:
+            size = int(candidate["bytes"])
+            if total_bytes + size > MAX_CONTEXT_BATCH_BYTES:
+                if not selected:
+                    raise ValueError("individual decision context exceeds the 64 MiB maintenance budget")
+                break
+            selected.append(candidate["id"])
+            total_bytes += size
+        rows = connection.execute(
+            """SELECT id, market_state_snapshot, risk_policy_snapshot,
+                      market_state_context_hash, risk_policy_context_hash
+               FROM analysis.ticker_decision WHERE id = ANY(%s) ORDER BY id""", [selected],
+        ).fetchall() if selected else []
         for row in rows:
             market_hash = row["market_state_context_hash"] or store_context(connection, row["market_state_snapshot"])
             policy_hash = row["risk_policy_context_hash"] or store_context(connection, row["risk_policy_snapshot"])
-            connection.execute(
+            updated = connection.execute(
                 """UPDATE analysis.ticker_decision
                    SET market_state_context_hash = %s, risk_policy_context_hash = %s,
                        market_state_snapshot = CASE WHEN %s::text IS NULL THEN market_state_snapshot ELSE '{}'::jsonb END,
                        risk_policy_snapshot = CASE WHEN %s::text IS NULL THEN risk_policy_snapshot ELSE '{}'::jsonb END
-                   WHERE id = %s""",
-                [market_hash, policy_hash, market_hash, policy_hash, row["id"]],
-            )
+                   WHERE id = %s
+                     AND ((market_state_context_hash IS NOT NULL AND market_state_snapshot = '{}'::jsonb)
+                          OR %s::text IS NULL OR market_state_snapshot = (
+                         SELECT payload FROM analysis.decision_context WHERE content_hash = %s))
+                     AND ((risk_policy_context_hash IS NOT NULL AND risk_policy_snapshot = '{}'::jsonb)
+                          OR %s::text IS NULL OR risk_policy_snapshot = (
+                         SELECT payload FROM analysis.decision_context WHERE content_hash = %s))
+                   RETURNING id""",
+                [market_hash, policy_hash, market_hash, policy_hash, row["id"],
+                 market_hash, market_hash, policy_hash, policy_hash],
+            ).fetchone()
+            if updated is None:
+                raise ValueError("context normalization changed original JSON values; batch rolled back")
         return {"phase": "decision-context", "dry_run": False, "compacted": len(rows),
                 "status": "batch_complete" if rows else "nothing_due",
                 "filesystem_reclaim": "not_until_separate_compaction"}

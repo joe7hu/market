@@ -1,7 +1,7 @@
 """Archive publication rows before retention, without putting the NAS on reads.
 
-Each object is a self-describing original database row, not a projection. Shared
-payloads retain their original hashes and are archived only once. Metadata and
+Each object is a self-describing original database row, not a projection. PostgreSQL-rendered row JSON is retained as text to avoid numeric precision
+loss in a JSON decoder. Shared payloads retain their original hashes and are archived only once. Metadata and
 payload rows are exported separately, keeping memory bounded by one row rather
 than an entire multi-symbol publication. A failed export/verification aborts the
 caller's deletion transaction; files already written are safe to reuse.
@@ -9,6 +9,7 @@ caller's deletion transaction; files already written are safe to reuse.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -29,13 +30,14 @@ class PublicationArchive:
             raise ValueError("publication archive relation is not allowed")
         count = 0
         with connection.cursor(name=f"archive_{uuid4().hex}") as cursor:
-            cursor.execute(f"SELECT to_jsonb(source) AS row FROM {relation} source WHERE {predicate}", parameters)
+            cursor.execute(f"SELECT to_jsonb(source)::text AS row_json FROM {relation} source WHERE {predicate}", parameters)
             for record in cursor:
-                row = dict(record["row"])
+                row_json = str(record["row_json"])
+                row = json.loads(row_json)
                 artifact = self.service._write_json_gzip(
-                    "publications", {"relation": relation, "row": row},
+                    "publications", {"relation": relation, "row_json": row_json},
                     source_relation=relation, row_count=1,
-                    metadata={"archive_contract": "publication-row.v1",
+                    metadata={"archive_contract": "publication-row.v2",
                               "source_key": str(row.get("id") or row.get("content_hash") or ""),
                               "archive_phase": "before_retention"},
                 )

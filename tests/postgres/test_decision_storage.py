@@ -297,8 +297,8 @@ def test_publication_retention_requires_archive_and_preserves_full_rows(storage,
     retention = RetentionRepository(storage.runtime, archive_root=storage.archive_root)
     assert retention.prune_publications(now=reference)["publications"] == 1
     objects = [json.loads(gzip.decompress(path.read_bytes())) for path in storage.archive_root.rglob("*.json.gz")]
-    assert any(item["relation"] == "app.publication" and item["row"]["id"] == str(ids[0]) for item in objects)
-    assert any(item["relation"] == "app.publication_payload" and item["row"]["payload"]["evidence"] == {"i": 0} for item in objects)
+    assert any(item["relation"] == "app.publication" and json.loads(item["row_json"])["id"] == str(ids[0]) for item in objects)
+    assert any(item["relation"] == "app.publication_payload" and json.loads(item["row_json"])["payload"]["evidence"] == {"i": 0} for item in objects)
     assert any(item["relation"] == "analysis.run" for item in objects)
     assert storage.verify()["failed"] == 0
     with storage.runtime.read() as connection:
@@ -314,3 +314,45 @@ def test_publication_export_failure_aborts_delete(storage, monkeypatch):
     with storage.runtime.read() as connection:
         assert connection.execute("SELECT count(*) FROM app.publication WHERE id = ANY(%s)", [ids]).fetchone()["count"] == 2
         assert connection.execute("SELECT count(*) FROM app.publication_payload").fetchone()["count"] == 2
+
+
+def test_context_backfill_bounds_bytes_as_well_as_rows(storage, monkeypatch):
+    _decision(storage.runtime, context={"raw": "x" * 60})
+    _decision(storage.runtime, revision="second", context={"raw": "x" * 60})
+    monkeypatch.setattr("investment_panel.infrastructure.postgres.decision_storage.MAX_CONTEXT_BATCH_BYTES", 100)
+    assert compact_context_batch(storage.runtime, batch_size=100, execute=True)["compacted"] == 1
+    assert compact_context_batch(storage.runtime, batch_size=100, execute=True)["compacted"] == 1
+
+
+def test_context_backfill_refuses_numeric_precision_loss(storage):
+    decision_id = _decision(storage.runtime)
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.ticker_decision SET market_state_snapshot = '{\"exact\":9007199254740993.1}' WHERE id = %s", [decision_id])
+    with pytest.raises(ValueError, match="changed original JSON"):
+        compact_context_batch(storage.runtime, execute=True)
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT market_state_context_hash FROM analysis.ticker_decision WHERE id = %s", [decision_id]).fetchone()["market_state_context_hash"] is None
+        assert connection.execute("SELECT count(*) FROM analysis.decision_context").fetchone()["count"] == 0
+
+
+def test_publication_archive_preserves_exact_postgres_numeric_text(storage):
+    from investment_panel.infrastructure.postgres.publication_archive import PublicationArchive
+    _, ids = _publications(storage.runtime)
+    with storage.runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.run SET inputs = '{\"exact\":9007199254740993.1}' WHERE id = (SELECT analysis_run_id FROM app.publication WHERE id = %s)", [ids[0]])
+        PublicationArchive(storage.runtime, storage.archive_root).publications(connection, [ids[0]])
+    objects = [json.loads(gzip.decompress(path.read_bytes())) for path in storage.archive_root.rglob("*.json.gz")]
+    assert any(item["relation"] == "analysis.run" and "9007199254740993.1" in item["row_json"] for item in objects)
+
+
+def test_context_backfill_finishes_partially_normalized_decision(storage):
+    context, policy = {"facts": ["retained"]}, {"version": "risk.v1"}
+    decision_id = _decision(storage.runtime, context=context, policy=policy)
+    with storage.runtime.transaction() as connection:
+        digest = store_context(connection, context)
+        connection.execute("UPDATE analysis.ticker_decision SET market_state_context_hash = %s, market_state_snapshot = '{}' WHERE id = %s", [digest, decision_id])
+    assert compact_context_batch(storage.runtime, execute=True)["compacted"] == 1
+    with storage.runtime.read() as connection:
+        result = connection.execute("SELECT market_state_snapshot, risk_policy_snapshot FROM analysis.ticker_decision_read WHERE id = %s", [decision_id]).fetchone()
+        assert result == {"market_state_snapshot": context, "risk_policy_snapshot": policy}
+    assert compact_context_batch(storage.runtime, execute=True)["compacted"] == 0

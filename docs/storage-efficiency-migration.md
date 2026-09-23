@@ -234,3 +234,23 @@ dropped; it must not silently discard compacted evidence.
   rewrite-based physical reclamation and extra-space requirements.
 - https://www.postgresql.org/docs/current/storage-toast.html — out-of-line value
   storage and compression; not a substitute for avoiding duplicate facts.
+
+### Additional hard limits
+
+Context backfill is capped by both row count and 64 MiB of original JSON per
+transaction. It compares each stored context against the original PostgreSQL
+JSON value before clearing the inline copy; unsupported numeric precision fails
+closed and rolls back the batch. A single context above that budget requires a
+separately reviewed migration rather than silently increasing resource usage.
+
+Options archive expiry is inventory-only. The previous expiry implementation
+unlinked files before recording a status not accepted by the schema. Execution
+now refuses before touching any file: an age threshold alone does not prove that
+archived quotes are unneeded by decisions, replay, or backups.
+
+Publication row archives use `publication-row.v2`: `relation` identifies the
+source table and `row_json` holds PostgreSQL's original JSON text. Restore this
+text directly as JSONB (or decode with decimal-aware tooling), not through a
+floating-point reserialization. This preserves numeric precision in historical
+run metadata as well as payloads. Older `publication-row.v1` objects, if any, use
+the `row` object instead; inspect the manifest contract during restoration.
