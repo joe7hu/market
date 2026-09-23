@@ -11,6 +11,7 @@ from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 import pytest
 from pytest_postgresql import factories
@@ -62,7 +63,10 @@ def typed_config(
         import yaml
 
         path.write_text(yaml.safe_dump(values), encoding="utf-8")
-        config = load_config(path)
+        # typed_config deliberately uses synthetic DSNs; persisted settings
+        # have direct PostgreSQL coverage and must not open those DSNs here.
+        with patch("investment_panel.settings.persisted_setting_sections", return_value={}):
+            config = load_config(path)
     config = replace(config, database=DatabaseConfig(url=dsn))
     if status_dir is not None:
         config = replace(config, nas=replace(config.nas, status_dir=status_dir))
