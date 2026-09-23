@@ -11,7 +11,7 @@ from investment_panel.infrastructure.postgres.authority import runtime_for_confi
 from investment_panel.infrastructure.postgres.symbol_decision_outcomes import SymbolDecisionOutcomeRepository
 from investment_panel.infrastructure.postgres.ticker_decisions import TickerDecisionRepository
 
-OUTCOME_BATCH_SIZE = 50
+OUTCOME_BATCH_SIZE = 25
 
 
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
@@ -19,8 +19,8 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     runtime = runtime_for_config(config)
     symbol_outcomes = SymbolDecisionOutcomeRepository(runtime).refresh()
     ticker_repository = TickerDecisionRepository(runtime)
-    # A 50-decision batch every five minutes clears the current publication
-    # rate while keeping each outcome pass below its scheduler timeout.
+    # Each ticker has six horizon writes. Keep the pass below the scheduler
+    # timeout so later worker classes are not starved by this backlog.
     ticker_outcomes = ticker_repository.refresh_outcomes(limit=OUTCOME_BATCH_SIZE)
     publish_attributions = getattr(ticker_repository, "publish_outcome_attributions", None)
     pending_attributions = ticker_repository.has_pending_outcome_attributions()

@@ -81,7 +81,7 @@ def test_outcome_refresh_includes_ticker_learning_without_staging_orders(monkeyp
             assert received_runtime is runtime
 
         def refresh_outcomes(self, *, limit):
-            assert limit == 50
+            assert limit == 25
             return {"evaluated": 3, "updated": 18, "resolved": 2}
 
         def has_pending_outcome_attributions(self):
@@ -131,7 +131,7 @@ def test_outcome_refresh_skips_global_attribution_without_new_resolutions(monkey
             assert received_runtime is runtime
 
         def refresh_outcomes(self, *, limit):
-            assert limit == 50
+            assert limit == 25
             return {"evaluated": 50, "updated": 300, "resolved": 0}
 
         def has_pending_outcome_attributions(self):
