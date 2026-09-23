@@ -18,17 +18,17 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Apply reviewed safety patch to this branch only
+      - name: Apply reviewed archive verification patch to this branch only
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          xz -d -c .storage-review/followup.patch.xz > /tmp/storage.patch
-          echo '57785a69e11bc8c2c08d7006e496cbb14fe642792c9d0986ede2c8b7fada3b3e  /tmp/storage.patch' | sha256sum -c
+          xz -d -c .storage-review/guard-fix.patch.xz > /tmp/storage.patch
+          echo '4f677fc36a56eec408e6778d782b7d39587fe469664c19c082f75cac1aebe592  /tmp/storage.patch' | sha256sum -c
           git apply --index /tmp/storage.patch
           git config user.name 'Market storage maintenance'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Bound storage maintenance and preserve exact archive values'
+          git commit -m 'Separate archive IO and verify offline recovery receipts'
           git fetch origin storage/nas-archive-and-compact-decisions
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
           git push origin HEAD:refs/heads/storage/nas-archive-and-compact-decisions
