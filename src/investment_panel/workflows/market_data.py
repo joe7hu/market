@@ -7,40 +7,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.settings import AppConfig
-from investment_panel.core.market_time import market_timezone_for_symbol
 from investment_panel.core.prices import fetch_prices
 from investment_panel.domain.decision import latest_completed_market_day
 from investment_panel.infrastructure.postgres.monitored_universe import monitored_universe
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
-from investment_panel.workflows.market import TERMINAL_BAR_RETRY_SECONDS, refresh_market_publication
+from investment_panel.workflows.market import refresh_market_publication, terminal_bar_retry
 from investment_panel.infrastructure.providers.yfinance_provider import YFinanceProvider
 
 
 SOURCE_ID = "daily-market-prices"
-
-
-def _missing_terminal_bars(
-    universe_rows: list[dict[str, Any]],
-    bars_by_symbol: dict[str, list[dict[str, Any]]],
-    as_of: datetime,
-) -> tuple[str, list[str]]:
-    expected = latest_completed_market_day(as_of).isoformat()
-    missing = []
-    for row in universe_rows:
-        if (
-            row["asset_class"] not in {"equity", "etf"}
-            or market_timezone_for_symbol(str(row["symbol"])) != "America/New_York"
-        ):
-            continue
-        symbol = str(row["symbol"])
-        if not any(
-            str(bar.get("date") or bar.get("trading_date"))[:10] == expected
-            and bar.get("is_complete") is True
-            for bar in bars_by_symbol.get(symbol, [])
-        ):
-            missing.append(symbol)
-    return expected, sorted(missing)
 
 
 def run_for_config(
@@ -121,49 +97,44 @@ def run_for_config(
             "market_metrics",
             metric_rows,
         )
-        if symbols is None:
-            expected_terminal_bar, missing_terminal_bars = _missing_terminal_bars(
-                universe_rows, bars_by_symbol, datetime.now(UTC),
-            )
-            terminal_errors = {
-                symbol: f"Missing completed {expected_terminal_bar} daily bar"
-                for symbol in missing_terminal_bars if symbol not in errors
-            }
         status = (
             "failed" if errors and not bars
-            else "partial" if errors or terminal_errors or metric_errors
+            else "partial" if errors or metric_errors
             else "succeeded"
         )
         ingestion_run.finish(
             status,
             item_count=stored + market_metrics_stored,
-            instrument_count=len(universe_rows) - len({*errors, *terminal_errors}),
+            instrument_count=len(universe_rows) - len(errors),
             failure_detail="; ".join(
-                f"{symbol}: {error}"
-                for symbol, error in list({**errors, **terminal_errors, **metric_errors}.items())[:25]
+                f"{symbol}: {error}" for symbol, error in list({**errors, **metric_errors}.items())[:25]
             ) or None,
             summary={
                 "requested_symbols": len(universe_rows),
-                "failed_symbols": len({*errors, *terminal_errors}),
+                "failed_symbols": len(errors),
                 "market_metrics_stored": market_metrics_stored,
                 "market_metric_failures": len(metric_errors),
-                "expected_terminal_bar": expected_terminal_bar,
-                "missing_terminal_bars": missing_terminal_bars,
-                "terminal_bar_checked": symbols is None,
             },
         )
-    # A source run can cross the close while its facts are being finalized.
-    # Recheck immediately before the first publication that could use them.
-    if symbols is None:
-        expected_terminal_bar, missing_terminal_bars = _missing_terminal_bars(
-            universe_rows, bars_by_symbol, datetime.now(UTC),
+    # The current HTTP response can be stale while PostgreSQL already holds a
+    # confirmed session close from an earlier successful collection.
+    terminal_check_at = datetime.now(UTC) if symbols is None else None
+    terminal_retry = (
+        terminal_bar_retry(runtime, config.watchlist, terminal_check_at)
+        if terminal_check_at is not None else None
+    )
+    if terminal_check_at is not None:
+        expected_terminal_bar = latest_completed_market_day(terminal_check_at).isoformat()
+        missing_terminal_bars = list((terminal_retry or {}).get("missing_terminal_bars") or [])
+        repository.record_terminal_bar_check(
+            run_id,
+            expected_terminal_bar=expected_terminal_bar,
+            missing_terminal_bars=missing_terminal_bars,
+            failed_symbols=[*errors, *missing_terminal_bars],
+            instrument_count=len(universe_rows) - len({*errors, *missing_terminal_bars}),
         )
-        terminal_errors = {
-            symbol: f"Missing completed {expected_terminal_bar} daily bar"
-            for symbol in missing_terminal_bars if symbol not in errors
-        }
     try:
-        if publish and symbols is None and missing_terminal_bars:
+        if publish and symbols is None and terminal_retry is not None:
             market = {"status": "deferred", "reason": "terminal_bar_retry"}
         elif publish and symbols is None:
             market = refresh_market_publication(
@@ -176,14 +147,41 @@ def run_for_config(
             market = {"status": "deferred", "reason": "scoped_refresh" if requested else "publication_disabled"}
     except Exception as exc:
         market = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-    if market.get("reason") == "terminal_bar_retry" and isinstance(market.get("missing_terminal_bars"), list):
+    if market.get("reason") == "terminal_bar_cutoff_changed" and terminal_check_at is not None:
+        # The publication retry crossed into a newer completed session after
+        # its last check. Check that session before recording source health.
+        terminal_check_at = datetime.now(UTC)
+        terminal_retry = terminal_bar_retry(runtime, config.watchlist, terminal_check_at)
+        expected_terminal_bar = latest_completed_market_day(terminal_check_at).isoformat()
+        missing_terminal_bars = list((terminal_retry or {}).get("missing_terminal_bars") or [])
+        repository.record_terminal_bar_check(
+            run_id,
+            expected_terminal_bar=expected_terminal_bar,
+            missing_terminal_bars=missing_terminal_bars,
+            failed_symbols=[*errors, *missing_terminal_bars],
+            instrument_count=len(universe_rows) - len({*errors, *missing_terminal_bars}),
+        )
+    elif market.get("reason") == "terminal_bar_retry":
         expected_terminal_bar = str(market.get("expected_terminal_bar") or expected_terminal_bar)
-        missing_terminal_bars = sorted({str(symbol) for symbol in market.get("missing_terminal_bars") or []})
+        if isinstance(market.get("missing_terminal_bars"), list):
+            missing_terminal_bars = sorted({str(symbol) for symbol in market["missing_terminal_bars"]})
+            if terminal_check_at is not None:
+                repository.record_terminal_bar_check(
+                    run_id,
+                    expected_terminal_bar=expected_terminal_bar,
+                    missing_terminal_bars=missing_terminal_bars,
+                    failed_symbols=[*errors, *missing_terminal_bars],
+                    instrument_count=len(universe_rows) - len({*errors, *missing_terminal_bars}),
+                )
+    if terminal_check_at is not None:
         terminal_errors = {
             symbol: f"Missing completed {expected_terminal_bar} daily bar"
             for symbol in missing_terminal_bars if symbol not in errors
         }
     downstream_failed = market.get("status") in {"failed", "partial"}
+    retry_after = market.get("retry_after_seconds")
+    if retry_after is None and terminal_retry is not None:
+        retry_after = terminal_retry.get("retry_after_seconds")
     return {
         "status": "failed" if errors and not bars else "partial" if errors or terminal_errors or metric_errors or downstream_failed else "ok",
         "source_status": "failed" if errors and not bars else "partial" if errors or terminal_errors or metric_errors else "ok",
@@ -201,7 +199,7 @@ def run_for_config(
         "market_metric_rows": market_metrics_stored,
         "market_metric_errors": metric_errors,
         "market_publication": market,
-        **({"retry_after_seconds": TERMINAL_BAR_RETRY_SECONDS} if missing_terminal_bars else {}),
+        **({"retry_after_seconds": retry_after} if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool) and retry_after > 0 else {}),
     }
 
 

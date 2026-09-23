@@ -157,6 +157,119 @@ def test_yahoo_uses_yfinance_when_a_closed_terminal_bar_is_missing(monkeypatch) 
     assert unchanged["date"].tolist() == [market_date - timedelta(days=1)]
 
 
+def test_yahoo_uses_completed_intraday_bar_when_daily_chart_is_stale(monkeypatch) -> None:
+    session_start = int(datetime(2026, 9, 22, 13, 30, tzinfo=UTC).timestamp())
+    session_end = int(datetime(2026, 9, 22, 20, tzinfo=UTC).timestamp())
+    minute_timestamps = list(range(session_start, session_end, 60))
+
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def get(self, _url: str, params: dict) -> FakeResponse:
+            metadata = {
+                "exchangeTimezoneName": "UTC",
+                "currentTradingPeriod": {"regular": {"start": session_start, "end": session_end}},
+            }
+            if params["interval"] == "1m":
+                return FakeResponse({"chart": {"result": [{
+                    "meta": metadata,
+                    "timestamp": minute_timestamps,
+                    "indicators": {"quote": [{
+                        "open": [10, *([11] * (len(minute_timestamps) - 1))],
+                        "high": [*([12] * (len(minute_timestamps) - 1)), 13],
+                        "low": [9] * len(minute_timestamps),
+                        "close": [*([11] * (len(minute_timestamps) - 1)), 12],
+                        "volume": [100] * len(minute_timestamps),
+                    }]},
+                }]}})
+            return FakeResponse({"chart": {"result": [{
+                "meta": metadata,
+                "timestamp": [session_start - 86_400],
+                "indicators": {"quote": [{
+                    "open": [10], "high": [12], "low": [9], "close": [11], "volume": [100],
+                }]},
+            }]}})
+
+    monkeypatch.setattr(prices.httpx, "Client", FakeClient)
+    monkeypatch.setattr(prices.time, "time", lambda: session_end + 60)
+    monkeypatch.setattr(
+        prices,
+        "fetch_yfinance",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("intraday terminal bar should win")),
+    )
+
+    frame = prices.fetch_yahoo_chart("UNH", lookback_days=2)
+
+    terminal = frame.iloc[-1]
+    assert terminal["date"] == date(2026, 9, 22)
+    assert terminal["source"] == "yahoo-chart-intraday"
+    assert (terminal["open"], terminal["high"], terminal["low"], terminal["close"], terminal["volume"]) == (10, 13, 9, 12, 39_000)
+    assert bool(terminal["is_complete"])
+
+
+def test_yahoo_intraday_terminal_rejects_incomplete_regular_session(monkeypatch) -> None:
+    session_start = int(datetime(2026, 9, 22, 13, 30, tzinfo=UTC).timestamp())
+    session_end = int(datetime(2026, 9, 22, 20, tzinfo=UTC).timestamp())
+    timestamps = list(range(session_start, session_end, 60))
+    del timestamps[1]
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"chart": {"result": [{
+                "meta": {
+                    "exchangeTimezoneName": "UTC",
+                    "currentTradingPeriod": {"regular": {"start": session_start, "end": session_end}},
+                },
+                "timestamp": timestamps,
+                "indicators": {"quote": [{
+                    "open": [10] * len(timestamps), "high": [12] * len(timestamps),
+                    "low": [9] * len(timestamps), "close": [11] * len(timestamps),
+                    "volume": [100] * len(timestamps),
+                }]},
+            }]}}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def get(self, *_args, **_kwargs) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(prices.httpx, "Client", FakeClient)
+
+    terminal = prices.fetch_yahoo_intraday_terminal(
+        "UNH", "UNH", market_date=date(2026, 9, 22), regular_session_end=session_end,
+    )
+
+    assert terminal.empty
+
+
 def test_normalize_price_frame_keeps_raw_close_when_adjusted_close_is_present() -> None:
     frame = prices.pd.DataFrame({
         "date": ["2026-09-22"], "open": [10], "high": [12], "low": [9], "close": [11],

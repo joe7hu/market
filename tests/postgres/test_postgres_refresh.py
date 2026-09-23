@@ -272,8 +272,174 @@ def test_market_data_retries_missing_completed_terminal_bars(
 
     assert result["status"] == result["source_status"] == "partial"
     assert result["missing_terminal_bars"] == ["CONFIG-ONLY", "QQQ"]
-    assert result["retry_after_seconds"] == market_data.TERMINAL_BAR_RETRY_SECONDS
+    assert result["retry_after_seconds"] == 300
     assert result["market_publication"] == {"status": "deferred", "reason": "terminal_bar_retry"}
+    without_publication = update_market_data.run_for_config(config, publish=False)
+    assert without_publication["status"] == without_publication["source_status"] == "partial"
+    assert without_publication["missing_terminal_bars"] == ["CONFIG-ONLY", "QQQ"]
+    assert without_publication["market_publication"] == {"status": "deferred", "reason": "publication_disabled"}
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.read() as connection:
+            source_run = connection.execute(
+                "SELECT status, instrument_count, summary FROM ingest.run WHERE id = %s", [result["run_id"]],
+            ).fetchone()
+    finally:
+        runtime.close()
+    assert source_run["status"] == "partial"
+    assert source_run["instrument_count"] == 1
+    assert source_run["summary"]["failed_symbols"] == 2
+    assert source_run["summary"]["missing_terminal_bars"] == ["CONFIG-ONLY", "QQQ"]
+
+
+def test_market_data_reuses_confirmed_terminal_bars_when_the_latest_response_is_stale(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    import pandas as pd
+    from investment_panel.workflows import market_data
+
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={
+            "data_sources": {"yfinance": {"enabled": False}},
+            "watchlist": [{"symbol": "CONFIG-ONLY", "asset_class": "equity"}],
+        },
+    )
+    terminal_date = latest_completed_market_day(datetime.now(UTC))
+    stale_date = terminal_date - timedelta(days=1)
+    requested_date = terminal_date
+
+    def fetch(symbol, *_args):
+        return pd.DataFrame([{
+            "symbol": symbol,
+            "date": requested_date,
+            "open": 10,
+            "high": 12,
+            "low": 10,
+            "close": 12,
+            "volume": 120,
+            "source": "test",
+            "is_complete": True,
+        }])
+
+    monkeypatch.setattr(market_data, "fetch_prices", fetch)
+    initial = update_market_data.run_for_config(config, publish=False)
+    requested_date = stale_date
+    repeated = update_market_data.run_for_config(config, publish=False)
+
+    assert initial["status"] == "ok"
+    assert repeated["status"] == repeated["source_status"] == "ok"
+    assert repeated["missing_terminal_bars"] == []
+
+
+def test_market_data_persists_a_terminal_retry_from_the_publication_recheck(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    import pandas as pd
+    from investment_panel.workflows import market_data
+
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={
+            "data_sources": {"yfinance": {"enabled": False}},
+            "watchlist": [{"symbol": "CONFIG-ONLY", "asset_class": "equity"}],
+        },
+    )
+    terminal_date = latest_completed_market_day(datetime.now(UTC)).isoformat()
+    retry = {
+        "status": "partial",
+        "reason": "terminal_bar_retry",
+        "expected_terminal_bar": terminal_date,
+        "missing_terminal_bars": ["CONFIG-ONLY"],
+        "retry_after_seconds": 300,
+    }
+    monkeypatch.setattr(
+        market_data,
+        "fetch_prices",
+        lambda symbol, *_args: pd.DataFrame([{
+            "symbol": symbol, "date": terminal_date, "open": 10, "high": 12, "low": 10,
+            "close": 12, "volume": 120, "source": "test", "is_complete": True,
+        }]),
+    )
+    monkeypatch.setattr(market_data, "terminal_bar_retry", lambda *_args: None)
+    monkeypatch.setattr(market_data, "refresh_market_publication", lambda *_args, **_kwargs: retry)
+
+    result = update_market_data.run_for_config(config)
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.read() as connection:
+            source_run = connection.execute(
+                "SELECT status, summary FROM ingest.run WHERE id = %s", [result["run_id"]],
+            ).fetchone()
+    finally:
+        runtime.close()
+    assert result["status"] == result["source_status"] == "partial"
+    assert source_run["status"] == "partial"
+    assert source_run["summary"]["missing_terminal_bars"] == ["CONFIG-ONLY"]
+
+
+def test_market_data_rechecks_the_new_session_after_a_publication_cutoff_change(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    import pandas as pd
+    from investment_panel.workflows import market_data
+
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={
+            "data_sources": {"yfinance": {"enabled": False}},
+            "watchlist": [{"symbol": "CONFIG-ONLY", "asset_class": "equity"}],
+        },
+    )
+    terminal_date = latest_completed_market_day(datetime.now(UTC)).isoformat()
+    retry = {
+        "status": "partial",
+        "reason": "terminal_bar_retry",
+        "expected_terminal_bar": terminal_date,
+        "missing_terminal_bars": ["CONFIG-ONLY"],
+        "retry_after_seconds": 300,
+    }
+    cutoff_changed = {
+        "status": "partial",
+        "reason": "terminal_bar_cutoff_changed",
+        "expected_terminal_bar": terminal_date,
+        "missing_terminal_bars": [],
+        "retry_after_seconds": 300,
+    }
+    checks = iter((None, retry))
+    monkeypatch.setattr(
+        market_data,
+        "fetch_prices",
+        lambda symbol, *_args: pd.DataFrame([{
+            "symbol": symbol, "date": terminal_date, "open": 10, "high": 12, "low": 10,
+            "close": 12, "volume": 120, "source": "test", "is_complete": True,
+        }]),
+    )
+    monkeypatch.setattr(market_data, "terminal_bar_retry", lambda *_args: next(checks))
+    monkeypatch.setattr(market_data, "refresh_market_publication", lambda *_args, **_kwargs: cutoff_changed)
+
+    result = update_market_data.run_for_config(config)
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.read() as connection:
+            source_run = connection.execute(
+                "SELECT status, summary FROM ingest.run WHERE id = %s", [result["run_id"]],
+            ).fetchone()
+    finally:
+        runtime.close()
+    assert result["status"] == result["source_status"] == "partial"
+    assert result["expected_terminal_bar"] == terminal_date
+    assert result["missing_terminal_bars"] == ["CONFIG-ONLY"]
+    assert source_run["status"] == "partial"
+    assert source_run["summary"]["missing_terminal_bars"] == ["CONFIG-ONLY"]
 
 
 def test_market_data_checks_the_terminal_bar_after_a_close_crossing_collection(
@@ -291,7 +457,6 @@ def test_market_data_checks_the_terminal_bar_after_a_close_crossing_collection(
         },
     )
     clock = iter((
-        datetime(2026, 9, 22, 19, 59, tzinfo=UTC),
         datetime(2026, 9, 22, 19, 59, tzinfo=UTC),
         datetime(2026, 9, 22, 20, 1, tzinfo=UTC),
     ))

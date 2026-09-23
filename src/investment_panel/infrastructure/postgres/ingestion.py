@@ -395,6 +395,50 @@ class IngestionRepository:
 
             PriceConfirmationRetentionRepository(self.runtime).cleanup_terminal_staging(run_id=run_id)
 
+    def record_terminal_bar_check(
+        self,
+        run_id: UUID,
+        *,
+        expected_terminal_bar: str,
+        missing_terminal_bars: Sequence[str],
+        failed_symbols: Sequence[str],
+        instrument_count: int,
+    ) -> None:
+        """Persist whether this completed daily-bar run meets its session gate."""
+
+        missing = sorted({str(symbol) for symbol in missing_terminal_bars})
+        failed = sorted({str(symbol) for symbol in failed_symbols})
+        failure_detail = (
+            f"Missing completed {expected_terminal_bar} daily bars: {', '.join(missing)}"
+            if missing else None
+        )
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            result = connection.execute(
+                """
+                UPDATE ingest.run
+                SET status = CASE WHEN status = 'succeeded' AND %s::boolean THEN 'partial' ELSE status END,
+                    instrument_count = %s,
+                    failure_detail = CASE WHEN %s::boolean THEN concat_ws('; ', failure_detail, %s::text) ELSE failure_detail END,
+                    summary = summary || %s
+                WHERE id = %s AND status IN ('succeeded', 'partial', 'failed')
+                """,
+                [
+                    bool(missing),
+                    max(0, instrument_count),
+                    bool(missing),
+                    failure_detail,
+                    Jsonb({
+                        "terminal_bar_checked": True,
+                        "expected_terminal_bar": expected_terminal_bar,
+                        "missing_terminal_bars": missing,
+                        "failed_symbols": len(failed),
+                    }),
+                    run_id,
+                ],
+            )
+            if result.rowcount != 1:
+                raise ValueError(f"ingestion run is not terminal: {run_id}")
+
     def _price_confirmation_cutover_enabled(self) -> bool:
         with self.runtime.read() as connection:
             row = connection.execute(

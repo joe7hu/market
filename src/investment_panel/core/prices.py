@@ -146,6 +146,17 @@ def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
         and frame["date"].max() < market_date
     ):
         try:
+            terminal = fetch_yahoo_intraday_terminal(
+                symbol,
+                provider_symbol,
+                market_date=market_date,
+                regular_session_end=int(regular_session_end),
+            )
+        except (httpx.HTTPError, KeyError, OSError, TypeError, ValueError):
+            terminal = pd.DataFrame()
+        if len(terminal) == 1:
+            return pd.concat([frame, terminal], ignore_index=True).tail(lookback_days)
+        try:
             fallback = fetch_yfinance(symbol, lookback_days, market_date=market_date)
         except Exception:  # A secondary provider must not discard primary evidence.
             return frame
@@ -162,6 +173,74 @@ def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
         terminal["is_complete"] = True
         return pd.concat([frame, terminal], ignore_index=True).tail(lookback_days)
     return frame
+
+
+def fetch_yahoo_intraday_terminal(
+    symbol: str,
+    provider_symbol: str,
+    *,
+    market_date: date,
+    regular_session_end: int,
+) -> pd.DataFrame:
+    """Return one completed daily bar from Yahoo's current regular-session minutes."""
+
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{provider_symbol}"
+    with httpx.Client(timeout=20.0, headers={"User-Agent": "joehu-market-panel/0.1"}) as client:
+        response = client.get(url, params={"range": "1d", "interval": "1m", "events": "history"})
+        response.raise_for_status()
+        payload = response.json()
+    result = (payload.get("chart", {}).get("result") or [None])[0]
+    if not result:
+        return pd.DataFrame()
+    metadata = result.get("meta") or {}
+    regular = (metadata.get("currentTradingPeriod") or {}).get("regular") or {}
+    try:
+        session_start = int(regular["start"])
+        session_end = int(regular["end"])
+        market_timezone = ZoneInfo(str(metadata.get("exchangeTimezoneName") or "UTC"))
+    except (KeyError, TypeError, ValueError, ZoneInfoNotFoundError):
+        return pd.DataFrame()
+    if session_end != regular_session_end:
+        return pd.DataFrame()
+    if session_end <= session_start:
+        return pd.DataFrame()
+    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+    expected_minutes = range(session_start, session_end, 60)
+    minutes: dict[int, tuple[float, float, float, float, float]] = {}
+    terminal_close: float | None = None
+    for index, timestamp in enumerate(result.get("timestamp") or []):
+        if timestamp == session_end:
+            close = value_at(quote.get("close"), index)
+            if close is not None and isfinite(close) and close > 0:
+                terminal_close = close
+            continue
+        if timestamp < session_start or timestamp >= session_end:
+            continue
+        if datetime.fromtimestamp(timestamp, UTC).astimezone(market_timezone).date() != market_date:
+            return pd.DataFrame()
+        opened, high, low, close, volume = (
+            value_at(quote.get(key), index) for key in ("open", "high", "low", "close", "volume")
+        )
+        if not valid_ohlcv(opened, high, low, close, volume) or timestamp in minutes:
+            return pd.DataFrame()
+        minutes[timestamp] = (opened, high, low, close, volume)
+    if set(minutes) != set(expected_minutes):
+        return pd.DataFrame()
+    closing_minute = minutes[session_end - 60]
+    terminal = {
+        "symbol": symbol,
+        "date": market_date,
+        "open": minutes[session_start][0],
+        "high": max(row[1] for row in minutes.values()),
+        "low": min(row[2] for row in minutes.values()),
+        "close": terminal_close if terminal_close is not None else closing_minute[3],
+        "volume": sum(row[4] for row in minutes.values()),
+        "source": f"yahoo-chart-intraday:{provider_symbol}" if provider_symbol != symbol else "yahoo-chart-intraday",
+        "is_complete": True,
+    }
+    if not valid_ohlcv(terminal["open"], terminal["high"], terminal["low"], terminal["close"], terminal["volume"]):
+        return pd.DataFrame()
+    return pd.DataFrame([terminal])
 
 
 def fetch_yfinance(
