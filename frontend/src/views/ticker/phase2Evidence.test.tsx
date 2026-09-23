@@ -52,7 +52,7 @@ describe("Ticker decision usability", () => {
     expect(html).toContain("TACTICAL");
     expect(html).toContain("84");
     expect(html).toContain("within this ranking");
-    expect(html).toContain("A supported return forecast is not available.");
+    expect(html).toContain("No validated return forecast.");
     expect(html).not.toContain("WRONG");
     expect(html).not.toContain("private-id");
   });
@@ -60,7 +60,7 @@ describe("Ticker decision usability", () => {
     const decision = { ...compactDecision, capital_action: { ...compactDecision.capital_action, action: "AVOID", owned: true, rationale: "cash_comparator" }, resolution: { primary_blocker: "cash_comparator", next_action: "Review evidence" } } as unknown as components["schemas"]["TickerDecisionDetailResponse"];
     const snapshot = { ...decision, opportunity_rank: { blockers: ["cash_comparator", "alpha_strategy_revision_missing"] }, alpha_signals: [], data_requests: [], learning: {} } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"];
     const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={decision} snapshot={snapshot} />);
-    expect(html).toContain("The investment signal has not passed strategy validation.");
+    expect(html).toContain("No qualified stock signal yet.");
     expect(html).toContain("You hold this stock.");
     expect(html).not.toContain("Do this now");
     expect(html).not.toContain("AVOID");
@@ -71,7 +71,7 @@ describe("Ticker decision usability", () => {
     const snapshot = { ...decision, alpha_signals: [], trade_plan: null, data_requests: [], learning: {} } as unknown as components["schemas"]["TickerDecisionSnapshotResponse"];
     const html = renderToStaticMarkup(<TickerDecisionPanel {...panelProps} decision={decision} snapshot={snapshot} />);
     expect(html).toContain("No new trade");
-    expect(html).toContain("No published entry, position size, invalidation and maximum loss are linked to this decision.");
+    expect(html).toContain("No executable trade plan.");
     expect(html).not.toContain("proposed impact");
     expect(html).not.toContain("Field unavailable:");
   });
