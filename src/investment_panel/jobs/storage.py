@@ -10,6 +10,8 @@ from typing import Any
 from investment_panel.settings import load_config
 from investment_panel.infrastructure.postgres.authority import runtime_for_config
 from investment_panel.infrastructure.postgres.decision_storage import compact_context_batch
+from investment_panel.infrastructure.postgres.decision_inputs import compact_input_batch
+from investment_panel.infrastructure.postgres.hot_retention import HotRetention
 from investment_panel.infrastructure.postgres.manifest_archive import ManifestArchive
 from investment_panel.infrastructure.postgres.retention import RetentionRepository
 from investment_panel.infrastructure.postgres.storage_archive import ARCHIVE_KINDS, StorageArchiveService
@@ -34,13 +36,22 @@ def run(
     execute: bool = False,
     expire: bool = False,
 ) -> dict[str, Any]:
-    batch_size = batch_size if batch_size is not None else (25 if phase == "decision-context" else 10 if phase == "publications" else 500)
+    batch_size = batch_size if batch_size is not None else (25 if phase in {"decision-context", "decision-inputs"} else 10 if phase == "publications" else 500)
     service = _service(config_path)
     if command == "plan":
         return service.plan()
     if command in {"archive", "compact"} and phase == "decision-manifests":
         return ManifestArchive(service).run(state=state, batch_size=batch_size,
             max_batches=max_batches, execute=execute, backup_token=backup_token)
+    if command == "compact" and phase in {"hot-options", "relative-values"}:
+        if state not in {"plan", "backfill"}:
+            raise ValueError("hot storage phases support plan or backfill")
+        return HotRetention(service).run(phase="options" if phase == "hot-options" else phase,
+            batch_size=batch_size, max_batches=max_batches, execute=execute and state == "backfill")
+    if command == "compact" and phase == "decision-inputs":
+        if state not in {"plan", "backfill"}:
+            raise ValueError("decision-inputs state must be plan or backfill")
+        return compact_input_batch(service.runtime, batch_size=batch_size, execute=execute and state == "backfill")
     if command == "compact" and phase == "decision-context":
         if state not in {"plan", "backfill"}:
             raise ValueError("decision-context state must be plan or backfill")
@@ -84,10 +95,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Verified, resumable Market storage operations")
     parser.add_argument("command", choices=("plan", "archive", "verify", "compact", "restore"))
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--phase", choices=sorted(ARCHIVE_KINDS | {"price-confirmations", "decision-context"}))
+    parser.add_argument("--phase", choices=sorted(ARCHIVE_KINDS | {"price-confirmations", "decision-context", "decision-inputs", "hot-options", "relative-values"}))
     parser.add_argument("--state", choices=("plan", "backfill", "verify", "cutover"), default="plan")
     parser.add_argument("--batch-size", type=int, help="phase-specific bounded batch size")
-    parser.add_argument("--max-batches", type=int, default=1, help="bounded decision-manifest export batches per invocation")
+    parser.add_argument("--max-batches", type=int, default=1, help="bounded archive batches per phase per invocation")
     parser.add_argument("--manifest-id", type=int)
     parser.add_argument("--destination")
     parser.add_argument("--backup-token", help="SHA-256 of a verified NAS PostgreSQL backup")

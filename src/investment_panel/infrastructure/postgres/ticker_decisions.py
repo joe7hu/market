@@ -49,6 +49,7 @@ from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.infrastructure.postgres.options_paper_quotes import is_credit_structure, package_price
 from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
 from investment_panel.infrastructure.postgres.decision_storage import store_context
+from investment_panel.infrastructure.postgres.decision_inputs import intern_input_manifest
 from investment_panel.infrastructure.postgres.confirmed_daily_prices import confirmed_forward_bars, forward_trading_dates
 from investment_panel.infrastructure.postgres.runtime import API_PROFILE, DatabaseRuntime, JOB_PROFILE
 
@@ -397,6 +398,7 @@ class TickerDecisionRepository:
                     signal=selected_signals[0],
                     forecast_id=next(iter(forecast_ids)),
                 )
+            compact_manifest, input_refs = intern_input_manifest(connection, payload["input_manifest"])
             market_context_hash = store_context(connection, payload.get("market_state_snapshot"))
             policy_context_hash = store_context(connection, payload.get("risk_policy_snapshot"))
             row = connection.execute(
@@ -409,11 +411,11 @@ class TickerDecisionRepository:
                     expressions, selected_expression, data_requests,
                     learning_history, input_manifest, market_state_publication_id,
                     market_state_snapshot, portfolio_impacts, risk_policy_snapshot,
-                    market_state_context_hash, risk_policy_context_hash, status
+                    market_state_context_hash, risk_policy_context_hash, input_payload_refs, inputs_normalized, status
                 ) VALUES (
                     %s, %s, %s, %s, now(), %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, 'published'
+                    %s, %s, %s, %s, %s, %s, %s::jsonb, true, 'published'
                 )
                 ON CONFLICT (instrument_id, decision_revision) DO NOTHING
                 RETURNING id::text
@@ -431,12 +433,12 @@ class TickerDecisionRepository:
                     Jsonb(payload["opportunity_episode"]), Jsonb(payload["risk_policy"]),
                     Jsonb(payload["expressions"]), Jsonb(payload.get("selected_expression")),
                     Jsonb(payload["data_requests"]), Jsonb(payload["learning_history"]),
-                    Jsonb(payload["input_manifest"]),
+                    compact_manifest,
                     _uuid_or_none(decision.market_state_publication_id),
                     Jsonb({}),
                     Jsonb(payload.get("portfolio_impacts") or {}),
                     Jsonb({}),
-                    market_context_hash, policy_context_hash,
+                    market_context_hash, policy_context_hash, input_refs,
                 ],
             ).fetchone()
             if row is None:

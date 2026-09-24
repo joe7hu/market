@@ -105,7 +105,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("update_event_calendar", freshness_seconds=86400),
         _job("update_disclosures", freshness_seconds=86400),
         _job("update_arco_data", freshness_seconds=14400),
-        _job("postgres_retention"),
+        _job("postgres_retention", timeout_seconds=180, initial_delay="one_interval"),
         _job("snapshot_database"),
     )
 }
@@ -173,6 +173,10 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
 
     heavy_refresh = heavy_refresh_enabled()
     intervals: dict[str, int] = {}
+    retention_seconds = _env_int_optional("MARKET_STORAGE_RETENTION_SECONDS")
+    retention_seconds = 3600 if retention_seconds is None else retention_seconds
+    if retention_seconds > 0:
+        intervals["postgres_retention"] = retention_seconds
     history_seconds = _env_int_optional("MARKET_OPTION_HISTORY_REFRESH_SECONDS")
     history_seconds = 900 if history_seconds is None else history_seconds
     if history_seconds > 0:

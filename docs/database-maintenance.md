@@ -2,7 +2,7 @@
 
 Market uses a data-free PostgreSQL baseline (`20260907_0006`) under
 `migrations/baseline/`, followed by the explicit data-preserving revisions in
-`migrations/versions/`. The current head is `20260923_0035`. Existing databases
+`migrations/versions/`. The current head is `20260924_0036`. Existing databases
 must run the migration runner; updating a baseline snapshot cannot upgrade a
 nonempty database. See [storage-efficiency migration](storage-efficiency-migration.md)
 for decision/context normalization and verified NAS reclamation.
@@ -53,3 +53,7 @@ the same bytes. Existing archives stay intact for provenance.
 Validate schema changes on an empty database and, when needed, an upgrade
 fixture. Use bounded `EXPLAIN (ANALYZE, BUFFERS)` checks for changed read paths;
 save plans to disk and report timing and spill counts instead of fact rows.
+
+For lossless input-group sharing and scheduled bounded NAS-first retention, use
+[Hot-storage lifecycle](hot-storage-lifecycle.md). Revision 0036 does not
+automatically rewrite the old ticker history.

@@ -1,3 +1,6 @@
+> The [hot-storage lifecycle](hot-storage-lifecycle.md) supersedes the older
+> derived-run deletion and per-row publication archive policies below.
+
 # Storage operations
 
 Storage commands are PostgreSQL-native and fail closed. For the large decision/JSON
