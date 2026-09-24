@@ -34,7 +34,10 @@ class PublicationArchive:
                  "app.publication_payload": "source.content_hash",
                  "app.publication_item": "source.publication_id, source.model_name, source.stable_key"}.get(relation, "source.id")
         with connection.cursor(name=f"archive_{uuid4().hex}") as cursor:
-            cursor.itersize = 1  # one potentially large row, never an eager 2,000-row fetch
+            # Bundle items are compact references; fetch them in small groups
+            # to avoid one database round trip per item. Keep payload rows at one.
+            # ponytail: prefetch at most 25 compact rows; lower if bundle items gain payloads.
+            cursor.itersize = 25 if relation == "app.publication_bundle_item" else 1
             cursor.execute(f"SELECT to_jsonb(source)::text AS row_json FROM {relation} source WHERE {predicate} ORDER BY {order}", parameters)
             count = 0
             def records():
