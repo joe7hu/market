@@ -1,0 +1,19 @@
+name: storage-review
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  source-review:
+    if: github.head_ref == 'feat/bounded-hot-storage'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Package tracked source for isolated storage verification
+        run: git archive --format=tar.gz --output=market-source.tar.gz HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: market-storage-review-source
+          path: market-source.tar.gz
+          retention-days: 1
