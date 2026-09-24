@@ -213,7 +213,9 @@ def test_static_arbitrage_uses_executable_worst_side_and_detects_bounds() -> Non
     assert not static_arbitrage_findings(audited_wing, spot=700.0, option_type="call")
 
 
-def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postgres_dsn: str) -> None:
+def test_append_only_retry_advances_pointer_without_mixing_quotes(
+    migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     ingestion = IngestionRepository(runtime)
@@ -282,6 +284,23 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
     )
     assert [row["id"] for row in verified["rows"]] == [candidate["id"]]
     assert verified["rows"][0]["verification_status"] == "verified"
+
+    # Failure mode: retention archives quotes after this generation was read.
+    # Reject stale in-memory inputs before writing summaries or relative values.
+    metadata, source_rows = history.v3._generation_rows(
+        complete["snapshot_id"], complete["capture_generation_id"],
+    )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "DELETE FROM raw.option_quote WHERE snapshot_id = %s AND capture_generation_id = %s AND contract_id = %s",
+            [complete["snapshot_id"], complete["capture_generation_id"], source_rows[0]["contract_id"]],
+        )
+    monkeypatch.setattr(history.v3, "_generation_rows", lambda _snapshot_id, _generation_id: (metadata, source_rows))
+    with pytest.raises(ValueError, match="capture source changed"):
+        history.v3.materialize(
+            snapshot_id=complete["snapshot_id"], capture_generation_id=complete["capture_generation_id"],
+            code_version="stale-source-test",
+        )
     runtime.close()
 
 

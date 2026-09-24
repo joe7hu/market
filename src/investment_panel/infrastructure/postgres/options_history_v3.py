@@ -251,6 +251,7 @@ class OptionHistoryV3Materializer:
             metadata = connection.execute(
                 """
                 SELECT generation.id, generation.capture_state, generation.capture_finished_at,
+                       generation.received_contract_count,
                        snapshot.history_symbol AS symbol, snapshot.slot_at,
                        snapshot.latest_complete_generation_id,
                        coalesce(generation.capture_finished_at, snapshot.observed_at) AS available_at
@@ -310,6 +311,24 @@ class OptionHistoryV3Materializer:
         eligible_groups, fit_attempts, succeeded_groups, decision_count = 0, 0, 0, 0
         persisted: list[dict[str, Any]] = []
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            generation = connection.execute("""
+                SELECT capture_state, received_contract_count
+                FROM raw.option_capture_generation
+                WHERE id = %s AND snapshot_id = %s
+                FOR KEY SHARE
+            """, [capture_generation_id, snapshot_id]).fetchone()
+            source_count = connection.execute("""
+                SELECT count(*) AS n FROM raw.option_quote
+                WHERE snapshot_id = %s AND capture_generation_id = %s
+            """, [snapshot_id, capture_generation_id]).fetchone()["n"]
+            if (
+                generation is None
+                or generation["capture_state"] != "complete"
+                or int(generation["received_contract_count"]) != int(metadata["received_contract_count"])
+                or int(generation["received_contract_count"]) != len(rows)
+                or int(source_count) != len(rows)
+            ):
+                raise ValueError("option capture source changed before materialization")
             theses = {
                 int(row["instrument_id"]): {"id": int(row["id"]), **dict(row["thesis"])}
                 for row in connection.execute(

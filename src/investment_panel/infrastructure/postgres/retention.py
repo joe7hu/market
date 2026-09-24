@@ -108,7 +108,7 @@ class RetentionRepository:
             # Row locks exclude concurrent insertion of FK references. Still
             # recheck on a fresh statement after waiting for these locks.
             return int(connection.execute(
-                "SELECT analysis.prune_empty_run_metadata(%s::uuid[]) AS deleted", [selected],
+                "SELECT analysis.prune_empty_run_metadata(%s::uuid[], %s) AS deleted", [selected, before],
             ).fetchone()["deleted"])
 
     def prune_publications(

@@ -84,12 +84,12 @@ def upgrade() -> None:
         REVOKE ALL ON FUNCTION analysis.empty_run_metadata_candidates(timestamptz) FROM PUBLIC;
         GRANT EXECUTE ON FUNCTION analysis.empty_run_metadata_candidates(timestamptz) TO market_app;
 
-        CREATE FUNCTION analysis.prune_empty_run_metadata(p_ids uuid[])
+        CREATE FUNCTION analysis.prune_empty_run_metadata(p_ids uuid[], p_before timestamptz)
         RETURNS integer LANGUAGE plpgsql SECURITY DEFINER
         SET search_path = pg_catalog, pg_temp AS $$
         DECLARE ref record; guards text := ''; removed integer;
         BEGIN
-            IF p_ids IS NULL OR cardinality(p_ids) > 100 THEN
+            IF p_ids IS NULL OR p_before IS NULL OR cardinality(p_ids) > 100 THEN
                 RAISE EXCEPTION 'empty run metadata deletion must be bounded to 100 IDs';
             END IF;
             FOR ref IN
@@ -106,12 +106,12 @@ def upgrade() -> None:
                     ' AND NOT EXISTS (SELECT 1 FROM %I.%I child WHERE child.%I = run.id)',
                     ref.nspname, ref.relname, ref.attname);
             END LOOP;
-            EXECUTE 'DELETE FROM analysis.run run WHERE run.id = ANY($1)' || guards USING p_ids;
+            EXECUTE 'DELETE FROM analysis.run run WHERE run.id = ANY($1) AND run.started_at < $2' || guards USING p_ids, p_before;
             GET DIAGNOSTICS removed = ROW_COUNT;
             RETURN removed;
         END $$;
-        REVOKE ALL ON FUNCTION analysis.prune_empty_run_metadata(uuid[]) FROM PUBLIC;
-        GRANT EXECUTE ON FUNCTION analysis.prune_empty_run_metadata(uuid[]) TO market_app;
+        REVOKE ALL ON FUNCTION analysis.prune_empty_run_metadata(uuid[], timestamptz) FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION analysis.prune_empty_run_metadata(uuid[], timestamptz) TO market_app;
 
         CREATE TABLE analysis.decision_input_payload (
             content_hash text PRIMARY KEY,
@@ -212,7 +212,7 @@ def downgrade() -> None:
     op.execute(f"CREATE OR REPLACE VIEW analysis.ticker_decision_read AS SELECT {_OLD_COLUMNS} FROM analysis.ticker_decision d")
     op.execute("""
         DROP FUNCTION analysis.empty_run_metadata_candidates(timestamptz);
-        DROP FUNCTION analysis.prune_empty_run_metadata(uuid[]);
+        DROP FUNCTION analysis.prune_empty_run_metadata(uuid[], timestamptz);
         REVOKE UPDATE, DELETE ON analysis.option_relative_value FROM market_app;
         REVOKE DELETE ON app.publication, app.publication_bundle,
                          app.publication_payload, ops.job_run FROM market_app;

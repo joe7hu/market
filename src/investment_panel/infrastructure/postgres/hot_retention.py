@@ -144,7 +144,7 @@ class HotRetention:
         last_contract = int(cursor.get("contract_id") or 0) if same else 0
         last_at = datetime.fromisoformat(cursor["observed_at"]) if same and cursor.get("observed_at") else datetime.min.replace(tzinfo=UTC)
         candidates = connection.execute(f"""
-            SELECT q.contract_id, q.observed_at, ({QUOTE_PIN}) AS pinned,
+            SELECT q.contract_id, q.observed_at, q.capture_generation_id, ({QUOTE_PIN}) AS pinned,
                    octet_length(to_jsonb(q)::text) AS bytes,
                    q.provider_payload <> '{{}}'::jsonb AS has_payload
             FROM raw.option_quote q WHERE q.snapshot_id = %s
@@ -153,6 +153,12 @@ class HotRetention:
         """, [sid, cutoff, last_contract, last_at, limit]).fetchall()
         if not candidates:
             return empty, end_cursor, False
+        generation_ids = sorted({row["capture_generation_id"] for row in candidates if row["capture_generation_id"] is not None})
+        if generation_ids:
+            connection.execute("""
+                SELECT id FROM raw.option_capture_generation
+                WHERE id = ANY(%s) ORDER BY id FOR UPDATE
+            """, [generation_ids]).fetchall()
         counts = dict(empty)
         keys, delete_keys, trim_keys = [], [], []
         budget = 0
@@ -191,14 +197,15 @@ class HotRetention:
 
     def _relative_values(self, connection: Any, cursor: dict[str, Any], now: datetime, limit: int, days: int):
         rows = connection.execute(f"""
-            SELECT r.id, r.created_at, ({RV_PIN}) AS pinned, octet_length(to_jsonb(r)::text) AS bytes
+            SELECT r.id, r.analysis_run_id, r.created_at, ({RV_PIN}) AS pinned,
+                   octet_length(to_jsonb(r)::text) AS bytes
             FROM analysis.option_relative_value r WHERE r.id > %s
             ORDER BY r.id LIMIT %s FOR UPDATE OF r
         """, [int(cursor.get("last_id") or 0), limit]).fetchall()
         counts = {"relative_values": 0, "scanned": 0}
         if not rows:
             return counts, {}, True
-        ids, budget, last_id = [], 0, int(cursor.get("last_id") or 0)
+        ids, run_ids, budget, last_id = [], set(), 0, int(cursor.get("last_id") or 0)
         for row in rows:
             eligible = not row["pinned"] and row["created_at"] < now - timedelta(days=days)
             if eligible and budget + int(row["bytes"]) > MAX_PACK_BYTES // 2:
@@ -209,9 +216,14 @@ class HotRetention:
             counts["scanned"] += 1
             if eligible:
                 ids.append(last_id)
+                run_ids.add(row["analysis_run_id"])
                 budget += int(row["bytes"])
         if ids:
             records = connection.execute("SELECT to_jsonb(r)::text AS row_json FROM analysis.option_relative_value r WHERE id = ANY(%s) ORDER BY id", [ids]).fetchall()
             self.archive.write(connection, "analysis.option_relative_value", records)
+            connection.execute("""
+                SELECT id FROM analysis.run WHERE id = ANY(%s)
+                ORDER BY id FOR UPDATE
+            """, [sorted(run_ids)]).fetchall()
             counts["relative_values"] = connection.execute(f"DELETE FROM analysis.option_relative_value r WHERE id = ANY(%s) AND NOT ({RV_PIN})", [ids]).rowcount
         return counts, {"last_id": last_id}, False

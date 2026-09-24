@@ -78,6 +78,13 @@ pack; it cannot leave deleted rows with an advanced-but-uncommitted cursor.
 Retries verify reused bytes. A failed phase records its old cursor and error.
 One maintenance job lock excludes competing hot-retention workers.
 
+The transaction also locks capture generations before archiving old quotes and
+checks the complete source row count before option-history output is written.
+It locks parent analysis runs before deleting relative values, so concurrent
+publication and strategy-evaluation foreign-key writes finish before the final
+pin check. The empty-run delete helper applies its age cutoff again, even when
+called directly with IDs that were not selected by the normal retention query.
+
 Publication packs amortize what used to be one file and manifest per row.
 A generation remains atomic: a failure during any pack retains its publication
 and payloads. Large historical generations may take several packs; generation

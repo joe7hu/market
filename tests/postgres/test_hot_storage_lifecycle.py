@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import gzip
 import json
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -258,6 +260,9 @@ def test_regular_retention_with_app_login_does_not_grant_run_cascade(storage):
                 code_version="test", inputs={"revision": i}) for i in range(3)]
     for run in runs:
         analysis.finish_run(run, "succeeded")
+    recent_run = analysis.start_run("storage-role-test", input_cutoff=now,
+                code_version="test", inputs={"revision": "recent"})
+    analysis.finish_run(recent_run, "succeeded")
     analysis.publish(runs[0], "today", {"daily_brief": [{"stable_key": "brief", "headline": "old"}]})
     analysis.publish(runs[1], "today", {"daily_brief": [{"stable_key": "brief", "headline": "current"}]})
     jobs = JobRepository(storage.runtime)
@@ -276,8 +281,89 @@ def test_regular_retention_with_app_login_does_not_grant_run_cascade(storage):
     assert counts["analysis_runs"] == 2
     assert counts["job_runs"] == 1
     with storage.runtime.transaction() as connection:
-        assert connection.execute("SELECT id FROM analysis.run ORDER BY id").fetchall() == [{"id": runs[1]}]
-        assert connection.execute("SELECT analysis.prune_empty_run_metadata(%s::uuid[]) AS n", [[runs[1]]]).fetchone()["n"] == 0
+        retained = {row["id"] for row in connection.execute("SELECT id FROM analysis.run").fetchall()}
+        assert retained == {runs[1], recent_run}
+        assert connection.execute("SELECT count(*) AS n FROM analysis.run WHERE id = %s", [recent_run]).fetchone()["n"] == 1
+        assert connection.execute(
+            "SELECT analysis.prune_empty_run_metadata(%s::uuid[], %s) AS n", [[recent_run], old],
+        ).fetchone()["n"] == 0
         with pytest.raises(psycopg.Error, match="bounded"), connection.transaction():
-            connection.execute("SELECT analysis.prune_empty_run_metadata(%s::uuid[])", [[runs[1]] * 101])
+            connection.execute("SELECT analysis.prune_empty_run_metadata(%s::uuid[], %s)", [[runs[1]] * 101, old])
+    assert storage.verify()["failed"] == 0
+
+
+def test_relative_value_pin_waits_for_inflight_publication(storage, monkeypatch):
+    now = _quotes(storage, old_days=800, profile="history_full")
+    from investment_panel.infrastructure.postgres.analysis import AnalysisRepository
+
+    analysis = AnalysisRepository(storage.runtime)
+    run_id = analysis.start_run("storage-pin-race", input_cutoff=now, code_version="test", inputs={})
+    analysis.finish_run(run_id, "succeeded")
+    old = now - timedelta(days=90)
+    with storage.runtime.transaction() as connection:
+        snapshot = connection.execute(
+            "SELECT id, ingest_run_id FROM raw.option_snapshot WHERE source_id = 'hot-test' ORDER BY observed_at LIMIT 1"
+        ).fetchone()
+        quote = connection.execute(
+            "SELECT contract_id FROM raw.option_quote WHERE snapshot_id = %s ORDER BY contract_id LIMIT 1",
+            [snapshot["id"]],
+        ).fetchone()
+        generation_id = connection.execute("""
+            INSERT INTO raw.option_capture_generation
+                (snapshot_id, ingest_run_id, generation, capture_state, expected_contract_count,
+                 received_contract_count, completeness, capture_started_at, capture_finished_at)
+            SELECT %s, %s, 1, 'complete', count(*), count(*), 1, %s, %s
+            FROM raw.option_quote WHERE snapshot_id = %s
+            RETURNING id
+        """, [snapshot["id"], snapshot["ingest_run_id"], old, old, snapshot["id"]]).fetchone()["id"]
+        connection.execute(
+            "UPDATE raw.option_quote SET capture_generation_id = %s WHERE snapshot_id = %s",
+            [generation_id, snapshot["id"]],
+        )
+        connection.execute("""
+            INSERT INTO analysis.option_relative_value
+                (analysis_run_id, capture_generation_id, contract_id, model_revision, classification,
+                 quality_status, created_at)
+            VALUES (%s, %s, %s, 'test', 'relative_cheap', 'available', %s)
+        """, [run_id, generation_id, quote["contract_id"], old])
+
+    publication_started, publish = Event(), Event()
+    archive_written = Event()
+    worker = HotRetention(storage)
+    write_archive = worker.archive.write
+
+    def signal_archive(connection, relation, records):
+        result = write_archive(connection, relation, records)
+        if relation == "analysis.option_relative_value":
+            archive_written.set()
+        return result
+
+    monkeypatch.setattr(worker.archive, "write", signal_archive)
+
+    def publish_while_retention_runs():
+        with storage.runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app.publication (scope, analysis_run_id, status) VALUES ('storage-pin-race', %s, 'published')",
+                [run_id],
+            )
+            publication_started.set()
+            assert publish.wait(10)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        publisher = executor.submit(publish_while_retention_runs)
+        assert publication_started.wait(5)
+        retention = executor.submit(worker.run, phase="relative-values", now=now, execute=True)
+        try:
+            assert archive_written.wait(5)
+            with pytest.raises(TimeoutError):
+                retention.result(timeout=1)
+        finally:
+            publish.set()
+        publisher.result(timeout=5)
+        assert retention.result(timeout=5)["relative_values"] == 0
+
+    with storage.runtime.read() as connection:
+        assert connection.execute(
+            "SELECT count(*) AS n FROM analysis.option_relative_value WHERE analysis_run_id = %s", [run_id],
+        ).fetchone()["n"] == 1
     assert storage.verify()["failed"] == 0
