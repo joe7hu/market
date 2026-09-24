@@ -45,5 +45,11 @@ all interfaces so the app can be browsed from another local device:
   `domain/strategies/catalog.py`.
 - Strategy sequencing and replay: `workflows/strategies.py`; PostgreSQL
   resolution/evidence: `infrastructure/postgres/strategy_factory.py`.
-- Run the affected focused test first, then `make guards`, `make check`, and
-  the final `make release-gate` for an integrated candidate.
+- Never write unit tests after writing code.
+- Highly prefer E2E tests as the sole test mechanism. Use them to verify
+  complex features, and produce a verifiable, repeatable artifact at the end.
+- If a system must be tested in isolation, first write every way it could
+  fail, then write the test code. Tests must work on this machine and, where
+  practical, on another machine; use GBrain when needed.
+- Run the relevant E2E test, then `make guards`, `make check`, and the final
+  `make release-gate` for an integrated candidate.
