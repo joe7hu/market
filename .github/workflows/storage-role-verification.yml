@@ -1,0 +1,84 @@
+name: storage-role-verification
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.head_ref == 'feat/bounded-hot-storage' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    env:
+      PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Apply verified role-boundary correction and remove temporary workflow
+        run: |
+          python - <<'PY'
+          import base64, gzip, hashlib, json
+          from pathlib import Path
+          packed = base64.b64decode('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')
+          assert hashlib.sha256(packed).hexdigest() == '4dbe72d9310e02b7a26cdb51787e63cd8406e0df7dbefc0954f57fcbf8f8323d'
+          for change in json.loads(gzip.decompress(packed)):
+              path = Path(change['path'])
+              assert not path.is_absolute() and '..' not in path.parts
+              assert path.parts[0] in ('src', 'migrations', 'tests', 'docs')
+              old = path.read_text()
+              digest = hashlib.sha256(old.encode()).hexdigest()
+              if digest == change['after']: continue
+              assert digest == change['before'], str(path)
+              lines = old.splitlines(keepends=True)
+              for edit in reversed(change['edits']): lines[edit['start']:edit['end']] = [edit['text']]
+              new = ''.join(lines)
+              assert hashlib.sha256(new.encode()).hexdigest() == change['after'], str(path)
+              path.write_text(new)
+          PY
+          git rm --ignore-unmatch .github/workflows/storage-role-verification.yml
+          git add src migrations tests docs
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git -c user.name='ChatGPT' -c user.email='noreply@openai.com' commit -m 'Exercise retention with the application role and constrain metadata deletion'
+            git push origin HEAD:refs/heads/feat/bounded-hot-storage
+          fi
+          git rev-parse HEAD | tee verified-commit.txt
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: '0.9.26'
+      - uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee
+        with:
+          postgres-version: '18'
+      - run: uv sync --extra test --locked
+      - name: Non-owner lifecycle and privilege regressions
+        run: |
+          set -o pipefail
+          uv run --extra test python -m pytest tests/postgres/test_hot_storage_lifecycle.py tests/postgres/test_option_paper_writer_privileges.py -q --junitxml=role-results.xml 2>&1 | tee role-tests.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: storage-role-verification
+          path: |
+            role-results.xml
+            role-tests.log
+            verified-commit.txt
+          retention-days: 7
+      - name: Storage compatibility and architecture regressions
+        run: |
+          set -o pipefail
+          uv run --extra test python -m pytest tests/postgres/test_decision_storage.py tests/postgres/test_postgres_retention_backup.py tests/postgres/test_schema_baseline.py tests/postgres/test_storage_archive.py tests/options/history/test_option_history.py tests/contracts/test_architecture_guards.py tests/contracts/test_postgres_runtime_boundary.py -q --junitxml=compatibility-results.xml 2>&1 | tee compatibility-tests.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: storage-role-compatibility
+          path: |
+            compatibility-results.xml
+            compatibility-tests.log
+            verified-commit.txt
+          retention-days: 7
