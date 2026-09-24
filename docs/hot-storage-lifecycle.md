@@ -84,6 +84,8 @@ It locks parent analysis runs before deleting relative values, so concurrent
 publication and strategy-evaluation foreign-key writes finish before the final
 pin check. The empty-run delete helper applies its age cutoff again, even when
 called directly with IDs that were not selected by the normal retention query.
+It also requires a 30-day minimum age and a verified NAS manifest containing
+each exact run ID before it can delete empty run metadata.
 
 Publication packs amortize what used to be one file and manifest per row.
 A generation remains atomic: a failure during any pack retains its publication

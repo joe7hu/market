@@ -113,6 +113,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260923_0035_decision_storage.py',
         '20260924_0036_hot_storage.py',
         '20260924_0037_option_payload_trigger.py',
+        '20260924_0038_verified_run_archive_prune.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
@@ -124,8 +125,9 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
     assert 'ALTER INDEX' not in sql
 
 
-def test_known_forward_revision_upgrades_to_head(postgres_dsn):
-    upgrade_database(postgres_dsn, '20260908_0007')
+@pytest.mark.parametrize('revision', ['20260908_0007', '20260924_0037'])
+def test_known_forward_revision_upgrades_to_head(postgres_dsn, revision):
+    upgrade_database(postgres_dsn, revision)
     upgrade_database(postgres_dsn)
     with psycopg.connect(postgres_dsn) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD_REVISION

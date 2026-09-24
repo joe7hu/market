@@ -2,7 +2,7 @@
 
 Market uses a data-free PostgreSQL baseline (`20260907_0006`) under
 `migrations/baseline/`, followed by the explicit data-preserving revisions in
-`migrations/versions/`. The current head is `20260924_0037`. Existing databases
+`migrations/versions/`. The current head is `20260924_0038`. Existing databases
 must run the migration runner; updating a baseline snapshot cannot upgrade a
 nonempty database. See [storage-efficiency migration](storage-efficiency-migration.md)
 for decision/context normalization and verified NAS reclamation.

@@ -373,7 +373,7 @@ class StorageArchiveService:
             "cutoff": cutoff,
             "candidates": archived,
             "detached": detached,
-            "dry_run": not execute,
+            "dry_run": not (execute or export),
         }
 
     def compact_price_confirmations(

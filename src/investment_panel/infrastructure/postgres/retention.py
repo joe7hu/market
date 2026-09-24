@@ -56,8 +56,8 @@ class RetentionRepository:
         rerun safely; the scheduler records failures instead of hiding them.
         """
         reference = now or datetime.now(UTC)
-        if reference.tzinfo is None or min(option_days, analysis_days, publication_days, job_days) < 1:
-            raise ValueError("retention requires an aware time and positive windows")
+        if reference.tzinfo is None or min(option_days, publication_days, job_days) < 1 or analysis_days < 30:
+            raise ValueError("retention requires an aware time, positive windows, and an analysis window of at least 30 days")
         counts = self.prune_publications(now=reference, batch_size=publication_batch_size,
             dry_run=dry_run, vacuum_analyze=vacuum_analyze, publication_days=publication_days)
         if dry_run:

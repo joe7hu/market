@@ -318,6 +318,9 @@ def test_regular_retention_with_app_login_does_not_grant_run_cascade(storage):
     recent_run = analysis.start_run("storage-role-test", input_cutoff=now,
                 code_version="test", inputs={"revision": "recent"})
     analysis.finish_run(recent_run, "succeeded")
+    unarchived_run = analysis.start_run("storage-role-test", input_cutoff=old,
+                code_version="test", inputs={"revision": "unarchived"})
+    analysis.finish_run(unarchived_run, "succeeded")
     analysis.publish(runs[0], "today", {"daily_brief": [{"stable_key": "brief", "headline": "old"}]})
     analysis.publish(runs[1], "today", {"daily_brief": [{"stable_key": "brief", "headline": "current"}]})
     jobs = JobRepository(storage.runtime)
@@ -325,26 +328,42 @@ def test_regular_retention_with_app_login_does_not_grant_run_cascade(storage):
     jobs.finish(job["id"], "succeeded")
     with storage.runtime.transaction() as connection:
         assert connection.execute("SELECT current_user AS role").fetchone()["role"] == "market_app"
-        connection.execute("UPDATE analysis.run SET started_at = %s WHERE id = ANY(%s)", [old, runs])
+        connection.execute("UPDATE analysis.run SET started_at = %s WHERE id = ANY(%s)", [old, runs + [unarchived_run]])
         connection.execute("UPDATE app.publication SET created_at = %s, published_at = %s WHERE status = 'superseded'", [old, old])
         connection.execute("UPDATE ops.job_run SET started_at = %s, finished_at = %s WHERE id = %s", [old, old, job["id"]])
         assert not connection.execute("SELECT has_table_privilege('market_app', 'analysis.run', 'DELETE') AS allowed").fetchone()["allowed"]
         with pytest.raises(psycopg.errors.InsufficientPrivilege), connection.transaction():
             connection.execute("DELETE FROM analysis.run WHERE false")
+    with storage.runtime.transaction() as connection:
+        with pytest.raises(psycopg.Error, match="verified archive"), connection.transaction():
+            connection.execute(
+                "SELECT analysis.prune_empty_run_metadata(%s::uuid[], %s)", [[unarchived_run], old],
+            )
+        with pytest.raises(psycopg.Error, match="30 days"), connection.transaction():
+            connection.execute(
+                "SELECT analysis.prune_empty_run_metadata(%s::uuid[], %s)",
+                [[recent_run], now - timedelta(days=1)],
+            )
     counts = RetentionRepository(storage.runtime, archive_root=storage.archive_root).prune(now=now)
     assert counts["publications"] == 1
-    assert counts["analysis_runs"] == 2
+    assert counts["analysis_runs"] == 3
     assert counts["job_runs"] == 1
     with storage.runtime.transaction() as connection:
         retained = {row["id"] for row in connection.execute("SELECT id FROM analysis.run").fetchall()}
         assert retained == {runs[1], recent_run}
         assert connection.execute("SELECT count(*) AS n FROM analysis.run WHERE id = %s", [recent_run]).fetchone()["n"] == 1
-        assert connection.execute(
-            "SELECT analysis.prune_empty_run_metadata(%s::uuid[], %s) AS n", [[recent_run], old],
-        ).fetchone()["n"] == 0
         with pytest.raises(psycopg.Error, match="bounded"), connection.transaction():
             connection.execute("SELECT analysis.prune_empty_run_metadata(%s::uuid[], %s)", [[runs[1]] * 101, old])
     assert storage.verify()["failed"] == 0
+
+
+def test_run_metadata_retention_rejects_a_window_below_its_database_guard(storage):
+    from investment_panel.infrastructure.postgres.retention import RetentionRepository
+
+    with pytest.raises(ValueError, match="30 days"):
+        RetentionRepository(storage.runtime, archive_root=storage.archive_root).prune(
+            now=datetime.now(UTC), analysis_days=29, dry_run=True,
+        )
 
 
 def test_relative_value_pin_waits_for_inflight_publication(storage, monkeypatch):

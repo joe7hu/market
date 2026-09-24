@@ -257,6 +257,10 @@ def test_option_plan_does_not_write_and_scratch_uses_configured_dsn(storage, mon
     plan = storage.archive_options(now=datetime(2028, 1, 1, tzinfo=UTC))
     assert plan["status"] == "dry_run" and plan["candidates"]
     assert archive_call.call_count == 0
+    monkeypatch.setattr(storage, "_archive_option_partition", lambda _: {"verification_status": "verified", "manifest_id": 1})
+    exported = storage.archive_options(now=datetime(2028, 1, 1, tzinfo=UTC), export=True)
+    assert exported["status"] == "succeeded"
+    assert exported["dry_run"] is False
     path = tmp_path / "options.dump"
     path.write_bytes(b"test dump")
     calls = []

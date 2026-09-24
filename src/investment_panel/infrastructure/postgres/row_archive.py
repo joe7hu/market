@@ -41,12 +41,19 @@ class RowArchive:
         size = 2
 
         def flush() -> None:
+            metadata = {"archive_contract": "postgres-row-pack.v1", "columns": columns,
+                        "source_database": dict(identity)}
+            if relation == "analysis.run":
+                metadata["source_row_ids"] = [json.loads(entry["row_json"])["id"] for entry in pack]
             artifact = self.service._write_json_gzip(
                 self.kind, pack, source_relation=relation, row_count=len(pack),
-                metadata={"archive_contract": "postgres-row-pack.v1", "columns": columns,
-                          "source_database": dict(identity)},
+                metadata=metadata,
             )
             manifest_id = int(artifact["manifest_id"])
+            if relation == "analysis.run":
+                # Refresh metadata on content-addressed retries created before
+                # run-level archive references were recorded.
+                self.service._update_manifest_metadata(manifest_id, {"source_row_ids": metadata["source_row_ids"]})
             if self.service.verify(manifest_id=manifest_id)["verified"] != 1:
                 raise ValueError("row archive verification failed; source rows retained")
             ids.append(manifest_id)
