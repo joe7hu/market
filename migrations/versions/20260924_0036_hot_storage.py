@@ -55,6 +55,35 @@ def upgrade() -> None:
         GRANT DELETE ON app.publication, app.publication_bundle,
                         app.publication_payload, ops.job_run TO market_app;
 
+        CREATE FUNCTION analysis.empty_run_metadata_candidates(p_before timestamptz)
+        RETURNS TABLE(id uuid, bytes integer) LANGUAGE plpgsql SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp AS $$
+        DECLARE ref record; guards text := '';
+        BEGIN
+            FOR ref IN
+                SELECT n.nspname, c.relname, a.attname, cardinality(f.conkey) AS key_count
+                FROM pg_constraint f JOIN pg_class c ON c.oid = f.conrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_attribute a ON a.attrelid = f.conrelid AND a.attnum = f.conkey[1]
+                WHERE f.contype = 'f' AND f.confrelid = 'analysis.run'::regclass
+            LOOP
+                IF ref.key_count <> 1 THEN
+                    RAISE EXCEPTION 'unreviewed composite analysis-run reference; metadata retained';
+                END IF;
+                guards := guards || format(
+                    ' AND NOT EXISTS (SELECT 1 FROM %I.%I child WHERE child.%I = run.id)',
+                    ref.nspname, ref.relname, ref.attname);
+            END LOOP;
+            -- Only empty parent IDs/sizes are exposed, never protected child data.
+            RETURN QUERY EXECUTE
+                'SELECT run.id, octet_length(to_jsonb(run)::text) FROM analysis.run run '
+                || 'WHERE run.started_at < $1' || guards
+                || ' ORDER BY run.started_at, run.id LIMIT 100 FOR UPDATE OF run SKIP LOCKED'
+                USING p_before;
+        END $$;
+        REVOKE ALL ON FUNCTION analysis.empty_run_metadata_candidates(timestamptz) FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION analysis.empty_run_metadata_candidates(timestamptz) TO market_app;
+
         CREATE FUNCTION analysis.prune_empty_run_metadata(p_ids uuid[])
         RETURNS integer LANGUAGE plpgsql SECURITY DEFINER
         SET search_path = pg_catalog, pg_temp AS $$
@@ -182,6 +211,7 @@ def downgrade() -> None:
         raise RuntimeError("restore inline decision inputs before downgrading hot storage")
     op.execute(f"CREATE OR REPLACE VIEW analysis.ticker_decision_read AS SELECT {_OLD_COLUMNS} FROM analysis.ticker_decision d")
     op.execute("""
+        DROP FUNCTION analysis.empty_run_metadata_candidates(timestamptz);
         DROP FUNCTION analysis.prune_empty_run_metadata(uuid[]);
         REVOKE UPDATE, DELETE ON analysis.option_relative_value FROM market_app;
         REVOKE DELETE ON app.publication, app.publication_bundle,

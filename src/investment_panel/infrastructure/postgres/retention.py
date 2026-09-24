@@ -87,24 +87,12 @@ class RetentionRepository:
         """Archive empty metadata only. Discover *all* incoming FKs, not a list
         of selected protections that accidentally permits CASCADE elsewhere.
         """
-        from psycopg import sql
         with self.runtime.transaction(MAINTENANCE_PROFILE) as connection:
-            references = connection.execute("""
-                SELECT n.nspname, c.relname, a.attname,
-                       cardinality(f.conkey) AS key_count
-                FROM pg_constraint f JOIN pg_class c ON c.oid = f.conrelid
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                JOIN pg_attribute a ON a.attrelid = f.conrelid AND a.attnum = f.conkey[1]
-                WHERE f.contype = 'f' AND f.confrelid = 'analysis.run'::regclass
-            """).fetchall()
-            if any(row["key_count"] != 1 for row in references):
-                raise ValueError("unreviewed composite analysis-run reference; metadata retained")
-            guards = [sql.SQL("NOT EXISTS (SELECT 1 FROM {} child WHERE child.{} = run.id)").format(
-                sql.Identifier(row["nspname"], row["relname"]), sql.Identifier(row["attname"])) for row in references]
-            query = sql.SQL("""SELECT run.id, octet_length(to_jsonb(run)::text) AS bytes FROM analysis.run run
-                WHERE run.started_at < %s AND {} ORDER BY run.started_at, run.id
-                LIMIT 100 FOR UPDATE OF run SKIP LOCKED""").format(sql.SQL(" AND ").join(guards) if guards else sql.SQL("true"))
-            rows = connection.execute(query, [before]).fetchall()
+            # Some child evidence is deliberately unreadable by market_app.
+            # The fixed-search-path helper exposes only empty parent IDs/sizes.
+            rows = connection.execute(
+                "SELECT * FROM analysis.empty_run_metadata_candidates(%s)", [before],
+            ).fetchall()
             if not rows:
                 return 0
             selected, consumed = [], 0
