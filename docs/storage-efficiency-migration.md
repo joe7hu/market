@@ -49,10 +49,12 @@ Publication exports are one original row per content-addressed JSON/gzip
 object, including publication, bundle, bundle-item, legacy-item, payload and
 analysis-run records. Sharing is retained, rather than exporting an entire
 large bundle into one in-memory object. Scheduled production retention is wired
-to the configured NAS directory. Direct `RetentionRepository` callers without
-an archive directory retain publications/payloads instead of deleting them;
-`MARKET_STORAGE_ARCHIVE_DIR` can configure those standalone callers. Default
-publication deletion batches are reduced to 25 generations.
+to the configured NAS directory and processes one publication generation per
+pass to reduce timeout risk. A single very large generation or slow NAS
+operation can still approach the launcher timeout. Direct `RetentionRepository`
+callers without an archive directory retain publications/payloads instead of
+deleting them; `MARKET_STORAGE_ARCHIVE_DIR` can configure those standalone
+callers.
 
 ## Stage 1 — stop growth and create a recoverable starting point
 

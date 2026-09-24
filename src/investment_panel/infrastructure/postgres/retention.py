@@ -47,7 +47,7 @@ class RetentionRepository:
     def prune(
         self, *, now: datetime | None = None, option_days: int = 7,
         analysis_days: int = 30, publication_days: int = 7, job_days: int = 30,
-        publication_batch_size: int = 25, dry_run: bool = False,
+        publication_batch_size: int = 1, dry_run: bool = False,
         vacuum_analyze: bool = False,
     ) -> dict[str, int]:
         """Small independently committed batches; no derived-history CASCADE.

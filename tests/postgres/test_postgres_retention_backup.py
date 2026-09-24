@@ -195,6 +195,7 @@ def test_publication_retention_is_bounded_dry_run_and_repeatable(postgres_dsn: s
         dry_run = retention.prune(now=reference, dry_run=True)
         assert dry_run == {"publications": 7, "publication_dry_run": 7}
 
+        scheduled = retention.prune(now=reference)
         first = retention.prune(now=reference, publication_batch_size=3)
         second = retention.prune(now=reference, publication_batch_size=3)
         third = retention.prune(now=reference, publication_batch_size=3)
@@ -202,9 +203,10 @@ def test_publication_retention_is_bounded_dry_run_and_repeatable(postgres_dsn: s
     finally:
         runtime.close()
 
+    assert scheduled["publications"] == 1
     assert first["publications"] == 3
     assert second["publications"] == 3
-    assert third["publications"] == 1
+    assert third["publications"] == 0
     assert fourth["publications"] == 0
     with closing(psycopg.connect(postgres_dsn)) as connection:
         market_superseded = connection.execute(
