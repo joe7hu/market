@@ -230,8 +230,8 @@ def test_relative_value_cleanup_skips_protected_prefix_and_keeps_recent(storage)
         generation = connection.execute("""INSERT INTO raw.option_capture_generation
             (snapshot_id, ingest_run_id, generation, capture_state) VALUES (%s, %s, 1, 'complete') RETURNING id""", [snapshot["id"], snapshot["ingest_run_id"]]).fetchone()["id"]
         contract_id = connection.execute("SELECT contract_id FROM raw.option_quote LIMIT 1").fetchone()["contract_id"]
-        run = connection.execute("""INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash)
-            VALUES ('storage-test', %s, 'test', %s) RETURNING id""", [now, "c" * 64]).fetchone()["id"]
+        run = connection.execute("""INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash, started_at, status)
+            VALUES ('storage-test', %s, 'test', %s, now(), 'succeeded') RETURNING id""", [now, "c" * 64]).fetchone()["id"]
         ids = []
         for i, (classification, age) in enumerate((("historical_static_arbitrage_candidate", 90), ("relative_cheap", 90), ("rejected", 90), ("relative_rich", 1))):
             ids.append(connection.execute("""INSERT INTO analysis.option_relative_value
