@@ -487,26 +487,16 @@ class TickerDecisionRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                WITH current_candidates AS (
-                    SELECT instrument.symbol AS ticker, decision.contract_version,
-                           decision.as_of, decision.decision_revision,
-                           decision.tactical, decision.fundamental, decision.capital_action,
-                           decision.resolution, decision.policy_version,
-                           decision.opportunity_episode_id, decision.opportunity_cutoff,
-                           decision.opportunity_episode, decision.risk_policy, decision.expressions,
-                           decision.selected_expression, decision.data_requests,
-                           decision.learning_history, decision.input_manifest,
-                           decision.market_state_publication_id::text,
-                           decision.market_state_snapshot, decision.portfolio_impacts,
-                           decision.risk_policy_snapshot,
-                           decision.published_at, decision.created_at, decision.id,
+                WITH current_candidates AS MATERIALIZED (
+                    SELECT instrument.symbol AS ticker, decision.id,
+                           decision.as_of, decision.published_at, decision.created_at,
                            count(*) OVER (
                                PARTITION BY decision.instrument_id, decision.as_of, decision.published_at
                            ) AS authority_count,
                            count(*) OVER (
                                PARTITION BY decision.opportunity_episode_id
                            ) AS opportunity_authority_count
-                    FROM analysis.ticker_decision_read decision
+                    FROM analysis.ticker_decision decision
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                     WHERE decision.status = 'published'
                       AND decision.contract_version = 'ticker-decision.v1'
@@ -523,23 +513,32 @@ class TickerDecisionRepository:
                       AND jsonb_typeof(decision.risk_policy) = 'object'
                       AND jsonb_typeof(decision.expressions) = 'object'
                       AND jsonb_typeof(decision.input_manifest) = 'object'
+                ), selected_decisions AS MATERIALIZED (
+                    SELECT DISTINCT ON (ticker) ticker, id
+                    FROM current_candidates
+                    WHERE authority_count = 1
+                      AND opportunity_authority_count = 1
+                      AND (%s::text IS NULL OR ticker = %s)
+                    ORDER BY ticker, as_of DESC, published_at DESC, created_at DESC, id DESC
                 )
-                SELECT DISTINCT ON (ticker) ticker, contract_version,
-                       as_of, decision_revision,
-                       tactical, fundamental, capital_action,
-                       resolution, policy_version,
-                       opportunity_episode_id, opportunity_cutoff,
-                       opportunity_episode, risk_policy, expressions,
-                       selected_expression, data_requests,
-                       learning_history, input_manifest,
-                       market_state_publication_id,
-                       market_state_snapshot, portfolio_impacts,
-                       risk_policy_snapshot, published_at
-                FROM current_candidates
-                WHERE authority_count = 1
-                  AND opportunity_authority_count = 1
-                  AND (%s::text IS NULL OR ticker = %s)
-                ORDER BY ticker, as_of DESC, published_at DESC, created_at DESC, id DESC
+                SELECT selected.ticker, selected_decision.contract_version,
+                       selected_decision.as_of, selected_decision.decision_revision,
+                       selected_decision.tactical, selected_decision.fundamental,
+                       selected_decision.capital_action, selected_decision.resolution,
+                       selected_decision.policy_version, selected_decision.opportunity_episode_id,
+                       selected_decision.opportunity_cutoff, selected_decision.opportunity_episode,
+                       selected_decision.risk_policy, selected_decision.expressions,
+                       selected_decision.selected_expression, selected_decision.data_requests,
+                       selected_decision.learning_history, selected_decision.input_manifest,
+                       selected_decision.market_state_publication_id::text,
+                       selected_decision.market_state_snapshot, selected_decision.portfolio_impacts,
+                       selected_decision.risk_policy_snapshot, selected_decision.published_at
+                FROM selected_decisions selected
+                JOIN analysis.ticker_decision_read selected_decision
+                  ON selected_decision.id = selected.id
+                ORDER BY selected.ticker, selected_decision.as_of DESC,
+                         selected_decision.published_at DESC, selected_decision.created_at DESC,
+                         selected_decision.id DESC
                 """,
                 [reference, reference, ticker, ticker],
             ).fetchall()

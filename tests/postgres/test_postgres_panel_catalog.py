@@ -829,6 +829,33 @@ def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
     assert profiles == [panel_models.TODAY_AUTHORITY_PROFILE] * 2
 
 
+def test_latest_decision_expands_only_the_selected_input_manifest():
+    queries = []
+
+    class Cursor:
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def execute(self, query, _parameters):
+            queries.append(" ".join(query.split()))
+            return Cursor()
+
+    class Runtime:
+        def read(self):
+            return nullcontext(Connection())
+
+    assert TickerDecisionRepository(Runtime()).latest("AAPL") is None
+
+    query = queries[0]
+    assert "FROM analysis.ticker_decision decision" in query
+    assert "JOIN analysis.ticker_decision_read selected_decision" in query
+    assert query.count("analysis.ticker_decision_read") == 1
+    assert query.index("WHERE authority_count = 1") < query.index(
+        "JOIN analysis.ticker_decision_read selected_decision"
+    )
+
+
 def test_opportunities_fallback_accepts_production_rank_projection(migrated_postgres_dsn):
     from investment_panel.application.read_models.loaders import load_opportunities_scope_data
     from investment_panel.domain.decision import OpportunityRank
