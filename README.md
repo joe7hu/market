@@ -257,3 +257,11 @@ See [the September 21 repair and deployment guide](docs/decision-loop-repair.md)
 for canonical capital decisions, monitored-scope diagnostics, quote-backed research
 experiment P&L, and independent forecast settlement. Apply migration
 `20260921_0033` before starting this revision.
+
+## Hot and cold storage
+
+PostgreSQL serves current state and point-in-time decision evidence; verified NAS
+row packs hold eligible raw/derived history. Hourly bounded retention, lossless
+decision-input sharing, restore contracts and the Mac deployment sequence are in
+[Hot-storage lifecycle](docs/hot-storage-lifecycle.md). Logical cleanup does not
+by itself shrink database files.

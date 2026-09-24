@@ -53,7 +53,9 @@ STORAGE_SIZE_QUERY = """
         SELECT relation, to_regclass(relation) AS oid
         FROM unnest(ARRAY[
             'analysis.ticker_input_manifest', 'analysis.ticker_input_manifest_legacy',
-            'analysis.ticker_decision', 'analysis.decision_context',
+            'analysis.ticker_decision', 'analysis.decision_context', 'analysis.decision_input_payload',
+            'analysis.option_decision', 'analysis.decision', 'analysis.decision_evidence',
+            'analysis.option_feature', 'app.publication_bundle_item',
             'app.publication_payload', 'app.publication_item',
             'raw.option_quote', 'raw.fundamental_observation',
             'raw.quote_confirmation', 'raw.price_bar_confirmation',
@@ -113,6 +115,7 @@ class StorageArchiveService:
             "archive_root": str(self.archive_root),
             "local_free_bytes": local.free,
             "local_capacity_scope": "CLI working-directory filesystem, not necessarily PostgreSQL storage",
+            "database_volume": database_volume(),
             "nas_free_bytes": nas.free if nas else None,
             "nas_free_reserve_bytes": ARCHIVE_FREE_RESERVE_BYTES,
             "decision_manifest_chunk_limit_bytes": 64 * 1024**2,
@@ -755,6 +758,7 @@ class StorageArchiveService:
         return {
             "local": {"path": str(Path.cwd()), "free_bytes": local.free, "total_bytes": local.total,
                       "scope": "application_working_directory_not_database_measurement"},
+            "database_volume": database_volume(),
             "nas": None if nas is None else {"path": str(self.archive_root), "free_bytes": nas.free, "total_bytes": nas.total},
             "table_sizes": [dict(row) for row in table_rows],
             "forecast_30d_bytes": None,
@@ -762,10 +766,12 @@ class StorageArchiveService:
             "archive_verification_failures": int(failures["count"]),
             "active_reclamation": [dict(row) for row in active],
             "full_history_collection_allowed": storage_capacity(path=Path.cwd()).history_collection_allowed,
-            "archive_lag_seconds": archive_lag_seconds,
+            "archive_lag_seconds": None,
+            "archive_lag_status": "use_verified_manifests_and_hot_retention_checkpoints",
+            "oldest_partition_age_seconds": archive_lag_seconds,
             "hot_partition_age_days": hot_age_days,
             "retention_backlog": {**dict(retention), "option_archive_candidates": len(archive_candidates)},
-            "projected_free_space_bytes": local.free,
+            "projected_free_space_bytes": None,
         }
 
     def _setting_json(self, key: str) -> dict[str, Any]:
@@ -1253,3 +1259,18 @@ def _complete_trading_day_cutoff(reference: datetime, trading_days: int) -> date
 
 def _json_value(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def database_volume() -> dict[str, Any]:
+    """Only the operator can map local/container PGDATA onto its real volume."""
+    configured = os.environ.get("MARKET_STORAGE_DATABASE_PATH", "").strip()
+    if not configured:
+        return {"status": "unconfigured", "path": None, "free_bytes": None,
+                "action": "set MARKET_STORAGE_DATABASE_PATH to the actual PostgreSQL volume"}
+    try:
+        if not Path(configured).is_dir():
+            raise OSError("PostgreSQL volume path is not a mounted directory")
+        usage = shutil.disk_usage(configured)
+    except OSError as exc:
+        return {"status": "unavailable", "path": configured, "free_bytes": None, "error": str(exc)}
+    return {"status": "measured", "path": configured, "free_bytes": usage.free, "total_bytes": usage.total}

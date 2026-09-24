@@ -147,7 +147,7 @@ def research_summary(runtime: DatabaseRuntime, config: AppConfig) -> dict[str, A
                     'next decision catalyst or confirmed price update'),
                     decision.input_manifest #>> '{inputs,theses,0,thesis_json,catalysts,0,title}') AS catalyst,
                 decision.resolution->'blockers' AS blockers
-            FROM chosen JOIN analysis.ticker_decision decision ON decision.id = chosen.id
+            FROM chosen JOIN analysis.ticker_decision_read decision ON decision.id = chosen.id
             ORDER BY chosen.owned DESC,
                 CASE WHEN chosen.research_rank ~ '^[1-9][0-9]*$' AND pg_input_is_valid(chosen.research_rank, 'integer') THEN chosen.research_rank::integer END NULLS LAST,
                 chosen.ticker

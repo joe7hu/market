@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-import logging
 import os
 from pathlib import Path
 import re
@@ -14,16 +13,15 @@ import psycopg
 from investment_panel.domain.decision import is_us_market_day
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.infrastructure.postgres.publication_archive import PublicationArchive
-
-
-logger = logging.getLogger(__name__)
+from investment_panel.infrastructure.postgres.hot_retention import HotRetention, MAINTENANCE_PROFILE
+from investment_panel.infrastructure.postgres.row_archive import MAX_PACK_BYTES, RowArchive
 
 
 OPTION_PARTITION_RE = re.compile(r"^option_quote_(\d{4})(\d{2})(\d{2})?$")
 ROLLING_PUBLICATION_SCOPES = ("today", "options-radar", "options-decision-system")
 MARKET_PUBLICATION_SUPERSEDED_LIMIT = 48
-ROLLING_PUBLICATION_TRADING_DAYS = 30
-PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE = 10_000
+ROLLING_PUBLICATION_TRADING_DAYS = 7
+PUBLICATION_PAYLOAD_CLEANUP_BATCH_SIZE = 500
 
 
 class RetentionRepository:
@@ -38,7 +36,7 @@ class RetentionRepository:
             raise ValueError("publication archive batch_size must be between 1 and 1000")
         reference = datetime.now(UTC)
         with self.runtime.transaction(JOB_PROFILE) as connection:
-            ids = _publication_candidates(connection, standard_cutoff=reference - timedelta(days=90),
+            ids = _publication_candidates(connection, standard_cutoff=reference - timedelta(days=7),
                 rolling_cutoff=_trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS), limit=batch_size)
             if execute and ids:
                 if self.archive is None:
@@ -47,276 +45,90 @@ class RetentionRepository:
             return {"phase": "publications", "candidates": len(ids), "deleted": 0, "dry_run": not execute}
 
     def prune(
-        self,
-        *,
-        now: datetime | None = None,
-        option_days: int = 7,
-        analysis_days: int = 30,
-        publication_days: int = 90,
-        job_days: int = 30,
-        publication_batch_size: int = 25,
-        dry_run: bool = False,
+        self, *, now: datetime | None = None, option_days: int = 7,
+        analysis_days: int = 30, publication_days: int = 7, job_days: int = 30,
+        publication_batch_size: int = 25, dry_run: bool = False,
         vacuum_analyze: bool = False,
     ) -> dict[str, int]:
+        """Small independently committed batches; no derived-history CASCADE.
+
+        Missing NAS never authorizes source deletion. A partial pass can be
+        rerun safely; the scheduler records failures instead of hiding them.
+        """
         reference = now or datetime.now(UTC)
-        if reference.tzinfo is None:
-            raise ValueError("retention reference time must be timezone-aware")
-        if publication_batch_size < 1:
-            raise ValueError("publication batch size must be positive")
-        cutoffs = {
-            "option": reference - timedelta(days=option_days),
-            "history": reference - timedelta(days=730),
-            "event_strip": reference - timedelta(days=365),
-            "history_payload": reference - timedelta(days=90),
-            "event_payload": reference - timedelta(days=30),
-            "event_derived": reference - timedelta(days=730),
-            "analysis": reference - timedelta(days=analysis_days),
-            "publication": reference - timedelta(days=publication_days),
-            "job": reference - timedelta(days=job_days),
-        }
-        counts: dict[str, int] = {}
-        rolling_publication_cutoff = _trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS)
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            publication_candidates = _publication_candidates(
-                connection,
-                standard_cutoff=cutoffs["publication"],
-                rolling_cutoff=rolling_publication_cutoff,
-                limit=None if dry_run else publication_batch_size,
-            )
-            counts["publications"] = len(publication_candidates)
-            if not dry_run and publication_candidates:
-                if self.archive is None:
-                    counts["publication_archive_required"] = len(publication_candidates)
-                    counts["publications"] = 0
-                else:
-                    publication_candidates = self.archive.publications(connection, publication_candidates)
-                    counts["publications"] = len(publication_candidates)
-                    counts.update(_delete_publications_and_orphaned_content(connection, publication_candidates))
-            if dry_run:
-                counts["publication_dry_run"] = len(publication_candidates)
-                return counts
-            orphan_payloads = _delete_orphaned_payload_batch(connection, self.archive)
-            if orphan_payloads:
-                counts["publication_payloads"] = counts.get("publication_payloads", 0) + orphan_payloads
-            protection = connection.execute(
-                """
-                SELECT
-                    count(*) FILTER (WHERE NOT EXISTS (
-                        SELECT 1 FROM app.publication publication
-                        WHERE publication.analysis_run_id = run.id
-                    ) AND NOT EXISTS (
-                        SELECT 1
-                        FROM analysis.decision decision
-                        JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
-                        WHERE decision.run_id = run.id
-                    ) AND NOT EXISTS (
-                        SELECT 1
-                        FROM analysis.decision decision
-                        JOIN analysis.shadow_trade trade ON trade.decision_id = decision.id
-                        WHERE decision.run_id = run.id
-                    ) AND NOT EXISTS (
-                        SELECT 1
-                        FROM analysis.decision decision
-                        JOIN app.trade_journal journal ON journal.decision_id = decision.id
-                        WHERE decision.run_id = run.id
-                    ) AND NOT EXISTS (
-                        SELECT 1 FROM analysis.event_study_feature feature
-                        WHERE feature.run_id = run.id
-                    ) AND NOT EXISTS (
-                        SELECT 1
-                        FROM analysis.option_relative_value relative_value
-                        JOIN analysis.option_relative_value_verification verification
-                          ON verification.relative_value_id = relative_value.id
-                        WHERE relative_value.analysis_run_id = run.id
-                    ) AND NOT EXISTS (
-                        SELECT 1 FROM analysis.strategy_evaluation evaluation
-                        WHERE evaluation.run_id = run.id
-                    )) AS eligible,
-                    count(*) FILTER (WHERE EXISTS (
-                        SELECT 1 FROM app.publication publication
-                        WHERE publication.analysis_run_id = run.id
-                    )) AS protected_publication,
-                    count(*) FILTER (WHERE EXISTS (
-                        SELECT 1
-                        FROM analysis.decision decision
-                        JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
-                        WHERE decision.run_id = run.id
-                    )) AS protected_outcome,
-                    count(*) FILTER (WHERE EXISTS (
-                        SELECT 1
-                        FROM analysis.decision decision
-                        JOIN analysis.shadow_trade trade ON trade.decision_id = decision.id
-                        WHERE decision.run_id = run.id
-                    )) AS protected_shadow_trade,
-                    count(*) FILTER (WHERE EXISTS (
-                        SELECT 1
-                        FROM analysis.decision decision
-                        JOIN app.trade_journal journal ON journal.decision_id = decision.id
-                        WHERE decision.run_id = run.id
-                    )) AS protected_trade_journal,
-                    count(*) FILTER (WHERE EXISTS (
-                        SELECT 1 FROM analysis.event_study_feature feature
-                        WHERE feature.run_id = run.id
-                    )) AS protected_event_study,
-                    count(*) FILTER (WHERE EXISTS (
-                        SELECT 1
-                        FROM analysis.option_relative_value relative_value
-                        JOIN analysis.option_relative_value_verification verification
-                          ON verification.relative_value_id = relative_value.id
-                        WHERE relative_value.analysis_run_id = run.id
-                    )) AS protected_verification
-                FROM analysis.run run
-                WHERE run.started_at < %s
-                """,
-                [cutoffs["analysis"]],
-            ).fetchone()
-            logger.info(
-                "analysis retention protection eligible=%s publication=%s outcome=%s "
-                "shadow_trade=%s trade_journal=%s event_study=%s verification=%s",
-                int(protection["eligible"] or 0),
-                int(protection["protected_publication"] or 0),
-                int(protection["protected_outcome"] or 0),
-                int(protection["protected_shadow_trade"] or 0),
-                int(protection["protected_trade_journal"] or 0),
-                int(protection["protected_event_study"] or 0),
-                int(protection["protected_verification"] or 0),
-            )
-            counts["analysis_runs"] = connection.execute(
-                """
-                WITH eligible AS (
-                    SELECT run.id
-                    FROM analysis.run run
-                    WHERE run.started_at < %s
-                      AND NOT EXISTS (SELECT 1 FROM app.publication publication WHERE publication.analysis_run_id = run.id)
-                      AND NOT EXISTS (
-                          SELECT 1 FROM analysis.decision decision
-                          JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
-                          WHERE decision.run_id = run.id
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM analysis.decision decision
-                          JOIN analysis.shadow_trade trade ON trade.decision_id = decision.id
-                          WHERE decision.run_id = run.id
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM analysis.decision decision
-                          JOIN app.trade_journal journal ON journal.decision_id = decision.id
-                          WHERE decision.run_id = run.id
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM analysis.event_study_feature feature
-                          WHERE feature.run_id = run.id
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM analysis.option_relative_value relative_value
-                          JOIN analysis.option_relative_value_verification verification
-                            ON verification.relative_value_id = relative_value.id
-                          WHERE relative_value.analysis_run_id = run.id
-                      )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM analysis.strategy_evaluation evaluation
-                          WHERE evaluation.run_id = run.id
-                      )
-                    ORDER BY run.started_at, run.id
-                    LIMIT 1000
-                )
-                DELETE FROM analysis.run run
-                USING eligible
-                WHERE run.id = eligible.id
-                """,
-                [cutoffs["analysis"]],
-            ).rowcount
-            counts["option_quotes"] = connection.execute(
-                """
-                DELETE FROM raw.option_quote quote
-                USING raw.option_snapshot snapshot
-                WHERE snapshot.id = quote.snapshot_id
-                  AND quote.observed_at < CASE
-                        WHEN snapshot.collection_profile = 'history_full' THEN %s
-                        WHEN snapshot.collection_profile = 'event_strip' THEN %s
-                        ELSE %s END
-                  AND NOT EXISTS (
-                      SELECT 1 FROM analysis.option_feature feature
-                      WHERE feature.snapshot_id = quote.snapshot_id
-                        AND feature.contract_id = quote.contract_id
-                        AND feature.quote_observed_at = quote.observed_at
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM analysis.option_decision decision
-                      WHERE decision.snapshot_id = quote.snapshot_id
-                        AND decision.contract_id = quote.contract_id
-                        AND decision.quote_observed_at = quote.observed_at
-                  )
-                """,
-                [cutoffs["history"], cutoffs["event_strip"], cutoffs["option"]],
-            ).rowcount
-            provider_payloads = connection.execute(
-                """
-                UPDATE raw.option_quote quote
-                SET provider_payload = '{}'::jsonb
-                FROM raw.option_snapshot snapshot
-                WHERE snapshot.id = quote.snapshot_id
-                  AND quote.provider_payload <> '{}'::jsonb
-                  AND quote.observed_at < CASE
-                        WHEN snapshot.collection_profile = 'history_full' THEN %s
-                        WHEN snapshot.collection_profile = 'event_strip' THEN %s
-                        ELSE %s END
-                """,
-                [cutoffs["history_payload"], cutoffs["event_payload"], cutoffs["option"]],
-            ).rowcount
-            if provider_payloads:
-                counts["option_provider_payloads"] = provider_payloads
-            counts["option_snapshots"] = connection.execute(
-                """
-                DELETE FROM raw.option_snapshot snapshot
-                WHERE snapshot.observed_at < CASE
-                        WHEN snapshot.collection_profile = 'history_full' THEN %s
-                        WHEN snapshot.collection_profile = 'event_strip' THEN %s
-                        ELSE %s END
-                  AND NOT EXISTS (SELECT 1 FROM raw.option_quote quote WHERE quote.snapshot_id = snapshot.id)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM analysis.option_feature feature
-                      WHERE feature.snapshot_id = snapshot.id
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM analysis.option_decision decision
-                      WHERE decision.snapshot_id = snapshot.id
-                  )
-                """,
-                [cutoffs["history"], cutoffs["event_strip"], cutoffs["option"]],
-            ).rowcount
-            closed_events = connection.execute(
-                """
-                DELETE FROM analysis.option_event event
-                WHERE event.status = 'closed'
-                  AND event.closed_at < %s
-                """,
-                [cutoffs["event_derived"]],
-            ).rowcount
-            if closed_events:
-                counts["closed_option_events"] = closed_events
-            counts["job_runs"] = connection.execute(
-                """
-                DELETE FROM ops.job_run
-                WHERE (status IN ('succeeded', 'skipped') AND started_at < %s)
-                   OR (status IN ('partial', 'failed') AND started_at < %s)
-                """,
-                [reference - timedelta(days=7), reference - timedelta(days=30)],
-            ).rowcount
-            failed_staging = _prune_failed_confirmation_staging(connection, reference - timedelta(days=30))
-            if failed_staging:
-                counts["failed_confirmation_staging"] = failed_staging
-        counts["option_partitions"] = self.drop_empty_option_partitions(before=cutoffs["option"])
-        if vacuum_analyze and counts["publications"]:
-            counts["publication_vacuum_tables"] = self.vacuum_analyze_publications()
+        if reference.tzinfo is None or min(option_days, analysis_days, publication_days, job_days) < 1:
+            raise ValueError("retention requires an aware time and positive windows")
+        counts = self.prune_publications(now=reference, batch_size=publication_batch_size,
+            dry_run=dry_run, vacuum_analyze=vacuum_analyze, publication_days=publication_days)
+        if dry_run:
+            return counts
+        counts.update({"analysis_runs": 0, "option_quotes": 0, "option_snapshots": 0})
+        if self.archive is not None:
+            hot = HotRetention(self.archive.service).run(now=reference, execute=True,
+                max_batches=20, option_days=option_days, analysis_days=analysis_days)
+            for name in ("option_quotes", "option_provider_payloads", "relative_values"):
+                if hot[name]:
+                    counts[name] = hot[name]
+            counts["analysis_runs"] = self._prune_empty_runs(reference - timedelta(days=analysis_days))
+        else:
+            counts["hot_archive_required"] = 1
+        with self.runtime.transaction(MAINTENANCE_PROFILE) as connection:
+            counts["job_runs"] = connection.execute("""
+                WITH expired AS (SELECT id FROM ops.job_run
+                    WHERE (status IN ('succeeded', 'skipped') AND started_at < %s)
+                       OR (status IN ('partial', 'failed') AND started_at < %s)
+                    ORDER BY started_at, id LIMIT 1000 FOR UPDATE SKIP LOCKED)
+                DELETE FROM ops.job_run job USING expired WHERE job.id = expired.id
+            """, [reference - timedelta(days=min(7, job_days)), reference - timedelta(days=job_days)]).rowcount
+        counts["option_partitions"] = self.drop_empty_option_partitions(before=reference - timedelta(days=option_days))
         return counts
+
+    def _prune_empty_runs(self, before: datetime) -> int:
+        """Archive empty metadata only. Discover *all* incoming FKs, not a list
+        of selected protections that accidentally permits CASCADE elsewhere.
+        """
+        from psycopg import sql
+        with self.runtime.transaction(MAINTENANCE_PROFILE) as connection:
+            references = connection.execute("""
+                SELECT n.nspname, c.relname, a.attname,
+                       cardinality(f.conkey) AS key_count
+                FROM pg_constraint f JOIN pg_class c ON c.oid = f.conrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_attribute a ON a.attrelid = f.conrelid AND a.attnum = f.conkey[1]
+                WHERE f.contype = 'f' AND f.confrelid = 'analysis.run'::regclass
+            """).fetchall()
+            if any(row["key_count"] != 1 for row in references):
+                raise ValueError("unreviewed composite analysis-run reference; metadata retained")
+            guards = [sql.SQL("NOT EXISTS (SELECT 1 FROM {} child WHERE child.{} = run.id)").format(
+                sql.Identifier(row["nspname"], row["relname"]), sql.Identifier(row["attname"])) for row in references]
+            query = sql.SQL("""SELECT run.id, octet_length(to_jsonb(run)::text) AS bytes FROM analysis.run run
+                WHERE run.started_at < %s AND {} ORDER BY run.started_at, run.id
+                LIMIT 100 FOR UPDATE OF run SKIP LOCKED""").format(sql.SQL(" AND ").join(guards) if guards else sql.SQL("true"))
+            rows = connection.execute(query, [before]).fetchall()
+            if not rows:
+                return 0
+            selected, consumed = [], 0
+            for row in rows:
+                if consumed + int(row["bytes"]) > MAX_PACK_BYTES // 2:
+                    if not selected:
+                        raise ValueError("empty run metadata exceeds bounded archive budget")
+                    break
+                selected.append(row["id"])
+                consumed += int(row["bytes"])
+            records = connection.execute("SELECT to_jsonb(run)::text AS row_json FROM analysis.run run WHERE id = ANY(%s) ORDER BY id", [selected]).fetchall()
+            RowArchive(self.archive.service).write(connection, "analysis.run", records)
+            # Row locks exclude concurrent insertion of FK references. Still
+            # recheck on a fresh statement after waiting for these locks.
+            delete = sql.SQL("DELETE FROM analysis.run run WHERE id = ANY(%s) AND {}").format(
+                sql.SQL(" AND ").join(guards) if guards else sql.SQL("true"))
+            return connection.execute(delete, [selected]).rowcount
 
     def prune_publications(
         self,
         *,
         now: datetime | None = None,
         batch_size: int = 25,
+        publication_days: int = 7,
         dry_run: bool = False,
         vacuum_analyze: bool = False,
     ) -> dict[str, int]:
@@ -330,13 +142,13 @@ class RetentionRepository:
         reference = now or datetime.now(UTC)
         if reference.tzinfo is None:
             raise ValueError("retention reference time must be timezone-aware")
-        if batch_size < 1:
-            raise ValueError("publication batch size must be positive")
+        if not 1 <= batch_size <= 100 or publication_days < 1:
+            raise ValueError("publication batch size must be 1..100 and days positive")
         rolling_cutoff = _trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS)
         with self.runtime.transaction(JOB_PROFILE) as connection:
             candidates = _publication_candidates(
                 connection,
-                standard_cutoff=reference - timedelta(days=90),
+                standard_cutoff=reference - timedelta(days=publication_days),
                 rolling_cutoff=rolling_cutoff,
                 limit=None if dry_run else batch_size,
             )
@@ -547,22 +359,6 @@ def _delete_orphaned_payload_batch(connection: Any, archive: PublicationArchive 
     hashes = [row["content_hash"] for row in rows]
     archive.rows(connection, "app.publication_payload", "source.content_hash = ANY(%s)", [hashes])
     return _delete_payload_hashes(connection, hashes)
-
-
-def _prune_failed_confirmation_staging(connection: Any, before: datetime) -> int:
-    deleted = 0
-    for table in ("price_bar", "quote"):
-        deleted += int(connection.execute(
-            f"""
-            DELETE FROM raw.{table}_confirmation confirmation
-            USING ingest.run run
-            WHERE run.id = confirmation.ingest_run_id
-              AND run.status = 'failed'
-              AND coalesce(run.finished_at, run.started_at) < %s
-            """,
-            [before],
-        ).rowcount)
-    return deleted
 
 
 def _trading_day_cutoff(reference: datetime, trading_days: int) -> datetime:

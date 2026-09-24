@@ -297,6 +297,7 @@ def test_publication_retention_requires_archive_and_preserves_full_rows(storage,
     retention = RetentionRepository(storage.runtime, archive_root=storage.archive_root)
     assert retention.prune_publications(now=reference)["publications"] == 1
     objects = [json.loads(gzip.decompress(path.read_bytes())) for path in storage.archive_root.rglob("*.json.gz")]
+    objects = [row for obj in objects for row in (obj if isinstance(obj, list) else [obj])]
     assert any(item["relation"] == "app.publication" and json.loads(item["row_json"])["id"] == str(ids[0]) for item in objects)
     assert any(item["relation"] == "app.publication_payload" and json.loads(item["row_json"])["payload"]["evidence"] == {"i": 0} for item in objects)
     assert any(item["relation"] == "analysis.run" for item in objects)
@@ -342,6 +343,7 @@ def test_publication_archive_preserves_exact_postgres_numeric_text(storage):
         connection.execute("UPDATE analysis.run SET inputs = '{\"exact\":9007199254740993.1}' WHERE id = (SELECT analysis_run_id FROM app.publication WHERE id = %s)", [ids[0]])
         PublicationArchive(storage.runtime, storage.archive_root).publications(connection, [ids[0]])
     objects = [json.loads(gzip.decompress(path.read_bytes())) for path in storage.archive_root.rglob("*.json.gz")]
+    objects = [row for obj in objects for row in (obj if isinstance(obj, list) else [obj])]
     assert any(item["relation"] == "analysis.run" and "9007199254740993.1" in item["row_json"] for item in objects)
 
 

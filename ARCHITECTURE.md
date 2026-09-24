@@ -412,3 +412,14 @@ publications and ranking/attribution scopes remain online. A NAS outage blocks
 reclamation, not existing evidence reads or current decision access. See
 [the migration runbook](docs/storage-efficiency-migration.md) for space budgets,
 restore contracts, concurrency boundaries and physical reclamation.
+
+### Hot/cold lifecycle ownership
+
+`decision_inputs.py` and schema revision 0036 own lossless immutable input-group
+sharing. `row_archive.py` owns bounded self-describing NAS row packs.
+`hot_retention.py` owns resumable raw-envelope/relative-value archival with
+source mutation and cursor committed atomically. `retention.py` coordinates
+publication retention and safe empty-run/operational cleanup; it must not use
+parent-run CASCADE to discard investment evidence. These are PostgreSQL/NAS
+maintenance owners, not a second runtime store. See
+[the lifecycle policy and deployment contract](docs/hot-storage-lifecycle.md).

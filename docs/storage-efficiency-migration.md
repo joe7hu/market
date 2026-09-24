@@ -1,3 +1,7 @@
+> Follow-up: [hot-storage lifecycle](hot-storage-lifecycle.md) adds input-group
+> sharing and packed NAS-first retention in revision 0036. This document retains
+> the completed legacy-manifest/context migration and its restore contracts.
+
 # Decision-history storage repair and NAS migration
 
 ## What was growing

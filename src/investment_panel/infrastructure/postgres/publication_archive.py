@@ -9,12 +9,12 @@ caller's deletion transaction; files already written are safe to reuse.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
+from investment_panel.infrastructure.postgres.row_archive import RowArchive
 
 
 class PublicationArchive:
@@ -28,23 +28,21 @@ class PublicationArchive:
             "app.publication_payload", "app.publication_item", "analysis.run",
         }:
             raise ValueError("publication archive relation is not allowed")
-        count = 0
+        # Deterministic PK order makes retries reuse packs instead of creating
+        # millions of tiny files. Memory is bounded inside RowArchive.
+        order = {"app.publication_bundle_item": "source.bundle_id, source.model_name, source.stable_key",
+                 "app.publication_payload": "source.content_hash",
+                 "app.publication_item": "source.publication_id, source.model_name, source.stable_key"}.get(relation, "source.id")
         with connection.cursor(name=f"archive_{uuid4().hex}") as cursor:
-            cursor.execute(f"SELECT to_jsonb(source)::text AS row_json FROM {relation} source WHERE {predicate}", parameters)
-            for record in cursor:
-                row_json = str(record["row_json"])
-                row = json.loads(row_json)
-                artifact = self.service._write_json_gzip(
-                    "publications", {"relation": relation, "row_json": row_json},
-                    source_relation=relation, row_count=1,
-                    metadata={"archive_contract": "publication-row.v2",
-                              "source_key": str(row.get("id") or row.get("content_hash") or ""),
-                              "archive_phase": "before_retention"},
-                )
-                checked = self.service.verify(manifest_id=int(artifact["manifest_id"]))
-                if checked["verified"] != 1:
-                    raise ValueError("publication archive did not verify; source rows retained")
-                count += 1
+            cursor.itersize = 1  # one potentially large row, never an eager 2,000-row fetch
+            cursor.execute(f"SELECT to_jsonb(source)::text AS row_json FROM {relation} source WHERE {predicate} ORDER BY {order}", parameters)
+            count = 0
+            def records():
+                nonlocal count
+                for record in cursor:
+                    count += 1
+                    yield record
+            RowArchive(self.service, kind="publications").write(connection, relation, records())
         return count
 
     def publications(self, connection: Any, candidates: list[Any]) -> list[Any]:

@@ -74,7 +74,7 @@ def test_retention_prunes_unreferenced_history_and_keeps_published_generation(po
                 source_id="retention-test",
                 observed_at=observed_at,
                 market_session="premarket",
-                universe=label,
+                universe="retention-test",
                 rows=[
                     {
                         "symbol": "NVDA",
@@ -117,7 +117,7 @@ def test_retention_prunes_unreferenced_history_and_keeps_published_generation(po
         "publications": 0,
         "analysis_runs": 1,
         "option_quotes": 1,
-        "option_snapshots": 1,
+        "option_snapshots": 0,
         "job_runs": 1,
         "option_partitions": 1,
     }
