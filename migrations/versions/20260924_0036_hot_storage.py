@@ -48,6 +48,42 @@ _COLUMNS = """
 
 def upgrade() -> None:
     op.execute("""
+        -- Runtime logins are NOINHERIT market_app, not the migration owner.
+        -- These are disposable derived/cache relations; audit parents remain
+        -- protected from direct DELETE and are handled by a bounded helper.
+        GRANT UPDATE, DELETE ON analysis.option_relative_value TO market_app;
+        GRANT DELETE ON app.publication, app.publication_bundle,
+                        app.publication_payload, ops.job_run TO market_app;
+
+        CREATE FUNCTION analysis.prune_empty_run_metadata(p_ids uuid[])
+        RETURNS integer LANGUAGE plpgsql SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp AS $$
+        DECLARE ref record; guards text := ''; removed integer;
+        BEGIN
+            IF p_ids IS NULL OR cardinality(p_ids) > 100 THEN
+                RAISE EXCEPTION 'empty run metadata deletion must be bounded to 100 IDs';
+            END IF;
+            FOR ref IN
+                SELECT n.nspname, c.relname, a.attname, cardinality(f.conkey) AS key_count
+                FROM pg_constraint f JOIN pg_class c ON c.oid = f.conrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_attribute a ON a.attrelid = f.conrelid AND a.attnum = f.conkey[1]
+                WHERE f.contype = 'f' AND f.confrelid = 'analysis.run'::regclass
+            LOOP
+                IF ref.key_count <> 1 THEN
+                    RAISE EXCEPTION 'unreviewed composite analysis-run reference; metadata retained';
+                END IF;
+                guards := guards || format(
+                    ' AND NOT EXISTS (SELECT 1 FROM %I.%I child WHERE child.%I = run.id)',
+                    ref.nspname, ref.relname, ref.attname);
+            END LOOP;
+            EXECUTE 'DELETE FROM analysis.run run WHERE run.id = ANY($1)' || guards USING p_ids;
+            GET DIAGNOSTICS removed = ROW_COUNT;
+            RETURN removed;
+        END $$;
+        REVOKE ALL ON FUNCTION analysis.prune_empty_run_metadata(uuid[]) FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION analysis.prune_empty_run_metadata(uuid[]) TO market_app;
+
         CREATE TABLE analysis.decision_input_payload (
             content_hash text PRIMARY KEY,
             payload jsonb NOT NULL,
@@ -146,6 +182,10 @@ def downgrade() -> None:
         raise RuntimeError("restore inline decision inputs before downgrading hot storage")
     op.execute(f"CREATE OR REPLACE VIEW analysis.ticker_decision_read AS SELECT {_OLD_COLUMNS} FROM analysis.ticker_decision d")
     op.execute("""
+        DROP FUNCTION analysis.prune_empty_run_metadata(uuid[]);
+        REVOKE UPDATE, DELETE ON analysis.option_relative_value FROM market_app;
+        REVOKE DELETE ON app.publication, app.publication_bundle,
+                         app.publication_payload, ops.job_run FROM market_app;
         DROP TRIGGER ticker_decision_input_refs_valid ON analysis.ticker_decision;
         DROP FUNCTION analysis.check_decision_input_refs();
         DROP FUNCTION analysis.intern_decision_inputs(jsonb);

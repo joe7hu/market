@@ -119,9 +119,9 @@ class RetentionRepository:
             RowArchive(self.archive.service).write(connection, "analysis.run", records)
             # Row locks exclude concurrent insertion of FK references. Still
             # recheck on a fresh statement after waiting for these locks.
-            delete = sql.SQL("DELETE FROM analysis.run run WHERE id = ANY(%s) AND {}").format(
-                sql.SQL(" AND ").join(guards) if guards else sql.SQL("true"))
-            return connection.execute(delete, [selected]).rowcount
+            return int(connection.execute(
+                "SELECT analysis.prune_empty_run_metadata(%s::uuid[]) AS deleted", [selected],
+            ).fetchone()["deleted"])
 
     def prune_publications(
         self,

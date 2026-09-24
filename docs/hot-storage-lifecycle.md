@@ -85,6 +85,14 @@ count and per-pack memory are bounded, not a promised constant total byte count
 for an arbitrary publication graph. Never turn off its reference protections
 to force a target size. Shared publication payloads are rechecked before GC.
 
+## Runtime permission boundary
+
+Lifecycle integration tests use the configured non-owner application login.
+Revision 0036 grants only the extra derived/cache deletion and RV row-lock
+permissions used by retention. It does not grant parent `analysis.run` DELETE:
+a bounded, fixed-search-path database helper rechecks every incoming FK before
+removing empty metadata. The ordinary application cannot cascade-delete a run.
+
 ## Deployment and initial backlog
 
 1. Verify a current full NAS backup and an independent copy/snapshot. Keep the
