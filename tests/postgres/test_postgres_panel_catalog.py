@@ -817,6 +817,15 @@ def test_today_rank_prefix_covers_maximum_api_page(monkeypatch):
             typed_config("postgresql:///page"), rank_offset=offset, rank_limit=limit,
         )) == []
     assert all("opportunity_rank_position <= 10500" in query for query in queries)
+    # Keep the broad candidate scan on compact rows; expand only selected authority rows.
+    assert all("FROM analysis.ticker_decision decision" in query for query in queries)
+    assert all(query.count("analysis.ticker_decision_read stored_decision") == 1 for query in queries)
+    assert all("LEFT JOIN analysis.ticker_decision_read stored_decision" in query for query in queries)
+    assert all(
+        query.index("FROM analysis.ticker_decision decision")
+        < query.index("LEFT JOIN analysis.ticker_decision_read stored_decision")
+        for query in queries
+    )
     assert profiles == [panel_models.TODAY_AUTHORITY_PROFILE] * 2
 
 

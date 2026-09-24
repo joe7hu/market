@@ -1145,7 +1145,7 @@ def today_authority_pages(
                        ORDER BY decision.as_of DESC, decision.published_at DESC,
                                 decision.created_at DESC, decision.id DESC
                    ) AS current_row
-            FROM analysis.ticker_decision_read decision
+            FROM analysis.ticker_decision decision
             JOIN catalog.instrument instrument
               ON instrument.id = decision.instrument_id
             WHERE decision.status = 'published'
@@ -1386,7 +1386,7 @@ def today_authority_pages(
                        )
                    ) AS needs_missing_plan_validation
             FROM positioned_actions
-            LEFT JOIN analysis.ticker_decision_read stored_decision
+            LEFT JOIN analysis.ticker_decision stored_decision
               ON stored_decision.id = positioned_actions.decision_id
             CROSS JOIN LATERAL (
                 SELECT stored_decision.input_manifest->'trade_plan' AS trade_plan
