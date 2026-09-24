@@ -117,6 +117,61 @@ def _quotes(storage, *, count=3, old_days=20, profile="radar"):
     return now
 
 
+def test_payload_retention_does_not_rebuild_paper_option_marks(storage):
+    now = _quotes(storage, old_days=90, profile="history_full")
+    with storage.runtime.read() as connection:
+        before = connection.execute("""
+            SELECT max(mark.projected_at) AS projected_at
+            FROM analysis.paper_option_mark_projection mark
+            WHERE mark.contract_id IN (
+                SELECT quote.contract_id FROM raw.option_quote quote
+                JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+                WHERE snapshot.source_id = 'hot-test'
+            )
+        """).fetchone()["projected_at"]
+    assert before is not None
+
+    result = HotRetention(storage).run(
+        phase="options", now=now, batch_size=500, max_batches=5, execute=True,
+    )
+
+    assert result["option_provider_payloads"] == 3
+    with storage.runtime.read() as connection:
+        after = connection.execute("""
+            SELECT max(mark.projected_at) AS projected_at
+            FROM analysis.paper_option_mark_projection mark
+            WHERE mark.contract_id IN (
+                SELECT quote.contract_id FROM raw.option_quote quote
+                JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+                WHERE snapshot.source_id = 'hot-test'
+            )
+        """).fetchone()["projected_at"]
+        assert connection.execute(
+            "SELECT count(*) FROM raw.option_quote WHERE provider_payload <> '{}'::jsonb"
+        ).fetchone()["count"] == 3
+    assert after == before
+    with storage.runtime.transaction() as connection:
+        quote = connection.execute("""
+            SELECT quote.snapshot_id, quote.contract_id, mark.projected_at, mark.mid
+            FROM raw.option_quote quote
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            JOIN analysis.paper_option_mark_projection mark ON mark.contract_id = quote.contract_id
+            WHERE snapshot.source_id = 'hot-test'
+            ORDER BY quote.observed_at DESC
+            LIMIT 1
+        """).fetchone()
+        connection.execute(
+            "UPDATE raw.option_quote SET mid = mid + 0.1 WHERE snapshot_id = %s AND contract_id = %s",
+            [quote["snapshot_id"], quote["contract_id"]],
+        )
+        refreshed = connection.execute(
+            "SELECT projected_at, mid FROM analysis.paper_option_mark_projection WHERE contract_id = %s",
+            [quote["contract_id"]],
+        ).fetchone()
+        assert refreshed["projected_at"] > quote["projected_at"]
+        assert refreshed["mid"] == quote["mid"] + 0.1
+
+
 def test_options_keep_latest_and_warm_history_but_archive_raw_envelopes(storage):
     now = _quotes(storage, profile="history_full")
     worker = HotRetention(storage)
