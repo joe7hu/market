@@ -4,83 +4,76 @@ on:
     branches: [main]
 permissions:
   contents: read
-concurrency:
-  group: storage-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
 jobs:
-  source-review:
+  release-verification:
     if: github.head_ref == 'feat/bounded-hot-storage' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: write
     env:
-      PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
+      PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl --junitxml=release-results.xml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.head_ref }}
-      - name: Check candidate transport
-        id: candidate
-        run: |
-          if test -f .github/storage-change-4.b64; then echo 'ready=true' >> "$GITHUB_OUTPUT"; fi
-      - name: Apply hash-verified source edits
-        if: steps.candidate.outputs.ready == 'true'
+      - name: Finalize fixture and remove temporary review transport
         run: |
           python - <<'PY'
-          import base64, hashlib, json, lzma
           from pathlib import Path
-          encoded = ''.join(Path(f'.github/storage-change-{i}.b64').read_text().strip() for i in range(1, 5))
-          packed = base64.b64decode(encoded, validate=True)
-          assert hashlib.sha256(packed).hexdigest() == 'c69d18595d63ebabc0605cdc63402445923ded8806da102e07051a4379f9bcd1'
-          for change in json.loads(lzma.decompress(packed)):
-              name = change['path']
-              assert '..' not in Path(name).parts and not Path(name).is_absolute()
-              assert name.startswith(('src/', 'tests/', 'docs/', 'migrations/')) or name in ('README.md', 'ARCHITECTURE.md')
-              path = Path(name)
-              old = path.read_text() if path.exists() else ''
-              digest = hashlib.sha256(old.encode()).hexdigest()
-              if digest == change['after']:
-                  continue
-              assert digest == change['before'], f'Concurrent source change: {name}'
-              lines = old.splitlines(keepends=True)
-              for edit in reversed(change['edits']):
-                  lines[edit['start']:edit['end']] = [edit['text']]
-              new = ''.join(lines)
-              assert hashlib.sha256(new.encode()).hexdigest() == change['after'], name
-              path.parent.mkdir(parents=True, exist_ok=True)
-              path.write_text(new)
+          p = Path('tests/postgres/test_hot_storage_lifecycle.py')
+          old = "INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash)\n            VALUES ('storage-test', %s, 'test', %s)"
+          new = "INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash, started_at, status)\n            VALUES ('storage-test', %s, 'test', %s, now(), 'succeeded')"
+          text = p.read_text()
+          assert old in text or new in text
+          p.write_text(text.replace(old, new))
           PY
-          python -m compileall -q src migrations tests/postgres/test_hot_storage_lifecycle.py
-          git diff --check
-          git add src tests docs migrations README.md ARCHITECTURE.md
+          git rm --ignore-unmatch .github/storage-change-1.b64 .github/storage-change-2.b64 .github/storage-change-3.b64 .github/storage-change-4.b64 .github/workflows/storage-review.yml
+          git add tests/postgres/test_hot_storage_lifecycle.py
+          git diff --cached --check
           if ! git diff --cached --quiet; then
-            git -c user.name='ChatGPT' -c user.email='noreply@openai.com' commit -m 'Implement lossless decision-input sharing and bounded NAS-first retention'
+            git -c user.name='ChatGPT' -c user.email='noreply@openai.com' commit -m 'Fix lifecycle fixture and remove temporary verification transport'
             git push origin HEAD:refs/heads/feat/bounded-hot-storage
           fi
-          git rev-parse HEAD
+          git rev-parse HEAD | tee verified-commit.txt
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
-        if: steps.candidate.outputs.ready == 'true'
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
-        if: steps.candidate.outputs.ready == 'true'
         with:
           version: '0.9.26'
       - uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee
-        if: steps.candidate.outputs.ready == 'true'
         with:
           postgres-version: '18'
       - name: Install dependencies
-        if: steps.candidate.outputs.ready == 'true'
-        run: uv sync --extra test --locked
-      - name: Storage lifecycle and compatibility tests
-        if: steps.candidate.outputs.ready == 'true'
         run: |
-          uv run --extra test python -m pytest tests/postgres/test_hot_storage_lifecycle.py tests/postgres/test_decision_storage.py tests/postgres/test_postgres_retention_backup.py tests/postgres/test_schema_baseline.py tests/postgres/test_storage_archive.py tests/options/history/test_option_history.py tests/contracts/test_architecture_guards.py tests/contracts/test_postgres_runtime_boundary.py -q --junitxml=storage-results.xml
+          uv sync --extra test --locked
+          npm ci --prefix frontend
+      - name: Bootstrap and migrate isolated CI PostgreSQL
+        env:
+          MARKET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          set -euo pipefail
+          ci_password="$(openssl rand -hex 32)"
+          PGPASSWORD=postgres psql "$MARKET_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE market_ci_login LOGIN PASSWORD '$ci_password' NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEROLE NOCREATEDB NOREPLICATION"
+          export MARKET_APP_LOGIN_ROLE=market_ci_login
+          export MARKET_APP_DATABASE_PASSWORD="$ci_password"
+          uv run market-db-migrate
+      - name: Complete release gate
+        run: |
+          set -o pipefail
+          make release-gate 2>&1 | tee release-gate.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always() && steps.candidate.outputs.ready == 'true'
+        if: always()
         with:
-          name: storage-lifecycle-verification
-          path: storage-results.xml
+          name: storage-release-verification
+          path: |
+            verified-commit.txt
+            release-results.xml
+            release-gate.log
           retention-days: 7
