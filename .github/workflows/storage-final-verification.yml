@@ -12,7 +12,7 @@ jobs:
     env:
       PYTEST_ADDOPTS: --postgresql-exec=/usr/lib/postgresql/18/bin/pg_ctl
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825519212fc417a725628
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
