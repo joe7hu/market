@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
+import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus, TablePayload } from "@/types";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { rows, tickerSymbol } from "@/utils";
 import { displayField, numberField, textField, titleLabel, toneFromText } from "@/shared/rowFormat";
@@ -97,7 +97,7 @@ export function SourcesRoute() {
   );
 }
 
-export function ResearchAuthorityTable({ data }: { data: PanelData }) {
+export function ResearchAuthorityTable({ data, status }: { data: PanelData; status?: ScopeSnapshotStatus }) {
   const tableGroups: Array<[string, string, string[]]> = [
     ["Hypotheses", "researchHypotheses", ["hypothesis_key", "statement", "mechanism_class", "status"]],
     ["Experiment families", "researchExperimentFamilies", ["family_key", "name", "status", "hypothesis_id"]],
@@ -128,7 +128,9 @@ export function ResearchAuthorityTable({ data }: { data: PanelData }) {
               <td className="max-w-[420px] px-3 py-3 text-muted-foreground">{textField(row, ["failure_reason", "exclusion_reason", "statement", "outcome", "input_cutoff"], "-")}</td>
             </tr>
           ))}
-          {!visible.length ? <EmptyRow colSpan={5} text="No research authority rows available." /> : null}
+          {!visible.length ? <EmptyRow colSpan={5} text={status?.state === "ready" ? "No research authority rows available."
+            : status?.state === "failed" || status?.state === "stale" ? "Research authority could not be loaded. Retry this request."
+            : "Loading research authority…"} /> : null}
         </tbody>
       </table>
     </DataTableFrame>

@@ -58,7 +58,7 @@ class SymbolDecisionOutcomeRepository:
                   AND decision.as_of <= %s
                   AND decision.as_of >= %s - make_interval(days => %s)
                   AND coalesce(outcome.state, 'observing') <> 'resolved'
-                ORDER BY decision.as_of, decision.id
+                ORDER BY COALESCE(outcome.updated_at, decision.as_of), decision.as_of, decision.id
                 LIMIT %s
                 """,
                 [reference, reference, max(1, int(lookback_days)), max(1, min(int(limit), 1000))],

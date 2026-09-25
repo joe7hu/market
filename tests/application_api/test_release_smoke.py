@@ -282,3 +282,49 @@ def test_working_transport_cannot_hide_failed_decision_service(tmp_path, monkeyp
     assert result["ready"] is False and result["service_ready"] is False
     assert result["workstation"]["decision_service"]["failed_count"] == 1
     assert result["message"] == "Workflow health degraded. System health identifies the affected workflows and blockers."
+
+
+def test_targeted_capture_reconciles_catalog_identity_and_provider_session(
+    migrated_postgres_dsn, monkeypatch,
+):
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    config = typed_config(migrated_postgres_dsn)
+    monkeypatch.setattr(option_database, "runtime_for_config", lambda _: runtime)
+    now = datetime.now(UTC)
+    provider = _RobinhoodFixture(expiry=(now.date() + timedelta(days=40)).isoformat(), provider_at=now)
+    try:
+        initial = persist_collected_option_chains(config, "robinhood", _collect_fixture(provider))
+        with runtime.read() as connection:
+            required = [dict(row) for row in connection.execute(
+                "SELECT contract.id AS contract_id, 'NVDA' AS symbol, expiration::text, strike::float, "
+                "option_type, multiplier, deliverable_key, style, settlement, contract.standard_contract_verified, "
+                "provider_symbols->>'robinhood' AS provider_instrument_id "
+                "FROM catalog.option_contract contract JOIN raw.option_quote quote ON quote.contract_id = contract.id "
+                "WHERE quote.snapshot_id = %s", [initial["snapshot_id"]],
+            ).fetchall()]
+        provider.provider_at = datetime.now(UTC)
+        good = _collect_fixture(provider, required_contracts=required)
+        good["required_contracts"] = required
+        saved = persist_collected_option_chains(config, "robinhood", good, universe="paper-tickets")
+        assert saved["matched_contract_ids"] == [required[0]["contract_id"]]
+        assert saved["contract_diagnostics"][0]["stage"] == "persisted"
+
+        # Equal row counts are insufficient: a different deliverable at the
+        # same strike must never satisfy the old ticket's quote requirement.
+        wrong = _collect_fixture(provider, required_contracts=required)
+        wrong["required_contracts"] = required
+        wrong["rows"]["NVDA"][0]["deliverable_key"] = "other-deliverable"
+        failed = persist_collected_option_chains(config, "robinhood", wrong, universe="paper-tickets")
+        assert failed["contract_count"] == 1
+        assert failed["matched_contract_ids"] == []
+        assert failed["contract_diagnostics"][0]["reason"] == "requested_contract_not_persisted"
+
+        provider.provider_at = now - timedelta(days=1)
+        stale = _collect_fixture(provider, required_contracts=required)
+        stale["required_contracts"] = required
+        failed = persist_collected_option_chains(config, "robinhood", stale, universe="paper-tickets")
+        assert failed["matched_contract_ids"] == []
+        assert failed["contract_diagnostics"][0]["reason"] == "provider_quote_from_prior_session"
+    finally:
+        runtime.close()

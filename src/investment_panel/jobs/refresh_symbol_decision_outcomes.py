@@ -23,10 +23,13 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     # timeout so later worker classes are not starved by this backlog.
     ticker_outcomes = ticker_repository.refresh_outcomes(limit=OUTCOME_BATCH_SIZE)
     publish_attributions = getattr(ticker_repository, "publish_outcome_attributions", None)
+    # A new short-horizon resolution must reach the canonical validator even
+    # while other decisions are observing their 126/252-session horizons.
+    # The publisher, not a global all-resolved predicate, owns eligibility.
     pending_attributions = ticker_repository.has_pending_outcome_attributions()
     if not callable(publish_attributions):
         attribution_result = {"status": "failed", "reason": "canonical_attribution_publisher_missing"}
-    elif pending_attributions:
+    elif pending_attributions and not ticker_outcomes.get("resolved", 0):
         attribution_result = {
             "status": "skipped",
             "reason": "outcome_attribution_pending",
@@ -36,11 +39,12 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     attribution_status = str(attribution_result.get("status") or "skipped")
     downstream_status = (
         "ok" if attribution_status == "ok" else
+        "partial" if attribution_status == "partial" else
         "failed" if attribution_status == "failed" else
         "blocked" if attribution_status == "blocked" else "not_run"
     )
     status = str(symbol_outcomes.get("status") or "ok")
-    if status == "ok" and attribution_status in {"blocked", "failed"}:
+    if status == "ok" and attribution_status in {"partial", "blocked", "failed"}:
         status = "partial"
     return {
         **symbol_outcomes,

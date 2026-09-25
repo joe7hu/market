@@ -18,6 +18,7 @@ from investment_panel.infrastructure.postgres.hot_retention import HotRetention
 from investment_panel.infrastructure.postgres.ingestion import IngestionRepository
 from investment_panel.infrastructure.postgres.instruments import reconcile_instrument
 from investment_panel.infrastructure.postgres.row_archive import RowArchive, MAX_PACK_BYTES
+from investment_panel.infrastructure.postgres.archive_io import MAX_CHUNK_BYTES
 from investment_panel.infrastructure.postgres.runtime import DatabaseRuntime
 from investment_panel.infrastructure.postgres.storage_archive import StorageArchiveService
 
@@ -232,7 +233,7 @@ def test_corrupt_pack_is_not_reused(storage):
 def test_oversized_pack_and_invalid_batch_fail_before_mutation(storage):
     with storage.runtime.transaction() as connection:
         with pytest.raises(ValueError, match="budget"):
-            RowArchive(storage).write(connection, "analysis.ticker_decision", [{"row_json": "x" * (MAX_PACK_BYTES + 1)}])
+            RowArchive(storage).write(connection, "analysis.ticker_decision", [{"row_json": "x" * (MAX_CHUNK_BYTES + 1)}])
     with pytest.raises(ValueError):
         HotRetention(storage).run(phase="options", batch_size=0, execute=True)
 
@@ -441,3 +442,70 @@ def test_relative_value_pin_waits_for_inflight_publication(storage, monkeypatch)
             "SELECT count(*) AS n FROM analysis.option_relative_value WHERE analysis_run_id = %s", [run_id],
         ).fetchone()["n"] == 1
     assert storage.verify()["failed"] == 0
+
+
+def test_oversized_row_uses_verified_typed_copy_and_retries_idempotently(storage, tmp_path):
+    # UTF-8, embedded COPY delimiters and precision must survive without a
+    # Python numeric parse or a higher budget for ordinary JSON row packs.
+    raw = '{"blob":"' + ('中' * (3 * 1024**2)) + '\\n\\t\\\\","exact":0.12345678901234567890123456789}'
+    decision_id = _decision(storage.runtime, "oversized", raw)
+    with storage.runtime.transaction() as connection:
+        records = connection.execute("SELECT to_jsonb(d)::text AS row_json FROM analysis.ticker_decision d WHERE id = %s", [decision_id]).fetchall()
+        assert len(records[0]["row_json"].encode()) > MAX_PACK_BYTES
+        ids = RowArchive(storage).write(connection, "analysis.ticker_decision", records)
+    assert len(ids) == 1
+    assert storage.verify(manifest_id=ids[0])["verified"] == 1
+    with storage.runtime.read() as connection:
+        manifest = connection.execute("SELECT * FROM ops.storage_archive_manifest WHERE id = %s", [ids[0]]).fetchone()
+    assert manifest["format"] == "postgres-copy-text-gzip.v1"
+    assert manifest["metadata"]["archive_contract"] == "postgres-row-json-copy.v1"
+    assert manifest["metadata"]["typed_restore_verified"] is True
+    with storage.runtime.transaction() as connection:
+        connection.execute("CREATE TEMP TABLE recovered_row (relation text, source_columns jsonb, source_database jsonb, row_json text)")
+        with connection.cursor().copy("COPY recovered_row FROM STDIN WITH (FORMAT text)") as copy:
+            with gzip.open(manifest["nas_uri"], "rb") as source:
+                while chunk := source.read(1024**2):
+                    copy.write(chunk)
+        assert connection.execute("SELECT row_json::jsonb = %s::jsonb AS same FROM recovered_row", [records[0]["row_json"]]).fetchone()["same"]
+        assert connection.execute("SELECT to_jsonb(jsonb_populate_record(NULL::analysis.ticker_decision, row_json::jsonb)) = row_json::jsonb AS same FROM recovered_row").fetchone()["same"]
+        assert RowArchive(storage).write(connection, "analysis.ticker_decision", records) == ids
+    # Read-back verification must reject corruption, not replace it and declare
+    # success. The caller's source transaction is still safe to roll back.
+    with open(manifest["nas_uri"], "wb") as target:
+        target.write(b"corrupt")
+    with pytest.raises(ValueError), storage.runtime.transaction() as connection:
+        RowArchive(storage).write(connection, "analysis.ticker_decision", records)
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT count(*) AS n FROM analysis.ticker_decision WHERE id = %s", [decision_id]).fetchone()["n"] == 1
+
+
+@pytest.mark.parametrize("failure", [None, "nas_unavailable", "typed_restore"])
+def test_orphaned_large_publication_payload_is_deleted_only_after_verifiable_archive(storage, monkeypatch, failure):
+    from investment_panel.infrastructure.postgres.retention import RetentionRepository
+    from investment_panel.infrastructure.postgres import row_copy_archive
+
+    raw = '{"data":"' + 'x' * (9 * 1024**2) + '","exact":0.12345678901234567890123456789}'
+    with storage.runtime.transaction() as connection:
+        connection.execute("INSERT INTO app.publication_payload (content_hash, payload) VALUES (%s, %s::jsonb)", ["c" * 64, raw])
+    retention = RetentionRepository(storage.runtime, archive_root=storage.archive_root)
+    if failure:
+        def fail(*args, **kwargs):
+            raise ValueError(failure)
+        monkeypatch.setattr(row_copy_archive, "ensure_mounted_archive_root" if failure == "nas_unavailable" else "_typed_restore", fail)
+        with pytest.raises(ValueError, match=failure):
+            retention.prune_publications()
+    else:
+        assert retention.prune_publications()["publication_payloads"] == 1
+        assert storage.verify()["failed"] == 0
+    with storage.runtime.read() as connection:
+        assert connection.execute("SELECT count(*) AS n FROM app.publication_payload WHERE content_hash = %s", ["c" * 64]).fetchone()["n"] == (1 if failure else 0)
+        manifests = connection.execute("SELECT * FROM ops.storage_archive_manifest WHERE source_relation = 'app.publication_payload'").fetchall()
+    assert len(manifests) == (0 if failure else 1)
+    if not failure:
+        with storage.runtime.transaction() as connection:
+            connection.execute("CREATE TEMP TABLE original_payload (relation text, source_columns jsonb, source_database jsonb, row_json text)")
+            with connection.cursor().copy("COPY original_payload FROM STDIN WITH (FORMAT text)") as copy, gzip.open(manifests[0]["nas_uri"], "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024**2), b""):
+                    copy.write(chunk)
+            connection.execute("INSERT INTO app.publication_payload SELECT restored.* FROM original_payload, LATERAL jsonb_populate_record(NULL::app.publication_payload, row_json::jsonb) restored")
+            assert connection.execute("SELECT payload = %s::jsonb AS same FROM app.publication_payload WHERE content_hash = %s", [raw, "c" * 64]).fetchone()["same"]

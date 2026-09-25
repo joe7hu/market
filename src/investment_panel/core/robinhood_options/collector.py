@@ -272,6 +272,8 @@ def collect_robinhood_option_chains(
         "collected_at": collected_at,
         "market_data": "robinhood",
     }
+    if required_only:
+        result["required_contracts"] = list(required_contracts or [])
     if not symbols:
         return result
     if client is None:
@@ -290,20 +292,46 @@ def collect_robinhood_option_chains(
     near_term_dte = int(near_term_dte if near_term_dte is not None else getattr(config, "near_term_dte", 35))
     max_collection_seconds = max(1, int(getattr(config, "max_collection_seconds", DEFAULT_MAX_COLLECTION_SECONDS)))
     deadline = time.monotonic() + max_collection_seconds
-
-    quote_rows = _fetch_equity_quotes(client, symbols, deadline=deadline)
+    if isinstance(client, RobinhoodMcpClient):
+        client.deadline = min(client.deadline, deadline) if client.deadline is not None else deadline
+    native = [row for row in required_contracts or [] if row.get("provider_instrument_id")] if required_only else []
+    if native:
+        from investment_panel.core.robinhood_options.active_quotes import collect_active_quotes
+        captured = collect_active_quotes(
+            client, native, batch_size=quote_batch_size, deadline=deadline,
+            payload_rows=lambda payload: _payload_list(payload, "results"),
+            normalize_quote=option_quote_row,
+        )
+        result.update(captured)
+        native_catalog_ids = {row["contract_id"] for row in native}
+        required_contracts = [row for row in required_contracts or [] if row["contract_id"] not in native_catalog_ids]
+    try:
+        quote_rows = _fetch_equity_quotes(client, symbols, deadline=deadline)
+    except Exception as exc:
+        if not native:
+            raise
+        # An underlying quote failure must not discard captured option legs.
+        quote_rows = []
+        result["errors"].append(f"underlying_quotes:{type(exc).__name__}:{exc}")
     result["quotes"] = quote_rows
     spot_by_symbol = {
         str(row.get("symbol") or "").upper(): as_float(row.get("option_spot"))
         for row in quote_rows
     }
     today = _observed_date(collected_at)
-    for symbol in [s.upper() for s in symbols if s]:
+    for symbol, rows in result["rows"].items():
+        for row in rows:
+            row["underlying_price"] = spot_by_symbol.get(symbol)
+    discovery_symbols = [s.upper() for s in symbols if s]
+    if native:
+        discovery_symbols = [s for s in discovery_symbols if any(row["symbol"] == s for row in required_contracts or [])]
+    for symbol in discovery_symbols:
         if time.monotonic() > deadline:
             result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s before {symbol}")
             result["timed_out"] = True
             break
-        result["symbols_attempted"].append(symbol)
+        if symbol not in result["symbols_attempted"]:
+            result["symbols_attempted"].append(symbol)
         try:
             rows = _collect_symbol(
                 client,
@@ -325,11 +353,27 @@ def collect_robinhood_option_chains(
             result["errors"].append(f"{symbol}:{exc}")
             continue
         if rows:
-            result["rows"][symbol] = rows
+            result["rows"].setdefault(symbol, []).extend(rows)
         if time.monotonic() > deadline:
             result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s after {symbol}")
             result["timed_out"] = True
             break
+    if required_only:
+        for contract in required_contracts or []:
+            if contract.get("contract_id") is None:
+                continue
+            matched = any(
+                row["expiry"] == contract["expiration"] and row["type"] == contract["option_type"]
+                and row["strike"] == as_float(contract["strike"])
+                and (not contract.get("deliverable_key") or row["deliverable_key"] == contract["deliverable_key"])
+                for row in result["rows"].get(contract["symbol"], [])
+            )
+            trace = {"contract_id": contract["contract_id"], "symbol": contract["symbol"],
+                     "stage": "normalized" if matched else "discovery",
+                     "reason": None if matched else "identity_not_discovered"}
+            result.setdefault("contract_diagnostics", []).append(trace)
+            if not matched:
+                result["errors"].append(f"{contract['symbol']}:contract={contract['contract_id']}:identity_not_discovered")
     received_at = datetime.now(UTC).isoformat()
     result["observed_at"] = received_at
     result["received_at"] = received_at
@@ -502,11 +546,11 @@ def _collect_symbol(
                     symbol,
                 )
                 selected = [] if required_only else _select_instruments(instruments, spot, option_type=option_type, count=strikes_around_spot)
-                required_strikes = {row["strike"] for row in required
-                                    if row["expiration"] == expiry and row["option_type"] == option_type}
+                required_here = [row for row in required if row["expiration"] == expiry and row["option_type"] == option_type]
                 selected_ids = {item["id"] for item in selected}
                 selected = [item for item in instruments
-                            if as_float(item.get("strike_price")) in required_strikes and item["id"] not in selected_ids] + selected
+                            if any(_required_contract_matches(item, row) for row in required_here)
+                            and item["id"] not in selected_ids] + selected
                 quoted = _quote_instruments(client, selected, quote_batch_size=quote_batch_size, deadline=deadline)
                 for row in quoted:
                     row["underlying_price"] = spot
@@ -608,6 +652,18 @@ def _provider_quote_time(primary: Any, raw: dict[str, Any]) -> datetime | None:
     return None
 
 
+def _required_contract_matches(instrument: dict[str, Any], contract: dict[str, Any]) -> bool:
+    if as_float(instrument.get("strike_price")) != as_float(contract.get("strike")):
+        return False
+    terms = verified_robinhood_contract_terms(instrument)
+    for key in ("deliverable_key", "style", "settlement"):
+        if contract.get(key) is not None and contract[key] != terms.get(key):
+            return False
+    chain = instrument.get("_chain_metadata") or {}
+    multiplier = as_float(instrument.get("trade_value_multiplier") or chain.get("trade_value_multiplier"))
+    return contract.get("multiplier") is None or as_float(contract["multiplier"]) == multiplier
+
+
 def _fetch_instruments(
     client: RobinhoodClient,
     *,
@@ -618,6 +674,7 @@ def _fetch_instruments(
 ) -> list[dict[str, Any]]:
     instruments: list[dict[str, Any]] = []
     cursor: str | None = None
+    seen_cursors: set[str] = set()
     while True:
         if _deadline_expired(deadline):
             return instruments
@@ -632,6 +689,9 @@ def _fetch_instruments(
         cursor = _cursor_from_next(next_url)
         if not cursor:
             return instruments
+        if cursor in seen_cursors:
+            raise ValueError("repeated option instrument pagination cursor")
+        seen_cursors.add(cursor)
 
 
 def _select_instruments(instruments: list[dict[str, Any]], spot: float | None, *, option_type: str, count: int) -> list[dict[str, Any]]:

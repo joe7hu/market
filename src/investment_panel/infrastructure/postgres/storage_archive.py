@@ -1013,18 +1013,21 @@ class StorageArchiveService:
     def _record_manifest(
         self, *, archive_kind: str, source_relation: str, path: Path, artifact_hash: str,
         row_count: int, range_start: datetime | None, range_end: datetime | None, metadata: dict[str, Any],
+        archive_format: str = "json.gz",
     ) -> tuple[int, bool]:
+        if archive_format not in {"json.gz", "postgres-copy-text-gzip.v1"}:
+            raise ValueError("unsupported row archive format")
         with self.runtime.transaction(JOB_PROFILE) as connection:
             row = connection.execute(
                 """
                 INSERT INTO ops.storage_archive_manifest
                     (archive_kind, source_relation, nas_uri, sha256, format, row_count,
                      range_start, range_end, schema_revision, verification_status, metadata)
-                VALUES (%s, %s, %s, %s, 'json.gz', %s, %s, %s, %s, 'written', %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'written', %s)
                 ON CONFLICT (archive_kind, sha256) DO NOTHING
                 RETURNING id
                 """,
-                [archive_kind, source_relation, str(path), artifact_hash, row_count,
+                [archive_kind, source_relation, str(path), artifact_hash, archive_format, row_count,
                  range_start, range_end, HEAD_REVISION, Jsonb(metadata)],
             ).fetchone()
             created = row is not None
