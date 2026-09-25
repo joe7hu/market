@@ -43,7 +43,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("full_market_refresh"),
         _job("daily_screen"),
         _job("refresh_market_publication", timeout_seconds=120, freshness_seconds=3600),
-        _job("refresh_paper_quotes", timeout_seconds=45, freshness_seconds=60),
+        _job("refresh_paper_quotes", timeout_seconds=90, freshness_seconds=60),
         _job("refresh_decision_models", timeout_seconds=1200, freshness_seconds=3600),
         _job("update_preopen_daily_brief_scheduled"),
         _job("hourly_options_radar"),

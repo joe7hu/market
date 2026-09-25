@@ -30,16 +30,17 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     # The owner prioritizes least-recently attempted symbols, then old quotes.
     # Failed/unsupported symbols must not repeatedly consume the first batch.
     # Keep every leg for each selected symbol together.
-    symbols = list(dict.fromkeys(row["symbol"] for row in required))[:8]
+    symbols = list(dict.fromkeys(row["symbol"] for row in required))[:20]
     selected = [row for row in required if row["symbol"] in symbols]
-    bounded = replace(provider, max_collection_seconds=30, timeout_seconds=10)
+    bounded = replace(provider, max_collection_seconds=45, timeout_seconds=10)
     policy = OptionHistoryPolicyRepository(runtime_for_config(config))
     lease = policy.acquire_provider_lease(provider="robinhood", workload="paper_execution_quotes",
-                                          symbol="PAPER", ttl_seconds=45)
+                                          symbol="PAPER", ttl_seconds=90)
     if lease is None:
         return {"status": "skipped", "reason": "provider_capacity_busy", "paper_only": True,
                 "contracts_required": len(required)}
     source_status = "failed"
+    collected: dict[str, Any] = {}
     try:
         collected = collect_robinhood_option_chains(bounded, symbols, required_contracts=selected, required_only=True)
         source_status = "partial" if collected.get("errors") else "ok"
@@ -51,15 +52,17 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
         return {"status": "failed", "reason": "paper_quote_capture_failed", "paper_only": True,
                 "live_brokerage_submission": False, "source_id": "robinhood",
                 "source_status": source_status, "downstream_status": "failed" if source_status != "failed" else "not_run",
-                "symbols_attempted": symbols, "contracts_required": len(required),
+                "symbols_requested": symbols, "symbols_attempted": collected.get("symbols_attempted") or [],
+                "contracts_required": len(required),
                 "contracts_selected": len(selected)}
     finally:
         policy.release_provider_lease(lease.id)
     count = int(persisted.get("contract_count") or 0)
     return {"status": "partial" if collected.get("errors") or count < len(selected) else "ok",
             "paper_only": True, "live_brokerage_submission": False, "source_id": "robinhood",
-            "symbols_attempted": symbols, "source_status": source_status, "downstream_status": "ok",
+            "symbols_requested": symbols, "symbols_attempted": collected.get("symbols_attempted") or [],
+            "source_status": source_status, "downstream_status": "ok",
             "contracts_required": len(required),
             "contracts_selected": len(selected), "contracts_captured": count,
-            "remaining_contracts": len(required) - len(selected), "run_id": persisted.get("run_id"),
+            "remaining_contracts": max(0, len(required) - count), "run_id": persisted.get("run_id"),
             "errors": list(collected.get("errors") or [])[:5]}

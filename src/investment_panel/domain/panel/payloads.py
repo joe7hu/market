@@ -18,6 +18,7 @@ RowsForTable = Callable[[str], list[dict[str, Any]]]
 
 
 SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
+    "research-authority": {name: 30 for name in tables_for_scope("research-authority")},
     "health": {
         "provider_runs": 1,
     },

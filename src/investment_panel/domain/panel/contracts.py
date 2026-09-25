@@ -25,6 +25,11 @@ DASHBOARD_UNAVAILABLE_MODELS = frozenset({
 
 PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "feed": ("feed_signals",),
+    "research-authority": (
+        "research_hypotheses", "research_experiment_families", "research_trials",
+        "research_trial_results", "research_validation_dossiers", "research_validation_gates",
+        "research_strategy_forecasts", "research_universe_observations", "research_strategy_revisions",
+    ),
     # Today is the bounded action queue. Keep canonical ticker decisions first
     # and include only existing source-backed context used by its cards.
     "today": (

@@ -267,6 +267,7 @@ def collect_robinhood_option_chains(
         "rows": {},
         "quotes": [],
         "errors": [],
+        "symbols_attempted": [],
         "observed_at": collected_at,
         "collected_at": collected_at,
         "market_data": "robinhood",
@@ -302,6 +303,7 @@ def collect_robinhood_option_chains(
             result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s before {symbol}")
             result["timed_out"] = True
             break
+        result["symbols_attempted"].append(symbol)
         try:
             rows = _collect_symbol(
                 client,

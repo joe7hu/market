@@ -17,7 +17,7 @@ const TABLE_KEY_OVERRIDES: Record<string, keyof KnownPanelTables> = {
 };
 
 const RESERVED_PANEL_KEYS = new Set(["dashboard", "settings", "errors"]);
-const PHASE4_WORKSPACES = new Set(["today", "opportunities", "portfolio", "research", "health"]);
+const PHASE4_WORKSPACES = new Set(["today", "opportunities", "portfolio", "research", "research-authority", "health"]);
 
 const PHASE4_TABLE_KEYS = ["portfolio_allocation", "portfolio_allocation_items", "portfolio_scenario_artifact", "execution_model_snapshot", "paper_execution_observations", "book_attribution"];
 
