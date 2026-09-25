@@ -38,6 +38,13 @@ def test_baseline_matches_verified_schema_and_application_queries(baseline_postg
         assert connection.execute("SELECT to_regclass('app.review_page_snapshot')").fetchone()[0] is None
         for relation in ('app.trade_journal','app.alert','analysis.event_decision_packet','analysis.event_scout_event','app.decision_truth'):
             assert connection.execute("SELECT has_table_privilege(current_user,%s,'INSERT')", [relation]).fetchone()[0]
+        for privilege in ('SELECT', 'INSERT', 'UPDATE'):
+            assert connection.execute(
+                "SELECT has_table_privilege(current_user,'app.thesis_expression',%s)", [privilege]
+            ).fetchone()[0]
+        assert connection.execute(
+            "SELECT has_sequence_privilege(current_user,'app.thesis_expression_id_seq','USAGE')"
+        ).fetchone()[0]
         assert not connection.execute("SELECT has_table_privilege(current_user,'analysis.research_evaluator_signing_secret','SELECT')").fetchone()[0]
 
 
@@ -114,6 +121,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
         '20260924_0036_hot_storage.py',
         '20260924_0037_option_payload_trigger.py',
         '20260924_0038_verified_run_archive_prune.py',
+        '20260924_0039_option_thesis_expression_grants.py',
     ]
     sql_files = sorted((root / 'migrations' / 'baseline').glob('*.sql'))
     assert len(sql_files) == 27
