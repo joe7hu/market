@@ -57,6 +57,13 @@ _CODEX_LUNA_RATE = ProviderRateCard(
     source="https://developers.openai.com/api/docs/pricing",
     verified_on="2026-08-13",
 )
+_CODEX_GPT6_LUNA_RATE = ProviderRateCard(
+    input_per_1m=0.10,
+    cached_input_per_1m=0.01,
+    output_per_1m=0.50,
+    source="https://developers.openai.com/api/docs/models/gpt-6-luna",
+    verified_on="2026-09-24",
+)
 _DEEPSEEK_FLASH_RATE = ProviderRateCard(
     input_per_1m=0.14,
     cached_input_per_1m=0.0028,
@@ -71,6 +78,11 @@ _CATALOG: dict[str, AgentProvider] = {
         command="market-run-option-agent",
         default_model="gpt-5.6-luna",
         models={
+            "gpt-6-luna": ProviderModel(
+                name="gpt-6-luna",
+                reasoning_efforts=frozenset({"none", "low", "medium", "high", "xhigh", "max"}),
+                rate_card=_CODEX_GPT6_LUNA_RATE,
+            ),
             "gpt-5.6-luna": ProviderModel(
                 name="gpt-5.6-luna",
                 reasoning_efforts=frozenset({"minimal", "low", "medium", "high"}),

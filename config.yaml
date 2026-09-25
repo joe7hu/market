@@ -191,9 +191,9 @@ agents:
     timeout_seconds: 300
     thesis_limit: 8
     postmortem_limit: 4
-    provider: deepseek
-    model: deepseek-v4-flash
-    reasoning_effort: high
+    provider: codex
+    model: gpt-6-luna
+    reasoning_effort: low
     auto_run_seconds: 0
     max_runs_per_day: 1
     experiment_enabled: false
