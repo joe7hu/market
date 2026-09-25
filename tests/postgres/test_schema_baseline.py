@@ -133,7 +133,7 @@ def test_migrations_directory_has_snapshot_and_forward_schema():
     assert 'ALTER INDEX' not in sql
 
 
-@pytest.mark.parametrize('revision', ['20260908_0007', '20260924_0037'])
+@pytest.mark.parametrize('revision', ['20260908_0007', '20260924_0037', '20260924_0038'])
 def test_known_forward_revision_upgrades_to_head(postgres_dsn, revision):
     upgrade_database(postgres_dsn, revision)
     upgrade_database(postgres_dsn)
